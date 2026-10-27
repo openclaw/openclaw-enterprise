@@ -425,7 +425,18 @@ test("complete native configuration requires explicit selection and custody with
       environment: {},
       startupConfiguration: { ...snapshot, configuration },
     });
-  assert.ok((await load())?.nativeRepositorySender);
+  // Existing repository custody selects the native Token Service without an OpenShell Backend.
+  const native = await load();
+  assert.ok(native?.nativeRepositorySender && native.credentialRefreshDriver?.preparedTokens);
+  assert.equal(native.credentialRefreshDriver.implementation, "native");
+  assert.equal(native.credentialRefreshDriver.sources, undefined);
+  drivers.credential_refresh = {
+    id: "review-token-service",
+    implementation: "native",
+    configuration: {},
+  };
+  assert.equal((await load())?.credentialRefreshDriver?.id, "review-token-service");
+  delete drivers.credential_refresh;
   configuration.repository = { ...repository, preparedGitHub: undefined };
   await assert.rejects(load(), /requires prepared GitHub custody/);
   // Selecting a Sandbox never downgrades protected delivery to the native socket.

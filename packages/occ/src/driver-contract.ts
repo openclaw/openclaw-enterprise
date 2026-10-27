@@ -90,21 +90,32 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "credential_gateway") {
-    return [
-      "listSourceTypes",
-      "validateSourceConfig",
-      "registerSource",
-      "updateSource",
-      "sourceStatus",
-      "removeSource",
-      "attachForRevision",
-      "attachmentStatus",
-      "withdraw",
-    ].every((operation) => typeof candidate[operation] === "function");
+    return (
+      validSourceTokenReader(candidate.sourceTokens) &&
+      [
+        "listSourceTypes",
+        "validateSourceConfig",
+        "registerSource",
+        "updateSource",
+        "sourceStatus",
+        "removeSource",
+        "attachForRevision",
+        "attachmentStatus",
+        "withdraw",
+      ].every((operation) => typeof candidate[operation] === "function")
+    );
   }
   if (driver.capability === "credential_refresh") {
-    return ["configureRefresh", "rotate", "refreshStatus", "removeRefresh"].every(
-      (operation) => typeof candidate[operation] === "function",
+    const sources = asRecord(candidate.sources);
+    const prepared = asRecord(candidate.preparedTokens);
+    return (
+      (sources !== undefined || prepared !== undefined) &&
+      validSourceTokenReader(candidate.sourceTokens) &&
+      (candidate.sources === undefined ||
+        ["configureRefresh", "rotate", "refreshStatus", "removeRefresh"].every(
+          (operation) => typeof sources?.[operation] === "function",
+        )) &&
+      (candidate.preparedTokens === undefined || typeof prepared?.issuer === "function")
     );
   }
   if (driver.capability === "service_account") {
@@ -173,6 +184,10 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     (candidate.deleteAgentRuntimeCredentials === undefined ||
       typeof candidate.deleteAgentRuntimeCredentials === "function")
   );
+}
+
+function validSourceTokenReader(reader: unknown): boolean {
+  return reader === undefined || typeof asRecord(reader)?.withSourceToken === "function";
 }
 
 function sandboxPolicyContract(candidate: Record<string, unknown>): boolean {

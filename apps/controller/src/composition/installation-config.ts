@@ -99,12 +99,12 @@ import {
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
-import { TokenService } from "../backends/token-service/service.ts";
+import { TokenService, tokenServiceConfiguration } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
 import { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { composeRepositoryAccess } from "./repository-credentials/platform.ts";
-import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
+import { startPreparedGitHubGitOwner } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
 import {
   OpenShellCredentialGatewayDriver,
@@ -209,6 +209,11 @@ export type ServiceAccountDriverFactory = (
   state: PostgresPlatformState,
 ) => void;
 
+type RepositoryGitWorker = Pick<
+  Parameters<typeof startPreparedGitHubGitOwner>[0],
+  "pool" | "report" | "startWorker"
+>;
+
 export interface InstallationRuntimeDrivers {
   readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
   /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
@@ -221,17 +226,21 @@ export interface InstallationRuntimeDrivers {
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
-  readonly credentialRefreshDriver?: CredentialRefreshDriver;
+  readonly credentialRefreshDriver?: CredentialRefreshDriver & {
+    /** The host uses these private hooks to run preparation and check its commits. */
+    readonly preparedTokens?: TokenService;
+    readonly preparedGitHub?: PostgresPreparedGitHubLifecycle;
+    readonly startRepositoryGit?: (
+      worker: RepositoryGitWorker,
+    ) => ReturnType<typeof startPreparedGitHubGitOwner>;
+  };
   readonly protectedDriver?: InstalledDriver;
   readonly proxyDriver?: CredentialProxyDriver;
   /** Present only when this registration owns protected repository delivery. */
   readonly repositoryGitDriver?: InstalledDriver;
-  readonly tokenService?: TokenService;
-  readonly preparedGitHub?: PostgresPreparedGitHubLifecycle;
   readonly pluginDriver?: PluginDriver;
   readonly repositoryPolicy?: RepositoryPolicyDriver;
   readonly nativeRepositorySender?: NativeRepositorySender;
-  readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration;
   readonly repositoryTransport?: OpenShellRepositoryTransport;
   readonly repositoryRegistry?: Awaited<
     ReturnType<typeof composeRepositoryAccess>
@@ -721,17 +730,6 @@ export async function loadInstallationConfiguration(options: {
       OpenShellCredentialGatewayDriver,
     );
   }
-  let credentialRefresh: SelectedDriverConfiguration | undefined;
-  if (drivers.credential_refresh !== undefined) {
-    const selection = object(drivers.credential_refresh, "drivers.credential_refresh");
-    closed(selection, ["id", "configuration"], "drivers.credential_refresh");
-    credentialRefresh = selected(
-      selection,
-      "credential_refresh",
-      "openshell",
-      OpenShellCredentialRefreshDriver,
-    );
-  }
   const sandboxSelection =
     drivers.sandbox === undefined ? undefined : object(drivers.sandbox, "drivers.sandbox");
   let proxySelection: SelectedDriverConfiguration | undefined;
@@ -794,12 +792,39 @@ export async function loadInstallationConfiguration(options: {
     chartListeners.openshellGit,
   );
 
+  const preparedGitHubConfigured =
+    preparedRepositoryGit !== undefined || preparedGitHubKeyPath !== undefined;
+  let credentialRefresh: SelectedDriverConfiguration | undefined;
+  if (drivers.credential_refresh !== undefined) {
+    const selection = object(drivers.credential_refresh, "drivers.credential_refresh");
+    closed(selection, ["id", "implementation", "configuration"], "drivers.credential_refresh");
+    const implementation =
+      selection.implementation === undefined ? "openshell" : selection.implementation;
+    if (implementation !== "openshell" && implementation !== "native") {
+      throw new Error("drivers.credential_refresh.implementation must be openshell or native.");
+    }
+    credentialRefresh = selected(
+      selection,
+      "credential_refresh",
+      implementation,
+      tokenServiceConfiguration,
+    );
+  } else if (preparedGitHubConfigured) {
+    // Existing GitHub installations selected preparation through their issuer and custody settings.
+    credentialRefresh = selected(
+      { id: "native-token-service", configuration: {} },
+      "credential_refresh",
+      "native",
+      tokenServiceConfiguration,
+    );
+  }
+
   const backends = backendConfiguration(
     configuration.backend,
     serviceAccount,
     repoSelection,
     credentialGateway?.id,
-    credentialRefresh?.id,
+    credentialRefresh?.implementation === "openshell" ? credentialRefresh.id : undefined,
     proxySelection?.id ?? packageProxyId,
   );
   const openShellBackend = backends.find(
@@ -1162,17 +1187,20 @@ export async function loadInstallationConfiguration(options: {
     secret.configuration as unknown as KubernetesSecretDriverOptions,
     { id: secret.id, implementation: secret.implementation, preprovisionedNamespace },
   );
-  const tokenService = new TokenService();
+  const preparedTokens =
+    preparedGitHubConfigured || credentialRefresh?.implementation === "native"
+      ? new TokenService()
+      : undefined;
   const preparedGitHub =
-    preparedGitHubKeyPath === undefined
-      ? undefined
-      : new PostgresPreparedGitHubLifecycle(
+    preparedGitHubKeyPath !== undefined && preparedTokens
+      ? new PostgresPreparedGitHubLifecycle(
+          preparedTokens,
           preparedGitHubKeyPath,
           secretDriver,
           preparedGitHubOrigin,
           preparedGitHubCa,
-          tokenService,
-        );
+        )
+      : undefined;
   let protectedDriver: InstalledDriver | undefined;
   let sandboxDriver: SandboxDriver | undefined;
   if (sandbox !== undefined && proxySelection !== undefined) {
@@ -1242,18 +1270,51 @@ export async function loadInstallationConfiguration(options: {
               })()
             : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
   }
-  const credentialRefreshDriver =
-    credentialRefresh === undefined
-      ? undefined
-      : new OpenShellCredentialRefreshDriver(credentialRefresh.configuration, {
-          id: credentialRefresh.id,
-          implementation: credentialRefresh.implementation,
-          backend: openShell!,
-        });
   const repositoryGitDriver = repositoryDeliveryMode === "protected" ? protectedDriver : undefined;
   // This check admits an implementation to try installation. Compute still verifies its
   // actual recipient and enforcement before release or the first eligible material read.
   repositoryGitDriver?.requireRepositoryGitTransport();
+  // Bind the installed grant, recipient and issuer here. Only worker activation opens the mounted inputs.
+  const startRepositoryGit =
+    preparedRepositoryGit &&
+    preparedTokens &&
+    repositoryRuntime &&
+    (async ({ pool, report, startWorker }: RepositoryGitWorker) => {
+      const { issuerCaPath, ...issuer } = preparedRepositoryGit;
+      return startPreparedGitHubGitOwner({
+        ...repositoryRuntime.repositoryOwner,
+        ...issuer,
+        ...(issuerCaPath && { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) }),
+        registry: repositoryRuntime.repositoryRegistry,
+        tokenService: preparedTokens,
+        ...(repositoryGitDriver && { protectedGitDriver: repositoryGitDriver.ref }),
+        ...(repositoryGitDriver &&
+          repositoryTransport && { protectedGitEvidence: repositoryTransport.evidence }),
+        pool,
+        ...(report && { report }),
+        ...(startWorker === false && { startWorker }),
+      });
+    });
+  const credentialRefreshDriver =
+    credentialRefresh &&
+    Object.assign(
+      credentialRefresh.implementation === "openshell"
+        ? new OpenShellCredentialRefreshDriver(credentialRefresh.configuration, {
+            id: credentialRefresh.id,
+            implementation: credentialRefresh.implementation,
+            backend: openShell!,
+          })
+        : {
+            id: credentialRefresh.id,
+            implementation: credentialRefresh.implementation,
+            capability: "credential_refresh" as const,
+          },
+      {
+        ...(preparedTokens && { preparedTokens }),
+        ...(preparedGitHub && { preparedGitHub }),
+        ...(startRepositoryGit && { startRepositoryGit }),
+      },
+    );
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -1280,7 +1341,7 @@ export async function loadInstallationConfiguration(options: {
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
         ...(protectedDriver === undefined ? {} : { protectedDriver }),
-        preparedTokens: tokenService,
+        ...(preparedTokens && { preparedTokens }),
         ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
           ? {}
           : { preparedRepositoryIngress: true }),
@@ -1324,12 +1385,9 @@ export async function loadInstallationConfiguration(options: {
       ? {}
       : { protectedDriver, proxyDriver: protectedDriver.require("credential_proxy") }),
     ...(repositoryGitDriver && { repositoryGitDriver }),
-    tokenService,
-    ...(preparedGitHub === undefined ? {} : { preparedGitHub }),
     createIAMDriver,
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     ...(repositoryRuntime ?? {}),
-    ...(preparedRepositoryGit ? { preparedRepositoryGit } : {}),
     ...(repositoryTransport ? { repositoryTransport } : {}),
   });
 }

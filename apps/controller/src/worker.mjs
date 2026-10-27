@@ -1,19 +1,12 @@
 import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
-import {
-  PreparedGitHubAppKeyError,
-  startPreparedGitHubGitOwner,
-} from "./backends/repository-credentials/prepared-git-owner.ts";
-import {
-  bindRepositoryGitTransport,
-  repositoryGitAuthority,
-} from "./composition/repository-credentials/transport.ts";
+import { PreparedGitHubAppKeyError } from "./backends/repository-credentials/prepared-git-owner.ts";
+import { bindRepositoryGitTransport } from "./composition/repository-credentials/transport.ts";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
   loadStartupConfigurationSnapshot,
-  readPublicCaBundle,
 } from "./composition/installation-config.ts";
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
@@ -189,15 +182,9 @@ try {
       state: new PostgresPlatformState(pool),
     });
   }
-  if (repositoryOwner && drivers.preparedRepositoryGit) {
-    const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
-    preparedRepositoryGit = await startPreparedGitHubGitOwner({
-      ...repositoryOwner,
-      ...owner,
-      ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
+  if (drivers?.credentialRefreshDriver?.startRepositoryGit) {
+    preparedRepositoryGit = await drivers.credentialRefreshDriver.startRepositoryGit({
       pool,
-      registry: drivers.repositoryRegistry,
-      ...repositoryGitAuthority(drivers),
       report: (code, context) =>
         emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
     });
@@ -207,7 +194,7 @@ try {
       pool,
       (event) => emitOccLogEvent(logger, event),
     );
-  } else if (drivers?.repositoryGitDriver || drivers?.openShellGit) {
+  } else if (drivers?.repositoryGitDriver || drivers?.repositoryTransport) {
     throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;
@@ -246,7 +233,7 @@ try {
             writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 }),
         }),
   });
-  preparedGitHub = drivers?.preparedGitHub;
+  preparedGitHub = drivers?.credentialRefreshDriver?.preparedGitHub;
   await preparedGitHub?.connect(pool);
   await worker.start();
   preparedGitHub?.startWorker((code) => emitOccLogEvent(logger, { event: "worker.error", code }));

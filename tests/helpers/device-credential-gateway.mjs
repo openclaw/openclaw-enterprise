@@ -48,13 +48,6 @@ export function createDeviceCredentialDrivers({
       sources.set(context.source.id, "pending");
       return { state: "pending" };
     },
-    async withSourceToken(context, use) {
-      record("withSourceToken", context);
-      if (sources.get(context.source.id) !== "ready") {
-        throw new Error("No usable token is available for this source.");
-      }
-      return use({ accessToken: DEVICE_ACCESS_TOKEN, accountId: DEVICE_ACCOUNT_ID });
-    },
     async sourceStatus(context) {
       record("sourceStatus", context);
       return { state: sources.get(context.source.id) ?? "absent" };
@@ -81,6 +74,18 @@ export function createDeviceCredentialDrivers({
     id: "device-credential-refresh",
     capability: "credential_refresh",
     implementation: "test-external-device-service",
+    get sources() {
+      return this;
+    },
+    sourceTokens: {
+      async withSourceToken(context, use) {
+        record("withSourceToken", context);
+        if (sources.get(context.source.id) !== "ready") {
+          throw new Error("No usable token is available for this source.");
+        }
+        return use({ accessToken: DEVICE_ACCESS_TOKEN, accountId: DEVICE_ACCOUNT_ID });
+      },
+    },
     async startDeviceAuthorization(context) {
       record("startDeviceAuthorization", context);
       const error = typeof startError === "function" ? startError() : startError;
@@ -125,5 +130,5 @@ export function createDeviceCredentialDrivers({
       handles.delete(context.source.id);
     },
   };
-  return { gateway, refresh };
+  return { gateway, refresh, calls };
 }

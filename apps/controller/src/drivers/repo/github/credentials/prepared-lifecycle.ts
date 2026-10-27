@@ -1,4 +1,4 @@
-import { TokenService } from "../../../../backends/token-service/service.ts";
+import type { TokenService } from "../../../../backends/token-service/service.ts";
 import { retireToken } from "../../../../backends/token-service/retirement.ts";
 import { githubProviderOrigin } from "./factory.ts";
 import { createHash, createPrivateKey, randomUUID } from "node:crypto";
@@ -89,11 +89,11 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
   readonly issuerAuthority: string;
   private readonly ca: Uint8Array | undefined;
   constructor(
+    tokenService: TokenService,
     custodyKeyPath: string,
     secretDriver: SecretDriver,
     apiOrigin = "https://api.github.com",
     ca?: Uint8Array,
-    tokenService = new TokenService(),
   ) {
     this.custodyKeyPath = custodyKeyPath;
     this.secretDriver = secretDriver;

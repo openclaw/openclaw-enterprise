@@ -332,15 +332,18 @@ func parseGeneratedRepositoryStartup(t *testing.T, realNode string, state *devel
 	program := `import assert from 'node:assert/strict';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { loadInstallationConfiguration } from './apps/controller/src/composition/installation-config.ts';
+import { loadInstallationConfiguration, loadStartupConfigurationSnapshot } from './apps/controller/src/composition/installation-config.ts';
 import { prepareProjectedInputs } from './apps/controller/src/composition/repository-credentials/projected-inputs.ts';
 import { createSystemClock } from './apps/controller/src/drivers/repo/credentials/clock.ts';
 const [root, sockets, origin] = process.argv.slice(1);
-const loaded = await loadInstallationConfiguration({ mode: 'production', environment: { OCC_CONFIG_PATH: join(root, 'installation.yaml') } });
+const options = { mode: 'production', environment: { OCC_CONFIG_PATH: join(root, 'installation.yaml') } };
+const startupConfiguration = await loadStartupConfigurationSnapshot(options);
+const loaded = await loadInstallationConfiguration({ ...options, startupConfiguration });
 assert.equal(loaded.repositoryGitDriver, undefined);
 assert.equal(typeof loaded.nativeRepositorySender, 'object');
 assert.equal(loaded.repositoryOwner.backendId, 'repository-backend');
-assert.equal(loaded.preparedRepositoryGit.apiOrigin, origin || undefined);
+assert.equal(typeof loaded.credentialRefreshDriver.startRepositoryGit, 'function');
+assert.equal(startupConfiguration.configuration.repository.preparedGitHub.apiOrigin, origin || undefined);
 // Lay the broker inputs out as Kubernetes projects the chart's Secret and ConfigMap volumes.
 const project = async (directory, files) => {
   await mkdir(join(directory, '..generation'), { recursive: true, mode: 0o755 });

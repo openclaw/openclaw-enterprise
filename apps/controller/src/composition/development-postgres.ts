@@ -127,7 +127,7 @@ export async function composePostgresDevelopment(
 
   try {
     const state = new PostgresPlatformState(pool, {
-      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+      preparedTokenProof: drivers?.credentialRefreshDriver?.preparedTokens?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -247,7 +247,6 @@ export async function composePostgresDevelopment(
     const controller = new OpenClawController(persistedInstallation, {
       ...installationControllerOptions(drivers?.installation),
       state,
-      ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
       recordOperations: true,
       defaultPresets: drivers?.defaultPresets ?? [],
       bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
@@ -365,7 +364,7 @@ export async function composePostgresDevelopment(
       },
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
-    await drivers?.preparedGitHub?.connect(pool);
+    await drivers?.credentialRefreshDriver?.preparedGitHub?.connect(pool);
     const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
@@ -375,13 +374,13 @@ export async function composePostgresDevelopment(
     app.addHook("onClose", async () => {
       await exchange?.close();
       await drivers?.protectedDriver?.close();
-      await drivers?.preparedGitHub?.close();
+      await drivers?.credentialRefreshDriver?.preparedGitHub?.close();
       await state.close();
     });
     return app;
   } catch (error) {
     await drivers?.protectedDriver?.close();
-    await drivers?.preparedGitHub?.close();
+    await drivers?.credentialRefreshDriver?.preparedGitHub?.close();
     await pool.end();
     throw error;
   }

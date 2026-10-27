@@ -108,7 +108,6 @@ export async function composeProduction(
     credentialGatewayDriver,
     credentialRefreshDriver,
     protectedDriver,
-    preparedGitHub,
     pluginDriver,
     repositoryPolicy,
     createIAMDriver,
@@ -146,7 +145,7 @@ export async function composeProduction(
 
   try {
     const state = new PostgresPlatformState(pool, {
-      preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
+      preparedTokenProof: credentialRefreshDriver?.preparedTokens?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -281,7 +280,6 @@ export async function composeProduction(
     const controller = new OpenClawController(persistedInstallation, {
       ...installationControllerOptions(config.drivers.installation),
       state,
-      ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
       recordOperations: true,
       backends: installation.backend,
       defaultPresets: config.drivers.defaultPresets ?? [],
@@ -398,7 +396,7 @@ export async function composeProduction(
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
-    await preparedGitHub?.connect(pool);
+    await credentialRefreshDriver?.preparedGitHub?.connect(pool);
     const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
@@ -408,14 +406,14 @@ export async function composeProduction(
     app.addHook("onClose", async () => {
       await exchange?.close();
       await config.drivers.protectedDriver?.close();
-      await preparedGitHub?.close();
+      await credentialRefreshDriver?.preparedGitHub?.close();
       await state.close();
     });
     phaseCompleted("routes");
     return app;
   } catch (error) {
     await config.drivers.protectedDriver?.close();
-    await preparedGitHub?.close();
+    await credentialRefreshDriver?.preparedGitHub?.close();
     await pool.end();
     throw error;
   }

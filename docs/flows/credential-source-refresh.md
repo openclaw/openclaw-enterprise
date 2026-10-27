@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-26
-last_updated_session: authoring-run/31aa1352-e139-4622-8019-4b5c08958c21
+updated: 2026-10-27
+last_updated_session: authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17
 ---
 
 # Credential source refresh Flow
@@ -18,7 +18,7 @@ the refresh grant. The Harness receives a placeholder and account metadata. An
 operator connection can retrieve an access token for authorized discovery.
 These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
-For [GitHub access](#6-oce-prepared-github-core), the OCE worker owns issuance.
+For [GitHub access](#6-oce-prepared-github-core), the worker runs the Installation’s Token Service.
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
 can use committed tokens but cannot trigger issuance.
 
@@ -30,10 +30,9 @@ can use committed tokens but cannot trigger issuance.
 - Source: `packages/occ/src/index.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:rotateCredentialSource`
 - Source: `apps/controller/src/drivers/credential-refresh/openshell.ts:OpenShellCredentialRefreshDriver`
-- Assumptions: the OpenShell Backend declares both `credential_gateway` and
-  `credential_refresh`, and both Drivers are selected; the gateway's
-  `toolBinaries` are configured, so the catalog lists the OAuth2 types; the
-  OpenShell gateway trusts and reaches the issuer's `token_url`.
+- The Installation selects the OpenShell Backend's `credential_gateway` and
+  `credential_refresh` Drivers. Configured `toolBinaries` enable tool OAuth2 types.
+  The gateway must trust and reach the issuer's `token_url`.
 
 ## Flow
 
@@ -135,10 +134,10 @@ The HTTP handler in `apps/controller/src/index.ts` records the successful start
 before sending the session reference. The audit event identifies the Agent or
 Namespace, not the session Secret.
 
-`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` keeps
-`start_unconfirmed` in the form draft if the start has no response status or its
-successful response is unusable. The form blocks another start. Without a
-confirmed session reference, it also cannot poll or cancel. See
+`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
+`start_unconfirmed` when the response lacks a status or an otherwise successful
+response is unusable. The form blocks another start. Polling and cancellation
+require a confirmed session reference. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 For a known session, compare-and-swap permits one poll at a time. OCC rechecks scope and
 both Driver selections before accepting completion. An uncertain exchange closes
@@ -169,13 +168,12 @@ Ready confirms a usable token. Later versions attach the existing provider
 without reseeding credentials; account metadata changes require a new login and
 version.
 
-For plugin configuration, the Gateway reads ownership/account metadata using its
-ordinary Backend identity, then calls `GetProviderCredentials` through the
-separate operator-TLS channel. OpenShell may refresh to satisfy its five-minute
-remaining-lifetime requirement. Only access credentials enter the callback; it
-rechecks the caller's authority and saved-Agent binding/grant before provider I/O.
-Closing or expiring the login session does not disable source-based discovery.
-Cancellation or a failed recheck cannot undo gateway refresh already started.
+For catalog discovery, the [OpenShell Token Service reader](../reference/drivers/credential-refresh.md#plugin-catalog-discovery) verifies
+source ownership and reads account metadata with its ordinary Backend identity.
+Operator mTLS authorizes `GetProviderCredentials`. OpenShell may renew to meet
+the five-minute lifetime minimum. OCC rechecks caller authority and saved-Agent
+binding and grant before passing the token to the Plugin Driver. Discovery
+outlives the login session. Cancellation or denial cannot undo a started refresh.
 
 ### 3. Background refresh
 
@@ -221,7 +219,7 @@ whose outcome is unknown records neither event.
 
 After the usual reference check and `deleting` mark, OCC calls `removeRefresh`,
 then the gateway's `removeSource`. Before `DeleteProviderRefresh`,
-`apps/controller/src/drivers/credential-refresh/openshell.ts:ownedProvider`
+`apps/controller/src/drivers/credential-refresh/openshell-source-tokens.ts:ownedProvider`
 checks the exact source Namespace and paired Gateway ID, then the current
 provider's manager/source labels and profile identity. A missing provider is
 already clean; a foreign provider or failed lookup refuses cleanup. The deletion
@@ -231,6 +229,7 @@ the record `deleting` for retry.
 
 ### 6. OCE-prepared GitHub core
 
+`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
 `apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
 
 The worker records an `issuing` attempt, signs a short-lived JSON Web Token
@@ -318,6 +317,8 @@ detached warm reads. Clearing a local buffer cannot revoke a provider token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 00:47: Trace authorized catalog token retrieval through the selected Token Service. (authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17 - 09e9cb6e4a452c2f727a7b53b9b2dcbd5ac5503c)
 
 - 2026-10-26 22:20: Distinguish Git session limits from metadata access. (authoring-run/31aa1352-e139-4622-8019-4b5c08958c21 - c1fee5d433)
 

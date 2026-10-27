@@ -66,8 +66,9 @@ their endpoints, such as `/usr/bin/curl`. Without it the catalog omits
 `bearer-token` and the OAuth2 types.
 
 `drivers.credential_refresh` is optional and takes an empty configuration. It
-selects the bundled [Credential Refresh](credential-refresh.md) implementation,
-which must be the same Backend's `credential_refresh` member. With it and
+selects the [OpenShell OAuth implementation](credential-refresh.md) when
+`implementation` is omitted or set to `openshell`. Its ID must match the same
+Backend’s `credential_refresh` member. With it and
 `toolBinaries`, the catalog adds the OAuth2 types.
 
 Binary-list changes apply on update, deployment or repair; until success,
@@ -83,7 +84,7 @@ Startup rejects the selection when:
 - no `openshell` Backend exists, or its `drivers.credential_gateway`,
   `drivers.sandbox`, or `drivers.credential_refresh` differs from the selected
   IDs;
-- `drivers.credential_refresh` is selected without `drivers.credential_gateway`; or
+- the OpenShell OAuth implementation is selected without `drivers.credential_gateway`; or
 - the configuration has any key other than `binaries` and `toolBinaries`.
 
 Both API and worker require Backend credentials. The API registers/deletes

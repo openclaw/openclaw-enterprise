@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   createOpenShellBackend,
   openShellProviderName,
@@ -272,45 +273,57 @@ test(
         .getProviderCredential(workspace, provider, key, signal),
       { value: current, expirationTime: `${expiry.toISOString().slice(0, 19)}.000000000Z` },
     );
-    const driver = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/codex"] },
-      { backend },
-    );
-    // Incoming IP-SAN transport must also carry the operator identity without SNI or bearer headers.
-    const ipBackend = createOpenShellBackend({
-      id: "openshell-ip",
-      implementation: "openshell",
-      configuration: { ...configuration, endpoint: `https://127.0.0.1:${port}` },
-      drivers: {
-        sandbox: "sandbox",
-        credential_gateway: "credential-gateway-openshell",
-        credential_refresh: "credential-refresh-openshell",
-      },
-    });
-    t.after(() => ipBackend.client.close());
-    const ipDriver = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/codex"] },
-      { backend: ipBackend },
-    );
+    const driver = new OpenShellCredentialRefreshDriver({}, { backend });
     const context = {
       signal,
       namespace: { id: "namespace", name: workspace },
-      source: { id: sourceId, namespaceId: "namespace", driverId: driver.id, type: "codex-oauth" },
+      source: {
+        id: sourceId,
+        namespaceId: "namespace",
+        driverId: backend.drivers.credential_gateway,
+        type: "codex-oauth",
+      },
     };
-    assert.equal(
-      await ipDriver.withSourceToken(context, async ({ accessToken }) => accessToken),
-      current,
-    );
+    // A retained account still uses operator mTLS over the IP-SAN endpoint with enrollment off.
+    for (const operatorTls of [certificates.operatorTls, undefined]) {
+      const retainedBackend = createOpenShellBackend({
+        id: "openshell-ip",
+        implementation: "openshell",
+        configuration: { ...configuration, endpoint: `https://127.0.0.1:${port}`, operatorTls },
+        drivers: { sandbox: "sandbox", credential_gateway: "credential-gateway-openshell" },
+      });
+      t.after(() => retainedBackend.client.close());
+      const gateway = new OpenShellCredentialGatewayDriver(
+        { binaries: ["/app/bin/codex"] },
+        { backend: retainedBackend },
+      );
+      const read = gateway.sourceTokens.withSourceToken(
+        context,
+        async ({ accessToken }) => accessToken,
+      );
+      if (operatorTls === undefined) {
+        await assert.rejects(read, /requires operatorTls/);
+      } else {
+        assert.equal(await read, current);
+      }
+    }
     const seen = [];
     const consume = async (token) => {
       seen.push(token);
       return "catalog-result";
     };
-    assert.equal(await driver.withSourceToken(context, consume), "catalog-result");
+    await assert.rejects(
+      driver.sourceTokens.withSourceToken(
+        { ...context, source: { ...context.source, driverId: "another-gateway" } },
+        consume,
+      ),
+      /not owned by this gateway/,
+    );
+    assert.equal(await driver.sourceTokens.withSourceToken(context, consume), "catalog-result");
     // The fake server represents an already-published replacement. This proves a fresh RPC read,
     // not OAuth rotation; the separate real-gateway test proves refresh and committed storage.
     current = "synthetic-access-replacement";
-    await driver.withSourceToken(context, consume);
+    await driver.sourceTokens.withSourceToken(context, consume);
     assert.deepEqual(
       seen.map(({ accessToken }) => accessToken),
       ["synthetic-access-first", "synthetic-access-replacement"],
@@ -318,7 +331,7 @@ test(
     assert.equal(seen[1].accountId, "account-fixture");
     assert.equal(rotations, 1, "source reads leave refresh coordination to GetProviderCredentials");
     denyRead = true;
-    await assert.rejects(driver.withSourceToken(context, consume), (error) => {
+    await assert.rejects(driver.sourceTokens.withSourceToken(context, consume), (error) => {
       assert.equal(error.grpcStatus, grpc.status.PERMISSION_DENIED);
       assert.match(error.message, /GetProviderCredentials failed/);
       assert.equal(error.message.includes("synthetic-private-provider-error"), false);
@@ -343,7 +356,7 @@ test(
       [{ [key]: { value: current, expiration_time: { seconds: "1" } } }, /expired/],
     ]) {
       readResponse = credentials;
-      await assert.rejects(driver.withSourceToken(context, consume), error);
+      await assert.rejects(driver.sourceTokens.withSourceToken(context, consume), error);
     }
     assert.equal(seen.length, 2, "denied and unusable values never reach plugin discovery");
     readResponse = { [key]: { value: current } };
@@ -360,7 +373,10 @@ test(
     pendingRead = true;
     const abort = new AbortController();
     const reason = new Error("credential discovery cancelled");
-    const pending = driver.withSourceToken({ ...context, signal: abort.signal }, consume);
+    const pending = driver.sourceTokens.withSourceToken(
+      { ...context, signal: abort.signal },
+      consume,
+    );
     const rejection = assert.rejects(pending, (error) => error === reason);
     await received.promise;
     abort.abort(reason);

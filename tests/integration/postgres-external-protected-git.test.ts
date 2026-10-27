@@ -14,15 +14,9 @@ import type {
   RepositoryGitDeliveryProfile,
   RepositoryGitSendPermit,
 } from "../../packages/contracts/src/index.ts";
-import {
-  loadInstallationConfiguration,
-  readPublicCaBundle,
-} from "../../apps/controller/src/composition/installation-config.ts";
-import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
-import {
-  bindRepositoryGitTransport,
-  repositoryGitAuthority,
-} from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import type { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
+import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
@@ -572,8 +566,9 @@ function externalGitJourney(
           },
         }
       : loadedDrivers;
-    const { repositoryOwner, repositoryRegistry, repositoryGitDriver: owner } = drivers;
-    assert.ok(owner && repositoryOwner && repositoryRegistry && drivers.preparedRepositoryGit);
+    const { repositoryOwner, repositoryGitDriver: owner } = drivers;
+    const startRepositoryGit = drivers.credentialRefreshDriver?.startRepositoryGit;
+    assert.ok(owner && repositoryOwner && startRepositoryGit);
     assert.equal(repositoryOwner.controlSocket, undefined);
     assert.equal(Object.hasOwn(drivers.installation.drivers, "repo"), false);
     assert.equal(drivers.nativeRepositorySender, undefined);
@@ -600,16 +595,9 @@ function externalGitJourney(
     const release = new ProtectedExecutionDriver(owner);
     // Use production authority and sender composition, including their background maintenance.
     // The short-lived local issuer makes rotation observable without changing stored deadlines.
-    const { issuerCaPath, ...preparedConfig } = drivers.preparedRepositoryGit;
-    const issuerCa = Buffer.from(await readPublicCaBundle(issuerCaPath!));
     const startOwner = () =>
-      startPreparedGitHubGitOwner({
-        ...repositoryOwner,
-        ...preparedConfig,
-        ca: issuerCa,
+      startRepositoryGit({
         pool: f.observerPool,
-        registry: repositoryRegistry,
-        ...repositoryGitAuthority(drivers),
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
     prepared = await startOwner();

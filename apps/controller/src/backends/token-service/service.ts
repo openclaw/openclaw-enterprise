@@ -2,11 +2,18 @@ import type { PostgresPlatformStateOptions } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
+  DriverImplementation,
   EgressRef,
   PreparedTokenIssuer,
   PreparedTokenService,
 } from "@openclaw-enterprise/contracts";
 import type { TokenIssue } from "./preparation.ts";
+
+/** The bundled implementations take issuer settings from their configured credential families. */
+export const tokenServiceConfiguration: DriverImplementation = {
+  configurationSchema: { type: "object", additionalProperties: false, properties: {} },
+  validateConfiguration: () => [],
+};
 
 type PostgresProof = NonNullable<PostgresPlatformStateOptions["preparedTokenProof"]>;
 

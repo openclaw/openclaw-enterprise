@@ -11,8 +11,8 @@ import type {
   CredentialSourceContext,
   CredentialSourceInput,
   CredentialSourceStatus,
+  CredentialSourceTokenReader,
   CredentialSourceType,
-  CredentialSourceToken,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialSourceConfigError,
@@ -29,6 +29,7 @@ import {
 } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
+import { openShellSourceTokenReader } from "../credential-refresh/openshell-source-tokens.ts";
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
 
 import {
@@ -838,6 +839,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
 
   readonly id: string;
   readonly capability = "credential_gateway" as const;
+  readonly sourceTokens: CredentialSourceTokenReader;
   readonly implementation: string;
   private readonly options: OpenShellCredentialGatewayOptions;
   private readonly backend: Backend<OpenShellGateway>;
@@ -868,6 +870,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         : { toolBinaries: Object.freeze([...options.toolBinaries]) }),
     });
     this.backend = selection.backend;
+    this.sourceTokens = openShellSourceTokenReader(this.backend);
     this.refresh = selection.backend.drivers.credential_refresh !== undefined;
   }
 
@@ -1001,27 +1004,6 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       context.signal,
     );
     return { state: "ready" };
-  }
-
-  async withSourceToken<T>(
-    context: CredentialSourceContext,
-    use: (token: CredentialSourceToken) => Promise<T>,
-  ): Promise<T> {
-    const provider = await this.codexProvider(context);
-    const account = codexAccountMetadata(provider.config);
-    // Only the operator channel can export credentials. OpenShell may refresh to
-    // satisfy its lifetime guarantee; the Driver never receives refresh material here.
-    const token = await this.credentialClient(context).getProviderCredential(
-      openShellWorkspaceName(context.namespace),
-      provider.name,
-      CODEX_ACCESS_TOKEN_ENV,
-      context.signal,
-    );
-    return use({
-      accessToken: token.value,
-      accountId: account.accountId,
-      ...(account.isFedramp === undefined ? {} : { isFedramp: account.isFedramp }),
-    });
   }
 
   async sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus> {
@@ -1260,37 +1242,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return detached === undefined ? absent() : settle(detached.receiptId);
   }
 
-  private async codexProvider(
-    context: CredentialSourceContext,
-  ): Promise<OpenShellProviderResponse> {
-    if (
-      context.source.type !== CODEX_OAUTH_TYPE ||
-      context.source.driverId !== this.id ||
-      context.source.namespaceId !== context.namespace.id
-    ) {
-      throw new ScopeViolationError("The Codex OAuth source is not owned by this gateway.");
-    }
-    const provider = await this.client(context).getProvider(
-      openShellWorkspaceName(context.namespace),
-      openShellProviderName(context.source.id),
-      context.signal,
-    );
-    if (!provider || !ownedBy(provider, context.source.id)) {
-      throw new ScopeViolationError(
-        "The OpenShell provider is not owned by this Codex OAuth source.",
-      );
-    }
-    return provider;
-  }
-
   private client(context: CredentialGatewayContext & { readonly namespace: { name: string } }) {
     return this.backend.client.clientForNamespace(context.namespace.name);
-  }
-
-  private credentialClient(
-    context: CredentialGatewayContext & { readonly namespace: { name: string } },
-  ) {
-    return this.backend.client.credentialClientForNamespace(context.namespace.name);
   }
 
   private placement(

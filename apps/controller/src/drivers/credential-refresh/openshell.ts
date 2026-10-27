@@ -1,13 +1,14 @@
-import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialRefreshDriver,
+  CredentialSourceRefresh,
   CredentialRefreshInput,
   CredentialRefreshStatus,
   CredentialSourceContext,
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
+  CredentialSourceTokenReader,
 } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -17,6 +18,13 @@ import {
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
+import { tokenServiceConfiguration } from "../../backends/token-service/service.ts";
+import {
+  openShellSourceTokenReader,
+  confirmCodexAccessToken,
+  ownedCodexProvider,
+  ownedProvider,
+} from "./openshell-source-tokens.ts";
 import { openShellRefreshSourceType } from "../credential-gateway/openshell.ts";
 import type {
   OpenShellProviderResponse,
@@ -84,23 +92,17 @@ function credentialRefreshStatus(status: OpenShellRefreshStatus): CredentialRefr
  * before expiry, so both roles must belong to one OpenShell Backend.
  */
 export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver {
-  static readonly configurationSchema = Object.freeze({
-    type: "object",
-    additionalProperties: false,
-    properties: {},
-  });
-
-  static validateConfiguration(): readonly ErrorDetail[] {
-    return [];
-  }
-
   readonly id: string;
   readonly capability = "credential_refresh" as const;
+  get sources(): CredentialSourceRefresh {
+    return this;
+  }
   readonly implementation: string;
+  readonly sourceTokens: CredentialSourceTokenReader;
   private readonly backend: Backend<OpenShellGateway>;
 
   constructor(configuration: unknown, selection: OpenShellCredentialRefreshSelection) {
-    requireConfiguration(OpenShellCredentialRefreshDriver, configuration);
+    requireConfiguration(tokenServiceConfiguration, configuration);
     this.id = selection.id ?? "credential-refresh-openshell";
     this.implementation = selection.implementation ?? "openshell";
     if (this.implementation !== "openshell") {
@@ -114,12 +116,13 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       );
     }
     this.backend = selection.backend;
+    this.sourceTokens = openShellSourceTokenReader(this.backend);
   }
 
   async startDeviceAuthorization(
     context: CredentialSourceContext,
   ): Promise<CredentialSourceDeviceAuthorization> {
-    await this.codexProvider(context);
+    await ownedCodexProvider(this.backend, context);
     this.backend.client.credentialClientForNamespace(context.namespace.name);
     return startCodexDeviceAuthorization(context.source.id, context.signal);
   }
@@ -128,7 +131,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     context: CredentialSourceContext,
     privateState: string,
   ): Promise<CredentialSourceDeviceAuthorizationResult> {
-    const provider = await this.codexProvider(context);
+    const provider = await ownedCodexProvider(this.backend, context);
     this.backend.client.credentialClientForNamespace(context.namespace.name);
     const state = codexDeviceAuthorizationState(context.source.id, privateState);
     if (provider.config[CODEX_ACCOUNT_CONFIG]) {
@@ -147,7 +150,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     });
     // TODO(connection recovery): grant configuration and metadata are not atomic;
     // interrupted handoff may require a new login until recoverable completion exists.
-    const current = await this.codexProvider(context);
+    const current = await ownedCodexProvider(this.backend, context);
     const configured = await this.client(context).updateProviderConfig(
       openShellWorkspaceName(context.namespace),
       provider.name,
@@ -200,7 +203,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     requestId: string,
   ): Promise<CredentialRefreshStatus> {
     const type = this.refreshType(context);
-    if ((await this.ownedProvider(context)) === undefined) {
+    if ((await ownedProvider(this.backend, context)) === undefined) {
       throw new ScopeViolationError("The OpenShell provider for this credential source is absent.");
     }
     const client = this.client(context);
@@ -239,7 +242,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     // Device login has no grant until approval. Once account metadata records a
     // completed handoff, losing the refresh state requires recovery like any other source.
     if (status === undefined && context.source.type === CODEX_OAUTH_TYPE) {
-      const provider = await this.codexProvider(context);
+      const provider = await ownedCodexProvider(this.backend, context);
       if (!provider.config[CODEX_ACCOUNT_CONFIG]) {
         return Object.freeze({ state: "pending" as const });
       }
@@ -252,7 +255,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
 
   async removeRefresh(context: CredentialSourceContext): Promise<void> {
     const type = this.refreshType(context);
-    if ((await this.ownedProvider(context)) === undefined) {
+    if ((await ownedProvider(this.backend, context)) === undefined) {
       return;
     }
     await this.client(context).deleteProviderRefresh(
@@ -291,57 +294,8 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
         "OpenShell could not establish managed Codex OAuth refresh. Connect again.",
       );
     }
-    await this.backend.client
-      .credentialClientForNamespace(context.namespace.name)
-      .getProviderCredential(
-        openShellWorkspaceName(context.namespace),
-        provider.name,
-        CODEX_ACCESS_TOKEN_ENV,
-        context.signal,
-      );
+    await confirmCodexAccessToken(this.backend, context, provider);
     return { status: "ready" };
-  }
-
-  private async codexProvider(
-    context: CredentialSourceContext,
-  ): Promise<OpenShellProviderResponse> {
-    if (context.source.type !== CODEX_OAUTH_TYPE) {
-      throw new ScopeViolationError("The Codex OAuth source is not owned by this gateway.");
-    }
-    const provider = await this.ownedProvider(context);
-    if (provider === undefined) {
-      throw new ScopeViolationError(
-        "The OpenShell provider is not owned by this Codex OAuth source.",
-      );
-    }
-    return provider;
-  }
-
-  private async ownedProvider(
-    context: CredentialSourceContext,
-  ): Promise<OpenShellProviderResponse | undefined> {
-    if (
-      context.source.driverId !== this.backend.drivers.credential_gateway ||
-      context.source.namespaceId !== context.namespace.id
-    ) {
-      throw new ScopeViolationError("The credential source is not owned by this gateway.");
-    }
-    const provider = await this.client(context).getProvider(
-      openShellWorkspaceName(context.namespace),
-      openShellProviderName(context.source.id),
-      context.signal,
-    );
-    if (
-      provider !== undefined &&
-      (provider.type !== openShellProviderName(context.source.id) ||
-        provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
-        provider.labels["openclaw.dev/credential-source-id"] !== context.source.id)
-    ) {
-      throw new ScopeViolationError(
-        "The OpenShell provider is not owned by this credential source.",
-      );
-    }
-    return provider;
   }
 
   private refreshType(context: CredentialSourceContext) {

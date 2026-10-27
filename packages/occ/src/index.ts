@@ -46,7 +46,6 @@ import type {
   CredentialFreeEgressSource,
   PreparedTokenSource,
   PreparedTokenIssuer,
-  PreparedTokenService,
   EgressRef,
   ProtectedEgressSource,
 } from "@openclaw-enterprise/contracts";
@@ -145,6 +144,7 @@ import type {
   CredentialGatewayDriver,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
+  CredentialSourceRefresh,
   CredentialSource,
   CredentialSourceReference,
   CredentialSourceMetadata,
@@ -730,7 +730,6 @@ export interface RuntimeLogReadGrant {
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
 export interface ControllerOptions {
-  readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   readonly authorize?: (
@@ -1885,7 +1884,6 @@ export class OpenClawController {
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
   private readonly registry = new Map<string, RegisteredDriver>();
-  private readonly preparedTokens: PreparedTokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private readonly backends: readonly BackendDefinition[];
   private readonly defaultPresets: readonly Pick<Preset, "name" | "template">[];
@@ -1924,7 +1922,6 @@ export class OpenClawController {
       this.configurations.register(registration);
     }
     this.authorization = options.authorize;
-    this.preparedTokens = options.preparedTokens;
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
@@ -5763,7 +5760,9 @@ export class OpenClawController {
       return deny("scope_mismatch");
     }
     if (admitted.adoption === "prepared") {
-      const lifecycle = this.preparedTokens?.issuer(admitted.key.provider);
+      const lifecycle = this.credentialRefreshDriver()?.preparedTokens?.issuer(
+        admitted.key.provider,
+      );
       const grant = provider.normalizeGrant([], source.config);
       if (
         !lifecycle ||
@@ -5823,7 +5822,7 @@ export class OpenClawController {
   }
 
   private preparedIssuer(provider: EgressRef) {
-    const lifecycle = this.preparedTokens?.issuer(provider);
+    const lifecycle = this.credentialRefreshDriver()?.preparedTokens?.issuer(provider);
     if (!lifecycle) {
       throw new DependencyUnavailableError(
         "The admitted prepared credential issuer is not configured.",
@@ -6242,7 +6241,7 @@ export class OpenClawController {
       });
       credentialSourceFieldsMatch(type, "config", config);
       const refreshDriver =
-        type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
+        type.rotation === "refresh" ? this.credentialSourceRefresh() : undefined;
       if (
         type.deviceAuthorization !== undefined &&
         (!refreshDriver?.startDeviceAuthorization || !refreshDriver.pollDeviceAuthorization)
@@ -6394,7 +6393,7 @@ export class OpenClawController {
 
   /** Configures a new source's refresh material, then forces and returns the first mint. */
   private async mintFirstRefreshToken(
-    refresh: CredentialRefreshDriver,
+    refresh: CredentialSourceRefresh,
     namespace: Readonly<Namespace>,
     source: Readonly<CredentialSource>,
     config: Readonly<Record<string, string>>,
@@ -6586,7 +6585,7 @@ export class OpenClawController {
       if (type.rotation === "refresh") {
         // A refresh type keeps no static value at the gateway: new material replaces the
         // refresh configuration, and the next mint proves it before OCC commits the references.
-        const refresh = this.credentialRefreshDriver();
+        const refresh = this.credentialSourceRefresh();
         status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
         assertCredentialGatewayHoldsSource(status);
         this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_UPDATE_FAILED");
@@ -6674,7 +6673,7 @@ export class OpenClawController {
           "Only a refresh-type credential source can be rotated; update a static source instead.",
         );
       }
-      const refresh = this.credentialRefreshDriver();
+      const refresh = this.credentialSourceRefresh();
       const placed = await this.credentialNamespace(namespace);
       const context = () => ({
         namespace: placed,
@@ -6724,7 +6723,7 @@ export class OpenClawController {
     gateway: CredentialGatewayDriver,
     source: Readonly<CredentialSource>,
     terminal: boolean,
-    refresh?: CredentialRefreshDriver,
+    refresh?: CredentialSourceRefresh,
   ): Promise<void> {
     let removed = true;
     try {
@@ -7579,8 +7578,8 @@ export class OpenClawController {
     const refresh = this.credentialRefreshDriver();
     const secrets = this.secretDriver();
     if (
-      !refresh.startDeviceAuthorization ||
-      !refresh.pollDeviceAuthorization ||
+      !refresh?.sources?.startDeviceAuthorization ||
+      !refresh.sources.pollDeviceAuthorization ||
       !secrets.withValue ||
       !secrets.compareAndSwap
     ) {
@@ -7611,7 +7610,7 @@ export class OpenClawController {
     const { context } = await this.authorizedCredentialSource(principalId, namespaceId, source.id);
     let started: CredentialSourceDeviceAuthorization;
     try {
-      started = await refresh.startDeviceAuthorization(context);
+      started = await refresh.sources.startDeviceAuthorization(context);
     } catch (error) {
       throw error instanceof DeviceAuthorizationStartError
         ? error
@@ -7715,13 +7714,11 @@ export class OpenClawController {
       namespaceId,
       session.sourceId,
     );
-    const refresh = this.selections.has("credential_refresh")
-      ? this.credentialRefreshDriver()
-      : undefined;
+    const refresh = this.credentialRefreshDriver();
     if (
       gateway.id !== session.credentialGatewayId ||
       refresh?.id !== session.credentialRefreshId ||
-      !refresh.pollDeviceAuthorization
+      !refresh.sources?.pollDeviceAuthorization
     ) {
       throw new ResourceStateConflictError("The login Driver changed. Connect again.");
     }
@@ -7747,7 +7744,7 @@ export class OpenClawController {
     }
     let result: CredentialSourceDeviceAuthorizationResult;
     try {
-      result = await refresh.pollDeviceAuthorization(context, session.privateState!);
+      result = await refresh.sources.pollDeviceAuthorization(context, session.privateState!);
     } catch (error) {
       // An uncertain external exchange is not replayed. The source remains visible for recovery.
       await this.secretOperation(() =>
@@ -7768,8 +7765,7 @@ export class OpenClawController {
     );
     if (
       current.gateway.id !== session.credentialGatewayId ||
-      !this.selections.has("credential_refresh") ||
-      this.credentialRefreshDriver().id !== session.credentialRefreshId
+      this.credentialRefreshDriver()?.id !== session.credentialRefreshId
     ) {
       throw new ResourceStateConflictError("The login Driver changed. Connect again.");
     }
@@ -8193,14 +8189,16 @@ export class OpenClawController {
         namespaceId,
         credential.credentialSource.id,
       );
-      if (!gateway.withSourceToken) {
+      // A retained source can still be read after its Installation disables new enrollments.
+      const reader = this.credentialRefreshDriver()?.sourceTokens ?? gateway.sourceTokens;
+      if (!reader) {
         throw new NotImplementedError(
           "agent_plugins.discovery",
           "The Credential Gateway does not support plugin discovery.",
         );
       }
       outcome = await this.credentialGatewayOperation(() =>
-        gateway.withSourceToken!(context, invoke),
+        reader.withSourceToken(context, invoke),
       );
     } else if (credential.accessToken !== undefined) {
       outcome = await invoke({ accessToken: credential.accessToken });
@@ -13310,27 +13308,33 @@ export class OpenClawController {
   private async refreshDriverForSource(
     gateway: CredentialGatewayDriver,
     type: string,
-  ): Promise<CredentialRefreshDriver | undefined> {
-    if (!this.selections.has("credential_refresh")) {
+  ): Promise<CredentialSourceRefresh | undefined> {
+    const refresh = this.credentialRefreshDriver()?.sources;
+    if (!refresh) {
       return undefined;
     }
     const catalog = await this.credentialGatewayOperation(() =>
       gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
     );
     return catalog.some((entry) => entry.type === type && entry.rotation === "refresh")
-      ? this.credentialRefreshDriver()
+      ? refresh
       : undefined;
   }
 
-  /** The refresh role is selectable only on the Credential Gateway's own Backend. */
-  private credentialRefreshDriver(): CredentialRefreshDriver {
-    try {
-      return this.selectedDriver("credential_refresh");
-    } catch {
+  private credentialRefreshDriver(): CredentialRefreshDriver | undefined {
+    return this.selections.has("credential_refresh")
+      ? this.selectedDriver("credential_refresh")
+      : undefined;
+  }
+
+  private credentialSourceRefresh(): CredentialSourceRefresh {
+    const sources = this.credentialRefreshDriver()?.sources;
+    if (!sources) {
       throw new DependencyUnavailableError(
         "The selected Credential Refresh Driver is unavailable for this refresh-type source.",
       );
     }
+    return sources;
   }
 
   private async credentialGatewayOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -13370,7 +13374,7 @@ export class OpenClawController {
     }
     const driver = this.selectedProxyOwner().require("credential_proxy");
     return driver.sourceControl.providers.flatMap((provider) => {
-      const issuer = this.preparedTokens?.issuer(provider.ref);
+      const issuer = this.credentialRefreshDriver()?.preparedTokens?.issuer(provider.ref);
       return issuer || isDeepStrictEqual(provider.ref, credentialFreeProviderRef)
         ? [{ driver, type: provider.sourceType, issuer }]
         : [];

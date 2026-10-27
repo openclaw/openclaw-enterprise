@@ -23,7 +23,6 @@ import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
@@ -642,7 +641,7 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
     return configuration;
   };
   const createdDriver = await loadInstallationFile(t, refreshing());
-  assert.ok(createdDriver.credentialRefreshDriver instanceof OpenShellCredentialRefreshDriver);
+  assert.equal(createdDriver.credentialRefreshDriver.id, "openshell-refresh");
   assert.deepEqual(createdDriver.installation.backend[0].drivers, {
     sandbox: "openshell-sandbox",
     credential_gateway: "openshell-credentials",
@@ -670,6 +669,7 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
   const withoutRefresh = sandboxInstallation();
   withoutRefresh.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
   const staticOnly = await loadInstallationFile(t, withoutRefresh);
+  assert.equal(staticOnly.credentialRefreshDriver, undefined);
   assert.deepEqual(
     (await staticOnly.credentialGatewayDriver.listSourceTypes({ signal })).map(({ type }) => type),
     ["openai", "codex-pat", "bearer-token"],
@@ -680,6 +680,8 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
     /drivers\.credential_refresh must match the selected drivers\.credential_refresh\.id/;
   for (const [change, expected] of [
     [(c) => delete c.drivers.credential_refresh, unpaired],
+    [(c) => (c.drivers.credential_refresh.implementation = "native"), unpaired],
+    [(c) => (c.drivers.credential_refresh.implementation = "unknown"), /implementation must be/],
     [(c) => delete c.backend[0].drivers.credential_refresh, unpaired],
     [
       (c) => delete c.drivers.credential_gateway,

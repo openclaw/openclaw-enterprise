@@ -614,7 +614,7 @@ test("Saved Agent plugin discovery requires exact Agent and Secret grants before
 });
 
 test("Saved Agent source discovery denies missing grants and rechecks revocation after retrieval", async (t) => {
-  const { gateway, refresh } = createDeviceCredentialDrivers();
+  const { gateway, refresh, calls } = createDeviceCredentialDrivers();
   const fixture = await createFixture(t, {
     credentialGatewayDriver: gateway,
     sandboxDriver: {
@@ -674,8 +674,9 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
       }).binding,
   );
   const path = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`;
-  const tokenReads = () =>
-    gateway.calls.filter(({ operation }) => operation === "withSourceToken").length;
+  const tokenReads = () => calls.filter(({ operation }) => operation === "withSourceToken").length;
+  // Existing accounts retain discovery even if the current catalog stops offering new sign-ins.
+  gateway.listSourceTypes = async () => [];
   const remove = (binding) =>
     fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(binding), 1);
   const allowed = await fixture.request("POST", path, { session, body: {} });
@@ -700,9 +701,9 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
     fixture.policy.bindings.push(binding);
   }
 
-  const withSourceToken = gateway.withSourceToken.bind(gateway);
+  const withSourceToken = refresh.sourceTokens.withSourceToken.bind(refresh.sourceTokens);
   let revokedBinding;
-  gateway.withSourceToken = (context, use) =>
+  refresh.sourceTokens.withSourceToken = (context, use) =>
     withSourceToken(context, (token) => {
       // Revoke after the external read yields its token, before OCC may hand it to discovery.
       // Neither the Plugin Driver nor an authorization method is replaced here.
@@ -718,6 +719,10 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
       fixture.policy.bindings.push(binding);
     }
   }
+  delete refresh.sourceTokens;
+  const unsupported = await fixture.request("POST", path, { session, body: {} });
+  assertApiError(unsupported, 501, "NOT_IMPLEMENTED");
+  assert.equal(fixture.calls.length, 1);
 });
 
 test("Saved Agent plugin discovery rechecks Secret authority after the backend read", async (t) => {

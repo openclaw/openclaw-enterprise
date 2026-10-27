@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-26
-last_updated_session: authoring-run/dc13892f-22e2-4838-b5d7-a716768e7243
+updated: 2026-10-27
+last_updated_session: authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17
 ---
 
 # Agent Plugin Deployment Flow
@@ -75,8 +75,9 @@ Unsupported discovery reads no credential.
 
 Saved-Agent discovery requires an active dedicated Agent and caller `read` and
 `update`. Bound Secrets use [`SecretDriver.withValue`](../reference/drivers/secret.md).
-Bound and explicitly supplied CredentialSources use Credential Gateway `withSourceToken`,
-which may refresh tokens and return account metadata. Bound credential callbacks
+For a bound or explicitly supplied managed OAuth source, OCC calls the
+[Token Service reader](../reference/drivers/credential-refresh.md#plugin-catalog-discovery).
+The reader can refresh the token and return account metadata. Bound credential callbacks
 recheck binding and caller and Agent `operate` grants. Missing or non-ready
 Agent-bound CredentialSources return `404` at binding lookup.
 For a caller-specified `credentialSource`, OCC rechecks Agent scope and caller
@@ -356,6 +357,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 00:41: Route OAuth catalog discovery through the selected Token Service. (authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17 - 09e9cb6e4a452c2f727a7b53b9b2dcbd5ac5503c)
 
 - 2026-10-26 20:21: Stop hosted reads on disconnect and clarify credential checks and catalog results. (authoring-run/dc13892f-22e2-4838-b5d7-a716768e7243 - cbad284a4d3d5f567e96e6c3dbb3fc5e7b86b14e)
 

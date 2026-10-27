@@ -1,3 +1,4 @@
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, get } from "node:https";
@@ -1127,8 +1128,8 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
   let issuer;
   let source;
   let registration;
-  const createOwner = (origin = gh.origin, tokenService) =>
-    new PostgresPreparedGitHubLifecycle(key, secretDriver, origin, gh.tls.ca, tokenService);
+  const createOwner = (origin = gh.origin, tokenService = new TokenService()) =>
+    new PostgresPreparedGitHubLifecycle(tokenService, key, secretDriver, origin, gh.tls.ca);
   const f = await staticEgressFixture(t, {
     secretValue,
     protectedSourceOnly: true,

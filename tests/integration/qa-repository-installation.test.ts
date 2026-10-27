@@ -4,14 +4,10 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { loadConfiguration } from "../../apps/controller/src/composition/repository-credentials/config.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import {
-  PREPARED_REPOSITORY_DIRECTORY,
-  REPOSITORY_CONTROL_SOCKET,
-} from "../../scripts/lib/prepared-repository-installation.mjs";
+import { REPOSITORY_CONTROL_SOCKET } from "../../scripts/lib/prepared-repository-installation.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import {
@@ -89,20 +85,11 @@ async function generatedInputs(
 type LoadedInstallation = Awaited<ReturnType<typeof loadInstallationConfiguration>>;
 
 async function startWorkerOwner(loaded: LoadedInstallation) {
-  assert.ok(loaded?.repositoryOwner && loaded.preparedRepositoryGit && loaded.repositoryRegistry);
-  const { issuerCaPath, ...prepared } = loaded.preparedRepositoryGit;
-  assert.equal(issuerCaPath, undefined);
-  // The worker serves this socket; the policy and key checks come first.
-  const { controlSocket, ...owner } = loaded.repositoryOwner;
-  assert.equal(typeof controlSocket, "string");
-  return startPreparedGitHubGitOwner({
-    ...owner,
-    ...prepared,
-    // Startup validates before it touches the database; maintenance stays off.
-    pool: {} as Parameters<typeof startPreparedGitHubGitOwner>[0]["pool"],
-    startWorker: false,
-    registry: loaded.repositoryRegistry,
-  });
+  const start = loaded?.credentialRefreshDriver?.startRepositoryGit;
+  assert.ok(start);
+  // As in the worker, opening the selected owner verifies its registry, key and use socket.
+  // This Installation test stops before database maintenance.
+  return start({ pool: {} as Parameters<typeof start>[0]["pool"], startWorker: false });
 }
 
 test("QA repository inputs start the controller, worker owner and repository service", async (t) => {
@@ -135,7 +122,11 @@ test("QA repository inputs start the controller, worker owner and repository ser
     mode: "production",
     environment: { OCC_CONFIG_PATH: join(root, "installation.yaml") },
   });
-  assert.ok(loaded?.repositoryOwner && loaded.repositoryPolicy && loaded.preparedRepositoryGit);
+  assert.ok(
+    loaded?.repositoryOwner &&
+      loaded.repositoryPolicy &&
+      loaded.credentialRefreshDriver?.startRepositoryGit,
+  );
   assert.equal(loaded.repositoryGitDriver, undefined);
   assert.equal(typeof loaded.nativeRepositorySender, "object");
   assert.equal(loaded.repositoryOwner.backendId, "github-qa");
@@ -145,11 +136,6 @@ test("QA repository inputs start the controller, worker owner and repository ser
     "git-write",
   );
 
-  // The owner refuses an App key it cannot sign with at startup (finding 2217).
-  assert.equal(
-    loaded.preparedRepositoryGit.privateKeyPath,
-    `${root}${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`,
-  );
   const owner = await startWorkerOwner(loaded);
   await owner.close();
 
