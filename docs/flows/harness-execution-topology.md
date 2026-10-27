@@ -123,6 +123,13 @@ Namespace provider routing validates exact revision ingress labels and retains
 the predecessor peer until activation. No labels means no network grant.
 See [RFC-0024](../../specs/rfcs/0024-strands-box-sandbox.md#driver-contract-supplements).
 
+`deploy/runtime/strands-box/transport.mjs` bounds shared framing and channel
+buffers. IPC backpressure pauses the originating TCP stream until drain; it
+does not truncate accepted data. A disconnected or persistently slow client
+closes only its channel. Malformed framing or loss of the shared IPC stream
+stops the revision fail-closed. These paths do not add destinations, credentials,
+retries or sandbox permissions.
+
 Compute owns the Gateway; SandboxDriver owns the separate Harness and ServiceAccount.
 The Harness retains node identity, workspace and model credentials. OpenShell delivers
 the Gateway CA and one-use startup target, then reconnects with the persisted device
