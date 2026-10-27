@@ -438,6 +438,118 @@ test(
   },
 );
 
+test(
+  "postgres: native send reads policy after a pending withdrawal commits",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const f = await staticEgressFixture(t, { appFactory: postgresApp });
+    assert.ok("egress" in f && "pool" in f && "state" in f);
+    const captured = f.capture();
+    const ready = (await f.resolve(captured)).ready;
+    assert.ok(ready);
+    const state = f.state as PlatformStateStore;
+    const original = state.transact;
+    const receipts = receiptProbe();
+    const transact = receipts.wrap({
+      read: state.read.bind(state),
+      transact: original.bind(state),
+    }).transact;
+    const deleted = deferred();
+    const release = deferred();
+    let withdrawalPid: number | undefined;
+    let senderPid: number | undefined;
+    let withdrawalStarted = true;
+    state.transact = async (work) => {
+      let pid: number | undefined;
+      const acquired = (client: object) => {
+        const value: unknown = Reflect.get(client, "processID");
+        if (typeof value === "number") {
+          pid = value;
+        }
+      };
+      f.pool.once("acquire", acquired);
+      try {
+        return await transact((unit) => {
+          f.pool.off("acquire", acquired);
+          return work({
+            ...unit,
+            namespaces: {
+              ...unit.namespaces,
+              async lockNamespace(...args) {
+                if (args[0] === f.namespace.id) {
+                  if (withdrawalStarted) {
+                    withdrawalPid = pid;
+                  } else {
+                    senderPid = pid;
+                  }
+                }
+                return unit.namespaces.lockNamespace(...args);
+              },
+            },
+            iamPolicy: {
+              ...unit.iamPolicy,
+              async deleteAccessBinding(...args) {
+                const removed = await unit.iamPolicy.deleteAccessBinding(...args);
+                assert.equal(args[0], f.namespace.id);
+                assert.equal(removed, true);
+                deleted.resolve();
+                await release.promise;
+                return removed;
+              },
+            },
+          });
+        });
+      } finally {
+        f.pool.off("acquire", acquired);
+      }
+    };
+    // Start both application operations from the test so neither inherits the
+    // other's transaction context. Hold the real DELETE after its last grant is removed.
+    const withdrawal = f.revoke();
+    let send: Promise<Awaited<ReturnType<typeof f.authorize>>> | undefined;
+    let blocked = false;
+    try {
+      await bounded(deleted.promise, "supported DELETE did not remove its grant");
+      withdrawalStarted = false;
+      send = f.authorize(f.permitRequest(captured, ready));
+      const end = Date.now() + 2000;
+      while (!blocked && Date.now() < end) {
+        if (withdrawalPid && senderPid && withdrawalPid !== senderPid) {
+          const observation = await f.pool.query(
+            `SELECT EXISTS (
+              SELECT 1 FROM pg_stat_activity
+              WHERE pid = $1 AND datname = current_database() AND usename = current_user
+                AND wait_event_type = 'Lock' AND $2 = ANY(pg_blocking_pids(pid))
+            ) AS blocked`,
+            [senderPid, withdrawalPid],
+          );
+          blocked = observation.rows[0].blocked;
+        }
+        if (!blocked) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+    } finally {
+      release.resolve();
+      await Promise.allSettled([withdrawal, ...(send ? [send] : [])]);
+      state.transact = original;
+    }
+    assert.ok(blocked, "the sender waited on the withdrawing transaction's Namespace lock");
+    await withdrawal;
+    assert.ok(send);
+    assert.equal((await send).refused?.code, f.refusalCode("DENIED"));
+    const receipt = await receipts.read(f.controller);
+    assert.equal(receipt.authorization, null);
+    assert.equal(receipt.settled, true);
+    assert.deepEqual(receipt.outcome, {
+      kind: "refused",
+      dispatched: false,
+      error: { kind: "denied", code: "unauthorized" },
+    });
+    assert.equal(f.providerRequests.length, 0);
+  },
+);
+
 // This directory is a separate authority: its observations do not acquire a
 // PostgreSQL fence, even when the Driver's local writes join the platform unit.
 type DirectoryVerdict = "allow" | "deny" | "unavailable";

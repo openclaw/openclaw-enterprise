@@ -494,6 +494,7 @@
         "postgres: no material policy transaction - permit first",
         "postgres: no material policy transaction - lost commit reply",
         "postgres: supported revoke waits for the final authorization transaction",
+        "postgres: native send reads policy after a pending withdrawal commits",
         "directory: fresh final allow through authenticated exchange",
         "directory: fresh final deny through authenticated exchange",
         "directory: fresh final unavailable through authenticated exchange",
