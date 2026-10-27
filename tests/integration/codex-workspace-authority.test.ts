@@ -1,3 +1,4 @@
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { jointPolicyJourney } from "../helpers/joint-policy-lifecycle.ts";
 import { globalAgent } from "node:https";
 import { connect } from "node:tls";
@@ -1844,7 +1845,14 @@ constructor = "${escaped(value)}"`,
       }),
       '{"workspaces":{"/work":{"has_changes":false,"has_changes":true}}}',
       ...[
-        "https://user:password@github.com/example/repository.git",
+        syntheticCredentialUrl({
+          protocol: "https",
+          username: "user",
+          password: "password",
+          host: "github.com",
+          port: undefined,
+          pathname: "/example/repository.git",
+        }),
         remote + "?access_token=example",
         remote + "#ref",
         remote + "/extra",
