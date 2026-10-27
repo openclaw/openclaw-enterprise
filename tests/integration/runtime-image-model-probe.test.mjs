@@ -18,7 +18,6 @@ import {
   runtimeFailure,
 } from "../helpers/runtime-image-model-probe.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
-import { isModelTurn } from "../helpers/runtime-image-startup-probe.mjs";
 
 // The embedded Gateway's startup model probe on the real runtime image under CPU
 // contention (setup: tests/helpers/runtime-image-model-probe.mjs). Its other
@@ -125,14 +124,19 @@ test(
       } else if (cliMs >= probe.capMs) {
         // A probe that reaches its cap is classified by the wrapper's own CPU-wait reading: over
         // a quarter of the time waiting is CPU_STARVED, otherwise TIMEOUT (the rule itself is in
-        // runtime-probe-cpu-counter.test.mjs). The reading here is normally about twice the
-        // elapsed time, but one CI VM reported 0.24 of it while the hogs kept the probe from
-        // ever reaching its model turn (finding 2271, run 40270134616). Require the code the
-        // rule gives for the reading, and a TIMEOUT only when the fixture saw no model turn.
+        // runtime-probe-cpu-counter.test.mjs). With pressure accounting the eight hogs keep
+        // some task waiting nearly all the time, so the reading must be starvation. CI's
+        // runners have none (pressureWaitMs null): the reading is then throttling alone, which
+        // misses waiting while other containers hold the node's CPUs, and read 0.22-0.34 of
+        // the elapsed time across 50 runs on 10-27. Either code is then the rule's answer, and
+        // a starved probe can still reach its model turn just before the cap (finding 2675).
         const starved = probe.cpuWaitMs > probe.elapsedMs / 4;
         const capCode = starved ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
         assert.equal(probe.code, capCode, detail);
-        assert.ok(starved || !events.some(isModelTurn), `starved before its turn${detail}`);
+        assert.ok(
+          starved || probe.pressureWaitMs === null,
+          `pressure accounting reads the hogs as starvation${detail}`,
+        );
         assert.equal(runtimeFailure(events), capCode, detail);
         assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed", detail);
         assert.equal(phaseAt(phases, "native-spawn"), undefined, detail);
