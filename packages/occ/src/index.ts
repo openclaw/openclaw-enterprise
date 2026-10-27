@@ -5501,12 +5501,9 @@ export class OpenClawController {
             throw new DependencyUnavailableError("Selected credential material is unavailable.");
           }
           requireSelection();
-          const material = await read.call(driver, {
-            secret,
-            lifetime,
-            retention: "none",
-            selectionCurrent,
-          });
+          const material = await Reflect.apply(read, driver, [
+            { secret, lifetime, retention: "none", selectionCurrent },
+          ]);
           requireSelection();
           return { ...material, materialId: secret.backendRef.uid };
         },

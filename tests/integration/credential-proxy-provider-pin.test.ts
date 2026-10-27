@@ -249,26 +249,47 @@ test("OCC withholds a changed reader's result when the driver ignores the select
   // Model the prior contract with the real storage adapter. The old reader can complete
   // a GET after replacement, so OCC must independently check its identity on return.
   let completed = 0;
-  const legacy = t.mock.method(
-    driver,
-    "readCredentialInput",
-    async (input: CredentialInputRead) => {
-      const material = await read.call(driver, {
+  let shadowCalls = 0;
+  async function legacy(this: typeof driver, input: CredentialInputRead) {
+    assert.equal(this, driver);
+    const material = await Reflect.apply(read, this, [
+      {
         secret: input.secret,
         lifetime: input.lifetime,
         retention: "none",
-      });
-      completed += 1;
-      return material;
+      },
+    ]);
+    completed += 1;
+    return material;
+  }
+  Object.defineProperty(legacy, "call", {
+    value() {
+      shadowCalls += 1;
+      throw new Error("Unexpected reader lookup");
+    },
+  });
+  const descriptor = Object.getOwnPropertyDescriptor(driver, "readCredentialInput");
+  Object.defineProperty(driver, "readCredentialInput", { configurable: true, value: legacy });
+  const restore = () =>
+    descriptor
+      ? Object.defineProperty(driver, "readCredentialInput", descriptor)
+      : Reflect.deleteProperty(driver, "readCredentialInput");
+  t.after(restore);
+  const allowed = await f.resolve(f.capture());
+  assert.deepEqual(
+    { ready: Boolean(allowed.ready), completed, shadowCalls },
+    {
+      ready: true,
+      completed: 1,
+      shadowCalls: 0,
     },
   );
-  assert.ok((await f.resolve(f.capture())).ready);
   const reads = f.secretReads;
   const gate = f.pauseNamespaceVerification();
   t.after(gate.release);
   const resolution = f.resolve(f.capture());
   await gate.reached;
-  legacy.mock.restore();
+  restore();
   gate.release();
   const result = await resolution;
   assert.equal(completed, 2);
