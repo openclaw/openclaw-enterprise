@@ -147,7 +147,7 @@ await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
 }).then((response) => response.json());
 ```
 
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/configuration-plugins-and-files.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
+A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. Select **Open draft** → **Configuration** → **Edit Configuration** to open the [console Configuration editor](../console/configuration-plugins-and-files.md#configuration-tab), then merge the following JSON fields into the selected Agent's existing Configuration:
 
 ```json
 {
