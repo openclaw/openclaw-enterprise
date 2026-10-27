@@ -1,10 +1,10 @@
 import type {
+  InstallationCapabilities,
   PluginApprovalMode,
   PluginApprovers,
   PluginCatalogEntry,
   PluginCatalogPage,
   PluginDesiredSelection,
-  PluginPolicyCapabilities,
   PluginReviewer,
   PluginToolCatalogEntry,
   PluginToolPolicy,
@@ -43,7 +43,7 @@ export interface ApproverFieldOptions {
 export interface PluginFieldsOptions {
   input: HTMLTextAreaElement;
   catalog?: PluginFieldCatalog | null;
-  capabilities?: PluginPolicyCapabilities | null;
+  capabilities?: NonNullable<InstallationCapabilities["pluginPolicies"]> | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
   onCancelDiscovery?: (() => void) | null;
   onLoadTools?: ((id: string) => void) | null;
@@ -348,7 +348,11 @@ export function createPluginFields({
     rememberExpandedTools();
     configuredOnly = value;
     search.value = tabState().query;
-    if (value) {
+    // The local catalog also supplies the package name and supported controls on Configured.
+    if (
+      value &&
+      !(catalog?.canLoad && capabilities?.driver?.implementation === "occ/openclaw-plugin")
+    ) {
       onCancelDiscovery?.();
     }
     render();
@@ -834,6 +838,12 @@ export function createPluginFields({
             ),
           ),
         );
+      }
+      const installOnly =
+        capabilities?.driver?.implementation === "occ/openclaw-plugin" &&
+        entry.selectableWithoutTools === true &&
+        entry.tools?.length === 0;
+      if (selected && !installOnly) {
         const defaults = selected.toolDefaults ?? {};
         const writeDefault: WritePolicy = (key, value) => writeToolPolicy(entry.id, key, value);
         const fields = toolPolicyFields(
@@ -930,7 +940,7 @@ export function createPluginFields({
             ),
           );
         }
-      } else {
+      } else if (!selected) {
         const add = button(`Add ${entry.name}`, () =>
           update((all) => {
             all[entry.id] = { enabled: true };
@@ -1225,7 +1235,10 @@ export function createPluginFields({
     },
     // `unread` says the capabilities read failed, so nothing is known about Installation support;
     // the owner shows why (finding 2538).
-    setCapabilities(value: PluginPolicyCapabilities | null, unread = false) {
+    setCapabilities(
+      value: NonNullable<InstallationCapabilities["pluginPolicies"]> | null,
+      unread = false,
+    ) {
       capabilities = value;
       capabilitiesUnread = value === null && unread;
       render();

@@ -69,6 +69,7 @@ COPY --chown=node:node packages/occ/src packages/occ/src
 COPY --chown=node:node packages/utils/package.json packages/utils/package.json
 COPY --chown=node:node packages/utils/src packages/utils/src
 COPY --chown=node:node apps/controller/src apps/controller/src
+COPY --chown=node:node apps/controller/plugins apps/controller/plugins
 COPY --from=console-build --chown=node:node /app/apps/controller/src/console/index.html apps/controller/src/console/index.html
 COPY --chown=node:node migrations/[0-9]*.sql migrations/
 COPY --chown=node:node migrations/meta/_journal.json migrations/meta/_journal.json

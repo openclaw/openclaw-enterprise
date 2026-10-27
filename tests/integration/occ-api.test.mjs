@@ -4163,6 +4163,102 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
   assert.equal(codexEmbedded.status, 201, JSON.stringify(codexEmbedded.body));
 });
 
+test("a saved Google package refuses an incompatible Agent mode, Harness or Compute", async () => {
+  const sandbox = {
+    id: "sandbox-native",
+    capability: "sandbox",
+    implementation: "test-native-sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {},
+    async cleanup() {},
+  };
+  const kubernetes = createTestKubernetesComputeDriver("compute-google-placement", {
+    sandboxDriver: sandbox,
+  });
+  const controller = await configuredController({ computeDriver: kubernetes });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "google-package-placement");
+  const configuration = await createConfiguration(
+    controller,
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+  );
+  const driver = new OCCPluginDriver();
+  controller.fixture.controller.registerDriver(driver);
+  controller.fixture.controller.selectDriver("plugin", driver.id);
+  const packageId = "occ-plugin:google@1.0.0";
+  const plugins = { [packageId]: { enabled: true } };
+  const agentsPath = `/namespaces/${namespace.id}/agents`;
+  const created = await controller.request("POST", agentsPath, {
+    body: {
+      name: "Workspace Agent",
+      executionMode: "dedicated",
+      configurationId: configuration.id,
+      plugins,
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const path = `${agentsPath}/${created.data.id}`;
+  const policy = await controller.request("PATCH", path, {
+    body: {
+      configurationId: configuration.id,
+      plugins: { [packageId]: { enabled: true, toolDefaults: { enabled: false } } },
+    },
+  });
+  assertApiError(policy, 400, "INVALID_REQUEST");
+  assert.match(policy.body.error.message, /supports install or remove only/);
+  const mode = await controller.request("PATCH", path, {
+    body: { configurationId: configuration.id, executionMode: "embedded" },
+  });
+  assert.equal(mode.status, 400, JSON.stringify(mode.body));
+  assert.match(mode.body.error.message, /Google Workspace requires a dedicated OpenClaw Agent/);
+  const saved = (await controller.request("GET", path)).data;
+  assert.equal(saved.executionMode, "dedicated");
+  assert.deepEqual(saved.plugins, plugins);
+
+  await controller.fixture.platformState.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  await bindHarnessKey(controller.fixture, namespace.id, saved);
+  const changeHarness = async (harnessId) => {
+    const changed = await controller.request(
+      "PATCH",
+      `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      {
+        body: { values: createHarnessConfiguration(harnessId, "gpt-5.1") },
+      },
+    );
+    assert.equal(changed.status, 200, JSON.stringify(changed.body));
+  };
+  await changeHarness("codex");
+  const deploy = await controller.request("POST", `${path}/deploy`);
+  assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
+  assert.equal(deploy.body.error.message, mode.body.error.message);
+
+  // The Sandbox can provision native workers. The replacement Compute cannot deliver the package.
+  await changeHarness("openclaw");
+  const unsupportedCompute = createReadyComputeDriver("compute-without-packages", {
+    validateHarnessAuth() {},
+    async stopRevision() {},
+  });
+  for (const replacement of [sandbox, unsupportedCompute]) {
+    controller.fixture.controller.registerDriver(replacement);
+    controller.fixture.controller.selectDriver(replacement.capability, replacement.id);
+  }
+  const unsupported = await controller.request("POST", `${path}/deploy`);
+  assert.equal(unsupported.status, 400, JSON.stringify(unsupported.body));
+  assert.equal(unsupported.body.error.message, "Google Workspace requires Kubernetes Compute.");
+  assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
+
+  controller.fixture.controller.selectDriver("compute", kubernetes.id);
+  const admitted = await controller.request("POST", `${path}/deploy`);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  assert.deepEqual(admitted.data.plugins, {
+    driver: { id: driver.id, implementation: driver.implementation },
+    plugins,
+  });
+});
+
 test("the OpenClaw Plugin Driver refuses a selection whose every tool the Configuration denies at save and deployment", async () => {
   const configurationDriver = createTestConfigurationDriver();
   const controller = await configuredController({ configurationDriver });

@@ -9,11 +9,13 @@ Codex Agents use a different catalog and approval policy; see
 ## Use the console
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
-Use **Configure plugins** to edit saved selections and tool policy. Only
-dedicated Codex Agents that do not authenticate with an API key can browse a
-catalog. For other Agents, **Configure plugins** reports that browsing is
-unavailable; add a known plugin ID in **Plugin selections JSON** instead. The
-CLI example below shows the Diffs ID.
+Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
+OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
+**Google Workspace**, add it, and save. Deploy a new version and run `gog --version`
+on the worker.
+Dedicated Codex Agents with a supported login can browse their app catalog.
+For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
+The CLI example below uses Diffs.
 For dedicated Codex browsing, the curated catalog needs no Secret. Hosted
 discovery requires a bound Service Accounts token Secret under **Credentials**
 and uses it server-side; other authentication methods cannot browse the hosted

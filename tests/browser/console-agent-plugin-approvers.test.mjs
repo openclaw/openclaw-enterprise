@@ -8,6 +8,7 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   apiRequests,
   detailUrl,
@@ -39,6 +40,45 @@ import {
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
+
+test("A dedicated OpenClaw Agent can save the Google Workspace package without a connection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Package installation", { ready: true });
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-google-package"),
+  ]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await fixture.createAgent(namespace.id, "Package Agent", nativeValues("package"), {
+    executionMode: "dedicated",
+    harnessAuth: null,
+  });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
+  assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const saved = page.waitForResponse(
+    (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  assert.deepEqual((await fixture.request("GET", path)).data.plugins, {
+    "occ-plugin:google@1.0.0": { enabled: true },
+  });
+  await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  assert.equal(await dialog.getByLabel("Enable Google Workspace").isChecked(), true);
+});
 
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -607,7 +647,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   );
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const pluginDialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await pluginDialog.getByRole("button", { name: pluginId, exact: true }).click();
+  await pluginDialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await pluginDialog.locator(`[data-plugin-id="${pluginId}"] .plugin-list-item`).click();
   await pluginDialog.getByLabel(`${pluginId} plugin approvers mode`).selectOption("none");
   const toolRow = pluginDialog.locator(`details.plugin-tool-row[data-tool="${toolId}"]`);
   await toolRow.locator("summary").click();
@@ -666,7 +707,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const reopenedPlugins = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await reopenedPlugins.getByRole("button", { name: pluginId, exact: true }).click();
+  await reopenedPlugins.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await reopenedPlugins.locator(`[data-plugin-id="${pluginId}"] .plugin-list-item`).click();
   const reopenedTool = reopenedPlugins.locator(`details.plugin-tool-row[data-tool="${toolId}"]`);
   await reopenedTool.locator("summary").click();
   await reopenedTool.getByLabel(`${toolId} tool approvers mode`).selectOption("inherit");

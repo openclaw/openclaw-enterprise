@@ -4,7 +4,38 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+
+test("Google packaging refuses substituted ClawHub skill bytes before installing the CLI", async (t) => {
+  const directory = await temporaryDirectory(t, "runtime-google-");
+  const upstream = join(directory, "upstream.md");
+  await writeFile(upstream, "Changed instructions under the same ClawHub version.\n");
+  const google = new URL("../../apps/controller/plugins/oce-google-workspace/", import.meta.url);
+  await symlink(new URL("skills/", google), join(directory, "skills"), "dir");
+  const manifest = JSON.parse(
+    await readFile(new URL("ai.openclaw.oce/release.json", google), "utf8"),
+  );
+  manifest.clawhub.sourceUrl = pathToFileURL(upstream).href;
+  manifest.artifacts["linux-amd64"].url = pathToFileURL(
+    join(directory, "unreachable-archive"),
+  ).href;
+  await writeFile(join(directory, "release.json"), JSON.stringify(manifest));
+  const result = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL("../../deploy/runtime/google/install-gog.mts", import.meta.url)),
+      directory,
+      "linux-amd64",
+      directory,
+      fileURLToPath(new URL("../../scripts/ci/download-pinned.sh", import.meta.url)),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /checksum did NOT match/);
+  await assert.rejects(readFile(join(directory, "gog")), { code: "ENOENT" });
+});
 
 test("runtime assembly preserves executable assets and links while excluding development files", async (t) => {
   const directory = await temporaryDirectory(t, "runtime-assets-");

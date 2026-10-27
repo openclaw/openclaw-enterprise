@@ -13,6 +13,8 @@ and supported controls before saving nonempty selections. Startup runs
 
 ## Current support
 
+For a dedicated OpenClaw Agent on Kubernetes, select [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) and deploy a version. The Gateway exposes the install-check skill. The worker puts the pinned `gog` CLI on its path. Installation requires no Google connection.
+
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
 existing native execution path without a review step. Diffs rejects

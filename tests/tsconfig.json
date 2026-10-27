@@ -14,7 +14,9 @@
     "**/*.test.ts",
     "../scripts/console-storybook/*.stories.ts",
     "../scripts/console/record-walkthrough.ts",
+    "../deploy/runtime/google/install-gog.mts",
     "helpers/credential-source-owner-upgrade.ts",
+    "fixtures/runtime-google-skill-policy.mts",
     "fixtures/repository-credentials/module-guard.ts",
     "fixtures/repository-credentials/planning.ts"
   ],

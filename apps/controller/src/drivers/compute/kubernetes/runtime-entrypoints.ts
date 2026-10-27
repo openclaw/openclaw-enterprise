@@ -233,6 +233,22 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 }
 `;
 
+const GOOGLE_INSTALL_HELPERS = String.raw`
+function verifiedGoogleFile(path, expected) {
+  const bytes = require("node:fs").readFileSync(path);
+  if (require("node:crypto").createHash("sha256").update(bytes).digest("hex") !== expected) {
+    throw new Error("The managed Google plugin failed its image integrity check: " + path);
+  }
+  return bytes;
+}
+
+function installedGoogleRelease() {
+  const digest = process.env.OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256;
+  if (!digest) return undefined;
+  return JSON.parse(verifiedGoogleFile("/usr/local/lib/oce/plugins/google/release.json", digest));
+}
+`;
+
 // The Harness supervisor (Codex with its workspace node) and the dedicated OpenClaw worker
 // can hold a startup failure before the child that would report it starts: a failed state
 // migration, a failed native workspace setup, or the worker's model check. Compute reads
@@ -285,6 +301,37 @@ function holdStartupFailure(check, code) {
 // deadline shares the bound. Whole-line comments here cost nothing at runtime: nodeProgramArguments
 // drops them before the dedicated Harness command is measured against the exec string budget.
 export const PLUGIN_RUNTIME_HELPERS = String.raw`
+${GOOGLE_INSTALL_HELPERS}
+function nativeOpenClawSelections(runtime) {
+  const selections = runtime.manifest.selections ?? {};
+  const id = process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID;
+  if (!id) return selections;
+  const { [id]: managed, ...native } = selections;
+  return native;
+}
+
+const googleSkillsDirectory = "/usr/local/lib/oce/plugins/google/skills";
+function googleInstallSkill(release) {
+  if (!release?.capabilities.gateway.includes("skill")) return undefined;
+  const directory = googleSkillsDirectory + "/" + release.skill;
+  return { directory, instructions: directory + "/SKILL.md" };
+}
+
+function configureGoogleInstallSkill(runtime, config) {
+  const id = process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID;
+  const release = installedGoogleRelease();
+  const selected = Boolean(id && runtime.manifest.selections?.[id]?.enabled);
+  if (selected !== Boolean(release)) throw new Error("The managed Google plugin selection differs from the runtime release.");
+  const skill = googleInstallSkill(release);
+  if (!skill && !config.skills?.load?.extraDirs?.includes(googleSkillsDirectory)) return;
+  if (skill) verifiedGoogleFile(skill.instructions, release.skillSha256);
+  const skills = config.skills ??= {};
+  const load = skills.load ??= {};
+  const directories = (load.extraDirs ?? []).filter((path) => path !== googleSkillsDirectory);
+  load.extraDirs = skill ? [...directories, googleSkillsDirectory] : directories;
+  writeOpenClawConfig(config);
+}
+
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
   dirname: pluginDirname,
@@ -1207,7 +1254,7 @@ function samePluginFailures(left, right) {
 function openClawPluginConfiguration(runtime, failures = [], base) {
   if (runtime.manifest?.kind === "openclaw") {
     return pluginRuntimeTranslator.openClawRuntimeArtifact(
-      runtime.manifest.selections ?? {},
+      nativeOpenClawSelections(runtime),
       failures,
       runtime.manifest.pluginApprovers,
       gatewayServesPublicOrigin(base),
@@ -1419,7 +1466,7 @@ function verifyOpenClawPluginInstall(plugin) {
 function installOpenClawPlugins(runtime, failures = []) {
   const artifact =
     runtime.manifest?.kind === "openclaw"
-      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
+      ? pluginRuntimeTranslator.openClawRuntimeArtifact(nativeOpenClawSelections(runtime), failures, runtime.manifest.pluginApprovers)
       : { installs: [] };
   const installs = artifact.installs ?? [];
   const failed = [...failures];
@@ -1462,6 +1509,10 @@ function installOpenClawPlugins(runtime, failures = []) {
   for (const plugin of installs) {
     if (failedIds.has(plugin.pluginId)) continue;
     verifyOpenClawPluginInstall(plugin);
+  }
+  if (runtime.manifest?.kind === "openclaw" && process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID) {
+    configureGoogleInstallSkill(runtime, readOpenClawConfig());
+    if (process.env.OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256) successfulPluginIds.push(process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID);
   }
   return { successfulPluginIds, failures: failed };
 }
@@ -2561,6 +2612,9 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   ];
   const nodes = fileConfig.nodes ??= {};
   if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
+    // Native workspace.skills checks the source root for discovery, the skill directory for
+    // resources and the instruction file for reads. This release needs exactly those paths.
+    const googleSkill = googleInstallSkill(installedGoogleRelease());
     nodes[workspaceNodeId] = {
       ask: "off",
       allowReadPaths: [
@@ -2568,6 +2622,7 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
         remoteRoot + "/**",
         "/home/node/.openclaw",
         ...skillRoots.flatMap((root) => [root, root + "/**"]),
+        ...(googleSkill ? [googleSkillsDirectory, googleSkill.directory, googleSkill.instructions] : []),
       ],
       allowWritePaths: [
         ...editable.map((name) => remoteRoot + "/" + name),
@@ -4633,6 +4688,7 @@ const { join } = require("node:path");
 const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
+${GOOGLE_INSTALL_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
@@ -4668,6 +4724,14 @@ if (
 // Until Doctor has brought it current, readiness does not open it.
 const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
 let nodeStateCurrent = outdatedNodeDatabases.length === 0;
+
+const googleRelease = installedGoogleRelease();
+const googleBin = "/usr/local/lib/oce/plugins/google/bin";
+const enableGoogleCli = googleRelease?.capabilities.harness.includes("cli");
+if (enableGoogleCli) {
+  const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
+  verifiedGoogleFile(join(googleBin, googleRelease.executable), googleRelease.artifacts[architecture]?.binarySha256);
+}
 
 function nativeWorkerReady() {
   return new Promise((resolve) => {
@@ -4742,6 +4806,7 @@ delete process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 delete process.env.OPENCLAW_HARNESS_PROBE_CONFIG;
 const nodeEnv = {
   ...process.env,
+  ...(enableGoogleCli && { PATH: [googleBin, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };
