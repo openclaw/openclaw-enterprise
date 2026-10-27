@@ -1856,6 +1856,7 @@ export class OpenShellGitRuntime {
                     "Preview credential recipient changed before installation.",
                   );
                 }
+                this.authorizedScope(entry);
                 const current = await read(() => readMaterial(reservedInstall), signal);
                 if (
                   current &&
@@ -1866,6 +1867,7 @@ export class OpenShellGitRuntime {
                   !this.stopped.signal.aborted &&
                   !signal.aborted
                 ) {
+                  this.authorizedScope(entry);
                   return { value: current.value, expiresAt: current.expiresAt };
                 }
                 entry.absent = current && "absent" in current ? current.absent : undefined;
@@ -1888,7 +1890,15 @@ export class OpenShellGitRuntime {
               entry.preview.verifyInstallBy = performance.now() + 30_000;
             }
           } catch (error) {
-            if (
+            if (error instanceof OpenShellGitRouteError && error.reason === "grant_changed") {
+              // Release refused before the provider could write. Clear only this reservation,
+              // and keep the route closed even if the store cannot confirm its cancellation.
+              try {
+                await this.cancelWriting(entry, signal);
+              } finally {
+                this.block(entry, error.reason);
+              }
+            } else if (
               error instanceof OpenShellGitObservationError ||
               (error instanceof OpenShellPreparedGitProviderError && error.outcome === "refused")
             ) {
@@ -2091,6 +2101,7 @@ export class OpenShellGitRuntime {
           reason = "material_expired";
           break;
         }
+        this.authorizedScope(entry);
         return {
           sandboxId: identity.sandboxId,
           bindingId: identity.bindingId,

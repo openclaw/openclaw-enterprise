@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-10-27"
-last_updated_session: authoring-run/f60cd87f-165b-42a9-8151-4e3b0b9878ff
+last_updated_session: authoring-run/81e4a5b2-912d-4ec7-87ff-ba4e4997b45e
 ---
 
 # Agent repository credential flow
@@ -155,12 +155,14 @@ Cleanup matches recorded owner identity without resolving policy or restoring au
 The worker's prepared provider owns issuance and custody.
 
 `apps/controller/src/drivers/egress-proxy/openshell-registration.ts:createOpenShellCapabilities`
-requires the selected Credential Proxy before it constructs an OpenShell Git Sandbox.
+requires the selected Credential Proxy to construct an OpenShell Git Sandbox.
 `apps/controller/src/composition/repository-credentials/transport.ts:bindRepositoryGitTransport`
-passes only the selected protected authority to that transport. The recipient must match
-its durable route fence before it receives prepared material; a revision ID alone is insufficient.
-The online authority binds each decision to the installed material and reply deadline.
-Previously admitted protocol-1 work retains its original recovery and cleanup owner.
+binds that authority to the protected transport.
+`apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:OpenShellGitRuntime`
+checks the original Repo authorization and recipient fence before reading release material.
+It rechecks authorization before releasing that material and after recipient observation before
+returning a mapping. Scope drift closes the route. The online authority binds decisions to installed
+material and reply deadlines. Protocol-1 work retains its original recovery and cleanup owner.
 
 ### 3. Record ownership before opening a session
 
@@ -377,6 +379,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 13:18: Trace scope checks at protected Git material and mapping release. (authoring-run/81e4a5b2-912d-4ec7-87ff-ba4e4997b45e - 0121f8aa669e88a8a7bf093f13f764ac30676e8d)
 
 - 2026-10-27 12:11: Trace protected OpenShell Git authority and original-owner recovery. (authoring-run/f60cd87f-165b-42a9-8151-4e3b0b9878ff - 68bb26f6e25e7e3a755c6f154732241853c7f55d)
 

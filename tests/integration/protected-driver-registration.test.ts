@@ -562,7 +562,7 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.ok(capabilities.repositoryTransport);
 });
 
-test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
+function scopeDriftFixture() {
   const resolve = createGitHubRepositoryDeliveryResolver(runtimeRegistry);
   let changed = false;
   const resolveDelivery: typeof resolve = (revision) => {
@@ -571,16 +571,27 @@ test("the running OpenShell recipient refuses a changed Repo ref or foreign supp
       ? { ...scope, repository: { ...scope.repository!, pushRef: "refs/heads/other" } }
       : scope;
   };
+  return {
+    resolveDelivery,
+    setChanged(value: boolean) {
+      changed = value;
+    },
+  };
+}
+
+test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
+  const { resolveDelivery, setChanged } = scopeDriftFixture();
   const f = openShellGitRuntimeFixture({ resolveDelivery });
   const reconcileFirst = openShellGitRuntimeFixture({ resolveDelivery });
   await f.reconcile();
   await reconcileFirst.reconcile();
   assert.ok(await f.lookup());
+  assert.equal(f.calls.material, 2);
   await f.prepare();
   assert.equal(f.calls.rotate, 1, "same admission does not reinstall material");
   // A faulty Repo result cannot change the ref used to initialize this recipient.
   const materialReads = reconcileFirst.calls.material;
-  changed = true;
+  setChanged(true);
   assert.equal(await f.lookup(), undefined, "changed scope cannot expose the installed mapping");
   await reconcileFirst.reconcile();
   assert.equal(reconcileFirst.calls.material, materialReads, "changed scope cannot read material");
@@ -588,7 +599,7 @@ test("the running OpenShell recipient refuses a changed Repo ref or foreign supp
   await assert.rejects(f.prepare(), /OpenShell Git revision binding is unavailable/);
   await f.reconcile();
   assert.equal(await f.lookup(), undefined);
-  changed = false;
+  setChanged(false);
   await f.reconcile();
   assert.equal(await f.lookup(), undefined, "restoring policy cannot revive the blocked recipient");
   assert.equal(f.calls.rotate, 1);
@@ -598,6 +609,50 @@ test("the running OpenShell recipient refuses a changed Repo ref or foreign supp
   await foreign.reconcile();
   assert.equal(await foreign.lookup(), undefined);
   assert.equal(foreign.calls.rotate, 0, "foreign supplier material never reaches the provider");
+});
+
+test("OpenShell refuses changed Repo scope before releasing selected material", async () => {
+  const { resolveDelivery, setChanged } = scopeDriftFixture();
+  const f = openShellGitRuntimeFixture({ resolveDelivery });
+  const rotate = f.provider.rotate;
+  f.provider.rotate = (...args) => {
+    setChanged(true);
+    return rotate(...args);
+  };
+  await f.reconcile();
+  assert.equal(f.calls.material, 1, "the release must not read material after scope changes");
+  assert.equal(f.calls.rotate, 0, "no credential reaches the recipient");
+  assert.equal(f.store.rows.get(f.revision.id)?.writePending, undefined);
+  assert.equal(f.entry.material, undefined);
+  assert.equal(await f.lookup(), undefined);
+});
+
+test("OpenShell refuses material when Repo scope changes during its release read", async () => {
+  const { resolveDelivery, setChanged } = scopeDriftFixture();
+  const f = openShellGitRuntimeFixture({ resolveDelivery });
+  const readMaterial = f.owner.readMaterial;
+  f.owner.readMaterial = async (...args) => {
+    const material = await readMaterial(...args);
+    if (f.calls.material === 2) {
+      setChanged(true);
+    }
+    return material;
+  };
+  await f.reconcile();
+  assert.equal(f.calls.material, 2, "scope changes during the release read");
+  assert.equal(f.calls.rotate, 0, "the read credential must not reach the recipient");
+  assert.equal(f.store.rows.get(f.revision.id)?.writePending, undefined);
+  assert.equal(f.entry.material, undefined);
+  assert.equal(await f.lookup(), undefined);
+});
+
+test("OpenShell refuses the same lookup when Repo scope changes during observation", async () => {
+  const { resolveDelivery, setChanged } = scopeDriftFixture();
+  const f = openShellGitRuntimeFixture({ resolveDelivery });
+  await f.reconcile();
+  f.faults.duringObserve = () => setChanged(true);
+  assert.equal(await f.lookup(), undefined, "the in-flight lookup cannot expose the old mapping");
+  assert.equal(f.calls.rotate, 1, "the existing recipient is not reinstalled");
 });
 
 test("repository scope changes invalidate the external Driver identity while a reload preserves it", async (t) => {

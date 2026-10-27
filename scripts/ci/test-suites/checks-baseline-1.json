@@ -567,6 +567,9 @@
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
         "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
+        "OpenShell refuses changed Repo scope before releasing selected material",
+        "OpenShell refuses material when Repo scope changes during its release read",
+        "OpenShell refuses the same lookup when Repo scope changes during observation",
         "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
     },
