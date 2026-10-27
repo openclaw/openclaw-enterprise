@@ -180,47 +180,50 @@ test(
   },
 );
 
-test(
-  "prepared Git retirement with a lost provider acknowledgment never restores use or reissues",
-  {
-    ...requiresPostgres,
-    timeout: 60_000,
-  },
-  async (t) => {
-    const f = await fixture(t);
-    await prepare(f);
-    const used = await f.owner.use(f.request());
-    await f.withdraw();
-    // GitHub commits DELETE then drops its response. Real provider state, rather
-    // than a patched owner return value, establishes the ambiguous outcome.
-    f.gh.disconnectAfterMutation("DELETE", "/installation/token");
-    await assert.rejects(f.owner.maintain(), {
-      message: /provider-unavailable|revocation is unconfirmed/,
-    });
-    const retained = () =>
-      f.pool.query(
-        "SELECT custody, sealed IS NOT NULL AS retained FROM occ.prepared_github_attempts WHERE id=$1",
-        [used.preparationAttemptId],
+for (const outcome of ["refused", "lost"]) {
+  test(
+    "prepared Git retirement with a " + outcome + " response never restores use or repeats",
+    { ...requiresPostgres, timeout: 60_000 },
+    async (t) => {
+      const f = await fixture(t);
+      await prepare(f);
+      const used = await f.owner.use(f.request());
+      await f.withdraw();
+      if (outcome === "refused") {
+        f.gh.setRevokeStatus(503);
+      } else {
+        // GitHub commits DELETE, then drops its response. The owner cannot confirm revocation.
+        f.gh.disconnectAfterMutation("DELETE", "/installation/token");
+      }
+      const revocations = () =>
+        f.gh.trace.filter(
+          (entry) => entry.method === "DELETE" && entry.target === "/installation/token",
+        ).length;
+      await assert.rejects(f.owner.maintain(), {
+        message: /provider-unavailable|revocation is unconfirmed/,
+      });
+      const retained = () =>
+        f.pool.query(
+          "SELECT custody, sealed IS NOT NULL AS retained FROM occ.prepared_github_attempts WHERE id=$1",
+          [used.preparationAttemptId],
+        );
+      assert.deepEqual((await retained()).rows, [{ custody: "unknown", retained: true }]);
+      assert.equal(revocations(), 1, "the original retirement attempted one provider revoke");
+      assert.equal(await f.providerStatus(used.value), outcome === "refused" ? 200 : 401);
+      await assertUseGuarded(f);
+      await f.owner.maintain();
+      assert.deepEqual((await retained()).rows, [{ custody: "unknown", retained: true }]);
+      assert.equal(revocations(), 1, "an unconfirmed revocation is never replayed");
+      await assertUseGuarded(f);
+      assert.equal(
+        f.gh.issuesOfTokens.length,
+        1,
+        "ambiguous retirement cannot authorize replacement issuance",
       );
-    assert.deepEqual((await retained()).rows, [{ custody: "unknown", retained: true }]);
-    assert.ok(
-      f.gh.trace.some(
-        (entry) => entry.method === "DELETE" && entry.target === "/installation/token",
-      ),
-    );
-    assert.equal(await f.providerStatus(used.value), 401);
-    await assertUseGuarded(f);
-    await f.owner.maintain();
-    assert.deepEqual((await retained()).rows, [{ custody: "unknown", retained: true }]);
-    await assertUseGuarded(f);
-    assert.equal(
-      f.gh.issuesOfTokens.length,
-      1,
-      "ambiguous retirement cannot authorize replacement issuance",
-    );
-    assert.deepEqual(f.gh.errors, []);
-  },
-);
+      assert.deepEqual(f.gh.errors, []);
+    },
+  );
+}
 
 for (const change of ["repository binding withdrawn", "revision superseded", "session expired"]) {
   test(

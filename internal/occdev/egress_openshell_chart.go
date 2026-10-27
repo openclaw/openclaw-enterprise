@@ -9,6 +9,8 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 	"go.yaml.in/yaml/v3"
@@ -102,9 +104,8 @@ func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) err
 		if c.Name != openShellGatewayService {
 			continue
 		}
-		i := slices.Index(c.Args, "--config")
 		configPath := pod.mountedConfigMapKey(c.Mounts, configMap, "gateway.toml")
-		if !path.IsAbs(configPath) || i < 0 || i+1 >= len(c.Args) || c.Args[i+1] != configPath {
+		if !path.IsAbs(configPath) || !selectsGatewayConfig(c.Args, configPath) {
 			return fmt.Errorf("rendered Gateway must load gateway.toml from ConfigMap %s", configMap)
 		}
 		caPath := pod.mountedConfigMapKey(c.Mounts, developmentEgressCA, "ca.crt")
@@ -114,6 +115,38 @@ func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) err
 		return nil
 	}
 	return fmt.Errorf("rendered chart is missing the %s StatefulSet and Gateway container", openShellGatewayService)
+}
+
+func selectsGatewayConfig(args []string, configPath string) bool {
+	// Accept the shipped chart's daemon arguments and the optional port override.
+	// Unknown options and positional arguments may prevent daemon startup or select a subcommand.
+	seen := make(map[string]bool)
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			return seen["--config"] && i == len(args)-1
+		}
+		option, value, hasValue := strings.Cut(args[i], "=")
+		if seen[option] || (option != "--config" && option != "--db-url" && option != "--port") {
+			return false
+		}
+		if !hasValue {
+			i++
+			if i == len(args) || strings.HasPrefix(args[i], "-") {
+				return false
+			}
+			value = args[i]
+		}
+		if value == "" || (option == "--config" && value != configPath) {
+			return false
+		}
+		if option == "--port" {
+			if _, err := strconv.ParseUint(value, 10, 16); err != nil {
+				return false
+			}
+		}
+		seen[option] = true
+	}
+	return seen["--config"]
 }
 
 // The launcher waits for this StatefulSet. Resolve both ConfigMap keys through

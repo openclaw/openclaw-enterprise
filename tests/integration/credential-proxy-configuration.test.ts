@@ -2,12 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ConfigurationValidationError,
+  repositoryGitAuthorization,
   requireConfiguration,
   type DriverCapability,
   type DriverImplementation,
+  type ProxyPlan,
+  type ProxyRevisionContext,
+  type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import { DriverConfigurationRegistry } from "../../packages/occ/src/index.ts";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  jointWorkspaceProfile,
+  openShellExchangeCapabilities,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import {
   OpenShellCredentialProxyDriver,
   openShellEgressConfiguration,
@@ -232,4 +242,174 @@ test("OpenShell direct construction and policy rendering still enforce configura
       redactedConfigurationError,
     );
   }
+});
+
+test("OpenShell discovery and policy use the installed configuration after caller mutation", async (t) => {
+  let registration = "installed";
+  let executionCapable = true;
+  const gatewayClient = new (class extends GrpcOpenShellGatewayClient {
+    override async getGatewayInfo() {
+      return {
+        gateway_version: "0.1.5",
+        extensions: [
+          {
+            configured_name: registration,
+            kind: 4,
+            protocol_major: 1,
+            ...(executionCapable && {
+              required_capabilities: openShellExchangeCapabilities,
+              supported_capabilities: openShellExchangeCapabilities,
+            }),
+          },
+        ],
+      };
+    }
+  })({ endpoint: "http://127.0.0.1:1" });
+  const sandbox: SandboxDriver = {
+    id: "sandbox",
+    implementation: "fixture",
+    capability: "sandbox",
+    facets: ["networking"],
+    harnessResource: () => {
+      throw new Error("Discovery must not access a Harness");
+    },
+    cleanup: async () => {},
+  };
+  const options = {
+    middlewareName: "installed",
+    repositoryMiddlewareName: "installed",
+    authorityScope: "execution" as const,
+    observedHookPreviewWorkspace: "preview-1",
+  };
+  const proxy = new OpenShellCredentialProxyDriver(options, {
+    id: "proxy",
+    backend: {
+      id: "openshell",
+      drivers: {},
+      client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient }),
+    },
+    sandbox,
+    previewEnforcement: async () => undefined,
+  });
+  options.middlewareName = "replacement";
+  options.repositoryMiddlewareName = "replacement";
+
+  const plan: ProxyPlan = {
+    id: "plan",
+    generation: 1,
+    sandboxDriverId: sandbox.id,
+    egressDriverId: proxy.id,
+    execution: {
+      installationId: "installation",
+      namespaceId: "namespace",
+      agentId: "agent",
+      revisionId: "revision",
+      servicePrincipalId: "principal",
+      executionId: "execution",
+    },
+    routes: [],
+  };
+  // Revision preparation reads the admitted plan and owner IDs; no workload is started.
+  const context = {
+    namespace: { id: plan.execution.namespaceId },
+    revision: { id: plan.execution.revisionId, egressPlan: plan },
+    plan,
+    signal: t.signal,
+  } as ProxyRevisionContext;
+  const wiring = await proxy.configureRevision(context);
+  assert.partialDeepStrictEqual(wiring.configuration.network_middlewares, {
+    "oce-egress": { middleware: "installed" },
+  });
+  assert.equal(
+    await repositoryGitAuthorization(proxy.sourceControl, t.signal, "github_installation"),
+    "request-hook-observed",
+  );
+  await assert.rejects(proxy.sourceControl.assertAvailable(t.signal, "repository_git"), {
+    code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+  });
+
+  registration = "replacement";
+  await assert.rejects(proxy.configureRevision(context), { name: "RetryLaterError" });
+  await assert.rejects(proxy.sourceControl.assertAvailable(t.signal, "github_installation"), {
+    name: "RetryLaterError",
+  });
+
+  registration = "installed";
+  executionCapable = false;
+  await assert.rejects(proxy.sourceControl.assertAvailable(t.signal), {
+    name: "CredentialProxyRepositoryOnlyError",
+  });
+
+  await t.test("joint discovery freezes both distinct installed names", async (t) => {
+    const installedNames = [jointWorkspaceProfile, "installed-repository"];
+    let names = [...installedNames];
+    t.mock.method(gatewayClient, "getGatewayInfo", async () => ({
+      extensions: names
+        .map((configured_name, index) => ({
+          configured_name,
+          kind: 4,
+          protocol_major: 1,
+          implementation_name:
+            index === 0 ? "oce/static-egress" : "oce/online-request-authorization",
+          implementation_version: "1",
+          required_capabilities:
+            index === 0
+              ? openShellExchangeCapabilities
+              : ["openshell.supervisor-middleware.contract"],
+          supported_capabilities:
+            index === 0
+              ? openShellExchangeCapabilities
+              : ["openshell.supervisor-middleware.contract"],
+        }))
+        .filter((row) => row.configured_name !== ""),
+    }));
+    const jointOptions = {
+      middlewareName: jointWorkspaceProfile,
+      repositoryMiddlewareName: "installed-repository",
+      authorityScope: "execution" as const,
+    };
+    const jointProxy = new OpenShellCredentialProxyDriver(jointOptions, {
+      id: "joint-proxy",
+      backend: {
+        id: "openshell",
+        drivers: {},
+        client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient }),
+      },
+      sandbox,
+      exchangeAuthority: {
+        host: "127.0.0.1",
+        port: 1,
+        certificatePath: "not-read-during-discovery",
+        privateKeyPath: "not-read-during-discovery",
+        issuerPublicKeyPath: "not-read-during-discovery",
+        issuer: "https://gateway.example.test",
+        audience: "online-authorizer",
+        keyId: "gateway-key",
+      },
+      bindRepositoryGit: async () => assert.fail("Discovery must not bind Git"),
+    });
+    jointOptions.middlewareName = "replacement-model";
+    jointOptions.repositoryMiddlewareName = "replacement-repository";
+    await jointProxy.sourceControl.assertAvailable(t.signal);
+    assert.equal(
+      await repositoryGitAuthorization(jointProxy.sourceControl, t.signal, "github_installation"),
+      "online-request",
+      "the installed pair remains authoritative after both caller names change",
+    );
+    for (names of [
+      ["replacement-model", "replacement-repository"],
+      ["replacement-model", installedNames[1]!],
+      [installedNames[0]!, "replacement-repository"],
+      [installedNames[0]!],
+      ["", installedNames[1]!],
+      [],
+    ]) {
+      for (const profile of [undefined, "github_installation"] as const) {
+        await assert.rejects(jointProxy.sourceControl.assertAvailable(t.signal, profile), {
+          name: "DependencyUnavailableError",
+          message: "Joint access requires both authenticated middleware registrations.",
+        });
+      }
+    }
+  });
 });

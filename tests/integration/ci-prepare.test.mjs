@@ -695,6 +695,21 @@ describe("CI preparation", { concurrency }, () => {
         prepared.stderr,
         new RegExp(`"stage":"runtime-image-reuse","outcome":"${outcome}"`),
       );
+      // Finding 2710: the stopped build's last progress names the step it was on.
+      const progress = {
+        "image-probe-hung": "#12 [openclaw-build 5/9] RUN pnpm build",
+        "image-build-hung": "#14 exporting to image",
+      }[scenario];
+      if (progress) {
+        assertStderrMatch(
+          prepared.stderr,
+          new RegExp(
+            `\\[image-build\\] the runtime image build's last output:\\n${RegExp.escape(progress)}\\n`,
+          ),
+        );
+      } else {
+        assert.doesNotMatch(prepared.stderr, /\[image-build\]/);
+      }
       const calls = (await commands.commands()).filter(({ command }) => command === "docker");
       const builds = calls.filter(({ args }) => args[0] === "buildx");
       assert.equal(

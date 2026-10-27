@@ -16,7 +16,9 @@
     "../scripts/console/record-walkthrough.ts",
     "helpers/credential-source-owner-upgrade.ts",
     "helpers/codex-launch-compat.ts",
-    "helpers/codex-enterprise-bootstrap.ts"
+    "helpers/codex-enterprise-bootstrap.ts",
+    "fixtures/repository-credentials/module-guard.ts",
+    "fixtures/repository-credentials/planning.ts"
   ],
   "references": [
     {

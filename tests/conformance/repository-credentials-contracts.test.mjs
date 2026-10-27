@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:https";
 import { access } from "node:fs/promises";
-import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.mjs";
+import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import {
   createResourceScope,
   createTestResourceScope,

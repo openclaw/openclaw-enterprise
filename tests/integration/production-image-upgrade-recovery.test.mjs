@@ -27,6 +27,11 @@ import { listen } from "../helpers/listen.mjs";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
+const sourceRevision = (
+  await execute("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
+    cwd: repository,
+  })
+).stdout.trim();
 const script =
   process.env.OCC_UPGRADE_SCRIPT ?? join(repository, "scripts/upgrade-production-images");
 const controller = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`;
@@ -1278,7 +1283,7 @@ async function fixture(
         ]
       : []),
     "--source-revision",
-    "d".repeat(40),
+    sourceRevision,
     "--evidence-dir",
     evidence,
     "--occ",
@@ -1870,23 +1875,27 @@ test("OpenClaw Doctor reports unknown restart history unless Ready and post-read
   }
 });
 
-test("OpenClaw Doctor rejects overflowing heap thresholds before upgrade effects", async (t) => {
-  for (const heap of [
-    "9223372036854775168",
-    "9223372036854775808",
-    "18446744073709551616",
-    "9".repeat(100),
+// Values that would wrap shell arithmetic (a negative deadline or Doctor threshold)
+// are refused before any upgrade effect; the largest accepted values still run.
+test("upgrade options reject overflowing values before upgrade effects", async (t) => {
+  for (const [flag, value, message] of [
+    ["--doctor-heap-mib", "9223372036854775168", /must be at most 9223372036854775167/],
+    ["--doctor-heap-mib", "9223372036854775808", /must be at most 9223372036854775167/],
+    ["--doctor-heap-mib", "18446744073709551616", /must be at most 9223372036854775167/],
+    ["--doctor-heap-mib", "9".repeat(100), /must be at most 9223372036854775167/],
+    ["--timeout-seconds", "86401", /--timeout-seconds must be at most 86400/],
+    ["--timeout-seconds", "9223372036854775807", /--timeout-seconds must be at most 86400/],
   ]) {
     const f = await fixture(t, { agent: true });
     const before = await f.state();
-    await assert.rejects(f.run("--doctor-heap-mib", heap), /must be at most 9223372036854775167/);
+    await assert.rejects(f.run(flag, value), message);
     assert.deepEqual(await f.state(), before);
     assert.deepEqual(await f.events(), []);
     assert.equal(existsSync(f.evidence), false);
   }
   const f = await fixture(t, { agent: true });
   await scriptGatewayMemory(f, ["unlimited"]);
-  await f.run("--doctor-heap-mib", "9223372036854775167");
+  await f.run("--doctor-heap-mib", "9223372036854775167", "--timeout-seconds", "86400");
   assert.deepEqual(await doctorEvents(f), [
     "gateway-memory unlimited",
     doctorCommand("9223372036854775167"),

@@ -5,7 +5,7 @@ import type {
   PreparedRepositoryBackendFactory,
 } from "../../credentials/backend-contracts.ts";
 import { sameBinding } from "../../credentials/sessions.ts";
-import { githubProviderOrigin } from "./factory.ts";
+import { githubProviderOrigin } from "./origin.ts";
 import { createGatewayAuthentication } from "./gateway-authentication.ts";
 import { resolveGitHubRepositoryBinding, validateGitHubRepositoryRegistry } from "./registry.ts";
 import type { GitHubRepositoryRegistry } from "./registry.ts";

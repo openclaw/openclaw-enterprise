@@ -93,7 +93,7 @@ a running Kubernetes Pod or model turn.
 
 ```sh
 pnpm credentials:build
-node --test tests/integration/repository-credentials-package.test.mjs
+node --test tests/integration/repository-credentials-package.test.ts
 ```
 
 This verifies the emitted service and client without workspace source or runtime
@@ -108,7 +108,8 @@ docker build --builder default --load --pull=false \
   -f tests/fixtures/repository-credentials/Dockerfile.qualification \
   -t repository-credentials-qualification:test .
 REPOSITORY_CREDENTIALS_TEST_IMAGE=repository-credentials-qualification:test \
-  node --test tests/integration/repository-credentials-container.test.mjs
+  node --test tests/integration/repository-credentials-container.test.mjs \
+    tests/integration/repository-credentials-gh.test.mjs
 ```
 
 The combined suite runs the emitted service/client cases, native Git paths, pinned

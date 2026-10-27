@@ -415,16 +415,17 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (selection.bindRepositoryGit) {
       this.bindRepositoryGit = selection.bindRepositoryGit;
     }
+    this.options = immutableCopy(options);
     const exchange = selection.exchangeAuthority;
-    const joint = options.middlewareName === jointWorkspaceProfile;
-    const workspace = joint || options.middlewareName === codexWorkspaceProviderRef.id;
+    const joint = this.options.middlewareName === jointWorkspaceProfile;
+    const workspace = joint || this.options.middlewareName === codexWorkspaceProviderRef.id;
     if (
       (joint &&
-        (!options.repositoryMiddlewareName ||
-          options.repositoryMiddlewareName === options.middlewareName ||
+        (!this.options.repositoryMiddlewareName ||
+          this.options.repositoryMiddlewareName === this.options.middlewareName ||
           !selection.bindRepositoryGit ||
-          options.observedHookPreviewWorkspace)) ||
-      (workspace && (!exchange || (!joint && options.repositoryMiddlewareName)))
+          this.options.observedHookPreviewWorkspace)) ||
+      (workspace && (!exchange || (!joint && this.options.repositoryMiddlewareName)))
     ) {
       throw new Error("The workspace registration requires its dedicated installation exchange.");
     }
@@ -432,13 +433,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       this.bindExchange = (createProxy) =>
         bindOpenShellExchange(exchange, this.sourceControl.sender, createProxy);
     }
-    if (options.observedHookPreviewWorkspace && selection.previewEnforcement) {
+    if (this.options.observedHookPreviewWorkspace && selection.previewEnforcement) {
       this.previewEnforcement = selection.previewEnforcement;
     }
     this.id = selection.id;
     this.backend = selection.backend;
     this.sandbox = selection.sandbox;
-    this.options = immutableCopy(options);
     if (joint) {
       this.policyReduction = {
         version: 3,
@@ -783,8 +783,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             (Array.isArray(extensions) ? extensions : []).filter(
               (value) => asRecord(value)?.configured_name === name,
             );
-          const model = registered(options.middlewareName);
-          const repo = registered(options.repositoryMiddlewareName!);
+          const model = registered(this.options.middlewareName);
+          const repo = registered(this.options.repositoryMiddlewareName!);
           const exact = (rows: typeof model, identity: string) => {
             const row = asRecord(rows[0]);
             return (
@@ -816,7 +816,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             ? { profile, authorization: "online-request" as const }
             : undefined;
         }
-        const registration = git ? options.repositoryMiddlewareName : options.middlewareName;
+        const registration = git
+          ? this.options.repositoryMiddlewareName
+          : this.options.middlewareName;
         if (
           !registration ||
           !Array.isArray(extensions) ||
@@ -843,7 +845,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           // that never serves a non-Git profile, not an outage or a partial negotiation.
           if (
             !git &&
-            registration === options.repositoryMiddlewareName &&
+            registration === this.options.repositoryMiddlewareName &&
             registration !== undefined &&
             registeredWithoutExecution(extensions, registration)
           ) {

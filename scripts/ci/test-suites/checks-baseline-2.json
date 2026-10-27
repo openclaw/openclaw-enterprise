@@ -39,7 +39,7 @@
     "tests/integration/repository-credentials-driver.test.mjs",
     "tests/integration/known-device-cookie.test.mjs",
     "tests/conformance/postgres-controller-auth-binding.test.mjs",
-    "tests/integration/repository-credentials-package.test.mjs",
+    "tests/integration/repository-credentials-package.test.ts",
     "tests/integration/repository-credentials-restart.test.mjs",
     "tests/conformance/plugin-driver.test.mjs",
     "tests/integration/ci-image-reconciliation.test.mjs",
@@ -403,7 +403,7 @@
       "path": "tests/integration/repository-credentials-router.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-package.test.mjs"
+      "path": "tests/integration/repository-credentials-package.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-service-loss.test.mjs",
@@ -535,7 +535,8 @@
         "external-repository-fixture registers its real structured validator and rejects malformed input safely",
         "github registers its real structured validator and rejects malformed input safely",
         "openshell registers its real structured validator and rejects malformed input safely",
-        "OpenShell direct construction and policy rendering still enforce configuration validation"
+        "OpenShell direct construction and policy rendering still enforce configuration validation",
+        "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
     }
   ]
