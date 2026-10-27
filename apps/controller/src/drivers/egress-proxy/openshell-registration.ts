@@ -72,6 +72,11 @@ export function createOpenShellCapabilities(input: {
       ...(git && { openShellGit: git }),
     },
   );
+  const selectedBindings = new WeakMap<
+    ProtectedRepositoryGitAuthority,
+    () => Promise<CredentialProxyBinding>
+  >();
+  let workerReserved = false;
   const proxy: CredentialProxyDriver | undefined =
     input.proxy &&
     new OpenShellCredentialProxyDriver(input.proxy.configuration, {
@@ -81,19 +86,36 @@ export function createOpenShellCapabilities(input: {
       preparedProviders: input.proxy.preparedProviders,
       ...(input.proxy.exchangeAuthority && { exchangeAuthority: input.proxy.exchangeAuthority }),
       ...(git && {
-        bindRepositoryGit: async () => {
-          throw new Error("OpenShell protected repository Git requires its selected route store.");
+        bindRepositoryGit: async (authority) => {
+          const bind = selectedBindings.get(authority);
+          if (!bind) {
+            throw new Error(
+              "OpenShell protected repository Git requires its selected route store.",
+            );
+          }
+          return bind();
         },
         previewEnforcement: git.previewEnforcement.bind(git),
       }),
     });
+  const registeredBind = proxy?.bindRepositoryGit;
   const repositoryTransport: OpenShellRepositoryTransport | undefined = git && {
     evidence: openShellGitRecipientEvidence,
     async bind(authority, pool, emit) {
-      if (!authority || !proxy?.bindRepositoryGit) {
+      if (!authority || !registeredBind) {
         throw new Error("Missing the selected Driver's protected repository Git authority.");
       }
-      return git.bindRepositoryGit(authority, pool, emit);
+      if (workerReserved) {
+        throw new Error("OpenShell Git worker already started or stopped.");
+      }
+      workerReserved = true;
+      const selected = authority();
+      if (proxy?.bindRepositoryGit !== registeredBind) {
+        throw new Error("The selected Credential Proxy transport changed before worker binding.");
+      }
+      // Invoke the captured registration synchronously so another caller cannot claim this binding.
+      selectedBindings.set(selected, () => git.bindRepositoryGit(() => selected, pool, emit));
+      return registeredBind(selected);
     },
   };
   return {

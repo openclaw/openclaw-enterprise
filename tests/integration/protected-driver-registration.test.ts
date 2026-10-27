@@ -607,6 +607,11 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     pool("accepted pool"),
     (event) => acceptedEvents.push(event),
   );
+  // The registered method recognizes the selected authority, but cannot start a second worker.
+  await assert.rejects(
+    capabilities.proxy.bindRepositoryGit(authority),
+    /already started or stopped/,
+  );
   await assert.rejects(
     capabilities.repositoryTransport.bind(
       () => authority,
@@ -637,6 +642,16 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.equal(acceptedEvents.length, 1);
   assert.equal(rejectedEvents.length, 0);
   await binding.close();
+
+  const replaced = createOpenShellCapabilities(input);
+  t.after(() => replaced.close());
+  replaced.proxy!.bindRepositoryGit = async () => {
+    throw new Error("replacement invoked");
+  };
+  await assert.rejects(
+    replaced.repositoryTransport!.bind(() => authority, pool("replaced pool")),
+    /transport changed before worker binding/,
+  );
 
   const failedKey = join(dirname(tls.certFile), "unread-key.pipe");
   execFileSync("mkfifo", [failedKey]);
