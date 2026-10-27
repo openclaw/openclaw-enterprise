@@ -14,6 +14,8 @@
     "**/*.test.ts",
     "../scripts/console-storybook/*.stories.ts",
     "../scripts/console/record-walkthrough.ts",
+    "../packages/contracts/prepack.ts",
+    "../packages/utils/prepack.ts",
     "helpers/credential-source-owner-upgrade.ts",
     "fixtures/repository-credentials/module-guard.ts",
     "fixtures/repository-credentials/planning.ts"
