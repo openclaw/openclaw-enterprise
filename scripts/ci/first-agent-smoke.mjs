@@ -620,16 +620,19 @@ async function proveAPIEgressRecovery(stack) {
   );
   await kubectl(stack, ["-n", namespace, "delete", "networkpolicy", supplementary.metadata.name]);
   const patch = (to) =>
-    kubectl(
-      stack,
-      ["-n", namespace, "patch", "networkpolicy", name, "--type=json", "--patch-file=/dev/stdin"],
-      {
-        input: JSON.stringify([
-          { op: "test", path: "/metadata/uid", value: policy.metadata.uid },
-          { op: "replace", path: `/spec/egress/${index}/to`, value: to },
-        ]),
-      },
-    );
+    kubectl(stack, [
+      "-n",
+      namespace,
+      "patch",
+      "networkpolicy",
+      name,
+      "--type=json",
+      "--patch",
+      JSON.stringify([
+        { op: "test", path: "/metadata/uid", value: policy.metadata.uid },
+        { op: "replace", path: `/spec/egress/${index}/to`, value: to },
+      ]),
+    ]);
   const worker = JSON.parse(
     (
       await kubectl(stack, [
