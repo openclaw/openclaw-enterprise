@@ -22,6 +22,7 @@ import type {
 import {
   EgressSendReceipts,
   type SendAttempt,
+  type StoredSendReceipt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
 import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
 
@@ -108,17 +109,16 @@ function receiptProbe() {
       assert.ok(receipt);
       return receipt;
     },
-    async readRefused(
-      controller: { transact: PlatformStateStore["transact"] },
-      error: { kind: "denied" | "unavailable"; code: string },
-    ) {
-      const receipt = await this.read(controller);
-      assert.equal(receipt.authorization, null);
-      assert.equal(receipt.settled, true);
-      assert.deepEqual(receipt.outcome, { kind: "refused", dispatched: false, error });
-      return receipt;
-    },
   };
+}
+
+function assertRefusedReceipt(
+  receipt: StoredSendReceipt,
+  error: { kind: "denied" | "unavailable"; code: string },
+) {
+  assert.equal(receipt.authorization, null);
+  assert.equal(receipt.settled, true);
+  assert.deepEqual(receipt.outcome, { kind: "refused", dispatched: false, error });
 }
 
 async function assertDenialAudit(
@@ -547,7 +547,8 @@ test(
     await withdrawal;
     assert.ok(send);
     assert.equal((await send).refused?.code, f.refusalCode("DENIED"));
-    await receipts.readRefused(f.controller, { kind: "denied", code: "unauthorized" });
+    const receipt = await receipts.read(f.controller);
+    assertRefusedReceipt(receipt, { kind: "denied", code: "unauthorized" });
     assert.equal(f.providerRequests.length, 0);
   },
 );
@@ -673,8 +674,9 @@ for (const authority of ["directory", "callback"] as const) {
             result.refused?.code,
             f.refusalCode(final === "deny" ? "DENIED" : "UNAVAILABLE"),
           );
-          const receipt = await receipts.readRefused(
-            f.controller,
+          const receipt = await receipts.read(f.controller);
+          assertRefusedReceipt(
+            receipt,
             final === "deny"
               ? { kind: "denied", code: "unauthorized" }
               : { kind: "unavailable", code: "authority" },
@@ -992,8 +994,9 @@ for (const failure of ["false", "unavailable", "unknown"] as const) {
     );
     assert.equal(calls, 1);
     assert.equal(shadowCalls, 0);
-    await receipts.readRefused(
-      f.controller,
+    const receipt = await receipts.read(f.controller);
+    assertRefusedReceipt(
+      receipt,
       failure === "false"
         ? { kind: "denied", code: "stale_configuration" }
         : { kind: "unavailable", code: "authority" },
@@ -1104,7 +1107,8 @@ for (const replacement of [
       0,
       "the in-flight logical route cannot use replacement placement",
     );
-    await receipts.readRefused(f.controller, { kind: "denied", code: "stale_configuration" });
+    const receipt = await receipts.read(f.controller);
+    assertRefusedReceipt(receipt, { kind: "denied", code: "stale_configuration" });
     await assertDenialAudit(f, "stale_configuration");
     assert.equal(f.secretReads, reads);
     assert.equal(f.providerRequests.length, 0);

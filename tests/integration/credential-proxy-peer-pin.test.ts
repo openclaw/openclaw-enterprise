@@ -152,11 +152,6 @@ async function exchange(t: TestContext, key: string | undefined) {
         controller.signal,
       ),
     ready,
-    async open() {
-      const result = await ready();
-      assert.equal((await send(result)).kind, "allow");
-      return result;
-    },
     resolve,
     send,
     setPeer(value: EgressPeer | undefined) {
@@ -262,7 +257,8 @@ test("exchange rejects malformed peer expiry at each public boundary", async (t)
 
 test("exchange renewal preserves progress while bounded by original peer expiry", async (t) => {
   const e = await exchange(t, "key-a");
-  await e.open();
+  const ready = await e.ready();
+  assert.equal((await e.send(ready)).kind, "allow");
   // A freshly verified longer lifetime cannot extend the captured authentication.
   e.setPeer({ ...e.pinned, expiresAt: new Date(e.f.ports.now() + 600_000).toISOString() });
   const lease = await e.renew();
@@ -281,7 +277,8 @@ test("exchange bounds unavailable stream policy checks without extending authori
       previouslyRenewed ? "after a successful renewal" : "on first renewal",
       async (t) => {
         const e = await exchange(t, "key-a");
-        const ready = await e.open();
+        const ready = await e.ready();
+        assert.equal((await e.send(ready)).kind, "allow");
         const authorizedDeadline = previouslyRenewed
           ? (await e.renew())?.renewBy
           : e.f.request.deadlineAt;
@@ -357,7 +354,8 @@ test("exchange renewal respects a shorter fresh peer expiry", async (t) => {
   ] as const) {
     await t.test(mode, async (t) => {
       const e = await exchange(t, "key-a");
-      await e.open();
+      const ready = await e.ready();
+      assert.equal((await e.send(ready)).kind, "allow");
       if (mode !== "before first lease") {
         assert.ok(await e.renew(8));
       }
@@ -386,7 +384,8 @@ test("exchange held response respects a shorter authenticated lifetime", async (
   for (const delay of ["none", "before protection", "during observation"] as const) {
     await t.test(delay, async (t) => {
       const e = await exchange(t, "key-a");
-      const ready = await e.open();
+      const ready = await e.ready();
+      assert.equal((await e.send(ready)).kind, "allow");
       assert.ok(await e.renew(8));
       e.setPeer({ ...e.pinned, expiresAt: new Date(e.f.ports.now() + 1000).toISOString() });
       const handle = await e.claim();
@@ -491,7 +490,8 @@ test("exchange reserves simultaneous response phases without discarding the winn
         const spies = (["begin", "authorize", "record", "observe"] as const).map((name) =>
           t.mock.method(e.receipts, name),
         );
-        const ready = await e.open();
+        const ready = await e.ready();
+        assert.equal((await e.send(ready)).kind, "allow");
         const checks = e.checks;
         // Both enter while permitted. The authenticated competitor must narrow
         // custody without claiming the response or invalidating the winner.
@@ -568,7 +568,8 @@ test("exchange busy phases retain concurrent authenticated lifetime reductions",
         const e = await exchange(t, "key-a");
         const writes = ["begin", "authorize", "record", "observe"] as const;
         const spies = writes.map((name) => t.mock.method(e.receipts, name));
-        const ready = await e.open();
+        const ready = await e.ready();
+        assert.equal((await e.send(ready)).kind, "allow");
         if (phase !== "first renewal") {
           assert.ok(await e.renew(8));
           e.f.advance(15_000);
@@ -675,7 +676,8 @@ test("exchange busy lifetime observation requires a live exact owner", async (t)
   for (const [name, change] of controls) {
     await t.test(name, async (t) => {
       const e = await exchange(t, name === "added key" ? undefined : "key-a");
-      const ready = await e.open();
+      const ready = await e.ready();
+      assert.equal((await e.send(ready)).kind, "allow");
       assert.ok(await e.renew(8));
       assert.equal(await e.claim(), ready.handle);
       const now = e.f.ports.now();
@@ -725,7 +727,8 @@ test("duplicate send retains only an exact authenticated lifetime contraction", 
     for (const elapsed of [2999, 3000, 3001]) {
       await t.test(`${mode}: ${elapsed}ms`, async (t) => {
         const e = await exchange(t, "key-a");
-        const ready = await e.open();
+        const ready = await e.ready();
+        assert.equal((await e.send(ready)).kind, "allow");
         const receipt = await e.receipt(ready);
         e.setPeer({
           ...e.pinned,
