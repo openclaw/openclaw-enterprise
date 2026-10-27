@@ -41,10 +41,24 @@ the Driver boundary.]
 
 ## Lifecycle
 
-[Trace one supported operation from selection or admission to its final result
-and cleanup. Name the caller and owner at each handoff. Include the checks
-before activation, the effect of a failure, and who retries. Distinguish Driver
-instance lifetime from the lifetime of resources it manages.]
+[Use a Mermaid sequence diagram. Replace the sample participants and messages
+with the actual callers and operations. Show the trigger, handoffs, and terminal
+result. Include readiness checks, failure, retry, or cleanup when they apply.]
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant D as Driver
+    C->>D: Request operation
+    alt Operation succeeds
+        D->>C: Return result
+    else Operation fails
+        D->>C: Report failure
+    end
+```
+
+[Briefly explain any retry or cleanup rules the diagram needs. Distinguish the
+Driver instance from the resources it manages.]
 
 ## Limits
 

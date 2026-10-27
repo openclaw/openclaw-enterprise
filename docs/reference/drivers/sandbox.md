@@ -221,23 +221,47 @@ Dedicated native OpenClaw requires a selected Sandbox that implements
 Other dedicated Harnesses may use a subset of facets or no Sandbox according to
 their Compute contract.
 
-1. Before deployment, OCC resolves the Harness, calls optional `configureAgent`
-   with that descriptor, then validates and freezes the resulting Configuration.
-   The Agent revision records the selected
-   `sandboxDriverId`, not the implementation or facet list.
-2. Compute prepares Namespace isolation and calls optional `ensureNamespace`.
-   It prepares the Agent gateway, identity, workspace, Services, and routing.
-3. The Sandbox provisions the dedicated Harness if it implements
-   `provisionHarness`; otherwise Compute creates it. Compute waits for the workload
-   with the requested Agent revision ID, and for every credential attachment to be `ready`, before
-   activating traffic.
-4. Stop and retirement call `cleanup` with the Agent revision. If Compute owns the
-   workload, it stops that workload first; its absence does not skip Sandbox
-   cleanup. If Sandbox owns it, the method removes it.
-5. Namespace deletion calls `cleanup` without an Agent revision after Agent revision cleanup
-   and before Compute releases the Namespace. A failure prevents Compute from
-   deleting the Namespace so provider cleanup can be retried safely, unless it
-   is a refusal of the controller's identity (below).
+```mermaid
+sequenceDiagram
+    participant O as OCC
+    participant C as Compute
+    participant S as Sandbox
+    O->>C: Prepare Namespace
+    C->>C: Establish isolation
+    opt ensureNamespace supplied
+        C->>S: ensureNamespace
+    end
+    O->>O: Resolve Harness
+    opt configureAgent supplied
+        O->>S: configureAgent
+        S->>O: Return configuration
+    end
+    O->>O: Validate and freeze configuration
+    O->>C: Prepare revision
+    C->>C: Prepare gateway and workload resources
+    alt Sandbox provisions the Harness
+        C->>S: provisionHarness
+        S->>C: Return Sandbox resource reference
+    else Compute owns the Harness
+        C->>C: Create Harness workload
+    end
+    C->>C: Verify revision and credential attachment readiness
+    C->>C: Activate traffic
+    opt Revision stop or retirement
+        C->>C: Stop any Compute-owned workload
+        C->>S: cleanup with revision
+    end
+    opt Namespace deletion after revision cleanup
+        C->>S: cleanup without revision
+        C->>C: Release Namespace after cleanup succeeds
+    end
+```
+
+The revision stores `sandboxDriverId`. The implementation and facets stay with
+the Driver. Compute prepares identity, workspace, Services, and routing. It checks the
+workload's revision ID and waits for every credential attachment to be `ready`.
+Revision cleanup also runs when the workload is already absent. For a
+Sandbox-owned workload, Sandbox removes it during cleanup.
 
 Namespace setup, provisioning, and cleanup must be safe to repeat. Failed
 Agent revision cleanup remains retryable. Unsupported topology, missing prerequisites,

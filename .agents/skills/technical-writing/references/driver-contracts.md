@@ -43,6 +43,7 @@ behavior; link canonical IAM policy instead of copying it.
 
 ## Lifecycle
 
+Use a Mermaid sequence diagram to show who calls whom and in what order.
 Distinguish Driver-instance selection, construction, startup, and shutdown from
 the lifecycle of managed resources. Do not imply a destructor exists when the
 interface has none. Explain relevant admission, preparation, readiness,

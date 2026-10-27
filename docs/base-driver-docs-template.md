@@ -11,8 +11,8 @@ lists properties first and methods second. Each table lists required members
 before optional members. Use only `Required` or `Optional` in the Requirement
 column. Describe the effect of an omitted member in its behavior or value column.
 IAM describes authorization,
-identity scope, and credential boundaries. Lifecycle distinguishes the Driver
-instance from the resources it manages.
+identity scope, and credential boundaries. Lifecycle uses a Mermaid sequence diagram to show the calls in order. See the
+[Sandbox lifecycle](reference/drivers/sandbox.md#lifecycle) for an example.
 
 Start with [Driver development](contributing/driver-development.md) to find
 the existing base contract. Base contracts belong in
