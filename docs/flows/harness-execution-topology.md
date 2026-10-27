@@ -151,6 +151,12 @@ receive ancillary file descriptors, so Box can continue to deny `recvmsg`.
 The runtime build applies and tests this patch before compiling OpenClaw; the
 SandboxDriver does not replace native supervision or patch Node's IPC methods.
 
+`deploy/runtime/code-mode/main.rs` is OCE's entrypoint for the native Codex
+host and runtime libraries. It selects `V8JitMode::Disabled` before calling the
+upstream `run_main`. The app-server discovers it at the packaged host pathname;
+native code-mode tools remain enabled and Box's W^X restriction stays enforced.
+See [code-mode packaging and verification](../guides/deploy/strands-code-mode.md).
+
 `deploy/runtime/Dockerfile:openclaw-build` applies the pinned-runtime pairing
 publication repair before compilation. A pending write for another device does
 not invalidate a node's committed pairing. Binding reads install committed
