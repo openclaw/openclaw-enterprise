@@ -4206,7 +4206,7 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
     },
   });
   assertApiError(policy, 400, "INVALID_REQUEST");
-  assert.match(policy.body.error.message, /supports install or remove only/);
+  assert.match(policy.body.error.message, /supports enablement and an optional credential slot/);
   const mode = await controller.request("PATCH", path, {
     body: { configurationId: configuration.id, executionMode: "embedded" },
   });

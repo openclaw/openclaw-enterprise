@@ -5,7 +5,12 @@ import {
   requireConfiguration,
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
-import { googlePackage, managedGoogleInstall } from "./managed-catalog.ts";
+import {
+  googlePackage,
+  managedCredentialBinding,
+  managedGoogleInstall,
+  managedPluginCredentials,
+} from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
   type JSONSchema,
@@ -357,6 +362,7 @@ class BundledPluginDriverBase {
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   readonly discoveryCredential = "none" as const;
+  readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
     approvers: { agent: true, plugin: true, tools: true },
@@ -374,12 +380,14 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     }
     if (
       google &&
-      (typeof google.enabled !== "boolean" || Object.keys(google).some((key) => key !== "enabled"))
+      (typeof google.enabled !== "boolean" ||
+        Object.keys(google).some((key) => key !== "enabled" && key !== "driverPolicy"))
     ) {
       throw new ConfigurationHarnessError(
-        "The Google Workspace package supports install or remove only.",
+        "The Google Workspace package supports enablement and an optional credential slot.",
       );
     }
+    managedCredentialBinding(selections);
     this.validate("openclaw", native, defaultApprovers);
   }
 

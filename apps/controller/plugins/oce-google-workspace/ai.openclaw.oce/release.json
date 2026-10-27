@@ -10,6 +10,7 @@
     "account": {
       "label": "Google account",
       "issuer": "https://accounts.google.com",
+      "tokenEndpoint": "https://oauth2.googleapis.com/token",
       "requiredScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
       "delivery": { "role": "harness", "env": "GOG_ACCESS_TOKEN", "presentation": "bearer" },
       "requests": [
@@ -31,7 +32,7 @@
     "sourceUrl": "https://raw.githubusercontent.com/openclaw/openclaw/246adaa1191438b9e9e178384a026b4c123782f1/skills/gog/SKILL.md"
   },
   "skill": "oce-google",
-  "skillSha256": "4d2c6ee467cfee42ae7829aec2e0d9765e5daf75c36683bb4d4bea03ca082096",
+  "skillSha256": "c8017d3b0196138a07d0278bcca2de1caee5fc8bdde0b654e73868f438cc94ce",
   "executable": "gog",
   "version": "0.46.0",
   "artifacts": {

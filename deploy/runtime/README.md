@@ -239,6 +239,21 @@ skill and adds it to native skill discovery. OpenClaw’s usual precedence appli
 the workspace contains another skill with the same name. Run `gog --version` in the
 worker to check the installation.
 
+To use Gmail, attach a ready `oauth2-refresh-token` source to the Agent and grant
+its service principal `operate` on that source. The source's token endpoint,
+scope, API host and exact path must match the `account` slot in the release.
+Use the slot's `delivery.env` as the source's `env_var`. On an installation
+with several tool binaries, set the source's `binary` to the installed `gog`
+path. The Sandbox and API must have the signed plugin request middleware enabled.
+
+In **Configure plugins**, add **Google Workspace**, choose the Google account,
+save the selection and deploy. The revision pins the release digest and one
+source ID. The Harness passes the OpenShell marker to `gog`. OpenShell checks
+the request and resolves the bearer at the proxy. The Gateway gets the skill.
+**Install without an account** deploys only the package. On dedicated OpenClaw,
+clearing or removing the selection keeps matching Google sources off the new
+worker even if they remain in the Agent’s saved credentials.
+
 OCE grants its workspace node read access to the selected skill. If you supply a
 custom file-transfer policy for that node, allow reads of
 `/usr/local/lib/oce/plugins/google/skills`, its `oce-google` directory and

@@ -63,6 +63,10 @@ test("A dedicated OpenClaw Agent can save the Google Workspace package without a
   const dialog = page.getByRole("dialog", { name: "Configure plugins" });
   await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
   await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
+  assert.equal(await dialog.getByLabel("Google account", { exact: true }).inputValue(), "");
+  await dialog
+    .getByRole("option", { name: "Install without an account" })
+    .waitFor({ state: "attached" });
   assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   const saved = page.waitForResponse(

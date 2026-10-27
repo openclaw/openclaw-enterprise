@@ -2,6 +2,7 @@ import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/con
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
+  OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
   codexProxiesRepositoryBroker,
   codexRepositoryBrokerNetworkProxy,
   type PreparedTokenService,
@@ -189,7 +190,7 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { managedGoogleInstall } from "../../plugin/managed-catalog.ts";
+import { managedGoogleInstall, managedCredentialSources } from "../../plugin/managed-catalog.ts";
 import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
@@ -15061,6 +15062,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         throw new OwnershipFailure("A credential source does not match the admitted source.");
       }
       seen.add(source.id);
+    }
+    if (
+      revision.harness.id === managedGoogleInstall.placement.harnessId &&
+      revision.harness.mode === managedGoogleInstall.placement.mode &&
+      (!revision.plugins ||
+        revision.plugins.driver.implementation === OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION)
+    ) {
+      return managedCredentialSources(
+        revision.plugins?.plugins,
+        resolved,
+        revision.harnessAuth.method === "credential_source"
+          ? revision.harnessAuth.sourceId
+          : undefined,
+      );
     }
     return resolved;
   }
