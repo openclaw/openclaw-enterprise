@@ -43,6 +43,10 @@ for (const persistence of databaseUrl ? ["memory", "postgres"] : ["memory"]) {
         },
       ],
     });
+    const configuredProxy =
+      "configuredProxy" in f
+        ? f.configuredProxy
+        : assert.fail("revision must not have been admitted");
     const directory = await temporaryDirectory(t, "verified-workspace-");
     const tls = await selfSigned(directory, {
       subjectAltName: "DNS:auth.openai.com,DNS:chatgpt.com",
@@ -135,7 +139,7 @@ for (const persistence of databaseUrl ? ["memory", "postgres"] : ["memory"]) {
       async verify(token: string) {
         return token === peerToken
           ? {
-              sender: f.egress.sourceControl.sender,
+              sender: configuredProxy.sourceControl.sender,
               sandboxId,
               instanceId,
               exchangeId: "synthetic-exchange",
@@ -169,10 +173,10 @@ for (const persistence of databaseUrl ? ["memory", "postgres"] : ["memory"]) {
       id: { value: "workspace-owner" },
       implementation: { value: "external-workspace-owner" },
     });
-    const proxy = Object.create(f.egress, {
+    const proxy = Object.create(configuredProxy, {
       id: { value: "workspace-owner" },
       implementation: { value: "external-workspace-owner" },
-      sourceControl: { value: { ...f.egress.sourceControl, providers: [provider] } },
+      sourceControl: { value: { ...configuredProxy.sourceControl, providers: [provider] } },
       verifyInstallation: {
         value: async (_: unknown, value: EgressInstallation) => isDeepStrictEqual(installed, value),
       },
@@ -205,7 +209,7 @@ for (const persistence of databaseUrl ? ["memory", "postgres"] : ["memory"]) {
     f.controller.selectDriver("credential_proxy", owner.require("credential_proxy").id);
     const selected = owner.require("credential_proxy").sourceControl.providers[0]!;
     assert.ok(
-      !f.egress.sourceControl.providers.some((entry) => entry.ref.id === provider.ref.id),
+      !configuredProxy.sourceControl.providers.some((entry) => entry.ref.id === provider.ref.id),
       "external opt-in does not advertise the profile on the stock sender",
     );
     const create = (name: string, extra = {}) =>

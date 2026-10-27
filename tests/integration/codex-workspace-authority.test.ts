@@ -79,7 +79,7 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
     admitRevision: false,
     ...(persistence === "postgres"
       ? {
-          appFactory: (context: TestContext, options: object) =>
+          appFactory: (context: TestContext, options: object = {}) =>
             postgresApp(context, { ...options, recordOperations: true }),
         }
       : {}),
@@ -92,6 +92,10 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
       },
     ],
   });
+  const configuredProxy =
+    "configuredProxy" in f
+      ? f.configuredProxy
+      : assert.fail("revision must not have been admitted");
   async function workerRefusal(revisionId: string, expected: string) {
     if (!("pool" in f)) {
       return;
@@ -107,7 +111,7 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
           assert.fail("owner refusal must precede Compute preparation");
         },
       },
-      proxyDriver: f.egress,
+      proxyDriver: configuredProxy,
       pollIntervalMs: 10,
     });
     await worker.start();
@@ -177,7 +181,7 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
     async verify(token: string) {
       return token === peerToken
         ? {
-            sender: f.egress.sourceControl.sender,
+            sender: configuredProxy.sourceControl.sender,
             sandboxId,
             instanceId,
             exchangeId,
@@ -203,11 +207,11 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
       return isDeepStrictEqual(accepted.get(use.id), association);
     },
   };
-  const proxy = Object.create(f.egress);
+  const proxy = Object.create(configuredProxy);
   Object.defineProperties(proxy, {
     id: { value: "workspace-admission" },
     implementation: { value: implementation },
-    sourceControl: { value: { ...f.egress.sourceControl, providers } },
+    sourceControl: { value: { ...configuredProxy.sourceControl, providers } },
     // This adapter observes an in-process controlled installation, not a deployed supervisor.
     verifyInstallation: {
       value: async (_context: unknown, observed: EgressInstallation) =>
@@ -298,7 +302,7 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   assert.equal((await patch()).status, 503, "the admitted sender must remain exact");
   proxy.sourceControl.sender = sender;
   f.controller.selectDriver("sandbox", f.sandboxDriver.id);
-  f.controller.selectDriver("credential_proxy", f.egress.id);
+  f.controller.selectDriver("credential_proxy", configuredProxy.id);
   assert.equal(
     (await patch()).status,
     503,
@@ -819,7 +823,7 @@ test("bundled workspace registration admits the five native routes and refuses s
     workspaceExchange: true,
     proxyDriverId: "sandbox-openshell",
     ...(databaseUrl && {
-      appFactory: (context: TestContext, options: object) => postgresApp(context, options),
+      appFactory: (context: TestContext, options: object = {}) => postgresApp(context, options),
     }),
   });
   assert.ok("context" in f);

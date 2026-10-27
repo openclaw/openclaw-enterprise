@@ -719,7 +719,7 @@ export async function staticEgressFixture(
       grant,
       secret,
       sandboxDriver: sandbox,
-      egress,
+      configuredProxy: egress,
       get secretReads() {
         return secretReads;
       },
