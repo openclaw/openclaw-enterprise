@@ -527,15 +527,23 @@ test("Slack credential checks name the missing proxy only when production expect
   );
   // Finding 2532: a redirect refused by redirect: "error" and an invalid header value are fetch
   // rejections after or without a connection attempt, not a missing route: they stay transient.
+  const redirectRequests = [];
   const redirectUrl = await listen(
-    createServer((_request, response) => {
-      response.writeHead(302, { location: "https://slack.com/api/auth.test" }).end();
+    createServer(async (request, response) => {
+      redirectRequests.push(request.url);
+      if (request.url === "/redirect-target") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(await auth().text());
+        return;
+      }
+      response.writeHead(302, { location: "/redirect-target" }).end();
     }),
   );
   await assert.rejects(
     check(new SlackChannelDriver(sendTo(redirectUrl), undefined, { expectProxy: true })),
     unavailable,
   );
+  assert.deepEqual(redirectRequests, ["/"]);
   await assert.rejects(
     check(
       new SlackChannelDriver(sendTo(redirectUrl), undefined, { expectProxy: true }),
