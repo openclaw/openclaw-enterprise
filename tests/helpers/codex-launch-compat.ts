@@ -109,6 +109,7 @@ export function sandboxPeer() {
   };
   const sandboxes = new Map<string, LiveSandbox>();
   let creates = 0;
+  let writes = 0;
   const unexpected = (): never => assert.fail("unexpected Gateway operation");
   const client: OpenShellGatewayClient = {
     health: unexpected,
@@ -143,6 +144,7 @@ export function sandboxPeer() {
       return profiles.get(id);
     },
     async importProviderProfile(_workspace, profile) {
+      writes++;
       profiles.set(profile.id, {
         id: profile.id,
         resourceVersion: "1",
@@ -155,6 +157,7 @@ export function sandboxPeer() {
     },
     async createProvider(request) {
       const p = { ...structuredClone(request), config: request.config ?? {}, resourceVersion: "1" };
+      writes++;
       providers.set(p.name, p);
       return p;
     },
@@ -162,6 +165,7 @@ export function sandboxPeer() {
       return sandboxes.get(name);
     },
     async createSandbox(request) {
+      writes++;
       creates++;
       assert.equal(
         sandboxes.has(request.name),
@@ -232,6 +236,9 @@ export function sandboxPeer() {
   return {
     driver,
     sandboxes,
+    get writes() {
+      return writes;
+    },
     get creates() {
       return creates;
     },

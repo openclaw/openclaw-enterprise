@@ -120,6 +120,7 @@ test(
         environment(server, "OCC_CONFIG_PATH"),
         environment(server, "OCC_EGRESS_AUTHORITY_PORT"),
         environment(server, "OCC_OPENSHELL_GIT_PORT"),
+        environment(server, "OCC_OPENSHELL_GIT_TOKEN_ENDPOINT"),
         ...(theme ? [environment(server, "OCC_CONSOLE_THEME_DIR")] : []),
       ]);
       // The check compares the Installation's listeners with the ports the chart routes.
@@ -128,6 +129,10 @@ test(
         "egressAuthority.enabled" in values ? "9444" : "disabled",
       );
       assert.equal(environment(check, "OCC_OPENSHELL_GIT_PORT").value, "disabled");
+      // These existing workloads do not opt in to the joint model/Git issuer. Keep the
+      // explicit disabled declaration: startup uses it to reject a joint Installation.
+      assert.equal(environment(check, "OCC_OPENSHELL_GIT_TOKEN_ENDPOINT").value, "disabled");
+      assert.equal(environment(check, "OCC_OPENSHELL_GIT_TOKEN_ASSERTION_SOURCE"), undefined);
       // Each file the check reads comes from the API's own volume at the API's path.
       const expected = ["installation-startup"];
       if (theme) {
@@ -249,7 +254,10 @@ test(
       return Object.fromEntries(
         check.env
           .filter(
-            ({ name }) => name === "OCC_EGRESS_AUTHORITY_PORT" || name === "OCC_OPENSHELL_GIT_PORT",
+            ({ name }) =>
+              name === "OCC_EGRESS_AUTHORITY_PORT" ||
+              name === "OCC_OPENSHELL_GIT_PORT" ||
+              name === "OCC_OPENSHELL_GIT_TOKEN_ENDPOINT",
           )
           .map(({ name, value }) => [name, value]),
       );
@@ -344,7 +352,10 @@ test(
     const environment = Object.fromEntries(
       check.env
         .filter(
-          ({ name }) => name === "OCC_EGRESS_AUTHORITY_PORT" || name === "OCC_OPENSHELL_GIT_PORT",
+          ({ name }) =>
+            name === "OCC_EGRESS_AUTHORITY_PORT" ||
+            name === "OCC_OPENSHELL_GIT_PORT" ||
+            name === "OCC_OPENSHELL_GIT_TOKEN_ENDPOINT",
         )
         .map(({ name, value }) => [name, value]),
     );

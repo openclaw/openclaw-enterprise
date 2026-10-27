@@ -28,10 +28,10 @@ const program = (args: readonly string[]) =>
   inflateRawSync(Buffer.from(args.slice(1).join(""), "base64")).toString();
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-// Independently captured from the unversioned commands at 45d315f4, including its bounded timers and compressed commands.
+// Captured from Kubernetes Compute at f6899148 with the stored admission.
 const mainCommands = {
-  plain: "904a04016d4be5faf075af3b0bc306d929019d0db4dd16e97d261690722ab8e5",
-  node: "7886c9198b5d580e6b9b3057e882506723efef7fd4dca53dc130816a8832c5c8",
+  plain: "0093cc49fc2dbd5e25b90a5d6f54a7c60aeea4be022f7ac2f44bc032459a58cd",
+  node: "4dc5f0e0ca8bf163f10cedf9090705bf42a011359b5435cd6995aa0f33fb3a5e",
 };
 for (const sample of fixture.cases) {
   test(`stored Codex ${sample.node ? "workspace-node" : "plain"} admission retains pre-change bytes and adopts without replay`, async () => {
@@ -54,6 +54,15 @@ for (const sample of fixture.cases) {
     const ref = await peer.driver().provisionHarness(oldContext);
     const live = peer.sandboxes.get(ref.resourceName);
     assert.ok(live);
+    // Independently captured from OpenShell provisioning at c250d521. Check the
+    // entire reconstructed live record before offering it to a replacement Driver.
+    assert.equal(
+      hash(JSON.stringify(live)),
+      sample.node
+        ? "045a3198c230c231a8c56de9a62e074c7a33e56f812ec5502fb442063318c9bc"
+        : "663eb3edfb414d831403235283933297e7a0a6cc088202634423726c27688855",
+    );
+    const priorWrites = peer.writes;
     const command = live.spec.command;
     assert.ok(Array.isArray(command));
     const annotations = { ...live.annotations };
@@ -81,7 +90,7 @@ for (const sample of fixture.cases) {
       /exact AgentRevision ownership and content/,
     );
     annotations["openclaw.dev/revision-id"] = fixture.revision.id;
-    assert.equal(peer.creates, 1);
+    assert.equal(peer.writes, priorWrites);
     const enrollmentPlan = plan();
     await assert.rejects(
       peer.driver().enrollHarness(
@@ -194,11 +203,11 @@ test("stored protected and public-reader bindings retain their semantics across 
   assert.ok(old);
   assert.equal(
     hash(old.entrypoint),
-    "ca506372014e836cd47368a1d875c8f337f237469a3402895e1419ba0808b5f7",
+    "bfdf4d4409c353bc3681e86ca1801125f342cea96a4707e2ca4b2db2d590094f",
   );
   assert.equal(
     hash(old.workspaceEntrypoint),
-    "a6b916b21126b21cd2da130c8bd791efc5cd0a0e517762c35c3e5809aa38708d",
+    "a552065cd60aae6faa8e5c9a68cdc3f3d89d06f6b498f92e1f291d424563c547",
   );
   for (const node of [false, true]) {
     const args = node ? fixture.protectedPrograms.nodeArgs : fixture.protectedPrograms.plainArgs;
@@ -216,7 +225,18 @@ test("stored protected and public-reader bindings retain their semantics across 
       ...requirements.requirements,
       command: [...requirements.command, ...args],
     });
-    await peer.driver().provisionHarness(historicalContext);
+    const ref = await peer.driver().provisionHarness(historicalContext);
+    const command = peer.sandboxes.get(ref.resourceName)?.spec.command;
+    assert.ok(Array.isArray(command));
+    // Both complete wrapped commands were independently captured with protected
+    // proxy wiring at c250d521. This check exercises the command comparison only.
+    assert.equal(
+      hash(JSON.stringify(command)),
+      node
+        ? "02c5d7883da38a03e163e24a1f4e8372d3411f4b9f3f6021545ad6349ce7b064"
+        : "8cc09a5c6c02c4e59e4d2bb19812dc340d374219e6f2c5f3a6a6228fb11b29fd",
+    );
+    const priorWrites = peer.writes;
     await peer.driver().provisionHarness(
       sandboxContext(stored, {
         ...requirements.requirements,
@@ -228,6 +248,7 @@ test("stored protected and public-reader bindings retain their semantics across 
       peer.driver().provisionHarness(sandboxContext(stored, requirements.requirements)),
       /exact AgentRevision ownership and content/,
     );
+    assert.equal(peer.writes, priorWrites);
   }
   const next: AgentRevision = {
     ...protectedRevision,

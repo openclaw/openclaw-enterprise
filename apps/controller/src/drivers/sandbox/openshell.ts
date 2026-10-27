@@ -2802,37 +2802,40 @@ function runtimeProviderSetupUpdate(
   });
 }
 
-// These unversioned Codex admissions have four known command generations. Match
-// each current payload only to its own pre-timeout, timeout-fixed and timer-bounded
-// predecessors. The OpenShell command prefix and all owner checks still match exactly.
+// For each unversioned Codex launch, accept only its own known older payloads.
+// The OpenShell command prefix, ownership and remaining Sandbox spec still match exactly.
 const priorCodexPayloads = new Map([
   [
-    "2afe3f2e70638a7a68bb9ad89b83d5c262a61e59bdb7c0cb41faa4309b96abc1",
+    "9e15c58b0e963476ad8718df8800409ce1241c13ea9c4eb8cce66e05e8810394",
     new Set([
+      "2afe3f2e70638a7a68bb9ad89b83d5c262a61e59bdb7c0cb41faa4309b96abc1",
       "82afa5ad13028f284c9c2e3a2f7c6362d5fa6c41f70e1c40f3dff7538f85877b",
       "6fce3240ec51f51102477d6379836ebcb784ba2bbc4a62109ac846bc84a4b2a8",
       "d60c6c59bbe7676d884ce262c42e0dbdbb49faf1d2bf1087c9efd35851c7b206",
     ]),
   ],
   [
-    "c41761e00e377fc09732dbf9cecd0ff82f7a6d627f45dba904fc55a833a46f94",
+    "209ea88dfd865e4ee86b78ec1bacec43c32b7cb025f1e87f22c28280dcc34ae4",
     new Set([
+      "c41761e00e377fc09732dbf9cecd0ff82f7a6d627f45dba904fc55a833a46f94",
       "647a06eec296df95ba8be08cf24de0167f797d56dc4aa475add40547977b0c53",
       "128a31e16844bc38c97c308b7a18f970e572d19d098e4a0068b40b131258b3bc",
       "23dfb30c097c8f01b5b96f3011640427adc4e13a3e812e1da4d98dcc2cf10485",
     ]),
   ],
   [
-    "protected:5c9f005aa0ea4f2bf30463fb4441c552714d36d8be01b9cd56cbcee9edc4d8db",
+    "protected:d0687871221fb6594e23cc2a14c3ce40ce24686799ff5e49f6883bb4d666c764",
     new Set([
+      "5c9f005aa0ea4f2bf30463fb4441c552714d36d8be01b9cd56cbcee9edc4d8db",
       "17dfa3dd15bec0d0c6801e6f2214539bbad5862668d73c8f3d6fff722ad4c9c6",
       "29297382ca2ad87806c73fd5663da35e0e00ae303d6a3c3838fbd1aa698fb9e9",
       "c1321f71f566b31da2ab608f57a105ef3aab68b338106ed01a8b2bc435c7efbd",
     ]),
   ],
   [
-    "protected:1ebc4e92f9790a8487a779e51fe4acb4a5bb415e83075dbc02cc700a9e1120c7",
+    "protected:0b4e850a20338168f673884ba07c868218fa1679009c1f398a0117df3354a338",
     new Set([
+      "1ebc4e92f9790a8487a779e51fe4acb4a5bb415e83075dbc02cc700a9e1120c7",
       "321192786091b6aab8408aaf9ccbbac49f12b70a8b7adc71df6d528c4d4711b3",
       "cf33567a3f0f5b524f51b3bba43e07917d6e5e88fd0f3dbbf36494f7c3c212c4",
       "e3243cdb010a3ba0dee43bfba5073522c2673c83c4adf39ac4531d501322ab2b",
