@@ -145,6 +145,17 @@ func reconcileK3dAPIEgressOnce(ctx context.Context, opts K3dAPIEgressOptions) (a
 		prefix = append(prefix, nodes[0].ID, "kubectl", "--request-timeout=8s")
 		return docker(input, append(prefix, args...)...)
 	}
+	ep, err := kube(nil, "-n", "default", "get", "endpoints", "kubernetes", "-o", "json")
+	if err != nil {
+		return empty, fmt.Errorf("cannot read Kubernetes API endpoints")
+	}
+	policy, err := kube(nil, "-n", opts.Namespace, "get", "networkpolicy", apiEgressPolicy, "-o", "json")
+	if err != nil {
+		return empty, fmt.Errorf("cannot read installed dependency policy")
+	}
+	// Validate the namespace after acquiring the policy. Replacement before this
+	// read changes the namespace UID; replacement afterward fails the policy UID
+	// and resource-version preconditions below. Never adopt a new installation.
 	ns, err := kube(nil, "get", "namespace", opts.Namespace, "-o", "json")
 	if err != nil {
 		return empty, fmt.Errorf("cannot read installation namespace")
@@ -156,14 +167,6 @@ func reconcileK3dAPIEgressOnce(ctx context.Context, opts K3dAPIEgressOptions) (a
 	}
 	if json.Unmarshal(ns, &namespace) != nil || namespace.Metadata.UID != opts.NamespaceUID {
 		return empty, fmt.Errorf("installation namespace UID does not match")
-	}
-	ep, err := kube(nil, "-n", "default", "get", "endpoints", "kubernetes", "-o", "json")
-	if err != nil {
-		return empty, fmt.Errorf("cannot read Kubernetes API endpoints")
-	}
-	policy, err := kube(nil, "-n", opts.Namespace, "get", "networkpolicy", apiEgressPolicy, "-o", "json")
-	if err != nil {
-		return empty, fmt.Errorf("cannot read installed dependency policy")
 	}
 	plan, err := planAPIEgress(ep, policy, addresses, opts)
 	if err != nil || !plan.Changed || !opts.Apply {

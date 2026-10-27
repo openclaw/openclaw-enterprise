@@ -1,6 +1,6 @@
 ---
 created: 2026-10-26
-updated: 2026-10-26
+updated: 2026-10-27
 last_updated_session: authoring-run/01a16571-f230-73d0-b786-f83300124449
 ---
 
@@ -26,7 +26,7 @@ OCC requests or operate Agent revisions.
 ```mermaid
 graph TD
   A["Operator or host service invokes CLI"] --> B["Read owned Docker server inventory"]
-  B --> C["Read namespace identity, API endpoints and Helm policy"]
+  B --> C["Read API endpoints, Helm policy, then namespace identity"]
   C --> D{"Ownership, addresses and policy shape valid?"}
   D -->|No| E["Report refusal; keep existing policy"]
   D -->|Yes| F{"API destinations changed?"}
@@ -49,8 +49,10 @@ IPv4 addresses on that cluster's Docker network. No Pod receives Docker access.
 
 ### 2. Validate live authority and destinations
 
-The same function runs existing `kubectl` inside an owned server. The namespace
-UID must match the installed value. `internal/occdev/k3d_api_egress.go:planAPIEgress` requires the Kubernetes
+The same function runs existing `kubectl` inside an owned server. It reads the
+policy before validating that the namespace UID matches the installed value.
+Namespace replacement before validation fails the UID check; replacement after
+validation fails the policy write preconditions. `internal/occdev/k3d_api_egress.go:planAPIEgress` requires the Kubernetes
 service's ready HTTPS addresses to belong to the owned servers and its port to
 match the configured API port. It checks Helm annotations and the chart's exact
 API/worker/initialization selector. It refuses combined ports and non-`/32` peers.
@@ -84,6 +86,8 @@ go test ./internal/occdev -run '^TestK3dAPIEgressReal$' -v
 
 The real test creates and deletes one empty namespace. It proves preview,
 namespace-identity refusal, guarded endpoint replacement and no-op behavior.
+It also replaces the namespace during policy acquisition and verifies that the
+old installation cannot update the replacement policy.
 Full recovery additionally requires normal OCC writes and real Agent turns after
 a host reboot; a healthy service process is insufficient.
 
