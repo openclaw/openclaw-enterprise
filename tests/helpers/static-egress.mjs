@@ -607,7 +607,14 @@ export async function staticEgressFixture(
     resourceId: source.id,
   });
   if (!admitRevision) {
-    return { ...app, namespace, agent, source, grant };
+    return {
+      ...app,
+      namespace,
+      agent,
+      source,
+      grant,
+      credentialSources: protectedSourceOnly ? undefined : catalog,
+    };
   }
   const revisionMetadata = await app.deployAgent(namespace.id, agent.id);
   const revision = await app.controller.transact((unit) =>

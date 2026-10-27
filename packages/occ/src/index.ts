@@ -2998,7 +2998,7 @@ export class OpenClawController {
         "Agent provisioning requires dedicated Harness authentication.",
       );
     }
-    // A selected gateway owns model delivery for every dedicated Harness. Refuse
+    // A configured source Backend owns model credentials for every dedicated Harness. Refuse
     // incompatible bindings before a job or external resource can be created.
     this.assertCredentialSourceDelivery(harnessAuth);
     const acceptedInput = Object.freeze({
@@ -6237,8 +6237,8 @@ export class OpenClawController {
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
       credentialSourceFieldsMatch(type, "config", written);
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
-      // The Driver may return the configuration in the form it uses, such as a normalized URL:
-      // the stored record, the response and the gateway then agree (finding 1292).
+      // The Backend may normalize source configuration, such as a URL.
+      // The stored record, response and provider then agree (finding 1292).
       const config = Object.freeze({
         ...(protectedType
           ? written
@@ -6862,7 +6862,7 @@ export class OpenClawController {
   /**
    * Deletion is caller-retried: the record stays `deleting` until the gateway copy is gone,
    * which keeps the Namespace nonempty and blocks new bindings in the meantime. The record moves
-   * to `deleting`, which is one-way, only once the selected gateway registered it, so a refusal
+   * to `deleting`, which is one-way, only once the configured Backend registered it, so a refusal
    * after a gateway change leaves the source as it was.
    */
   async deleteCredentialSource(
@@ -11627,7 +11627,7 @@ export class OpenClawController {
   /**
    * `operate` on each source an Agent already binds, so an update cannot swap out or drop a
    * source the caller may not use. It reads no record, so it answers the same whether or not the
-   * source still exists, is ready, or belongs to the selected gateway.
+   * source still exists, is ready, or belongs to the configured Backend.
    */
   private async authorizeBoundCredentialSources(
     principalId: string,

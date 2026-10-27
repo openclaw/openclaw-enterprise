@@ -552,7 +552,7 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
+/** Persisted owner discriminator. `credential_gateway` identifies a Backend source owner by its stable ID. */
 export type CredentialSourceOwnerCapability = "credential_gateway" | "credential_proxy";
 
 /** OCC source admission, including its owner and Secret references, never credential values. */

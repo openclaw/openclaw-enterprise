@@ -60,7 +60,11 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
     implementation: "openshell",
     backend: {
       id: "openshell",
-      drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
+      drivers: { sandbox: "policy-openshell" },
+      credentialSources: {
+        id: "policy-credentials",
+        configuration: { binaries: ["/usr/bin/codex"] },
+      },
       client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
     },
   });

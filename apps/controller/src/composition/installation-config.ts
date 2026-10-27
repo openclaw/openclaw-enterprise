@@ -437,7 +437,9 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
 
 /** Decode released Installation YAML at the boundary, retaining the owner ID on saved sources. */
 function backendSourceSettings(value: unknown, legacy: unknown): unknown {
-  if (legacy === undefined) return value;
+  if (legacy === undefined) {
+    return value;
+  }
   const selection = object(legacy, "drivers.credential_gateway");
   closed(selection, ["id", "configuration"], "drivers.credential_gateway");
   const id = nonempty(selection.id, "drivers.credential_gateway.id");
@@ -449,7 +451,9 @@ function backendSourceSettings(value: unknown, legacy: unknown): unknown {
   }
   return value.map((entry) => {
     const backend = asRecord(entry);
-    if (backend?.type !== "openshell") return entry;
+    if (backend?.type !== "openshell") {
+      return entry;
+    }
     if (backend.credentialSources !== undefined) {
       throw new Error(
         "Declare credential sources on the Backend or through the legacy driver selector once.",

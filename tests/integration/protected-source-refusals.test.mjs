@@ -137,11 +137,11 @@ test("deploy names a live-adopted source without a provider/model and Proxy sour
   });
   assert.equal(grant.status, 201, JSON.stringify(grant.body));
 
-  // The Installation drops drivers.credential_proxy and keeps its OpenShell Sandbox and Gateway.
-  // Both Agents bind sources admitted under the Proxy: the live-adopted Gateway source and the
+  // The Installation drops Credential Proxy and keeps the OpenShell Sandbox and source owner.
+  // Both Agents bind sources admitted under the Proxy: the live-adopted Backend source and the
   // Proxy's own. Neither can deploy until the Proxy returns or the bindings change; a retry
   // cannot help, so each is a 409 that names no source.
-  const restarted = f.restart(["sandbox", "credential_gateway"]);
+  const restarted = f.restart({ keepOpenShell: true });
   for (const agentId of [f.agent.id, metadataAgent.data.id]) {
     assert.deepEqual(await refusedAnswer(() => f.deploy(restarted, agentId)), {
       status: 409,

@@ -136,7 +136,6 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "plugin",
     "channel",
     "repo",
-    "credential_gateway",
     "credential_refresh",
     "credential_proxy",
   ]);
@@ -146,6 +145,7 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     assert.equal(isDriverCapability(capability), true);
   }
   for (const unsupported of [
+    "credential_gateway",
     "gateway",
     "secrets",
     "providers",

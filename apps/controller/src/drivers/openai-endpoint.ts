@@ -50,7 +50,7 @@ export function openAiBaseUrlSpellingMessage(subject: string, value: string): st
   }
 }
 
-/** Shared endpoint validation for the Compute and Credential Gateway Drivers. */
+/** Endpoint validation shared by Compute and Backend source registration. */
 export function normalizeOpenAiBaseUrl(value: string): string | undefined {
   if (openAiBaseUrlSpellingProblem(value) !== undefined) {
     return undefined;

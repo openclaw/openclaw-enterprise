@@ -52,6 +52,7 @@ import {
   CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
   DependencyUnavailableError,
+  InstalledDriver,
   SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
   SandboxWorkspaceSetupRefusedError,
@@ -6425,7 +6426,7 @@ test(
     // model source survives Git; the runtime-files provider cannot stand in for that source.
     await t.test(
       "protected Sandbox accepts only the separately admitted model alongside Git",
-      async () => {
+      async (t) => {
         const git = protectedGit.sandboxDriver.openShellGit;
         const proxy = protectedGit.proxyDriver;
         const sandbox = protectedGit.sandboxDriver;
@@ -6458,6 +6459,47 @@ test(
         };
         const ctx = { ...context, plan, revision: rev };
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
+        await t.test(
+          "both Installation layouts admit a stored Git revision until its model binary policy changes",
+          async (t) => {
+            const legacy = structuredClone(configuration);
+            const backend = legacy.backend[0];
+            legacy.drivers.credential_gateway = backend.credentialSources;
+            backend.drivers.credential_gateway = backend.credentialSources.id;
+            delete backend.credentialSources;
+            // The released Git registration hashed the model source settings and the repository
+            // authority. The latter includes this fixture's temporary registry path and listener.
+            const previous = new InstalledDriver(
+              {
+                id: gitId,
+                implementation: "openshell",
+                configuration: {
+                  sandbox: legacy.drivers.sandbox.configuration,
+                  backend,
+                  proxy: legacy.drivers.credential_proxy,
+                  modelGateway: legacy.drivers.credential_gateway,
+                  repositoryAuthorityIdentity: protectedGit.authorityIdentity,
+                },
+              },
+              { capabilities: { sandbox, credential_proxy: proxy } },
+              { sandbox: gitId, credential_proxy: gitId },
+            );
+            const stored = { ...rev, egressPlan: { ...plan, driver: previous.ref } };
+            const load = (config) =>
+              loadInstallationFile(t, config, {
+                createOpenShellBackend: () => backendFor(gateway),
+              });
+            protectedGit.computeDriver.validateExecutionAdmission(stored, "stored");
+            (await load(legacy)).computeDriver.validateExecutionAdmission(stored, "stored");
+            const changed = structuredClone(configuration);
+            changed.backend[0].credentialSources.configuration.binaries = ["/app/bin/other-client"];
+            const replacement = await load(changed);
+            assert.throws(
+              () => replacement.computeDriver.validateExecutionAdmission(stored, "stored"),
+              DependencyUnavailableError,
+            );
+          },
+        );
         assert.equal(
           protectedGit.computeDriver.admitRevision(rev),
           "protected-codex-no-connection-retry:v1",

@@ -299,7 +299,9 @@ async function fixture(
       ]
     : [];
 
-  if (sourceBackend) backends.push(sourceBackend);
+  if (sourceBackend) {
+    backends.push(sourceBackend);
+  }
 
   async function compose(registry, Driver) {
     const controller = new OpenClawController(installation, {
@@ -316,7 +318,9 @@ async function fixture(
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
     }
-    if (registry !== undefined) installCredentialDrivers?.(controller, registry);
+    if (registry !== undefined) {
+      installCredentialDrivers?.(controller, registry);
+    }
     if (registry !== undefined || !repositories) {
       await controller.validateBackendConfiguration();
     }
