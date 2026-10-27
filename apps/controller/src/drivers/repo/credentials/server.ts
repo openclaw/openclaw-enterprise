@@ -89,7 +89,8 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
   const agentSockets = new Set<Socket>();
   const controlSockets = new Set<Socket>();
   const active = new WeakSet<Socket>();
-  let admitting = true;
+  let admitting = false;
+  let stopping = false;
   let socketIdentity: Readonly<{ dev: number; ino: number }> | undefined;
   const limits = config.limits;
   const serverOptions = {
@@ -169,9 +170,10 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
   let agentClose: Promise<void> | undefined;
   let controlClose: Promise<void> | undefined;
   const stopAdmission = () => {
-    if (!admitting) {
+    if (stopping) {
       return;
     }
+    stopping = true;
     admitting = false;
     agentClose = new Promise((done) => agent.close(() => done()));
     controlClose = new Promise((done) => control.close(() => done()));
@@ -225,6 +227,9 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
     await chmod(socketPath, 0o600);
     const info = await lstat(socketPath);
     socketIdentity = { dev: info.dev, ino: info.ino };
+    // Admit only after socket setup. The caller installs shutdown handlers in
+    // the promise continuation, before the next connection can be dispatched.
+    admitting = true;
     return { stopAdmission, close, address: agent.address() as AddressInfo };
   } catch {
     await close();

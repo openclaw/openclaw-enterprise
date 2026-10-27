@@ -61,7 +61,7 @@ graph TD
 
 ### 1. Prepare the candidate
 
-`scripts/upgrade-production-images:256`, `scripts/upgrade-production-images:prepare_upgrade`
+`scripts/upgrade-production-images:prepare_upgrade`
 
 Before protected-file reads, evidence writes, or cluster access, every upgrade
 attempt requires the repository root's Git `HEAD` to match `--source-revision`.
