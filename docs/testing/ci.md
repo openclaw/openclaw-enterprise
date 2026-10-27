@@ -370,10 +370,11 @@ sudo env PATH="$PATH" OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman \
 
 The first proof fails initialization and cancels a delayed image build through
 the real provider. It checks descendant exit, no late resources, rollback, and
-preservation of a volume labelled with a near-miss project name. It verifies private routing
-after the browser QA fixture recreates OCC for theme and Preset changes. The
-fixture retains the exact controller/worker addresses admitted by the launcher;
-this is a fixture constraint, not support for arbitrary Compose recreation.
+preservation of a volume labelled with a near-miss project name. It also checks
+the real private Envoy path after the browser QA fixture recreates OCC for theme
+and Preset changes. The fixture pins the controller/worker addresses already
+admitted by the launcher. This proof does not cover recovery after IP changes
+during arbitrary Compose recreation.
 It explicitly enables bundled Presets, which OpenShell leaves opt-in.
 The second starts Compose OCC,
 OpenShell, and Kubernetes Compute through `scripts/dev-up`, checks authenticated
@@ -405,6 +406,15 @@ credentialed QA. Chromium runs as a normal user with access to the disposable
 runner's rootful socket through a job-scoped ACL. This differs from the documented
 local `sudo` path; the startup commands above exercise that path separately. It trusts the launcher's CA and uses its native-admin
 route; it does not install the older Compose QA relay.
+
+The required workflow in `ci.yml` does not select `dev-up-podman`. Both Podman
+legs run only in the advisory workflow, whose eligibility check excludes fork
+PRs even with `full-qa`. A maintainer can publish the reviewed commit to a
+same-repository PR branch and select `full-qa` for hosted proof before merge.
+Without that step, hosted Podman proof first runs after merge through the
+schedule or a manual dispatch on `main`; pushes also run it when
+`QA_ADVISORY_ON_PUSH` is enabled. Local results do not establish a passing hosted
+Podman job.
 
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing

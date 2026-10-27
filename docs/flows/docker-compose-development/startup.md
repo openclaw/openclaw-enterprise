@@ -273,8 +273,12 @@ owns both OpenShell control-plane sequences.
 
 Compose builds separately without a readiness deadline, then starts PostgreSQL,
 migration, and bootstrap with `--no-build`. Other Compose commands use the startup
-timeout. `internal/occdev/compose_process_unix.go:ownComposeProcessGroup` kills
-and drains the provider process group on cancellation, including inherited pipes.
+timeout. On Linux and macOS,
+`internal/occdev/compose_process_unix.go:ownComposeProcessGroup` isolates each
+Docker or Podman Compose call in a process group. It kills that group on
+cancellation and stops any remaining descendants after the command returns,
+including after success. `cmd/occ/main.go:main` receives Ctrl-C through
+`signal.NotifyContext`; context cancellation stops the isolated group.
 Unconfirmed termination preserves state without rollback.
 `internal/occdev/command.go:composeServiceID` uses exact project/service labels.
 After both one-shot services succeed, startup creates k3d on the Compose network.
@@ -408,6 +412,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 - 2026-10-29 18:57: Resolved the manifest-list platform child before saving images. (authoring-run/88c984db-3b18-420c-acfc-7e329a46af89 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
 
 - 2026-10-28 09:41: Normalize attached Podman file options for startup and cleanup, retaining file validation. (authoring-run/fc103f5f-f130-4239-a879-78ed1d7e6602 - 8eea685f0303ad004e222fc4399a019a9486dcb3)
+
+- 2026-10-27 15:06: Clarify Docker and Podman process-group cleanup and Ctrl-C propagation. (authoring-run/89dcf90b-063b-45c6-85af-b7d04ba53636 - 0250d59ea8d540fd998bd91ca79cd87f576ab981)
 
 - 2026-10-24 17:53: Preserve attached Compose file selection before environment defaults. (authoring-run/bf58bf91-3fb2-4b62-9afe-c5cf1ce830dd - fd5723d94aebbd96d93e85649eec908adbc6d58a)
 

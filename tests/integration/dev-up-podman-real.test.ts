@@ -247,7 +247,7 @@ for (const [scenario, command] of [
 }
 
 test(
-  "Podman QA preserves private routing after theme and Preset preparation",
+  "Podman QA reaches private Envoy from fixture-pinned addresses after theme and Preset preparation",
   { skip: process.env.OCC_TEST_DEV_UP_PODMAN_REAL !== "1", timeout: 1_200_000 },
   async (t) => {
     assert.equal(process.env.OCC_TEST_QA_CONTAINER_ENGINE, "podman");
@@ -306,8 +306,9 @@ test(
       assert.equal(status, "404");
     };
     await probe();
-    // These are the same real reconfigurations made before model-ui QA. A new
-    // Podman IP would no longer match the private route's exact source policy.
+    // Model-ui QA makes these same reconfigurations. The fixture pins the
+    // admitted addresses; this checks the real Envoy path with those addresses,
+    // not recovery after Podman assigns a new IP outside the exact source policy.
     await prepareQaConsoleTheme(f);
     await probe();
     await prepareQaPreset(f, "Codex");
