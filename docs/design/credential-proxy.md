@@ -15,8 +15,11 @@ can send this particular request. A GitHub adapter decides which fields the Agen
 
 Suppose an operator binds a GitHub metadata source to a dedicated Agent. The
 grant names the GitHub App, its installation, the Agent and the expected identity of
-`acme/widgets` (ID `12345`). A process in that execution asks GitHub for the
-repository with a bodyless HTTPS request.
+`acme/widgets` (ID `12345`). This example requires an installed sender and Sandbox
+that force the execution's GitHub requests through the protected exchange.
+Stock OpenShell does not provide this path.
+
+A process in the execution asks GitHub for the repository with a bodyless HTTPS request.
 
 ```http
 GET /repos/acme/widgets HTTP/1.1

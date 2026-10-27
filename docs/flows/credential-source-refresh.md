@@ -244,20 +244,21 @@ graph TD
   W["<b>Worker</b><br/>Holds App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
   G -->|Installation token| W
   W -->|Verify and commit| P[("<b>PostgreSQL</b><br/>Encrypted token")]
-  P -->|Authorized use| S["<b>Trusted sender</b><br/>Uses token"]
+  P -->|Eligible token| R["<b>OCC and resolver</b>"]
+  R -->|Credential header| S["<b>Metadata sender</b><br/>Needs a send permit"]
   classDef owner fill:#e7f1ec,stroke:#789884,color:#263e33
   classDef issuer fill:#f0eaf6,stroke:#9584ab,color:#392c42
   classDef stored fill:#e8eff6,stroke:#8498a9,color:#283746
-  class W,S owner
+  class W,R,S owner
   class G issuer
   class P stored
   linkStyle default stroke:#89919a
 ```
 
-Issuance runs in the background. For each request, the trusted reader selects
-a usable committed version. Native Git reads through the worker's private socket.
-A cold or expired read returns `not_ready`. PostgreSQL custody requires a persistent
-32-byte encryption key.
+The worker issues tokens in the background. The diagram shows how the metadata
+sender uses one. For native Git, the broker asks the worker to authorize the send
+over its private socket. A cold or expired read returns `not_ready`.
+PostgreSQL custody requires a persistent 32-byte encryption key.
 
 For `acme/widgets`, the worker requests repository ID `12345` and
 `metadata: read`. It checks the returned ID, name, permissions and expiry. The approved `github-installation` profile sends `{}` and
