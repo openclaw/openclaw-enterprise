@@ -244,12 +244,15 @@ const olderWorkspaceNodeState = fileURLToPath(
 // current OpenClaw then reads. Never prints a key.
 const WORKSPACE_NODE_UPGRADE = String.raw`
 const crypto = require("node:crypto");
-const { readdirSync } = require("node:fs");
+const { chmodSync, readdirSync, statSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { DatabaseSync } = require("node:sqlite");
 const [entrypoint, timeoutMs, children, environment] =
   [process.argv[1], Number(process.argv[2]), process.argv[3], JSON.parse(process.argv[4])];
 const state = "/home/node/.openclaw-node";
+// A retained node-state root can carry the setgid bit inherited from a PVC.
+// Both launchers must prepare it before Doctor opens the old database.
+chmodSync(state, 0o2755);
 const shared = state + "/state/openclaw.sqlite";
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 const savedDeviceId = crypto.createHash("sha256")
@@ -281,6 +284,7 @@ const start = () => {
   return { status: result.status, signal: result.signal, output: result.stdout + result.stderr };
 };
 const upgraded = start();
+require("node:assert/strict").equal(statSync(state).mode & 0o7777, 0o700);
 const identity = spawnSync(process.execPath, ["/app/openclaw.mjs", "node", "identity", "--json"], {
   env: { PATH: process.env.PATH, HOME: "/home/node", OPENCLAW_STATE_DIR: state,
     OPENCLAW_CONFIG_PATH: state + "/openclaw.json", OPENCLAW_NO_AUTO_UPDATE: "1" },

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-24
-last_updated_session: authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b
+updated: 2026-10-27
+last_updated_session: authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -219,10 +219,14 @@ The Driver mounts version state at `/sandbox/.openclaw-runtime` and persistent
 subpaths below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
 runtime `harnessHome` for native hook credentials. Codex
 hooks trust the provider-file Gateway CA and require node-reachable routing.
-`OPENCLAW_NODE_STATE_DIR` uses a process-created `state` child to avoid atomic
-replacement through symlinks/root-owned mounts. Workspace, node identity, sessions
-and images stay separate. The supervisor probes `/tmp`; native `TMPDIR` is a
-private `tmp` child under the runtime home.
+`OPENCLAW_NODE_STATE_DIR` uses a process-created `state` child to avoid root-owned
+mounts and symlinks.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
+and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
+clearing inherited setgid. OpenClaw prepares its children on retry; retained state
+and workspace permissions stay unchanged. Permission failures stop startup.
+Workspace, node identity, sessions and images stay separate. The supervisor probes
+`/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
 
 `prepareNativeWorkspace` uses a restricted Deployment for the Agent revision to privatize
 writable PVC subpaths, preserving retained entries. Mode and process ownership checks precede
@@ -351,6 +355,10 @@ needs the provider ClusterIP, advertised `ws://*.openshell.localhost:8080/`
 route, and inactive direct Service. Native model execution requires real runtime
 proof on a Landlock-capable host; Console admission and initialized files are insufficient.
 
+`tests/integration/runtime-image-node-state-permissions.test.ts` checks packaged
+setup, retry and restart under setgid parents. It does not prove Kubernetes or
+model execution.
+
 ## Related docs
 
 - [Agent Sandbox policy admission and live application](agent-sandbox-policy.md)
@@ -366,6 +374,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
 
 - 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
 

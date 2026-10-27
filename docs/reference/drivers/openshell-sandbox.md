@@ -281,6 +281,11 @@ never the PVC root. Persistent categories use separate subpaths below
 avoid symlinks and permission changes on root-owned mounts. PVC quota limits
 runtime storage; Agent deletion removes it.
 
+Before opening node state, the Codex Harness and dedicated OpenClaw worker set
+their process-owned state root to `0700`, clearing inherited setgid bits. Shared
+workspace directories keep their permissions. OpenClaw prepares its private
+children, including a `control` directory retained after a failed setup.
+
 The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
 `tmp` child without changing supervisor directory permissions. Codex's container has
 a `1Gi` ephemeral-storage limit. Native provisioning privatizes writable PVC
