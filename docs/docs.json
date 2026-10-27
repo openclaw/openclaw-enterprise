@@ -1031,6 +1031,7 @@
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
+              "testing/strands-box",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
               "flows/agent-repository-credentials",

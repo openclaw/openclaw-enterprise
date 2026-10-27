@@ -22,6 +22,7 @@ required `facets` and `cleanup` members, an optional `harnessHome`, and optional
 | Member                                           | Contract                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `facets`                                         | Declare at least one distinct facet. Unknown, duplicate, or empty declarations are rejected.                                                                                                                                                                                                                                                                                                      |
+| `maintenanceIntervalMs`                          | Optional positive interval for the selected Sandbox's active Agent revisions. The worker repeats Compute preparation through its existing durable maintenance loop. Omission requests no Sandbox maintenance.                                                                                                                                                                                     |
 | `harnessHome`                                    | Optional normalized absolute HOME of the Harness user inside the Sandbox. Compute renders Harness-local paths, such as the native hook credential directory, under it. Defaults to `/home/node`.                                                                                                                                                                                                  |
 | `configureAgent(configuration, harness)`         | Optional synchronous transform. OCC passes the read-only native configuration and resolved Harness descriptor, then validates and freezes the returned configuration. The transform cannot change the selected Harness runtime. If absent, the original configuration is used.                                                                                                                    |
 | `validateWorkspaceSetup(harness, configuration)` | Optional synchronous admission check for initial workspace files. Its presence declares private initialization support. Compute delegates validation of the projected configuration; without it, Compute refuses initial files with a Sandbox. Compute retains its runtime-storage and identity checks.                                                                                           |
@@ -30,6 +31,7 @@ required `facets` and `cleanup` members, an optional `harnessHome`, and optional
 | `cleanup(context)`                               | Required for Agent revision stop, retirement, and Namespace cleanup. Agent revision cleanup receives the immutable Agent revision; Namespace cleanup omits it.                                                                                                                                                                                                                                    |
 | `harnessResource(context)`                       | Optional. Returns the Sandbox reference `provisionHarness` creates for an Agent revision, without side effects. Compute needs it to [withdraw a credential source](credential-gateway.md#optional-additions) from a running Agent revision.                                                                                                                                                       |
 | `workspaceNodePeerLabels(context)`               | Optional. Exact Pod labels of the provider Pods that open the Agent revision's workspace-node connection, or `undefined` before its Sandbox exists. Compute admits only these Pods to that Agent's Gateway port, plus those of the serving Agent revision while a successor prepares, so the labels must select that Sandbox alone. OpenShell returns the supervisor's `openshell.ai/sandbox-id`. |
+| `harnessPeerLabels(context)`                     | Optional. Exact Harness ingress Pod labels in the prepared Namespace for namespace Service routing. Include Namespace, Agent, revision and `agent` workload-role ownership labels. Return `undefined` until the owned workload exists; Compute grants no peer in that case. See [provider routing](kubernetes-compute/networking-and-isolation.md#networking).                                    |
 | `readSandboxLogs(context, request)`              | Optional read of the Agent revision's Sandbox log: at most `lines` raw lines at or after `sinceTime`, plus how many lines the source examined. It must use a read-only interface and derive the Sandbox from the Agent revision. OCC classifies and redacts every line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source).                                                       |
 
 Two optional methods serve a provider-owned Harness transport.
@@ -100,6 +102,11 @@ subpaths and mount modes, literal environment or Kubernetes `secretKeyRef`,
 explicit Harness login mode, `credentialAttachments`, and Agent and Agent revision labels.
 Sandbox must use these prepared values rather than guessing login mode or
 resolving another credential.
+
+Optional `transportToken` carries the Agent-scoped Gateway-to-Harness credential
+for trusted provider readiness. A revision-owned Secret projection does not make
+the credential revision-scoped. Strands mounts this readiness projection only in
+its trusted supervisor. See [runtime credential lifetime](kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 
 Optional `supervisedCommand` is the same prepared Harness entrypoint without
 Compute's generic process-init wrapper. A provider may use it only when its own
@@ -209,6 +216,13 @@ Namespace setup, provisioning, and cleanup must be safe to repeat. Failed
 Agent revision cleanup remains retryable. Unsupported topology, missing prerequisites,
 ambiguous resources, failed identity checks, or unavailable containment must
 prevent progress rather than weakening isolation.
+
+For a selected Sandbox with `maintenanceIntervalMs`, the worker uses the shortest
+requested Compute, Sandbox or repository interval and rechecks deployment
+authority before repeating Compute preparation. Stop, replacement or Driver
+mismatch ends that Agent revision's maintenance. These passes carry
+`existingHarnessOnly: true` through Compute to Sandbox; a lost Sandbox still
+requires a new deployment.
 
 The worker retries driver errors as `DEPENDENCY_UNAVAILABLE`. When a driver
 cannot run the requested Agent revision and a retry cannot change that, it throws
