@@ -143,6 +143,13 @@ Namespace provider routing validates exact revision ingress labels and retains
 the predecessor peer until activation. No labels means no network grant.
 See [RFC-0024](../../specs/rfcs/0024-strands-box-sandbox.md#driver-contract-supplements).
 
+`deploy/runtime/strands-box/transport.mjs` bounds shared framing and channel
+buffers. IPC backpressure pauses the originating TCP stream until drain; it
+does not truncate accepted data. A disconnected or persistently slow client
+closes only its channel. Malformed framing or loss of the shared IPC stream
+stops the revision fail-closed. These paths do not add destinations, credentials,
+retries or sandbox permissions.
+
 Dedicated Harnesses use ServiceAccounts separate from their Gateway. Compute owns the Gateway; SandboxDriver owns the native Harness. Its node retains identity, workspace and model credentials. OpenShell's version provider delivers setup and the Gateway CA; startup combines inherited trust, writes a private one-use target and reconnects with the persisted device token. Renewal and cleanup retain exact provider ownership.
 
 `internal/occdev/kubernetes.go:writeInstallation` permits Node and pinned Codex model egress. Native workers connect outbound without an app-server endpoint. Compute binds `dedicated-native` with `inference: "worker"`; a missing or disconnected Harness fails without Gateway inference. Exact callbacks and session admission scope transport to the Agent.
