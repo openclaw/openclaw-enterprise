@@ -535,7 +535,8 @@
         "external-repository-fixture registers its real structured validator and rejects malformed input safely",
         "github registers its real structured validator and rejects malformed input safely",
         "openshell registers its real structured validator and rejects malformed input safely",
-        "OpenShell direct construction and policy rendering still enforce configuration validation"
+        "OpenShell direct construction and policy rendering still enforce configuration validation",
+        "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
     }
   ]

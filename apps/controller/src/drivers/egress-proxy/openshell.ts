@@ -361,7 +361,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         const info = await client.getGatewayInfo(signal);
         const extensions = info.extensions;
         const git = profile === "repository_git" || profile === "github_installation";
-        const registration = git ? options.repositoryMiddlewareName : options.middlewareName;
+        const registration = git
+          ? this.options.repositoryMiddlewareName
+          : this.options.middlewareName;
         if (
           !registration ||
           !Array.isArray(extensions) ||
@@ -382,7 +384,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           // that never serves a non-Git profile, not an outage or a partial negotiation.
           if (
             !git &&
-            registration === options.repositoryMiddlewareName &&
+            registration === this.options.repositoryMiddlewareName &&
             registration !== undefined &&
             registeredWithoutExecution(extensions, registration)
           ) {
