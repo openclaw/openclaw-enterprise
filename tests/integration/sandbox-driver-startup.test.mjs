@@ -6323,7 +6323,6 @@ test(
     assert.equal(protectedGit.repositoryOwner.controlSocket, undefined);
     assert.equal(protectedGit.nativeRepositorySender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
-    assert.equal(protectedGit.sandboxDriver.openShellGit.configuration.protectedExecution, true);
     // Finding 2199: no OpenShell release is qualified to enforce git-write, so the bundled sender
     // refuses the profile before it reads the gateway, instead of admitting a revision that waits
     // at enrollment until the convergence deadline.
@@ -6496,14 +6495,13 @@ test(
           );
         }
         try {
-          await git.start(
-            {
-              readOpenShellMaterial: async () => undefined,
-              authorizeOnlineRequest: async () => ({ kind: "denied", reason: "unavailable" }),
+          git.routes = routeStore();
+          await git.bindRepositoryGit({
+            online: {
+              readMaterial: async () => undefined,
+              authorize: async () => ({ kind: "denied", reason: "unavailable" }),
             },
-            undefined,
-            routeStore(),
-          );
+          });
           // v4 promised a send cutoff. The online sender must refuse that revision before creation.
           const exactRevision = structuredClone(rev);
           exactRevision.executionAdmission.version = 4;

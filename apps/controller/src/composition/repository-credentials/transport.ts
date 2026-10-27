@@ -82,56 +82,57 @@ export async function bindRepositoryGitTransport(
   }: RepositoryGitTransportOptions = {},
 ): Promise<CredentialProxyBinding | undefined> {
   const { repositoryTransport, repositoryGitDriver } = drivers;
+  if (!repositoryTransport && !repositoryGitDriver) {
+    return undefined;
+  }
   if (
-    repositoryGitDriver &&
-    (!owner.protectedGit || repositoryGitDriver !== drivers.protectedDriver)
+    !owner.protectedGit ||
+    !repositoryGitDriver ||
+    repositoryGitDriver !== drivers.protectedDriver
   ) {
     throw new Error("Missing the selected Driver's protected repository Git authority.");
   }
   if (repositoryTransport) {
-    return repositoryTransport.bind(owner, pool, emit);
+    return repositoryTransport.bind(owner.protectedGit, pool, emit);
   }
-  if (repositoryGitDriver && owner.protectedGit) {
-    const binding = await repositoryGitDriver.requireRepositoryGitTransport()(owner.protectedGit);
-    if (!binding.reconcile) {
-      return binding;
-    }
-    const stop = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let running: Promise<void>;
-    const tick = async () => {
-      try {
-        await binding.reconcile!(AbortSignal.any([stop.signal, AbortSignal.timeout(25_000)]));
-        pendingLog.delivered();
-      } catch {
-        // The next pass must observe an uncertain effect, never repeat it.
-        // The Driver retains the operation; request authorization remains fail-closed.
-        if (!stop.signal.aborted && pendingLog.failed()) {
-          // The protected Git Driver is the selected Sandbox Driver's owner (installation-config),
-          // so its ID is the Sandbox Driver ID the log already keeps (finding 2245).
-          emit?.({
-            event: "worker.repository-delivery-pending",
-            sandboxDriverId: repositoryGitDriver.ref.id,
-          });
-        }
-      } finally {
-        if (!stop.signal.aborted) {
-          timer = setTimeout(() => {
-            running = tick();
-          }, reconcileIntervalMs);
-          timer.unref();
-        }
+  const binding = await repositoryGitDriver.requireRepositoryGitTransport()(owner.protectedGit);
+  if (!binding.reconcile) {
+    return binding;
+  }
+  const stop = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let running: Promise<void>;
+  const tick = async () => {
+    try {
+      await binding.reconcile!(AbortSignal.any([stop.signal, AbortSignal.timeout(25_000)]));
+      pendingLog.delivered();
+    } catch {
+      // The next pass must observe an uncertain effect, never repeat it.
+      // The Driver retains the operation; request authorization remains fail-closed.
+      if (!stop.signal.aborted && pendingLog.failed()) {
+        // The protected Git Driver is the selected Sandbox Driver's owner (installation-config),
+        // so its ID is the Sandbox Driver ID the log already keeps (finding 2245).
+        emit?.({
+          event: "worker.repository-delivery-pending",
+          sandboxDriverId: repositoryGitDriver.ref.id,
+        });
       }
-    };
-    running = tick();
-    return {
-      async close() {
-        stop.abort();
-        clearTimeout(timer);
-        await running;
-        await binding.close();
-      },
-    };
-  }
-  return undefined;
+    } finally {
+      if (!stop.signal.aborted) {
+        timer = setTimeout(() => {
+          running = tick();
+        }, reconcileIntervalMs);
+        timer.unref();
+      }
+    }
+  };
+  running = tick();
+  return {
+    async close() {
+      stop.abort();
+      clearTimeout(timer);
+      await running;
+      await binding.close();
+    },
+  };
 }

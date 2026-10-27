@@ -1,16 +1,65 @@
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID, createHash } from "node:crypto";
-import test from "node:test";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import test, { type TestContext } from "node:test";
+import type {
+  ProtectedRepositoryGitMaterial,
+  RepositoryGitInstallationFence,
+} from "../../packages/contracts/src/index.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import {
+  OpenShellGitRuntime,
+  protectedOpenShellGitOwner,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
-import type { ProtectedRepositoryGitMaterial } from "../../packages/contracts/src/index.ts";
 import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/egress-authority.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
+import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
 import type { PostgresPool } from "../../packages/occ/src/index.ts";
+
+async function protectedStandingExecution(t: TestContext, source: string) {
+  let client!: Awaited<ReturnType<typeof gitExpiryGateway>>["client"];
+  let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
+  // Admit the same protected Driver pair used by the worker transfer journey.
+  const protectedGit = protectedRepositoryGitRelease(() => {
+    throw new Error("no repository access before bootstrap");
+  });
+  const gatewayId = CREDENTIAL_GATEWAY_FIXTURE_ID;
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/bin/codex"] },
+    {
+      id: gatewayId,
+      backend: {
+        id: "fixture-gateway",
+        drivers: { credential_gateway: gatewayId },
+        client: { placement: () => undefined, clientForNamespace: () => client },
+      } as never,
+    },
+  );
+  const fixture = await standingExecutionFixture(
+    t,
+    source,
+    async (pool, namespace) => ({
+      ...(peer = await preparedStandingGitPeer(t, pool, namespace, {
+        driver: protectedGit.owner.ref,
+      })),
+      protectedDriver: protectedGit.owner,
+      credentialGateway: gateway,
+    }),
+    { sandbox: protectedGit.sandboxConfiguration },
+  );
+  return {
+    ...fixture,
+    peer,
+    setClient(value: typeof client) {
+      client = value;
+    },
+  };
+}
 
 // Real standing approval, persisted route, runtime, provider and stock gRPC client. The
 // supervisor, Pod identities and material are controlled; no credential or origin is needed.
@@ -19,13 +68,27 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
     `OpenShell standing rotation preserves custody when ${outcome}`,
     { ...requiresPostgres, timeout: 45_000 },
     async (t) => {
-      const { f, registry, revision, credentials, binding, key, approval } =
-        await standingExecutionFixture(t, import.meta.url);
+      const { f, registry, revision, credentials, binding, key, approval, setClient } =
+        await protectedStandingExecution(t, import.meta.url);
+      // Standing execution may be recorded only for this Agent's active revision.
+      const activated = await f.state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          key.namespaceId,
+          key.agentId,
+          undefined,
+          revision.id,
+        ),
+      );
+      assert.equal(activated?.activeRevisionId, revision.id);
       const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
       const model = "original-model";
       const workspace = "team-workspace";
       const sandbox = "git-execution";
       const firstDeadline = credentials.deadlineWallMs;
+      const delivery = createGitHubRepositoryDeliveryResolver(registry)(revision);
+      const repository = delivery.delivery.repository;
+      const policy = delivery.repository;
+      assert.ok(repository && policy);
       const { client, world } = await gitExpiryGateway(t, {
         model,
         workspace,
@@ -35,12 +98,13 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
         platformProfile: false,
         trackGitExpiry: true,
       });
+      setClient(client);
       let workload = "original-pods-and-containers";
       const continuity = { model, workload: async () => workload };
       const context = async () => ({ client, workspace, sandbox, continuity });
       const signal = AbortSignal.timeout(40_000);
       const identity = {
-        sandboxId: "original-sandbox-id",
+        sandboxId: randomUUID(),
         workspace,
         requestId: "fixture-request",
         bindingId: "",
@@ -57,8 +121,8 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
           sessionId: "session-" + n,
           materialVersion: randomUUID(),
           preparationAttemptId: randomUUID(),
-          repository: "example/source",
-          pushRef: "refs/heads/review",
+          repository,
+          ...policy,
           apiOrigin: "https://api.github.com",
         }) satisfies ProtectedRepositoryGitMaterial;
       const materials = [
@@ -86,7 +150,10 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
         );
         runtime["routes"] = routes;
         runtime["owner"] = {
-          readOpenShellMaterial: async () => {
+          readMaterial: async (route: RepositoryGitInstallationFence, signal: AbortSignal) => {
+            signal.throwIfAborted();
+            assert.equal(route.revisionId, revision.id);
+            assert.ok(route.fence > 0 && route.observed);
             reads++;
             // The prepared owner's separate contract checks session and custody. This fixture
             // supplies a selected attempt only while this exact durable approval is current.
@@ -108,7 +175,7 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
             const result = materials[candidate]!;
             return replaceAtWriter ? { ...result, sessionId: "different-session" } : result;
           },
-          authorizeOpenShellRequest: async () => assert.fail("installation is not a recorded use"),
+          authorizeOnlineRequest: async () => assert.fail("installation is not a recorded use"),
         };
         const prepare = () =>
           runtime.prepare(revision, client, workspace, sandbox, signal, [model]);
@@ -137,6 +204,28 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
         installed.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue;
       world.id = identity.sandboxId;
       await warm.bind();
+      // Seed the independently observed release from the controlled supervisor. The transfer
+      // journey exercises signed enrollment; this case exercises durable rotation afterward.
+      const plan = revision.egressPlan;
+      assert.ok(plan);
+      await f.state.transact((unit) =>
+        unit.credentialSources.recordEgressInstallation({
+          plan,
+          sandboxId: identity.sandboxId,
+          sender: { id: "controlled-online-sender", generation: 1 },
+          installedAt: new Date().toISOString(),
+          enforcement: {
+            authorityScope: "execution",
+            instanceId: randomUUID(),
+            configurationId: plan.id,
+            policyHash: "original-policy",
+            repositoryGitRecipient: {
+              ...world.repositoryGitRecipient,
+              authorization: "online-request",
+            },
+          },
+        }),
+      );
       await warm.reconcile();
       assert.equal((await warm.lookup())?.sessionId, "session-1");
       assert.equal(world.writes, 1);
@@ -354,12 +443,8 @@ test(
   "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart",
   { ...requiresPostgres, timeout: 45_000 },
   async (t) => {
-    let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
-    const { f, registry, revision, credentials } = await standingExecutionFixture(
-      t,
-      import.meta.url,
-      async (pool, namespace) => (peer = await preparedStandingGitPeer(t, pool, namespace)),
-    );
+    const { f, registry, revision, credentials, peer, setClient } =
+      await protectedStandingExecution(t, import.meta.url);
     const model = "original-model";
     const workspace = "route-reservation";
     const sandbox = "reservation-sandbox";
@@ -371,6 +456,7 @@ test(
       deadline: credentials.deadlineWallMs,
       platformProfile: false,
     });
+    setClient(client);
     let lostAcknowledgements = 0;
     const releases: boolean[] = [];
     // Keep the real transaction and committed row. Only its reply is lost; a pending
@@ -409,7 +495,7 @@ test(
         createGitHubRepositoryDeliveryResolver(registry),
       );
       value["routes"] = routes;
-      value["owner"] = peer.prepared;
+      value["owner"] = protectedOpenShellGitOwner(peer.prepared.protectedGit!);
       t.after(() => value.close());
       return value;
     };
@@ -446,7 +532,10 @@ test(
       reason: "write_unknown",
     });
     await peer.prepared.maintain();
-    const material = await peer.prepared.readOpenShellMaterial(revision.id, t.signal);
+    const material = await peer.prepared.protectedGit!.online.readMaterial(
+      { revisionId: revision.id, fence: 1, observed: {} },
+      t.signal,
+    );
     assert.ok(!material || "absent" in material);
     for (const value of [first, cold]) {
       assert.equal(

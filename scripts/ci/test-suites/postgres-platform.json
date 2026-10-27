@@ -39,8 +39,8 @@
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
     "tests/integration/postgres-protected-git-recipient-custody.test.ts",
     "tests/integration/postgres-prepared-standing-removal.test.ts",
-    "tests/integration/postgres-prepared-github-git-use.test.mjs",
-    "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+    "tests/integration/postgres-prepared-github-git-use.test.ts",
+    "tests/integration/postgres-openshell-online-git-journey.test.ts",
     "tests/integration/postgres-openshell-git-routes.test.ts",
     "tests/integration/postgres-openshell-standing-route.test.ts",
     "tests/integration/postgres-external-protected-git.test.ts",
@@ -304,12 +304,18 @@
     {
       "path": "tests/integration/postgres-prepared-standing-expiry.test.ts",
       "expectedTests": [
-        "prepared standing Git retirement preserves the skew boundary",
-        "prepared standing Git retirement preserves the refused boundary",
-        "prepared standing Git retirement preserves the response lost boundary",
-        "prepared standing Git retirement preserves the other issuer boundary",
-        "prepared standing Git retirement preserves the finite boundary",
-        "a lost standing Git issuance remains unresolved without a verified expiry",
+        "native prepared standing Git retirement preserves the skew boundary",
+        "native prepared standing Git retirement preserves the refused boundary",
+        "native prepared standing Git retirement preserves the response lost boundary",
+        "native prepared standing Git retirement preserves the other issuer boundary",
+        "native prepared standing Git retirement preserves the finite boundary",
+        "a lost native standing Git issuance remains unresolved without a verified expiry",
+        "protected prepared standing Git retirement preserves the skew boundary",
+        "protected prepared standing Git retirement preserves the refused boundary",
+        "protected prepared standing Git retirement preserves the response lost boundary",
+        "protected prepared standing Git retirement preserves the other issuer boundary",
+        "protected prepared standing Git retirement preserves the finite boundary",
+        "a lost protected standing Git issuance remains unresolved without a verified expiry",
         "a protected successor binds the released Git recipient and preserves draft custody, limit one per grant",
         "a protected successor binds the released Git recipient and preserves draft custody, limit none"
       ]
@@ -329,15 +335,15 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-prepared-github-git-use.test.mjs",
+      "path": "tests/integration/postgres-prepared-github-git-use.test.ts",
       "expectedTests": [
-        "OpenShell material delivery reads only an existing live revision token without issuing or authorizing use"
+        "protocol-3 native material has no trial ports and explicit use commits exactly one receipt"
       ]
     },
     {
-      "path": "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+      "path": "tests/integration/postgres-openshell-online-git-journey.test.ts",
       "expectedTests": [
-        "OCE signed TLS Git authorization composes with PostgreSQL admission and material withdrawal"
+        "protected signed TLS Git authorization binds committed receipts, late replies and withdrawal"
       ]
     },
     {

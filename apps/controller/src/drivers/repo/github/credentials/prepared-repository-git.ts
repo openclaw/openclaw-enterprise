@@ -205,15 +205,7 @@ const active = (sessions: string) =>
 export interface InstalledGitMaterial {
   readonly preparationAttemptId: string;
   readonly materialVersion: string;
-  readonly route?: RepositoryGitInstallationFence;
-}
-
-/** Compatibility with the broker-backed OpenShell trial only. Never use at a protected sender. */
-function openShellOnlineGitDecision(result: RepositoryGitSendDecision) {
-  if (result.kind === "denied") {
-    return result.reason === "unavailable" ? false : result.reason;
-  }
-  return result.kind === "permit" && Date.now() < Date.parse(result.sendStartBy);
+  readonly route: RepositoryGitInstallationFence;
 }
 
 /**
@@ -495,7 +487,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         ...(installationRecipient(this.proxy) && {
           githubInstallation: Object.freeze({
             readMaterial: (route, signal) =>
-              this.readRecipientMaterial(route.revisionId, lifetime(signal), route, scope, mode),
+              this.#readRecipientMaterial(route.revisionId, lifetime(signal), route, scope, mode),
             authorize: async (request, installed, signal) => {
               const q = checkRequest(request, scope);
               const binding = structuredClone(installed);
@@ -515,7 +507,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           } satisfies NonNullable<RepositoryGitAuthority<Allow>["githubInstallation"]>),
         }),
         readMaterial: (route, signal) =>
-          this.readRecipientMaterial(route.revisionId, lifetime(signal), route, undefined, mode),
+          this.#readRecipientMaterial(route.revisionId, lifetime(signal), route, undefined, mode),
         authorize: (request, installed, signal) =>
           this.authorizeProtectedRequest(
             checkRequest(request),
@@ -638,26 +630,26 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   /** Reads existing material for the worker's selected revision, never a workload request.
    * This neither prepares material nor grants permission to send. Each later request must
    * still authorize the exact installed attempt/version against current session authority. */
-  async readRecipientMaterial(
+  async #readRecipientMaterial(
     revisionId: string,
     signal: AbortSignal,
-    install?: RepositoryGitInstallationFence,
-    scope?: undefined,
-    mode?: Authorization,
+    install: RepositoryGitInstallationFence,
+    scope: undefined,
+    mode: Authorization,
   ): Promise<ProtectedRepositoryGitMaterial | RepositoryGitMaterialAbsence | undefined>;
-  async readRecipientMaterial(
+  async #readRecipientMaterial(
     revisionId: string,
     signal: AbortSignal,
     install: RepositoryGitInstallationFence,
     scope: "github-installation",
-    mode?: Authorization,
+    mode: Authorization,
   ): Promise<ProtectedGitHubInstallationMaterial | RepositoryGitMaterialAbsence | undefined>;
-  async readRecipientMaterial(
+  async #readRecipientMaterial(
     revisionId: string,
     signal: AbortSignal,
-    install?: RepositoryGitInstallationFence,
-    scope?: "github-installation",
-    mode: Authorization = null,
+    install: RepositoryGitInstallationFence,
+    scope: "github-installation" | undefined,
+    mode: Authorization,
   ): Promise<
     | ProtectedRepositoryGitMaterial
     | ProtectedGitHubInstallationMaterial
@@ -669,41 +661,41 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     const unprepared: RepositoryGitMaterialAbsence = Object.freeze({ absent: "unprepared" });
     try {
       signal.throwIfAborted();
+      if (!this.proxy || !install || install.revisionId !== revisionId) {
+        return unprepared;
+      }
+      const proxy = this.proxy;
       const result = await this.transaction(async (c) => {
-        const current = await lockLiveSession(c, "live_revision_id", revisionId, this.proxy);
+        const current = await lockLiveSession(c, "live_revision_id", revisionId, proxy);
         if (!current) {
           return current === null ? withdrawn : unprepared;
         }
-        if (this.proxy) {
-          // The session transaction holds the current route, approval and Agent. Only the
-          // conditional installer may receive a token; a changed fence or observation gets none.
-          if (
-            current.authorization !== mode ||
-            !install ||
-            install.revisionId !== revisionId ||
-            !(
-              await c.query(this.proxy.evidence.observed, [
-                revisionId,
-                install.fence,
-                JSON.stringify(install.observed),
-              ])
-            ).rowCount
-          ) {
-            return unprepared;
-          }
+        // The session transaction holds the current route, approval and Agent. Only the
+        // conditional installer may receive a token; a changed fence or observation gets none.
+        if (
+          current.authorization !== mode ||
+          !(
+            await c.query(proxy.evidence.observed, [
+              revisionId,
+              install.fence,
+              JSON.stringify(install.observed),
+            ])
+          ).rowCount
+        ) {
+          return unprepared;
         }
         const source = this.policy(current.session);
         if (!source) {
           // The registry no longer admits this binding.
           return withdrawn;
         }
-        // The compatibility material/online paths never receive the installation credential.
+        // Only the selected installation recipient may receive the installation credential.
         const wide = scope === "github-installation";
         const { grant } = source;
         if (
           wide !== (source.adoption === installationGitAdoption) ||
           wide !== (grant.profile === "github-installation") ||
-          (wide && (!install || !installationRecipient(this.proxy)))
+          (wide && !installationRecipient(proxy))
         ) {
           return unprepared;
         }
@@ -754,20 +746,6 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     }
   }
 
-  /** Only the protocol-1 broker trial may use a decision that omits the send-start deadline. */
-  async authorizeOpenShellRequest(
-    q: PreparedGitHubUseRequest,
-    installed: InstalledGitMaterial,
-    signal: AbortSignal,
-  ): Promise<boolean | "draft_already_opened" | "access_withdrawn"> {
-    if (this.proxy) {
-      return false;
-    }
-    return openShellOnlineGitDecision(
-      await this.authorizeProtectedRequest(q, installed, signal, null, sendPermit),
-    );
-  }
-
   /** Only a confirmed commit can return an allow or send permit. The authenticated recipient already
    * holds this exact material. The durable receipt records possible use, never delivery. */
   private async authorizeProtectedRequest<
@@ -780,7 +758,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     decide: (receipt: GitUse, deadline: string) => Allow,
   ): Promise<Allow | Extract<RepositoryGitSendDecision, { kind: "denied" }>> {
     const denied = { kind: "denied", reason: "unavailable" } as const;
-    if (!installed?.preparationAttemptId || !installed.materialVersion) {
+    if (
+      !this.proxy ||
+      !installed?.route ||
+      !installed.preparationAttemptId ||
+      !installed.materialVersion
+    ) {
       return denied;
     }
     // transaction() replaces every error with a redacted one, so the refusal class is noted here.
