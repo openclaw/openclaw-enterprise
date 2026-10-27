@@ -54,6 +54,8 @@ func TestAPIEgressRefusesUntrustedEndpointsOrExpandedPolicies(t *testing.T) {
 		{"broad existing network", apiEndpointFixture, strings.ReplaceAll(apiPolicyFixture, "172.22.0.2/32", "172.22.0.0/16")},
 		{"peer with exception", apiEndpointFixture, strings.ReplaceAll(apiPolicyFixture, `"cidr":"172.22.0.2/32"`, `"cidr":"172.22.0.2/32","except":["172.22.0.2/32"]`)},
 		{"mixed API port rule", apiEndpointFixture, strings.ReplaceAll(apiPolicyFixture, `{"port":6443,"protocol":"TCP"}`, `{"port":6443,"protocol":"TCP"},{"port":443,"protocol":"TCP"}`)},
+		{"API range", apiEndpointFixture, strings.ReplaceAll(apiPolicyFixture, `"port":6443`, `"port":6443,"endPort":6500`)},
+		{"range overlaps API", apiEndpointFixture, strings.ReplaceAll(apiPolicyFixture, `"port":5432`, `"port":5432,"endPort":6500`)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plan, err := planAPIEgress([]byte(test.endpoint), []byte(test.policy), map[string]bool{"172.22.0.3": true}, apiEgressTestOptions())

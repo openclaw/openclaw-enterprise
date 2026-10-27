@@ -232,6 +232,7 @@ func planAPIEgress(endpointJSON, policyJSON []byte, serverIPs map[string]bool, o
 				Ports []struct {
 					Protocol string
 					Port     int
+					EndPort  *int
 				}
 			}
 		}
@@ -255,6 +256,9 @@ func planAPIEgress(endpointJSON, policyJSON []byte, serverIPs map[string]bool, o
 	index := -1
 	for i, rule := range policy.Spec.Egress {
 		for _, port := range rule.Ports {
+			if port.EndPort != nil && port.Port <= opts.APIPort && *port.EndPort >= opts.APIPort {
+				return plan, fmt.Errorf("API port occurs in a ranged egress rule")
+			}
 			if port.Port == opts.APIPort && len(rule.Ports) != 1 {
 				return plan, fmt.Errorf("API port occurs in a combined egress rule")
 			}
