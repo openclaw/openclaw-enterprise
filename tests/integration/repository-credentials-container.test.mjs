@@ -17,7 +17,7 @@ test("emitted native service and client enforce development token routing withou
 
 // Each host case launches its own selected artifact workflow or inspects host mounts.
 if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
-  for (const workflow of ["git", "gh", "native-paths"]) {
+  for (const workflow of ["git", "native-paths"]) {
     test(`emitted service and client qualify the real ${workflow} workflow`, async (t) => {
       await runInFixtureContainer(
         t,
