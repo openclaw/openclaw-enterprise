@@ -24,9 +24,7 @@ must serialize to less than 1 MiB; a save over that is refused with
 `400 INVALID_REQUEST` and a message naming the limit. Configuration POST/PATCH
 bodies allow six times 1 MiB plus 32 KiB (6.2 MiB), room for the values and the
 envelope in six-byte JSON escapes; a caller without the create or update grant
-is refused before the body is read. Reviewed
-bundled and installed Configuration Drivers are available in development and
-production.
+is refused before the body is read.
 
 Console presentation uses a separate API-only [theme bundle](console/theming.md),
 selected with `OCC_CONSOLE_THEME_DIR`. It does not change persisted Installation
@@ -293,12 +291,12 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
 ## Gateway tool policy
 
 Dedicated OpenClaw on Kubernetes and Codex on Kubernetes or Docker apply the
-Gateway policy after plugin grants. An embedded OpenClaw Gateway applies a
-policy only when the Configuration sets one. Model access requires concrete names in
+Gateway policy after plugin grants; embedded OpenClaw applies a policy only when the
+Configuration sets one. Model access requires concrete names in
 `tools.gatewayPolicy.allow`. Plugin approval and `tools.alsoAllow` alone grant
-no additional model tools.
+no model tools.
 
-Trusted Configuration authors can select reviewed task tools:
+Select reviewed task tools, for example:
 
 ```json
 {
@@ -316,22 +314,16 @@ Enable Diffs as a plugin. Omitting the policy uses the
 empty `allow` withholds Gateway tools. Action-bearing tools, such as `dashboard`,
 require explicit allowed actions. Baseline actions can only narrow; administrative tools and
 additional baseline actions are rejected. Profiles, denies and Codex dynamic-tool
-exclusions still apply.
-
-On Kubernetes Compute, Configuration save and Agent save refuse a policy that
-breaks these rules for every topology, with the message deployment gives. A
-Configuration saved before this check still reads, but Agent save and deployment
-refuse it: correct `tools.gatewayPolicy` and save the Configuration again.
+exclusions still apply. On Kubernetes, every save refuses such a policy; correct
+an older saved one before deploying.
 
 Compute enforces `automations.scope: "caller"` and `allowCommandJobs: false` under
 `tools.gatewayPolicy`, plus `agents.defaults.modelSelectionScope: "session"` and
-`cron.triggers.enabled: false`. Human Gateway administration and Codex native
-tools retain their existing authorization.
+`cron.triggers.enabled: false`.
 
-Deploy a revision to change the saved policy after old work ends. With Gateway managed mode off, an authorized Gateway admin
-can widen the local allowlist for subsequent turns through a native restart.
-Redeploying with managed mode on restores the revision's policy. The
-[deployment flow](../flows/agent-plugins.md#4-prepare-native-runtime-state-and-hand-off-readiness)
+Deploy a revision to change the saved policy after old work ends.
+[Gateway managed mode](agents/gateway-managed-mode.md) governs local allowlist
+changes. The [deployment flow](../flows/agent-plugins.md#4-prepare-native-runtime-state-and-hand-off-readiness)
 details compatibility checks.
 
 ## Related
