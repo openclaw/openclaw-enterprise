@@ -5,7 +5,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  Backend,
+  ComputeRevisionContext,
+} from "../../packages/contracts/src/index.ts";
 import { exerciseInstallationRequests } from "../helpers/openshell-installation-github-requests.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import {
@@ -32,7 +36,11 @@ import {
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
 import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { options } from "../helpers/kubernetes-routed-scenarios.mjs";
-import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  openShellProviderName,
+  type OpenShellGateway,
+} from "../../apps/controller/src/backends/openshell.ts";
+import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   KubernetesComputeDriver,
@@ -94,20 +102,16 @@ test(
       },
     );
     const gatewayId = CREDENTIAL_GATEWAY_FIXTURE_ID;
+    const modelBackend: Backend<OpenShellGateway> = {
+      id: "fixture-gateway",
+      drivers: { credential_gateway: gatewayId },
+      client: { placement: () => undefined, clientForNamespace: () => client },
+    } as never;
     const gateway = new OpenShellCredentialGatewayDriver(
       { binaries: ["/usr/bin/codex"] },
-      {
-        id: gatewayId,
-        backend: {
-          id: "fixture-gateway",
-          drivers: { credential_gateway: gatewayId },
-          client: {
-            placement: () => undefined,
-            clientForNamespace: () => client,
-          },
-        } as never,
-      },
+      { id: gatewayId, backend: modelBackend },
     );
+    const modelAttachments = openShellCredentialAttachments(modelBackend.client, gateway.profiles);
     const { f, key, driver, revision, predecessor, registry, owner, approval, credentials } =
       await standingExecutionFixture(
         t,
@@ -261,7 +265,7 @@ test(
           const resolved = custody.harnessAuth!;
           assert.equal(resolved.method, "credential_source");
           const source = resolved.source;
-          const attachments = await gateway.attachForRevision({
+          const attachments = await modelAttachments.prepare({
             revision: r,
             sources: [source],
             namespace: { ...f.namespace, status: "ready", name: workspace },

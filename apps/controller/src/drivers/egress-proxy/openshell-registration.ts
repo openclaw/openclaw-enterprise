@@ -40,6 +40,7 @@ export function createOpenShellCapabilities(input: {
     selection: OpenShellSandboxDriverSelection,
   ) => SandboxDriver;
   readonly backend: Backend<OpenShellGateway>;
+  readonly credentialProfiles?: OpenShellSandboxDriverSelection["credentialProfiles"];
   readonly operatorOwnedKubernetesResources: boolean;
   readonly repository?: {
     readonly configuration: OpenShellGitRuntimeConfiguration | undefined;
@@ -70,6 +71,7 @@ export function createOpenShellCapabilities(input: {
       id: input.sandbox.id,
       implementation: input.sandbox.implementation,
       backend: input.backend,
+      ...(input.credentialProfiles && { credentialProfiles: input.credentialProfiles }),
       operatorOwnedKubernetesResources: input.operatorOwnedKubernetesResources,
       ...(git && { openShellGit: git }),
     },

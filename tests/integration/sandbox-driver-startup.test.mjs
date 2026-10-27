@@ -18,6 +18,7 @@ import {
   openShellProviderName,
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   createKubernetesComputeDriver,
@@ -621,7 +622,11 @@ test("startup composes both OpenShell members from one Backend", async (t) => {
   // An explicit hard_requirement composes like the omitted default above.
   const configuration = sandboxInstallation();
   configuration.drivers.sandbox.configuration.policy.landlockCompatibility = "hard_requirement";
-  const createdDriver = await loadInstallationFile(t, configuration);
+  const store = credentialGatewayOverProviders();
+  const createdDriver = await loadInstallationFile(t, configuration, {
+    createOpenShellBackend: (definition) =>
+      createOpenShellBackend(definition, { gatewayClient: store.client }),
+  });
 
   assert.ok(createdDriver.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
   assert.equal(createdDriver.credentialGatewayDriver.id, "openshell-credentials");
@@ -630,6 +635,15 @@ test("startup composes both OpenShell members from one Backend", async (t) => {
     sandbox: createdDriver.sandboxDriver.id,
     credential_gateway: createdDriver.credentialGatewayDriver.id,
   });
+  const registration = store.context("cs_installed-model");
+  registration.source.driverId = createdDriver.credentialGatewayDriver.id;
+  await createdDriver.credentialGatewayDriver.registerSource(registration, store.input());
+  const attachments = await createdDriver.sandboxDriver.credentialAttachments.prepare(
+    store.revisionContext([registration.source]),
+  );
+  assert.deepEqual(attachments, [
+    { sourceId: registration.source.id, ref: openShellProviderName(registration.source.id) },
+  ]);
 });
 
 test("startup pairs the Credential Refresh Driver with its gateway on one OpenShell Backend", async (t) => {
@@ -669,7 +683,8 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
   const withoutRefresh = sandboxInstallation();
   withoutRefresh.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
   const staticOnly = await loadInstallationFile(t, withoutRefresh);
-  assert.equal(staticOnly.credentialRefreshDriver, undefined);
+  assert.equal(staticOnly.installation.drivers.credential_refresh, undefined);
+  assert.equal(staticOnly.credentialRefreshDriver.sources, undefined);
   assert.deepEqual(
     (await staticOnly.credentialGatewayDriver.listSourceTypes({ signal })).map(({ type }) => type),
     ["openai", "codex-pat", "bearer-token"],
@@ -4271,17 +4286,18 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
     },
   };
   // Another controller configuration over the same OpenShell store, as after a config change.
-  const driverWith = ({ binaries = ["/usr/local/bin/codex"], toolBinaries } = {}) =>
-    new OpenShellCredentialGatewayDriver(
+  const backend = {
+    drivers: { credential_gateway: "credential-gateway-openshell" },
+    client: { clientForNamespace: () => client, placement: () => undefined },
+  };
+  const driversWith = ({ binaries = ["/usr/local/bin/codex"], toolBinaries } = {}) => {
+    const driver = new OpenShellCredentialGatewayDriver(
       { binaries, ...(toolBinaries === undefined ? {} : { toolBinaries }) },
-      {
-        backend: {
-          drivers: { credential_gateway: "credential-gateway-openshell" },
-          client: { clientForNamespace: () => client, placement: () => undefined },
-        },
-      },
+      { backend },
     );
-  const driver = driverWith({ toolBinaries });
+    return { driver, attachments: openShellCredentialAttachments(backend.client, driver.profiles) };
+  };
+  const { driver, attachments } = driversWith({ toolBinaries });
   const namespace = { id: "ns_00000000-0000-4000-8000-0000000000aa", name: "placed-tenant" };
   const signal = new AbortController().signal;
   const source = (id, namespaceId = namespace.id) => ({
@@ -4299,7 +4315,8 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
     client,
     deletedProfiles,
     driver,
-    driverWith,
+    driversWith,
+    attachments,
     profileWrites,
     profiles,
     providers,
@@ -4390,8 +4407,9 @@ test("each Codex PAT source gets its own provider profile, stable across replays
   assert.deepEqual(profileWrites, []);
 });
 
-test("the OpenShell Credential Gateway acts only on its own source's provider", async () => {
+test("OpenShell source and Sandbox operations act only on the source's own provider", async () => {
   const {
+    attachments,
     calls,
     context,
     driver,
@@ -4436,7 +4454,7 @@ test("the OpenShell Credential Gateway acts only on its own source's provider", 
   assert.equal((await driver.sourceStatus(context(owner))).state, "failed");
   await assert.rejects(driver.removeSource(context(owner)), ScopeViolationError);
   await assert.rejects(
-    driver.attachForRevision(revisionContext([source(owner)])),
+    attachments.prepare(revisionContext([source(owner)])),
     /provider for a bound credential source is unavailable/,
   );
   // Ownership refusal happens before any provider or profile mutation.
@@ -4456,32 +4474,32 @@ test("OpenShell preserves the main-era owned profile lifecycle without a migrati
   const original = structuredClone(f.profiles.get(provider.name));
   const otherProfile = structuredClone(f.profiles.get(otherProvider.name));
   f.profileWrites.length = 0;
-  const restarted = f.driverWith();
-  await ready(restarted.sourceStatus(context));
-  assert.deepEqual(await restarted.attachForRevision(f.revisionContext([context.source])), [
+  const restarted = f.driversWith();
+  await ready(restarted.driver.sourceStatus(context));
+  assert.deepEqual(await restarted.attachments.prepare(f.revisionContext([context.source])), [
     { sourceId: context.source.id, ref: provider.name },
   ]);
-  await ready(restarted.updateSource(context, f.input("rotated-key")));
-  await ready(f.driverWith().registerSource(context, f.input("replay-key")));
+  await ready(restarted.driver.updateSource(context, f.input("rotated-key")));
+  await ready(f.driversWith().driver.registerSource(context, f.input("replay-key")));
   assert.equal(f.providers.get(provider.name).credentials.OPENAI_API_KEY, "rotated-key");
   assert.deepEqual(f.profiles.get(provider.name), original);
   assert.deepEqual(f.profileWrites, [], "unchanged main-era profiles need no marker-only write");
 
   // A normal binary-policy change reconciles the owned profile using its resource version.
-  const narrowed = f.driverWith({ binaries: ["/opt/codex"] });
-  await narrowed.attachForRevision(f.revisionContext([context.source]));
+  const narrowed = f.driversWith({ binaries: ["/opt/codex"] });
+  await narrowed.attachments.prepare(f.revisionContext([context.source]));
   assert.deepEqual(f.profiles.get(provider.name).binaries, ["/opt/codex"]);
   assert.notEqual(f.profiles.get(provider.name).resourceVersion, original.resourceVersion);
   assert.deepEqual(f.profiles.get(otherProvider.name), otherProfile);
   assert.deepEqual(f.providers.get(otherProvider.name), otherProvider);
-  await narrowed.removeSource(context);
+  await narrowed.driver.removeSource(context);
   assert.equal(f.providers.has(provider.name), false);
   assert.equal(f.profiles.has(provider.name), false);
   assert.deepEqual(f.profiles.get(otherProvider.name), otherProfile);
 
   // Deletion also works directly on an unmarked profile, without a prior reconciliation.
-  await f.driverWith().removeSource(otherContext);
-  await f.driverWith().removeSource(otherContext);
+  await f.driversWith().driver.removeSource(otherContext);
+  await f.driversWith().driver.removeSource(otherContext);
   assert.equal(f.providers.size, 0);
   assert.equal(f.profiles.size, 0);
 });
@@ -4504,20 +4522,22 @@ test("OpenShell main-era interrupted registration survives restart without repla
   [...f.profiles.keys()].forEach(f.unmark);
   f.client.createProvider = create;
   f.profileWrites.length = 0;
-  const restarted = f.driverWith();
-  await ready(restarted.registerSource(context, f.input("first-key")));
-  await ready(restarted.registerSource(context, f.input("retry-key")));
+  const restarted = f.driversWith();
+  await ready(restarted.driver.registerSource(context, f.input("first-key")));
+  await ready(restarted.driver.registerSource(context, f.input("retry-key")));
   assert.deepEqual(f.profileWrites, []);
   const [provider] = f.providers.values();
   assert.equal(provider.credentials.OPENAI_API_KEY, "first-key");
   // Owned reconciliation still applies new binary configuration through registration.
-  await f.driverWith({ binaries: ["/opt/codex"] }).registerSource(context, f.input("retry-key"));
+  await f
+    .driversWith({ binaries: ["/opt/codex"] })
+    .driver.registerSource(context, f.input("retry-key"));
   assert.deepEqual(f.profiles.get(provider.name).binaries, ["/opt/codex"]);
   assert.equal(f.providers.get(provider.name).credentials.OPENAI_API_KEY, "first-key");
   // Legacy cleanup can remove this orphan, and repeated deletion stays idempotent.
   f.providers.delete(provider.name);
-  await restarted.removeSource(context);
-  await restarted.removeSource(context);
+  await restarted.driver.removeSource(context);
+  await restarted.driver.removeSource(context);
   assert.equal(f.profiles.size, 0);
 });
 
@@ -4540,7 +4560,7 @@ test("OpenShell main-era cleanup resumes after provider deletion without losing 
   assert.equal(f.providers.has(provider.name), false);
   assert.deepEqual(f.profiles.get(provider.name), unmarked);
   f.client.deleteProviderProfile = deleteProfile;
-  await f.driverWith().removeSource(context);
+  await f.driversWith().driver.removeSource(context);
   assert.equal(f.profiles.has(provider.name), false);
   assert.deepEqual(f.providers.get(survivor.name), survivor);
   assert.deepEqual(f.profiles.get(survivor.name), survivorProfile);
@@ -4555,7 +4575,7 @@ test("OpenShell concurrent registrations preserve the first provider's credentia
   f.client.getProviderProfile = async (...args) => {
     const stale = await read(...args);
     f.client.getProviderProfile = read;
-    await f.driverWith().registerSource(context, f.input("winner-key"));
+    await f.driversWith().driver.registerSource(context, f.input("winner-key"));
     return stale;
   };
   await ready(f.driver.registerSource(context, f.input("retry-key")));
@@ -4600,19 +4620,20 @@ test("OpenShell registration does not adopt an unknown provider create outcome",
   assert.equal(f.calls.length, 1);
 });
 
-test("the OpenShell Credential Gateway never attaches a source of another Namespace", async () => {
-  const { context, driver, input, revisionContext, source } = credentialGatewayOverProviders();
+test("the OpenShell Sandbox never attaches a source of another Namespace", async () => {
+  const { attachments, context, driver, input, revisionContext, source } =
+    credentialGatewayOverProviders();
   const owner = "cs_00000000-0000-4000-8000-0000000000c1";
   await driver.registerSource(context(owner), input());
   // The provider is genuinely owned, so only the Namespace check can refuse.
   const foreign = source(owner, "ns_00000000-0000-4000-8000-0000000000ff");
   await assert.rejects(
-    driver.attachForRevision(revisionContext([foreign])),
+    attachments.prepare(revisionContext([foreign])),
     (error) =>
       error instanceof ScopeViolationError &&
       error.message === "The credential source is not owned by this gateway.",
   );
-  assert.equal((await driver.attachForRevision(revisionContext([source(owner)]))).length, 1);
+  assert.equal((await attachments.prepare(revisionContext([source(owner)]))).length, 1);
 });
 
 test("the OpenShell Credential Gateway refuses an empty secret before creating a provider", async () => {
@@ -4671,7 +4692,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
     },
   );
 
-  const { calls, context, deletedProfiles, driver, input, profiles, providers } =
+  const { attachments, calls, context, deletedProfiles, driver, input, profiles, providers } =
     credentialGatewayOverProviders({ toolBinaries: ["/usr/bin/curl"] });
   assert.deepEqual(
     (await driver.listSourceTypes({})).map(({ type }) => type),
@@ -4753,7 +4774,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   const { namespace, signal } = context(first);
   const revision = { harness: { id: "codex", mode: "dedicated" } };
   await assert.rejects(
-    driver.attachForRevision({
+    attachments.prepare({
       namespace,
       revision,
       sources: [bearer(first), bearer(second)],
@@ -4768,8 +4789,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
     },
   );
   assert.equal(
-    (await driver.attachForRevision({ namespace, revision, sources: [bearer(first)], signal }))
-      .length,
+    (await attachments.prepare({ namespace, revision, sources: [bearer(first)], signal })).length,
     1,
   );
   // A provider of another type under this source's name and labels is not this source's.
@@ -4831,7 +4851,7 @@ test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on 
   const gateway = credentialGatewayOverProviders({
     toolBinaries: ["/usr/bin/curl", "/usr/bin/python3"],
   });
-  const { driver, driverWith, profileWrites, profiles } = gateway;
+  const { driver, driversWith, profileWrites, profiles } = gateway;
   const { bearer, input, providerOf, register, revisionContext, sourceContext } =
     bearerTokenSources(gateway);
   const updated = bearer("cs_00000000-0000-4000-8000-000000000101", "UPDATED_TOKEN");
@@ -4843,18 +4863,18 @@ test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on 
   assert.deepEqual(profileOf(deployed).binaries, ["/usr/bin/curl", "/usr/bin/python3"]);
 
   // The operator drops python3. Status reads never write the profile.
-  const narrowed = driverWith({ toolBinaries: ["/usr/bin/curl"] });
+  const narrowed = driversWith({ toolBinaries: ["/usr/bin/curl"] });
   profileWrites.length = 0;
-  assert.equal((await narrowed.sourceStatus(sourceContext(updated))).state, "ready");
+  assert.equal((await narrowed.driver.sourceStatus(sourceContext(updated))).state, "ready");
   assert.deepEqual(profileWrites, []);
 
   // Updating a source's token rewrites its profile to the current list.
-  await ready(narrowed.updateSource(sourceContext(updated), input(updated, "n3w")));
+  await ready(narrowed.driver.updateSource(sourceContext(updated), input(updated, "n3w")));
   assert.deepEqual(profileOf(updated).binaries, ["/usr/bin/curl"]);
   assert.deepEqual(profileOf(deployed).binaries, ["/usr/bin/curl", "/usr/bin/python3"]);
 
   // Deploying a revision rewrites each attached source's profile.
-  assert.equal((await narrowed.attachForRevision(revisionContext([deployed]))).length, 1);
+  assert.equal((await narrowed.attachments.prepare(revisionContext([deployed]))).length, 1);
   assert.deepEqual(profileOf(deployed).binaries, ["/usr/bin/curl"]);
   assert.deepEqual(
     profileWrites.map(([operation]) => operation),
@@ -4863,89 +4883,92 @@ test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on 
 
   // An unchanged configuration writes nothing.
   profileWrites.length = 0;
-  await narrowed.updateSource(sourceContext(updated), input(updated));
-  await narrowed.attachForRevision(revisionContext([updated, deployed]));
+  await narrowed.driver.updateSource(sourceContext(updated), input(updated));
+  await narrowed.attachments.prepare(revisionContext([updated, deployed]));
   assert.deepEqual(profileWrites, []);
 
   // A model source's profile follows the Harness binaries the same way.
   const model = "cs_00000000-0000-4000-8000-000000000103";
-  await narrowed.registerSource(gateway.context(model), gateway.input());
-  const retargeted = driverWith({
+  await narrowed.driver.registerSource(gateway.context(model), gateway.input());
+  const retargeted = driversWith({
     binaries: ["/opt/codex/bin/codex"],
     toolBinaries: ["/usr/bin/curl"],
   });
-  await retargeted.attachForRevision(revisionContext([gateway.source(model)]));
+  await retargeted.attachments.prepare(revisionContext([gateway.source(model)]));
   assert.deepEqual(profileOf(gateway.source(model)).binaries, ["/opt/codex/bin/codex"]);
 });
 
 test("an OpenShell profile write that lost a race to the same profile still attaches", async () => {
   const gateway = credentialGatewayOverProviders({ toolBinaries: ["/usr/bin/curl"] });
-  const { client, driverWith, profiles } = gateway;
+  const { client, driversWith, profiles } = gateway;
   const { bearer, providerOf, register, revisionContext } = bearerTokenSources(gateway);
   const source = bearer("cs_00000000-0000-4000-8000-000000000111");
   await register(gateway.driver, source);
   const profileId = providerOf(source).type;
   const read = client.getProviderProfile;
-  const narrowed = driverWith({ toolBinaries: ["/usr/bin/wget"] });
-  const other = driverWith({ toolBinaries: ["/usr/bin/curl", "/usr/bin/wget"] });
+  const narrowed = driversWith({ toolBinaries: ["/usr/bin/wget"] });
+  const other = driversWith({ toolBinaries: ["/usr/bin/curl", "/usr/bin/wget"] });
 
   // Another deployment with the same configuration writes between this read and write: the
   // stale version is refused, and the stored profile is already the one this writer wanted.
   client.getProviderProfile = async (workspace, id) => {
     const stale = await read(workspace, id);
     client.getProviderProfile = read;
-    await narrowed.attachForRevision(revisionContext([source]));
+    await narrowed.attachments.prepare(revisionContext([source]));
     return stale;
   };
-  assert.equal((await narrowed.attachForRevision(revisionContext([source]))).length, 1);
+  assert.equal((await narrowed.attachments.prepare(revisionContext([source]))).length, 1);
   assert.deepEqual(profiles.get(profileId).binaries, ["/usr/bin/wget"]);
 
   // A concurrent writer that stored another profile is not mistaken for success.
-  const curlOnly = driverWith({ toolBinaries: ["/usr/bin/curl"] });
+  const curlOnly = driversWith({ toolBinaries: ["/usr/bin/curl"] });
   client.getProviderProfile = async (workspace, id) => {
     const stale = await read(workspace, id);
     client.getProviderProfile = read;
-    await curlOnly.attachForRevision(revisionContext([source]));
+    await curlOnly.attachments.prepare(revisionContext([source]));
     return stale;
   };
-  await assert.rejects(other.attachForRevision(revisionContext([source])), /modified concurrently/);
+  await assert.rejects(
+    other.attachments.prepare(revisionContext([source])),
+    /modified concurrently/,
+  );
   assert.deepEqual(profiles.get(profileId).binaries, ["/usr/bin/curl"]);
 });
 
 test("an OpenShell bearer-token source stays deletable after toolBinaries is removed", async () => {
   const gateway = credentialGatewayOverProviders({ toolBinaries: ["/usr/bin/curl"] });
-  const { deletedProfiles, driverWith, profiles } = gateway;
+  const { deletedProfiles, driversWith, profiles } = gateway;
   const { bearer, input, providerOf, register, revisionContext, sourceContext } =
     bearerTokenSources(gateway);
   const source = bearer("cs_00000000-0000-4000-8000-000000000121");
   await register(gateway.driver, source);
   const profileId = providerOf(source).type;
 
-  const modelOnly = driverWith();
+  const modelOnly = driversWith();
   // The type is gone for new registrations, updates and deployments.
   await assert.rejects(
-    modelOnly.registerSource(
+    modelOnly.driver.registerSource(
       sourceContext(bearer("cs_00000000-0000-4000-8000-000000000122")),
       input(source),
     ),
     /does not support this type/,
   );
   await assert.rejects(
-    modelOnly.updateSource(sourceContext(source), input(source)),
+    modelOnly.driver.updateSource(sourceContext(source), input(source)),
     /does not support this type/,
   );
   await assert.rejects(
-    modelOnly.attachForRevision(revisionContext([source])),
+    modelOnly.attachments.prepare(revisionContext([source])),
     /does not support this type/,
   );
   // The existing source still reports its state and can be removed with its own profile.
-  assert.equal((await modelOnly.sourceStatus(sourceContext(source))).state, "ready");
-  await modelOnly.removeSource(sourceContext(source));
+  assert.equal((await modelOnly.driver.sourceStatus(sourceContext(source))).state, "ready");
+  await modelOnly.driver.removeSource(sourceContext(source));
   assert.equal(providerOf(source), undefined);
   assert.deepEqual(deletedProfiles, [profileId]);
   assert.equal(profiles.has(profileId), false);
   // Removal is idempotent once the provider is gone.
-  await modelOnly.removeSource(sourceContext(source));
+  await modelOnly.driver.removeSource(sourceContext(source));
 });
 
 test("OpenShell observes the Codex Harness through its exact bearer-passthrough service", async () => {

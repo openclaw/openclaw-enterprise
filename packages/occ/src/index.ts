@@ -7568,14 +7568,17 @@ export class OpenClawController {
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
-    if (!this.selections.has("credential_gateway") || !this.selections.has("credential_refresh")) {
+    const refresh = this.credentialRefreshDriver();
+    if (
+      !this.selections.has("credential_gateway") ||
+      !(refresh?.sources || refresh?.preparedTokens)
+    ) {
       throw new NotImplementedError(
         "agent_device_authorization",
         "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
       );
     }
     const gateway = this.credentialGatewayDriver();
-    const refresh = this.credentialRefreshDriver();
     const secrets = this.secretDriver();
     if (
       !refresh?.sources?.startDeviceAuthorization ||
@@ -8184,13 +8187,12 @@ export class OpenClawController {
     };
     let outcome: { value: T } | { error: PluginDiscoveryError } | { validationError: unknown };
     if (credential.credentialSource !== undefined) {
-      const { gateway, context } = await this.authorizedCredentialSource(
+      const { context } = await this.authorizedCredentialSource(
         principalId,
         namespaceId,
         credential.credentialSource.id,
       );
-      // A retained source can still be read after its Installation disables new enrollments.
-      const reader = this.credentialRefreshDriver()?.sourceTokens ?? gateway.sourceTokens;
+      const reader = this.credentialRefreshDriver()?.sourceTokens;
       if (!reader) {
         throw new NotImplementedError(
           "agent_plugins.discovery",

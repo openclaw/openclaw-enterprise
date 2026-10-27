@@ -150,9 +150,6 @@ function createTestCredentialGateway(options = {}) {
       }
       stored.delete(context.source.id);
     },
-    async attachForRevision(context) {
-      return context.sources.map((source) => ({ sourceId: source.id, ref: `ref-${source.id}` }));
-    },
   };
 }
 
@@ -498,24 +495,22 @@ test("a refresh type needs a selected Credential Refresh Driver before any gatew
   }
 });
 
-test("a trusted source token reader must be callable and cannot register a refresh Driver on its own", () => {
+test("a Token Service can supply only a trusted reader and must implement every facet it supplies", () => {
   const controller = new OpenClawController(installation);
   const refresh = createTestCredentialRefresh([]);
-  for (const driver of [createTestCredentialGateway(), refresh]) {
-    assert.throws(
-      () => controller.registerDriver({ ...driver, sourceTokens: {} }),
-      DriverSelectionError,
-    );
-  }
   assert.throws(
-    () =>
-      controller.registerDriver({
-        ...refresh,
-        sources: undefined,
-        sourceTokens: { withSourceToken: assert.fail },
-      }),
+    () => controller.registerDriver({ ...refresh, sourceTokens: {} }),
     DriverSelectionError,
   );
+  assert.throws(
+    () => controller.registerDriver({ ...refresh, sources: undefined }),
+    DriverSelectionError,
+  );
+  controller.registerDriver({
+    ...refresh,
+    sources: undefined,
+    sourceTokens: { withSourceToken: assert.fail },
+  });
 });
 
 test("an OpenShell Backend names its refresh Driver, and the selected one must be a member", async () => {

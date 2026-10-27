@@ -149,7 +149,7 @@ projects `models.providers.openai` and an environment SecretRef. It retains
 normalized model HTTPS endpoints (port 443, paths ending in `/v1`), using the first
 as provider default. Custom endpoints require `credential_source`; Secret-backed
 keys stay OpenAI-only. Invalid URLs fail admission.
-`apps/controller/src/drivers/credential-gateway/openshell.ts:attachForRevision`
+`apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts`
 checks every model against the immutable source endpoint before attachment.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
 writes capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`;

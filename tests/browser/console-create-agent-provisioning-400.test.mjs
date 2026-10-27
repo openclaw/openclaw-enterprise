@@ -140,9 +140,6 @@ async function modelSourceFixture(t, { compute, ...options } = {}, gatewayMethod
     async updateSource() {
       assert.fail("these cases do not update a source");
     },
-    async attachForRevision() {
-      assert.fail("these cases do not deploy a Sandbox");
-    },
     async removeSource(context) {
       removals.push(context.source.id);
     },

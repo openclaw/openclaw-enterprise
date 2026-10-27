@@ -6975,7 +6975,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         const attachments =
           credentialContext === undefined
             ? []
-            : await this.requireCredentialGateway().attachForRevision(credentialContext);
+            : await this.requireCredentialAttachments(sandboxDriver).prepare(credentialContext);
         const sourceIds = new Set(credentialContext?.sources.map(({ id }) => id));
         const attachedSourceIds = new Set(attachments.map(({ sourceId }) => sourceId));
         if (
@@ -6984,7 +6984,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           attachments.some(({ sourceId }) => !sourceIds.has(sourceId))
         ) {
           throw new ConfigurationFailure(
-            "The Credential Gateway must attach each bound source exactly once.",
+            "The Sandbox Driver must attach each bound source exactly once.",
           );
         }
         const currentEgressInstallation = revision.egressPlan?.policyReductionVersion
@@ -11101,7 +11101,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private requireCredentialAttachments(sandbox: SandboxDriver) {
     if (!sandbox.credentialAttachments) {
       throw new ConfigurationFailure(
-        "The selected Sandbox Driver cannot observe or withdraw credential attachments.",
+        "The selected Sandbox Driver does not support credential attachments.",
       );
     }
     return sandbox.credentialAttachments;
@@ -11116,7 +11116,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return this.credentialGatewayDriver;
   }
 
-  /** Only the trusted Gateway attachment supplies external account metadata and placeholders. */
+  /** Only the trusted Sandbox attachment supplies external account metadata and placeholders. */
   private credentialSourceEnvironment(
     revision: AgentRevision,
     attachments: readonly CredentialSourceAttachment[],
@@ -11127,7 +11127,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sourceId = revision.harnessAuth.sourceId;
     const attachment = attachments.find((entry) => entry.sourceId === sourceId);
-    // Protected sources belong to the Credential Proxy, never the legacy Gateway.
+    // The Credential Proxy delivers protected sources separately from Sandbox attachments.
     if (source?.egress !== undefined) {
       if (
         source.id !== sourceId ||

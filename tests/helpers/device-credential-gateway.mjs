@@ -60,9 +60,6 @@ export function createDeviceCredentialDrivers({
     async updateSource() {
       assert.fail("device-login scenarios do not update source inputs");
     },
-    async attachForRevision() {
-      assert.fail("this fixture proves API admission, not runtime attachment");
-    },
   };
   const refresh = {
     id: "device-credential-refresh",

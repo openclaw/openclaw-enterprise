@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
@@ -226,6 +227,7 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
   };
   return {
     driver,
+    attachments: openShellCredentialAttachments(backend.client, driver.profiles),
     refresh,
     providers,
     profiles,
@@ -277,7 +279,7 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
     status: "ready",
   });
   assert.deepEqual(f.operations, ["configure-refresh", "store-metadata", "rotate", "read-usable"]);
-  const [attachment] = await f.driver.attachForRevision({
+  const [attachment] = await f.attachments.prepare({
     namespace: owner.namespace,
     sources: [owner.source],
     signal: owner.signal,

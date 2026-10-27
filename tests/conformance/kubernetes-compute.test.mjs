@@ -1660,6 +1660,9 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     state: "ready",
   };
   sandboxDriver.credentialAttachments = {
+    async prepare() {
+      return [{ sourceId: source.id, ref: "native-provider" }];
+    },
     async status() {
       return [{ sourceId: source.id, state: "ready" }];
     },
@@ -1671,9 +1674,6 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
       capability: "credential_gateway",
       async listSourceTypes() {
         return [sourceType];
-      },
-      async attachForRevision() {
-        return [{ sourceId: source.id, ref: "native-provider" }];
       },
     },
     context: { harnessAuth: { ...snapshot, source }, credentialSources: [source] },
@@ -16373,6 +16373,11 @@ test("stop and retirement end credential-source access through Sandbox cleanup",
   let podObservations = 0;
   const sandboxDriver = {
     id: "sandbox-credential-stop",
+    credentialAttachments: {
+      async prepare() {
+        assert.fail("stop and retirement must not prepare Sandbox credential attachments");
+      },
+    },
     implementation: "test/provider-owned",
     capability: "sandbox",
     facets: ["networking", "filesystem", "process"],
@@ -16394,7 +16399,6 @@ test("stop and retirement end credential-source access through Sandbox cleanup",
     id: "credential-gateway-stop",
     implementation: "test/credential-gateway",
     capability: "credential_gateway",
-    attachForRevision: unexpected("attachForRevision"),
     removeSource: unexpected("removeSource"),
   };
   const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
@@ -18158,13 +18162,15 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
         },
       ];
     },
-    async attachForRevision(context) {
-      assert.deepEqual(context.sources, [source]);
-      return structuredClone(attachments);
-    },
   };
   const sandboxDriver = {
     id: "external-sandbox",
+    credentialAttachments: {
+      async prepare(context) {
+        assert.deepEqual(context.sources, [source]);
+        return structuredClone(attachments);
+      },
+    },
     implementation: "openshell",
     // This provider fixture owns private initialization; the Sandbox startup suite
     // proves execution. This case verifies Compute passes only its delivery identity.

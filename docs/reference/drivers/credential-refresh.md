@@ -23,13 +23,13 @@ that specify only `id` and `configuration` still select OpenShell. Its OAuth
 interface requires membership in the Credential Gateway’s OpenShell Backend.
 Existing GitHub preparation settings select the native service when the
 Installation omits `credential_refresh`. An OpenShell selection can also serve
-configured GitHub preparation. Static credentials alone require no Token Service.
+configured GitHub preparation. Static credentials require no issuer configuration.
 [Driver selection](selection.md#backend-membership)
 
 ## Interface
 
 The [Driver contract](../../../packages/contracts/src/index.ts) requires at
-least one of `sources` or `preparedTokens`. A Driver that supplies `sources`
+least one of `sources`, `sourceTokens`, or `preparedTokens`. A Driver that supplies `sources`
 implements these four operations.
 
 | Operation          | Inputs and preconditions                                                                       | Result or side effects                                                                          | Failure or absence                                                              |
@@ -50,11 +50,11 @@ Device authorization uses its optional login hooks. Trusted catalog discovery us
 
 ## Plugin catalog discovery
 
-For a managed OAuth source, OCC calls the selected Token Service's
-`sourceTokens.withSourceToken(context, use)`. If that reader is absent, a
-Gateway that owns the source may supply its `sourceTokens` view. The bundled
-OpenShell Gateway supplies the same OpenShell reader so an enrolled source
-remains usable after new device logins are disabled.
+For a managed OAuth source, OCC calls the Token Service's
+`sourceTokens.withSourceToken(context, use)`. Installing an OpenShell source Backend
+provides this reader even when the Installation disables new device logins or
+selects the native service for GitHub. Existing accounts can still authorize
+discovery. New OAuth enrollment requires the OpenShell `sources` interface.
 
 OCC authorizes the exact source before asking for a token. The callback
 rechecks the caller’s grants and, for a saved Agent binding, the Agent’s grants

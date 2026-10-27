@@ -77,9 +77,6 @@ function withCredentialGateway(drivers) {
       return { state: "ready" };
     },
     async removeSource() {},
-    async attachForRevision() {
-      return [];
-    },
   };
   return {
     ...drivers,

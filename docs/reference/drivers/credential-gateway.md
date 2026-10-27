@@ -5,11 +5,11 @@
 `CredentialGatewayDriver` holds credentials outside the Agent workload and
 applies them to the Agent's outbound requests. OpenClaw Control Plane (OCC) owns
 the [credential source](../credential-sources.md) record, its Secret references,
-authorization, and Agent bindings. The Driver owns the stored copy of the value,
-the source-type catalog, and how a credential reaches a request. The paired
-[SandboxDriver](sandbox.md) consumes the Driver's attachments for each Agent revision when
-it creates the Harness, and [Compute](compute.md) waits for those attachments
-before activation.
+authorization, and Agent bindings. The Driver owns the stored copy of the value
+and the source-type catalog. The paired
+[SandboxDriver](sandbox.md) prepares the provider attachments for each Agent revision
+and applies them when it creates the Harness. [Compute](compute.md) waits for those
+attachments before activation.
 
 Selection is optional. The only implementation is the bundled
 [OpenShell Credential Gateway](openshell-credential-gateway.md), which requires
@@ -28,15 +28,14 @@ there is no fallback to environment delivery.
 The [shared interface](../../../packages/contracts/src/index.ts) requires every
 method below. Startup rejects a Driver that omits one.
 
-| Operation              | Inputs and preconditions                                                                       | Result or side effects                                                                    | Failure or absence                                                                     |
-| ---------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `listSourceTypes`      | Cancellation signal.                                                                           | The implementation's catalog of `CredentialSourceType` entries.                           | OCC treats a failure as dependency unavailable.                                        |
-| `validateSourceConfig` | Catalog-checked type and nonsecret configuration.                                              | Synchronous validation without I/O, Secret reads, or persistence.                         | Invalid values throw `CredentialSourceConfigError` (`400`).                            |
-| `registerSource`       | Ready Namespace, the new source record, and resolved Secret values; none for a `refresh` type. | Stores the value in the gateway and returns `ready`, `pending`, `failed`, or `absent`.    | `failed` or `absent` fails registration; OCC then calls `removeSource`.                |
-| `updateSource`         | Existing source and new resolved values.                                                       | Replaces the stored values for processes started afterwards and returns the source state. | `failed` or `absent` fails the update; OCC keeps the Secret references unchanged.      |
-| `sourceStatus`         | Existing source.                                                                               | Live source state and an optional safe reason.                                            | OCC reports `failed` with a fixed reason when the call throws.                         |
-| `removeSource`         | Source record.                                                                                 | Deletes the stored copy. An already-absent source counts as removed.                      | A failure leaves the OCC record `deleting` for retry.                                  |
-| `attachForRevision`    | Namespace, immutable Agent revision, and the bound source records.                             | Exactly one `{ sourceId, ref }` attachment per bound source. `ref` is opaque to OCC.      | Throws when a source is unavailable or foreign; the Agent revision does not provision. |
+| Operation              | Inputs and preconditions                                                                       | Result or side effects                                                                    | Failure or absence                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `listSourceTypes`      | Cancellation signal.                                                                           | The implementation's catalog of `CredentialSourceType` entries.                           | OCC treats a failure as dependency unavailable.                                   |
+| `validateSourceConfig` | Catalog-checked type and nonsecret configuration.                                              | Synchronous validation without I/O, Secret reads, or persistence.                         | Invalid values throw `CredentialSourceConfigError` (`400`).                       |
+| `registerSource`       | Ready Namespace, the new source record, and resolved Secret values; none for a `refresh` type. | Stores the value in the gateway and returns `ready`, `pending`, `failed`, or `absent`.    | `failed` or `absent` fails registration; OCC then calls `removeSource`.           |
+| `updateSource`         | Existing source and new resolved values.                                                       | Replaces the stored values for processes started afterwards and returns the source state. | `failed` or `absent` fails the update; OCC keeps the Secret references unchanged. |
+| `sourceStatus`         | Existing source.                                                                               | Live source state and an optional safe reason.                                            | OCC reports `failed` with a fixed reason when the call throws.                    |
+| `removeSource`         | Source record.                                                                                 | Deletes the stored copy. An already-absent source counts as removed.                      | A failure leaves the OCC record `deleting` for retry.                             |
 
 `validateSourceConfig({ type, config })` checks nonsecret values synchronously,
 without network calls or other effects. OCC calls it after catalog field checks,
@@ -46,9 +45,8 @@ OCC then stores and registers that instead of the written values. Invalid values
 `CredentialSourceConfigError` with a safe field name and message; HTTP reports
 `400 INVALID_REQUEST`. Do not include submitted values in the error.
 
-`attachForRevision` throws `CredentialSourceRevisionError` when two sources would
-share a placeholder environment variable; the worker then fails the deployment
-at once instead of retrying.
+The paired Sandbox throws `CredentialSourceRevisionError` from `credentialAttachments.prepare`
+when two sources would share a placeholder environment variable. The worker then fails the deployment.
 
 A `CredentialSourceType` declares:
 
@@ -79,7 +77,7 @@ Gateway and paired Sandbox that already provide OAuth token injection. The
 experimental OpenShell `codex-oauth` type requires the upstream gateway API and
 alias-enabled supervisor described in the [OpenShell Driver reference](openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
-For an `openai`/`chatgptAuthTokens` source, `attachForRevision` must return
+For an `openai`/`chatgptAuthTokens` source, the Sandbox’s `credentialAttachments.prepare` must return
 `externalChatgptAuth` on the source's attachment: `accessTokenPlaceholder`,
 `accountId`, `planType`, and optional `userId`, `accountUserId`, `email`, and `isFedramp`. The
 trusted Driver supplies account metadata from the authenticated connection;
@@ -110,12 +108,11 @@ bundle or native-refresh fallback is supported. See
 ### Optional additions
 
 Device-login source types require the paired [Credential Refresh Driver](credential-refresh.md#device-authorization)
-to implement authorization. The Gateway registers the source before login and
-prepares the attachment its paired Sandbox applies to the Harness. The selected Token Service supplies the access
+to implement authorization. The Gateway registers the source before login.
+The paired Sandbox prepares and applies the Harness attachment. The selected Token Service supplies the access
 token for [plugin catalog discovery](credential-refresh.md#plugin-catalog-discovery).
-When that reader is absent, the OpenShell Gateway supplies the same reader through
-its optional `sourceTokens` view. Existing accounts can still authorize discovery
-with operator mTLS after the Installation disables enrollment.
+The Token Service can read an existing OpenShell account over operator mTLS
+after the Installation disables enrollment.
 
 `SecretDriver.withValue` supplies static registration inputs. Withdrawal also
 uses Compute's `withdrawCredentialSource`. The paired Sandbox Driver identifies the
@@ -180,11 +177,10 @@ credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source 
    worker passes the other listed sources it loaded in
    `ComputeRevisionContext.credentialSources`, omitting the Harness source and any
    withdrawn from the Agent revision.
-4. **Provisioning.** Compute calls `attachForRevision` with the Harness source
-   first and the other sources after it, and passes the result in
-   `HarnessWorkloadRequirements.credentialAttachments` to `provisionHarness`.
-   The Sandbox checks that its paired Gateway issued every attachment before
-   applying it.
+4. **Provisioning.** Compute calls the selected Sandbox’s `credentialAttachments.prepare`
+   with ordinary sources, starting with the Harness source when present. It passes the
+   returned references in `HarnessWorkloadRequirements.credentialAttachments` to
+   `provisionHarness`. The Sandbox verifies the references before applying them.
 5. **Activation.** After the Harness is ready, Compute calls
    the paired Sandbox Driver’s `credentialAttachments.status`. `pending` or a missing status retries reconciliation;
    `failed`, `withheld`, `revoked`, or `absent` fails it. Only `ready` for every

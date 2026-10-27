@@ -1833,8 +1833,6 @@ export interface CredentialAttachmentStatus {
 /** Holds credential sources and applies them outside the Agent workload. */
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
-  /** Retained sources may still have a trusted reader after enrollment is disabled. */
-  readonly sourceTokens?: CredentialSourceTokenReader;
   listSourceTypes(context: CredentialGatewayContext): Promise<readonly CredentialSourceType[]>;
   /**
    * Validate nonsecret configuration without I/O, before OCC reads Secrets or stores a record.
@@ -1855,10 +1853,6 @@ export interface CredentialGatewayDriver extends Driver {
   sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
   /** Idempotent; an already-absent source counts as removed. */
   removeSource(context: CredentialSourceContext): Promise<void>;
-  /** Returns exactly one attachment per bound source, or throws. */
-  attachForRevision(
-    context: CredentialRevisionContext,
-  ): Promise<readonly CredentialSourceAttachment[]>;
 }
 
 export interface CredentialRefreshInput {
@@ -1883,6 +1877,7 @@ export interface CredentialRefreshStatus {
 export interface CredentialRefreshDriver extends Driver {
   readonly capability: "credential_refresh";
   readonly sources?: CredentialSourceRefresh;
+  /** Reads previously enrolled sources independently of new OAuth enrollment. */
   readonly sourceTokens?: CredentialSourceTokenReader;
   readonly preparedTokens?: PreparedTokenService;
 }
@@ -1934,8 +1929,10 @@ export interface SandboxRepositoryAccess {
 }
 
 export interface SandboxDriver extends Driver {
-  /** Observes and withdraws source attachments on the revision's provisioned Harness. */
+  /** Prepares source attachments and observes or withdraws them on the revision's Harness. */
   readonly credentialAttachments?: {
+    /** Returns exactly one opaque attachment per ordinary bound source before provisioning. */
+    prepare(context: CredentialRevisionContext): Promise<readonly CredentialSourceAttachment[]>;
     status(
       context: CredentialRevisionContext & { readonly sandbox: SandboxResourceRef },
     ): Promise<readonly CredentialAttachmentStatus[]>;

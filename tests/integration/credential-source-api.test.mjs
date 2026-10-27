@@ -7,14 +7,19 @@ import {
   openShellProviderName,
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
+import { openShellSourceTokenReader } from "../../apps/controller/src/drivers/credential-refresh/openshell-source-tokens.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { storedCredentialSourceConfig } from "../helpers/refusal-text.mjs";
+import {
+  DEVICE_LOGIN_NOT_CONFIGURED,
+  storedCredentialSourceConfig,
+} from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 
 // Tool source types, the Secret field each takes, and a valid config each starts from.
@@ -140,6 +145,7 @@ async function fixture(
       backend,
     },
   );
+  const attachments = openShellCredentialAttachments(backend.client, driver.profiles);
   let now = Date.parse("2026-10-05T12:00:00Z");
   const computeDriver = {
     ...createDevelopmentComputeDriver({ id: "credential-source-compute" }),
@@ -156,11 +162,16 @@ async function fixture(
   await app.bootstrap();
   app.controller.registerDriver(driver);
   app.controller.selectDriver("credential_gateway", driver.id);
-  if (toolSources) {
-    const refresh = new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend });
-    app.controller.registerDriver(refresh);
-    app.controller.selectDriver("credential_refresh", refresh.id);
-  }
+  const refresh = toolSources
+    ? new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend })
+    : {
+        id: backend.id,
+        capability: "credential_refresh",
+        implementation: "openshell",
+        sourceTokens: openShellSourceTokenReader(backend),
+      };
+  app.controller.registerDriver(refresh);
+  app.controller.selectDriver("credential_refresh", refresh.id);
   const namespace = await app.createNamespace("credential-test", { ready: true });
   const path = "/namespaces/" + namespace.id + "/credential-sources";
   const secret = await app.createSecret(namespace.id, "model-key", "synthetic-model-key");
@@ -174,6 +185,7 @@ async function fixture(
   return {
     ...app,
     driver,
+    attachments,
     client,
     providers,
     profiles,
@@ -285,7 +297,7 @@ async function fixture(
     },
     /** Attaches stored sources to a new dedicated Codex revision. */
     attach(...sources) {
-      return driver.attachForRevision({
+      return attachments.prepare({
         namespace,
         sources,
         revision: { harness: { id: "codex", mode: "dedicated" } },
@@ -347,6 +359,7 @@ test("plugin catalog discovery can use a retained Codex source after device enro
     body: { harnessId: "codex" },
   });
   assert.equal(start.status, 501, JSON.stringify(start.body));
+  assert.equal(start.body.error.message, DEVICE_LOGIN_NOT_CONFIGURED);
   const rotate = await f.request("POST", `${f.path}/${stored.id}/rotate`);
   assert.equal(rotate.status, 409, JSON.stringify(rotate.body));
 });
@@ -509,7 +522,7 @@ test("OpenShell custom and default credential profiles keep independent ownershi
     },
   };
   assert.deepEqual(
-    await f.driver.attachForRevision({ ...context, sources: [source], revision: nativeRevision }),
+    await f.attachments.prepare({ ...context, sources: [source], revision: nativeRevision }),
     [{ sourceId: custom.data.id, ref: provider.name }],
   );
   for (const model of [{ id: "model", baseUrl: "https://other.example.test/v1" }, {}]) {
@@ -519,12 +532,12 @@ test("OpenShell custom and default credential profiles keep independent ownershi
       delete revision.configuration.models.providers.openai.baseUrl;
     }
     await assert.rejects(
-      f.driver.attachForRevision({ ...context, sources: [source], revision }),
+      f.attachments.prepare({ ...context, sources: [source], revision }),
       /must match the bound credential source endpoint/,
     );
   }
   assert.deepEqual(
-    await f.driver.attachForRevision({
+    await f.attachments.prepare({
       ...context,
       sources: [source],
       revision: { harness: { id: "codex", mode: "dedicated" } },

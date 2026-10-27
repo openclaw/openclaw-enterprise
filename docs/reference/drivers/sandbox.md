@@ -32,13 +32,11 @@ required `facets` and `cleanup` members, an optional `harnessHome`, and optional
 | `workspaceNodePeerLabels(context)`               | Optional. Exact Pod labels of the provider Pods that open the Agent revision's workspace-node connection, or `undefined` before its Sandbox exists. Compute admits only these Pods to that Agent's Gateway port, plus those of the serving Agent revision while a successor prepares, so the labels must select that Sandbox alone. OpenShell returns the supervisor's `openshell.ai/sandbox-id`.                   |
 | `readSandboxLogs(context, request)`              | Optional read of the Agent revision's Sandbox log: at most `lines` raw lines at or after `sinceTime`, plus how many lines the source examined. It must use a read-only interface and derive the Sandbox from the Agent revision. OCC classifies and redacts every line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source).                                                                         |
 
-A Sandbox that supports ordinary provider attachments implements both
-`credentialAttachments.status` and `credentialAttachments.withdraw`.
-Compute passes the provisioned Harness reference to both. Status reports readiness
-for each bound source. Withdrawal targets one source and settles on a revocation
-receipt or confirmed Sandbox absence. A recheck detaches the source again if the
-Sandbox lists it. These operations also work on an Installation that omits
-`credential_proxy`. [OpenShell provider attachments](openshell-credential-gateway.md#how-sources-map-to-openshell)
+For ordinary providers, Compute passes the Namespace, revision and sources to
+`credentialAttachments.prepare`. The Sandbox verifies ownership and returns one opaque
+attachment per source. For `status` and `withdraw`, Compute includes the Harness reference.
+Withdrawal settles on a revocation receipt or confirmed Sandbox absence. A recheck detaches
+any source still listed. These operations also work without `credential_proxy`. [OpenShell provider attachments](openshell-credential-gateway.md#how-sources-map-to-openshell)
 
 Two optional methods serve a provider-owned Harness transport.
 `harnessEndpoint(context)` returns the transport for the provisioned Harness, and
@@ -135,10 +133,9 @@ including safe retries and preserved later edits. Throw
 `SandboxWorkspaceSetupRefusedError` for a refusal; Compute fails at once.
 
 `credentialAttachments` holds one opaque `{ sourceId, ref }` entry per
-credential source the Agent revision uses. The list is empty otherwise. The selected
-[CredentialGatewayDriver](credential-gateway.md) issues the references. Its paired
-Sandbox verifies that every reference belongs to that Gateway and applies the
-attachments. After the Harness is ready, Compute asks the Sandbox whether each
+ordinary credential source the Agent revision uses. The list is empty otherwise. The
+selected Sandbox prepares the references and verifies that each belongs to its Backend
+before applying it. Compute configures protected sources separately through the Credential Proxy. After the Harness is ready, Compute asks the Sandbox whether each
 attachment is applied before activating the Agent revision.
 
 ### Sandbox resource identity

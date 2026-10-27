@@ -1940,13 +1940,15 @@ for (const harnessAuth of ["api_key", "credential_source"]) {
               "updateSource",
               "sourceStatus",
               "removeSource",
-              "attachForRevision",
             ].map((method) => context.mock.method(drivers.credentialGatewayDriver, method))
           : []),
         ...(sourceBacked
-          ? ["provisionHarness", "cleanup"].map((method) =>
-              context.mock.method(drivers.sandboxDriver, method),
-            )
+          ? [
+              context.mock.method(drivers.sandboxDriver.credentialAttachments, "prepare"),
+              ...["provisionHarness", "cleanup"].map((method) =>
+                context.mock.method(drivers.sandboxDriver, method),
+              ),
+            ]
           : []),
       ];
       await revokeAuthority();
@@ -2067,12 +2069,20 @@ function sourceProvisioningDrivers() {
     async removeSource({ source }) {
       stored.delete(source.id);
     },
-    async attachForRevision() {
-      assert.fail("this case ends at provisioning handoff");
-    },
   };
   const sandboxDriver = {
     id: "sandbox-source-provisioning",
+    credentialAttachments: {
+      async prepare() {
+        assert.fail("this case ends at provisioning handoff");
+      },
+      async status() {
+        assert.fail("this case ends at provisioning handoff");
+      },
+      async withdraw() {
+        assert.fail("this case ends at provisioning handoff");
+      },
+    },
     capability: "sandbox",
     implementation: "test-provisioning",
     facets: ["networking", "filesystem", "process"],

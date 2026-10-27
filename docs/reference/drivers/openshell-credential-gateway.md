@@ -229,7 +229,7 @@ The source ID identifies its profile even with an invalid persisted endpoint.
 Deletion refuses an unowned provider; unknown source types and gateway errors
 remain failures.
 
-For an Agent revision, `attachForRevision` updates each source's profile and returns
+For an Agent revision, the OpenShell Sandbox’s `credentialAttachments.prepare` updates each source's profile and returns
 its provider name. It fails when two of the Agent revision's sources would use
 the same environment variable, and the worker then fails the deployment with
 `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT` without retrying. The

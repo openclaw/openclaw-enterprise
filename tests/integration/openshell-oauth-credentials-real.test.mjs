@@ -10,6 +10,7 @@ import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -105,6 +106,7 @@ test(
       { binaries: ["/usr/local/bin/codex"] },
       { backend },
     );
+    const attachments = openShellCredentialAttachments(backend.client, driver.profiles);
     const refreshDriver = new OpenShellCredentialRefreshDriver({}, { backend });
     const context = {
       signal,
@@ -262,7 +264,7 @@ test(
       first,
       "a credential with sufficient remaining lifetime is reused without another mint",
     );
-    const firstAttachment = await driver.attachForRevision({
+    const firstAttachment = await attachments.prepare({
       signal,
       namespace: context.namespace,
       sources: [context.source],
@@ -278,7 +280,7 @@ test(
     const second = await refreshDriver.sourceTokens.withSourceToken(context, fingerprint);
     assert.notEqual(first, second);
     assert.deepEqual(
-      await driver.attachForRevision({
+      await attachments.prepare({
         signal,
         namespace: context.namespace,
         sources: [context.source],

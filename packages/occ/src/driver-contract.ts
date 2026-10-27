@@ -90,25 +90,22 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "credential_gateway") {
-    return (
-      validSourceTokenReader(candidate.sourceTokens) &&
-      [
-        "listSourceTypes",
-        "validateSourceConfig",
-        "registerSource",
-        "updateSource",
-        "sourceStatus",
-        "removeSource",
-        "attachForRevision",
-      ].every((operation) => typeof candidate[operation] === "function")
-    );
+    return [
+      "listSourceTypes",
+      "validateSourceConfig",
+      "registerSource",
+      "updateSource",
+      "sourceStatus",
+      "removeSource",
+    ].every((operation) => typeof candidate[operation] === "function");
   }
   if (driver.capability === "credential_refresh") {
     const sources = asRecord(candidate.sources);
     const prepared = asRecord(candidate.preparedTokens);
+    const reader = asRecord(candidate.sourceTokens);
     return (
-      (sources !== undefined || prepared !== undefined) &&
-      validSourceTokenReader(candidate.sourceTokens) &&
+      (sources !== undefined || prepared !== undefined || reader !== undefined) &&
+      (candidate.sourceTokens === undefined || typeof reader?.withSourceToken === "function") &&
       (candidate.sources === undefined ||
         ["configureRefresh", "rotate", "refreshStatus", "removeRefresh"].every(
           (operation) => typeof sources?.[operation] === "function",
@@ -126,7 +123,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       sandboxFacets(candidate.facets) &&
       sandboxPolicyContract(candidate) &&
       (candidate.credentialAttachments === undefined ||
-        ["status", "withdraw"].every(
+        ["prepare", "status", "withdraw"].every(
           (name) => typeof asRecord(candidate.credentialAttachments)?.[name] === "function",
         )) &&
       (candidate.repositoryAccess === undefined ||
@@ -186,10 +183,6 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     (candidate.deleteAgentRuntimeCredentials === undefined ||
       typeof candidate.deleteAgentRuntimeCredentials === "function")
   );
-}
-
-function validSourceTokenReader(reader: unknown): boolean {
-  return reader === undefined || typeof asRecord(reader)?.withSourceToken === "function";
 }
 
 function sandboxPolicyContract(candidate: Record<string, unknown>): boolean {
