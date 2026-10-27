@@ -11,18 +11,26 @@ State which configurations support it and which responsibilities belong to an ad
 
 ## Interface
 
-[Link the exported interface and its callers. Include required properties as
-well as methods. For optional members, name any modes that require them and
-what the caller does when they are absent.]
+[Link the exported interface and its callers. In each table, list required
+members first, then optional members. If a mode needs an optional member,
+name the mode and explain what happens when the member is absent.]
 
-| Member                 | Requirement         | Caller and behavior                                |
-| ---------------------- | ------------------- | -------------------------------------------------- |
-| `<required member>`    | Required            | [Inputs or property value, result, and effect.]    |
-| `<optional method>`    | Optional            | [Who calls it, when, and what happens if omitted.] |
-| `<conditional method>` | Required for [mode] | [Prerequisite, result, and failure when absent.]   |
+### Properties
 
-[Remove example rows that do not apply. Add Interface subsections for facets,
-input types, or optional operations when these need more detail.]
+| Property              | Requirement | Value and meaning                           |
+| --------------------- | ----------- | ------------------------------------------- |
+| `<required property>` | Required    | [Value and what it identifies or declares.] |
+| `<optional property>` | Optional    | [Meaning and default when omitted.]         |
+
+### Methods
+
+| Method              | Requirement | Caller and behavior                                     |
+| ------------------- | ----------- | ------------------------------------------------------- |
+| `<required method>` | Required    | [Caller, inputs, result, and effect.]                   |
+| `<optional method>` | Optional    | [When the caller needs it and what happens if omitted.] |
+
+[Omit empty groups. Add Interface subsections for facets, input types, or
+operations that need more detail.]
 
 ## IAM
 

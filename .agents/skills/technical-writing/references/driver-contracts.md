@@ -19,14 +19,11 @@ implemented behavior from target design.
 
 ## Interface
 
-Link the canonical exported types. Describe required identity properties and
-core methods, then optional methods, hooks, and capability declarations. For
-each operation, cover inputs, results, preconditions, side effects, and failure
-meaning. Explain what happens when an optional method is absent and whether a
-caller or production mode nevertheless requires it.
-
-Use the template's member table. Mark an optional method as required for a
-named mode when its caller refuses that mode without it.
+Link the exported types. Group members under **Properties** and then **Methods**.
+In each table, put required members before optional members. Use the exported
+type to determine the requirement. For an optional member, describe the default
+or fallback and any mode that requires it. For each method, explain the caller,
+inputs, result, side effects, and failures that affect the caller.
 
 Do not duplicate an entire source interface merely to list fields. Include a
 small shared-contract example when it clarifies a boundary; keep backend setup

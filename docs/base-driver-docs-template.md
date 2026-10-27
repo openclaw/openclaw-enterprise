@@ -7,8 +7,9 @@ for the scope of this kind.
 
 The required sections are **Overview**, **Interface**, **IAM**, **Lifecycle**,
 **Limits**, **Troubleshooting**, **Implementations**, and **Related**. Interface
-lists required members, optional members, and the modes that require an
-otherwise optional method. IAM describes authorization,
+lists properties first and methods second. Each table lists required members
+before optional members and names any mode that requires an optional member.
+IAM describes authorization,
 identity scope, and credential boundaries. Lifecycle distinguishes the Driver
 instance from the resources it manages.
 
