@@ -109,12 +109,13 @@ correlation registry from
 The registry holds at most twice the configured `sessions` count.
 Admission IDs bind the complete request: platform Namespace, repository reference,
 normalized profile, expected grant and absolute deadline. Registry mode requires
-this binding and independently resolves its fingerprint. A worker-owned private
-journal reserves the exact attempt before bearer delivery; recovery durably fences
-a missing admission. The broker opens the session before reserving, so a capacity
-or shutdown refusal leaves no receipt and the same admission can retry or be
-fenced. When the broker refuses a reserved admission as invalid, or cannot record
-its session, it fences its own reservation. A fence that does not commit stays
+this binding and independently resolves its fingerprint. The broker holds one
+local session slot and freezes the selected route before the worker-owned private
+journal reserves the original attempt. It constructs that route only after the
+reservation succeeds, using the original deadline. A capacity or shutdown refusal
+before reservation leaves no receipt. A missing or uncertain reservation creates no
+session. Recovery durably fences a missing admission. If the broker cannot open or
+bind after reservation, it fences its own reservation. A fence that does not commit stays
 with that admission, and the next open or recovery fences it; past the admission
 window a sweep retries it and forgets it once the fence commits, so it stops
 counting toward capacity. Known nondelivery closes the session.
@@ -357,6 +358,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 ## Changelog
 
 - 2026-10-27 14:02: Classify failed authentication after sender drainage. (authoring-run/53fbc611-31df-40b6-b106-b4035812ccb6 - 9d53c40b47afc7915d22a011ba721a880101b5ba)
+
+- 2026-10-27 13:43: Reserve the original attempt before constructing the selected prepared route. (authoring-run/c791ff25-9d48-4b6a-b400-315fa09ba049 - af7b0b904719bc1e1b238985d3db7cda8a3f7515)
 
 - 2026-10-27 13:13: Preserve the selected exchange credential through rotation and authorize the first write. (authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37 - 852146b8faea0fd083abd2255190eed5c0e5f43d)
 

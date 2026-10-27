@@ -221,7 +221,7 @@ test(
         originRequests++;
       },
     };
-    const origin = await startGitSmartHttpFixture(resources, originOptions);
+    const origin = await startGitSmartHttpFixture(t, originOptions);
     const gitOrigin = origin.origin;
     const base = await createLoopbackServiceConfiguration(resources);
     const config = { ...base, gateway: { ...base.gateway, controlSocket } };

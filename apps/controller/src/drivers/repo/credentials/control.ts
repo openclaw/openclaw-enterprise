@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { Clock } from "./backend-contracts.ts";
+import type { CredentialServiceOwner } from "./internal-contracts.ts";
 import type { SessionInput } from "./sessions.ts";
 import { snapshotSessionInput, sameSessionInput, isBoundInput } from "./sessions.ts";
 import type {
@@ -41,7 +42,7 @@ interface AdmissionRecord {
 }
 
 export function createControlAdmission(
-  service: SessionControl,
+  service: SessionControl & Pick<CredentialServiceOwner, "prepareOpen">,
   config: ServiceConfig,
   clock: Clock,
   durableRequired: boolean,
@@ -49,9 +50,6 @@ export function createControlAdmission(
 ) {
   const records = new Map<string, AdmissionRecord>();
   const sessions = new Map<string, string>();
-  // Sessions opened before their admission is recorded, with any disposal seen
-  // meanwhile. Each holds a service slot, so service capacity bounds this map.
-  const unrecorded = new Map<string, SessionStatus | undefined>();
   const operations = new Map<
     string,
     Promise<{ result: unknown; sessionId: string; created: boolean }>
@@ -162,8 +160,6 @@ export function createControlAdmission(
         record.terminal = status;
       }
       void persist(id, record, status).catch(() => {});
-    } else if (unrecorded.has(status.sessionId)) {
-      unrecorded.set(status.sessionId, status);
     }
   };
   // A later open evicts disposed sessions from the service, so a durable
@@ -271,27 +267,15 @@ export function createControlAdmission(
       throw new Error("SESSION_CAPACITY");
     }
     let opened: ReturnType<SessionControl["open"]> | undefined;
-    let early: SessionStatus | undefined;
     if (isBoundInput(admittedInput)) {
       const lookupOnly = recoverOnly || age >= admissionWindowMs;
-      // Only the durable owner selects standing. Until it answers, the unopened
-      // bearer cannot acquire or use provider material.
-      let standing: boolean | undefined;
+      let prepared: ReturnType<CredentialServiceOwner["prepareOpen"]> | undefined;
       let refused: unknown;
-      // Open before reserving. Only bind advances a reserved receipt, so an open
-      // refused after reservation (capacity, shutdown) would strand it. Such a
-      // refusal writes no receipt and the same admission may retry. Invalid input
-      // keeps the journal-first answer; the unreserved session is never handed out.
+      // Hold local capacity and freeze the selected route before asking the durable
+      // owner to reserve. No backend exists until the original reservation answers.
       if (!lookupOnly) {
         try {
-          opened = service.open(admittedInput, async (sessionId) => {
-            if (standing === undefined) {
-              throw new Error("ADMISSION_UNCONFIRMED");
-            }
-            if (standing) {
-              await journal!.authorizeStanding(id, sessionId, admittedInput);
-            }
-          });
+          prepared = service.prepareOpen(admittedInput);
         } catch (error) {
           if (!(error instanceof Error && invalidAdmissionErrors.has(error.message))) {
             throw error;
@@ -299,32 +283,26 @@ export function createControlAdmission(
           refused = error;
         }
       }
-      const discard = () => {
-        if (opened !== undefined && service.status(opened.session.sessionId) !== undefined) {
-          service.close(opened.session.sessionId);
-        }
-      };
-      if (opened !== undefined) {
-        unrecorded.set(opened.session.sessionId, undefined);
-      }
       let result: Awaited<ReturnType<RepositoryReceiptClient["admission"]>>;
       try {
         result = await journal!.admission(id, admittedInput, lookupOnly);
-        if (result.kind === "reserved") {
-          standing = result.standing;
+        if (!lookupOnly && result.kind === "reserved" && prepared !== undefined) {
+          try {
+            if (disposed) {
+              throw new Error("CONTROL_CLOSED");
+            }
+            const standing = result.standing;
+            opened = prepared.open(async (sessionId) => {
+              if (standing) {
+                await journal!.authorizeStanding(id, sessionId, admittedInput);
+              }
+            });
+          } catch (error) {
+            refused = error;
+          }
         }
-      } catch (error) {
-        discard();
-        throw error;
       } finally {
-        // Nothing awaits between here and recording, so no disposal is missed.
-        if (opened !== undefined) {
-          early = unrecorded.get(opened.session.sessionId);
-          unrecorded.delete(opened.session.sessionId);
-        }
-      }
-      if (lookupOnly || result.kind !== "reserved") {
-        discard();
+        prepared?.cancel();
       }
       if (result.kind === "disposed") {
         return { result: result.status, sessionId: result.status.sessionId, created: false };
@@ -354,6 +332,9 @@ export function createControlAdmission(
         records.set(id, record);
         await fenced(id, record);
         throw refused;
+      }
+      if (opened === undefined) {
+        throw new Error("RECEIPT_UNAVAILABLE");
       }
     } else if (age >= admissionWindowMs) {
       throw new Error("ADMISSION_MISSING");
@@ -385,7 +366,7 @@ export function createControlAdmission(
       forgetAt,
       durable: isBoundInput(admittedInput),
       ready: Promise.resolve(),
-      terminal: early,
+      terminal: undefined,
       unbound: false,
       saved: false,
       writing: undefined,
@@ -484,7 +465,6 @@ export function createControlAdmission(
       }
       records.clear();
       sessions.clear();
-      unrecorded.clear();
       refencing.clear();
     },
   };

@@ -30,6 +30,7 @@ import type {
 } from "../../apps/controller/src/backends/token-service/custody.ts";
 import { retireToken } from "../../apps/controller/src/backends/token-service/retirement.ts";
 import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-contracts.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
@@ -46,6 +47,7 @@ import {
   dispatchMetadata,
   raceMaintenance,
 } from "../helpers/github-metadata-exchange.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import {
@@ -506,6 +508,7 @@ test(
       tokenLifetimeMs: 45 * 60_000,
     });
     let lifecycle!: PostgresPreparedGitHubLifecycle;
+    let tokens!: TokenService;
     let secretDriver!: SecretDriver;
     let source!: PreparedGitHubEgressSource;
     let app!: Awaited<ReturnType<typeof postgresApp>>;
@@ -522,7 +525,8 @@ test(
       }),
       createPreparedGitHub(opts: { secretDriver: SecretDriver; tokenService: TokenService }) {
         secretDriver = opts.secretDriver;
-        lifecycle = createOwner(opts.tokenService);
+        tokens = opts.tokenService;
+        lifecycle = createOwner(tokens);
         return lifecycle;
       },
       async appFactory(context: TestContext, opts: Record<string, unknown>) {
@@ -608,6 +612,59 @@ test(
         : GitHubPreparationAdmission = row.admission;
       assert.equal(admission.grant.installationId, fixtureInstallationId);
     });
+    const compute = new KubernetesComputeDriver(
+      {
+        ...conformanceKubernetesOptions({
+          gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+          runtime: undefined,
+        }),
+        authentication: { mode: "inCluster" },
+        servicePrincipalCredentials: { mode: "disabled" },
+      },
+      { preparedTokens: tokens },
+    );
+    const retained = Reflect.get(compute, "preparedTokens") as {
+      issuer(
+        provider: PreparedTokenIssuer["provider"],
+      ): Pick<PreparedTokenIssuer, "sourceFromRoute" | "ready"> | undefined;
+    };
+    assert.deepEqual(Reflect.ownKeys(retained), ["issuer"]);
+    assert.ok(Object.isFrozen(retained) && Object.getPrototypeOf(retained) === null);
+    assert.equal(
+      retained.issuer({ ...lifecycle.provider, generation: lifecycle.provider.generation + 1 }),
+      undefined,
+    );
+    const handle = retained.issuer(lifecycle.provider);
+    assert.ok(handle && Object.isFrozen(handle) && Object.getPrototypeOf(handle) === null);
+    assert.deepEqual(Reflect.ownKeys(handle).sort(), ["ready", "sourceFromRoute"]);
+    // Installed methods can carry their owner's context; exposing a bound copy would retain it.
+    const decorated = Object.create(lifecycle, {
+      provider: { value: { ...lifecycle.provider, id: "fixture-decorated-readiness" } },
+    }) as PreparedTokenIssuer;
+    const checkReady: PreparedTokenIssuer["ready"] = async function (
+      this: PreparedTokenIssuer,
+      _input,
+      signal,
+    ) {
+      assert.equal(this, decorated);
+      return !signal.aborted;
+    };
+    Object.setPrototypeOf(
+      checkReady,
+      Object.assign(Object.create(Function.prototype), { owner: lifecycle }),
+    );
+    Object.defineProperty(checkReady, "bind", { value: undefined });
+    Object.defineProperty(decorated, "ready", { value: checkReady });
+    tokens.register(decorated);
+    const decoratedHandle = retained.issuer(decorated.provider);
+    assert.ok(decoratedHandle && (await decoratedHandle.ready(source, t.signal)));
+    assert.equal(Reflect.has(decoratedHandle.ready, "owner"), false);
+
+    const readsBeforeReadiness = f.secretReads;
+    assert.equal(await handle.ready(source, t.signal), true);
+    assert.equal(await handle.ready(source, AbortSignal.abort()), false);
+    assert.equal(f.secretReads, readsBeforeReadiness);
+    assert.equal(gh.issuesOfTokens.length, 1, "readiness cannot issue inline");
     const old = await lifecycle.readWarm(source, window());
     assert(old && Date.parse(old.usableUntil) > Date.now() + 40 * 60_000);
     const dispatched = async (revoke = false) => {

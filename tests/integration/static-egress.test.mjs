@@ -2941,8 +2941,8 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
           elapsed = 31_000;
         }
         if (scenario === "check_deadline") {
-          // The actual successful final policy transaction has committed. A new
-          // capture prunes the expired handle before that check returns to its owner.
+          // The final policy-and-receipt transaction has committed. Prune the
+          // expired handle before its acknowledgment returns; no permit may escape.
           assert.ok((await f.resolve(f.capture())).ready);
         }
         if (cancellation) {
@@ -2976,9 +2976,14 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
         const replay = (await f.resolve(captured)).ready;
         assert.ok((await f.authorize(f.permitRequest(captured, replay))).refused);
       }
-      if (["revoke", "deadline", "check_deadline"].includes(scenario)) {
+      if (["revoke", "deadline"].includes(scenario)) {
         assert.equal(stored.outcome.kind, "refused");
         assert.equal(stored.outcome.dispatched, false);
+      }
+      if (scenario === "check_deadline") {
+        assert.ok(stored.authorization?.association.custodyId);
+        assert.deepEqual(stored.outcome, { kind: "uncertain", dispatch: "possible" });
+        assert.equal(stored.settled, false);
       }
       if (scenario === "deny_lost_ack") {
         assert.equal(stored.settled, true, "refusal committed before its acknowledgment was lost");

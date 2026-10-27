@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-27"
-last_updated_session: authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037
+last_updated_session: authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad
 ---
 
 # Protected credential request flow
@@ -87,6 +87,11 @@ release or custody settlement.
 Compute rechecks admission with the worker before launch. PostgreSQL rejects
 unknown decisions and mixed v2/v3 fields. Older workers refuse v3. Upgrade
 all writers before admitting it.
+
+For each prepared route, `apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
+selects the current issuer, projects the admitted source and checks readiness. Compute retains
+only these observation methods, without token-read or lifecycle authority. A missing or mismatched
+owner refuses release; a cold source remains pending.
 
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
@@ -210,10 +215,16 @@ refuses permission, including after an authority restart.
 The sender and OCC bind the same Sandbox, instance, configuration, peer key, policy hash,
 authority scope and plan to the exchange. The Git recipient has its own delivery evidence.
 
-After reservation, OCC rechecks identity, policy, material and the rejection fence.
-`EgressSendReceipts.authorize` commits the execution, installation fence, exchange,
-response custody, request and injection digests, authorization time and send-start deadline.
-The deadline is at most one second away and cannot outlive the request, material or identity.
+After reservation, OCC’s `authorizeSend` port verifies the current runtime before opening
+the send transaction. The selected `IAMDriver.authorize` method makes the fresh decision for
+the exact service principal, `operate` action and Credential Source. For native IAM, the
+Namespace lock orders that decision and receipt commit against supported Namespace binding
+changes. An external IAM decision occurs before the transaction and cannot share that ordering.
+OCC rechecks the selected route, installation, material and rejection fence, then mints the
+permit and calls `EgressSendReceipts.authorizeIn` in the same transaction. The receipt binds
+the execution, installation fence, exchange, response custody, request and injection digests,
+authorization time and send-start deadline. The deadline is at most one second away and cannot
+outlive the request, material or identity.
 
 Before returning permission, the registry rechecks cancellation, ownership and the persisted
 deadline. A lost acknowledgment, handle or deadline yields no permit. Restart cannot
@@ -318,28 +329,10 @@ None.
 
 ## Changelog
 
+- 2026-10-27 14:03: Document the accompanying send authorization transaction. (authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad - 61c38c4c5a008bbdd8ad8eb2d70aa68492b7fdcc)
+
+- 2026-10-27 13:15: Document the accompanying Compute readiness capability boundary. (authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de - f6396abd5698efacabfeb150ef6cd38cdef6e814)
+
 - 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
-
-- 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
-
-- 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
-
-- 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
-
-- 2026-10-22 05:35: Pin peer identity and original authentication expiry throughout the exchange. (authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a - d87db85f74052e9ff819920acd820880e7a6a8af)
-
-- 2026-10-22 05:21: Preserve the metadata grant digest for equivalent Driver output. (authoring-run/aabacbf5-998a-479d-8903-9f891cd69066 - 1435acf226b887a2cd85b7515b302914605beaef)
-
-- 2026-10-22 05:16: Bind exchange identity independently of Git delivery evidence. (authoring-run/601b0e1c-ade5-431c-aa48-1c6775df430a - d5c0a95fc970e8a63f40746ad2e55ac5216580e0)
-
-- 2026-10-22: Streamline flow; preserve authority and recovery boundaries.
-
-- 2026-10-22 04:16: Enforce delivery settlement policy, operation fences and retained detach confirmation in the accompanying changes. (authoring-run/bcd1284f-0d04-4fc7-92e1-b4d5ac1eeb7f - 1544403a30a747898deaf3cf0935094b7812390d)
-
-- 2026-10-22 01:51: Describe final withdrawal and delivery custody in the accompanying schema consolidation. (authoring-run/c692ffd7-9ade-4cb3-80b7-cd02340e0537 - fe6b0002a5bf41e6e418df9848337b285ce53199)
-
-- 2026-10-21 23:40: Describe versioned policy reduction, durable operation recovery and the reference-peer proof boundary. (authoring-run/3e4e8e77-728c-435a-90e9-fe6c9758551c - d8a5a9c77963836fbe54f1dc28f2f8a0c01c5622)
-
-- 2026-10-21 22:39: Explain conditional recovery of rejected prepared material and its classification limit in the accompanying change. (authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002 - df297cd59e8de130e9eb0599e67f47fa6d85079e)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

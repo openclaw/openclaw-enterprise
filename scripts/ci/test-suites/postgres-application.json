@@ -6,6 +6,7 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/postgres-worker-agent-revision.test.mjs",
+    "tests/integration/postgres-worker-repository-roles.test.ts",
     "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
     "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
     "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
@@ -65,6 +66,17 @@
         "a Kubernetes 403 on a private Secret write fails deployment on the first attempt",
         "a Kubernetes 403 on a private Secret write during maintenance preparation keeps the maintenance chain",
         "a Kubernetes 403 on a private Secret write during maintenance activation keeps the maintenance chain"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-repository-roles.test.ts",
+      "expectedTests": [
+        "worker refuses repository credentials when repositoryPolicy is present with the wrong id",
+        "worker refuses repository credentials when repositoryPolicy is present with the wrong implementation",
+        "worker refuses repository credentials when repositoryPolicy is absent",
+        "worker refuses repository credentials when nativeRepositorySender is present with the wrong id",
+        "worker refuses repository credentials when nativeRepositorySender is present with the wrong implementation",
+        "worker refuses repository credentials when nativeRepositorySender is absent"
       ]
     },
     {
