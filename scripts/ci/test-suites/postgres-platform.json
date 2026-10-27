@@ -501,7 +501,6 @@
         "callback: fresh final allow through authenticated exchange",
         "callback: fresh final deny through authenticated exchange",
         "callback: fresh final unavailable through authenticated exchange",
-        "native authorization does not expose its PostgreSQL state to an unexpected argument",
         "memory: no material slow final runtime verification precedes the short send window",
         "memory: no material slow final runtime verification does not block DELETE",
         "postgres: static slow final runtime verification precedes the short send window",

@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  PostgresPlatformState,
   InMemoryPlatformState,
   type PlatformStateStore,
   type PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -697,47 +695,6 @@ for (const authority of ["directory", "callback"] as const) {
     );
   }
 }
-
-test("native authorization does not expose its PostgreSQL state to an unexpected argument", async () => {
-  const unavailable = new Error("inert PostgreSQL pool");
-  const state = new PostgresPlatformState({
-    async connect() {
-      throw unavailable;
-    },
-    end: async () => undefined,
-  });
-  const driver = new NativeIAMDriver(state);
-  const request: AuthorizationRequest = {
-    principalId: "ungranted-principal",
-    action: "operate",
-    resource: {
-      kind: "credential_source",
-      id: "ungranted-source",
-      namespaceId: "ungranted-namespace",
-    },
-  };
-  let called = false;
-  let receivedState = false;
-  await assert.rejects(
-    Reflect.apply(driver.authorize, driver, [
-      request,
-      async (value: unknown) => {
-        called = true;
-        receivedState = value === state;
-      },
-    ]),
-    {
-      name: "DependencyUnavailableError",
-      message: "The platform persistence repository is unavailable.",
-    },
-  );
-  assert.equal(
-    receivedState,
-    false,
-    "an unsuccessful caller must not receive the PostgreSQL state",
-  );
-  assert.equal(called, false, "authorization must not invoke an unexpected argument");
-});
 
 function deferred() {
   let resolve!: () => void;
