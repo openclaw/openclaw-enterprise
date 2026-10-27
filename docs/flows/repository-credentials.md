@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
 updated: 2026-10-27
-last_updated_session: authoring-run/dadaaea1-48d6-4917-ab44-18b1cfbeccb8
+last_updated_session: authoring-run/09fabde1-4f6f-46b0-9d37-943815810d11
 ---
 
 # Repository credential service flow
@@ -106,21 +106,22 @@ a digest; only the original admission response contains the bearer.
 `apps/controller/src/drivers/repo/credentials/server.ts:startListeners` owns the
 correlation registry from
 `apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission`.
-The registry holds at most twice the configured `sessions` count. Admission IDs
-bind the Namespace, repository reference, profile, expected grant and absolute
-deadline. Registry mode independently resolves that binding. A worker-owned
-journal reserves the exact attempt before bearer delivery. The broker opens before
-reserving, so capacity or shutdown refusal writes no receipt. Invalid or unbound
-reservations are fenced; a failed fence remains with its admission until a later
-recovery or maintenance sweep confirms it. Known nondelivery closes the session.
+The registry holds at most twice the configured session count. Each admission ID binds its
+Namespace, repository reference, normalized profile, expected grant and absolute
+deadline. The broker resolves the binding, holds a slot and freezes the route.
+Only a confirmed worker journal reservation permits construction, using the
+original deadline. Capacity or shutdown refusal before reservation leaves no receipt.
 
-An uncertain response retains its admission ID. Inspect the original owner and
-any known session; reconciliation cannot recover a bearer or authorize replacement.
-Status cannot close sessions or publish disposal. After a lost disposal acknowledgement,
-`createControlAdmission` checks the original receipt's session, binding, deadline and
-cleanup counts. Unresolved evidence remains unavailable. `createCredentialService`
-retains observed expiry across wall-clock correction, denies bearer use and leaves
-cleanup to the lifecycle owner.
+Recovery fences missing admissions. If opening or binding fails, the broker
+fences its reservation. An unconfirmed fence stays with the admission for retry
+on open, recovery or a sweep after the admission window. A committed fence frees
+capacity. Known nondelivery closes the session. Recovery cannot return a bearer,
+change the binding, authorize replacement or replay provider work. Keep the original
+admission ID and inspect its owner and any known session after an uncertain response.
+
+Status observes expiry without closing the session or publishing disposal. Clock rollback cannot restore
+use. After a lost disposal acknowledgement, the broker checks the original receipt's
+session, binding, deadline and cleanup counts. An unconfirmed disposal remains unknown.
 
 The receipt and operator control clients reject private-socket replies over
 16,384 bytes before destroying the response.
@@ -363,11 +364,17 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 
 ## Changelog
 
+- 2026-10-27 16:17: Reconcile selected route admission and disposal observation. (authoring-run/09fabde1-4f6f-46b0-9d37-943815810d11 - cf476a1b8303c5c24a2ec0c6fd7bc82df501115f)
+
+- 2026-10-27 16:03: Preserve the original attempt and selected prepared route during integration. (authoring-run/0a7454c1-6227-4251-b631-3bcfc0621c5a - 00e9ac0c0a6c4cbdf6a4bb7eb4b600e0d3d27322)
+
 - 2026-10-27 14:38: Preserve observed expiry at the first upstream write for owned and prepared exchanges. (authoring-run/dadaaea1-48d6-4917-ab44-18b1cfbeccb8 - b9fe4f8bb5b3321d1c0965297443fa174520c481)
 
 - 2026-10-27 14:12: Enforce observed expiry throughout prepared authorization and dispatch. (authoring-run/d086ce54-15b3-490d-8361-a992c4445d7f - 7e2feb0a3388f35364d943f0de778a5a5af8e944)
 
 - 2026-10-27 14:02: Classify failed authentication after sender drainage. (authoring-run/53fbc611-31df-40b6-b106-b4035812ccb6 - 9d53c40b47afc7915d22a011ba721a880101b5ba)
+
+- 2026-10-27 13:43: Reserve the original attempt before constructing the selected prepared route. (authoring-run/c791ff25-9d48-4b6a-b400-315fa09ba049 - af7b0b904719bc1e1b238985d3db7cda8a3f7515)
 
 - 2026-10-27 13:32: Retain observed session expiry through wall-clock correction. (authoring-run/190e7ec1-f80f-46f3-8a1c-06a9976abbc4 - bc4d77fb896d89b02b561a7e5f213e713ee40d13)
 

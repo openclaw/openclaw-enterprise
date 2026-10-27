@@ -206,8 +206,8 @@ The trusted worker or local operator uses HTTP over a private mode-0600 Unix soc
 | `GET /v1/sessions/{id}`                                           | Private session and cleanup status                          |
 | `POST /v1/sessions/{id}/close`                                    | Immediate local closure status; cleanup reported separately |
 
-The service/operator owns the socket's private parent, which is never mounted
-into the client. Control bodies are limited to 16 KiB; HTTPS exposes no admission or close endpoint.
+The service/operator owns the socket's private parent. Clients never mount it.
+Control bodies are limited to 16 KiB. HTTPS exposes no admission or close endpoint.
 
 `X-Admission-Id` combines a 13-digit Unix-millisecond timestamp, hyphen and
 lowercase UUIDv4; the CLI prints this nonsecret ID before dispatch. HTTP 201
@@ -223,12 +223,12 @@ closure and runtime retirement do not depend on it.
 
 Platform admission binds `namespaceId`, `repositoryRef`, normalized `profile`,
 `expectedBinding` and `deadlineWallMs` to the persisted attempt. The worker's
-private receipt socket commits a reservation before bearer release. A recovery-only
-lookup can durably fence a missing admission. Only the original broker records its
-exact `DISPOSED` result; status recovers disposal from a matching committed
-observation, otherwise the outcome remains unknown. Receipts contain no credentials
-and remain with attempt history. Journal failure prevents new bound admission and
-cannot establish absence or disposal.
+private receipt socket commits the reservation before the broker constructs the
+selected route or releases a bearer. Recovery can fence a missing admission.
+Only the original broker records its exact `DISPOSED` result. Status confirms
+disposal from the matching committed observation; otherwise it remains unknown.
+Receipts contain no credentials and stay with attempt history. Journal failure
+blocks new bound admission and proves neither absence nor disposal.
 
 Unseen IDs must be under 60 seconds old and never future-dated. Process-local
 correlations stop at twice the session limit and can return `overloaded`;

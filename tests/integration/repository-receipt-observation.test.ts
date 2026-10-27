@@ -75,6 +75,7 @@ for (const delivery of [
     );
     await receipt.prepare(admissionId, "project", 60);
     const wire: string[] = [];
+    let receiptUnavailable = false;
     const relay = createServer(async (incoming, response) => {
       const bytes = await body(incoming);
       const { kind, sessionId } = JSON.parse(bytes.toString()) as {
@@ -82,6 +83,10 @@ for (const delivery of [
         sessionId?: string;
       };
       wire.push(kind);
+      if (kind === "status" && receiptUnavailable) {
+        response.destroy();
+        return;
+      }
       if (kind === "dispose" && delivery === "before") {
         response.destroy();
         return;
@@ -283,6 +288,31 @@ for (const delivery of [
       }
     }
     assert.deepEqual(wire.slice(split), ["status", "status"]);
+    if (delivery === "after") {
+      // Once the correlation window ends, repeated close must still consult the
+      // original receipt while the service retains the disposed session.
+      monotonicElapsed = 61_000;
+      const closeStart = wire.length;
+      for (let index = 0; index < 2; index++) {
+        assert.deepEqual(await client.close(session.sessionId, AbortSignal.timeout(5_000)), {
+          ...session,
+          state: "DISPOSED",
+        });
+      }
+      assert.deepEqual(wire.slice(closeStart), ["status", "status"]);
+      receiptUnavailable = true;
+      await assert.rejects(client.close(session.sessionId, AbortSignal.timeout(5_000)), {
+        name: "RepositoryCredentialControlError",
+        retryable: true,
+      });
+      assert.deepEqual(wire.slice(closeStart), ["status", "status", "status"]);
+    } else {
+      await assert.rejects(client.close(session.sessionId, AbortSignal.timeout(5_000)), {
+        name: "RepositoryCredentialControlError",
+        retryable: true,
+      });
+      assert.deepEqual(wire.slice(split), ["status", "status", "status"]);
+    }
     assert.equal(wire.filter((kind) => kind === "dispose").length, 1);
     assert.equal((await stored())?.state, delivery === "before" ? "active" : "disposed");
   });

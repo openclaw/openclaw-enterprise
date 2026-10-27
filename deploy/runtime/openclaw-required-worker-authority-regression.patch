@@ -73,18 +73,6 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 -    [admin]: ["operator.admin"],
 -    ...Object.fromEntries(Object.values(writers).map((email) => [email, writerScopes])),
 -  });
--
--  // Observe real provider setup, never replace it.
--  const setupCalls: string[] = [];
--  const dispatchErrors: string[] = [];
--  let dispatchSettled: Promise<unknown> | undefined;
--  let hold: { committed: Deferred; resume: Promise<void>; afterAck: boolean } | undefined;
--  async function pauseRequested<T extends { state: string }>(placement: T, afterAck: boolean) {
--    const current = hold;
--    if (current?.afterAck === afterAck && placement.state === "requested") {
--      hold = undefined;
--      current.committed.resolve();
--      await current.resume;
 +test.for(["before acknowledgment", "after acknowledgment"] as const)(
 +  "required placement survives disconnect %s but stops setup when committed caller authority ends",
 +  async (timing, { signal }) => {
@@ -114,7 +102,18 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +        },
 +      },
 +    );
-+
+
+-  // Observe real provider setup, never replace it.
+-  const setupCalls: string[] = [];
+-  const dispatchErrors: string[] = [];
+-  let dispatchSettled: Promise<unknown> | undefined;
+-  let hold: { committed: Deferred; resume: Promise<void>; afterAck: boolean } | undefined;
+-  async function pauseRequested<T extends { state: string }>(placement: T, afterAck: boolean) {
+-    const current = hold;
+-    if (current?.afterAck === afterAck && placement.state === "requested") {
+-      hold = undefined;
+-      current.committed.resolve();
+-      await current.resume;
 +    // Observe real provider setup, never replace it.
 +    const setupCalls: string[] = [];
 +    const dispatchErrors: string[] = [];
@@ -235,43 +234,6 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 -    }
 -    emitSessionsChanged(...args);
 -  });
--
--  await gateway.withGatewayServer(async ({ port }) => {
--    await waitForGatewayStartup(port);
--    using adminConnection = await connectWriter(port, admin, ["operator.admin"]);
--    const adminWs = adminConnection.ws;
--    const commitConfigPatch = async (patch: Record<string, unknown>) => {
--      const current = await gateway.rpcReq<{ hash: string }>(adminWs, "config.get", {});
--      expect(current.ok, JSON.stringify(current.error)).toBe(true);
--      const patched = await gateway.rpcReq(adminWs, "config.patch", {
--        baseHash: current.payload?.hash,
--        ...patch,
--      });
--      expect(patched.ok, JSON.stringify(patched.error)).toBe(true);
--    };
--    const createThenEndAuthority = async (
--      email: string,
--      endAuthority: (ws: WebSocket) => Promise<void>,
--      expectedSetupCalls: string[] = [],
--      afterAck = false,
--    ) => {
--      setupCalls.length = 0;
--      const { ws } = await connectWriter(port, email);
--      const committed = createDeferredCore();
--      const resume = createDeferredCore();
--      hold = { committed, resume: resume.promise, afterAck };
--      settled = { remaining: 2, done: createDeferredCore() };
--      const created = gateway.rpcReq(ws, "sessions.create", {});
--      void created.catch(() => {});
--      try {
--        if (afterAck) {
--          expect(await created).toMatchObject({ ok: true });
--          await committed.promise;
--        } else {
--          await Promise.race([
--            committed.promise,
--            created.then(() => {
--              throw new Error("sessions.create settled before its requested placement committed");
 +      const createThenEndAuthority = async (
 +        email: string,
 +        endAuthority: (ws: WebSocket) => Promise<void>,
@@ -364,7 +326,43 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +      } else {
 +        await expect(disconnected.created).rejects.toThrow(/closed/);
 +      }
-+
+
+-  await gateway.withGatewayServer(async ({ port }) => {
+-    await waitForGatewayStartup(port);
+-    using adminConnection = await connectWriter(port, admin, ["operator.admin"]);
+-    const adminWs = adminConnection.ws;
+-    const commitConfigPatch = async (patch: Record<string, unknown>) => {
+-      const current = await gateway.rpcReq<{ hash: string }>(adminWs, "config.get", {});
+-      expect(current.ok, JSON.stringify(current.error)).toBe(true);
+-      const patched = await gateway.rpcReq(adminWs, "config.patch", {
+-        baseHash: current.payload?.hash,
+-        ...patch,
+-      });
+-      expect(patched.ok, JSON.stringify(patched.error)).toBe(true);
+-    };
+-    const createThenEndAuthority = async (
+-      email: string,
+-      endAuthority: (ws: WebSocket) => Promise<void>,
+-      expectedSetupCalls: string[] = [],
+-      afterAck = false,
+-    ) => {
+-      setupCalls.length = 0;
+-      const { ws } = await connectWriter(port, email);
+-      const committed = createDeferredCore();
+-      const resume = createDeferredCore();
+-      hold = { committed, resume: resume.promise, afterAck };
+-      settled = { remaining: 2, done: createDeferredCore() };
+-      const created = gateway.rpcReq(ws, "sessions.create", {});
+-      void created.catch(() => {});
+-      try {
+-        if (afterAck) {
+-          expect(await created).toMatchObject({ ok: true });
+-          await committed.promise;
+-        } else {
+-          await Promise.race([
+-            committed.promise,
+-            created.then(() => {
+-              throw new Error("sessions.create settled before its requested placement committed");
 +      const revoked = await createThenEndAuthority(
 +        writers.scope,
 +        async () => {
@@ -377,7 +375,14 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 -        await endAuthority(ws);
 -      } finally {
 -        resume.resolve();
--      }
++            replacePaths: [`gateway.auth.identityScopes.${writers.scope}`],
++          });
++        },
++        /^Gateway requester authority changed$/,
++      );
++      if (!afterAcknowledgment) {
++        await expect(revoked.created).rejects.toThrow(/gateway policy changed/);
+       }
 -      await settled.done.promise;
 -      await dispatchSettled;
 -      expect(setupCalls, dispatchErrors.join("; ")).toEqual(expectedSetupCalls);
@@ -394,21 +399,14 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 -      ["prepareProjectIntent", "createWithRequest"],
 -      true,
 -    );
--
+
 -    const revoked = await createThenEndAuthority(writers.scope, async () => {
 -      await commitConfigPatch({
 -        raw: JSON.stringify({ gateway: { auth: { identityScopes: { [writers.scope]: null } } } }),
 -        replacePaths: [`gateway.auth.identityScopes.${writers.scope}`],
 -      });
-+            replacePaths: [`gateway.auth.identityScopes.${writers.scope}`],
-+          });
-+        },
-+        /^Gateway requester authority changed$/,
-+      );
-+      if (!afterAcknowledgment) {
-+        await expect(revoked.created).rejects.toThrow(/gateway policy changed/);
-+      }
-+
+-    });
+-    await expect(revoked.created).rejects.toThrow(/gateway policy changed/);
 +      // Restoring the role cannot restore authority accepted before its revocation.
 +      const reassigned = await createThenEndAuthority(
 +        writers.role,
@@ -428,7 +426,11 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +      if (!afterAcknowledgment) {
 +        await expect(reassigned.created).rejects.toThrow(/closed|policy changed|role changed/);
 +      }
-+
+
+-    const unprofiled = await createThenEndAuthority(writers.profile, async () => {
+-      await commitConfigPatch({
+-        raw: JSON.stringify({ cloudWorkers: { requiredProfile: null } }),
+-      });
 +      const unprofiled = await createThenEndAuthority(
 +        writers.profile,
 +        async () => {
@@ -442,13 +444,6 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +      expect(unprofiled.ws.readyState).toBe(WebSocket.OPEN);
 +      unprofiled.ws.close();
      });
--    await expect(revoked.created).rejects.toThrow(/gateway policy changed/);
--
--    const unprofiled = await createThenEndAuthority(writers.profile, async () => {
--      await commitConfigPatch({
--        raw: JSON.stringify({ cloudWorkers: { requiredProfile: null } }),
--      });
--    });
 -    await unprofiled.created;
 -    expect(unprofiled.ws.readyState).toBe(WebSocket.OPEN);
 -    unprofiled.ws.close();
@@ -459,7 +454,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.server.ts
 --- a/src/gateway/test-helpers.server.ts
 +++ b/src/gateway/test-helpers.server.ts
-@@ -674,13 +674,20 @@
+@@ -669,13 +669,20 @@
    // Full-suite runs can saturate the event loop (581+ files). Keep this high
    // enough to avoid flaky RPC timeouts, but still fail fast when a response
    // never arrives.
@@ -481,7 +476,7 @@ diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.serve
        ws.off("message", handler);
        ws.off("close", closeHandler);
      }
-@@ -695,11 +702,8 @@
+@@ -690,11 +697,8 @@
          resolve(obj);
        }
      }
@@ -495,7 +490,7 @@ diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.serve
      ws.on("message", handler);
      ws.once("close", closeHandler);
    });
-@@ -1190,7 +1194,7 @@
+@@ -1155,7 +1159,7 @@
    ws: WebSocket,
    method: string,
    params?: unknown,
@@ -504,7 +499,7 @@ diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.serve
  ) {
    // Config publication leaves in-flight session writers owned by the Gateway.
    publishGatewayTestConfig();
-@@ -1202,10 +1206,13 @@
+@@ -1167,10 +1171,13 @@
    }
    const { randomUUID } = await import("node:crypto");
    const id = randomUUID();

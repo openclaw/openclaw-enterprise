@@ -281,6 +281,7 @@ async function fakeCommand({
       assert.equal(args.includes("--load") || args.includes("--cache-to"), false);
       // A cache miss builds every step in the probe; this one outlasts the lane's time.
       if (scenario === "image-probe-hung") {
+        stderr("#12 [openclaw-build 5/9] RUN pnpm build\n");
         return hang();
       }
       const role = args.includes("--target") ? "controller" : "runtime";
@@ -396,6 +397,7 @@ async function fakeCommand({
     ) {
       assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
       if (scenario === "image-build-hung") {
+        stderr("#14 exporting to image\n");
         return hang();
       }
       state.runtime = args[args.indexOf("-t") + 1];

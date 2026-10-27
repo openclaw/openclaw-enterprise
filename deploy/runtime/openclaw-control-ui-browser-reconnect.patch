@@ -55,10 +55,10 @@ index 0ba4108dfcb2e14d929419e896ecc0f4a2a29155..c4a8670f7b6504e74c95b9db4e285eaa
  }
  
 diff --git a/ui/src/api/gateway-connect-errors.ts b/ui/src/api/gateway-connect-errors.ts
-index d45265c4cb9931d5516857a9ff5fa1fc4d8f366a..caf64c269ed74122d1e27e6d3d233924efdab2ee 100644
+index 1baf7e29daad53407e044c0d62904f6a35fd6238..c71f5f94198c30e80dbb7532c9cc5c9ebaf06736 100644
 --- a/ui/src/api/gateway-connect-errors.ts
 +++ b/ui/src/api/gateway-connect-errors.ts
-@@ -21,6 +21,7 @@ export type GatewayBrowserCloseInfo = {
+@@ -22,6 +22,7 @@ export type GatewayBrowserCloseInfo = {
    error?: ErrorShape;
    willRetry: boolean;
    busy?: boolean;
@@ -92,7 +92,7 @@ index 1f70fd5f455d69e12b9769061e295a5c8d632044..3e89cfec94a66623f7c80bb95c4428a9
  
  it.each(["cross-origin", "opened"])("does not probe a %s transport", async (kind) => {
 diff --git a/ui/src/api/gateway.ts b/ui/src/api/gateway.ts
-index ad496c9162370a2243d60c022338aec428fb4720..64a9062d9c6eff80fd58a42dc30f54173c792005 100644
+index 4beb67b0d9af855971a6ce2cf498ce1634545bfd..0f9285251bd9876680ac3205dde2f9f0d4b3d05f 100644
 --- a/ui/src/api/gateway.ts
 +++ b/ui/src/api/gateway.ts
 @@ -214,14 +214,17 @@ export class GatewayBrowserClient {
@@ -116,10 +116,10 @@ index ad496c9162370a2243d60c022338aec428fb4720..64a9062d9c6eff80fd58a42dc30f5417
                  }
                })
 diff --git a/ui/src/app/app-shell-view.test.ts b/ui/src/app/app-shell-view.test.ts
-index 910ff8e478bae7ab4e1a70d6a7f4d55d5f9e9075..414bc063213bf604bc1e2803c8a882aa7dc6520f 100644
+index 8bb8e0ac47d79aee7e331cdf9859be71024bb968..2fe608d2ee56eca8aae871ad8a0645b419ca966a 100644
 --- a/ui/src/app/app-shell-view.test.ts
 +++ b/ui/src/app/app-shell-view.test.ts
-@@ -308,6 +308,24 @@ it("keeps pages interactive through transport loss and fences reload-required",
+@@ -316,6 +316,24 @@ it("keeps pages interactive through transport loss and fences reload-required",
    }
  });
  
@@ -145,7 +145,7 @@ index 910ff8e478bae7ab4e1a70d6a7f4d55d5f9e9075..414bc063213bf604bc1e2803c8a882aa
    let mobile = false;
    mockMobile(() => mobile);
 diff --git a/ui/src/app/app-shell-view.tsx b/ui/src/app/app-shell-view.tsx
-index cdceb9d728d4241230465697b66ceafb32c04a13..7621dd1d7df48700dbe3a057d2c092db6387c59a 100644
+index d6bcbd1be7ceb0624a7220b7bc6796f60b6e2fb9..4b2fefdad9fcc68b2d2909f804dd7e007edcfb1f 100644
 --- a/ui/src/app/app-shell-view.tsx
 +++ b/ui/src/app/app-shell-view.tsx
 @@ -96,6 +96,11 @@ export function ApplicationShell(props: {
@@ -160,7 +160,7 @@ index cdceb9d728d4241230465697b66ceafb32c04a13..7621dd1d7df48700dbe3a057d2c092db
    const footerStatus = createMemo(() =>
      shellConnectionStatus() || view().connectionRecovery ? view().gatewayStatus : null,
    );
-@@ -357,6 +362,19 @@ export function ApplicationShell(props: {
+@@ -358,6 +363,19 @@ export function ApplicationShell(props: {
            onMouseDown={beginNativeWindowDragFromTopInset}
            inert={view().mobileNavLayout && view().navDrawerOpen}
          >
@@ -180,7 +180,7 @@ index cdceb9d728d4241230465697b66ceafb32c04a13..7621dd1d7df48700dbe3a057d2c092db
            <Show
              when={
                floatingSidebarAttentionVisible(view().floatingUpdateCard) ||
-@@ -380,8 +398,9 @@ export function ApplicationShell(props: {
+@@ -381,8 +399,9 @@ export function ApplicationShell(props: {
            >
              <RouterOutlet
                ref={(element) => (props.host.routeOutlet = element)}
@@ -193,13 +193,13 @@ index cdceb9d728d4241230465697b66ceafb32c04a13..7621dd1d7df48700dbe3a057d2c092db
                retryContext={view().context}
                retryEnabled={view().gatewayConnected}
 diff --git a/ui/src/app/gateway-store.observers.test.ts b/ui/src/app/gateway-store.observers.test.ts
-index dad9972f155e06dedf804f5372dc518cc41cb649..cc148301c01f0ba5a804b9c151d725c47d858260 100644
+index 8adcff4da2675804542eb7977d68fa12105d3f20..a5125ca83842490eae4731feed13bb6a808f4b75 100644
 --- a/ui/src/app/gateway-store.observers.test.ts
 +++ b/ui/src/app/gateway-store.observers.test.ts
-@@ -466,6 +466,23 @@ describe("createApplicationGateway connection ownership", () => {
+@@ -493,6 +493,23 @@ describe("createApplicationGateway connection ownership", () => {
      }
    });
-
+ 
 +  it("offers browser recovery only for an established connection and retires it on recovery or replacement", () => {
 +    gateway.start();
 +    const original = current();
@@ -221,10 +221,10 @@ index dad9972f155e06dedf804f5372dc518cc41cb649..cc148301c01f0ba5a804b9c151d725c4
      const otherGateway = "wss://other-gateway.example.test";
      const selection = {
 diff --git a/ui/src/app/gateway-store.ts b/ui/src/app/gateway-store.ts
-index a17324787a8dbd1014de9e16d484afada1193a29..2f0545d578a18a4969f222ce8536271399c60d5e 100644
+index 5f776c1dc61b5c2d40261c909912ec230b999a6b..005c03ee89dc4ed72e3cf53000949b8a2ebe119b 100644
 --- a/ui/src/app/gateway-store.ts
 +++ b/ui/src/app/gateway-store.ts
-@@ -184,6 +184,7 @@ export function createApplicationGateway(
+@@ -186,6 +186,7 @@ export function createApplicationGateway(
    };
    const setConnectionSnapshot = (patch: Partial<ApplicationGatewaySnapshot>) =>
      setSnapshot({
@@ -232,7 +232,7 @@ index a17324787a8dbd1014de9e16d484afada1193a29..2f0545d578a18a4969f222ce85362713
        hello: null,
        pluginCapabilities: null,
        canvasPluginSurfaceUrl: null,
-@@ -527,7 +528,7 @@ export function createApplicationGateway(
+@@ -514,7 +515,7 @@ export function createApplicationGateway(
            setSnapshot({ reconnectAt: Date.now() + delayMs });
          }
        },
@@ -241,7 +241,7 @@ index a17324787a8dbd1014de9e16d484afada1193a29..2f0545d578a18a4969f222ce85362713
          if (client !== nextClient) {
            return;
          }
-@@ -597,6 +598,7 @@ export function createApplicationGateway(
+@@ -588,6 +589,7 @@ export function createApplicationGateway(
                  : t(willRetry ? "connection.interruptedRetrying" : "connection.interrupted", {
                      code: String(code),
                    }),
@@ -250,7 +250,7 @@ index a17324787a8dbd1014de9e16d484afada1193a29..2f0545d578a18a4969f222ce85362713
            lastErrorAuthReason: startupPending ? null : readConnectionAuthReason(error?.details),
          });
 diff --git a/ui/src/app/gateway.ts b/ui/src/app/gateway.ts
-index 6d402eb34fe3a64e1f21edb90e5008959e3111e4..4a3035aa1660e85a79ff8fc2ce2e1b056f558fd6 100644
+index 5419f99999f0837122e0c142600f8c0961de5223..4e196edb77a19f20a28e37fd58fe2201b0859fc4 100644
 --- a/ui/src/app/gateway.ts
 +++ b/ui/src/app/gateway.ts
 @@ -29,6 +29,8 @@ export type ApplicationGatewaySnapshot = {
@@ -263,7 +263,7 @@ index 6d402eb34fe3a64e1f21edb90e5008959e3111e4..4a3035aa1660e85a79ff8fc2ce2e1b05
    deferredIntentCount?: number;
    deferredIntentDraining?: boolean;
 diff --git a/ui/src/app/router-outlet.tsx b/ui/src/app/router-outlet.tsx
-index a17b8d4f611e8dae0ef13544ca9ef96742d58eda..73ef71a6ace84bf3e5b3bc14f9a3d9d023050710 100644
+index cfe905152f8d70f15df13fe2ce3103a530e69e43..106573515193c39fb9279c9b6a284ab07a77dd9d 100644
 --- a/ui/src/app/router-outlet.tsx
 +++ b/ui/src/app/router-outlet.tsx
 @@ -126,6 +126,7 @@ function renderRouterOutlet(
@@ -283,10 +283,10 @@ index a17b8d4f611e8dae0ef13544ca9ef96742d58eda..73ef71a6ace84bf3e5b3bc14f9a3d9d0
        aria-disabled={props["aria-disabled"]}
        onOpenclaw-route-element={elements.register}
 diff --git a/ui/src/i18n/locales/en.ts b/ui/src/i18n/locales/en.ts
-index e199c046f3554bb62b102d717f7e71de6e7491df..7bfb3156d7e4a6d77aeefed4bb6e209422b3a21e 100644
+index 0660916d05026b7be117be1caa51b909db2fbb5d..4043db137f4c922e44c8624bbaec3330ef709010 100644
 --- a/ui/src/i18n/locales/en.ts
 +++ b/ui/src/i18n/locales/en.ts
-@@ -1598,6 +1598,9 @@ export const en: TranslationMap & {
+@@ -1361,6 +1361,9 @@ const startupEnglish = {
      "reload-required": "Refresh required",
      offline: "Disconnected",
      reconnecting: "Reconnecting…",
@@ -297,10 +297,10 @@ index e199c046f3554bb62b102d717f7e71de6e7491df..7bfb3156d7e4a6d77aeefed4bb6e2094
        "Connection to the Gateway was interrupted. Reconnecting automatically. (WebSocket {code})",
      interrupted:
 diff --git a/ui/src/styles/layout.css b/ui/src/styles/layout.css
-index db327ed78561e20b7e4b657e48f2c2576537e2b0..47111ff5e3b7c1e90a7a5f8ead78aa39317f921d 100644
+index f9d7e1114076780b2b0a593c29d675cd69fe1341..bf6d3460d91fb18f19b50c9141c87881766fbd38 100644
 --- a/ui/src/styles/layout.css
 +++ b/ui/src/styles/layout.css
-@@ -4312,6 +4312,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
+@@ -3462,6 +3462,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
    min-height: 0;
  }
  
