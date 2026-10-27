@@ -335,18 +335,4 @@ None.
 
 - 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
 
-- 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
-
-- 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
-
-- 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
-
-- 2026-10-22 05:35: Pin peer identity and original authentication expiry throughout the exchange. (authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a - d87db85f74052e9ff819920acd820880e7a6a8af)
-
-- 2026-10-22 05:21: Preserve the metadata grant digest for equivalent Driver output. (authoring-run/aabacbf5-998a-479d-8903-9f891cd69066 - 1435acf226b887a2cd85b7515b302914605beaef)
-
-- 2026-10-22 05:16: Bind exchange identity independently of Git delivery evidence. (authoring-run/601b0e1c-ade5-431c-aa48-1c6775df430a - d5c0a95fc970e8a63f40746ad2e55ac5216580e0)
-
-- 2026-10-22: Streamline flow; preserve authority and recovery boundaries.
-
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.
