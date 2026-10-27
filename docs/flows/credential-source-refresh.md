@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-27
-last_updated_session: authoring-run/1280f6a3-93e3-43d7-b641-05139f54b08c
+last_updated_session: authoring-run/0430a401-05fb-4e0b-9166-a02b77498311
 ---
 
 # Credential source refresh Flow
@@ -236,8 +236,9 @@ the record `deleting` for retry.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
 
-The worker records an `issuing` attempt, signs a short-lived JSON Web Token (JWT) with the App key and rechecks ownership
-before `POST /app/installations/{installation_id}/access_tokens`. The JWT expires five minutes after signing. The Installation selects the HTTPS issuer and trust roots.
+The worker records `issuing`, signs a five-minute JWT with the App key and rechecks
+ownership before `POST /app/installations/{installation_id}/access_tokens`.
+The Installation selects the HTTPS issuer and trust roots.
 
 ```mermaid
 graph TD
@@ -255,18 +256,17 @@ graph TD
   linkStyle default stroke:#89919a
 ```
 
-The worker issues tokens in the background. The diagram shows how the metadata
-sender uses one. For native Git, the broker asks the worker to authorize the send
-over its private socket. A cold or expired read returns `not_ready`.
-PostgreSQL custody requires a persistent 32-byte encryption key.
+The worker prepares tokens in the background. PostgreSQL custody requires a
+persistent 32-byte encryption key. Cold or expired reads return `not_ready`.
+Native Git uses a [private broker request](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
 For `acme/widgets`, the worker requests repository ID `12345` and
-`metadata: read`. It checks the returned ID, name, permissions and expiry. The approved `github-installation` profile sends `{}` and
-inherits the installation's scope.
+`metadata: read`. It checks the returned ID, name, permissions and expiry.
+The approved `github-installation` profile sends `{}` and inherits installation scope.
 
-**Renewal.** An eligible token stays available while the worker prepares its
-replacement. Committing the new version retires the old one. OCC rechecks the
-grant and material version before authorizing a [protected send](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
+**Renewal.** Eligible tokens serve requests during renewal. Committing the replacement
+retires the old version. OCC rechecks grant and version before authorizing a
+[protected send](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
 
 | Limit                                | Effect                                                                                                                                                                                                              |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -275,33 +275,31 @@ grant and material version before authorizing a [protected send](credential-sour
 | Local cutoff (`usableUntil`)         | Readers stop selecting the token 60 seconds before GitHub expiry. A request may require more remaining time.                                                                                                        |
 | GitHub expiry (`expires_at`)         | GitHub sets a one-hour [installation token lifetime](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).               |
 
-Prepared metadata reads share the two token limits. Withdrawing their
-credential-source binding stops new authorizations. A send already authorized
-can finish.
+Metadata reads share both token limits. Withdrawing the credential-source
+binding stops new authorizations. A previously authorized send can finish.
 
-**Key rotation and withdrawal.** On a changed signing-key version, the worker
-advances the owner epoch and retires old material before publishing a token signed
-with the new key. Withdrawal stops new authorizations; an authorized send can
-finish. For an Agent-bound metadata source, Agent deletion immediately fences
-use and renewal. The next worker pass disables its token family and retires the
-current token. Agent deletion can finish before GitHub revocation. Source deletion
-waits up to 25 seconds for in-flight revocation, returning `409` for unsettled custody.
+**Key rotation and withdrawal.** When the signing key changes version, the worker
+advances the owner epoch and retires old material before publishing its replacement.
+Deleting the Agent blocks use and renewal immediately. On its next pass, the
+worker disables the Agent-bound metadata family and retires the token. GitHub
+revocation can outlast Agent deletion. Source deletion waits up to 25 seconds
+for revocation, returning `409` if custody remains unsettled.
 
-**Uncertain outcomes.** A lost GitHub answer or local commit receipt blocks replay
-of the original attempt. The [response parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
-retains a unique candidate for cleanup despite ambiguous scope; duplicate root
-token fields leave none. The worker records possible revocation before calling
-`DELETE /installation/token`. HTTP 204 confirms revocation; a lost answer leaves
-it unconfirmed. After token expiry and clock-skew allowance, the store can settle
-an old attempt; expiry does not confirm revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+**Uncertain outcomes.** A lost issuance or commit receipt blocks replay. The
+[response parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
+keeps a unique cleanup candidate despite ambiguous scope. Duplicate root token
+fields leave none. The worker records possible revocation before
+`DELETE /installation/token`. HTTP 204 confirms revocation. A lost response
+leaves it unknown. Expiry plus the clock-skew allowance can settle an attempt
+without confirming revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
 
 `apps/controller/src/backends/token-service/retirement.ts:retireToken` clears
-detached token bytes before settling the original receipt. If revocation and
-settlement both fail, the error names the stages without underlying errors.
+detached bytes before settling the original receipt. If revocation and
+settlement both fail, the error names only the stages.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
-clears token buffers after publication, including on failure. Callers own their
-detached warm reads. Clearing a buffer cannot revoke a token.
+clears token buffers after successful or failed publication. Callers own their
+detached reads. Clearing bytes cannot revoke a token.
 
 ## Debugging and Verification
 
@@ -339,6 +337,8 @@ detached warm reads. Clearing a buffer cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 19:10: Clarify GitHub token renewal and withdrawal. (authoring-run/0430a401-05fb-4e0b-9166-a02b77498311 - d0d593e0f6b4d2c8c1282f0f05e4d83aa607608f)
 
 - 2026-10-27 10:59: Trace dual retirement failures in the accompanying source change. (authoring-run/1280f6a3-93e3-43d7-b641-05139f54b08c - 0418ef3a2c116b73f025281395d92477daf665d2)
 
