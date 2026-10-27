@@ -3073,10 +3073,11 @@ for (const harnessId of ["codex", "openclaw"]) {
                   "no-new-privileges",
                   "--user",
                   `${process.getuid()}:${process.getgid()}`,
+                  // The concurrent initializer containers share these test-owned mounts on SELinux.
                   "--volume",
-                  `${workspace}:/sandbox/enterprise`,
+                  `${workspace}:/sandbox/enterprise:z`,
                   "--volume",
-                  `${home}:/sandbox/.openclaw-runtime/home`,
+                  `${home}:/sandbox/.openclaw-runtime/home:z`,
                   ...Object.entries(execution.environment).flatMap(([key, value]) => [
                     "--env",
                     `${key}=${value}`,
