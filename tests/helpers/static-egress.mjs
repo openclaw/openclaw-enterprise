@@ -11,6 +11,7 @@ import {
   egressAssociationInstallation,
 } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { createHash, generateKeyPairSync, randomUUID, randomBytes, sign } from "node:crypto";
 import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
 import { writeFile } from "node:fs/promises";
@@ -82,7 +83,9 @@ export function supervisorBearer(claims, privateKey) {
 export async function staticEgressFixture(
   t,
   {
-    appFactory = createConsoleAppFixture,
+    appFactory = /** @type {(t: import("node:test").TestContext, options?: Parameters<typeof createConsoleAppFixture>[1]) => Promise<Awaited<ReturnType<typeof createConsoleAppFixture>> | Awaited<ReturnType<typeof import("./postgres-egress-app.mjs").postgresApp>>>} */ (
+      createConsoleAppFixture
+    ),
     driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
     protectedSourceOnly = false,
@@ -1206,6 +1209,21 @@ export async function syntheticDispatchFixture(t, receipts) {
     now: () => clock,
     installation: async () => installation,
     provider: () => openAiStaticProvider,
+    // Synthetic policy is immutable; real OCC uses its policy-and-receipt transaction.
+    async authorizeSend(use, selected, attempt, mintAuthorization) {
+      const decision = await this.check(use, attempt.material);
+      if (!("key" in decision)) {
+        return decision;
+      }
+      if (!isDeepStrictEqual(decision, selected)) {
+        return { kind: "denied", code: "stale_configuration" };
+      }
+      const authorization = mintAuthorization();
+      if ("kind" in authorization) {
+        return authorization;
+      }
+      return this.receipts.authorize(use.peer.sender, attempt, authorization);
+    },
     // Policy and Secret dependencies are synthetic; dispatch, persistence and sockets are real.
     check: async () => source,
     read: async () => {

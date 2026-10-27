@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-27"
-last_updated_session: authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de
+last_updated_session: authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad
 ---
 
 # Protected credential request flow
@@ -215,10 +215,16 @@ refuses permission, including after an authority restart.
 The sender and OCC bind the same Sandbox, instance, configuration, peer key, policy hash,
 authority scope and plan to the exchange. The Git recipient has its own delivery evidence.
 
-After reservation, OCC rechecks identity, policy, material and the rejection fence.
-`EgressSendReceipts.authorize` commits the execution, installation fence, exchange,
-response custody, request and injection digests, authorization time and send-start deadline.
-The deadline is at most one second away and cannot outlive the request, material or identity.
+After reservation, OCC’s `authorizeSend` port verifies the current runtime before opening
+the send transaction. The selected `IAMDriver.authorize` method makes the fresh decision for
+the exact service principal, `operate` action and Credential Source. For native IAM, the
+Namespace lock orders that decision and receipt commit against supported Namespace binding
+changes. An external IAM decision occurs before the transaction and cannot share that ordering.
+OCC rechecks the selected route, installation, material and rejection fence, then mints the
+permit and calls `EgressSendReceipts.authorizeIn` in the same transaction. The receipt binds
+the execution, installation fence, exchange, response custody, request and injection digests,
+authorization time and send-start deadline. The deadline is at most one second away and cannot
+outlive the request, material or identity.
 
 Before returning permission, the registry rechecks cancellation, ownership and the persisted
 deadline. A lost acknowledgment, handle or deadline yields no permit. Restart cannot
@@ -322,6 +328,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-27 14:03: Document the accompanying send authorization transaction. (authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad - 61c38c4c5a008bbdd8ad8eb2d70aa68492b7fdcc)
 
 - 2026-10-27 13:15: Document the accompanying Compute readiness capability boundary. (authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de - f6396abd5698efacabfeb150ef6cd38cdef6e814)
 
