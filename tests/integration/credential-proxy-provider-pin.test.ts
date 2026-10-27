@@ -434,8 +434,7 @@ test("an unbound source update keeps its admitted provider when same-type provid
   const created = await f.request("POST", f.path, { body });
   assert.equal(created.status, 201);
   const { id } = created.data;
-  const update = (): Promise<{ status: number }> =>
-    f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
+  const update = () => f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
   const savedAdmission = () =>
     f.controller.transact(
       async (unit: PlatformUnitOfWork) =>
@@ -457,6 +456,13 @@ test("an unbound source update keeps its admitted provider when same-type provid
     providers.splice(0, providers.length, ...entries);
     const refused = await update();
     assert.equal(refused.status, 409);
+    if (entries.length > 1) {
+      assert.deepEqual(refused.body.error, {
+        code: "RESOURCE_CONFLICT",
+        message:
+          "The admitted credential provider has duplicate registrations. Ask an Installation administrator to resolve them.",
+      });
+    }
     assert.equal(f.secretReads, reads + 1);
     assert.deepEqual(await savedAdmission(), key);
     assert.deepEqual(validations, [a.ref.id, a.ref.id]);
@@ -502,8 +508,7 @@ test("a source update withholds resolved material after its provider or injector
   const created = await f.request("POST", f.path, { body });
   assert.equal(created.status, 201);
   const { id } = created.data;
-  const update = (): Promise<{ status: number }> =>
-    f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
+  const update = () => f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
   const savedSource = () =>
     f.controller.transact((unit: PlatformUnitOfWork) =>
       unit.credentialSources.findCredentialSource(f.namespace.id, id),
@@ -547,6 +552,11 @@ test("a source update withholds resolved material after its provider or injector
   const reads = f.secretReads;
   const refused = await update();
   assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body.error, {
+    code: "RESOURCE_CONFLICT",
+    message:
+      "The selected credential provider changed during admission. Review the current provider configuration and retry the same source update only after confirming the configuration is current.",
+  });
   assert.equal(f.secretReads, reads, "a replacement before access must prevent the Secret read");
   assert.deepEqual([originalCalls, replacementCalls], [1, 0]);
   assert.deepEqual(await savedSource(), before);

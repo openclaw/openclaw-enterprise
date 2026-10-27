@@ -6102,7 +6102,9 @@ export class OpenClawController {
         : control.providers.find((entry) => entry.sourceType.type === type);
     const provider = resolve();
     if (provider === "ambiguous") {
-      throw new ResourceStateConflictError("The admitted credential provider is ambiguous.");
+      throw new ResourceStateConflictError(
+        "The admitted credential provider has duplicate registrations. Ask an Installation administrator to resolve them.",
+      );
     }
     if (!provider) {
       return undefined;
@@ -6119,7 +6121,7 @@ export class OpenClawController {
         provider.normalizeConfig !== normalizeConfig
       ) {
         throw new ResourceStateConflictError(
-          "The selected credential provider changed during admission.",
+          "The selected credential provider changed during admission. Review the current provider configuration and retry the same source update only after confirming the configuration is current.",
         );
       }
     };
