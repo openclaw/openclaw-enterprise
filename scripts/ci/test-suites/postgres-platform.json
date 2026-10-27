@@ -335,6 +335,12 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-prepared-git-route-selection.test.ts",
+      "expectedTests": [
+        "prepared Git keeps the reserved route and rechecks a withdrawn grant before origin I/O"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-openshell-online-git-journey.test.mjs",
       "expectedTests": [
         "OCE signed TLS Git authorization composes with PostgreSQL admission and material withdrawal"
