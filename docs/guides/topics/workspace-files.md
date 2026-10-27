@@ -41,9 +41,12 @@ it is not available with the bundled [SSH Driver](../../reference/drivers/ssh-co
 
 1. Open **Agents**, select the Agent in the intended Namespace, and open
    **Workspace files**.
-2. The four files are listed with their own **Reload** and **Save**. Use
-   **Reload** before editing if another person might have changed the file;
-   reloading discards your unsaved changes.
+2. Choose **Instructions** (`AGENTS.md`), **Personality** (`SOUL.md`), **Identity**
+   (`IDENTITY.md`), or **User context** (`USER.md`). On a phone, use the
+   **Workspace file** dropdown. Read the description above the editor to check
+   the file's role. Switching files keeps unsaved edits. Use **Reload** before
+   editing if another person might have changed the file; reloading discards
+   that file's unsaved changes.
 3. Edit the text, then select **Save** for that file. Saving creates or replaces
    only the selected file. Each file can contain up to 16 KiB of UTF-8 text.
 4. Reload the file to confirm the expected content was stored.

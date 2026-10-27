@@ -4,6 +4,12 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import {
+  CONSOLE_NAMESPACE_NOT_READY,
+  RESOURCE_CONFLICT,
+  SECRET_CREATE_DENIED,
+  SECRET_NAME_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -602,14 +608,8 @@ for (const viewport of consoleViewports) {
     // The Secret API never answers 429: a rate limit in front of it (an ingress or proxy) does,
     // with its own page and no API envelope.
     const cases = [
-      [
-        apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"),
-        "This Namespace is not ready, so it cannot store Secrets yet.",
-      ],
-      [
-        apiErrorResponse(403, "FORBIDDEN", "refused"),
-        "Access denied. You do not have permission to manage this Secret binding.",
-      ],
+      [apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"), CONSOLE_NAMESPACE_NOT_READY],
+      [apiErrorResponse(403, "FORBIDDEN", "refused"), SECRET_CREATE_DENIED],
       [proxyErrorResponse(429), "Too many requests. Wait before trying again."],
     ] as const;
     // While the request runs, every control that could change or reveal the value is disabled.
@@ -641,14 +641,29 @@ for (const viewport of consoleViewports) {
       assert.ok(focused.text.startsWith(text), `${status}: ${focused.text}`);
       assert.equal(focused.inView, true, `${status}: in view`);
     }
-    // A name conflict still puts focus on Name to change it.
-    refusal = apiErrorResponse(409, "RESOURCE_CONFLICT", "refused");
+    // A name conflict shows the API's sentence and still puts focus on Name to change it.
+    refusal = apiErrorResponse(409, "RESOURCE_CONFLICT", SECRET_NAME_CONFLICT);
     await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-    await dialog.getByRole("alert").filter({ hasText: "may already exist" }).waitFor();
+    await dialog.getByRole("alert").filter({ hasText: SECRET_NAME_CONFLICT }).waitFor();
     assert.equal(
       await focusedId(page),
       await dialog.getByLabel("Name", { exact: true }).getAttribute("id"),
     );
+    // A conflict that names no reason, either with no message at all (a body without the API's
+    // envelope) or with the API's generic text, keeps the dialog's name and Namespace guidance
+    // instead of the generic "Refresh, then try again" (review of #3690).
+    const unexplained =
+      "Secret creation conflicted. A Secret with this name may already exist in this Namespace. Check the name and Namespace state before trying again.";
+    for (const response of [
+      proxyErrorResponse(409),
+      apiErrorResponse(409, "RESOURCE_CONFLICT", RESOURCE_CONFLICT),
+    ]) {
+      refusal = response;
+      await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+      await dialog.getByRole("alert").filter({ hasText: unexplained }).waitFor();
+      assert.equal(await dialog.getByText(/Refresh, then try again/).count(), 0);
+      assert.equal(await dialog.getByText(SECRET_NAME_CONFLICT).count(), 0);
+    }
     // An unknown outcome disables Name, Value and the submit, so its message takes focus like a
     // refusal (finding 2075). It is last: the dialog refuses another try until a refresh.
     refusal = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "refused");

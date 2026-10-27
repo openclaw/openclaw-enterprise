@@ -28,7 +28,7 @@ func TestAgentRuntimeTableShowsCurrentContainerReason(t *testing.T) {
 			}}
 			var out bytes.Buffer
 			app := &application{out: &out}
-			if err := app.printRuntime(map[string]any{"pods": []any{pod}}, "ns_1", "agt_1", "rev_1"); err != nil {
+			if err := app.printRuntime(map[string]any{"pods": []any{pod}}, "ns_00000000-0000-4000-8000-000000000001", "agt_00000000-0000-4000-8000-000000000001", "rev_00000000-0000-4000-8000-000000000001"); err != nil {
 				t.Fatal(err)
 			}
 			_, row, _ := strings.Cut(out.String(), "\n")
@@ -47,7 +47,7 @@ func TestAgentRuntimeTableReadsASoleContainerAndRefusesMalformedPods(t *testing.
 	}}
 	var out bytes.Buffer
 	app := &application{out: &out}
-	if err := app.printRuntime(map[string]any{"pods": []any{pod}}, "ns_1", "agt_1", "rev_1"); err != nil {
+	if err := app.printRuntime(map[string]any{"pods": []any{pod}}, "ns_00000000-0000-4000-8000-000000000001", "agt_00000000-0000-4000-8000-000000000001", "rev_00000000-0000-4000-8000-000000000001"); err != nil {
 		t.Fatal(err)
 	}
 	_, row, _ := strings.Cut(out.String(), "\n")
@@ -55,7 +55,7 @@ func TestAgentRuntimeTableReadsASoleContainerAndRefusesMalformedPods(t *testing.
 		t.Errorf("pod row = %q, want the sole container's state and restarts", got)
 	}
 	out.Reset()
-	err := app.printRuntime(map[string]any{"pods": []any{pod, "sbx-1"}}, "ns_1", "agt_1", "rev_1")
+	err := app.printRuntime(map[string]any{"pods": []any{pod, "sbx-1"}}, "ns_00000000-0000-4000-8000-000000000001", "agt_00000000-0000-4000-8000-000000000001", "rev_00000000-0000-4000-8000-000000000001")
 	if err == nil || err.Error() != "OCC returned an invalid runtime description" || out.Len() != 0 {
 		t.Errorf("malformed Pod: error = %v, output = %q", err, out.String())
 	}

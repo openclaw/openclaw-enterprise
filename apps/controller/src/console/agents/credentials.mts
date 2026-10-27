@@ -9,14 +9,15 @@ import type {
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { sameValue } from "../carry.mjs";
 import { element, button, focusSaveOutcome, setStatusTone, validateFields } from "../dom.mjs";
+import { wholeEnvironmentReferenceName } from "../environment-references.mjs";
 import {
+  askInstallationAdministrator,
   configurationConflictMessage,
   isStaleGeneration,
   namespacePath,
   SAVE_REFUSALS,
 } from "./list.mjs";
 import {
-  askInstallationAdministrator,
   credentialOperateGrants,
   ensureCredentialOperateBinding,
   type AgentAccessContext,
@@ -46,6 +47,16 @@ function channelEnabled(values: unknown, provider: string) {
   );
 }
 
+// The environment key a Slack token reads, as the Slack Channel Driver reads it: an env
+// SecretRef's id, or NAME when the token is exactly one `${NAME}` (finding 2513).
+function slackTokenKey(token: unknown) {
+  if (typeof token === "string") {
+    return wholeEnvironmentReferenceName(token);
+  }
+  const { source, id } = responseFields(token);
+  return source === "env" && typeof id === "string" ? id : undefined;
+}
+
 // Named accounts must not use the standard keys: OpenClaw reads SLACK_APP_TOKEN and
 // SLACK_BOT_TOKEN as an extra implicit default account. For them, require exactly the
 // environment keys the native document references; null means the default account only.
@@ -59,9 +70,9 @@ function namedSlackAccountKeys(values: unknown) {
   for (const account of [slack, ...Object.values(accounts)]) {
     const { appToken, botToken } = responseFields(account);
     for (const token of [appToken, botToken]) {
-      const { source, id } = responseFields(token);
-      if (source === "env" && typeof id === "string") {
-        keys.add(id);
+      const key = slackTokenKey(token);
+      if (key !== undefined) {
+        keys.add(key);
       }
     }
   }
@@ -614,12 +625,18 @@ export function createChannelSecretsPanel({
 
   // Channel credentials are saved and complete: the next-step card's credentials step (UX spec
   // 3.7). Deploy also needs the version history.
+  // A grant this session could not verify holds nothing: the save finished, nothing here can
+  // confirm the grant, and the API checks the Agent's access when it deploys (finding 2547).
+  function grantHoldsDeploy() {
+    return Boolean(state.saveGrantWarning) && state.grantProblem !== "unverified";
+  }
+
   function credentialsReady() {
     return (
       !state.saving &&
       !state.outcomeUnknown &&
       !state.reloadRequired &&
-      !state.saveGrantWarning &&
+      !grantHoldsDeploy() &&
       !state.unsavedSecrets &&
       hasRequiredChannelCredentials(state.values, state.configuration)
     );
@@ -642,7 +659,7 @@ export function createChannelSecretsPanel({
     if (!revisionsLoaded) {
       return "Version history is required before deploying this new version.";
     }
-    if (state.saveGrantWarning) {
+    if (grantHoldsDeploy()) {
       return "Resolve the saved Secret access grant before deploying.";
     }
     const blockReason = channelCredentialBlockReason(state.values);

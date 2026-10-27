@@ -34,7 +34,8 @@
     {
       "path": "tests/integration/runtime-image-gateway-unclean-restart.test.mjs",
       "expectedTests": [
-        "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns"
+        "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns",
+        "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner"
       ]
     },
     {

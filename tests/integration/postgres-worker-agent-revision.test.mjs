@@ -48,6 +48,12 @@ import {
   repositoryAttempts,
   repositoryBoundary,
 } from "../helpers/postgres-worker-revision-support.mjs";
+import {
+  DEPLOYMENT_FAILED,
+  IMAGE_PULL_FAILING,
+  POD_QUOTA_FULL,
+  WORKSPACE_SETUP_RETRYING,
+} from "../helpers/refusal-text.mjs";
 
 // Deployment, dispatch, convergence and the persisted lifecycle. Credential-source withdrawals and
 // listed sources that lose their grant or readiness are in the -credential-sources sibling; the
@@ -533,6 +539,7 @@ revisionTest(
           agentId: malformedAdmission.id,
           revision: 1,
           backendId: null,
+          gatewayManagedMode: malformedAdmission.gatewayManagedMode,
           configuration: {},
           executionAdmission: first.executionAdmission,
           servicePrincipalId: malformedAdmission.servicePrincipalId,
@@ -1177,6 +1184,59 @@ revisionTest(
 );
 
 revisionTest(
+  "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("cleanup-status");
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool);
+    const readStatus = () => fixture.deploymentStatus(owner, candidate);
+
+    // The deployment records evidence, then its preparation fails permanently. As the worker
+    // does, the failing claim registers the revision's cleanup and then fails the deployment.
+    const deferredDeploy = await queue.claim();
+    assert.equal(deferredDeploy.idempotencyKey, candidate.idempotencyKey);
+    await queue.defer(deferredDeploy, { code: "REVISION_INCOMPLETE" }, { delayMs: 60_000 });
+    await makeWorkDue(fixture.observerPool, candidate.idempotencyKey);
+    const deploy = await queue.claim();
+    assert.equal(deploy.idempotencyKey, candidate.idempotencyKey);
+    await queue.enqueueRepositoryCleanup(
+      deploy,
+      { namespaceId: fixture.namespace.id, agentId: owner.id, revisionId: candidate.id },
+      "failed-preparation",
+    );
+    await queue.fail(deploy, { code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" });
+
+    // No worker has claimed the cleanup yet: it waits, whatever its deployment recorded
+    // (findings 2456, 2466 apply only to started work).
+    const waiting = await readStatus();
+    assert.equal(waiting.status, "failed");
+    assert.equal(waiting.cleanup.status, "queued");
+    assert.equal(typeof waiting.cleanup.nextAttemptAt, "string");
+
+    // A claimed cleanup runs and has no next attempt; it has recorded no result.
+    const claim = await queue.claim();
+    assert.match(claim.idempotencyKey, /^agent_revision:[^:]+:repository_cleanup:retire:/);
+    assert.equal(claim.revisionId, candidate.id);
+    assert.deepEqual((await readStatus()).cleanup, { status: "running", nextAttemptAt: null });
+
+    // A retry counts the attempt and queues the cleanup again. It stays running between
+    // attempts and still reports no result.
+    await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
+    assert.equal((await queue.findWork(claim.idempotencyKey)).attemptCount, 1);
+    const retrying = await readStatus();
+    assert.equal(retrying.cleanup.status, "running");
+    assert.equal(typeof retrying.cleanup.nextAttemptAt, "string");
+
+    // Only the recorded result completes it.
+    await makeWorkDue(fixture.observerPool, claim.idempotencyKey);
+    const last = await queue.claim();
+    assert.equal(last.idempotencyKey, claim.idempotencyKey);
+    assert.equal((await readStatus()).cleanup.status, "running");
+    await queue.complete(last, { code: "REPOSITORY_CLEANUP_COMPLETE" });
+    assert.deepEqual((await readStatus()).cleanup, { status: "succeeded", nextAttemptAt: null });
+  },
+);
+
+revisionTest(
   "real PostgreSQL preserves the failure budget while an Agent runtime converges",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("slow-runtime");
@@ -1389,20 +1449,17 @@ revisionTest(
     // Finding 1617: a full Namespace Pod quota is named, without its numbers.
     assert.deepEqual(await progress(overQuota, overQuotaRevision), {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
-      message:
-        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+      message: POD_QUOTA_FULL,
     });
     // Finding 1677: Kubernetes is restarting a failed workspace setup that may still pass.
     assert.deepEqual(await progress(setupRetrying, setupRetryingRevision), {
       code: "WORKSPACE_SETUP_RETRYING",
-      message:
-        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
+      message: WORKSPACE_SETUP_RETRYING,
     });
     // Finding 1762: the kubelet cannot pull an image; fixed copy, never the image reference.
     assert.deepEqual(await progress(imagePull, imagePullRevision), {
       code: "REVISION_IMAGE_PULL_FAILED",
-      message:
-        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
+      message: IMAGE_PULL_FAILING,
     });
     const firstDelay = async (revision) => {
       const recorded = delays.get(revision.idempotencyKey);
@@ -2307,8 +2364,7 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "RUNTIME_CPU_STARVED",
-        message:
-          "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
+        message: DEPLOYMENT_FAILED.RUNTIME_CPU_STARVED,
       },
     },
   },
@@ -2328,8 +2384,7 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "WORKSPACE_SETUP_REFUSED",
-        message:
-          "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.",
+        message: DEPLOYMENT_FAILED.WORKSPACE_SETUP_REFUSED,
       },
     },
   },
@@ -2376,7 +2431,7 @@ revisionTest(
       error: {
         code: "RUNTIME_MODEL_PROBE_FAILED",
         message:
-          "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
+          "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.",
         data: { runtimeFailure },
       },
     });
@@ -2393,7 +2448,7 @@ revisionTest(
           error: {
             code: "RUNTIME_MODEL_PROBE_TIMEOUT",
             message:
-              "The startup model check did not get a reply from the model provider in time. With OpenClaw this includes a provider the runtime cannot reach (refused connection or unknown host). Check that the runtime can reach the provider (network egress, proxy, or a custom baseUrl in the Configuration) and that the provider is responding, then deploy a new version.",
+              "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
           },
         },
       },
@@ -2562,7 +2617,7 @@ revisionTest(
         error: {
           code: "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
           message:
-            "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.",
+            "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness. Use credential sources instead of Secret bindings, or ask an Installation administrator for a Sandbox Driver that supports them, then deploy again.",
         },
       },
     });
@@ -2602,7 +2657,7 @@ revisionTest(
       error: {
         code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
         message:
-          "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.",
+          "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check the worker's tenant RoleBindings for secrets and any admission policy or ResourceQuota, then deploy again.",
       },
     });
     assert.equal(preparations, 1);
@@ -3152,7 +3207,7 @@ for (const refusal of [
     error: {
       code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
       message:
-        "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.",
+        "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check the worker's tenant RoleBindings for secrets and any admission policy or ResourceQuota, then deploy again.",
     },
     cause: "KubernetesSecretWriteForbiddenError",
   },
@@ -3297,7 +3352,8 @@ for (const { label, failure, code, message } of [
         "A Kubernetes API request timed out.",
       ),
     code: "KUBERNETES_API_UNAVAILABLE",
-    message: "The Kubernetes API was still unavailable at the deployment deadline.",
+    message:
+      "The Kubernetes API was still unavailable at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the cluster's API server.",
   },
   {
     label: "OpenShell admission limit",
@@ -3309,7 +3365,7 @@ for (const { label, failure, code, message } of [
       }),
     code: "SANDBOX_ADMISSION_LIMIT_REACHED",
     message:
-      "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.",
+      "The Sandbox gateway still refused new controller requests (request admission limit reached) at the deployment deadline. Deploy again once other Sandbox work has finished; if it keeps failing, ask an operator to check the gateway's request limit.",
   },
   {
     // Finding 2040: a gateway that never comes back is bounded by the deadline too.
@@ -3317,7 +3373,8 @@ for (const { label, failure, code, message } of [
     failure: () =>
       new SandboxGatewayUnavailableError("OpenShell CreateSandbox failed with gRPC status 14."),
     code: "SANDBOX_GATEWAY_UNAVAILABLE",
-    message: "The Sandbox gateway still did not answer the controller at the deployment deadline.",
+    message:
+      "The Sandbox gateway still did not answer the controller at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the Sandbox gateway.",
   },
 ]) {
   test(

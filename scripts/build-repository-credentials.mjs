@@ -18,24 +18,45 @@ const emittedRoot = await realpath(join(repositoryRoot, "apps/controller/dist"))
 const artifactRoot = join(repositoryRoot, ".build/repository-credentials");
 const clientRoot = join(emittedRoot, "drivers/repo/github/credentials/client");
 const clientContracts = join(emittedRoot, "drivers/repo/credentials/client-contracts.js");
+// The sender needs hashing, random identifiers and certificate inspection, but
+// signing belongs to the worker. Keep this independent of module filenames.
+const serviceCryptoImports = new Set([
+  "createHash",
+  "randomBytes",
+  "randomUUID",
+  "X509Certificate",
+]);
 
 function contained(root, path) {
   const suffix = relative(root, path);
   return suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
 }
 
-function dependencies(source, path) {
+function dependencies(source, path, runtime) {
   const specifiers = new Set();
   const unsupported = () => {
     throw new Error(`Unsupported runtime import in ${path}`);
   };
-  function add(node) {
+  function add(node, declaration) {
     if (node?.type !== "StringLiteral") {
       unsupported();
     }
     // Alternate module loaders could hide dependencies from this ESM closure.
     if (node.value === "module" || node.value === "node:module") {
       unsupported();
+    }
+    if (
+      runtime === "service" &&
+      (node.value === "crypto" || node.value === "node:crypto") &&
+      (declaration.type !== "ImportDeclaration" ||
+        declaration.specifiers.length === 0 ||
+        declaration.specifiers.some(
+          (specifier) =>
+            specifier.type !== "ImportSpecifier" ||
+            !serviceCryptoImports.has(specifier.imported.name),
+        ))
+    ) {
+      throw new Error(`Unsupported service cryptographic capability in ${path}`);
     }
     specifiers.add(node.value);
   }
@@ -49,19 +70,19 @@ function dependencies(source, path) {
       node.type === "ExportAllDeclaration"
     ) {
       if (node.source) {
-        add(node.source);
+        add(node.source, node);
       }
     } else if (node.type === "ImportExpression") {
       if (node.options || node.phase) {
         unsupported();
       }
-      add(node.source);
+      add(node.source, node);
     } else if (node.type === "CallExpression" || node.type === "OptionalCallExpression") {
       if (node.callee.type === "Import") {
         if (node.arguments.length !== 1) {
           unsupported();
         }
-        add(node.arguments[0]);
+        add(node.arguments[0], node);
       } else if (node.callee.type === "Identifier" && node.callee.name === "require") {
         unsupported();
       }
@@ -119,7 +140,7 @@ async function closure(name, entrypoints) {
     }
     const source = await readModule(path, name);
     files.set(path, source);
-    for (const specifier of dependencies(source, relative(emittedRoot, path))) {
+    for (const specifier of dependencies(source, relative(emittedRoot, path), name)) {
       if (isBuiltin(specifier)) {
         continue;
       }

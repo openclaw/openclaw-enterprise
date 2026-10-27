@@ -10,7 +10,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
+import { CODEX_PLACEMENT_REFUSAL, EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 
 async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
@@ -673,8 +673,7 @@ test("Create Agent's preflight refuses a planned Harness authentication that Age
   const foreign = await f.createSecret(other.id, "foreign-model-key", "test-api-key");
   const missing = { ...foreign.ref, id: `sec_${crypto.randomUUID()}` };
   const crossNamespace = "Secret references cannot cross Namespaces.";
-  const embeddedMethod =
-    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
+  const embeddedMethod = EMBEDDED_API_KEY_REQUIRED;
   for (const [harnessAuth, message] of [
     [{ method: "api_key" }, undefined],
     [{ method: "codex_pat" }, embeddedMethod],

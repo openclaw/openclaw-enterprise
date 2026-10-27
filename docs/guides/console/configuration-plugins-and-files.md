@@ -21,10 +21,31 @@ In the draft, **Enable gateway password access** stages the generated-password
 reference; authentication mode and proxy settings stay unchanged. The Compute
 Driver owns the password; the Console shows only its reference.
 
+**Collaboration and safety** shows two Gateway settings as a deployment of the
+draft applies them, and whether each value is the default or set in the
+Configuration:
+
+- **Other participants can steer a running turn**
+  (`messages.queue.allowCollaborativeSteering`, default on): another person in the
+  conversation can add guidance to a running turn. The turn keeps the identity
+  and permissions of the person who started it, even when the person steering
+  has fewer. When off, their message runs as a separate turn after it. With
+  `messages.queue.collaborativeSteeringFallback: reject` (the default of
+  `security.preset: corporate`), the Gateway refuses it instead and asks them to
+  resend it with `/followup`. The help text shows which applies.
+- **apply_patch changes files only in the workspace**
+  (`tools.exec.applyPatch.workspaceOnly`, default on).
+
+**Strict mode** writes the locked-down value of each setting into the
+Configuration; turning it off removes them, so each setting follows its default.
+A toggle set back to its default removes its value. Each change edits the
+Configuration JSON: save it, then deploy a new version. Without Configuration
+`update`, the toggles are unavailable.
+
 **Edit Configuration** edits native JSON. **Save Configuration** requires an object;
 **Cancel** discards edits. **Edit current Configuration** opens the current draft's editor,
 not a historical copy. Without Configuration `update`, or Secret `operate` on a Secret the
-Configuration binds, it reads **Open version draft** and opens the draft read-only. Saving preserves Secret bindings and saved versions;
+Configuration binds, it reads **Open draft** and opens the draft read-only. Saving preserves Secret bindings and saved versions;
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.
 
@@ -38,7 +59,7 @@ Configuration JSON. See the [Configuration reference](../../reference/configurat
 
 ## Plugins tab
 
-In **Create new version** → **Plugins**, edit the Agent's existing selections and
+In **Open draft** → **Plugins**, edit the Agent's existing selections and
 tool policies with **Configure plugins** or **Plugin selections JSON**. With a bound
 Service Accounts token Secret, the tab preloads the first catalog page for the
 picker. Search and tool lookups show loading indicators. Dedicated Codex browsing
@@ -80,7 +101,7 @@ new version**. Otherwise, edit the reloaded settings and save only the changes
 you still need.
 
 When viewing a saved version, the **Plugins** tab shows that version's
-saved selection. Return to **Create new version** to make another edit.
+saved selection. Return to **Open draft** to make another edit.
 Native `values.plugins` in **Edit Configuration** controls the runtime's native
 plugin allowlist and is separate from these Agent-owned selections.
 
@@ -100,6 +121,9 @@ version. They are not historical copies or Configuration fields.
 | `IDENTITY.md` | Agent identity and presentation.                  |
 | `USER.md`     | Context about the person the Agent assists.       |
 
+Choose a file with its desktop tab or the phone **Workspace file** dropdown.
+The description explains its role. Switching files keeps unsaved text and each
+file's indicator shows Unsaved, Loading, Missing, Read-only, or Needs attention.
 Each editor loads independently. Its status reports loading, success, or failure.
 **Reload** replaces unsaved edits with current contents. **Save** immediately
 creates or replaces that one file; it does not deploy a version. Save is disabled

@@ -23,7 +23,7 @@ import {
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { AGENT_NAME_CONFLICT, GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import { AGENT_NAME_CONFLICT, callerDenied } from "../helpers/refusal-text.mjs";
 
 async function ensureInstallation(state, name) {
   const existing = await state.loadInstallation();
@@ -109,6 +109,7 @@ test(
       configurationId: `cfg_${randomUUID()}`,
       backendId: null,
       harnessAuth: null,
+      gatewayManagedMode: true,
       draft_spec: {},
       executionMode: "embedded",
       servicePrincipalId: `service-agent-${randomUUID()}`,
@@ -120,6 +121,7 @@ test(
       agentId,
       revision: 1,
       backendId: null,
+      gatewayManagedMode: agent.gatewayManagedMode,
       configurationId: `cfg_${randomUUID()}`,
       configurationKind: "agent",
       configurationGeneration: 1,
@@ -551,7 +553,7 @@ test(
         generation: 1,
         createdAt,
       });
-      await unit.agents.createAgent({
+      const agent = await unit.agents.createAgent({
         id: agentId,
         namespaceId,
         name: "Provisioning success",
@@ -570,6 +572,7 @@ test(
         agentId,
         revision: 1,
         backendId: null,
+        gatewayManagedMode: agent.gatewayManagedMode,
         configurationId,
         configurationKind: "agent",
         configurationGeneration: 1,
@@ -1890,6 +1893,7 @@ test(
         agentId: agent.id,
         revision: 1,
         backendId: null,
+        gatewayManagedMode: agent.gatewayManagedMode,
         configurationId: configuration.id,
         configurationKind: "agent",
         configurationGeneration: 1,
@@ -1969,6 +1973,13 @@ test(
     const detail = await request(api, "GET", agentPath);
     assert.equal(detail.status, 200);
     assert.deepEqual(detail.data, degradedAgent);
+    // An Agent update checks the sources its saved settings bind, which this Agent's unreadable
+    // settings do not show: the sources answer stays false, even for a caller with every grant.
+    const permissions = await request(api, "GET", `${agentPath}/permissions`);
+    assert.equal(permissions.status, 200);
+    assert.equal(permissions.data.update, true);
+    assert.equal(permissions.data.configurationRead, true);
+    assert.equal(permissions.data.agentSourcesOperate, false);
 
     // The list carries summaries, newest first. It never decodes a snapshot, so the
     // unreadable revision lists like any other; its exact read reports the error.
@@ -2111,15 +2122,16 @@ test(
 
     // The degraded response has the same exact-resource IAM boundary as a
     // healthy response; neither metadata nor decode errors may leak on denial.
-    for (const [resourceKind, resourceId, listPath, detailPath, visible] of [
+    for (const [resourceKind, kindLabel, resourceId, listPath, detailPath, visible] of [
       [
         "agent_revision",
+        "AgentRevision",
         malformedRevisionId,
         revisionPath,
         `${revisionPath}/${malformedRevisionId}`,
         [revisionSummary(healthyRevision.data, "queued")],
       ],
-      ["agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
+      ["agent", "Agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
     ]) {
       await pool.query(
         `INSERT INTO occ.iam_restrictions
@@ -2132,9 +2144,10 @@ test(
       assert.deepEqual(filtered.data, visible);
       const denied = await request(api, "GET", detailPath);
       assert.equal(denied.status, 403);
+      // The Restriction reads as any missing grant on the ID the path named.
       assert.deepEqual(denied.error, {
         code: "FORBIDDEN",
-        message: GENERIC_DENIAL,
+        message: callerDenied(`${kindLabel} read`, `${kindLabel} ${resourceId}`),
       });
       assert.equal(denied.data, undefined);
     }
@@ -2190,6 +2203,7 @@ test(
           agentId: agent.id,
           revision,
           backendId: null,
+          gatewayManagedMode: agent.gatewayManagedMode,
           configurationId: configuration.id,
           configurationKind: "agent",
           configurationGeneration: 1,

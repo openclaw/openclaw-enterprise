@@ -1,12 +1,58 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import { type createApiClient, requestFailure, responseFields } from "../api-client.mjs";
-import { element, button, setFieldError, statusBlock, validateFields } from "../dom.mjs";
+import {
+  type createApiClient,
+  namedDenial,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
+import {
+  element,
+  button,
+  setFieldError,
+  statusBlock,
+  validateFields,
+  withRequestId,
+} from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
+import {
+  WORKSPACE_READ_DENIED,
+  WORKSPACE_SAVE_DENIED,
+  WORKSPACE_SAVE_REFUSED,
+} from "./access-reasons.mjs";
+import { describeFailure } from "./list.mjs";
 
-const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
+const workspaceFiles = [
+  {
+    name: "AGENTS.md",
+    label: "Instructions",
+    title: "Working instructions",
+    description:
+      "Working instructions and workspace conventions: startup steps, tool use, memory practices, and rules for completing tasks.",
+  },
+  {
+    name: "SOUL.md",
+    label: "Personality",
+    title: "Personality and behavior",
+    description:
+      "The Agent’s personality, tone, values, and behavioral boundaries. Use this file to guide how it communicates and approaches its work.",
+  },
+  {
+    name: "IDENTITY.md",
+    label: "Identity",
+    title: "Name and appearance",
+    description:
+      "The Agent’s name, persona, emoji, and avatar. Use this file for how the Agent identifies and presents itself.",
+  },
+  {
+    name: "USER.md",
+    label: "User context",
+    title: "User preferences and context",
+    description:
+      "Stable preferences and background about the person this Agent supports, such as communication style and ongoing work. This is Agent-wide context, shared across its workspace.",
+  },
+];
 // Shown when the caller's permission answer denies Agent operate, which saving a file needs.
-const OPERATE_DENIED =
-  "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
+const OPERATE_DENIED = WORKSPACE_SAVE_DENIED;
 
 interface WorkspaceContext {
   request: ReturnType<typeof createApiClient>;
@@ -43,13 +89,26 @@ export function workspaceFileProblem(name: string, content: string) {
   return "";
 }
 
-function fileError(error: FileFailure, writing: boolean) {
-  let text = "Workspace access is unavailable. Check the Agent gateway and try reloading.";
+const WORKSPACE_GATEWAY_UNAVAILABLE =
+  "Workspace files could not be reached: the Agent's gateway did not answer. Check that the Agent is running, then reload this file. If it continues, ask an operator to check the gateway.";
+const WORKSPACE_API_UNREACHABLE =
+  "The request did not reach the API. Check your connection, then reload this file.";
+
+function fileError(error: FileFailure, writing: boolean, failure: unknown) {
+  // A failure without its own text below says why by status (finding 2538): a rate limit how
+  // long to wait, a conflict the API's reason, a request that never reached the API that, and
+  // anything else that the gateway did not answer.
+  const { name } = responseFields(failure);
+  let text =
+    error.status === 409 || error.status === 429
+      ? describeFailure(error)
+      : error.status === undefined && (name === "TypeError" || name === "TimeoutError")
+        ? WORKSPACE_API_UNREACHABLE
+        : WORKSPACE_GATEWAY_UNAVAILABLE;
   if (error.status === 403) {
-    // Saving a file is an Agent operate action (finding 1540).
-    text = writing
-      ? "You do not have permission to save this file. Ask an administrator for Agent operate access."
-      : "Access denied. You do not have permission for this file operation.";
+    // Saving a file is an Agent operate action (finding 1540); reading one is Agent read, unless
+    // the API names another grant.
+    text = writing ? WORKSPACE_SAVE_REFUSED : (namedDenial(error) ?? WORKSPACE_READ_DENIED);
   }
   if (error.status === 404) {
     text = "File unavailable or missing. Check Agent access before creating it.";
@@ -62,7 +121,7 @@ function fileError(error: FileFailure, writing: boolean) {
     text =
       "Outcome unknown. Your write may have succeeded. Reload this file and review its current contents before saving again.";
   }
-  return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+  return withRequestId(text, error.requestId);
 }
 
 // Only this answer confirms the file itself is absent. A resource or scope 404 does not establish
@@ -119,12 +178,115 @@ export function renderWorkspaceFiles(
       element(
         "p",
         { className: "muted", role: "status" },
-        "Workspace files require a deployed Agent with a current version and a reachable gateway.",
+        "Workspace files require a deployed Agent with a current version and a reachable gateway. Deploy the Agent to read or edit them.",
       ),
     );
     return { section, refresh: () => {} };
   }
-  for (const name of filenames) {
+  const selectionKey = "workspace:selection";
+  const retainedSelection = context.drafts.get(selectionKey);
+  let selectedFile =
+    workspaceFiles.find((file) => file.name === retainedSelection)?.name ?? "AGENTS.md";
+  context.drafts.track(selectionKey, () => selectedFile);
+  context.drafts.unsavedWhen(selectionKey, () => false);
+  const fileTabs = element("div", {
+    className: "workspace-file-tabs",
+    role: "tablist",
+    "aria-label": "Workspace file",
+  });
+  const fileSelect = element("select", { id: "workspace-file-picker" });
+  const mobilePicker = element(
+    "div",
+    { className: "workspace-file-mobile" },
+    element("label", { for: fileSelect.id }, "Workspace file"),
+    fileSelect,
+  );
+  const title = element("h3");
+  const description = element("p", { id: "workspace-file-description" });
+  const surface = element(
+    "div",
+    { className: "workspace-picker-surface" },
+    fileTabs,
+    mobilePicker,
+    element(
+      "div",
+      { className: "workspace-file-intro" },
+      title,
+      description,
+      element(
+        "p",
+        { className: "workspace-file-switch-note" },
+        "Switching files keeps unsaved edits. Save applies only to the selected file.",
+      ),
+    ),
+  );
+  section.append(surface);
+  const choices: Array<{
+    name: string;
+    title: string;
+    description: string;
+    tab: HTMLButtonElement;
+    panel: HTMLElement;
+  }> = [];
+  function chooseFile(name: string) {
+    const chosen = choices.find((file) => file.name === name);
+    if (!chosen) {
+      return;
+    }
+    selectedFile = name;
+    fileSelect.value = name;
+    title.textContent = chosen.title;
+    description.textContent = chosen.description;
+    for (const file of choices) {
+      const active = file === chosen;
+      file.panel.hidden = !active;
+      file.tab.setAttribute("aria-selected", String(active));
+      file.tab.tabIndex = active ? 0 : -1;
+    }
+  }
+  fileSelect.addEventListener("change", () => chooseFile(fileSelect.value));
+  fileTabs.addEventListener("keydown", (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    const at = choices.findIndex((file) => file.tab === document.activeElement);
+    const next = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: choices.length - 1 }[
+      event.key
+    ];
+    if (at < 0 || next === undefined) {
+      return;
+    }
+    event.preventDefault();
+    const file = choices[(next + choices.length) % choices.length];
+    if (file) {
+      chooseFile(file.name);
+      file.tab.focus();
+    }
+  });
+  for (const file of workspaceFiles) {
+    const { name, label } = file;
+    const fileId = `workspace-choice-${name.toLowerCase().replace(".", "-")}`;
+    const badge = element("span", {
+      className: "badge workspace-file-badge",
+      id: `${fileId}-status`,
+      hidden: true,
+    });
+    const tab = button("", () => chooseFile(name), {
+      className: "workspace-file-tab",
+      id: `${fileId}-tab`,
+      role: "tab",
+      "aria-label": `${label} · ${name}`,
+      "aria-controls": `${fileId}-panel`,
+      "aria-describedby": badge.id,
+    });
+    tab.append(
+      element("span", { className: "workspace-file-role" }, label),
+      element("code", { className: "workspace-file-name" }, name),
+      badge,
+    );
+    const option = element("option", { value: name }, `${label} · ${name}`);
+    fileTabs.append(tab);
+    fileSelect.append(option);
     const draftKey = `workspace:${name}`;
     const retained = context.drafts.get(draftKey) as WorkspaceDraft | undefined;
     const endpoint = `${path}/workspace/files/${encodeURIComponent(name)}`;
@@ -142,7 +304,7 @@ export function renderWorkspaceFiles(
       spellcheck: "false",
       className: "configuration-editor",
       disabled: true,
-      "aria-describedby": `workspace-${name}-hint`,
+      "aria-describedby": `workspace-${name}-hint ${description.id}`,
     });
     const status = element("p", { className: "hint", role: "status" }, `Loading ${name}…`);
     const errorNotice = statusBlock("danger", null, null);
@@ -191,6 +353,18 @@ export function renderWorkspaceFiles(
       errorNotice,
       element("div", { className: "form-actions" }, reload, save),
     );
+    const panel = element(
+      "div",
+      {
+        className: "workspace-file-panel",
+        id: `${fileId}-panel`,
+        role: "tabpanel",
+        "aria-labelledby": tab.id,
+      },
+      form,
+    );
+    choices.push({ ...file, tab, panel });
+    surface.append(panel);
     const updateControls = () => {
       editor.disabled = pending || !loaded;
       // The file stays readable and selectable, but an edit no Save can keep is not offered.
@@ -207,6 +381,31 @@ export function renderWorkspaceFiles(
         save.removeAttribute("aria-disabled");
         save.removeAttribute("aria-describedby");
       }
+      const dirty = loaded && editor.value !== (baseline ?? "");
+      const needsAttention = Boolean(errorNotice.textContent) || rereadFailed;
+      let state = "";
+      let tone = "neutral";
+      if (outcomeUnknown) {
+        state = "Check save";
+        tone = "warning";
+      } else if (pending) {
+        state = writing ? "Saving" : "Loading";
+      } else if (needsAttention) {
+        state = "Needs attention";
+        tone = "danger";
+      } else if (dirty) {
+        state = "Unsaved";
+        tone = "warning";
+      } else if (loaded && baseline === undefined) {
+        state = "Missing";
+        tone = "warning";
+      } else if (operateDenied) {
+        state = "Read-only";
+      }
+      badge.textContent = state;
+      badge.hidden = state === "";
+      badge.dataset.tone = tone;
+      option.textContent = `${label} · ${name}${state ? ` — ${state}` : ""}`;
     };
     const missingDenied = `${name} is missing.`;
     denials.push(() => {
@@ -290,7 +489,7 @@ export function renderWorkspaceFiles(
           loaded = false;
         }
         status.textContent = canCreate ? missingText() : "";
-        errorNotice.textContent = canCreate ? "" : fileError(cause, false);
+        errorNotice.textContent = canCreate ? "" : fileError(cause, false, failure);
       } finally {
         if (context.isCurrent()) {
           pending = false;
@@ -361,7 +560,7 @@ export function renderWorkspaceFiles(
         }
         outcomeUnknown = writeOutcomeUnknown(cause.status);
         status.textContent = "";
-        errorNotice.textContent = fileError(cause, true);
+        errorNotice.textContent = fileError(cause, true, failure);
       } finally {
         if (context.isCurrent()) {
           pending = false;
@@ -420,12 +619,14 @@ export function renderWorkspaceFiles(
           if (rereadFailed) {
             rereadFailed = false;
             status.textContent = errorNotice.textContent ? "" : missingText();
+            updateControls();
           }
           return;
         }
         // The file stays as last read, and the reader learns it may be out of date.
         status.textContent = `${name} could not be reread. Reload to check its current contents.`;
         rereadFailed = true;
+        updateControls();
         return;
       }
       if (!context.isCurrent() || operations !== started || pending || editor.value !== shown) {
@@ -457,12 +658,13 @@ export function renderWorkspaceFiles(
       if (rereadFailed) {
         rereadFailed = false;
         status.textContent = "";
+        updateControls();
       }
     }
     refreshers.push(refresh);
-    section.append(form);
     void load();
   }
+  chooseFile(selectedFile);
   // An answer already settled applies before this section is first painted. It also applies while
   // the tab is parked (another tab is shown), since the page restores these nodes on return; it
   // changes only this section's own nodes.

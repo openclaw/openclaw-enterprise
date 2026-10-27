@@ -281,6 +281,7 @@ async function fakeCommand({
       assert.equal(args.includes("--load") || args.includes("--cache-to"), false);
       // A cache miss builds every step in the probe; this one outlasts the lane's time.
       if (scenario === "image-probe-hung") {
+        stderr("#12 [openclaw-build 5/9] RUN pnpm build\n");
         return hang();
       }
       const role = args.includes("--target") ? "controller" : "runtime";
@@ -344,6 +345,25 @@ async function fakeCommand({
       state[role] = args[2];
       return finish();
     }
+    // The warm job builds the runtime image's OpenClaw build stage alone first.
+    if (
+      equals(args.slice(0, 6), [
+        "buildx",
+        "build",
+        "--output",
+        "type=cacheonly",
+        "--target",
+        "openclaw-build",
+      ])
+    ) {
+      assert.equal(
+        args.includes("--load") || args.includes("-t") || args.includes("--cache-to"),
+        false,
+      );
+      assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
+      assert.equal(state.runtime, undefined, "the stage builds before the runtime image");
+      return finish();
+    }
     // The warm job's cache export, after that image's build and load.
     if (equals(args.slice(0, 4), ["buildx", "build", "--output", "type=cacheonly"])) {
       assert.equal(args.includes("--load") || args.includes("-t"), false);
@@ -377,6 +397,7 @@ async function fakeCommand({
     ) {
       assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
       if (scenario === "image-build-hung") {
+        stderr("#14 exporting to image\n");
         return hang();
       }
       state.runtime = args[args.indexOf("-t") + 1];

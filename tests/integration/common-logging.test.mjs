@@ -779,7 +779,8 @@ function bindDeliveryTransport(reconcile, emit, pendingLog) {
 
 test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never other shapes", async () => {
   // The shapes the bootstrap and auth:maintain scripts and the worker emit (finding 2245).
-  const installationId = `ins_${randomUUID()}`;
+  // Fixed, because a random v4 UUID can be all digits and then its uppercase form equals itself.
+  const installationId = "ins_3f9d2c4e-7a1b-4c5d-8e6f-0a1b2c3d4e5f";
   const configurationId = `cfg_${randomUUID()}`;
   const kept = [
     { event: "installation.bootstrapped", installationId },

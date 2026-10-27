@@ -452,7 +452,7 @@ test("listing Secrets requires Namespace read before filtering each Secret", asy
 });
 
 test("deployment admission stamps immutable native logging after sandbox policy", async () => {
-  const { configurationDriver, configure, deploy, namespace, select, updateAgent } =
+  const { agent, configurationDriver, configure, deploy, namespace, select, updateAgent } =
     await fixture();
   const originalValues = {
     logging: {
@@ -500,6 +500,10 @@ test("deployment admission stamps immutable native logging after sandbox policy"
       tenant: "kept",
     },
     diagnostics: { otel: { logs: false, traces: true } },
+    // OpenClaw's earlier value for a setting its security preset would otherwise fill.
+    tools: { exec: { applyPatch: { workspaceOnly: true } } },
+    // The omitted roster gains its served main entry, named after the OCC Agent.
+    agents: { ...originalValues.agents, entries: { main: { identity: { name: agent.name } } } },
   });
 });
 

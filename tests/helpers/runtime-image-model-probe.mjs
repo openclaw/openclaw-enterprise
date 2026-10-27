@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { changeSignal, followContainer } from "./docker-follow.mjs";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
-import { runDockerCommand } from "./runtime-image-startup.mjs";
+import { gatewayMemoryArguments, runDockerCommand } from "./runtime-image-startup.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
@@ -39,7 +39,6 @@ export const imageTestOptions =
     : {};
 
 export const constrainedGatewayCpuLimit = "0.5";
-export const productionGatewayMemoryLimit = "2g";
 export const probeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
 // Failures carry the exit code, signal, timeout and redacted output tails (finding 2184).
@@ -177,7 +176,7 @@ function containerTime(value) {
 // "hang". Resolves once `until` accepts an observation snapshot.
 export async function runEmbeddedGatewayProbe(
   t,
-  { mode, delayMs = 0, cpus, memory, until, limitMs, stress, afterStop },
+  { mode, delayMs = 0, cpus, until, limitMs, stress, afterStop },
 ) {
   const scenarioStartedAt = Date.now();
   const gateway = embeddedGateway();
@@ -235,8 +234,7 @@ export async function runEmbeddedGatewayProbe(
     `container:${sidecar}`,
     "--cpus",
     cpus,
-    "--memory",
-    memory,
+    ...gatewayMemoryArguments,
     "--user",
     "1000:1000",
     "--read-only",

@@ -17,6 +17,7 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
@@ -383,7 +384,8 @@ test("protected admission requires the actual counterpart and exact loaded polic
     "failed candidate cannot leave admitted source metadata",
   );
   await assert.rejects(f.egress.configureRevision(f.context), {
-    name: "DependencyUnavailableError",
+    name: "RetryLaterError",
+    message: PROXY_REGISTRATION_UNAVAILABLE,
   });
   f.observed.available = true;
   const expectedPolicy = structuredClone(f.observed.policy);
@@ -1497,8 +1499,8 @@ test(
   { timeout: 30_000 },
   async (t) => {
     // A fixed base keeps real time out of the advanced clock, so the horizon margin below holds
-    // on a runner of any speed.
-    const start = Date.now();
+    // on a runner of any speed. The base is set again after setup (below).
+    let start = Date.now();
     let elapsed = 0;
     // Configured bounds, validated like an Installation's requestCapacity, release through the
     // same registry code as the defaults, so the loop needs only about a hundred operations.
@@ -1534,6 +1536,10 @@ test(
     assert.ok(60_000 / step > capacity.sandboxRequestIds);
     assert.ok(capacity.sandboxRequestIds < capacity.requestIds);
     assert.ok(capacity.operations < operations);
+    // The Kubernetes Secret driver stamps each read with the wall clock, and the proxy refuses
+    // material observed after its own clock. Setup can take longer than one step on a busy
+    // runner, so start the advanced clock from the wall clock after setup, not before it.
+    start = Date.now();
     for (let i = 0; i < operations; i += 1) {
       elapsed += step;
       const captured = f.capture();
@@ -2935,8 +2941,8 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
           elapsed = 31_000;
         }
         if (scenario === "check_deadline") {
-          // The actual successful final policy transaction has committed. A new
-          // capture prunes the expired handle before that check returns to its owner.
+          // The final policy-and-receipt transaction has committed. Prune the
+          // expired handle before its acknowledgment returns; no permit may escape.
           assert.ok((await f.resolve(f.capture())).ready);
         }
         if (cancellation) {
@@ -2970,9 +2976,14 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
         const replay = (await f.resolve(captured)).ready;
         assert.ok((await f.authorize(f.permitRequest(captured, replay))).refused);
       }
-      if (["revoke", "deadline", "check_deadline"].includes(scenario)) {
+      if (["revoke", "deadline"].includes(scenario)) {
         assert.equal(stored.outcome.kind, "refused");
         assert.equal(stored.outcome.dispatched, false);
+      }
+      if (scenario === "check_deadline") {
+        assert.ok(stored.authorization?.association.custodyId);
+        assert.deepEqual(stored.outcome, { kind: "uncertain", dispatch: "possible" });
+        assert.equal(stored.settled, false);
       }
       if (scenario === "deny_lost_ack") {
         assert.equal(stored.settled, true, "refusal committed before its acknowledgment was lost");
@@ -3089,6 +3100,7 @@ test("production Compute refuses protected admission and release, including empt
   assert.equal((await compute.prepareRevision(unprotected)).ready, false);
   await compute.activateRevision({
     ...unprotected,
+    gatewayManagedMode: false,
     compute: { id: compute.id, implementation: compute.implementation },
   });
 

@@ -23,10 +23,14 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
+  agentPrincipalDenied,
   CONFIGURATION_EDITS_PENDING,
   DEPENDENCY_UNAVAILABLE,
+  DEPLOY_CLUSTER_RBAC_REFUSED,
   READ_UNAVAILABLE,
+  namespaceListDenied,
 } from "../helpers/refusal-text.mjs";
+import { liftRestriction } from "../helpers/iam-grants.mjs";
 
 const slack = {
   enabled: true,
@@ -119,11 +123,12 @@ test("draft Agent offers deployment without a generated-credential step", async 
   );
   await deploy.click();
   assert.equal((await deniedDeployment).status(), 403);
-  // The API names the Agent's own principal and the grant it lacks; the console shows that.
+  // The API names the grant the Agent's own principal lacks and who gives it; the console shows
+  // that. The administrator may read the model Secret, so it is named (finding 2592).
   await page
     .getByRole("alert")
     .filter({
-      hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
+      hasText: agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${agent.harnessAuth.source.id}`),
     })
     .waitFor();
   await waitForEnabled(deploy);
@@ -143,7 +148,9 @@ test("draft Agent offers deployment without a generated-credential step", async 
   await deploy.click();
   await page
     .getByRole("alert")
-    .filter({ hasText: /cluster denied OCC access.*tenant RoleBindings/ })
+    .filter({
+      hasText: DEPLOY_CLUSTER_RBAC_REFUSED,
+    })
     .waitFor();
   await waitForEnabled(deploy);
   await page.unroute(deployUrl);
@@ -308,12 +315,16 @@ test("active Agent can deploy the current saved draft as a new version", async (
     fixture,
     `/console/agents/${agent.id}?namespace=${encodeURIComponent(namespace.id)}`,
   );
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1/ })
+    .waitFor({ state: "attached" });
 
   await page.screenshot({ path: join(artifacts, "revision-deploy.png"), fullPage: true });
 
   // The viewed version stays immutable; create a draft before deploying v2.
-  await page.getByRole("button", { name: "Create new version" }).first().click();
+  await page.getByRole("button", { name: "Open draft" }).first().click();
   await page
     .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
@@ -442,7 +453,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
     },
   );
   await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Create new version" }).first().click();
+  await page.getByRole("button", { name: "Open draft" }).first().click();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).first().waitFor();
   assert.equal(deploymentRequests, 0);
@@ -485,6 +496,64 @@ test("Slack credential gate treats omitted enabled as enabled", async (t) => {
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
+});
+
+// OpenClaw and the Slack Channel Driver read a token that is exactly one `${NAME}` as the env
+// SecretRef to NAME (finding 2511). Where Compute skips OCC's binding rule, as this fixture's does,
+// the Credentials tab is the only check before Deploy: it must list those keys, for a named account
+// and for the top-level account beside one, and hold Deploy until they are bound, or OCC refuses
+// the deploy with binding_required (finding 2513).
+test("Slack credential gate reads whole ${NAME} tokens beside named accounts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Named Slack token gate", { ready: true });
+  const [appSecret] = await existingSlackSecrets(fixture, namespace.id);
+  const { appToken, botToken, ...shared } = slack;
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Named Slack Token Agent",
+    nativeValues("named-slack-tokens", {
+      harnessId: "codex",
+      channels: {
+        slack: {
+          ...shared,
+          appToken: "${SLACK_MAIN_APP_TOKEN}",
+          botToken: "${SLACK_MAIN_BOT_TOKEN}",
+          accounts: {
+            work: {
+              appToken: { source: "env", provider: "default", id: "SLACK_WORK_APP_TOKEN" },
+              botToken: "${SLACK_WORK_BOT_TOKEN}",
+            },
+          },
+        },
+      },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: { SLACK_WORK_APP_TOKEN: envBinding(appSecret) },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page
+    .getByText(
+      "Complete these in Credentials before deploying: Slack Secret bindings (SLACK_MAIN_APP_TOKEN, SLACK_MAIN_BOT_TOKEN, SLACK_WORK_BOT_TOKEN).",
+    )
+    .waitFor();
+  const rows = page.locator("section.channel-secrets .credential-status-list");
+  assert.deepEqual(await rows.locator("dt").allTextContents(), [
+    "SLACK_MAIN_APP_TOKEN",
+    "SLACK_MAIN_BOT_TOKEN",
+    "SLACK_WORK_APP_TOKEN",
+    "SLACK_WORK_BOT_TOKEN",
+  ]);
+  assert.deepEqual(await rows.locator("dd").allTextContents(), [
+    "Missing",
+    "Missing",
+    "Bound",
+    "Missing",
+  ]);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 });
 
 test("Teams-enabled drafts keep console deploy blocked", async (t) => {
@@ -805,8 +874,12 @@ test("Credentials shows issued-account denial only while that source is selected
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   assert.equal((await deniedList).status(), 403);
-  fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
-  const feedback = page.getByText(/Service accounts unavailable\. Access denied/);
+  liftRestriction(fixture.policy, restriction);
+  // The refusal names the grant the list checks and who can grant it.
+  const feedback = page.getByText(
+    `Service Accounts unavailable. ${namespaceListDenied("Service Accounts")}`,
+    { exact: true },
+  );
   const issuedAccount = page.getByLabel("Issued ChatGPT service account", { exact: true });
   await feedback.waitFor();
   assert.equal(await issuedAccount.inputValue(), account.id);
@@ -837,7 +910,9 @@ test("operator-managed console binding saves and deploys without a managed crede
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByLabel("Authentication source").selectOption("runtime");
   await page
-    .getByText("Configured on the runtime host; not validated by OCC.", { exact: true })
+    .getByText("Configured on the runtime host; OpenClaw Enterprise does not check it.", {
+      exact: true,
+    })
     .waitFor();
   assert.equal(await page.getByLabel("API key Secret").isVisible(), false);
   const save = page.waitForResponse(

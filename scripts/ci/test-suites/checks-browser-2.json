@@ -8,6 +8,7 @@
     "tests/browser/console-agents.test.ts",
     "tests/integration/ci-impact.test.mjs",
     "tests/browser/console-agent-draft-guards.test.mjs",
+    "tests/browser/console-policy-denials.test.ts",
     "tests/browser/console-agent-channels.test.mjs",
     "tests/browser/console-dialogs.test.ts",
     "tests/browser/console-form-fields.test.ts",
@@ -28,6 +29,8 @@
     "tests/browser/console-drafts-kept.test.mjs",
     "tests/browser/console-button-hierarchy.test.ts",
     "tests/browser/console-status-block.test.ts",
+    "tests/browser/console-next-steps.test.mjs",
+    "tests/browser/console-disabled-reasons.test.mjs",
     "tests/browser/console-page-header.test.ts"
   ],
   "files": [
@@ -48,6 +51,9 @@
     },
     {
       "path": "tests/browser/console-agent-draft-guards.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-policy-denials.test.ts"
     },
     {
       "path": "tests/browser/console-agent-state.test.mjs"
@@ -105,6 +111,12 @@
     },
     {
       "path": "tests/browser/console-page-header.test.ts"
+    },
+    {
+      "path": "tests/browser/console-next-steps.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-disabled-reasons.test.mjs"
     }
   ]
 }

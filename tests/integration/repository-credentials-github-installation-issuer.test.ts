@@ -11,6 +11,16 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
 
+function assertCredentialMatches(actual: Uint8Array | undefined, expected: string | undefined) {
+  assert.equal(
+    actual === undefined
+      ? expected === undefined
+      : expected !== undefined && Buffer.compare(actual, Buffer.from(expected)) === 0,
+    true,
+    "credential material mismatch",
+  );
+}
+
 test("prepared issuer inherits the installation only for its explicit grant; unusable replies stay in custody", async (t) => {
   const tls = await createTlsMaterial(t);
   const clock = createControlledClock();
@@ -22,7 +32,10 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
     createServer(tls, async (req, res) => {
       assert.equal(req.method, "POST");
       assert.equal(req.url, "/app/installations/91374/access_tokens");
-      assert.equal(req.headers.authorization, "Bearer synthetic-app-authorization");
+      assert(
+        req.headers.authorization === "Bearer synthetic-app-authorization",
+        "unexpected issuer authorization",
+      );
       assert.equal(req.headers["content-type"], "application/json");
       let body = "";
       for await (const chunk of req) {
@@ -61,7 +74,7 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
       grant: scope,
     };
     // The JavaScript fixture's transaction callbacks are generic; it returns their actual results.
-    const store = createPreparedStore(admission).connect() as unknown as GitHubPreparationStore;
+    const store = createPreparedStore(admission).connect() as GitHubPreparationStore;
     let signingKeyCurrent = true;
     if (body === undefined) {
       onTcpConnect = () => {
@@ -96,13 +109,15 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
     await store.readCurrent("family", (row) => {
       assert(row);
       if (usable) {
-        assert.equal(Buffer.from(row.committed!.bytes).toString(), token);
-        assert.deepEqual(row.committed!.admission.grant, scope);
+        assert(row.committed);
+        assertCredentialMatches(row.committed.bytes, token);
+        assert.deepEqual(row.committed.admission.grant, scope);
       } else {
-        assert.equal(row.committed, undefined);
+        assert(row.committed === undefined);
         const [attempt] = row.attempts;
-        assert.equal(attempt!.state, "quarantined");
-        assert.equal(Buffer.from(attempt!.candidate!).toString(), token);
+        assert(attempt);
+        assert.equal(attempt.state, "quarantined");
+        assertCredentialMatches(attempt.candidate, token);
       }
     });
     // A contradictory response can still represent a real issue. Do not mint a replacement.
@@ -163,4 +178,112 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
     );
   }
   assert.equal(requests.length, count);
+});
+
+test("background issuer records definite non-issuance only for unambiguous token-free refusals", async (t) => {
+  const tls = await createTlsMaterial(t);
+  const clock = createControlledClock();
+  let status = 401;
+  let body = "";
+  let requests = 0;
+  const origin = await listen(
+    t,
+    createServer(tls, async (req, res) => {
+      for await (const _chunk of req) {
+        // Consume the request before returning the selected issuer response.
+      }
+      requests++;
+      res.writeHead(status, { "content-type": "application/json" }).end(body);
+    }),
+  );
+  const admission: GitHubPreparationAdmission = {
+    familyId: "refusal-family",
+    generation: 1,
+    ownerEpoch: 1,
+    inputVersion: "issuer-key-version",
+    issuerAuthority: preparationIssuerAuthority(origin, tls.ca),
+    grant: {
+      id: "refusal-grant",
+      isolationId: "team",
+      appId: "3217",
+      installationId: "91374",
+      profile: "github-installation",
+    },
+  };
+  const token = "synthetic-cleanup-token";
+  const replies = [
+    { name: "token-free", body: '{"message":"refused"}' },
+    { name: "null token", body: '{"token":null}' },
+    { name: "empty token", body: '{"token":""}' },
+    { name: "identified token", body: JSON.stringify({ token }), candidate: token },
+    {
+      name: "duplicate top-level token",
+      body: `{"token":"${token}","token":"${token}"}`,
+    },
+    {
+      name: "escaped duplicate token",
+      body: String.raw`{"token":"${token}","to\u006ben":"${token}"}`,
+    },
+    {
+      name: "nested ambiguity with one token",
+      body: `{"token":"${token}","permissions":{"contents":"read","contents":"write"}}`,
+      candidate: token,
+    },
+    { name: "token-free ambiguity", body: '{"message":"refused","message":"unknown"}' },
+    { name: "malformed", body: '{"message":' },
+  ];
+  // Exercise each status with an unambiguous refusal, then each ambiguous body at a refusal status.
+  const statuses = [
+    [200, false],
+    [201, false],
+    [401, true],
+    [403, true],
+    [404, true],
+    [422, true],
+    [500, false],
+  ] as const;
+  const cases = [
+    ...statuses.map(([status, notIssued]) => ({ status, reply: replies[0]!, notIssued })),
+    ...replies.slice(1).map((reply) => ({ status: 401, reply, notIssued: false })),
+  ];
+  for (const scenario of cases) {
+    await t.test(`${scenario.status}: ${scenario.reply.name}`, async () => {
+      const { reply } = scenario;
+      status = scenario.status;
+      body = reply.body;
+      const store = createPreparedStore(admission).connect() as GitHubPreparationStore;
+      const owner = createGitHubPreparationOwner({
+        admission,
+        store,
+        clock,
+        apiOrigin: origin,
+        ca: tls.ca,
+        minimumValidityMs: 10_000,
+        renewBeforeMs: 120_000,
+        getKey: async () => ({
+          kind: "github-app",
+          close() {},
+          withJwt: (send) => send("synthetic-app-authorization", () => {}),
+        }),
+      });
+      const before = requests;
+      const bounds = { signal: t.signal, deadlineMonoMs: 30_000 };
+      assert.equal(await owner.run("original-attempt", bounds), "quarantined");
+      assert.equal(requests, before + 1);
+      await store.readCurrent(admission.familyId, (row) => {
+        assert(row);
+        assert(row.committed === undefined);
+        assert.equal(row.attempts.length, 1);
+        const [attempt] = row.attempts;
+        assert(attempt);
+        assert.equal(attempt.id, "original-attempt");
+        assert.deepEqual(attempt.admission, admission);
+        assert.equal(attempt.state, "quarantined");
+        assertCredentialMatches(attempt.candidate, reply.candidate);
+        assert.equal(attempt.notIssued === true, scenario.notIssued);
+      });
+      assert.equal(await owner.run("replacement-attempt", bounds), "blocked");
+      assert.equal(requests, before + 1);
+    });
+  }
 });

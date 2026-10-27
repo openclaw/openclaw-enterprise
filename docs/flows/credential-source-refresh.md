@@ -1,32 +1,26 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-22
-last_updated_session: 01a162e5-0e51-7b41-915c-00017912b787
+updated: 2026-10-27
+last_updated_session: authoring-run/0430a401-05fb-4e0b-9166-a02b77498311
 ---
 
 # Credential source refresh Flow
 
 ## Overview
 
-A `refresh`-type credential source, such as `oauth2-client-credentials`, holds
-issuer material instead of a static value. The API registers it with the
-selected Credential Gateway, then asks the paired Credential Refresh Driver to
-store the material and mint the first token. Afterwards the gateway re-mints
-tokens before expiry without OCC, and the Agent keeps one stable placeholder.
-OCC calls the refresh role again only to update material, force a rotation,
-read status, or delete the source. This flow covers those calls; the
-[credential source lifecycle flow](credential-source-lifecycle.md) owns
-binding, admission, dispatch, and withdrawal, which are the same for every type.
+For an OAuth2 source, the API registers an empty provider. The paired Refresh
+Driver configures the issuer and requests the first token. The gateway renews it
+before expiry while the Agent keeps one placeholder. See the
+[credential source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
 
-In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps the
-refresh grant and its successors. The Harness receives a stable placeholder and account
-metadata; a separate operator connection can retrieve an access token for authorized
-discovery. These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
+In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
+the refresh grant. The Harness receives a placeholder and account metadata. An
+operator connection can retrieve an access token for authorized discovery.
+These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
-[OCE-prepared GitHub credentials](#6-oce-prepared-github-core) have a different owner.
-An OCE worker prepares a repository-scoped installation token in the background.
+For [GitHub access](#6-issue-and-renew-a-github-installation-token), the OCE worker owns issuance.
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
-can use an eligible, committed token but cannot trigger issuance.
+can use committed tokens but cannot trigger issuance.
 
 ## Entry Points
 
@@ -97,8 +91,10 @@ NetworkPolicy does not police (finding 1356):
   (`grpc.tcp.<service>`), so the label count decides, not the port name (finding 1366). An `endpoint` host
   `<service>.<namespace>.svc[.<domain>]` or a dotted `serviceName` names one
   namespace at save. A bare `serviceName` runs in each tenant namespace, so only
-  registration and attach know it; registration's profile check refuses the
-  name before any gateway write. An IP address, node address, two-label
+  registration and attach know it. Registration refuses the name before any
+  gateway write with `400` naming `/config/token_url`. Attach runs only in the
+  worker: it refuses a stored one with a message that names the replacement, and
+  the worker retries the revision. An IP address, node address, two-label
   `<service>.<namespace>` or other `endpoint` host names no namespace, and only
   Pod names are refused.
 
@@ -233,49 +229,77 @@ RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses a
 out-of-band provider drift; lookup and mutation are not atomic. A failure leaves
 the record `deleting` for retry.
 
-### 6. OCE-prepared GitHub core
+<a id="6.-oce-prepared-github-core"></a>
+<a id="6-oce-prepared-github-core"></a>
+
+### 6. Issue and renew a GitHub installation token
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
 
-A background worker can prepare one admitted GitHub App grant without traffic
-from an Agent. The owner commits an `issuing` attempt before retrieving the exact
-signing key version, then checks the family, owner epoch and that attempt again
-before calling GitHub. It reuses the existing signer and installation-token
-exchange. This is the [OCE-owned GitHub preparation option](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/protocol.md#prepare-and-renew-credentials).
+The worker records `issuing`, signs a five-minute JWT with the App key and rechecks
+ownership before `POST /app/installations/{installation_id}/access_tokens`.
+The Installation selects the HTTPS issuer and trust roots.
 
-GitHub issuance cannot be atomic with local storage. The owner verifies the exact
-returned repository, rights and provider expiry. The publication transaction
-rechecks the fence and remaining validity, then commits the token with its own
-opaque material version. A late, invalid or ambiguous result stays quarantined
-across owner changes. If storage loses a token before commit, the recorded attempt
-still blocks replay. Recovery and cleanup need an explicit owner.
+```mermaid
+graph TD
+  W["<b>Worker</b><br/>Holds App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
+  G -->|Installation token| W
+  W -->|Verify and commit| P[("<b>PostgreSQL</b><br/>Encrypted token")]
+  P -->|Eligible token| R["<b>OCC and resolver</b>"]
+  R -->|Credential header| S["<b>Metadata sender</b><br/>Needs a send permit"]
+  classDef owner fill:#e7f1ec,stroke:#789884,color:#263e33
+  classDef issuer fill:#f0eaf6,stroke:#9584ab,color:#392c42
+  classDef stored fill:#e8eff6,stroke:#8498a9,color:#283746
+  class W,R,S owner
+  class G issuer
+  class P stored
+  linkStyle default stroke:#89919a
+```
 
-The shared response parser identifies custody separately from scope evidence
-(see [response capture](repository-credentials.md#4-reserve-acquire-and-dispatch)).
-Ambiguous fields quarantine a uniquely identified token for cleanup. Repeated
-root token keys leave no candidate to revoke automatically; the retained intent
-blocks replay and requires explicit recovery.
+The worker prepares tokens in the background. PostgreSQL custody requires a
+persistent 32-byte encryption key. Cold or expired reads return `not_ready`.
+Native Git uses a [private broker request](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
-The trusted Resolver gets only a read port. It can receive still-eligible
-committed material during renewal. Cold, expired or differently admitted material
-returns `not_ready`, including when validity runs out during the read. The
-Resolver must authorize both access and the actual send.
+For `acme/widgets`, the worker requests repository ID `12345` and
+`metadata: read`. It checks the returned ID, name, permissions and expiry.
+The approved `github-installation` profile sends `{}` and inherits installation scope.
 
-The optional PostgreSQL lifecycle joins the family transaction, encrypted custody,
-and retained attempts. The worker retains the dedicated 32-byte custody
-key across restarts; the API does not receive it. Only the worker prepares material.
-The Installation owns the HTTPS issuer and its trust roots; a source cannot redirect the issuer. A cold or
-expired read cannot start an exchange, and uncertain issuance blocks another attempt.
+**Renewal.** Eligible tokens serve requests during renewal. Committing the replacement
+retires the old version. OCC rechecks grant and version before authorizing a
+[protected send](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
 
-The grant names one Agent. Once that Agent's deletion begins, the shared live predicate
-stops claims, renewal and use. The worker's next pass disables the family and retires its
-current token for revocation. Agent deletion never waits on GitHub. Deleting the source
-waits up to 25 seconds for a revocation in flight; other unsettled custody still returns `409`.
+| Limit                                | Effect                                                                                                                                                                                                              |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository approval (Git)            | Removal or expiry stops new authorizations. [Standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent) permits another finite session for the same running Agent and scope. |
+| Execution's repository session (Git) | The session ends at its deadline even if the token is fresh.                                                                                                                                                        |
+| Local cutoff (`usableUntil`)         | Readers stop selecting the token 60 seconds before GitHub expiry. A request may require more remaining time.                                                                                                        |
+| GitHub expiry (`expires_at`)         | GitHub sets a one-hour [installation token lifetime](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).               |
+
+Metadata reads share both token limits. Withdrawing the credential-source
+binding stops new authorizations. A previously authorized send can finish.
+
+**Key rotation and withdrawal.** When the signing key changes version, the worker
+advances the owner epoch and retires old material before publishing its replacement.
+Deleting the Agent blocks use and renewal immediately. On its next pass, the
+worker disables the Agent-bound metadata family and retires the token. GitHub
+revocation can outlast Agent deletion. Source deletion waits up to 25 seconds
+for revocation, returning `409` if custody remains unsettled.
+
+**Uncertain outcomes.** A lost issuance or commit receipt blocks replay. The
+[response parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
+keeps a unique cleanup candidate despite ambiguous scope. Duplicate root token
+fields leave none. The worker records possible revocation before
+`DELETE /installation/token`. HTTP 204 confirms revocation. A lost response
+leaves it unknown. Expiry plus the clock-skew allowance can settle an attempt
+without confirming revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
+`apps/controller/src/backends/token-service/retirement.ts:retireToken` clears
+detached bytes before settling the original receipt. If revocation and
+settlement both fail, the error names only the stages.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
-clears the previous committed buffer and token buffers still on the publication
-draft in `finally`, even if the callback, sealing or SQL publication fails. Callers
-own their detached warm reads. Clearing a local buffer does not revoke a provider token.
+clears token buffers after successful or failed publication. Callers own their
+detached reads. Clearing bytes cannot revoke a token.
 
 ## Debugging and Verification
 
@@ -313,6 +337,16 @@ own their detached warm reads. Clearing a local buffer does not revoke a provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 19:10: Clarify GitHub token renewal and withdrawal. (authoring-run/0430a401-05fb-4e0b-9166-a02b77498311 - d0d593e0f6b4d2c8c1282f0f05e4d83aa607608f)
+
+- 2026-10-27 10:59: Trace dual retirement failures in the accompanying source change. (authoring-run/1280f6a3-93e3-43d7-b641-05139f54b08c - 0418ef3a2c116b73f025281395d92477daf665d2)
+
+- 2026-10-27 10:53: Illustrate installation token issuance and distinguish renewal from permission to send. (authoring-run/49b987ad-6c12-4e7c-8848-4d14b179981a - 0418ef3a2c)
+
+- 2026-10-26 22:20: Distinguish Git session limits from metadata access. (authoring-run/31aa1352-e139-4622-8019-4b5c08958c21 - c1fee5d433)
+
+- 2026-10-26 21:46: Trace GitHub App issuance, separate deadlines, replacement and retirement. (authoring-run/c959c07b-2be2-482d-83ae-fe63be655940 - e573b7de03)
 
 - 2026-10-22 09:48: Distinguish a start the Console cannot confirm from an uncertain exchange on a known session. (01a162e5-0e51-7b41-915c-00017912b787 - 9a6b9c3e69a9fce4a859d70307257c0319fbdfda)
 

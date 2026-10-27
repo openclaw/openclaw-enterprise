@@ -20,7 +20,13 @@ import {
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
 import { isPluginSelections } from "./plugin-fields.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
-import { SAVE_REFUSALS, assertReadableConfiguration, message, rejectionMessage } from "./list.mjs";
+import {
+  SAVE_REFUSALS,
+  assertReadableConfiguration,
+  describeFailure,
+  readFailure,
+  rejectionMessage,
+} from "./list.mjs";
 import { configuredHarnessId } from "./harness-auth.mjs";
 
 type PluginAgent = Pick<
@@ -74,6 +80,12 @@ const PLUGINS_READ_ONLY =
 export const API_KEY_PLUGIN_MESSAGE =
   "Codex plugins need a ChatGPT login. This Agent uses an API key, so each selected plugin is disabled when it deploys (PLUGIN_AUTH_REQUIRED). Change its Harness authentication under Credentials to use plugins.";
 
+// The policy capabilities read authorizes Agent update on the Agent.
+const PLUGIN_CAPABILITIES_NEED = {
+  task: "reading this Agent's plugin policy controls",
+  grant: "Agent update on it",
+};
+
 const PLUGIN_WARNING_EXPLANATIONS = Object.freeze({
   PLUGIN_AUTH_REQUIRED:
     "was disabled for this startup because it is not authenticated: Codex plugins need a ChatGPT login rather than an API key, and some also need their app connected to that account.",
@@ -112,11 +124,14 @@ function approverSummary(
   ];
 }
 
-/** One sentence per deployment startup warning, keeping its code for lookup. */
+/**
+ * One sentence per deployment startup warning, keeping its code for lookup. A code this console
+ * does not know still gets a sentence and a next step, not the code alone (finding 2538).
+ */
 export function pluginWarningText(warning: PluginDeploymentWarning) {
   const explanation = Object.hasOwn(PLUGIN_WARNING_EXPLANATIONS, warning.code)
     ? PLUGIN_WARNING_EXPLANATIONS[warning.code]
-    : "reported a startup warning.";
+    : "reported a startup warning this console does not describe. Check the Agent's runtime logs.";
   return `${warning.pluginId} ${explanation} (${warning.code})`;
 }
 
@@ -180,6 +195,7 @@ export function renderAgentPlugins(
   input.value = retained?.text ?? initialText;
   let catalogCredential: PluginCapabilities["discoveryCredential"] | null = null;
   let catalogCapabilityChecked = false;
+  // The failed capabilities read's reason, shown once under the policy controls.
   let catalogCapabilityError = false;
   const hasBoundCredential =
     agent.harnessAuth?.method === "credential_source" ||
@@ -217,7 +233,7 @@ export function renderAgentPlugins(
             : !catalogCapabilityChecked
               ? "Checking plugin catalog availability…"
               : catalogCapabilityError
-                ? "Could not check plugin catalog availability. Refresh this page or edit existing plugin selections."
+                ? "Plugin browsing needs the plugin capabilities, which could not be read. Refresh this page, or edit existing plugin selections."
                 : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
@@ -460,11 +476,14 @@ export function renderAgentPlugins(
             ? rejectionMessage(cause, mutationStarted)
             : error.status === 400
               ? "Plugin selections were rejected. Check plugin IDs and policy JSON, then retry."
-              : error.status === 409
-                ? "Plugin changes conflict with the current Agent state. Refresh this Agent before retrying."
-                : error.status === 501
-                  ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
-                  : message(cause, mutationStarted);
+              : error.status === 501
+                ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
+                : // A typed 409 names the setting or state that refused the save.
+                  describeFailure(cause, {
+                    mutation: mutationStarted,
+                    conflict: "Plugin changes conflict with the current Agent state.",
+                    next: "Refresh this Agent before retrying.",
+                  });
       // Save disables while it runs, which dropped focus to the page. Focus the reader moved
       // anywhere else while the save ran, in this section too, stays there (finding 1978).
       revealStatus(saveError, save);
@@ -509,9 +528,14 @@ export function renderAgentPlugins(
         } else {
           catalogCapabilityError = true;
           catalogCapabilityChecked = true;
+          discovery.fields.setCapabilities(null, true);
           discovery.update();
-          capabilitiesStatus.textContent =
-            "Plugin policy controls could not be loaded. Plugin selections JSON remains editable.";
+          // A refusal names the grant this read checks, an outage who to ask (finding 2538).
+          capabilitiesStatus.textContent = `${readFailure(
+            "Plugin policy controls",
+            cause,
+            PLUGIN_CAPABILITIES_NEED,
+          )} Plugin selections JSON remains editable.`;
         }
       },
     );

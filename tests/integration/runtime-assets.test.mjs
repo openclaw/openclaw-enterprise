@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -92,9 +92,26 @@ packages:
   );
   const sourceAlias = join(directory, "source-alias");
   await symlink(root, sourceAlias, "dir");
+  // This assembly fixture has its own identity; it is not an upstream source checkout.
+  const sourceManifest = join(directory, "openclaw-source.json");
+  const sourceIdentity = {
+    commit: "a".repeat(40),
+    sourceArchiveSha256: "b".repeat(64),
+    buildTimestamp: "2026-01-01T00:00:00Z",
+  };
+  await writeFile(sourceManifest, JSON.stringify(sourceIdentity));
+  // Refuse stale metadata before pruning the input tree or writing provenance.
+  const refused = spawnSync(
+    process.execPath,
+    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output, sourceManifest],
+    { encoding: "utf8", env: { ...process.env, GIT_COMMIT: "c".repeat(40) } },
+  );
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /GIT_COMMIT must match the OpenClaw source manifest/);
+  assert.equal(await readFile(join(root, "src/server.ts"), "utf8"), files["src/server.ts"]);
   execFileSync(
     process.execPath,
-    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output],
+    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output, sourceManifest],
     {
       env: { ...process.env, GIT_COMMIT: "a".repeat(40) },
     },
@@ -138,6 +155,8 @@ packages:
     "../codex/bin.js",
   );
   const provenance = JSON.parse(await readFile(join(output, "provenance.json"), "utf8"));
+  assert.equal(provenance.commit, sourceIdentity.commit);
+  assert.equal(provenance.sourceArchiveSha256, sourceIdentity.sourceArchiveSha256);
   assert.equal(
     provenance.runtimeContentsSha256,
     createHash("sha256").update(contents).digest("hex"),
@@ -166,9 +185,11 @@ packages:
   // The per-patch fields recorded before `patches` keep their names and values.
   for (const [field, file] of [
     ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
-    ["openclawConnectPatchSha256", "openclaw-connect-ephemeral-expired-setup.patch"],
     ["codexDependencyPinPatchSha256", "stock-codex-0.163.0-alpha.2-dependency-pin.patch"],
-    ["openclawRequiredWorkerAuthorityPatchSha256", "openclaw-required-worker-authority.patch"],
+    [
+      "openclawRequiredWorkerAuthorityRegressionPatchSha256",
+      "openclaw-required-worker-authority-regression.patch",
+    ],
   ]) {
     assert.equal(provenance[field], provenance.patches[file], field);
   }

@@ -8,13 +8,18 @@ import { chromium, request as playwrightRequest } from "playwright";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
+import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
 } from "../../packages/occ/src/state/controller-work.ts";
+
+// Shared with the API tests, which drive the same fixture without a browser.
+export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
 
 // What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
 // persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read
@@ -36,6 +41,117 @@ export const MEMBER_WRITE = [
   ["create", "secret"],
   ["read", "preset"],
 ];
+
+/**
+ * MEMBER_WRITE without each [action, resourceKind] grant in `grants`, which it must hold: the
+ * member-write persona missing exactly those grants.
+ * @param {...(typeof MEMBER_WRITE)[number]} grants
+ * @returns {typeof MEMBER_WRITE}
+ */
+export function memberWriteWithout(...grants) {
+  const held = ([action, resourceKind]) =>
+    grants.some((grant) => grant[0] === action && grant[1] === resourceKind);
+  const kept = MEMBER_WRITE.filter((grant) => !held(grant));
+  assert.equal(kept.length, MEMBER_WRITE.length - grants.length, "MEMBER_WRITE holds each grant");
+  return kept;
+}
+
+// What a member who reads an Agent holds in one Namespace: the Namespace, the Agent, its
+// versions and its Configuration. Tests add the grants their persona needs to it.
+/** @type {typeof MEMBER_WRITE} */
+export const AGENT_READ = [
+  ["read", "namespace"],
+  ["read", "agent"],
+  ["read", "agent_revision"],
+  ["read", "configuration"],
+];
+
+/**
+ * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
+ * Returns a function that restores the grants the Role held before.
+ */
+export function revokeMemberGrant(fixture, label, grant) {
+  return revokeRoleGrant(memberRole(fixture, label), label, grant);
+}
+
+/**
+ * Removes one [action, resourceKind] grant from the Installation administrator Role the fixture
+ * seeds for its administrator account, which `login` signs in by default. Returns a restore
+ * function, as revokeMemberGrant does.
+ */
+export function revokeAdministratorGrant(fixture, grant) {
+  const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
+  assert.ok(role, "the fixture's administrator has a Role");
+  return revokeRoleGrant(role, "the administrator", grant);
+}
+
+/**
+ * Binds the Installation administrator Role the fixture seeds to `principal`, as another
+ * administrator grants Installation administration while that account is signed in. Returns a
+ * function that removes that binding again, as another administrator revokes it.
+ */
+export function grantInstallationAdministration(fixture, principal) {
+  const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
+  assert.ok(role, "the fixture's administrator has a Role");
+  const binding = fixture.policy.bindings.find(({ roleId }) => roleId === role.id);
+  assert.ok(binding, "the fixture's administrator holds the Role through a binding");
+  const granted = {
+    ...binding,
+    id: `installation-administrator-${principal.id}`,
+    subjectId: principal.id,
+  };
+  fixture.policy.bindings.push(granted);
+  return () => {
+    fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(granted), 1);
+  };
+}
+
+function revokeRoleGrant(role, holder, [action, resourceKind]) {
+  const before = role.permissions;
+  role.permissions = before.filter(
+    (grant) => grant.action !== action || grant.resourceKind !== resourceKind,
+  );
+  assert.notEqual(
+    role.permissions.length,
+    before.length,
+    `${holder} holds ${action} ${resourceKind}`,
+  );
+  return () => {
+    role.permissions = before;
+  };
+}
+
+// Secret operate on exactly `secretIds`, as an administrator grants it per Secret: one Role
+// holding Secret operate, bound to `principal` once for each Secret. `revoke(secretId)` removes
+// that Secret's binding.
+export function grantSecretOperate(fixture, namespaceId, principal, secretIds) {
+  const roleId = `secret-operate-${principal.id}`;
+  if (!fixture.policy.roles.some(({ id }) => id === roleId)) {
+    fixture.policy.roles.push({
+      id: roleId,
+      namespaceId,
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+  }
+  for (const secretId of secretIds) {
+    fixture.policy.bindings.push({
+      id: `${roleId}-${secretId}`,
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId,
+      resourceKind: "secret",
+      resourceId: secretId,
+    });
+  }
+  return {
+    revoke(secretId) {
+      const index = fixture.policy.bindings.findIndex(({ id }) => id === `${roleId}-${secretId}`);
+      assert.notEqual(index, -1, `Secret operate on ${secretId} is granted`);
+      fixture.policy.bindings.splice(index, 1);
+    },
+  };
+}
 
 // The in-memory fixture has no worker records. A test that supplies a failed deployment
 // record builds its error with the API's own code, so the console shows the exact code,
@@ -354,6 +470,19 @@ export async function operateDeniedSecretOption(scope, label, secret) {
   return option;
 }
 
+// Lists the Secret field `label`'s inline Create new Secret action and returns it, checking that
+// it is disabled with `reason` in its accessible name.
+export async function deniedCreateSecretOption(scope, label, reason) {
+  await scope.getByLabel(label, { exact: true }).fill("no matching Secret");
+  const option = scope.getByRole("option", {
+    name: `Create new Secret... ${reason}`,
+    exact: true,
+  });
+  await option.waitFor();
+  assert.equal(await option.getAttribute("aria-disabled"), "true");
+  return option;
+}
+
 // Expires every session the app holds, as time passing would: the API then refuses each one.
 // Better Auth's memory adapter stores session expiry as Date values.
 export function expireSessions(fixture) {
@@ -429,6 +558,15 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
     expected,
     `input value was ${JSON.stringify(value)}, not ${JSON.stringify(expected)}, after ${timeoutMs} ms`,
   );
+}
+
+// The Agent page builds its tab while the view is still held back (display: none) for its first
+// reads, and a picker's Secret list can load before the view is shown (findings 2034, 2626). A
+// test that measures layout waits through this, not waitForInputValue alone: a hidden field
+// measures 0 x 0.
+export async function waitForShownInputValue(locator, expected, timeoutMs = 10_000) {
+  await waitForInputValue(locator, expected, timeoutMs);
+  await locator.waitFor({ state: "visible", timeout: timeoutMs });
 }
 
 // A control becomes enabled when the page state behind it settles, which can be a task or more
@@ -877,6 +1015,69 @@ export async function routeFailedDeployment(
   return error;
 }
 
+// One readable version per history page: the first page lists the newest readable version.
+// `olderRead`, when given, is told of each older-page request and answers when it resolves.
+export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRead) {
+  const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  return page.route(
+    (url) => url.origin === fixture.origin && url.pathname === revisionsPath,
+    async (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      if (cursor === "older-page") {
+        await olderRead?.();
+      }
+      const response = await route.fetch({ url: `${fixture.origin}${revisionsPath}` });
+      const body = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          data: cursor === "older-page" ? body.data.slice(1) : body.data.slice(0, 1),
+          meta: { ...body.meta, nextCursor: cursor === "older-page" ? null : "older-page" },
+        },
+      });
+    },
+  );
+}
+
+// The Agent page's "Viewing version" chooser in `scope`, a page or a locator.
+export const versionChooser = (scope) => scope.getByLabel("Viewing version", { exact: true });
+
+// Version `n`'s chooser label: "vN" alone or "vN · <outcome>".
+const versionName = (n) => new RegExp(`^v${n}(?: ·|$)`);
+
+// Version `n`'s option in the chooser.
+export const versionOption = (scope, n) =>
+  versionChooser(scope).getByRole("option", { name: versionName(n) });
+
+// Waits until the chooser has a selected version, or until version `n` is the selected one.
+export function waitForChosenVersion(scope, n) {
+  const chosen =
+    n === undefined
+      ? versionChooser(scope).locator("option:checked")
+      : versionChooser(scope)
+          .getByRole("option", { selected: true })
+          .filter({ hasText: versionName(n) });
+  return chosen.waitFor({ state: "attached" });
+}
+
+// Denies AgentRevision read on one version, as an administrator's per-version restriction does.
+// State reads the policy on each request, so it applies from the next read on. Its id is
+// `deny-read-<revision id>`: console-next-steps looks it up to deny only once.
+export function denyRevisionRead(fixture, namespace, revision) {
+  restrict(fixture.policy, "read", "agent_revision", {
+    id: `deny-read-${revision.id}`,
+    namespaceId: namespace.id,
+    resourceId: revision.id,
+  });
+}
+
+// The Stop Agent button in its row on the Agent page.
+export const stopAgentButton = (page) =>
+  page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button", { name: "Stop Agent", exact: true });
+
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
 function contrastRatio(a, b) {
   const luminance = (rgb) => {
@@ -953,6 +1154,22 @@ export function statusTone(locator, { text = false } = {}) {
       ...(withText ? { text: node.textContent } : {}),
     }),
     text,
+  );
+}
+
+// A long resource ID as the console shortens it in text: its first 12 and last 6 characters.
+export const shortId = (id) => `${id.slice(0, 12)}…${id.slice(-6)}`;
+
+// A control's accessible description from aria-describedby: the text of each element it names,
+// in order (finding D749). A referenced ID that renders nothing adds nothing.
+export function accessibleDescription(locator) {
+  return locator.evaluate((node) =>
+    (node.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => globalThis.document.getElementById(id)?.textContent?.trim() ?? "")
+      .filter(Boolean)
+      .join(" "),
   );
 }
 

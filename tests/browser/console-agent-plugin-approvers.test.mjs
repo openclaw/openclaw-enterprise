@@ -17,6 +17,7 @@ import {
   nativeValues,
   newPage,
   nextFrames,
+  operateDeniedSecretOption,
   pathRequests,
   selectSecret,
   settledView,
@@ -24,7 +25,18 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
+import {
+  enterManualModel,
+  openAdvancedSettings,
+  submitCreateAgent,
+} from "./console-agents-test-support.mjs";
+import {
+  callerDenied,
+  refusedNamed,
+  SECRET_CREATE_DENIED,
+  SLACK_LOOKUP_DENIED,
+} from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -256,7 +268,8 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await selectSecret(page, "Slack bot token Secret for people search", bot);
   denied = true;
   await people.fill("denied");
-  await page.getByText(/permission to use its selected Slack bot Secret/).waitFor();
+  // The API named no grant here, so the console names the Secret's.
+  await page.getByText(SLACK_LOOKUP_DENIED).waitFor();
   denied = false;
   await people.fill("nobody");
   await page.getByText("No matches found. Try another name or paste an exact ID.").waitFor();
@@ -277,13 +290,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   assert.ok(lookups.some((body) => body.secretId === bot.id && body.query === "free"));
   await page.getByLabel("Agent name").fill("Approver search Agent");
   await enterManualModel(page, "synthetic-model-key", "gpt-5.1");
-  const created = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal((await created).status(), 201);
+  await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
   const body = pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).at(-1).body;
   assert.deepEqual(body.pluginApprovers, [{ channel: "slack", id: "team:TTEST123:user:UTEST123" }]);
   const configuration = pathRequests(
@@ -309,14 +316,14 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Approver privacy", { ready: true });
   const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
+  const spare = await fixture.createSecret(namespace.id, "Spare bot", "synthetic-spare-token");
   // This administrator may not create Secrets in the Namespace, so the Namespace permission answer
   // denies Secret create; nothing here creates one.
-  fixture.policy.restrictions.push({
-    id: "deny-approver-secret-create",
+  restrict(fixture.policy, "create", "secret", { namespaceId: namespace.id });
+  // Nor operate the spare token, which a people search needs on its Secret (finding 2469).
+  restrict(fixture.policy, "operate", "secret", {
     namespaceId: namespace.id,
-    resourceKind: "secret",
-    action: "create",
-    effect: "deny",
+    resourceId: spare.id,
   });
   const { page } = await newPage(t, fixture, { browser });
   const lookups = [];
@@ -346,11 +353,18 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   const createAction = page
     .locator('[id^="approver-directory-secret-option-"]')
     .filter({ hasText: "Create new Secret..." });
-  assert.equal(
-    await createAction.textContent(),
-    "Create new Secret... Your access does not include creating Secrets in this Namespace.",
-  );
+  assert.equal(await createAction.textContent(), `Create new Secret... ${SECRET_CREATE_DENIED}`);
   assert.equal(await createAction.getAttribute("aria-disabled"), "true");
+  // The spare token is listed disabled with the reason, and a forced click chooses nothing, so
+  // no search is made with it.
+  const deniedSpare = await operateDeniedSecretOption(
+    page,
+    "Slack bot token Secret for people search",
+    spare,
+  );
+  await deniedSpare.click({ force: true });
+  await page.getByLabel("Slack bot token Secret for people search", { exact: true }).press("Enter");
+  assert.equal(await page.getByText("Ready to search.").count(), 0);
   await selectSecret(page, "Slack bot token Secret for people search", bot);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
@@ -408,12 +422,27 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   const requests = apiRequests(page, fixture.origin);
   const directoryBodies = [];
   let directoryAvailable = true;
+  let directoryDenied = false;
   // The browser test owns Console selection and saved API state; only provider directory data is simulated.
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
     async (route) => {
       const body = route.request().postDataJSON();
       directoryBodies.push(body);
+      if (directoryDenied) {
+        await route.fulfill({
+          status: 403,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: {
+              code: "FORBIDDEN",
+              message: callerDenied("Secret operate", "a Secret this request uses"),
+            },
+            meta: { requestId: "req_test_slack_directory_denied" },
+          }),
+        });
+        return;
+      }
       if (!directoryAvailable) {
         await route.fulfill({
           status: 501,
@@ -553,6 +582,13 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await picker
     .getByRole("button", { name: "Remove selected person 1 (name unavailable)", exact: true })
     .click();
+  // The lookup checks several grants, so a refusal shows the one the API names (finding D753).
+  directoryDenied = true;
+  await people.fill("UTEST998");
+  await picker
+    .getByText(refusedNamed("Slack lookup", "Secret operate", "a Secret this request uses"))
+    .waitFor();
+  directoryDenied = false;
   directoryAvailable = true;
   await people.fill("Alex");
   await picker.getByRole("option", { name: /Alex.*@alex/ }).click();

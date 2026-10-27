@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.mjs";
+import {
+  CONSOLE_NAMESPACE_CREATE_DENIED,
+  NAMESPACE_NAME_CONFLICT,
+  NO_READABLE_NAMESPACES,
+} from "../helpers/refusal-text.mjs";
 import {
   apiRequests,
+  authorizationDenials,
   expectWriteAsksBeforeUnload,
   fileBrowser,
   holdRequests,
@@ -18,8 +23,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 
 const browser = fileBrowser();
-const REFUSED =
-  "Your access does not include creating Namespaces in this Installation. After an administrator grants access, select Refresh to try again.";
+const REFUSED = `${CONSOLE_NAMESPACE_CREATE_DENIED} Then select Refresh.`;
 const isPrimary = (locator) =>
   locator.evaluate((node) => node.classList.contains("button--primary"));
 const creates = (requests) => pathRequests(requests, "POST", "/namespaces");
@@ -41,8 +45,7 @@ const focusReturnsToOpener = (page) =>
   );
 
 test("create a Namespace from the console, then open its Agent workflow", async (t) => {
-  const audit = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
@@ -97,7 +100,7 @@ test("create a Namespace from the console, then open its Agent workflow", async 
   const created = listed.data.find((item) => item.name === "Support team");
   assert.equal(created.status, "provisioning");
   assert.ok(
-    audit
+    fixture.auditSink
       .list()
       .some(
         (event) =>
@@ -128,10 +131,8 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   const name = dialog.getByLabel("Namespace name");
   await name.fill("Existing team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /Choose a different name/ })
-    .waitFor();
+  // The API's own sentence: a live Namespace has the name (not one a deleted Namespace keeps).
+  await dialog.getByRole("alert").filter({ hasText: NAMESPACE_NAME_CONFLICT }).waitFor();
   // A taken name is the reader's to fix: no request ID beside it (finding 2102).
   assert.equal(await dialog.getByText(/Request ID/).count(), 0);
   assert.equal(await name.inputValue(), "Existing team");
@@ -339,13 +340,12 @@ test("a creator who cannot read Namespaces is told so instead of offered Open Ag
     (await fixture.request("GET", "/namespaces")).data.some((item) => item.name === "Creator team"),
   );
   await done.click();
-  await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
+  await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
   await focusReturnsToOpener(page);
 });
 
 test("a member is not invited to create, and a real IAM denial disables Create Namespace", async (t) => {
-  const audit = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const limited = await fixture.createAccountWithPolicy("namespace-member", () => {});
   const { page } = await newPage(t, fixture, {
@@ -354,7 +354,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, "/console/namespaces", limited.credentials);
-  await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
+  await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
   // Not an Installation administrator: no filled primary and no invitation to create, but the
   // control stays usable, since a role may still grant Namespace creation (finding 2059).
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
@@ -363,16 +363,14 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   assert.equal(await isPrimary(opener), false);
   assert.equal(
     await emptyText.textContent(),
-    "Ask an administrator for access to an existing Namespace, or create one if your role allows it.",
+    "No Namespaces are shared with you. Ask an Installation administrator to give you access to one.",
   );
   await opener.click();
   const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /do not have permission to create Namespaces/ })
-    .waitFor();
+  // Only an Installation administrator creates Namespaces, so no grant is promised (finding 2496).
+  await dialog.getByRole("alert").filter({ hasText: CONSOLE_NAMESPACE_CREATE_DENIED }).waitFor();
   assert.equal(
     await dialog.getByRole("button", { name: "Create Namespace", exact: true }).isDisabled(),
     true,
@@ -391,7 +389,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), REFUSED);
   assert.equal(
     await emptyText.textContent(),
-    "Ask an administrator to create a Namespace or grant access to an existing one.",
+    "Ask an Installation administrator to create a Namespace or to give you access to an existing one.",
   );
   // The page's Refresh offers creation again, as the refusal says (finding 2083); Escape after
   // the next refusal also leaves focus on it.
@@ -402,10 +400,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   await opener.click();
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /do not have permission/ })
-    .waitFor();
+  await dialog.getByRole("alert").filter({ hasText: CONSOLE_NAMESPACE_CREATE_DENIED }).waitFor();
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   assert.equal(await opener.isDisabled(), true);
@@ -417,14 +412,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
     ),
     false,
   );
-  assert.ok(
-    audit
-      .list()
-      .some(
-        (event) =>
-          event.kind === "authorization_denial" && event.action === "openclaw.namespaces.create",
-      ),
-  );
+  assert.ok(authorizationDenials(fixture.auditSink, "openclaw.namespaces.create").length > 0);
 });
 
 // Creates a Namespace through the open page's dialog and returns its error alert, if any.
@@ -454,10 +442,7 @@ test("a Refresh after an administrator grants Namespace create offers creation a
   await login(page, fixture, "/console/namespaces", member.credentials);
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   const dialog = await submitCreate(page, "Granted team");
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /do not have permission to create Namespaces/ })
-    .waitFor();
+  await dialog.getByRole("alert").filter({ hasText: CONSOLE_NAMESPACE_CREATE_DENIED }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await page.getByRole("status").filter({ hasText: REFUSED }).waitFor();
   assert.equal(await opener.isDisabled(), true);
@@ -504,6 +489,15 @@ test("an unknown administrator answer keeps Create Namespace the primary action"
   await page.locator(settledView).locator(".namespace-toolbar").waitFor();
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   assert.equal(await isPrimary(opener), true);
+  // With no readable Namespace (the bootstrapped one is denied), the caller may be a member, so
+  // the empty list still says who gives access (finding 2583).
+  restrict(fixture.policy, "read", "namespace");
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
+  assert.equal(
+    await page.locator(settledView).locator(".state-panel p").textContent(),
+    "Create a Namespace if your access allows it, or ask an Installation administrator to give you access to one.",
+  );
 });
 
 // A refused administrator loses the primary action on the next render too, and the refusal
@@ -526,10 +520,7 @@ test("a refused administrator's refusal stays with that account", async (t) => {
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   assert.equal(await isPrimary(opener), true);
   const dialog = await submitCreate(page, "Refused team");
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /do not have permission/ })
-    .waitFor();
+  await dialog.getByRole("alert").filter({ hasText: CONSOLE_NAMESPACE_CREATE_DENIED }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await page.getByRole("status").filter({ hasText: REFUSED }).waitFor();
   await page.getByRole("link", { name: "Agents", exact: true }).click();
@@ -546,7 +537,7 @@ test("a refused administrator's refusal stays with that account", async (t) => {
   await page.getByLabel("Password").fill(member.credentials.password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-  await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
+  await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
   await waitForEnabled(opener);
   assert.equal(await page.getByText(REFUSED).count(), 0);
 
