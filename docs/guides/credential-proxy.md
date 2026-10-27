@@ -145,7 +145,8 @@ max_payload_bytes = 4194304
 timeout = "2s"
 ```
 
-Restart the Gateway once the listener serves authenticated `Describe`. Set
+Restart the Gateway once the listener serves authenticated `Describe`. OCE checks
+the negotiated implementation and package digest before creating the worker. Set
 `drivers.sandbox.configuration.gateway.managedPluginMiddleware` to
 the exact `grpc_endpoint` URL above in the OCE Installation. Select the ready Google
 credential, save, and deploy. At a controlled upstream, verify

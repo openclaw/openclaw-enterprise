@@ -1067,6 +1067,16 @@ test("OpenShell admits initial files only for its projected main workspace", () 
   }
 });
 
+const negotiatedGoogleGuard = () => ({
+  kind: 4,
+  configured_name: "oce-plugin-requests",
+  implementation_name: "oce/managed-plugin-requests",
+  implementation_version: managedGoogleInstall.releaseSha256,
+  protocol_major: 1,
+  supported_capabilities: ["openshell.supervisor-middleware.contract"],
+  required_capabilities: ["openshell.supervisor-middleware.contract"],
+});
+
 test("a selected Google account uses its exact provider and a signed, fail-closed worker request guard", async () => {
   const registration = "oce-plugin-requests";
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
@@ -1142,6 +1152,14 @@ test("a selected Google account uses its exact provider and a signed, fail-close
       requirements: { ...requirements, credentialAttachments: requireOwner },
     });
   await assert.rejects(wrong([]), /selected OpenShell provider/);
+  const service = negotiatedGoogleGuard();
+  client.getGatewayInfo = async () => ({ extensions: [service] });
+  service.implementation_name = "other/response-only";
+  await assert.rejects(provision, /has not negotiated/);
+  assert.equal(created, undefined);
+  assert.equal(client.providers.size, 0);
+  assert.equal(client.profiles.size, 0);
+  Object.assign(service, negotiatedGoogleGuard());
   revision.sandboxPolicy = {
     defaults: {},
     additions: [
@@ -4765,7 +4783,7 @@ test("Google requires an OAuth source whose effective binary list is exactly the
   };
   for (const [list, binary, acceptable] of [
     [[pinned], undefined, true],
-    [[pinned, other], pinned, true],
+    [[pinned, other, "/opt/tools/*"], pinned, true],
     [[pinned, other], undefined, false],
   ]) {
     const f = credentialGatewayOverProviders({ toolBinaries: list, refresh: true });
@@ -4777,10 +4795,12 @@ test("Google requires an OAuth source whose effective binary list is exactly the
     };
     const register = (config) =>
       f.driver.registerSource({ ...context, source }, { type: source.type, config, secrets: {} });
-    await assert.rejects(
-      register({ ...source.config, binary: "/tmp/other" }),
-      /installation toolBinaries/,
-    );
+    for (const invalid of ["/tmp/other", "/opt/tools/*"]) {
+      await assert.rejects(
+        register({ ...source.config, binary: invalid }),
+        /installation toolBinaries/,
+      );
+    }
     assert.deepEqual(f.profileWrites, []);
     await register(source.config);
     assert.deepEqual(
@@ -4801,6 +4821,11 @@ test("Google requires an OAuth source whose effective binary list is exactly the
       },
     };
     if (acceptable) {
+      const service = negotiatedGoogleGuard();
+      f.client.getGatewayInfo = async () => ({ extensions: [service] });
+      service.implementation_version = "old-release";
+      await assert.rejects(f.driver.attachForRevision(attachment), /has not negotiated/);
+      Object.assign(service, negotiatedGoogleGuard());
       assert.deepEqual(await f.driver.attachForRevision(attachment), [
         { sourceId, ref: openShellProviderName(sourceId) },
       ]);

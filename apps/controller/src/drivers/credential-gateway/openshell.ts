@@ -28,6 +28,7 @@ import {
   sha256Hex,
 } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
+import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
 import { managedCredentialBinding, managedGoogleInstall } from "../plugin/managed-catalog.ts";
 
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
@@ -294,6 +295,11 @@ function validateEndpointConfig(type: string, config: Readonly<Record<string, st
   }
 }
 
+function allowsOAuthBinary(options: OpenShellCredentialGatewayOptions, binary: string): boolean {
+  // OpenShell treats '*' in a binary path as a glob. A per-source selection names one executable.
+  return !binary.includes("*") && options.toolBinaries?.includes(binary) === true;
+}
+
 function validateOAuth2Config(
   type: string,
   config: Readonly<Record<string, string>>,
@@ -301,7 +307,7 @@ function validateOAuth2Config(
   gateway: OpenShellGatewayPlacement | undefined,
 ): Readonly<Record<string, string>> | void {
   validateEndpointConfig(type, config);
-  if (config.binary !== undefined && !options.toolBinaries?.includes(config.binary)) {
+  if (config.binary !== undefined && !allowsOAuthBinary(options, config.binary)) {
     throw new CredentialSourceConfigError(
       "binary",
       "The OAuth2 binary must be an executable in the installation toolBinaries.",
@@ -681,7 +687,7 @@ function requiredToolBinaries(
   if (binary === undefined) {
     return options.toolBinaries;
   }
-  if (!options.toolBinaries.includes(binary)) {
+  if (!allowsOAuthBinary(options, binary)) {
     throw new StoredCredentialSourceConfigError("binary");
   }
   return [binary];
@@ -1104,6 +1110,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           "The bound Google account must grant only the pinned Google executable. Set binary on this OAuth2 source when its installation allows other tools.",
         );
       }
+      await verifyManagedPluginRegistration(client, context.signal);
     }
     const attachments: CredentialSourceAttachment[] = [];
     const environment = new Set<string>();

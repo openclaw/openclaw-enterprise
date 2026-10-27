@@ -856,7 +856,9 @@ export function createPluginFields({
         entry.tools?.length === 0;
       if (selected?.enabled) {
         for (const slot of capabilities?.credentialSlots ?? []) {
-          if (slot.pluginId !== entry.id) continue;
+          if (slot.pluginId !== entry.id) {
+            continue;
+          }
           const bindings = selected.driverPolicy?.credentials;
           const current = isObject(bindings) ? bindings[slot.id] : undefined;
           const stale =
@@ -866,7 +868,9 @@ export function createPluginFields({
             ["", "Install without an account"],
             ...slot.sources.map(({ id, name }) => [id, name] as const),
           ];
-          if (stale) options.push(["stale", "Release changed — select an account again", true]);
+          if (stale) {
+            options.push(["stale", "Release changed — select an account again", true]);
+          }
           details.append(
             select(
               slot.label,

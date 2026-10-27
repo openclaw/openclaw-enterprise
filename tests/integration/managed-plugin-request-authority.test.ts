@@ -4,6 +4,7 @@ import { createManagedPluginRequestAuthority } from "../../apps/controller/src/d
 import {
   managedGoogleInstall,
   managedPluginMiddleware,
+  managedPluginMiddlewareImplementation,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { grpc, invoke, openShellOnlineWire, token } from "../helpers/openshell-online-wire.mjs";
 
@@ -43,6 +44,11 @@ test("the signed OpenShell request stage admits only the bundled Gmail operation
     },
     gateway,
   );
+  // GetGatewayInfo exposes these negotiated fields before a Sandbox receives its provider.
+  assert.equal(manifest.extension.implementation_name, managedPluginMiddlewareImplementation);
+  assert.equal(manifest.extension.implementation_version, managedGoogleInstall.releaseSha256);
+  assert.deepEqual(manifest.extension.required_capabilities, [contract]);
+  assert.deepEqual(manifest.extension.supported_capabilities, [contract]);
   assert.deepEqual(
     manifest.bindings.map(({ operation, phase }: { operation: number; phase: number }) => [
       operation,

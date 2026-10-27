@@ -3,13 +3,17 @@ import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
 import { isDeepStrictEqual } from "node:util";
 import { openShellProviderName } from "../../backends/openshell.ts";
-import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
+import {
+  openShellProfileEndpoint,
+  type OpenShellGatewayClient,
+} from "./openshell-gateway-client.ts";
 import { wirePolicy } from "../egress-proxy/openshell-wire-policy.ts";
 import {
   managedCredentialBinding,
   managedGoogleInstall,
   managedPluginMiddleware,
   managedPluginMiddlewareAudience,
+  managedPluginMiddlewareImplementation,
   type ManagedCredentialSlot,
 } from "../plugin/managed-catalog.ts";
 
@@ -17,6 +21,37 @@ export const managedGoogleCredentialEnvironment = "OPENCLAW_MANAGED_GOOGLE_CREDE
 
 function unsupported(message: string): never {
   throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", message);
+}
+
+/** The gateway negotiated this service's Describe at startup. Check it before creating any
+ * credential-bearing Sandbox or reconciling its source profiles. GetSandboxConfig then proves
+ * the exact endpoint and effective policy for the created Sandbox. */
+export async function verifyManagedPluginRegistration(
+  client: OpenShellGatewayClient,
+  signal: AbortSignal,
+): Promise<void> {
+  const extensions = (await client.getGatewayInfo?.(signal))?.extensions;
+  const services = Array.isArray(extensions)
+    ? extensions
+        .map(asRecord)
+        .filter((service) => service?.configured_name === managedPluginMiddleware)
+    : [];
+  const service = services[0];
+  const capabilities = ["openshell.supervisor-middleware.contract"];
+  if (
+    services.length !== 1 ||
+    service?.kind !== 4 ||
+    service.protocol_major !== 1 ||
+    (service.protocol_minor ?? 0) !== 0 ||
+    service.implementation_name !== managedPluginMiddlewareImplementation ||
+    service.implementation_version !== managedGoogleInstall.releaseSha256 ||
+    !isDeepStrictEqual(service.supported_capabilities, capabilities) ||
+    !isDeepStrictEqual(service.required_capabilities, capabilities)
+  ) {
+    unsupported(
+      "OpenShell has not negotiated the OCE plugin request guard for the selected release.",
+    );
+  }
 }
 
 export function openShellPluginPolicy(

@@ -12,6 +12,7 @@ import {
   loadOpenShellMiddleware,
   middlewareBearer,
   record,
+  type OpenShellHttpOnlyRelease,
 } from "./openshell-authority.ts";
 import {
   OpenShellExtensionJwtVerifier,
@@ -81,8 +82,8 @@ export interface OpenShellOnlineAuthorityOptions {
     signal: AbortSignal,
   ) => Promise<OpenShellOnlineDecision>;
   readonly budgetMs?: number;
-  /** This fixed, REST-only policy refuses upgrades and admits no other installation binding. */
-  readonly httpOnlyBinding?: string;
+  /** Advertise this fixed REST-only release for pre-create verification. Refuse upgrades and other bindings. */
+  readonly httpOnlyRelease?: OpenShellHttpOnlyRelease;
 }
 
 /** Stock v0.1.4's normalized pre-credential view. Omitted headers and original framing
@@ -309,7 +310,8 @@ function createAuthority<T>(
   const acceptedBinding = (config: unknown) => {
     const id = bindingId(config);
     return (
-      id !== undefined && (options.httpOnlyBinding === undefined || options.httpOnlyBinding === id)
+      id !== undefined &&
+      (options.httpOnlyRelease === undefined || options.httpOnlyRelease.releaseSha256 === id)
     );
   };
   let pending = 0;
@@ -321,7 +323,7 @@ function createAuthority<T>(
           call.request.gateway,
           options.identity.audience,
           "online-request-authorization",
-          options.httpOnlyBinding !== undefined,
+          options.httpOnlyRelease,
         );
       if (description) {
         callback(null, description);
@@ -337,7 +339,7 @@ function createAuthority<T>(
           acceptedBinding(call.request.config),
       });
     },
-    ...(options.httpOnlyBinding !== undefined && {
+    ...(options.httpOnlyRelease !== undefined && {
       EvaluateWebSocketSession(call: ServerDuplexStream<Wire, Wire>) {
         const sandboxId = supervisor(claims(call));
         call.once("data", (event: Wire) => {
@@ -368,7 +370,7 @@ function createAuthority<T>(
       if (
         !request ||
         call.request.middleware_name !== options.registrationName ||
-        (options.httpOnlyBinding !== undefined && !acceptedBinding(call.request.config)) ||
+        (options.httpOnlyRelease !== undefined && !acceptedBinding(call.request.config)) ||
         pending >= 1024 ||
         expired()
       ) {

@@ -22,6 +22,7 @@ import {
   managedGoogleCredentialEnvironment,
   openShellPluginPolicy,
   verifyPluginRequestGuard,
+  verifyManagedPluginRegistration,
 } from "./openshell-plugin-policy.ts";
 import { managedCredentialBinding } from "../plugin/managed-catalog.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
@@ -3238,6 +3239,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
+    const plugin = openShellPluginPolicy(
+      context.revision,
+      context.requirements,
+      this.options.gateway.managedPluginMiddleware,
+      this.options.providers ?? [],
+    );
+    if (plugin) {
+      await verifyManagedPluginRegistration(client, context.signal);
+    }
     // Backstop for the admission check (finding 2144): the revision's own policy is immutable,
     // so a retry cannot clear an overlap.
     const gitOverlap =
@@ -3273,12 +3283,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
     }
-    const plugin = openShellPluginPolicy(
-      context.revision,
-      context.requirements,
-      this.options.gateway.managedPluginMiddleware,
-      this.options.providers ?? [],
-    );
     const checkGuard = async () => {
       if (plugin) {
         verifyPluginRequestGuard(

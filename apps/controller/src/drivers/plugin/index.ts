@@ -10,6 +10,7 @@ import {
   managedCredentialBinding,
   managedGoogleInstall,
   managedPluginCredentials,
+  requireManagedCredentialRuntime,
 } from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
@@ -435,6 +436,10 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     selections: PluginDesiredState,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
     computeImplementation: string,
+    credentialRuntime?: {
+      readonly sandbox: string | undefined;
+      readonly gateway: string | undefined;
+    },
   ): void {
     if (!Object.hasOwn(selections, managedGoogleInstall.id)) {
       return;
@@ -446,6 +451,11 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     if (!placement.computeImplementations.includes(computeImplementation)) {
       throw new ConfigurationHarnessError("Google Workspace requires Kubernetes Compute.");
     }
+    requireManagedCredentialRuntime(
+      selections,
+      credentialRuntime?.sandbox,
+      credentialRuntime?.gateway,
+    );
   }
 
   validateAgentConfiguration(

@@ -2,6 +2,7 @@ import {
   managedGoogleInstall,
   managedPluginMiddleware,
   managedPluginMiddlewareAudience,
+  managedPluginMiddlewareImplementation,
   type ManagedRequest,
 } from "../plugin/managed-catalog.ts";
 import {
@@ -54,7 +55,10 @@ export function createManagedPluginRequestAuthority(
   return createOpenShellOnlineHttpAuthority({
     identity,
     registrationName: managedPluginMiddleware,
-    httpOnlyBinding: managedGoogleInstall.releaseSha256,
+    httpOnlyRelease: {
+      implementation: managedPluginMiddlewareImplementation,
+      releaseSha256: managedGoogleInstall.releaseSha256,
+    },
     authorize: async (request) => {
       const names = request.headers.map(([name]) => name);
       if (

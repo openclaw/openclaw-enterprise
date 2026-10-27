@@ -361,6 +361,18 @@ test("the saved Agent picker and binding use the granted source and the same rev
   assert.equal(stale.status, 400, JSON.stringify(stale.body));
   const otherAccount = await save("cs_" + randomUUID(), slot.releaseSha256);
   assert.equal(otherAccount.status, 400, JSON.stringify(otherAccount.body));
+  const unsupported = await save(google.id, slot.releaseSha256);
+  assert.equal(unsupported.status, 400, JSON.stringify(unsupported.body));
+  assert.match(unsupported.body.error.message, /OpenShell Sandbox and Credential Gateway/);
+  const sandbox = {
+    id: "openshell-placement",
+    capability: "sandbox",
+    implementation: "openshell",
+    facets: ["networking", "filesystem", "process"],
+    async cleanup() {},
+  };
+  f.controller.registerDriver(sandbox);
+  f.controller.selectDriver("sandbox", sandbox.id);
   const saved = await save(google.id, slot.releaseSha256);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual(saved.data.plugins[slot.pluginId].driverPolicy, {

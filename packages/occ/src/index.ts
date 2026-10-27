@@ -8382,7 +8382,9 @@ export class OpenClawController {
               namespaceId,
               sourceId,
             );
-            if (source?.state === "ready") sources.push(source);
+            if (source?.state === "ready") {
+              sources.push(source);
+            }
           }
         }
       }
@@ -14163,7 +14165,10 @@ export class OpenClawController {
       return;
     }
     const driver = this.pluginDriver();
-    driver.validatePlacement?.(plugins, harness, this.selectedDriver("compute").implementation);
+    driver.validatePlacement?.(plugins, harness, this.selectedDriver("compute").implementation, {
+      sandbox: this.selections.get("sandbox")?.implementation,
+      gateway: this.selections.get("credential_gateway")?.implementation,
+    });
     const required = pluginRuntimeHarnessRequirement(driver.implementation, harness);
     if (required !== undefined) {
       throw new ConfigurationHarnessError(

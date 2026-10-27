@@ -40,6 +40,7 @@ const credentialSlot = Type.Object(
 export type ManagedRequest = Type.Static<typeof request>;
 export type ManagedCredentialSlot = Type.Static<typeof credentialSlot>;
 export const managedPluginMiddleware = "oce-plugin-requests";
+export const managedPluginMiddlewareImplementation = "oce/managed-plugin-requests";
 export const managedPluginMiddlewareAudience = `urn:openshell:extension:middleware:${managedPluginMiddleware}`;
 
 // Only this package bundled in the controller participates in managed deployment.
@@ -94,7 +95,9 @@ export const managedGoogleInstall = {
 export function managedCredentialBinding(selections: PluginDesiredState | undefined) {
   const selection = selections?.[managedGoogleInstall.id];
   const policy = selection?.driverPolicy;
-  if (policy === undefined) return undefined;
+  if (policy === undefined) {
+    return undefined;
+  }
   const bindings = Object.entries(asRecord(policy.credentials) ?? {});
   const entry = bindings[0];
   if (policy.releaseSha256 !== managedGoogleInstall.releaseSha256) {
@@ -118,24 +121,31 @@ export function managedCredentialBinding(selections: PluginDesiredState | undefi
   return { slot, sourceId, credential };
 }
 
-function isSlotSource(slot: ManagedCredentialSlot, source: CredentialSource): boolean {
-  const config = source.config;
-  return (
-    source.ownerCapability === "credential_gateway" &&
-    source.egress === undefined &&
-    source.type === "oauth2-refresh-token" &&
-    config.token_url === slot.tokenEndpoint &&
-    config.env_var === slot.delivery.env &&
-    slot.requests.some(({ url }) => new URL(url).hostname === config.host)
-  );
+export function requireManagedCredentialRuntime(
+  selections: PluginDesiredState | undefined,
+  sandbox?: string,
+  gateway?: string,
+): void {
+  if (
+    managedCredentialBinding(selections) &&
+    (sandbox !== "openshell" || gateway !== "openshell")
+  ) {
+    throw new ConfigurationHarnessError(
+      "A bound Google account requires the OpenShell Sandbox and Credential Gateway.",
+    );
+  }
 }
 
 function acceptsSource(slot: ManagedCredentialSlot, source: CredentialSource): boolean {
   const config = source.config;
   const scopes = config.scope?.split(" ") ?? [];
   return (
-    isSlotSource(slot, source) &&
     source.state === "ready" &&
+    source.ownerCapability === "credential_gateway" &&
+    source.egress === undefined &&
+    source.type === "oauth2-refresh-token" &&
+    config.token_url === slot.tokenEndpoint &&
+    config.env_var === slot.delivery.env &&
     (config.binary === undefined || config.binary === managedGoogleInstall.binaryPath) &&
     (config.port ?? "443") === "443" &&
     slot.requiredScopes.every((scope) => scopes.includes(scope)) &&
@@ -172,9 +182,11 @@ export function managedCredentialSources(
   const active = sources.filter(
     (source) =>
       source.id === binding?.sourceId ||
-      !Object.values(managedGoogleInstall.credentials).some((slot) => isSlotSource(slot, source)),
+      !Object.values(managedGoogleInstall.credentials).some((slot) => acceptsSource(slot, source)),
   );
-  if (!binding) return active;
+  if (!binding) {
+    return active;
+  }
   const tools = active.filter((source) => source.id !== modelSourceId);
   const source = tools[0];
   if (
