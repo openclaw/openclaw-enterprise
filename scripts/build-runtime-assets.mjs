@@ -49,7 +49,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-google-worker-placeholder.patch",
-    sha256: "089f572cff79a3d9a2cbe0e7fabad8ae07e19fc6def2bab7d38e51f3f1c083af",
+    sha256: "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);

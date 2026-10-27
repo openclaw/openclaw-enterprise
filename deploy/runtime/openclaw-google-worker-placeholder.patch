@@ -17,7 +17,7 @@
 -      normalized.startsWith("LC_");
 +      normalized.startsWith("LC_") ||
 +      (googleMarker && (normalized === "GOG_ACCESS_TOKEN" ||
-+        (normalized === "SSL_CERT_FILE" && value === "/etc/openshell-tls/ca-bundle.pem")));
++        (normalized === "SSL_CERT_FILE" && value === "/run/openshell-supervisor-ca/material/ca-bundle.crt")));
      if (!allowed) {
        continue;
      }
@@ -29,7 +29,7 @@
 +
 +test("a native worker receives only a scoped Google placeholder and OpenShell trust", () => {
 +  const marker = `openshell:resolve:env:s${"a".repeat(64)}_GOG_ACCESS_TOKEN`;
-+  const trust = "/etc/openshell-tls/ca-bundle.pem";
++  const trust = "/run/openshell-supervisor-ca/material/ca-bundle.crt";
 +  const capture = (token: string, ca = trust) =>
 +    snapshotNodeWorkerEnv({ GOG_ACCESS_TOKEN: token, SSL_CERT_FILE: ca });
 +  expect(capture(marker)).toMatchObject({ GOG_ACCESS_TOKEN: marker, SSL_CERT_FILE: trust });

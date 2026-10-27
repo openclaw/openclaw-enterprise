@@ -63,7 +63,7 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
       // Exercise the production worker bootstrap in the real image. Substitute its model probe and
       // enrollment peer; the child resolves and executes the installed binary with the actual launch env.
       const probe = `const r = require("node:child_process").spawnSync("gog", ["--version"], {encoding:"utf8"});
-console.log(JSON.stringify(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0], markerVisible:process.env.GOG_ACCESS_TOKEN===undefined?undefined:"present"}));
+console.log(JSON.stringify({...(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}), markerVisible:process.env.GOG_ACCESS_TOKEN===undefined?undefined:"present"}));
 process.exit(r.error ? 0 : r.status);`;
       const launch = `
 const cp = require("node:child_process"), realSpawn = cp.spawn;
@@ -113,12 +113,14 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
           {},
           launch,
         );
-      assert.deepEqual(JSON.parse((await worker(undefined)).stdout.trim()), { code: "ENOENT" });
+      const marker =
+        "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
+      assert.deepEqual(JSON.parse((await worker(undefined, [], [marker])).stdout.trim()), {
+        code: "ENOENT",
+      });
       assert.deepEqual(JSON.parse((await worker(expected)).stdout.trim()), {
         version: "v" + version,
       });
-      const marker =
-        "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
       const bound = "OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV=GOG_ACCESS_TOKEN";
       assert.deepEqual(JSON.parse((await worker(expected, [], [marker])).stdout), {
         version: "v" + version,

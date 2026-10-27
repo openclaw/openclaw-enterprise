@@ -187,7 +187,7 @@ RUN echo '570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b  /tmp
 
 # Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.
 COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-google-worker-placeholder.patch
-RUN echo '089f572cff79a3d9a2cbe0e7fabad8ae07e19fc6def2bab7d38e51f3f1c083af  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
+RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-google-worker-placeholder.patch
 
 # Run the bridge tests alongside the build using the same patched source.

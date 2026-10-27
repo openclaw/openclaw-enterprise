@@ -6,6 +6,7 @@ import {
   RUNTIME_FAILURE_CHECKS,
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
+import { readFileSync } from "node:fs";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
@@ -232,6 +233,18 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
   server.listen(port, "0.0.0.0");
 }
 `;
+
+// The bootstrap also needs the reserved alias when the Agent installs no Google release.
+// Read it in the controller so an unselected worker need not have the package on disk.
+const googleAccountEnv: string = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../plugins/oce-google-workspace/ai.openclaw.oce/release.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).credentials.account.delivery.env;
 
 const GOOGLE_INSTALL_HELPERS = String.raw`
 function verifiedGoogleFile(path, expected) {
@@ -4726,13 +4739,14 @@ const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
 let nodeStateCurrent = outdatedNodeDatabases.length === 0;
 
 const googleRelease = installedGoogleRelease();
+const googleAlias = ${JSON.stringify(googleAccountEnv)};
 const googleCredentialEnv = process.env.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV;
 if (googleCredentialEnv !== undefined && (
-  googleCredentialEnv !== "GOG_ACCESS_TOKEN" ||
+  googleCredentialEnv !== googleAlias ||
   googleRelease?.credentials?.account?.delivery?.env !== googleCredentialEnv ||
-  !/^openshell:resolve:env:s[0-9a-f]{64}_GOG_ACCESS_TOKEN$/.test(process.env.GOG_ACCESS_TOKEN ?? "")
+  /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(process.env[googleAlias] ?? "")?.[1] !== googleAlias
 )) throw new Error("The selected Google account requires its scoped OpenShell credential placeholder.");
-if (googleCredentialEnv === undefined) delete process.env.GOG_ACCESS_TOKEN;
+if (googleCredentialEnv === undefined) delete process.env[googleAlias];
 const googleBin = "/usr/local/lib/oce/plugins/google/bin";
 const enableGoogleCli = googleRelease?.capabilities.harness.includes("cli");
 if (enableGoogleCli) {
