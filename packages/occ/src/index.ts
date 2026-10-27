@@ -19,6 +19,7 @@ export {
   preparedGitHubLive,
   readPreparedGitHubMetadata,
 } from "./state/prepared-github-state.ts";
+export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
@@ -5670,13 +5671,10 @@ export class OpenClawController {
     }
     // A provisioned revision may probe before activation. It must still be the newest
     // admitted running revision; an older or superseded execution cannot keep using egress.
-    const revisions = await state.revisions.listRevisionMetadata(
-      execution.namespaceId,
-      execution.agentId,
-    );
     if (
-      revisions.at(-1)?.id !== execution.revisionId &&
-      agent.activeRevisionId !== execution.revisionId
+      agent.activeRevisionId !== execution.revisionId &&
+      (await state.revisions.listRevisionMetadata(execution.namespaceId, execution.agentId)).at(-1)
+        ?.id !== execution.revisionId
     ) {
       return deny("withdrawn");
     }

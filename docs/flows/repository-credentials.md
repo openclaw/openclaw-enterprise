@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-10-23
-last_updated_session: authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668
+updated: 2026-10-27
+last_updated_session: authoring-run/51557b14-ec25-4b33-98f2-b5a16d00d6ea
 ---
 
 # Repository credential service flow
@@ -60,8 +60,9 @@ root-to-leaf protected-path validation and Kubernetes projection snapshots.
 `apps/controller/src/drivers/repo/credentials/configuration.ts:validateServiceConfig`
 validates gateway, session and capacity settings. The standalone check emits a
 safe summary without session/listener imports. Startup selects the system clock
-and GitHub factory; `apps/controller/src/composition/repository-credentials/service.ts:runService`
+and configured backend; `apps/controller/src/composition/repository-credentials/service.ts:runService`
 composes service and listeners without the controller API or worker.
+For the development token backend,
 `apps/controller/src/drivers/repo/github/credentials/factory.ts:createGitHubDriverFactory`
 composes session-bound backends. It delegates grant resolution to
 `apps/controller/src/drivers/repo/github/credentials/grants.ts:createGrantResolver`
@@ -69,7 +70,9 @@ and client authentication to
 `apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts:createGatewayAuthentication`.
 A registry-selected factory retains the frozen repository identity and access profile.
 The production native sender consumes READY material from the worker Token Service.
-It owns no App signing key and cannot issue installation tokens.
+It owns no App signing key, cannot issue installation tokens and does not load the
+development static-token implementation. The development backend requires both
+`developmentOnly: true` and the `--development-authority` process flag.
 `packages/contracts/src/repo.ts` owns public `RepoDriver`, grant identity and
 four-field status. Private contracts under
 `apps/controller/src/drivers/repo/credentials/` separate full status/admission/bearer
@@ -85,7 +88,8 @@ Registry startup selects
 from the same canonical registry loaded by API and worker. The worker owns the
 App key; only the sender receives its TLS private key. `startListeners` can reclaim only an owned,
 private, refused stale Unix socket after checking that its identity is unchanged;
-a live or ambiguously owned socket fails startup.
+a live or ambiguously owned socket fails startup. Neither listener admits requests
+until the control socket has mode `0600` and its identity is recorded.
 
 ### 2. Admit and publish a client session
 
@@ -352,6 +356,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 11:09: Separate prepared startup from development authority and defer listener admission until socket setup completes. (authoring-run/51557b14-ec25-4b33-98f2-b5a16d00d6ea - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 - 2026-10-23 16:25: Require patched gh 2.103.2 in image and client version checks; pin its published checksum manifest. (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
 

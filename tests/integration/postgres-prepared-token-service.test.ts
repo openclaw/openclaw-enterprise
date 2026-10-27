@@ -19,6 +19,7 @@ import type {
   PreparedGitHubEgressSource,
   SecretDriver,
 } from "../../packages/contracts/src/index.ts";
+import type { readPreparedGitHubMetadata } from "../../packages/occ/src/index.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createTokenPreparation } from "../../apps/controller/src/backends/token-service/preparation.ts";
 import type {
@@ -30,7 +31,9 @@ import type {
 import { retireToken } from "../../apps/controller/src/backends/token-service/retirement.ts";
 import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
+import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-contracts.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
+import { PreparedGitHubPostgres } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts";
 import {
   EgressSendReceipts,
   type SendAttempt,
@@ -492,7 +495,8 @@ test(
   async (t) => {
     const directory = await temporaryDirectory(t, "prepared-rejection-");
     const key = join(directory, "custody.key");
-    await writeFile(key, randomBytes(32), { mode: 0o600 });
+    const custodyKey = randomBytes(32);
+    await writeFile(key, custodyKey, { mode: 0o600 });
     // The JavaScript fixture forwards these issuer options to its protocol implementation.
     const startIssuer: (
       context: TestContext,
@@ -579,6 +583,31 @@ test(
         [source.key.source.id],
       );
     assert.equal(await lifecycle.maintain(t.signal), "committed");
+    await t.test("prepared metadata exposes only its selected columns", async () => {
+      // A caller must not be able to specialize the reader's persisted admission.
+      type FabricatedReader = (
+        ...args: Parameters<typeof readPreparedGitHubMetadata>
+      ) => Promise<{ admission: GitHubPreparationAdmission & { fabricated: string } } | undefined>;
+      const row = await new PreparedGitHubPostgres(
+        app.pool,
+        custodyKey,
+        lifecycle.issuerAuthority,
+      ).metadata(source);
+      assert(row);
+      // An exhaustive key set rejects types that promise unselected attempt fields.
+      const columns: Record<keyof typeof row, true> = {
+        admission: true,
+        id: true,
+        material_version: true,
+        provider_expires_at: true,
+        usable_until: true,
+      };
+      assert.deepEqual(Object.keys(row).sort(), Object.keys(columns).sort());
+      const admission: typeof readPreparedGitHubMetadata extends FabricatedReader
+        ? never
+        : GitHubPreparationAdmission = row.admission;
+      assert.equal(admission.grant.installationId, fixtureInstallationId);
+    });
     const old = await lifecycle.readWarm(source, window());
     assert(old && Date.parse(old.usableUntil) > Date.now() + 40 * 60_000);
     const dispatched = async (revoke = false) => {

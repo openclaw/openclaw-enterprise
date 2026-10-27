@@ -37,7 +37,7 @@ RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
 # the controller's compiler options and turns off only project build outputs
 # (declarations, build info) and the type check; Static Checks and the service
 # build below check types. The emitted files match the full build's
-# (tests/integration/repository-credentials-package.test.mjs).
+# (tests/integration/repository-credentials-package.test.ts).
 FROM repository-credentials-deps AS repository-client-build
 COPY tsconfig.base.json ./
 COPY apps/controller/tsconfig.json apps/controller/tsconfig.json

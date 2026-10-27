@@ -1,3 +1,4 @@
+import { githubProviderOrigin } from "./origin.ts";
 import type { RepositoryBackend } from "../../credentials/backend-contracts.ts";
 import { createGitHubDriver } from "./driver.ts";
 import { snapshotBinding } from "../../credentials/sessions.ts";
@@ -9,13 +10,6 @@ import { createGrantResolver } from "./grants.ts";
 import { createStaticTokenSource } from "./token-source/static.ts";
 import type { GitHubDriverFactory, GitHubFactoryOptions, GitHubTokenProfile } from "./types.ts";
 
-export function githubProviderOrigin(value: string): string {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || url.origin !== value || url.username || url.password) {
-    throw new Error("invalid-endpoint");
-  }
-  return url.origin;
-}
 export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHubDriverFactory {
   const config = validateGitHubConfiguration(options.configuration);
   // A static token has no metadata-only capability.

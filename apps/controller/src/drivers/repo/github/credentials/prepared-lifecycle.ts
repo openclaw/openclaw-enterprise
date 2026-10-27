@@ -1,6 +1,6 @@
 import { TokenService } from "../../../../backends/token-service/service.ts";
 import { retireToken } from "../../../../backends/token-service/retirement.ts";
-import { githubProviderOrigin } from "./factory.ts";
+import { githubProviderOrigin } from "./origin.ts";
 import { createHash, createPrivateKey, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";

@@ -245,7 +245,6 @@ test(
     // call a provider, and the peer deliberately refuses before any model turn.
     const { containerName } = await runGatewaySmoke(t, "codex", {
       configuration,
-      collectPlugins: false,
       waitUntilReady: false,
       extraEnvironment: ["APP_SERVER_URL=ws://127.0.0.1:4500", "OPENCLAW_DEBUG=1"],
     });
