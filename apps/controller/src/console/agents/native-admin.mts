@@ -48,43 +48,55 @@ export function renderNativeAdminAccess(
   path: string,
   // The caller's latest advisory Agent administer answer; undefined when it is unknown.
   administerAllowed?: () => Promise<boolean | undefined>,
+  options?: {
+    versionLabel(): string;
+    recovery(status: Availability["status"]): HTMLElement | null;
+  },
 ) {
   const statusPath = `${path}/native-admin`;
-  const status = element("p", { className: "hint", role: "status" }, "Checking access…");
-  const error = element("p", { className: "error", role: "alert" });
+  const status = element(
+    "p",
+    { id: "native-admin-availability", className: "hint", role: "status" },
+    "Checking access…",
+  );
+  const error = element("p", { id: "native-admin-error", className: "error", role: "alert" });
+  const target = element("p", { id: "native-admin-target", className: "native-admin-target" });
+  const unavailable = button("Open Agent UI", () => {}, {
+    tone: "primary",
+    disabled: true,
+    hidden: true,
+    "aria-describedby": `${status.id} ${error.id}`,
+  });
+  const recovery = element("div", { className: "native-admin-recovery" });
   const launch = element(
     "a",
     {
-      className: "overview-primary",
+      className: "button button--primary agent-ui-launch",
       target: "_blank",
       rel: "noopener noreferrer",
-      "aria-describedby": "native-admin-scope native-admin-warning",
+      "aria-describedby": "native-admin-target native-admin-scope native-admin-warning",
       hidden: true,
     },
-    "Open admin console",
+    "Open Agent UI",
     element("span", { "aria-hidden": "true" }, "↗"),
   );
   const reload = button("Refresh access", () => void load(), { className: "overview-text-button" });
   const scope = element(
     "p",
     { id: "native-admin-scope" },
-    "Full native administration, including gateway conversations and credentials.",
+    "Full Agent administration, including conversations and accessible credentials.",
   );
   const caution = element("p", { id: "native-admin-warning" }, warning);
   const section = element(
     "section",
     { className: "native-admin-access", "aria-label": "Native admin UI" },
-    element(
-      "div",
-      { className: "native-admin-heading" },
-      element("h2", {}, "Gateway administration"),
-      launch,
-    ),
+    target,
     scope,
     caution,
     status,
     error,
     reload,
+    recovery,
   );
 
   let current: Availability | undefined;
@@ -111,6 +123,18 @@ export function renderNativeAdminAccess(
     section.hidden =
       !failed &&
       (current === undefined || current.status === "disabled" || current.status === "denied");
+    unavailable.hidden = section.hidden || !launch.hidden;
+    target.hidden = launch.hidden;
+    updateTarget();
+    const nextRecovery = current && launch.hidden ? options?.recovery(current.status) : null;
+    // An unchanged recovery link keeps focus if the reader moved there during the access read.
+    const shownRecovery = recovery.firstElementChild;
+    if (nextRecovery ? !nextRecovery.isEqualNode(shownRecovery) : shownRecovery !== null) {
+      recovery.replaceChildren(...(nextRecovery ? [nextRecovery] : []));
+    }
+  }
+  function updateTarget() {
+    target.textContent = `Opens selected version · ${options?.versionLabel() ?? "current version"} in a new tab.`;
   }
 
   async function load() {
@@ -187,6 +211,9 @@ export function renderNativeAdminAccess(
 
   return {
     section,
+    launch,
+    unavailable,
+    updateTarget,
     ready: load(),
     // Rereads access once, for example after the active version or runtime state changes.
     refresh() {

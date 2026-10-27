@@ -1130,9 +1130,11 @@ async function createApiSecret(request, namespaceId, name, value) {
     200,
     `Secret read failed with HTTP ${read.status} (${read.error?.code ?? "unknown"})`,
   );
-  // Detail reads include consumers; a newly created, unbound Secret has none.
+  // Detail reads include consumers; a newly created, unbound Secret has none. Only the exact
+  // read reports what its caller may do next: every caller here holds Secret update and delete.
   assert.deepEqual(read.data, {
     ...response.data,
+    callerPermissions: { update: true, delete: true },
     consumers: {
       agents: [],
       configurations: [],

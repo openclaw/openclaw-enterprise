@@ -55,6 +55,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
@@ -7116,7 +7117,10 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.equal(readyDeployment.data.configurationGeneration, 1);
   assert.deepEqual(
     readyDeployment.data.configuration,
-    admitLoggingConfiguration({ model: "first", temperature: "0" }, "info"),
+    admitLoggingConfiguration(
+      servedAs({ model: "first", temperature: "0" }, agentA.data.name),
+      "info",
+    ),
   );
   assert.deepEqual(readyDeployment.data.harness, {
     id: "openclaw",
@@ -7158,7 +7162,10 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.equal(nextDeployment.data.revision, 2);
   assert.deepEqual(
     nextDeployment.data.configuration,
-    admitLoggingConfiguration({ model: "second", temperature: "1" }, "info"),
+    admitLoggingConfiguration(
+      servedAs({ model: "second", temperature: "1" }, agentA.data.name),
+      "info",
+    ),
   );
   const admittedRevisions = await injectedRequest(
     fixture.app,

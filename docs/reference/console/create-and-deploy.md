@@ -15,7 +15,7 @@ Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
 `OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
-**Open admin console** requires [native admin setup](../../guides/deploy/native-admin.md):
+**Open Agent UI** requires [native admin setup](../../guides/deploy/native-admin.md):
 trusted-proxy authentication and the exact Agent HTTPS origin. Loopback origins alone
 are insufficient. Presets and edited Configuration JSON retain their settings.
 
@@ -79,7 +79,7 @@ as the reason Dedicated OpenClaw is disabled.
    and offers no retry or link. The job identifies only the deployment that ended.
    For a failed deployment, open the linked Agent and version and follow its recovery
    guidance. After a Stop, deploy again when ready.
-   Ordinary creation saves Configuration first and opens a draft on **Create new version**,
+   Ordinary creation saves Configuration first and opens a draft on **Open draft**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
    update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
@@ -254,7 +254,7 @@ provider acceptance, runtime readiness, or a channel connection.
 
 ## Deploy a new version
 
-Open **Create new version** and select **Deploy new version** after storing
+Open **Open draft** and select **Deploy new version** after storing
 credentials, saving channel Secret bindings, and selecting harness authentication.
 To change plugins, edit **Plugins**, select **Save plugin selections**, then
 deploy. Deployment uses saved Configuration, plugins, and [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode); it does

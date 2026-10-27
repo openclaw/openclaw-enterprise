@@ -20,6 +20,8 @@ import {
   commandOutput,
   image,
   imageTestOptions,
+  openClawGatewaySpawnedRequest,
+  openClawProcessRunningRequest,
   runDocker,
   temporaryGatewayConfiguration,
   runGatewaySmoke,
@@ -174,6 +176,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const cp = require("node:child_process");
 const { entrypoints, schemaMs, startupMs } = JSON.parse(fs.readFileSync(0, "utf8"));
+const gatewaySpawned = ${openClawGatewaySpawnedRequest};
+const openClawRunning = ${openClawProcessRunningRequest};
 const manifest = { kind: "openclaw", selections: {}, pluginApprovers: [] };
 const base = {
   gateway: { mode: "local", bind: "loopback", controlUi: { enabled: false },
@@ -200,12 +204,19 @@ async function scenario(entrypoint, channel, label) {
   const exited = new Promise(resolve => child.once("exit", resolve));
   const deadline = Date.now() + startupMs;
   const incompatible = channel?.enabled !== false && channel !== undefined && !supportsSlackApprovers;
+  // Only a configured Slack channel gets the approver overlay, so only that case
+  // needs OpenClaw's full start to prove it accepts the policy. Without the overlay
+  // the effective config is the base config: those cases end once the launcher has
+  // passed its checks and spawned OpenClaw (four fewer full starts per run).
+  const fullStart = channel?.enabled === true;
   try {
     let observed = false;
     while (Date.now() < deadline) {
       if (child.exitCode !== null) throw new Error(label + " exited before readiness: " + output);
       if (incompatible) {
         observed = output.includes("cannot validate approvals.plugin.slack");
+      } else if (!fullStart) {
+        observed = (await gatewaySpawned()) === 200;
       } else {
         try { observed = (await fetch("http://127.0.0.1:18789/healthz", { signal: AbortSignal.timeout(1000) })).ok; } catch {}
       }
@@ -233,6 +244,14 @@ async function scenario(entrypoint, channel, label) {
     await exited;
     fs.rmSync(directory, { recursive: true, force: true });
   }
+  // The launcher forwards SIGTERM to OpenClaw and exits with it, but a respawned
+  // OpenClaw stopped early in its start can outlive it briefly. The next scenario
+  // reuses the port, so wait until no OpenClaw process runs.
+  const stopDeadline = Date.now() + 30_000;
+  while ((await openClawRunning()) === 200 && Date.now() < stopDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(await openClawRunning(), 503, label + " left an OpenClaw process running");
 }
 (async () => {
   for (const [label, entrypoint] of Object.entries(entrypoints)) {
@@ -247,8 +266,9 @@ async function scenario(entrypoint, channel, label) {
       // at the same time, so a slow start under that load is not a failure. A start
       // that never reports its outcome still fails within startupMs. The container
       // reads the schema once, then starts six runtimes one after another (two
-      // launchers, Slack absent, disabled and configured): its limit is their sum
-      // plus a minute to create and remove the container.
+      // launchers, Slack absent, disabled and configured; only configured runs to
+      // /healthz): its limit is their sum plus a minute to create and remove the
+      // container.
       const schemaMs = cpuScaledImageTimeoutMs(30_000);
       const startupMs = cpuScaledImageTimeoutMs(45_000);
       const { stdout } = await runDocker(

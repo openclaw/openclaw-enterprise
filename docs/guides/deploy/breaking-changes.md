@@ -22,6 +22,27 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-27: OpenClaw retired its memory flush and cyber failover models
+
+**What breaks.** The OpenClaw update of 2026-10-27 removed
+`agents.defaults.compaction.memoryFlush.model`,
+`agents.defaults.embeddedAgent.cyberFailover.model` and
+`plugins.entries.codex.config.appServer.cyberFailover.model`. Memory flushes
+now use the session model and its fallbacks; cyber-policy retries use the
+active model. OpenClaw refuses a configuration that still sets one, and its
+`doctor --fix` cannot rewrite the read-only Configuration OCE mounts, so the
+Gateway does not start. Configuration and Preset save, Agent save and deploy
+now refuse these settings with `400 INVALID_REQUEST`.
+
+**Who is affected.** Configurations and Presets that set any of them.
+
+**How to tell.** The message reads `Configuration setting <path> must be
+removed: the OpenClaw runtime retired it`.
+
+**Steps.** Before upgrading, remove these settings from each Configuration
+and Preset; `mode` and `cooloffMs` under `cyberFailover` still apply. Then
+deploy a new version of each Agent that used them.
+
 ## 2026-10-27: an OpenClaw Gateway needs a 4Gi memory limit
 
 **What breaks.** Since the OpenClaw update of 2026-10-26, an embedded Gateway

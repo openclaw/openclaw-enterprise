@@ -96,11 +96,18 @@ compose_args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --key-output)
-      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+      if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
         usage_error "arguments" "--key-output requires a path"
       fi
       key_output="$2"
       shift 2
+      ;;
+    --key-output=*)
+      key_output="${1#--key-output=}"
+      if [ -z "$key_output" ]; then
+        usage_error "arguments" "--key-output requires a path"
+      fi
+      shift
       ;;
     --sandbox-network-policy-file | --sandbox-network-policy-ceiling-file | --sandbox-network-policy-file=* | --sandbox-network-policy-ceiling-file=*)
       usage_error "arguments" "Sandbox policy input requires Kubernetes Compute and a Sandbox Driver"

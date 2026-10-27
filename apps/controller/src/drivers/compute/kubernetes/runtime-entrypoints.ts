@@ -2424,7 +2424,43 @@ const GATEWAY_RESPAWN_WINDOW_MS = 10 * 60_000;
 const GATEWAY_RESPAWN_READY_TIMEOUT_MS = 180_000;
 const GATEWAY_RESPAWN_READY_POLL_MS = 500;
 const GATEWAY_RESPAWN_KILL_GRACE_MS = 10_000;
+const GATEWAY_STOP_RECHECK_MS = 1_000;
 let gatewayTerminating = false;
+
+// OpenClaw ignores a stop signal that arrives while it restarts itself in place
+// (after a native configuration edit that needs a Gateway restart) and then
+// serves again. A stopping Gateway does not serve again after its server closes,
+// so repeat the signal when the native readiness endpoint answers after it
+// refused a connection. A slow or unready answer proves neither.
+function stopNativeGateway(target, signal) {
+  const exited = () => target.exitCode !== null || target.signalCode !== null;
+  target.kill(signal);
+  let closed = false;
+  let checking = false;
+  const recheck = setInterval(async () => {
+    if (exited()) {
+      clearInterval(recheck);
+      return;
+    }
+    if (checking) return;
+    checking = true;
+    try {
+      const response = await fetch(
+        "http://127.0.0.1:" + process.env.OPENCLAW_GATEWAY_PORT + "/readyz",
+        { signal: AbortSignal.timeout(2_000), redirect: "error" },
+      ).catch((error) => error);
+      if (response instanceof Error) {
+        if (response.cause?.code === "ECONNREFUSED") closed = true;
+      } else if (response.status === 200 && closed && !exited()) {
+        closed = false;
+        target.kill(signal);
+      }
+    } finally {
+      checking = false;
+    }
+  }, GATEWAY_STOP_RECHECK_MS);
+  recheck.unref?.();
+}
 
 // Forward to the current native process; between a respawn's stop and spawn
 // there is none, and the wrapper exits itself.
@@ -2437,7 +2473,7 @@ function forwardTermination(currentChild) {
       process.exit(0);
       return;
     }
-    target.kill(signal);
+    stopNativeGateway(target, signal);
     setTimeout(() => currentChild()?.kill("SIGKILL"), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
   };
   process.on("SIGTERM", () => forward("SIGTERM"));
@@ -2990,7 +3026,7 @@ function stopContainer() {
     process.exit(1);
     return;
   }
-  child.kill("SIGTERM");
+  stopNativeGateway(child, "SIGTERM");
   setTimeout(() => process.exit(1), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
 }
 
@@ -3149,7 +3185,7 @@ if (followsPeerStatus) {
   // leaves only the container restart.
   const stopGatewayProcess = async () => {
     if (!childRunning) return;
-    child.kill("SIGTERM");
+    stopNativeGateway(child, "SIGTERM");
     const exited = childExited;
     const escalate = setTimeout(() => child.kill("SIGKILL"), ${GATEWAY_STOP_TIMEOUT_MS});
     escalate.unref?.();
@@ -4199,7 +4235,15 @@ export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
 // the saved device identity. No deadline here: the controller's convergence
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
-function agentWithNodeEntrypoint(entrypoint: string): string {
+const PRIVATE_WORKSPACE_NODE_STATE = `mkdirSync(state, { recursive: true, mode: 0o700 });
+// PVC parents can propagate setgid even with mkdir's 0700 mode. Keep the
+// process-owned node state private before OpenClaw creates its child directories.
+chmodSync(state, 0o700);`;
+
+function agentWithNodeEntrypoint(
+  entrypoint: string,
+  prepareState = PRIVATE_WORKSPACE_NODE_STATE,
+): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
@@ -4226,7 +4270,7 @@ if (
 ) {
   throw new Error("The workspace node is not provisioned.");
 }
-mkdirSync(state, { recursive: true });
+${prepareState}
 initializeRuntimeAssets();
 publishAgentPluginSkillPath();
 const configPath = join(state, "openclaw.json");
@@ -4589,6 +4633,29 @@ export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
 );
 
+/** Check the one supported upgrade without exposing an old program to the launch path. */
+export function matchesWorkspaceNodeStateUpgrade(
+  expected: readonly string[],
+  observed: readonly string[],
+  protectedCodex: boolean,
+): boolean {
+  const entrypoint = protectedCodex ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
+  const samePayload = (parts: readonly string[], program: string) => {
+    const [, ...encoded] = nodeProgramArguments(program);
+    return parts.length === encoded.length && parts.every((part, index) => part === encoded[index]);
+  };
+  return (
+    samePayload(
+      expected,
+      protectedCodex ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT,
+    ) &&
+    samePayload(
+      observed,
+      agentWithNodeEntrypoint(entrypoint, "mkdirSync(state, { recursive: true });"),
+    )
+  );
+}
+
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");
 const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
@@ -4678,7 +4745,9 @@ const authenticationFailure = probeOpenClawAuthenticationFailure();
 if (authenticationFailure !== undefined) {
   holdFailedAuthentication("model-probe", authenticationFailure.code, authenticationFailure.cause);
 } else {
-mkdirSync(state, { recursive: true });
+mkdirSync(state, { recursive: true, mode: 0o700 });
+// Match the Harness's private node-state preparation on fsGroup-backed storage.
+chmodSync(state, 0o700);
 const workerConfigPath = join(state, "openclaw.json");
 writeFileSync(workerConfigPath, JSON.stringify({
   ...JSON.parse(inferenceConfig),

@@ -376,8 +376,9 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     );
   });
   await page
-    .getByRole("button", { name: "View new version, editable Configuration", exact: true })
-    .waitFor();
+    .getByRole("combobox", { name: "Viewing version", exact: true })
+    .getByRole("option", { name: "Draft · Editable Configuration", exact: true, selected: true })
+    .waitFor({ state: "attached" });
   await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
   await page.getByText("No version is currently selected for service.").waitFor();
   // A never-deployed Agent has no Stop card and reports no stop request (finding 1899). The

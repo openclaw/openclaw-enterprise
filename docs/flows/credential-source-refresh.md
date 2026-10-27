@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-27
-last_updated_session: authoring-run/49b987ad-6c12-4e7c-8848-4d14b179981a
+last_updated_session: authoring-run/1280f6a3-93e3-43d7-b641-05139f54b08c
 ---
 
 # Credential source refresh Flow
@@ -279,20 +279,25 @@ Prepared metadata reads share the two token limits. Withdrawing their
 credential-source binding stops new authorizations. A send already authorized
 can finish.
 
-**Key rotation and withdrawal.** When the signing-key version changes, the worker
-advances the owner epoch and retires old material before publishing a replacement.
-Deleting the bound Agent stops new use and renewal immediately. The next worker pass
-disables the token family and retires its token. Agent deletion can finish before
-GitHub revocation. Source deletion waits up to 25 seconds for in-flight revocation,
-then returns `409` if custody remains unsettled.
+**Key rotation and withdrawal.** On a changed signing-key version, the worker
+advances the owner epoch and retires old material before publishing a token signed
+with the new key. Withdrawal stops new authorizations; an authorized send can
+finish. For an Agent-bound metadata source, Agent deletion immediately fences
+use and renewal. The next worker pass disables its token family and retires the
+current token. Agent deletion can finish before GitHub revocation. Source deletion
+waits up to 25 seconds for in-flight revocation, returning `409` for unsettled custody.
 
-**Uncertain outcomes.** A lost issuance response or commit receipt blocks replay.
-The [response parser](repository-credentials.md#4-reserve-acquire-and-dispatch) retains
-an identifiable token for cleanup even with ambiguous scope. Duplicate root token
-fields leave no unique candidate. The worker records possible revocation before
-`DELETE /installation/token`. Only HTTP 204 confirms revocation. A lost response
-stays unconfirmed without automatic replay. After all possible tokens expire,
-allowing for clock skew, the store can settle the attempt. [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key)
+**Uncertain outcomes.** A lost GitHub answer or local commit receipt blocks replay
+of the original attempt. The [response parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
+retains a unique candidate for cleanup despite ambiguous scope; duplicate root
+token fields leave none. The worker records possible revocation before calling
+`DELETE /installation/token`. HTTP 204 confirms revocation; a lost answer leaves
+it unconfirmed. After token expiry and clock-skew allowance, the store can settle
+an old attempt; expiry does not confirm revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
+`apps/controller/src/backends/token-service/retirement.ts:retireToken` clears
+detached token bytes before settling the original receipt. If revocation and
+settlement both fail, the error names the stages without underlying errors.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
 clears token buffers after publication, including on failure. Callers own their
@@ -334,6 +339,8 @@ detached warm reads. Clearing a buffer cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 10:59: Trace dual retirement failures in the accompanying source change. (authoring-run/1280f6a3-93e3-43d7-b641-05139f54b08c - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 - 2026-10-27 10:53: Illustrate installation token issuance and distinguish renewal from permission to send. (authoring-run/49b987ad-6c12-4e7c-8848-4d14b179981a - 0418ef3a2c)
 

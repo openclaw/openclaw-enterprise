@@ -15,6 +15,34 @@ import { installationDriverConfigurations } from "../../apps/controller/src/comp
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
+// Keep the two worker roles distinct. Tests can still replace the boundary's methods
+// after a worker starts to simulate a lost response or a changed grant.
+function repositoryWorkerRoles(driver) {
+  if (driver === undefined) {
+    return {};
+  }
+  const { id, implementation } = driver;
+  return {
+    repositoryPolicy: {
+      id,
+      implementation,
+      capability: driver.capability,
+      listOptions: (input) => driver.listOptions(input),
+      resolve: (input) => driver.resolve(input),
+    },
+    nativeRepositorySender: {
+      id,
+      implementation,
+      maintenanceIntervalMs: driver.maintenanceIntervalMs,
+      durableBrokerReceipts: driver.durableBrokerReceipts,
+      checkAdmissionReady: (signal) => driver.checkAdmissionReady(signal),
+      open: (input, signal) => driver.open(input, signal),
+      status: (sessionId, signal) => driver.status(sessionId, signal),
+      close: (sessionId, signal) => driver.close(sessionId, signal),
+    },
+  };
+}
+
 // Admission locks a Namespace, then its Agent. Every worker transaction that locks a claim's
 // Agent must already hold the Namespace (#1742), or it deadlocks with a concurrent deploy,
 // stop, delete or withdrawal. Records each Agent row lock taken first, with its stack.
@@ -711,9 +739,7 @@ export function createWorkerRevisionFixtures(
           drivers: { ...configuredDrivers.installation.drivers, ...driverSelections },
         },
         secretDriver,
-        ...(repoDriver === undefined
-          ? {}
-          : { repositoryPolicy: repoDriver, nativeRepositorySender: repoDriver }),
+        ...repositoryWorkerRoles(repoDriver),
       });
       worker = createControllerWorker({
         metrics,

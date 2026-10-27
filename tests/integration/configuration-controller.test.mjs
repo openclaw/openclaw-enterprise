@@ -37,6 +37,7 @@ import {
   codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -1205,6 +1206,70 @@ test("Configuration save refuses workspace bootstrap settings native setup refus
     ),
     skipBootstrap,
   );
+});
+
+test("Configuration save and deployment refuse settings the pinned OpenClaw retired", async () => {
+  // Finding 2709. The OpenClaw pin removed these settings; its config validation refuses them,
+  // and doctor --fix cannot rewrite OCE's read-only Configuration, so a saved one failed only
+  // when the Gateway started. Every save path and deployment refuse each, whatever its value.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-retired-integration", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Retired settings consumer",
+    secretName: "retired-key",
+  });
+  const flushes = "memory flushes use the session model and its fallbacks";
+  const retries = "cyber-policy retries use the active model";
+  for (const [path, replacement, value] of [
+    ["agents.defaults.compaction.memoryFlush.model", flushes, "openai/gpt-4.1"],
+    ["agents.defaults.embeddedAgent.cyberFailover.model", retries, "openai/gpt-4.1"],
+    ["plugins.entries.codex.config.appServer.cyberFailover.model", retries, null],
+  ]) {
+    const values = { ...runtimeSelected };
+    const keys = path.split(".");
+    let parent = values;
+    for (const key of keys.slice(0, -1)) {
+      parent = parent[key] = { ...parent[key] };
+    }
+    parent[keys.at(-1)] = value;
+    const message = setting(
+      path,
+      `must be removed: the OpenClaw runtime retired it (${replacement})`,
+    );
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+    await refusedOnSave(context, values, message);
+  }
+  // Agent save refuses a stored row the same way, before any deployment.
+  const retired = {
+    ...runtimeSelected,
+    agents: { defaults: { ...runtimeDefaults, compaction: { memoryFlush: { model: "x/m" } } } },
+  };
+  await writePastOcc(configurationDriver, agent.configurationId, retired);
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    setting(
+      "agents.defaults.compaction.memoryFlush.model",
+      `must be removed: the OpenClaw runtime retired it (${flushes})`,
+    ),
+    { label: "Agent save" },
+  );
+  // The settings beside them still save.
+  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
+  await acceptedOnSave(context, {
+    ...runtimeSelected,
+    agents: {
+      defaults: {
+        ...runtimeDefaults,
+        compaction: { memoryFlush: { enabled: false } },
+        embeddedAgent: { cyberFailover: { mode: "off", cooloffMs: 1000 } },
+      },
+    },
+  });
 });
 
 test("SSH and Docker Compute refuse at save and deployment a Gateway tool policy their embedded Gateway refuses", async () => {
@@ -2867,8 +2932,8 @@ for (const runtimeLogging of [undefined, "driver"]) {
     assert.deepEqual(
       deployed.body.data.configuration,
       runtimeLogging === "driver"
-        ? initialValues
-        : admitLoggingConfiguration(initialValues, "info"),
+        ? servedAs(initialValues, "Configuration consumer")
+        : admitLoggingConfiguration(servedAs(initialValues, "Configuration consumer"), "info"),
     );
 
     const source = await request(context.app, "GET", `${collection}/${configurationId}`);

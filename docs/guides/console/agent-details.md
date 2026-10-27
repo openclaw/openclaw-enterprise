@@ -16,10 +16,10 @@ permission; saving and deploying have separate access checks.
 | **Agents** / **← Agents**     | Opens the Agents list in the selected Namespace.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **Namespaces**                | Lists the Namespaces you can read.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | **Observability**             | Opens the Installation's configured observability dashboard in a new tab. Shown only to Installation administrators, and only when one is configured.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Agent name                    | Human-readable name of this Agent.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Agent name                    | Human-readable name of this Agent. Each deployment also shows it as the assistant name in the [native admin UI](../../reference/agents/deployment.md#versions-and-deployment).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | **Namespace**                 | Namespace containing the Agent.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Refresh**                   | Reloads the Agent page. It does not retry or restart deployment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **Selected version**          | Version in the Agent's `activeRevisionId`. It may differ from the latest or viewed version.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Selected for service**      | Version in the Agent's `activeRevisionId`. It may differ from the latest or viewed version.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | **Latest visible deployment** | Newest readable version and its recorded deployment status. **Newer version hidden** means the current version is one you cannot read; ask for read access to new versions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | **Live serving**              | Unverified by this page. **Not running** means no version is selected for service, for example after a failed first deployment. **May be offline** means a newer dedicated deployment failed, and the current version was probably stopped for it, or the selected version's own deployment failed (an embedded redeploy selects its version before its gateway is ready). For a running Agent whose selected version has a dedicated Harness, the line under it shows that version's Sandbox: running, starting, Harness restarting, or unknown when it cannot be read. The page reads it when it opens; **Refresh** reads it again. **Sandbox lost** means that the Sandbox stopped or is gone and OCC does not restart it; deploy a new version. |
 | **Deployment activity**       | Most recent visible version and its persisted deployment status. Hidden until a version exists.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -32,7 +32,7 @@ configurable settings. Sign out ends your console session.
 
 ## Follow deployment activity
 
-**Deployment activity** follows the latest readable version while viewing
+In **Deployment**, **Deployment activity** follows the latest readable version while viewing
 another version or the draft. Routine completions and failures fold, a failure
 under its leading card; pending work, warnings and cleanup stay open. On a slow
 connection the page can show before the first record arrives; that record then stays
@@ -69,7 +69,7 @@ A running worker shows its previous result.
 Next eligibility does not promise a start time; missing evidence does not mean
 work never started.
 
-**Selected version** is OCC's selection, not live health. Deployment may still
+**Selected for service** is OCC's selection, not live health. Deployment may still
 be in progress; a successful historical record does not confirm a response.
 A newer version still deploying is labelled **Deploying version**.
 Verify the runtime and a real response with
@@ -82,12 +82,18 @@ Verify the runtime and a real response with
 An **Agent revision** (`AgentRevision`) stores one version's settings, which
 cannot change. A **Configuration** supplies reusable settings for the next version.
 
-**Versions** lists the newest 50 versions and marks the current one; **Show
-older versions** loads the next 50. **View version vN** shows creation time,
-Configuration generation, deployment status, and read-only settings, including
-native JSON. Activity follows the latest visible deployment. **Available versions**
-jumps to readable versions; `rev_…` identifies the version for API calls and
-support. Viewing neither deploys nor activates it.
+**Viewing version** opens the saved draft or a read-only version snapshot. The
+picker initially holds the newest 50 versions; **Load older versions** appends
+the next page. It marks the version **Selected for service** and deployment
+outcomes. **Version details** expands the version ID, creation time, and
+Configuration generation. Browsing does not deploy or activate a version.
+
+Open **Deployment** for the latest visible deployment activity, the viewed
+version's own record, and diagnostics. Pending work, startup warnings, and
+incomplete cleanup also show a message above the tabs. A failed refresh of the
+current version or history keeps a notice there with a link to Deployment.
+Failed deployments keep
+their recovery message above the summary. These records do not prove live health.
 
 **Run diagnostics for this version** requests fresh, on-demand observations of
 the viewed version. A failed version that is not current has no runtime to check,
@@ -116,9 +122,9 @@ while it started. See [Agent logs](../topics/agent-logs.md).
 The Console cannot roll back or deploy an old version again. See
 [Agent revisions](../topics/agent-revisions.md) for the lifecycle.
 
-Select **Create new version** to open the current saved settings. Edit and save
+Select **Open draft** to open the current saved settings. Edit and save
 Configuration, plugin selections, channel settings, or credentials.
-**Prepare this version**, beside **Versions**, checks off saved settings and
+**Prepare this version**, above the tabs, checks off saved settings and
 credentials and holds **Deploy new version** with its status. A model credential
 the last deployment rejected keeps the credentials step open: deploying again
 does not fix it.
@@ -192,14 +198,18 @@ The console has no chat panel. To give an Agent a task:
   its channel. An operator with cluster access can check a real response with
   [model verification](../operate/model-verification.md).
 
-## Conditional native admin panel
+<span id="conditional-native-admin-panel"></span>
 
-When enabled by the Installation and permitted for your account, **Gateway
-administration** near the top provides **Refresh access** and **Open admin console**. The latter opens
-the active gateway in a new tab, even while you view a draft or older version.
+## Open the Agent UI
 
-The native UI can change the gateway outside OCE's version tracking. Use OCE for
-durable configuration. See [native admin access](../../reference/agent-native-admin.md)
+When enabled by the Installation and permitted for your account, **Open Agent UI**
+in the header opens the Agent interface directly in a new tab. Its description
+names the version selected for service, even while you view a draft or historical
+version. **Refresh access** checks availability again. Unavailable access leaves
+the launch disabled and explains the next step; denied access hides it.
+
+Gateway managed mode restricts administrative changes by default. OCE deployments
+can overwrite changes made while managed mode is off. Use OCE for durable configuration. See [native admin access](../../reference/agent-native-admin.md)
 for permissions and stopped, unavailable, or unsupported states. Installation
 administrators [share Agents](agent-sharing.md) from the **Access** tab.
 
@@ -220,7 +230,7 @@ With no selected version, there is no Stop row before a first deploy or after a
 failed first deployment. While a first deployment is queued or in progress,
 **Stop Agent** cancels it. If you cannot read the deploying version, Stop stays
 and its confirmation says it cancels the deployment or stops a started version. To resume,
-open **Create new version** and select **Deploy new version**, which creates a new
+open **Open draft** and select **Deploy new version**, which creates a new
 version. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 
 ## Delete Agent and error recovery

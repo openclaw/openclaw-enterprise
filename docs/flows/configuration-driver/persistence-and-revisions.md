@@ -142,8 +142,12 @@ a Codex approval policy outside `never`, `on-request` and `on-failure` this way;
 Kubernetes also refuses a `gateway.auth.password` other than the
 `OPENCLAW_GATEWAY_PASSWORD` reference. The selected PluginDriver's
 optional `validateAgentConfiguration` then checks plugin selections against the
-admitted values. OCC freezes
-the admitted values, including any remaining inline unresolved SecretRefs, into
+admitted values. OCC then applies
+[`withAgentIdentityName`](../../../packages/occ/src/openclaw-roster.ts), which
+sets the Agent name as the sole roster entry's `identity.name` unless the
+Configuration names it ([rules](../../reference/agents/deployment.md#versions-and-deployment)).
+No check above reads that setting. OCC freezes
+the result, including any remaining inline unresolved SecretRefs, into
 `AgentRevision.configuration`; separate `configurationId`, `configurationKind`,
 and `configurationGeneration` fields pin the selected Configuration metadata.
 The Agent revision also pins the selected OpenClaw or Codex Harness descriptor,

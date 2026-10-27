@@ -293,16 +293,18 @@ for (const viewport of [
     // read lands it grows the status above the strip. Measure the strip once the reads are in.
     await waitForIdleFetches(page);
     const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
-    // The strip sits in the middle of the viewport, as after reading the overview.
+    // Scroll after reading the overview, keeping the strip visible even when the compact
+    // desktop summary already places it above the viewport's midpoint.
     await page.evaluate(() => {
       const strip = globalThis.document.querySelector(".agent-tabs")!.getBoundingClientRect();
-      globalThis.scrollBy(0, strip.top - globalThis.innerHeight / 2);
+      const target = Math.min(globalThis.innerHeight / 2, strip.top / 2);
+      globalThis.scrollBy(0, strip.top - target);
     });
     const before = await page.evaluate(() => ({
       scrollY: globalThis.scrollY,
       strip: globalThis.document.querySelector(".agent-tabs")!.getBoundingClientRect().top,
     }));
-    assert.ok(before.scrollY > 0, "the page scrolled to put the strip mid-viewport");
+    assert.ok(before.scrollY > 0, "the page is scrolled before opening Logs");
     await logsTab.click();
     await page
       .getByRole("log", { name: "Runtime log output" })
@@ -3104,11 +3106,11 @@ test("a refused status poll clears the Pod details and keeps authorized log read
 
 // Back compares a read the view shows as refused or missing like data (finding 1553): an
 // unchanged 404 keeps the view, a 403 granted since and a shown read refused since rebuild it
-// (finding 1562). The Configuration tab keeps rate-limited runtime reads out of it.
+// (finding 1562). The Deployment tab exposes Refresh deployment without runtime log reads.
 test("Back keeps a view whose refusal is unchanged and rebuilds one granted or refused since", async (t) => {
   const logs = await logsFixture(t);
   const { page, deployment, leave } = await openRetainedLogs(t, logs, logs.fixture.credentials, {
-    tab: "configuration",
+    tab: "deployment",
     firstDeployment: refusedRoute(404),
   });
   const refresh = page.getByRole("button", { name: "Refresh deployment" });

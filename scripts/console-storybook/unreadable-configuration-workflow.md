@@ -8,13 +8,13 @@ do not prove PostgreSQL decoding, runtime health, or configuration repair.
 2. Open **Pages / Agent detail / Unreadable Agent draft**. Confirm the Agent name
    and version history remain visible. Configuration, Plugins, Channels, and
    Credentials show the repair banner without editors or deployment controls.
-3. Select **View version v1, current version**. Its readable admitted settings
-   remain available. Return to **Create new version** to see the draft error.
+3. Choose **v1 · Selected for service** in **Viewing version**. Its readable admitted settings
+   remain available. Return to **Open draft** to see the draft error.
 4. Open **Pages / Agent detail / Unreadable revision snapshot**. The selected
    version retains its identity and history entry. Configuration and Plugins
    show the repair banner; no missing settings appear as empty JSON or defaults.
    Deployment activity reports its own read failure.
-5. Select **Create new version**. Its healthy draft can still be edited. Return
+5. Select **Open draft**. Its healthy draft can still be edited. Return
    to the unreadable version, switch tabs, and use **Retry** to confirm the
    scoped error stays visible. Check the same navigation at a narrow viewport.
 

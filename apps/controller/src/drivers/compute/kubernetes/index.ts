@@ -12,6 +12,7 @@ import {
   computeReleasePublicKey,
   signComputeExecutionRelease,
 } from "../egress-enrollment.ts";
+import { forwardMethod } from "../../../backends/token-service/forward-method.ts";
 import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
@@ -3278,6 +3279,42 @@ function gatewayDocumentBeforeLanBind(
   return JSON.stringify(earlier);
 }
 
+/** Compute observes prepared-source readiness; it does not resolve warm credentials. */
+type PreparedTokenReadinessIssuer = Pick<
+  NonNullable<ReturnType<PreparedTokenService["issuer"]>>,
+  "sourceFromRoute" | "ready"
+>;
+type PreparedTokenReadinessService = {
+  issuer(
+    ...args: Parameters<PreparedTokenService["issuer"]>
+  ): PreparedTokenReadinessIssuer | undefined;
+};
+
+function preparedTokenReadiness(
+  service: PreparedTokenReadinessService | undefined,
+): PreparedTokenReadinessService | undefined {
+  if (!service) {
+    return undefined;
+  }
+  const select = forwardMethod(service, service.issuer);
+  return Object.freeze(
+    Object.assign(Object.create(null), {
+      issuer(provider) {
+        const owner = select(provider);
+        if (!owner) {
+          return undefined;
+        }
+        return Object.freeze(
+          Object.assign(Object.create(null), {
+            sourceFromRoute: forwardMethod(owner, owner.sourceFromRoute),
+            ready: forwardMethod(owner, owner.ready),
+          } satisfies PreparedTokenReadinessIssuer),
+        );
+      },
+    } satisfies PreparedTokenReadinessService),
+  );
+}
+
 export class KubernetesComputeDriver implements ComputeDriver {
   readonly discoverHarnessModels = discoverHarnessModels;
 
@@ -3508,7 +3545,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly preparedRepositoryIngress: boolean;
-  private readonly preparedTokens: PreparedTokenService | undefined;
+  private readonly preparedTokens: PreparedTokenReadinessService | undefined;
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
 
@@ -4079,7 +4116,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.sandboxDriver = this.protectedExecution?.sandbox ?? selection.sandboxDriver;
     this.preprovisionedNamespace = selection.preprovisionedNamespace;
-    this.preparedTokens = selection.preparedTokens;
+    this.preparedTokens = preparedTokenReadiness(selection.preparedTokens);
     if (this.preprovisionedNamespace && options.executionCluster) {
       throw new ConfigurationFailure(
         "A preprovisioned Namespace requires single-cluster Kubernetes execution.",

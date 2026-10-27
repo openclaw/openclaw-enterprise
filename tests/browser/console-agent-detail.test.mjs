@@ -105,6 +105,65 @@ import {
   READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
 
+test("Deployment shows a historical version's snapshot read failure and Retry recovers", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deployment snapshot retry", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Snapshot retry", nativeValues("retry"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const current = await fixture.deployAgent(namespace.id, agent.id);
+  await fixture.activateRevision(namespace.id, agent.id, current.id, first.revision.id);
+
+  for (const openingTab of ["deployment", "configuration"]) {
+    await t.test(`opening from ${openingTab}`, async (t) => {
+      const { page } = await newPage(t, fixture);
+      const snapshotPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${first.revision.id}`;
+      // A transient snapshot read failure must stay visible beside the latest deployment,
+      // whether Deployment is opened by address or after another tab already saw the failure.
+      await page.route(
+        fixture.origin + snapshotPath,
+        (route) =>
+          route.fulfill(
+            apiErrorResponse(
+              503,
+              "DEPENDENCY_UNAVAILABLE",
+              "A required platform dependency is unavailable.",
+            ),
+          ),
+        { times: 1 },
+      );
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, first.revision.id, openingTab),
+      );
+      if (openingTab === "configuration") {
+        await page
+          .getByRole("heading", { name: "Configuration unavailable", exact: true })
+          .waitFor();
+        await page.getByRole("tab", { name: "Deployment", exact: true }).click();
+      }
+      const panel = page.getByRole("tabpanel", { name: "Deployment", exact: true });
+      const error = panel.getByRole("alert").filter({
+        has: page.getByRole("heading", { name: "Configuration unavailable", exact: true }),
+      });
+      await error.waitFor();
+      await error.getByRole("button", { name: "Retry", exact: true }).click();
+      await page
+        .getByRole("tabpanel", { name: "Deployment", exact: true })
+        .locator(".version-evidence")
+        .getByRole("heading", { name: "This version’s deployment record", exact: true })
+        .waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("revision"), first.revision.id);
+      assert.equal(new URL(page.url()).searchParams.get("tab"), "deployment");
+      assert.equal(
+        await page.getByRole("heading", { name: "Configuration unavailable", exact: true }).count(),
+        0,
+      );
+    });
+  }
+});
+
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -160,8 +219,11 @@ test("Agent detail separates the current version, viewed version, and latest dep
   });
   const url = detailUrl(fixture, namespace.id, agent.id, current.revision.id, "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Versions" }).waitFor();
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page.getByLabel("Viewing version", { exact: true }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .locator("option:checked")
+    .waitFor({ state: "attached" });
   const overview = page.locator(".agent-current-summary > div");
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await overview.nth(1).getByText("v2 · Queued").waitFor();
@@ -180,6 +242,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
     attempt: { at: new Date("2026-09-27T12:01:00.000Z"), code: "REVISION_INCOMPLETE" },
     nextAttemptAt: "2026-09-27T12:01:01.000Z",
   };
+  await page.getByRole("tab", { name: "Deployment", exact: true }).click();
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
   await expectDeploymentOutcome(page, "In progress");
   await activity.getByText("Deployment work started; waiting for the next attempt.").waitFor();
@@ -345,11 +408,32 @@ test("Agent detail separates the current version, viewed version, and latest dep
     ).length >= 1,
   );
 
-  await page.getByRole("button", { name: "View version v2" }).click();
-  await page.getByRole("heading", { name: "Version v2" }).waitFor();
+  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+    await page
+      .locator("#revision-selector option")
+      .filter({ hasText: /^v2(?: ·|$)/ })
+      .getAttribute("value"),
+  );
+  await page
+    .locator(".agent-version-metadata .resource-id")
+    .filter({ hasText: pending.id })
+    .waitFor({ state: "attached" });
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "View version v1" }).click();
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+    await page
+      .locator("#revision-selector option")
+      .filter({ hasText: /^v1(?: ·|$)/ })
+      .getAttribute("value"),
+  );
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .locator("option:checked")
+    .waitFor({ state: "attached" });
+  await page
+    .locator(".agent-version-metadata .resource-id")
+    .filter({ hasText: current.revision.id })
+    .waitFor({ state: "attached" });
+  await page.getByRole("tab", { name: "Deployment", exact: true }).click();
   await activity.getByText("Most recent visible deployment · v2").waitFor();
   await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v3"));
   const newer = await fixture.deployAgent(namespace.id, agent.id);
@@ -382,7 +466,10 @@ test("Agent detail separates the current version, viewed version, and latest dep
   );
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
   await activity.getByText("Most recent visible deployment · v3").waitFor();
-  await page.getByRole("button", { name: "View version v3" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { name: /^v3(?: ·|$)/ })
+    .waitFor({ state: "attached" });
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await overview.nth(1).getByText("v3 · Queued").waitFor();
   await fixture.activateRevision(namespace.id, agent.id, newer.id, current.revision.id);
@@ -471,8 +558,9 @@ for (const unreadable of ["draft", "revision"]) {
     await row.getByRole("link", { name: "Affected Agent", exact: true }).click();
     await page.getByRole("heading", { name: "Affected Agent", exact: true }).waitFor();
     await page
-      .getByRole("button", { name: "View version v1, current version", exact: true })
-      .waitFor();
+      .getByLabel("Viewing version", { exact: true })
+      .getByRole("option", { name: /^v1(?: ·|$)/ })
+      .waitFor({ state: "attached" });
     if (unreadable === "draft") {
       await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
       await page.getByRole("button", { name: "Edit current Configuration", exact: true }).click();
@@ -510,12 +598,15 @@ for (const unreadable of ["draft", "revision"]) {
         ).length,
         0,
       );
-      await page
-        .getByRole("button", { name: "View version v1, current version", exact: true })
-        .click();
+      await page.getByLabel("Viewing version", { exact: true }).selectOption(
+        await page
+          .locator("#revision-selector option")
+          .filter({ hasText: /^v1(?: ·|$)/ })
+          .getAttribute("value"),
+      );
       await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
     } else {
-      await page.getByRole("button", { name: "Create new version", exact: true }).first().click();
+      await page.getByRole("button", { name: "Open draft", exact: true }).first().click();
       await page.getByRole("button", { name: "Edit Configuration", exact: true }).waitFor();
     }
     assert.equal(
@@ -993,7 +1084,7 @@ test("Gateway password access saves the generated reference without changing adm
     first.revision.id,
   );
   assert.equal(nonAuthWriteRequests(requests).length, 1);
-  await page.getByLabel("Available versions").selectOption(first.revision.id);
+  await page.getByLabel("Viewing version").selectOption(first.revision.id);
   await page.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
   assert.equal(await enable.count(), 0);
 
@@ -1065,14 +1156,19 @@ test("Agent detail preserves admitted revision history while draft edits change 
   requests.length = 0;
 
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByLabel("Available versions").selectOption(first.revision.id);
+  await page.getByLabel("Viewing version").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/, () =>
     waitForIdleFetches(page),
   );
 
-  await page.getByRole("button", { name: "View version v2" }).click();
+  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+    await page
+      .locator("#revision-selector option")
+      .filter({ hasText: /^v2(?: ·|$)/ })
+      .getAttribute("value"),
+  );
   await page.waitForURL((url) => url.searchParams.get("revision") === second.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-two"').waitFor();
@@ -1081,13 +1177,18 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
   assertRevisionUrl(page, second.revision.id);
 
-  await page.getByRole("button", { name: "View version v1" }).click();
+  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+    await page
+      .locator("#revision-selector option")
+      .filter({ hasText: /^v1(?: ·|$)/ })
+      .getAttribute("value"),
+  );
   await page.waitForURL((url) => url.searchParams.get("revision") === first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   assertRevisionUrl(page, first.revision.id);
 
-  await page.getByRole("button", { name: "Create new version" }).last().click();
+  await page.getByRole("button", { name: "Open draft" }).last().click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "draft-current"').waitFor();
@@ -1188,7 +1289,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
-  await page.getByLabel("Available versions").selectOption(second.revision.id);
+  await page.getByLabel("Viewing version").selectOption(second.revision.id);
   const requestedMode = page.locator(".configuration-summary dt", {
     hasText: "Requested Gateway managed mode",
   });
@@ -1226,7 +1327,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.deepEqual(currentConfiguration.data.values, editedValues);
   assert.deepEqual(currentConfiguration.data.secretBindings, secretBindings);
 
-  await page.getByLabel("Available versions").selectOption(first.revision.id);
+  await page.getByLabel("Viewing version").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/, () =>
@@ -1260,7 +1361,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
     .waitFor();
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.harnessAuth, null);
-  await page.getByLabel("Available versions").selectOption(first.revision.id);
+  await page.getByLabel("Viewing version").selectOption(first.revision.id);
   await page
     .getByRole("link", {
       name: "Auth Revisioned Agent",
@@ -1668,7 +1769,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), editedPlugins);
-  await page.getByLabel("Available versions").selectOption(first.revision.id);
+  await page.getByLabel("Viewing version").selectOption(first.revision.id);
   await page.waitForURL((current) => current.searchParams.get("revision") === first.revision.id);
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
@@ -3212,7 +3313,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.equal(await page.getByText(/deployment in progress is cancelled/).count(), 0);
 
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
+  await page.getByRole("button", { name: "Open draft", exact: true }).last().click();
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
   const running = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
@@ -3245,7 +3346,10 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
     fixture,
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
   );
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .locator("option:checked")
+    .waitFor({ state: "attached" });
   await page.waitForFunction(
     () => !globalThis.document.body.textContent.includes("Loading configuration…"),
   );
@@ -3321,7 +3425,11 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(
-    await page.locator('.revision-selector [aria-label$=", current version"]').count(),
+    await page
+      .getByRole("combobox", { name: "Viewing version", exact: true })
+      .getByRole("option")
+      .filter({ hasText: "Selected for service" })
+      .count(),
     0,
   );
   await workspace.click();
@@ -3414,7 +3522,10 @@ test("Agent detail has no Stop row for an Agent that was never deployed", async 
   // Once a deployed version is selected for service, something runs, so Stop returns.
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .locator("option:checked")
+    .waitFor({ state: "attached" });
   await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).waitFor();
   assert.equal(await stopRegion.getByText("No version is selected.").count(), 0);
 });
@@ -3730,7 +3841,7 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
   await page.getByRole("heading", { name: "Read-only Agent" }).waitFor();
   const openDraft = page
     .locator(".agent-toolbar-actions")
-    .getByRole("button", { name: "Open version draft" });
+    .getByRole("button", { name: "Open draft" });
   await openDraft.waitFor();
   await waitForEnabled(openDraft);
   // The answer denies operate and delete, so the page has no danger zone at all (UX spec 3.9):
@@ -4104,7 +4215,7 @@ test("a version editor without Agent update can recover a failed deployment from
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
   await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
-  await page.locator(".revision-create").waitFor();
+  await page.getByLabel("Viewing version", { exact: true }).waitFor();
   const summary = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   firstPermissions.release();
   const response = await summary;
@@ -4127,15 +4238,18 @@ test("a version editor without Agent update can recover a failed deployment from
   // The header label confirms the page applied the permission answer before recovery is used.
   await page
     .locator(".agent-toolbar-actions")
-    .getByRole("button", { name: "Open version draft" })
+    .getByRole("button", { name: "Open draft" })
     .waitFor();
   // Without Agent update the Versions list's draft entry is not called editable, nor read-only:
   // this caller can save the Configuration (finding 2405).
-  await page.getByRole("button", { name: "View version draft", exact: true }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .locator('option[value="draft"]')
+    .waitFor({ state: "attached" });
   // The narrow-width version chooser names the draft the same way.
   assert.equal(
     await page.locator("#revision-selector option[value=draft]").textContent(),
-    "Version draft",
+    "Draft · Editable Configuration",
   );
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
@@ -4176,7 +4290,7 @@ test("a version editor without Agent update can recover a failed deployment from
   await recovery
     .getByRole("link", { name: "Open Configuration", exact: true })
     .waitFor({ state: "detached" });
-  await recovery.getByRole("link", { name: "Open version draft", exact: true }).waitFor();
+  await recovery.getByRole("link", { name: "Open draft", exact: true }).waitFor();
 
   restoreGrants();
   await page.reload();
@@ -4260,15 +4374,19 @@ test("a reader without update views the version draft read-only", async (t) => {
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   assert.equal(await page.getByText(/New version\. Changes affect/).count(), 0);
   // The draft card names the draft; Deploy says why it is disabled, with no editor's steps.
-  await page.getByRole("heading", { name: "Version draft", exact: true }).waitFor();
+  await page
+    .getByRole("heading", { name: "Version draft", exact: true, includeHidden: true })
+    .waitFor({ state: "attached" });
   assert.equal(await page.getByRole("heading", { name: "Prepare this version" }).count(), 0);
   assert.equal(
     await page.getByText("Edit and save Configuration, plugins, or Channels").isVisible(),
     false,
   );
   await page.getByText(AGENT_DEPLOY_NOT_INCLUDED, { exact: true }).waitFor();
-  const entry = page.getByRole("button", { name: "View version draft", exact: true });
-  await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
+  const entry = page
+    .getByLabel("Viewing version", { exact: true })
+    .locator('option[value="draft"]');
+  await entry.filter({ hasText: "Read-only Configuration" }).waitFor({ state: "attached" });
 
   // Plugin selections are an Agent-side save. The reader reads them, with no editor's copy, and
   // the page does not ask for the policy capabilities, a read that needs Agent update and would
@@ -4295,7 +4413,7 @@ test("a reader without update views the version draft read-only", async (t) => {
   const snapshot = page
     .locator("section.agent-card")
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
-  await snapshot.getByRole("button", { name: "Open version draft", exact: true }).click();
+  await snapshot.getByRole("button", { name: "Open draft", exact: true }).click();
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
   assert.equal(await page.getByRole("button", { name: "Edit current Configuration" }).count(), 0);
@@ -4303,7 +4421,7 @@ test("a reader without update views the version draft read-only", async (t) => {
 });
 
 // The permission answer can land after a version's page or the Plugins tab is drawn. A reader's
-// Edit current Configuration turns into Open version draft in place, and the Plugins tab waits
+// Edit current Configuration turns into Open draft in place, and the Plugins tab waits
 // for the answer before it reads the policy capabilities, which need Agent update (finding 2436).
 test("a late permission answer relabels a reader's version entry and skips plugin capabilities", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Late plugin reader");
@@ -4341,7 +4459,7 @@ test("a late permission answer relabels a reader's version entry and skips plugi
   // Until the answer lands the page assumes an editor.
   await snapshot.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
   firstAnswer.release();
-  await snapshot.getByRole("button", { name: "Open version draft", exact: true }).waitFor();
+  await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
 
   const secondAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
@@ -4398,14 +4516,11 @@ test("an Agent editor without Configuration update sees the Configuration read-o
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
   // The draft stays a new version (this member can change the Agent's own settings), but its
   // Configuration is not called editable.
-  const entry = page.getByRole("button", {
-    name: "View new version, read-only Configuration",
-    exact: true,
-  });
-  await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
+  const entry = page.locator("#revision-selector option[value=draft]");
+  await entry.filter({ hasText: "Read-only Configuration" }).waitFor({ state: "attached" });
   assert.equal(
     await page.locator("#revision-selector option[value=draft]").textContent(),
-    "New version · read-only Configuration",
+    "Draft · Read-only Configuration",
   );
   // Agent update alone keeps the draft a member can change, so the notice is not a reader's.
   await page
@@ -4468,14 +4583,18 @@ test("an editor without operate on a bound Secret views the version draft read-o
   });
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   assert.equal(await page.getByText(/New version\. Changes affect/).count(), 0);
-  const entry = page.getByRole("button", { name: "View version draft", exact: true });
-  await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
+  const entry = page
+    .getByLabel("Viewing version", { exact: true })
+    .locator('option[value="draft"]');
+  await entry.filter({ hasText: "Read-only Configuration" }).waitFor({ state: "attached" });
   assert.equal(
     await page.locator("#revision-selector option[value=draft]").textContent(),
-    "Version draft",
+    "Draft · Read-only Configuration",
   );
   // No editor's checklist: this member can change nothing here and cannot deploy.
-  await page.getByRole("heading", { name: "Version draft", exact: true }).waitFor();
+  await page
+    .getByRole("heading", { name: "Version draft", exact: true, includeHidden: true })
+    .waitFor({ state: "attached" });
   assert.equal(await page.getByRole("heading", { name: "Prepare this version" }).count(), 0);
   // The current version's header opens the draft rather than offering to create a version.
   await page.goto(
@@ -4483,7 +4602,7 @@ test("an editor without operate on a bound Secret views the version draft read-o
   );
   await page
     .locator(".agent-toolbar-actions")
-    .getByRole("button", { name: "Open version draft", exact: true })
+    .getByRole("button", { name: "Open draft", exact: true })
     .waitFor();
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
@@ -5113,8 +5232,10 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
     editor.credentials,
   );
   assert.equal((await (await permissions).json()).data.configurationUpdate, true);
-  const entry = page.getByRole("button", { name: "View version draft", exact: true });
-  await entry.getByText("Configuration draft", { exact: true }).waitFor();
+  const entry = page
+    .getByLabel("Viewing version", { exact: true })
+    .locator('option[value="draft"]');
+  await entry.filter({ hasText: "Editable Configuration" }).waitFor({ state: "attached" });
   // Configuration update alone keeps the draft editable, so the notice is not a reader's.
   await page
     .getByText(
@@ -5149,7 +5270,7 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
   reread.release();
   assert.equal((await (await answer).json()).data.configurationUpdate, false);
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
-  await entry.getByText("Read-only Configuration", { exact: true }).waitFor();
+  await entry.filter({ hasText: "Read-only Configuration" }).waitFor({ state: "attached" });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
 });

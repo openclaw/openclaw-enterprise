@@ -32,6 +32,7 @@ import { refusedAnswer } from "../helpers/refusal-answers.mjs";
 import { GATEWAY_MANAGED_MODE_DENIED } from "../helpers/refusal-text.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
 
 const administrator = "principal-configuration-administrator";
 const deployOnly = "principal-configuration-deploy-only";
@@ -932,7 +933,10 @@ test("a Configuration left ahead of its record by failed updates recovers on the
     resolveApprovedDevelopmentHarness,
   );
   assert.equal(revision.configurationGeneration, 4);
-  assert.deepEqual(revision.configuration, admitLoggingConfiguration(valuesWith(["east"]), "info"));
+  assert.deepEqual(
+    revision.configuration,
+    admitLoggingConfiguration(servedAs(valuesWith(["east"]), agent.name), "info"),
+  );
   // Lost write 1 to 2; lost retry 2 to 3 and its compensation 3 to 2; failed retry 2 to 3;
   // recovery 3 to 4.
   assert.deepEqual(steps, [
@@ -1123,12 +1127,49 @@ test("Agent deployment snapshots its selected Configuration and Compute identity
   assert.equal(revision.configurationId, configuration.id);
   assert.equal(revision.configurationKind, "agent");
   assert.equal(revision.configurationGeneration, configuration.generation);
-  assert.deepEqual(revision.configuration, admitLoggingConfiguration(configuration.values, "info"));
+  assert.deepEqual(
+    revision.configuration,
+    admitLoggingConfiguration(servedAs(configuration.values, agent.name), "info"),
+  );
   assert.equal(Object.isFrozen(configuration.values.models.providers.openai.apiKey), true);
   assert.equal(Object.isFrozen(revision.configuration.plugins.entries.example.regions), true);
   assert.equal(agent.executionMode, "embedded");
   assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
   assert.deepEqual(revision.compute, { id: compute.id, implementation: compute.implementation });
+});
+
+test("Agent deployment keeps the display name its Configuration sets", async () => {
+  const { agent, configuration, controller, namespace } = await fixture();
+  // The Configuration owner chose this name for the Control UI; the OCC Agent name must not
+  // replace it, and the entry's other identity settings stay as written.
+  const values = {
+    ...configuration.values,
+    agents: {
+      ...configuration.values.agents,
+      // A roster entry selects its own model when agents.defaults.model is unset.
+      entries: {
+        main: {
+          model: "openai/gpt-4.1",
+          models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+          identity: { name: "Configured name", emoji: "🦞" },
+        },
+      },
+    },
+  };
+  await controller.updateConfiguration(administrator, {
+    namespaceId: namespace.id,
+    configurationId: configuration.id,
+    values,
+  });
+
+  const revision = await controller.deployAgent(
+    administrator,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+
+  assert.notEqual(agent.name, "Configured name");
+  assert.deepEqual(revision.configuration, admitLoggingConfiguration(values, "info"));
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {
@@ -1677,8 +1718,23 @@ for (const scope of ["primary", "default-fallback", "entry-fallback", "provider-
     );
 
     assert.deepEqual(configuration.values, values);
-    // Admission freezes the original fallback order for the runtime to execute.
-    assert.deepEqual(admitted.configuration, admitLoggingConfiguration(values, "info"));
+    // Admission freezes the original fallback order for the runtime to execute, and names the
+    // sole roster entry after the OCC Agent.
+    assert.deepEqual(
+      admitted.configuration,
+      admitLoggingConfiguration(
+        {
+          ...values,
+          agents: {
+            ...values.agents,
+            entries: {
+              main: { ...values.agents.entries.main, identity: { name: dedicated.name } },
+            },
+          },
+        },
+        "info",
+      ),
+    );
     assert.deepEqual(admitted.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
     assert.equal(admitted.compute.id, "configuration-occ-compute");
   });

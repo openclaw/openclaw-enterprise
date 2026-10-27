@@ -65,6 +65,33 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
   }
 });
 
+test("docker dev-up accepts --key-output=PATH", () => {
+  // Kubernetes Compute execs occ, whose flags accept either spelling. Docker
+  // Compute parses this script itself and used to report the equals form as an
+  // unknown option before any engine or Compose work.
+  const env = { ...process.env, OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker" };
+  delete env.BASH_ENV;
+  delete env.ENV;
+  delete env.SHELLOPTS;
+  const empty = spawnSync("/bin/bash", ["scripts/dev-up", "--key-output="], {
+    cwd: repository,
+    encoding: "utf8",
+    env,
+  });
+  assert.equal(empty.status, 2, empty.stderr);
+  assert.match(empty.stderr, /--key-output requires a path/);
+  assert.doesNotMatch(empty.stderr, /unknown option/);
+
+  const equals = spawnSync("/bin/bash", ["scripts/dev-up", "--key-output=relative-key"], {
+    cwd: repository,
+    encoding: "utf8",
+    env,
+  });
+  assert.notEqual(equals.status, 0, equals.stderr);
+  assert.doesNotMatch(equals.stderr ?? "", /unknown option/);
+  assert.match(equals.stderr ?? "", /key output must be an absolute path|OCC CLI is required/);
+});
+
 test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
   // Each wrapper exits on a path that needs no cluster, container engine or download:
   // k3d prints help, and setup-tools rejects an unknown profile after entering the checkout.

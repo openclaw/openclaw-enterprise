@@ -42,10 +42,10 @@ index 41b19d80ada1ba2d09a6874ba61401632c1e4fe9..78f7f31c9f4cf957a30b164b7950287d
              defaultRuntime.writeJson(result);
            } else {
 diff --git a/src/infra/gateway-lock-payload.ts b/src/infra/gateway-lock-payload.ts
-index 01fff8d315b72bdb264b529423451329664a480c..dcc7585004d30f33d5b7b12936595485d56b1bb4 100644
+index 5ff6dbe40893bad2c969677308fbc3fcf75c858c..2513bfce56d8a91612b398b002634e23dea2a4a3 100644
 --- a/src/infra/gateway-lock-payload.ts
 +++ b/src/infra/gateway-lock-payload.ts
-@@ -152,6 +152,8 @@ const LockPayloadSchema = z.object({
+@@ -196,6 +196,8 @@ export const LockPayloadSchema = z.object({
      .optional(),
    stateDir: z.string().optional(),
    startTime: z.number().optional(),
@@ -55,13 +55,13 @@ index 01fff8d315b72bdb264b529423451329664a480c..dcc7585004d30f33d5b7b12936595485
    parentStartTime: z.number().optional(),
    // Null and absent identities cannot establish the owner's process namespace.
 diff --git a/src/infra/gateway-lock-recovery.test.ts b/src/infra/gateway-lock-recovery.test.ts
-index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde51607efafb6 100644
+index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b16420e9f 100644
 --- a/src/infra/gateway-lock-recovery.test.ts
 +++ b/src/infra/gateway-lock-recovery.test.ts
-@@ -3,7 +3,11 @@ import path from "node:path";
- import { afterEach, describe, expect, it, vi } from "vitest";
- import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
- import { readGatewayLockProcessNamespace } from "./gateway-lock-payload.js";
+@@ -7,7 +7,11 @@ import {
+   GATEWAY_OWNER_HEARTBEAT_STALE_MS,
+   readGatewayLockProcessNamespace,
+ } from "./gateway-lock-payload.js";
 -import { inspectGatewayLockRecovery, recoverGatewayLock } from "./gateway-lock-recovery.js";
 +import {
 +  inspectGatewayLockRecovery,
@@ -71,16 +71,16 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
  import { resolveGatewayLockPaths } from "./gateway-lock.js";
  import { defaultPayload } from "./gateway-state-owner-record.js";
  import { openNodeSqliteDatabase } from "./node-sqlite.js";
-@@ -11,7 +15,7 @@ import { openNodeSqliteDatabase } from "./node-sqlite.js";
+@@ -15,7 +19,7 @@ import { openNodeSqliteDatabase } from "./node-sqlite.js";
  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
  afterEach(() => vi.restoreAllMocks());
  
 -function fixture() {
 +function fixture(role: "gateway" | "sqlite-maintenance" = "sqlite-maintenance") {
    const root = tempDirs.make("gateway-lock-recovery-");
-   const env = {
-     ...process.env,
-@@ -26,6 +30,8 @@ function fixture() {
+   vi.stubEnv("OPENCLAW_STATE_DIR", root);
+   vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(root, "openclaw.json"));
+@@ -28,6 +32,8 @@ function fixture() {
    }
    const payload = {
      ...defaultPayload(databasePath),
@@ -89,7 +89,7 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
      processNamespace: {
        ...localNamespace,
        host: "stopped-foreign-container",
-@@ -40,6 +46,10 @@ function fixture() {
+@@ -42,6 +48,10 @@ function fixture() {
    return { env, paths, databasePath, payload, lockPaths };
  }
  
@@ -100,7 +100,7 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
  describe("explicit Gateway lock recovery", () => {
    it("inspects without changing files and removes only the confirmed foreign owner", async () => {
      const { env, lockPaths } = fixture();
-@@ -136,8 +146,95 @@ describe("explicit Gateway lock recovery", () => {
+@@ -167,8 +177,95 @@ describe("explicit Gateway lock recovery", () => {
      expect(lockPaths.every((pathname) => fs.existsSync(pathname))).toBe(true);
    });
  
@@ -114,9 +114,9 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
 +      { pidNsInode: "12345" },
 +      { platform: "darwin" },
 +    ])("keeps every lock when a different namespace is supplied: %j", async (change) => {
-+    const { env, lockPaths, payload } = fixture("gateway");
++    const { lockPaths, payload } = fixture("gateway");
 +    await expect(
-+      recoverTerminatedGatewayNamespace({ ...proof(payload), ...change }, { env }),
++      recoverTerminatedGatewayNamespace({ ...proof(payload), ...change }),
 +    ).rejects.toThrow(/namespace/i);
 +    expect(lockPaths.every((pathname) => fs.existsSync(pathname))).toBe(true);
 +  });
@@ -124,7 +124,7 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
 +  it.skipIf(process.platform !== "linux").each(["live", "unknown start", "recycled PID"])(
 +    "checks actual process death when a different hostname reuses the local PID namespace number: %s",
 +    async (status) => {
-+      const { env, payload, lockPaths } = fixture("gateway");
++      const { payload, lockPaths } = fixture("gateway");
 +      const local = readGatewayLockProcessNamespace();
 +      if (local?.platform !== "linux" || payload.startTime === undefined)
 +        throw Error("Linux PID fixture required");
@@ -139,10 +139,10 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
 +          JSON.stringify({ ...payload, processNamespace: namespace, startTime }),
 +        );
 +      }
-+      const recovery = recoverTerminatedGatewayNamespace(
-+        { ...namespace, pidNsInitStartTicks: payload.pidNsInitStartTicks },
-+        { env },
-+      );
++      const recovery = recoverTerminatedGatewayNamespace({
++        ...namespace,
++        pidNsInitStartTicks: payload.pidNsInitStartTicks,
++      });
 +      if (status === "recycled PID") {
 +        await expect(recovery).resolves.toEqual({ recovered: true, removed: 3 });
 +      } else {
@@ -162,9 +162,9 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
 +    ])(
 +    "leaves all records for the operator when one file cannot be attributed: %j",
 +    async (change) => {
-+      const { env, lockPaths, paths, payload } = fixture("gateway");
++      const { lockPaths, paths, payload } = fixture("gateway");
 +      fs.writeFileSync(paths.configLockPath, JSON.stringify({ ...payload, ...change }));
-+      await expect(recoverTerminatedGatewayNamespace(proof(payload), { env })).rejects.toThrow(
++      await expect(recoverTerminatedGatewayNamespace(proof(payload))).rejects.toThrow(
 +        "not attributable",
 +      );
 +      expect(lockPaths.every((pathname) => fs.existsSync(pathname))).toBe(true);
@@ -198,7 +198,7 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
      const db = openNodeSqliteDatabase(databasePath);
      db.exec(
-@@ -155,25 +252,45 @@ describe("explicit Gateway lock recovery", () => {
+@@ -186,25 +283,45 @@ describe("explicit Gateway lock recovery", () => {
            pid: payload.pid,
            host: "stopped-foreign-container",
            startedAt: payload.startTime ?? null,
@@ -218,16 +218,16 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
      db.close();
      const inspection = await inspectGatewayLockRecovery({ env });
      expect(inspection.lease?.owner).toBe("old-gateway");
--    await recoverGatewayLock({ env, confirmation: inspection.confirmation });
+-    await recoverGatewayLock({ confirmation: inspection.confirmation });
 +    if (caller === "operator") {
-+      await recoverGatewayLock({ env, confirmation: inspection.confirmation });
++      await recoverGatewayLock({ confirmation: inspection.confirmation });
 +    } else if (caller === "terminated Gateway") {
-+      await expect(recoverTerminatedGatewayNamespace(proof(payload), { env })).resolves.toEqual({
++      await expect(recoverTerminatedGatewayNamespace(proof(payload))).resolves.toEqual({
 +        recovered: true,
 +        removed: 4,
 +      });
 +    } else {
-+      await expect(recoverTerminatedGatewayNamespace(proof(payload), { env })).rejects.toThrow(
++      await expect(recoverTerminatedGatewayNamespace(proof(payload))).rejects.toThrow(
 +        liveLease ? "Cannot prove Gateway PID" : "SQLite Gateway owner lease is not attributable",
 +      );
 +    }
@@ -251,15 +251,16 @@ index 2d735e7ae1dcbab42092e6366874a550c869bada..a8dd3355aef7376b2ea628ffaffde516
    });
  });
 diff --git a/src/infra/gateway-lock-recovery.ts b/src/infra/gateway-lock-recovery.ts
-index 39d1b2f159b107b0b52307746d62eae1d50737c0..0599bce1bdfd45918224913cb57072e3f8352aab 100644
+index 8ec9c1f51668cad84524aa06c723244d1aeb0940..8283737500b7899e431e5e2b42c9eac3e3d9e31a 100644
 --- a/src/infra/gateway-lock-recovery.ts
 +++ b/src/infra/gateway-lock-recovery.ts
-@@ -1,11 +1,15 @@
+@@ -1,12 +1,16 @@
  import { createHash } from "node:crypto";
  import fs from "node:fs";
  import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 +import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 +import { isRecord } from "@openclaw/normalization-core/record-coerce";
+ import { isStatePostgres } from "../state/openclaw-state-db-engine.js";
  import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
  import { acquireFileLockSync } from "./file-lock-manager.js";
  import {
@@ -270,7 +271,7 @@ index 39d1b2f159b107b0b52307746d62eae1d50737c0..0599bce1bdfd45918224913cb57072e3
    type LockPayload,
  } from "./gateway-lock-payload.js";
  import {
-@@ -18,6 +22,7 @@ import { decodeGatewayOwnerLease } from "./gateway-owner-lease.read.js";
+@@ -24,6 +28,7 @@ import { decodeGatewayOwnerLease } from "./gateway-owner-lease.read.js";
  import { defaultPayload } from "./gateway-state-owner-record.js";
  import { acquireGatewayStateOwner, type StateDatabaseSchemaLease } from "./gateway-state-owner.js";
  import { throwSqliteLifecycleErrors } from "./sqlite-lifecycle-errors.js";
@@ -278,15 +279,12 @@ index 39d1b2f159b107b0b52307746d62eae1d50737c0..0599bce1bdfd45918224913cb57072e3
  
  type ObservedFile = { path: string; raw: string; identity: string; holder: LockPayload | null };
  
-@@ -82,6 +87,81 @@ export async function inspectGatewayLockRecovery(options: { env?: NodeJS.Process
-   return { databasePath, files, lease, confirmation, holders, present: holders.length > 0 };
+@@ -99,6 +104,78 @@ export async function inspectGatewayLockRecovery(options: { env?: NodeJS.Process
+   };
  }
  
 +/** The supervisor supplies kernel identity from a private PID namespace it verified stopped. */
-+export async function recoverTerminatedGatewayNamespace(
-+  namespace: unknown,
-+  options: { env?: NodeJS.ProcessEnv } = {},
-+) {
++export async function recoverTerminatedGatewayNamespace(namespace: unknown) {
 +  const { pidNsInitStartTicks, ...placement } = isRecord(namespace) ? namespace : {};
 +  const expected = GatewayProcessNamespaceSchema.safeParse(placement).data;
 +  const local = readGatewayLockProcessNamespace();
@@ -327,7 +325,7 @@ index 39d1b2f159b107b0b52307746d62eae1d50737c0..0599bce1bdfd45918224913cb57072e3
 +      );
 +    }
 +  }
-+  const inspection = await inspectGatewayLockRecovery(options);
++  const inspection = await inspectGatewayLockRecovery();
 +  for (const { path, observed } of inspection.files) {
 +    if (!observed) continue;
 +    if (
@@ -354,14 +352,14 @@ index 39d1b2f159b107b0b52307746d62eae1d50737c0..0599bce1bdfd45918224913cb57072e3
 +    assertStoppedPid(owner.pid, owner.startedAt);
 +  }
 +  // Reinspect and compare before taking custody, just as for an operator's confirmation.
-+  return recoverGatewayLock({ env: options.env, confirmation: inspection.confirmation });
++  return recoverGatewayLock({ confirmation: inspection.confirmation });
 +}
 +
  /** Explicit operator confirmation is bound to file identity, bytes, heartbeat and lease facts. */
- export async function recoverGatewayLock(options: {
-   env?: NodeJS.ProcessEnv;
+ export async function recoverGatewayLock(options: { confirmation: string }) {
+   const inspection = await inspectGatewayLockRecovery();
 diff --git a/src/infra/gateway-lock.ts b/src/infra/gateway-lock.ts
-index 029af50e0ad44512f93e394a0524067ae9ff4d39..fefeb4abc2de71c36fcbd06397320300b6cd9532 100644
+index 688683ff422fd0e77c3470ab27895b427f3497c6..a8831ba0338edf5cc6e9ded30b74bf6ceddfb64d 100644
 --- a/src/infra/gateway-lock.ts
 +++ b/src/infra/gateway-lock.ts
 @@ -10,7 +10,7 @@ import {
@@ -373,16 +371,16 @@ index 029af50e0ad44512f93e394a0524067ae9ff4d39..fefeb4abc2de71c36fcbd06397320300
  import {
    createOpenClawDatabaseMaintenanceScope,
    getOpenClawDatabaseMaintenanceScope,
-@@ -421,6 +421,7 @@ export async function acquireGatewayLock(
-     stateDir: paths.stateDir,
+@@ -454,6 +454,7 @@ export async function acquireGatewayLock(
      role,
      processNamespace: readGatewayLockProcessNamespace(),
+     machineIdentity: process.platform === "darwin" ? readProcessMachineIdentity() : undefined,
 +    ...(role === "gateway" ? { pidNsInitStartTicks: getProcessStartTime(1) ?? undefined } : {}),
      ...(role === "gateway" ? { cronOwnerProjection: "dynamic-default-v1" as const } : {}),
      ...(typeof opts.port === "number" &&
      Number.isInteger(opts.port) &&
 diff --git a/src/infra/gateway-owner-lease.ts b/src/infra/gateway-owner-lease.ts
-index c7c94b2ebe1d17db183df1cab2f80c865b795627..997261c2e7950d372070936d766c29ac5f5d8880 100644
+index 514fd5abfa9679b70fcb42e62077311ea1074842..aac1dc378e543b5ce2bb56a5e4ee2d2bce661a35 100644
 --- a/src/infra/gateway-owner-lease.ts
 +++ b/src/infra/gateway-owner-lease.ts
 @@ -3,7 +3,7 @@ import { hostname } from "node:os";
@@ -391,10 +389,10 @@ index c7c94b2ebe1d17db183df1cab2f80c865b795627..997261c2e7950d372070936d766c29ac
  import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 -import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 +import { getFileLockProcessStartTime, getProcessStartTime } from "../shared/pid-alive.js";
+ import { readAgentDatabaseLeaseProvenance } from "../state/openclaw-agent-db-lease-provenance.js";
  import type { OpenClawStateSchemaReadAdmission } from "../state/openclaw-state-db-contract.js";
  import { isStatePostgres } from "../state/openclaw-state-db-engine.js";
- import {
-@@ -235,6 +235,7 @@ export function acquireGatewayOwnerLease(params: {
+@@ -239,6 +239,7 @@ export function acquireGatewayOwnerLease(params: {
    };
    const payload = {
      owner: processOwner,
@@ -403,10 +401,10 @@ index c7c94b2ebe1d17db183df1cab2f80c865b795627..997261c2e7950d372070936d766c29ac
      mode: params.mode,
      supervisor: params.supervisor,
 diff --git a/src/infra/state-lease-process-owner.ts b/src/infra/state-lease-process-owner.ts
-index ad5645fe5817f695efb0358dc396ed5a4e63b5f3..02fc6fbcc0bf17c7663bb53f996178221ba9be7c 100644
+index 1aa3d8b8bf10e75bc97bf90b6cf144df86bf0e60..4d0e843f42a753b7f3f5363dc2d4610ba98cbcd7 100644
 --- a/src/infra/state-lease-process-owner.ts
 +++ b/src/infra/state-lease-process-owner.ts
-@@ -188,8 +188,9 @@ export function readStateLeaseProcessOwnerStatus(
+@@ -154,8 +154,9 @@ export function readStateLeaseProcessOwnerStatus(
    return readSameNamespaceProcessOwnerStatus(owner);
  }
  
