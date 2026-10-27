@@ -23,6 +23,12 @@ For the protected OpenShell qualification boundary, see [OpenShell Git](protecte
    Git operation and proposed refs. It sends only after the worker authorizes that
    use of the prepared credential. An authorization record is not a delivery receipt.
 
+If standing approval is withdrawn before the worker’s final authorization check, the
+request is denied. After the worker issues a one-use permit, withdrawal denies fresh
+requests but cannot invalidate that permit. The permitted send can start after withdrawal
+is acknowledged, within its original send deadline and unless cancelled. A possible
+dispatch must not be replayed.
+
 Reads cover the repository, not just the review branch. GitHub's `contents: write`
 permission is not branch-scoped: protect important refs at GitHub independently,
 without an App bypass. The Git-only profile exposes fetch and push, not GitHub REST or GraphQL.

@@ -988,6 +988,14 @@ test(
     const deepLinkResponse = await nativePage.goto(deepLink.href);
     assert.ok(deepLinkResponse?.status() < 400, "stock UI deep link must be served");
     await waitForStockUi(nativePage);
+    // The Gateway embeds the stock UI's bootstrap configuration in the document it serves,
+    // and the UI boots from it. The OCC Agent name must replace the stock "Assistant"; the
+    // Gateway cuts a display name to 50 characters.
+    const bootstrap = await nativePage.evaluate(() =>
+      globalThis.document.documentElement.getAttribute("data-openclaw-bootstrap-config"),
+    );
+    assert.ok(bootstrap, "the Gateway must serve the stock UI's bootstrap configuration");
+    assert.equal(JSON.parse(bootstrap).assistantName, topology.agent.name.slice(0, 50));
     await nativePage.locator(".page-title").getByText("Advanced", { exact: true }).waitFor();
     await nativePage.getByRole("button", { name: "Raw", exact: true }).waitFor();
     await nativePage.screenshot({

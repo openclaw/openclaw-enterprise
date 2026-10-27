@@ -106,6 +106,11 @@ transformation. Its SandboxDriver selection and the Agent's stable service
 principal remain internal; the current HTTP Agent revision schema omits them.
 See [SandboxDriver](../drivers/sandbox.md).
 
+After its checks pass, deployment saves the Agent `name` as the sole roster
+entry's `identity.name`, under `agents.entries.main` when the roster is omitted.
+The native admin UI shows it, up to 50 characters, instead of `Assistant`. OCC
+keeps a name the Configuration sets and does not name entries of a larger roster.
+
 The bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy` requires a
 `ready` Namespace, exact-Agent `deploy`, exact
 Configuration `read`, and, for managed credentials, the selected

@@ -16,6 +16,7 @@ import {
   jointWorkspaceProfile,
   openShellExchangeCapabilities,
 } from "./openshell-exchange-capabilities.ts";
+import { jointGitBinaries } from "./openshell-joint-git-provision.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 
 type Fields = Readonly<Record<string, unknown>>;
@@ -407,18 +408,6 @@ export function readJointEnforcement(
     const endpoint = asRecord(rule.endpoints[0]);
     // Only the profiled Basic and required Bearer provider rules are possible on the
     // authenticated supplier RPC. Rebuild their complete local transport envelope.
-    const binaryPaths = [
-      "/usr/bin/git",
-      "/usr/lib/git-core/git-remote-https",
-      "/usr/lib/git-core/git-remote-http",
-      "/usr/libexec/git-core/git-remote-https",
-      "/usr/libexec/git-core/git-remote-http",
-      "/usr/bin/curl",
-      "/usr/local/bin/node",
-      "/usr/bin/node",
-      "/usr/bin/gh",
-      "/usr/local/bin/gh",
-    ];
     if (
       !nonempty(endpoint?.token_grant_owner) ||
       !/^grant-owner:v1:[a-f0-9]{64}$/.test(endpoint.token_grant_owner)
@@ -427,7 +416,7 @@ export function readJointEnforcement(
     }
     const wanted = {
       name: leg.rule_name,
-      binaries: binaryPaths.map((path) => ({ path })),
+      binaries: jointGitBinaries.map((path) => ({ path })),
       endpoints: [
         {
           host: leg.host,

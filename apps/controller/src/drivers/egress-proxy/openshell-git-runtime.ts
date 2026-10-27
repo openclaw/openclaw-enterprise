@@ -505,7 +505,6 @@ export class OpenShellGitRuntime {
         !!trust &&
         "assertionSource" in trust &&
         trust.assertionSource === "kubernetes-projected-token",
-      binaries: [...binaries, "/usr/bin/gh", "/usr/local/bin/gh"],
     };
   }
 

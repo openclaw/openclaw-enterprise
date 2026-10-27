@@ -193,7 +193,8 @@ function releasedGatewayStateVolume(t, mountPath) {
   });
 }
 
-// startGateway(readinessAttempts) starts a Gateway on the released state volume.
+// startGateway(readinessAttempts, until) starts a Gateway on the released state
+// volume and waits until runGatewaySmoke's `until`.
 async function assertReleasedGatewayMigratesOnce(startGateway) {
   // The current OpenClaw refuses this database until Doctor migrates it. Doctor's
   // full repair pass takes about 20 s here and over a minute on a busy CI runner.
@@ -216,8 +217,10 @@ async function assertReleasedGatewayMigratesOnce(startGateway) {
   await runDocker(["stop", "--time", "60", released.containerName]);
   await runDocker(["rm", "-f", released.containerName]);
 
-  // A current database starts without Doctor.
-  const current = await startGateway();
+  // A current database starts without Doctor. The launcher decides before it spawns
+  // OpenClaw, and the start above already proved OpenClaw accepts the migrated
+  // database, so this start ends at the spawn (about 20 CPU-seconds less).
+  const current = await startGateway(undefined, "spawned");
   assert.deepEqual(stateMigrationPhases(current.logs), [], current.logs);
   assert.doesNotMatch(current.logs, /openclaw doctor --fix/);
   assert.deepEqual(await agentDatabaseFacts(current.containerName), migrated);
@@ -244,12 +247,15 @@ const olderWorkspaceNodeState = fileURLToPath(
 // current OpenClaw then reads. Never prints a key.
 const WORKSPACE_NODE_UPGRADE = String.raw`
 const crypto = require("node:crypto");
-const { readdirSync } = require("node:fs");
+const { chmodSync, readdirSync, statSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { DatabaseSync } = require("node:sqlite");
 const [entrypoint, timeoutMs, children, environment] =
   [process.argv[1], Number(process.argv[2]), process.argv[3], JSON.parse(process.argv[4])];
 const state = "/home/node/.openclaw-node";
+// A retained node-state root can carry the setgid bit inherited from a PVC.
+// Both launchers must prepare it before Doctor opens the old database.
+chmodSync(state, 0o2755);
 const shared = state + "/state/openclaw.sqlite";
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 const savedDeviceId = crypto.createHash("sha256")
@@ -281,6 +287,7 @@ const start = () => {
   return { status: result.status, signal: result.signal, output: result.stdout + result.stderr };
 };
 const upgraded = start();
+require("node:assert/strict").equal(statSync(state).mode & 0o7777, 0o700);
 const identity = spawnSync(process.execPath, ["/app/openclaw.mjs", "node", "identity", "--json"], {
   env: { PATH: process.env.PATH, HOME: "/home/node", OPENCLAW_STATE_DIR: state,
     OPENCLAW_CONFIG_PATH: state + "/openclaw.json", OPENCLAW_NO_AUTO_UPDATE: "1" },
@@ -480,11 +487,12 @@ describe("runtime image released state migration", { concurrency: 4 }, () => {
       // The volume replaces the Gateway's /home/node tmpfs, as its PersistentVolume does.
       const volume = await releasedGatewayStateVolume(t, "/home/node");
       const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
-      await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
+      await assertReleasedGatewayMigratesOnce((readinessAttempts, until) =>
         runGatewaySmoke(t, "openclaw", {
           configurationPath: "/etc/openclaw/openclaw.json",
           entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
           readinessAttempts,
+          until,
           tmpfs: [],
           volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`, `${volume}:/home/node`],
           withAppServer: false,
@@ -499,9 +507,10 @@ describe("runtime image released state migration", { concurrency: 4 }, () => {
     async (t) => {
       // The Docker Driver's Agent state volume, over the Gateway's /home/node tmpfs.
       const volume = await releasedGatewayStateVolume(t, "/home/node/.openclaw");
-      await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
+      await assertReleasedGatewayMigratesOnce((readinessAttempts, until) =>
         runGatewaySmoke(t, "openclaw", {
           readinessAttempts,
+          until,
           volumes: [`${volume}:/home/node/.openclaw`],
           withAppServer: false,
         }),

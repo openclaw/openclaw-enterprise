@@ -232,8 +232,9 @@ into the immutable `AgentRevision.configuration` field and records
 `configurationId`, `configurationKind`, and `configurationGeneration` as
 separate Agent revision fields. A selected [SandboxDriver](drivers/sandbox.md) may
 transform a copy through `configureAgent` before admission; the reusable
-Configuration and its generation remain unchanged. The snapshot contains that
-effective document, and its metadata identifies the source generation.
+Configuration and its generation remain unchanged. The snapshot adds the
+[Agent display name](agents/deployment.md#versions-and-deployment) to that document;
+its metadata names the source generation.
 Subsequent Configuration updates do not change a
 running gateway or existing version; only a later explicit deployment observes
 the next generation. Deleting a Configuration still referenced by an Agent

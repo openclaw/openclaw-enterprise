@@ -11,16 +11,16 @@ Namespace control. Check each story at 1440, 1024 and 390.
 1. Open **Pages / Agents / Populated**. The Namespace control is 32 px tall, with
    its label inside the box, and shares a line with Refresh.
 2. Open **Pages / Agent detail / Page header with a long name**. At 1024 the
-   name wraps to two lines on the left. Refresh and Create new version stay at
+   name wraps to two lines on the left. Refresh and Open draft stays at
    its right, and nothing overlaps. Select **Copy Agent ID**: "Copied" shows
    beside it.
-3. In the same story, select **Create new version**. The draft's header shows
+3. In the same story, select **Open draft**. The draft's header shows
    Refresh only. Select **Edit Configuration**, change a value, and select
    **← Agents**. The page stays and says why.
 4. Open **Pages / Agent detail / Page header at 390px**. The header is four
    rows: ← Agents with the actions, the name, the ID row, then the Namespace
    control at full width. It ends by 240 px. Switch to another window and back.
-   While the access check runs, Create new version is held with the page, and
+   While the access check runs, Open draft is held with the page, and
    focus returns to it.
 5. Open **Pages / Agent detail / Copy Agent ID without clipboard access**. The
    ID is selected and no "Copied" status shows.

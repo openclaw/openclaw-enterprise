@@ -674,6 +674,10 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
   );
   await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
+    await page
+      .getByRole("tablist", { name: "Workspace file", exact: true })
+      .getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) })
+      .click();
     await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
     const editor = page.getByLabel(name, { exact: true });
     assert.equal(await editor.inputValue(), `# ${name}\n`);
@@ -707,7 +711,7 @@ const STOP_REFUSED = stopRefused("this Agent");
 async function expectOperateControls(page: Page, allowed: boolean) {
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRow.waitFor({ state: allowed ? "visible" : "hidden" });
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Deployment", exact: true }).click();
   const run = page.getByRole("button", { name: "Run diagnostics for this version", exact: true });
   await run.waitFor();
   const denial = page.getByText(DIAGNOSTICS_DENIED, { exact: true });
@@ -780,7 +784,8 @@ async function operateScenario(t: TestContext, name: string) {
       if (answered) {
         await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
         for (const file of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
-          await page.getByText(`${file} loaded.`, { exact: true }).waitFor();
+          // All files load before retention, including the editors hidden by the picker.
+          await page.getByText(`${file} loaded.`, { exact: true }).waitFor({ state: "attached" });
         }
       }
     },

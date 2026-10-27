@@ -269,19 +269,13 @@ test("every keyboard stop on Agents, Agent detail, its logs and Create Agent sho
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Focus ring", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Ring Agent", nativeValues("v1"));
-  // An active version fills the version picker, a scrolling list beside the tabs.
+  // An active version fills the native version picker above the tabs.
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id);
   const logs = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "logs");
   const pages = [
     ["Agents", `/console/agents?namespace=${namespace.id}`, "link", "Ring Agent", "a"],
-    [
-      "Agent detail",
-      `${detail.pathname}${detail.search}`,
-      "button",
-      "View version v1, current version",
-      "button",
-    ],
+    ["Agent detail", `${detail.pathname}${detail.search}`, "combobox", "Viewing version", "select"],
     // Log row summaries scroll the pane as focus reaches them.
     ["Agent logs", `${logs.pathname}${logs.search}`, "log", "Runtime log output", "summary"],
     [

@@ -188,11 +188,21 @@ test("first-Agent requires dedicated Codex for OpenShell before external calls",
 });
 
 test("first-Agent recognizes the prior OpenShell PAT policy only on an identified revision", () => {
-  const values = (sandbox, approvalsReviewer = "user") => ({
+  const record = {
+    name: "first-agent",
+    harness: "codex",
+    sandboxDriver: "openshell",
+    authMethod: "codex_pat",
+  };
+  const settings = (sandbox, approvalsReviewer = "user") => ({
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
-  const configured = values("read-only");
-  const record = { harness: "codex", sandboxDriver: "openshell", authMethod: "codex_pat" };
+  // Deployment adds the Agent name to the sole main entry of each revision snapshot.
+  const values = (sandbox, approvalsReviewer) => ({
+    ...settings(sandbox, approvalsReviewer),
+    agents: { entries: { main: { identity: { name: record.name } } } },
+  });
+  const configured = settings("read-only");
   const matches = (snapshot, priorRevisionId) =>
     firstAgentRevisionValuesMatch(snapshot, configured, record, "rev_saved", priorRevisionId);
 
@@ -223,7 +233,7 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     "the historical exception must retain unrelated configuration drift checks",
   );
   assert.deepEqual(prior, values("workspace-write"), "reading never rewrites a frozen revision");
-  assert.deepEqual(configured, values("read-only"), "reading never rewrites configured settings");
+  assert.deepEqual(configured, settings("read-only"), "reading never rewrites configured settings");
 });
 
 test("first-Agent flags a prior OpenShell PAT revision and points at --replace-key", () => {

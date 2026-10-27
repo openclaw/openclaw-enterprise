@@ -624,7 +624,7 @@ const badgeState = (locator: Locator) =>
 
 // Status badges share one pattern. The version list's "Current version" label read as
 // "Currentversion" (audit 2.2), and the Credentials tab's Slack token states had their own chrome.
-test("The current version, Slack token bindings and Namespace rows use the badge and card patterns", async (t) => {
+test("The version picker names the service selection, and bindings and Namespaces use badges and cards", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Badges and cards");
   const versioned = await fixture.createAgent(namespace.id, "Badge Agent", nativeValues("badge"));
   await fixture.seedActiveAgentRevision(namespace.id, versioned.id);
@@ -650,24 +650,20 @@ test("The current version, Slack token bindings and Namespace rows use the badge
     },
   );
 
-  // The current version shows a Current badge after a visible space. Info, not success: Current
-  // means only that OCC selected the version, which may be stopped or failed (finding 1969).
+  // Service selection remains explicit in the native picker without implying live health.
   for (const viewport of consoleViewports) {
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await login(page, fixture, detailUrl(fixture, namespace.id, versioned.id));
-    const version = page.getByRole("button", {
-      name: "View version v1, current version",
-      exact: true,
-    });
-    await version.waitFor();
-    const state = await badgeState(version.locator(".badge"));
-    assert.deepEqual(
-      { ...state, gap: state.gap !== null && state.gap >= 4 },
-      { badge: true, text: "Current", tone: "info", gap: true, sameLine: true, painted: true },
-      `badge at ${viewport.width}: ${JSON.stringify(state)}`,
+    const picker = page.getByRole("combobox", { name: "Viewing version", exact: true });
+    await picker.waitFor();
+    assert.equal(await picker.locator("option:checked").textContent(), "v1 · Selected for service");
+    assert.equal(
+      await page
+        .getByRole("region", { name: "Agent state at a glance" })
+        .getByText("Live serving", { exact: true })
+        .isVisible(),
+      true,
     );
-    // Rendered text: the badge follows the version number after a space.
-    assert.match(await version.innerText(), /^v1 Current\n/);
   }
 
   // Each Slack token binding reads Bound or Missing in the shared badge, with a tone.
@@ -787,7 +783,7 @@ test("Deleting and unreadable configuration badges take their tones on the list 
 
   await page.goto(detailUrl(fixture, namespace.id, deleting.id).href);
   await page.locator(settledView).waitFor();
-  // The badge sits in the page header's actions, where Create new version would be.
+  // The badge sits in the page header's actions, where Open draft would be.
   const header = page
     .locator(".content .page-header .page-actions")
     .locator(".badge")

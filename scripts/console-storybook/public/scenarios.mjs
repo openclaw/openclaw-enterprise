@@ -1155,7 +1155,7 @@ export const scenarios = {
     description:
       "One Agent has unreadable saved plugin selections. Both Agents remain in the list, and the affected row shows a warning. This is simulated API data, not database recovery proof.",
     steps: [
-      "Open Research assistant and select Create new version. Its saved settings show a repair banner without editing or deployment controls.",
+      "Open Research assistant and select Open draft. Its saved settings show a repair banner without editing or deployment controls.",
       "Select v1 to inspect the readable admitted snapshot. Return to Agents and open Documentation assistant to check that its draft remains editable.",
     ],
   },
@@ -4066,19 +4066,20 @@ export const scenarios = {
     steps: [
       "Read Live serving in the summary: Not running.",
       "Read the notice above the Configuration snapshot: Failed version.",
-      "Find Create new version once, in the page header. The Versions list names the draft as New version, Editable Configuration.",
+      "Find Open draft once, in the page header. The version picker names the draft as New version, Editable Configuration.",
     ],
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   newVersion: {
     group: "Pages/Agent detail",
-    name: "Create new version",
+    name: "Open draft",
     path: draft,
     deployed: true,
     description:
       "Edit and save the current Configuration before deploying a new immutable version. The selected version stays unchanged until activation.",
     steps: [
       "Review the selected version and saved draft settings.",
+      "Check the new-version notice has an even, neutral border without a blue stripe. Its message stays visible when Configuration opens for editing, including at phone width.",
       "Turn off Gateway managed mode and confirm the current version still requests it on.",
       "Return to the draft, edit and save Configuration, then deploy the new version.",
       "Inspect the admitted version and its deployment activity.",
@@ -4108,10 +4109,10 @@ export const scenarios = {
     deployed: true,
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Configuration update, so a version's Configuration tab offers Open version draft instead of Edit current Configuration. The draft it opens shows the saved JSON with no editor. The API still decides.",
+      "The permission answer denies Configuration update, so a version's Configuration tab offers Open draft instead of Edit current Configuration. The draft it opens shows the saved JSON with no editor. The API still decides.",
     steps: [
-      "Find Open version draft below the Configuration snapshot, and no Edit current Configuration.",
-      "Choose Open version draft: the draft opens read-only, with no Edit Configuration button.",
+      "Find Open draft below the Configuration snapshot, and no Edit current Configuration.",
+      "Choose Open draft: the draft opens read-only, with no Edit Configuration button.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
@@ -4125,9 +4126,9 @@ export const scenarios = {
       "The Agent header keeps its identity and actions visible while access is rechecked. The delay and Agent data are simulated.",
     steps: [
       "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
-      "Focus Create new version, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
+      "Focus Open draft, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
       "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
-      "Choose Create new version to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
+      "Choose Open draft to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
     ],
     nextStory: "authSaveHoldsNavigation",
   },
@@ -4139,10 +4140,10 @@ export const scenarios = {
     revisionHistory: 3,
     earlierFailedVersion: 2,
     description:
-      "v2's deployment failed and v3 now serves. The Versions list marks v2 from the list's own outcome, so the mark shows on load, before v2 is opened.",
+      "v2's deployment failed and v3 now serves. The version picker marks v2 from the list's own outcome, so the mark shows on load, before v2 is opened.",
     steps: [
-      'Check that v3 reads "Current" and v2 shows a red "Failed" badge without opening it; v1 has no badge. A screen reader announces "View version v2, deployment failed".',
-      "Reload the page: v2 keeps its Failed badge.",
+      'Check Viewing version: v3 includes "Selected for service" and v2 includes "Failed" without opening it; v1 has no outcome label.',
+      "Reload the page: v2 keeps its Failed label.",
     ],
     gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
   },
@@ -4156,13 +4157,12 @@ export const scenarios = {
     // Each older page takes 1.5 s, so its loading state can be seen.
     rules: [{ suffix: "/revisions", queryParam: "cursor", delayMs: 1500 }],
     description:
-      "Versions list one page at a time, newest first. Older versions load on request, and nothing is pruned.",
+      "The version picker loads history one page at a time, newest first. Browsing does not deploy or roll back.",
     steps: [
-      "Check that v8, v7, and v6 are listed with Show older versions below the list.",
-      "With the keyboard, Tab into the list (focus lands on v8), then Tab once more to Show older versions and press Enter. For about 1.5 s it reads Loading older versions…, looks disabled and keeps focus; pressing Enter again loads nothing more. When v5, v4, and v3 appear, focus is still on Show older versions.",
-      "Press Enter again. When v2 and v1 load, the button is gone and focus moves to v2, the first version that loaded, scrolled into view in the list.",
-      "Tab out of the list and Shift+Tab back: focus lands on v8. Down and Up move between versions and wrap at either end; Home and End jump to v8 and v1. Tab leaves the list in one press, and Shift+Tab returns to v8, not the version the arrows last reached.",
-      "Press Down twice, to v6, then Enter. v6 opens, and the next Tab into the list lands on v6, the viewed version.",
+      "Open Viewing version and check Draft, v8, v7, and v6. Selected for service identifies the service target.",
+      "Choose Load older versions. During the 1.5-second read the button keeps focus and ignores repeat activation.",
+      "When v5, v4, and v3 load, the button keeps focus. Load the final page; focus returns to Viewing version without changing the viewed version.",
+      "Choose v6, then Open draft. Neither action changes the version selected for service.",
     ],
     gap: "The fixture uses three versions per page; the API default is 50.",
   },
@@ -4238,7 +4238,7 @@ export const scenarios = {
       },
     ],
     actions: [
-      { selector: 'button[aria-label^="View version v1"]', click: true },
+      { selector: "#revision-selector", value: "rev_00000000-0000-4000-8000-000000000001" },
       click("Access"),
       ...shareExistingPerson,
       { selector: 'a[data-nav="agents"]', click: true },
@@ -4246,7 +4246,7 @@ export const scenarios = {
     description:
       "The story opens a version from the draft, shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
     steps: [
-      "While the note “This page stays open until sharing finishes.” shows, check that the versions in the Versions rail are disabled, and that ← Agents and Refresh keep the page. Select Reset story to replay the hold.",
+      "While the note “This page stays open until sharing finishes.” shows, check that the version picker is disabled, and that ← Agents and Refresh keep the page. Select Reset story to replay the hold.",
       "Open the preview in its own tab to try browser Back. While sharing, Back opens Configuration. Back again keeps that version open and explains why.",
       "When the grants are written, the note goes, Direct Agent grants lists the new binding, and navigation is available again. If you tried Back above, Back now reaches the draft and Forward returns through Configuration to Access.",
     ],
@@ -4934,25 +4934,25 @@ export const scenarios = {
   deploymentPending: {
     group: "Pages/Agent detail",
     name: "New version queued",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "queued",
     description:
       "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified. Deployment details keep Last recorded result, Reason and Since rows (not recorded yet), so the first result fills them in place.",
     steps: [
-      'Selected version reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+      'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
     ],
   },
   deploymentRunning: {
     group: "Pages/Agent detail",
     name: "New version in progress",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "running",
     description:
       "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
     steps: [
-      'Selected version reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+      'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
     ],
   },
   deploymentRunningActivates: {
@@ -4965,9 +4965,9 @@ export const scenarios = {
     description:
       "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
     steps: [
-      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
-      "Before the status poll lands, Tab into the Versions list (focus lands on v7, the viewed version) and press Down to v6.",
-      'Within about 5 s the notice begins "Current version" and Selected version reads v7. The Versions list is rebuilt with v7 marked Current, and focus stays on v6; Tab out and back lands on v6.',
+      'On arrival the notice begins "Deploying version" and Selected for service reads v6.',
+      "Before the status poll lands, focus Viewing version without changing its v7 selection.",
+      'Within about 5 s the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
     ],
   },
   deploymentCompletesRereadFails: {
@@ -4982,7 +4982,7 @@ export const scenarios = {
     description:
       "v7's deployment completes, but the Agent reread that would make it current fails. The notice says the deployment completed and that the current version could not be refreshed, rather than Deploying beside Completed. The deployment and the failure are simulated.",
     steps: [
-      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      'On arrival the notice begins "Deploying version" and Selected for service reads v6.',
       'Within about 5 s Latest visible deployment reads "v7 · Completed", the page says the current version and version history could not be refreshed, and the notice reads "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."',
     ],
   },
@@ -5006,13 +5006,13 @@ export const scenarios = {
       "One deployment status read fails while v7 is deploying. The notice keeps Deploying version rather than turning Historical, polling continues, and the next read records success and makes v7 current. The deployment, failure and activation are simulated.",
     steps: [
       'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment reads "v7 · Unavailable" and the notice still begins "Deploying version".',
-      'Within about 10 s the notice begins "Current version" and Selected version reads v7, with no "Historical version" in between.',
+      'Within about 10 s the notice begins "Current version" and Selected for service reads v7, with no "Historical version" in between.',
     ],
   },
   deploymentDeferred: {
     group: "Pages/Agent detail",
     name: "Deployment waiting for runtime",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "queued",
     deploymentLastAttempt: {
@@ -5032,7 +5032,7 @@ export const scenarios = {
   deploymentRetrying: {
     group: "Pages/Agent detail",
     name: "Deployment retry after dependency failure",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "running",
     deploymentLastAttempt: {
@@ -5162,7 +5162,7 @@ export const scenarios = {
   deploymentBootstrapCleanup: {
     group: "Pages/Agent detail",
     name: "Bootstrap failure with cleanup pending",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
     bootstrapFailure: true,
@@ -5296,7 +5296,7 @@ export const scenarios = {
     steps: [
       "Above the facts, the failure is one danger status block: a red stripe on a light red wash, the label DEPLOYMENT FAILED · V7, the title This Agent may be offline, and CONVERGENCE_DEADLINE_EXCEEDED in code at the end of the first sentence. Open v7 Logs is the page's one filled button; at 390 wide it spans the block.",
       "In Deployment details, the three step tiles are white cards with a light edge; only the failed Deployment work tile has a red wash, and each marker carries its step's colour.",
-      'In the Versions list, v7 reads "v7", a space, then a red "Failed" badge; v6 keeps its blue "Current" badge and no other version has an outcome badge. A screen reader announces "View version v7, deployment failed".',
+      'In Viewing version, v7 includes "Failed" and v6 includes "Selected for service". The status summary also shows the latest failure.',
       "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
       "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
     ],
@@ -5341,12 +5341,12 @@ export const scenarios = {
     deployed: true,
     agentName: "Quarterly release review and signoff bot",
     description:
-      "The Agent page header: ← Agents, the name with Refresh and Create new version at its right, then the Agent ID, Copy Agent ID and the compact Namespace control in the row under it.",
+      "The Agent page header: ← Agents, the name with Refresh and Open draft at its right, then the Agent ID, Copy Agent ID and the compact Namespace control in the row under it.",
     steps: [
-      "At 1440 and 1024 the 40-character name wraps on the left; Refresh and Create new version stay on its first line and nothing overlaps.",
+      "At 1440 and 1024 the 40-character name wraps on the left; Refresh and Open draft stay on its first line and nothing overlaps.",
       "Select Copy Agent ID. The ID is on the clipboard and Copied shows beside the button for two seconds.",
       "Choose Research in the Namespace control; the console opens Research's Agents list, as the header selector always has. Go Back.",
-      "Select Create new version; the draft opens and its header shows Refresh only.",
+      "Select Open draft; the draft opens and its header shows Refresh only.",
       "On the draft, select Edit Configuration and change a value, then select ← Agents. The page stays and says why, as the sidebar does.",
     ],
   },
@@ -5357,10 +5357,10 @@ export const scenarios = {
     deployed: true,
     mobile: true,
     description:
-      "At 390px the header is four rows: ← Agents with Refresh and Create new version, the name, the Agent ID with Copy Agent ID, then the Namespace control at full width. It ends by 240px.",
+      "At 390px the header is four rows: ← Agents with Refresh and Open draft, the name, the Agent ID with Copy Agent ID, then the Namespace control at full width. It ends by 240px.",
     steps: [
       "Check that the ID row has no trailing separator and the Namespace control spans the row.",
-      "Leave the window and come back while the access recheck runs: Create new version is held with the page, and focus returns to it afterwards.",
+      "Leave the window and come back while the access recheck runs: Open draft is held with the page, and focus returns to it afterwards.",
     ],
   },
   agentHeaderNoClipboard: {
@@ -5413,7 +5413,7 @@ export const scenarios = {
   deploymentModelProbeFailed: {
     group: "Pages/Agent detail",
     name: "New version failed its model check",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
@@ -5429,7 +5429,7 @@ export const scenarios = {
   deploymentFailsWhileWatching: {
     group: "Pages/Agent detail",
     name: "Deployment fails while watching",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
@@ -5444,14 +5444,14 @@ export const scenarios = {
     description:
       "Watch v7 change from running to failed. The recovery card then leads the page, as it does on a reload, and Deployment details fold under it. The deployment and failure are simulated.",
     steps: [
-      'On arrival v7\'s Configuration tab notice begins "Deploying version". Once v7 reads Failed, it begins "Historical version" and Selected version still reads v6.',
+      'On arrival v7\'s Configuration tab notice begins "Deploying version". Once v7 reads Failed, it begins "Failed version" and Selected for service still reads v6.',
       'Once v7 fails, "Deployment failed · v7" is the first card and Deployment details are folded. Open them: they show the failure\'s record and stay open.',
     ],
   },
   deploymentModelProbeRetried: {
     group: "Pages/Agent detail",
     name: "New version failed its model check after a retry",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "rate_limit-attempt2" },
@@ -5465,7 +5465,7 @@ export const scenarios = {
   deploymentModelProbeFailedReadOnly: {
     group: "Pages/Agent detail",
     name: "New version failed, viewer cannot edit",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
@@ -5473,7 +5473,7 @@ export const scenarios = {
     description:
       "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
     steps: [
-      "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft. The Versions list names the draft Version draft, Configuration draft.",
+      "Check that the recovery has one link, Open v7 Logs, and the header says Open draft. The picker includes Draft and its Configuration access.",
       "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
@@ -5481,7 +5481,7 @@ export const scenarios = {
   deploymentModelProbeFailedDeployOnly: {
     group: "Pages/Agent detail",
     name: "New version failed, viewer may deploy",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
@@ -5499,16 +5499,16 @@ export const scenarios = {
       sandboxPolicyRead: false,
     },
     description:
-      "Recovery offers Open version draft when the viewer may deploy but cannot edit the Configuration, so the draft is theirs to read and deploy.",
+      "Recovery offers Open draft when the viewer may deploy but cannot edit the Configuration, so the draft is theirs to read and deploy.",
     steps: [
-      "Select Open version draft and confirm the Configuration tab opens in view, focused, without deploying.",
+      "Select Open draft and confirm the Configuration tab opens in view, focused, without deploying.",
     ],
     gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
   },
   deploymentModelProbeFailedConfigurationEditor: {
     group: "Pages/Agent detail",
     name: "New version failed, viewer may edit only the Configuration",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
@@ -5639,16 +5639,16 @@ export const scenarios = {
       },
     ],
     description:
-      "The startup model check failure for a viewer who may deploy but can neither edit nor read the Configuration. The draft Open version draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
+      "The startup model check failure for a viewer who may deploy but can neither edit nor read the Configuration. The draft Open draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
     steps: [
-      "At 1440 and 390 wide, confirm the recovery shows one link, Open v7 Logs, and never shows Open version draft.",
+      "At 1440 and 390 wide, confirm the recovery shows one link, Open v7 Logs, and never shows Open draft.",
     ],
     gap: "The failure, permissions and denial are simulated; the API still authorizes every page a link opens.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
     name: "Deployment failed after selection",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateSelected: true,
@@ -5658,7 +5658,7 @@ export const scenarios = {
   deploymentStopped: {
     group: "Pages/Agent detail",
     name: "Deployment stopped by the owner",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     stopped: true,
     candidateDeploymentStatus: "failed",
@@ -5670,7 +5670,7 @@ export const scenarios = {
   deploymentSuperseded: {
     group: "Pages/Agent detail",
     name: "Deployment superseded by a newer version",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
     candidateSuperseded: true,
@@ -5681,7 +5681,7 @@ export const scenarios = {
   deploymentSucceeded: {
     group: "Pages/Agent detail",
     name: "New version activated",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "succeeded",
     description:
@@ -5690,7 +5690,7 @@ export const scenarios = {
   deploymentActivityLoading: {
     group: "Pages/Agent detail",
     name: "Deployment activity loading",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "running",
     rules: [
@@ -5710,7 +5710,7 @@ export const scenarios = {
   deploymentUnavailable: {
     group: "Pages/Agent detail",
     name: "Deployment activity unavailable",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "running",
     rules: [
@@ -5725,7 +5725,7 @@ export const scenarios = {
   diagnosticsSuccess: {
     group: "Pages/Agent detail",
     name: "Current observations for v7",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     slack: true,
     candidateDeploymentStatus: "succeeded",
@@ -5742,7 +5742,7 @@ export const scenarios = {
   diagnosticsFast: {
     group: "Pages/Agent detail",
     name: "Current observations that answer at once",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     slack: true,
     candidateDeploymentStatus: "succeeded",
@@ -5758,7 +5758,7 @@ export const scenarios = {
   diagnosticsNoSlack: {
     group: "Pages/Agent detail",
     name: "Current observations for a version without Slack",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "succeeded",
     diagnosticsState: "noSlack",
@@ -5769,7 +5769,7 @@ export const scenarios = {
   diagnosticsReader: {
     group: "Pages/Agent detail",
     name: "Current observations for a reader without operate",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "succeeded",
     agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
@@ -5780,7 +5780,7 @@ export const scenarios = {
   diagnosticsRefused: {
     group: "Pages/Agent detail",
     name: "Current observations refused",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "succeeded",
     rules: [{ suffix: "/diagnostics", method: "POST", status: 403, code: "FORBIDDEN" }],
@@ -5803,7 +5803,7 @@ export const scenarios = {
   diagnosticsUnavailable: {
     group: "Pages/Agent detail",
     name: "Current observation unavailable",
-    path: candidateVersion,
+    path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "succeeded",
     rules: [
@@ -6123,7 +6123,7 @@ export const scenarios = {
       "Saved Agent plugin selections could not be read. The Agent header and version history remain visible; draft settings and deployment are unavailable. The admitted v1 snapshot is independently readable.",
     steps: [
       "Open Plugins, Channels, and Credentials. Each shows the saved-configuration banner, with no empty settings or editable defaults.",
-      "Select v1 to inspect its admitted configuration, then return to Create new version to see the unreadable draft.",
+      "Select v1 to inspect its admitted configuration, then return to Open draft to see the unreadable draft.",
     ],
   },
   unreadableRevisionConfiguration: {
@@ -6137,8 +6137,26 @@ export const scenarios = {
       "An admitted revision has unreadable plugin selections. Its identity and history remain visible while its saved settings show a repair banner. Deployment activity can fail separately because it still requires a valid snapshot.",
     steps: [
       "Open Plugins and confirm the invalid snapshot is not shown as empty JSON.",
-      "Select Create new version. The healthy current draft remains editable independently of the unreadable historical snapshot.",
+      "Select Open draft. The healthy current draft remains editable independently of the unreadable historical snapshot.",
     ],
+  },
+  deploymentSnapshotUnavailable: {
+    group: "Pages/Agent detail",
+    name: "Deployment snapshot unavailable",
+    path: `${currentVersion}&tab=deployment`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      { suffix: "/revisions/rev_00000000-0000-4000-8000-000000000006", status: 503, once: true },
+    ],
+    description:
+      "A historical version's snapshot read fails while Deployment is open. Its error and Retry stay visible beside the latest deployment's activity.",
+    steps: [
+      "Read Configuration unavailable inside Deployment. The latest deployment remains separate from the viewed version's failed snapshot read.",
+      "Choose Retry. The same historical version and Deployment tab stay selected, and its deployment record and diagnostics appear.",
+      "Repeat at phone width. Switching to Configuration also shows the snapshot error until Retry succeeds.",
+    ],
+    gap: "Simulated UI proof; browser regressions exercise recovery through the controller API.",
   },
   revisionError: {
     group: "Pages/Agent detail",
@@ -7663,10 +7681,10 @@ export const scenarios = {
     deployed: true,
     nativeAdmin: "available",
     description:
-      "The Agent overview puts the authorized admin launch beside its access and configuration warning. The link opens a fixture, not a gateway.",
+      "Open Agent UI appears in the header after access is verified. Its target, scope, and Gateway managed-mode warning remain visible. The link opens a simulated fixture.",
     steps: [
       "Check the selected version, completed deployment, and unverified live serving at desktop and phone widths.",
-      "Expand Deployment details, then open the admin console. Compare Denied and hidden: there is no launch or access warning there.",
+      "Open Deployment and expand Deployment details, then use Open Agent UI directly. Compare Denied and hidden: there is no launch or access warning there.",
     ],
   },
   nativeStopped: {
@@ -7705,6 +7723,45 @@ export const scenarios = {
       "Tab to Refresh access and press Enter. While Checking access… shows, focus stays on the button and Enter again sends nothing.",
     ],
   },
+  agentDetailLayout: {
+    group: "Pages/Agent detail",
+    name: "Agent detail layout",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    nativeAdmin: "available",
+    description:
+      "Compact Agent status, a version picker, Deployment details, direct Agent UI access, and live workspace file roles.",
+    steps: [
+      "Browse v6 using Viewing version. The Agent UI target and Selected for service stay on v7.",
+      "Open Deployment for historical records and diagnostics. Open Logs for runtime output.",
+      "Open Workspace files. Choose each file, read its role, and edit one. Unsaved marks that file until Save or Reload.",
+      "Open Agent UI directly in a new tab. Review the scope and Gateway managed-mode warning.",
+    ],
+    gap: "Simulated UI proof; no backend persistence, credential delivery, or live runtime execution.",
+  },
+  deploymentEmpty: {
+    group: "Pages/Agent detail",
+    name: "No deployment history",
+    path: `${draft}&tab=deployment`,
+    description:
+      "The saved draft has no deployment records. Deployment stays available without reading its Configuration; the empty state does not claim live health.",
+  },
+  workspaceLoading: {
+    group: "Components/Workspace",
+    name: "Loading files",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [
+      {
+        prefix:
+          "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/workspace/files/",
+        delayMs: 3000,
+      },
+    ],
+    description:
+      "File selection and role descriptions remain available during reads. Each file shows Loading and disables its editor until the read finishes.",
+  },
   workspaceNavigation: {
     group: "Components/Workspace",
     name: "Keep unsaved files",
@@ -7715,11 +7772,11 @@ export const scenarios = {
         selector: '[id="workspace-AGENTS.md"]',
         value: "# Unsaved guidance\nKeep these edits while navigating.\n",
       },
-      { selector: '[id="workspace-USER.md"]', value: "" },
     ],
     description: "File edits, including empty text, survive tabs and pages until Save or Reload.",
     steps: [
-      "Switch to Configuration and back to Workspace files.",
+      "Choose User context and clear its text. Switch between Instructions and User context; check the Unsaved indicators and role descriptions. On a phone use Workspace file.",
+      "Switch to Configuration and back to Workspace files; the selected file and unsaved contents remain.",
       "Open Namespaces, return with Back, then save AGENTS.md and reload USER.md.",
     ],
     gap: "Simulated files; no live Agent gateway.",
@@ -7730,7 +7787,7 @@ export const scenarios = {
     path: `${revision}&tab=workspace`,
     deployed: true,
     description:
-      "Load, edit, save, and reload AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Changes apply to live files, not revisions.",
+      "Choose Instructions (AGENTS.md), Personality (SOUL.md), Identity (IDENTITY.md), or User context (USER.md). Each file has a role description and its own Save and Reload. Changes apply to the live workspace.",
   },
   workspaceCleanCRLF: {
     group: "Components/Workspace",
@@ -7939,7 +7996,7 @@ export const scenarios = {
       "v7 finishes deploying while Workspace files are open. Unedited files are reread in place from it.",
     steps: [
       "Wait about 5 seconds for Deployment activity to record v7 as succeeded, or click Refresh deployment.",
-      "IDENTITY.md keeps its missing-file error and adds no reread warning.",
+      "IDENTITY.md keeps its Missing indicator in the desktop tabs and phone picker, with no reread warning. A later confirmed-missing read clears a previous Needs attention indicator; the browser regression covers that recovery.",
       "SOUL.md says it could not be reread. Click Reload SOUL.md: the warning is replaced by SOUL.md loaded.",
     ],
     gap: "Simulated API results demonstrate presentation only. Browser tests cover reread ordering and later rereads clearing a failure.",
@@ -8358,7 +8415,7 @@ export const scenarios = {
     steps: [
       "Start on the Agents list and open oceclaw.",
       "Confirm the Console shows a selected deployed revision, simulated deployment status, and available native admin access.",
-      "Click Open admin console. The target fixture opens with an existing #openclaw-feedback message.",
+      "Click Open Agent UI. The target fixture opens with an existing #openclaw-feedback message.",
       "Enter a new message, click Send in the simulated Admin UI, and confirm the visible assistant reply.",
     ],
     gap: "The Admin UI target is a fixture page. It demonstrates the link target and chat-shaped result only; it does not connect to a gateway, Slack, credentials, or a model.",
@@ -8391,8 +8448,8 @@ export const scenarios = {
       "Edit saved settings while the current version stays unchanged; deploy a new immutable version.",
     steps: [
       "Open Edit Slack, paste CNEW123 into Channels and press Enter, then Save configuration.",
-      "Select View version v1 and open Channels: it still has the original settings.",
-      "Select Create new version, then Deploy new version. The saved draft is deployed, not the viewed snapshot.",
+      "Choose v1 in Viewing version and open Channels: it still has the original settings.",
+      "Select Open draft, then Deploy new version. The saved draft is deployed, not the viewed snapshot.",
       "Refresh deployment and inspect the new version. The prior snapshot remains readable.",
       "Workspace file edits are separate: they save immediately without a new revision.",
     ],
@@ -8593,7 +8650,7 @@ export const scenarios = {
       "Refresh stop status. The fixture now clears the current version; Workspace shows why files are unavailable, without reloading the page.",
       "Open Configuration, then Workspace files again. The unavailable notice remains; the old editors do not return.",
       "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
-      "Return to Create new version and Deploy new version to request running again.",
+      "Return to Open draft and Deploy new version to request running again.",
     ],
     gap: "The fixture separates Stop acceptance from the next read clearing the selected revision. Neither establishes that a live gateway shut down. Disabling a channel does not stop the Agent; deletion is destructive.",
   },

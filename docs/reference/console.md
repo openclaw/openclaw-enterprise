@@ -143,7 +143,7 @@ again** confirms a new stop intent, even without a selected version, but not
 when you can read no version, as before a first deploy (the list then shows no
 Stop icon). That does not prove cleanup finished.
 
-To resume, open **Create new version** and select **Deploy new version**. See
+To resume, open **Open draft** and select **Deploy new version**. See
 [Stop and resume](agents/deployment.md#stop-and-resume) for worker lifecycle and
 preservation.
 
@@ -238,8 +238,8 @@ For an unavailable gateway, follow the
 ## Open the native admin UI
 
 When [Agent native admin UI access](agent-native-admin.md) is enabled, all Agent
-detail tabs, including Configuration and Workspace files, show a **Native admin
-UI** panel to callers with exact Agent `administer`.
+detail tabs, including Configuration and Workspace files, show **Open Agent UI**
+in the header and its availability information to callers with exact Agent `administer`.
 It is hidden otherwise, when the Installation disables the feature, and until
 the next sign-in or new tab after a denial. The panel reports a stopped Agent
 (including before first deployment) as needing to be started, asks you to check
@@ -247,10 +247,10 @@ deployment and refresh access when a desired-running Agent has no selected versi
 administrators can [share an Agent](console/agent-sharing.md) with an existing
 person.
 
-**Open admin console** opens the Agent's selected version in a new tab, even
-from a draft or older version. Its visible warning is part of the operator
-contract: native UI changes to the gateway bypass OCE and are not recorded in
-AgentRevisions. Use OCE for durable configuration. The tab shares
+**Open Agent UI** opens the Agent's selected version in a new tab, even
+from a draft or older version. Its visible warning explains that Gateway managed mode restricts
+administrative changes by default. OCE deployments can overwrite changes made
+while managed mode is off. Use OCE for durable configuration. The tab shares
 the console's OCE session cookie through the configured shared cookie parent
 domain; native chat or other Agent-host activity does not extend that session.
 

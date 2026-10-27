@@ -26,7 +26,10 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
+  LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -1974,6 +1977,60 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
     /without exact AgentRevision ownership and content/,
   );
   assert.deepEqual(calls, [["getSandbox", name, calls[0][2]]]);
+
+  const saved = sandboxes.get(name);
+  const prefix = saved.spec.command.slice(0, RUNTIME_WRAPPER_COMMAND.length + 1);
+  const requestProgram = (program, admission) =>
+    driver.provisionHarness({
+      ...context,
+      revision: { ...revision, compute: { driverId: "kubernetes", admission } },
+      requirements: { ...codexRequirements(revision), command: harnessRuntimeCommand(program) },
+    });
+  const protectedApproval = "protected-codex-no-connection-retry:v1";
+  for (const [program, admission, previousHash] of [
+    [
+      AGENT_WITH_NODE_ENTRYPOINT,
+      undefined,
+      "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
+    ],
+    [
+      LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+      protectedApproval,
+      "58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",
+    ],
+  ]) {
+    // Each complete stored payload is pinned to its independent pre-upgrade producer.
+    const previous = program.replace(
+      /mkdirSync\(state, \{ recursive: true, mode: 0o700 \}\);[\s\S]*?chmodSync\(state, 0o700\);/,
+      "mkdirSync(state, { recursive: true });",
+    );
+    const previousParts = nodeProgramArguments(previous).slice(1);
+    assert.equal(
+      createHash("sha256").update(JSON.stringify(previousParts)).digest("hex"),
+      previousHash,
+    );
+    const stored = { ...saved, spec: { ...saved.spec, command: [...prefix, ...previousParts] } };
+    sandboxes.set(name, stored);
+    calls.length = 0;
+    assert.deepEqual(await requestProgram(program, admission), first);
+    await assert.rejects(
+      requestProgram(program + "\n0;", admission),
+      /exact AgentRevision ownership and content/,
+    );
+    await assert.rejects(
+      requestProgram(program, admission ? undefined : protectedApproval),
+      /exact AgentRevision ownership and content/,
+    );
+    if (admission === protectedApproval) {
+      await assert.rejects(
+        requestProgram(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT, admission),
+        /exact AgentRevision ownership and content/,
+      );
+    }
+    assert.equal(sandboxes.get(name), stored);
+    assert.ok(calls.every(([method]) => method === "getSandbox" || method === "getService"));
+  }
+  sandboxes.set(name, saved);
 
   // ALREADY_EXISTS (a create that outlived its 24 h replay record) adopts this revision's Sandbox.
   sandboxes.clear();

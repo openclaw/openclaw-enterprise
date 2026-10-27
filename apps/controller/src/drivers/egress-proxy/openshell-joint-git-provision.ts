@@ -10,6 +10,19 @@ import {
 import { wirePolicy } from "./openshell-wire-policy.ts";
 
 const hosts = ["github.com", "api.github.com"] as const;
+/** Executables admitted by the joint Git recipient profile and its effective policy. */
+export const jointGitBinaries = Object.freeze([
+  "/usr/bin/git",
+  "/usr/lib/git-core/git-remote-https",
+  "/usr/lib/git-core/git-remote-http",
+  "/usr/libexec/git-core/git-remote-https",
+  "/usr/libexec/git-core/git-remote-http",
+  "/usr/bin/curl",
+  "/usr/local/bin/node",
+  "/usr/bin/node",
+  "/usr/bin/gh",
+  "/usr/local/bin/gh",
+]);
 const owner = "openclaw.dev/joint-git-recipient";
 const positive = /^[1-9]\d*$/;
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -164,24 +177,14 @@ export async function provisionJointGit(
     grant: Grant;
     tokenEndpoint: string;
     projectedAssertion?: boolean;
-    binaries: readonly string[];
     signal: AbortSignal;
   } & (
     | { restore: readonly Omit<Recipient, "profile">[]; beforeWrite?: never }
     | { restore?: never; beforeWrite: () => Promise<void> }
   ),
 ) {
-  const {
-    client,
-    workspace,
-    workspaceId,
-    sandbox,
-    revisionId,
-    bindingId,
-    grant,
-    binaries,
-    signal,
-  } = input;
+  const { client, workspace, workspaceId, sandbox, revisionId, bindingId, grant, signal } = input;
+  const binaries = [...jointGitBinaries];
   const endpoint = jointTokenEndpoint(input.tokenEndpoint);
   if (
     !workspaceId ||

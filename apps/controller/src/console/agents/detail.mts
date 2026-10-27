@@ -475,55 +475,6 @@ function takeLinkedVersionView(key: string) {
   return linked;
 }
 
-// One Tab stop for a list of version buttons, as in the tab strip (UX plan C7): it sits on the
-// viewed version (else the newest), Up/Down (and Home/End) move focus between versions, and
-// Enter or Space opens one. A rail of 51 versions was 51 Tab stops (finding 2101).
-// It returns a function that moves the Tab stop to an item and focuses it.
-function rovingVersions(list: HTMLElement, items: HTMLButtonElement[]) {
-  const home = items.find((item) => item.getAttribute("aria-current") === "page") ?? items[0];
-  const reset = () => {
-    for (const item of items) {
-      item.tabIndex = item === home ? 0 : -1;
-    }
-  };
-  const focusItem = (target: HTMLButtonElement) => {
-    for (const item of items) {
-      item.tabIndex = item === target ? 0 : -1;
-    }
-    target.focus({ preventScroll: true });
-  };
-  reset();
-  list.addEventListener("keydown", (event) => {
-    const enabled = items.filter((item) => !item.disabled);
-    const at = enabled.findIndex((control) => control === document.activeElement);
-    const next = {
-      ArrowUp: at - 1,
-      ArrowDown: at + 1,
-      Home: 0,
-      End: enabled.length - 1,
-    }[event.key];
-    if (at === -1 || next === undefined || event.altKey || event.ctrlKey || event.metaKey) {
-      return;
-    }
-    event.preventDefault();
-    const target = enabled[(next + enabled.length) % enabled.length];
-    if (!target) {
-      return;
-    }
-    focusItem(target);
-    target.scrollIntoView({ block: "nearest" });
-  });
-  // Tabbing back in lands on the viewed version, wherever the arrows left focus.
-  list.addEventListener("focusout", () => {
-    queueMicrotask(() => {
-      if (!list.contains(document.activeElement)) {
-        reset();
-      }
-    });
-  });
-  return focusItem;
-}
-
 export async function renderAgentDetail(
   context: DetailContext,
   { agent: preloadedAgent }: { agent?: AgentRead | null } = {},
@@ -737,7 +688,7 @@ export async function renderAgentDetail(
   function applyDraftAccess() {
     if (headerNewVersion) {
       // This opens the draft; Configuration update and Agent deploy are independent grants.
-      headerNewVersion.textContent = agentReadOnly() ? "Open version draft" : "Create new version";
+      headerNewVersion.textContent = "Open draft";
     }
     labelDraftEntry();
     renderVersionNotice();
@@ -771,6 +722,7 @@ export async function renderAgentDetail(
     tabLabels.push(["repositories", "Repositories"], ["credentials", "Credentials"]);
   }
   tabLabels.push(["workspace", "Workspace files"], ["policy", "Policy denials"]);
+  tabLabels.push(["deployment", "Deployment"]);
   if (selected !== "draft") {
     tabLabels.push(["logs", "Logs"]);
   }
@@ -901,9 +853,9 @@ export async function renderAgentDetail(
   };
   const headerNewVersion =
     selected !== "draft"
-      ? button("Create new version", () => change("draft", "configuration"), { size: "sm" })
+      ? button("Open draft", () => change("draft", "configuration"), { size: "sm" })
       : null;
-  // Create new version sits in the page header beside Refresh (UX spec 3.2); the shell's
+  // Open draft sits in the page header beside Refresh; the shell's
   // ← Agents and Namespace selector ask refuseLeave before they leave.
   const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
   context.setPageActions?.(headerActions);
@@ -947,7 +899,9 @@ export async function renderAgentDetail(
       return;
     }
     node.replaceChildren(
-      version,
+      ...(visibleRevisions[0] && version === `v${visibleRevisions[0].revision}`
+        ? [versionLink(version, visibleRevisions[0].id, "deployment")]
+        : [version]),
       element("span", { className: "visually-hidden" }, " · "),
       element("span", { className: "badge", ...(tone ? { "data-tone": tone } : {}) }, label),
     );
@@ -1089,7 +1043,7 @@ export async function renderAgentDetail(
   const currentSummary = element(
     "section",
     { className: "agent-current-summary stats", "aria-label": "Agent state at a glance" },
-    stat("Selected version", currentVersionValue, currentVersionNote),
+    stat("Selected for service", currentVersionValue, currentVersionNote),
     stat("Latest visible deployment", latestDeploymentValue, latestDeploymentNote),
     stat("Live serving", liveServingValue, liveServingNote),
   );
@@ -1163,7 +1117,7 @@ export async function renderAgentDetail(
     }
     return accepted?.id;
   }
-  // The rail's entry for a viewed version the caller cannot read.
+  // The picker's entry for a viewed version the caller cannot read.
   const unavailableVersionLabel = () =>
     deployedHere(selected) ? "Deployed version · not readable" : "Viewed version unavailable";
   // Members have no console chat, and native admin needs administer (and is off under
@@ -1247,25 +1201,21 @@ export async function renderAgentDetail(
     showDeleting();
     return agent;
   }
-  const selector = element("section", { className: "agent-card revision-selector" });
+  const selector = element("section", {
+    className: "revision-selector",
+    "aria-label": "Version being viewed",
+  });
   const content = element("div");
   const detailPane = element("div", { className: "agent-version-detail" });
   const detailHeading = element("div", { className: "agent-version-heading" });
   const versionEvidence = element("div", { className: "version-evidence" });
-  // The selected version's heading, record and (on a draft) its next step sit beside the Versions
-  // rail; the tabs and open tab run full width below both (UX spec 3.7). Under 1100 px the summary
-  // comes first, so a draft's Deploy is on the first screen of a phone too.
+  // Keep the viewed version and draft actions above the full-width tabs.
   const versionSummary = element("div", { className: "agent-version-summary" });
-  // Known from the address, not from what has loaded, so the tabs never jump as reads land: a
-  // draft's next step or a version's record fills the summary and the tabs run full width below;
-  // with only a heading (Logs, Workspace files, Access on a version) the tab sits beside the rail.
+  // Agent-wide tabs do not imply a selected version, so hide their version controls.
   function setLayoutShape() {
-    versionLayout.dataset.summary =
-      selected === "draft" || !["workspace", "logs", "access"].includes(selectedTab)
-        ? "full"
-        : "heading";
-    // Stacked, a draft's next step leads the rail, so its Deploy is on a phone's first screens.
-    versionLayout.toggleAttribute("data-draft", selected === "draft");
+    const agentWide = ["workspace", "access"].includes(selectedTab);
+    selector.hidden = agentWide;
+    versionSummary.hidden = agentWide;
   }
   const versionLayout = element(
     "div",
@@ -1286,6 +1236,24 @@ export async function renderAgentDetail(
       "Loading the most recent visible deployment…",
     ),
   );
+  const deploymentPanels = element(
+    "div",
+    { className: "agent-deployment-panels", hidden: selectedTab !== "deployment" },
+    element("p", { className: "hint" }, "Latest visible deployment"),
+    deploymentStatus,
+    versionEvidence,
+  );
+  const deploymentEmpty = element(
+    "p",
+    { className: "muted", hidden: true },
+    "No deployment history is visible to your account.",
+  );
+  deploymentPanels.append(deploymentEmpty);
+  const deploymentAttention = statusBlock("warning", null, null, [], {
+    className: "agent-deployment-attention",
+    hidden: true,
+    role: null,
+  });
   const tabControls = new Map<string, HTMLButtonElement>();
   const revisionControls = new Map<VersionControl, boolean>();
   // A refused leave says why beside the control whose request holds the page (finding 1962).
@@ -1355,7 +1323,7 @@ export async function renderAgentDetail(
         leaveNote.scrollIntoView({ block: "nearest" });
       }
     } else if (!draftEditorBlocksNavigation()) {
-      showLeaveNote(content, reason, "start");
+      showLeaveNote(selectedTab === "deployment" ? deploymentPanels : content, reason, "start");
       // The note tops the tab panel, which may be scrolled out of view; focus stays put.
       if (leaveNote.isConnected) {
         leaveNote.scrollIntoView({ block: "nearest" });
@@ -1436,6 +1404,9 @@ export async function renderAgentDetail(
   content.id = `${tabIds}-panel`;
   content.setAttribute("role", "tabpanel");
   content.setAttribute("aria-labelledby", `${tabIds}-${selectedTab}`);
+  deploymentPanels.id = `${tabIds}-deployment-panel`;
+  deploymentPanels.setAttribute("role", "tabpanel");
+  deploymentPanels.setAttribute("aria-labelledby", `${tabIds}-deployment`);
   for (const [id, label] of tabLabels) {
     const control = button(
       label,
@@ -1452,7 +1423,7 @@ export async function renderAgentDetail(
       {
         id: `${tabIds}-${id}`,
         role: "tab",
-        "aria-controls": content.id,
+        "aria-controls": id === "deployment" ? deploymentPanels.id : content.id,
         "aria-selected": String(id === selectedTab),
         tabindex: id === selectedTab ? "0" : "-1",
       },
@@ -1507,11 +1478,32 @@ export async function renderAgentDetail(
     );
   };
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
-  versionSummary.append(detailHeading, versionEvidence);
-  detailPane.append(tabs, tabNotice, content);
-  const nativeAdmin = renderNativeAdminAccess(context, path, () =>
-    latestPermissionsRead.then((permissions) => permissions?.administer),
+  versionSummary.append(detailHeading);
+  detailPane.append(tabs, tabNotice, deploymentPanels, content);
+  if (selected !== "draft") {
+    detailPane.append(pageDisclosure);
+  }
+  const nativeAdmin = renderNativeAdminAccess(
+    context,
+    path,
+    () => latestPermissionsRead.then((permissions) => permissions?.administer),
+    {
+      versionLabel: () => {
+        const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
+        return current ? `v${current.revision}` : shortId(currentRevisionId ?? "");
+      },
+      recovery: (status) => {
+        if (status === "stopped" || status === "unsupported") {
+          return versionLink("Open draft", "draft", "configuration");
+        }
+        const latest = visibleRevisions[0];
+        return status === "unavailable" && latest
+          ? versionLink("View deployment", latest.id, "deployment")
+          : null;
+      },
+    },
   );
+  headerActions.append(nativeAdmin.launch, nativeAdmin.unavailable);
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,
@@ -1524,9 +1516,14 @@ export async function renderAgentDetail(
     { className: "agent-overview-status" },
     statCard,
     statusLine,
-    deploymentStatus,
   );
-  view.replaceChildren(recovery.section, nativeAdmin.section, overviewStatus, versionLayout);
+  view.replaceChildren(
+    recovery.section,
+    nativeAdmin.section,
+    deploymentAttention,
+    overviewStatus,
+    versionLayout,
+  );
   // Recovery or native administration can appear above the facts. Keep the Agent heading and
   // controls in place, then reveal the overview once its first deployment reads settle.
   // The bounded wait still exposes loading, refresh and the version controls on a slow read.
@@ -1563,8 +1560,7 @@ export async function renderAgentDetail(
   // and scrolls in the frame that reveals the page, never at the top first (finding 1552).
   let revealHold: Promise<void> | null = null;
   let scrollOnReveal: (() => void) | null = null;
-  // Brings the version's detail (tab strip and open tab) to the top of the window; the heading
-  // and record sit above it beside the Versions rail (UX spec 3.7). A
+  // Brings the version's tabs and open panel to the top of the window. A
   // click in the shown page scrolls smoothly unless the reader asked for reduced motion; a page
   // about to show scrolls at once, so it never paints at the top first (findings 1552, 1586).
   function scrollToVersionDetail({ animate = false } = {}, node: Element = detailPane) {
@@ -1861,8 +1857,7 @@ export async function renderAgentDetail(
 
   function renderDetailHeading() {
     detailHeading.hidden = false;
-    // An Agent-wide tab's heading introduces the tab below it; a version's heading leads the
-    // summary beside the Versions rail.
+    // Agent-wide headings introduce their tab; version metadata stays above the tabs.
     const agentWide = ["access", "workspace"].includes(selectedTab);
     if (agentWide && detailHeading.parentElement !== detailPane) {
       detailPane.prepend(detailHeading);
@@ -1874,7 +1869,7 @@ export async function renderAgentDetail(
         element(
           "div",
           {},
-          element("h2", {}, "Agent access"),
+          element("h2", {}, "Agent-wide access"),
           element(
             "p",
             { className: "muted" },
@@ -1889,7 +1884,7 @@ export async function renderAgentDetail(
         element(
           "div",
           {},
-          element("h2", {}, "Agent workspace"),
+          element("h2", {}, "Live Agent workspace"),
           element(
             "p",
             { className: "muted" },
@@ -1930,13 +1925,20 @@ export async function renderAgentDetail(
               : "Loading version details…",
       ),
     );
+    const detailsOpen =
+      detailHeading.querySelector<HTMLDetailsElement>(".agent-version-metadata")?.open ?? false;
+    const metadata = element(
+      "details",
+      { className: "agent-version-metadata", ...(detailsOpen ? { open: true } : {}) },
+      element("summary", {}, "Version details"),
+    );
     if (snapshot) {
       if (selected !== "draft") {
-        heading.append(element("p", { className: "resource-id" }, snapshot.id));
+        metadata.append(element("p", { className: "resource-id" }, snapshot.id));
       }
       if (!("configurationReadError" in snapshot)) {
         const draft = "generation" in snapshot;
-        heading.append(
+        metadata.append(
           element(
             "p",
             { className: "muted" },
@@ -1944,6 +1946,7 @@ export async function renderAgentDetail(
           ),
         );
       }
+      heading.append(metadata);
     }
     detailHeading.replaceChildren(
       heading,
@@ -1961,83 +1964,41 @@ export async function renderAgentDetail(
     );
   }
 
-  // The rail's version buttons by revision ID, for the outcome badge the latest one carries.
-  const versionControls = new Map<
-    string,
-    { control: HTMLButtonElement; line: HTMLElement; label: string }
-  >();
-  // Each rail control's key (a revision ID, "new", "older" or "chooser"), so a rebuild of the
-  // rail gives focus back to the same control instead of dropping it to the page (finding 2115).
-  let railFocusKeys = new Map<VersionControl, string>();
-  // The revisions the rail last listed, not counting a viewed version shown on its own below
-  // them: where the loaded pages ended.
-  let listedRevisionIds = new Set<string>();
-  // A version's own deployment outcome beside its number (finding 2095): the rail knows the
-  // latest version's record, so a failed or deploying latest version is marked; the others have
-  // no record read here and stay plain. The rail may show before that record is read, so the
-  // badge is set in place.
   function markVersionOutcomes() {
-    // The badge uses the page's outcome words (finding 2093).
-    const status = latestDeploymentStatus;
-    const tone = status && status !== "succeeded" && DEPLOYMENT_OUTCOME_TONES[status];
-    const outcome = tone && [outcomeLabel(status), tone];
-    const failed = [outcomeLabel("failed"), DEPLOYMENT_OUTCOME_TONES.failed];
-    for (const [id, { control, line, label }] of versionControls) {
-      const [text, tone] =
-        (id === activityRevisionId
-          ? outcome
-          : failedVersions.has(failedVersionKey(path, id)) && failed) || [];
-      const shown = line.querySelector<HTMLElement>(".version-outcome");
-      if (
-        (shown?.textContent ?? "") === (text ?? "") &&
-        (shown?.dataset.tone ?? "") === (tone ?? "")
-      ) {
+    const chooser = selector.querySelector<HTMLSelectElement>("#revision-selector");
+    if (!chooser) {
+      return;
+    }
+    for (const option of chooser.options) {
+      const revision = visibleRevisions.find((revision) => revision.id === option.value);
+      if (!revision) {
         continue;
       }
-      shown?.remove();
-      if (text) {
-        line.append(
-          " ",
-          element("span", { className: "badge version-outcome", "data-tone": tone }, text),
-        );
+      const labels = [`v${revision.revision}`];
+      if (revision.id === currentRevisionId) {
+        labels.push("Selected for service");
       }
-      const name = text ? `${label}, deployment ${text.toLowerCase()}` : label;
-      if (control.getAttribute("aria-label") !== name) {
-        control.setAttribute("aria-label", name);
+      if (
+        revision.id === activityRevisionId &&
+        latestDeploymentStatus &&
+        latestDeploymentStatus !== "succeeded"
+      ) {
+        labels.push(outcomeLabel(latestDeploymentStatus));
+      } else if (failedVersions.has(failedVersionKey(path, revision.id))) {
+        labels.push("Failed");
       }
+      setText(option, labels.join(" · "));
     }
   }
-  // The Versions list's draft entry and chooser option. When Agent-side saves would be refused
-  // they do not call the draft a new version (findings 2405, 2441); without Configuration update,
-  // the Configuration is read-only (finding 2421). The permission answer can land after the list
-  // is built, so its callback labels them again.
   function labelDraftEntry() {
-    const [title, detail, name, option] = agentReadOnly()
-      ? [
-          "Version draft",
-          configurationReadOnly() ? "Read-only Configuration" : "Configuration draft",
-          "View version draft",
-          "Version draft",
-        ]
-      : configurationReadOnly()
-        ? [
-            "New version",
-            "Read-only Configuration",
-            "View new version, read-only Configuration",
-            "New version · read-only Configuration",
-          ]
-        : [
-            "New version",
-            "Editable Configuration",
-            "View new version, editable Configuration",
-            "New version · editable Configuration",
-          ];
-    const entry = selector.querySelector(".revision-create");
-    entry?.setAttribute("aria-label", name);
-    entry?.replaceChildren(element("strong", {}, title), element("small", {}, detail));
     const choice = selector.querySelector("#revision-selector option[value=draft]");
     if (choice) {
-      choice.textContent = option;
+      setText(
+        choice,
+        configurationReadOnly()
+          ? "Draft · Read-only Configuration"
+          : "Draft · Editable Configuration",
+      );
     }
   }
   function renderVersions(
@@ -2045,111 +2006,17 @@ export async function renderAgentDetail(
     snapshot: Snapshot | null,
     historyError: unknown = null,
   ) {
-    const focusKey = [...railFocusKeys].find(
-      ([control]) => control === document.activeElement,
-    )?.[1];
-    const listedBefore = listedRevisionIds;
-    listedRevisionIds = new Set(revisions.map((revision) => revision.id));
-    // The rebuilt list keeps the reader's scroll position.
-    const listScroll = selector.querySelector(".version-list")?.scrollTop ?? 0;
-    railFocusKeys = new Map();
+    let focus: "older" | "chooser" | null = null;
+    if (selector.contains(document.activeElement)) {
+      focus = document.activeElement?.classList.contains("version-older") ? "older" : "chooser";
+    }
     revisionControls.clear();
-    versionControls.clear();
-    // Opening the draft is navigation. Saving a Configuration and deploying have their own permissions.
-    // The draft is an entry in the list, named as the chooser below names it, not a second
-    // "Create new version": the page header holds that action (finding 2403).
-    const newVersion = button("", () => change("draft", "configuration"), {
-      className: "revision-create",
-      ...(selected === "draft" ? { "aria-current": "page" } : {}),
-    });
-    trackRevisionControl(newVersion);
-    railFocusKeys.set(newVersion, "new");
-    // The versions, the viewed one included, are one Tab stop (finding 2101), so the list is a
-    // vertical toolbar: screen readers announce it as one control that the arrows move through.
-    const list = element("div", {
-      className: "version-list",
-      role: "toolbar",
-      "aria-orientation": "vertical",
-      "aria-label": "Versions",
-    });
-    const items = [];
-    for (const revision of revisions) {
-      const label = `View version v${revision.revision}${revision.id === currentRevisionId ? ", current version" : ""}`;
-      const control = button("", () => change(revision.id, "configuration"), {
-        className: "version-item",
-        "aria-label": label,
-        ...(selected === revision.id ? { "aria-current": "page" } : {}),
-      });
-      // The current version's badge follows its number on the same line, after a space.
-      const line = element(
-        "span",
-        {},
-        element("strong", {}, `v${revision.revision}`),
-        ...(revision.id === currentRevisionId
-          ? // Current means only that OCC selected this version; it can be stopped or failed
-            // (finding 1969), so the badge marks it without claiming health.
-            [" ", element("span", { className: "badge", "data-tone": "info" }, "Current")]
-          : []),
-      );
-      control.append(line, element("small", {}, displayDate(revision.createdAt)));
-      versionControls.set(revision.id, { control, line, label });
-      railFocusKeys.set(control, revision.id);
-      trackRevisionControl(control);
-      items.push(control);
-      list.append(control);
-    }
-    if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
-      if (snapshot && "revision" in snapshot) {
-        const control = button("", () => change(selected, "configuration"), {
-          className: "version-item",
-          "aria-label": `View version v${snapshot.revision}`,
-          "aria-current": "page",
-        });
-        control.append(
-          element("strong", {}, `v${snapshot.revision}`),
-          element("small", {}, "Viewed version"),
-        );
-        railFocusKeys.set(control, selected);
-        trackRevisionControl(control);
-        items.push(control);
-        list.append(control);
-      } else {
-        list.append(
-          element(
-            "div",
-            { className: "version-item version-unavailable" },
-            unavailableVersionLabel(),
-          ),
-        );
-      }
-    }
-    const focusVersion = rovingVersions(list, items);
-    // Versions list one page at a time, newest first; older pages load on request. The button
-    // follows the list rather than sitting in it: it loads versions, it is not one, so the arrows
-    // stay on versions and Tab reaches it next (finding 2115). While loading it keeps focus.
-    let older = null;
-    if (olderCursor && !historyError) {
-      older = button(
-        olderLoading ? "Loading older versions…" : "Show older versions",
-        () => void loadOlderRevisions(),
-        {
-          className: "version-item version-older",
-          ...(olderLoading ? { "aria-disabled": "true", "aria-busy": "true" } : {}),
-        },
-      );
-      trackRevisionControl(older);
-      railFocusKeys.set(older, "older");
-    }
     const chooser = element(
       "select",
       { id: "revision-selector" },
       element("option", { value: "draft" }),
       ...revisions.map((revision) =>
-        element(
-          "option",
-          { value: revision.id },
-          `v${revision.revision} · ${displayDate(revision.createdAt)}`,
-        ),
+        element("option", { value: revision.id }, `v${revision.revision}`),
       ),
     );
     if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
@@ -2164,72 +2031,77 @@ export async function renderAgentDetail(
       );
     }
     chooser.value = selected;
-    railFocusKeys.set(chooser, "chooser");
     chooser.addEventListener("change", () => {
-      const nextRevision = chooser.value;
       if (draftEditorBlocksNavigation() || sharingWrite) {
         chooser.value = selected;
         showLeaveBlock();
         return;
       }
-      change(nextRevision, "configuration");
+      change(chooser.value, "configuration");
     });
     trackRevisionControl(chooser);
+    const older =
+      olderCursor && !historyError
+        ? button(
+            olderLoading ? "Loading older versions…" : "Load older versions",
+            () => void loadOlderRevisions(),
+            {
+              className: "version-older",
+              ...(olderLoading ? { "aria-disabled": "true", "aria-busy": "true" } : {}),
+            },
+          )
+        : null;
+    if (older) {
+      trackRevisionControl(older);
+    }
+    const viewed = revisions.find((revision) => revision.id === selected);
+    const current = revisions.find((revision) => revision.id === currentRevisionId);
+    const currentLabel = current ? `v${current.revision}` : shortId(currentRevisionId ?? "");
+    let viewing = "Saved draft for a future deployment";
+    if (selected !== "draft") {
+      viewing = viewed ? displayDate(viewed.createdAt) : "";
+    }
     selector.replaceChildren(
-      ...[
-        element("h2", {}, "Versions"),
-        element("p", { className: "muted" }, "Choose a version to inspect its saved details."),
-        newVersion,
-        list,
+      element(
+        "div",
+        { className: "agent-version-toolbar" },
+        element(
+          "div",
+          { className: "agent-version-control" },
+          element("label", { for: chooser.id }, "Viewing version"),
+          chooser,
+        ),
         older,
-        olderError
-          ? statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)
-          : null,
-        revisions.length || selected !== "draft"
-          ? element("label", { for: "revision-selector" }, "Available versions")
-          : null,
-        revisions.length || selected !== "draft" ? chooser : null,
-        historyError
-          ? statusBlock("danger", null, `Version history unavailable. ${message(historyError)}`)
-          : null,
-        !historyError && !revisions.length
-          ? element(
+        element("span", { className: "agent-version-date" }, viewing),
+      ),
+      element(
+        "p",
+        { className: "agent-version-context" },
+        `${currentRevisionId ? `${currentLabel} remains selected for service.` : "No version is selected for service."} ${selected === "draft" ? "Deploy new version creates an immutable version from the saved draft." : "Browsing does not deploy or roll back."}`,
+      ),
+      ...(olderError
+        ? [statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)]
+        : []),
+      ...(historyError
+        ? [statusBlock("danger", null, `Version history unavailable. ${message(historyError)}`)]
+        : []),
+      ...(!historyError && !revisions.length
+        ? [
+            element(
               "p",
               { className: "muted" },
-              // A current version, or a deploy that set the Agent running, means versions
-              // exist and are hidden. A stopped Agent may have versions too; the record cannot say.
               currentRevisionId || currentRuntimeState === "running"
                 ? `No readable versions. This Agent has versions your access does not include. ${askForGrant("AgentRevision read on them")}`
                 : "No readable versions. Creating an Agent alone does not create a version; if this Agent was deployed before, your access does not include its versions.",
-            )
-          : null,
-      ].filter((child) => child !== null),
+            ),
+          ]
+        : []),
     );
     labelDraftEntry();
+    markVersionOutcomes();
     updateNavigationControls();
-    list.scrollTop = listScroll;
-    // A rebuild while the reader is in the rail (a poll that lands an outcome, or older versions
-    // loading) keeps focus on the same control. Once every older version is shown, focus goes to
-    // the first one that just loaded, below those listed before (a poll may add a newer one
-    // meanwhile; the viewed version shown on its own does not count), else the last version. A version no longer listed gives focus to the list's
-    // Tab stop.
-    if (focusKey !== undefined && !selector.contains(document.activeElement)) {
-      const usable = items.filter((item) => !item.disabled);
-      const wasListed = (item: VersionControl) => listedBefore.has(railFocusKeys.get(item) ?? "");
-      const lastShown = usable.map(wasListed).lastIndexOf(true);
-      const target =
-        [...railFocusKeys].find(([control, key]) => key === focusKey && !control.disabled)?.[0] ??
-        (focusKey === "older"
-          ? (usable.find((item, index) => index > lastShown && !wasListed(item)) ?? usable.at(-1))
-          : ["new", "chooser"].includes(focusKey)
-            ? undefined
-            : (usable.find((item) => item.tabIndex === 0) ?? usable[0]));
-      if (target instanceof HTMLButtonElement && items.includes(target)) {
-        focusVersion(target);
-        target.scrollIntoView({ block: "nearest" });
-      } else {
-        target?.focus({ preventScroll: true });
-      }
+    if (focus) {
+      (focus === "older" && older ? older : chooser).focus({ preventScroll: true });
     }
   }
 
@@ -2298,6 +2170,35 @@ export async function renderAgentDetail(
   function renderLatestDeployment() {
     markVersionOutcomes();
     const latest = visibleRevisions[0];
+    setHidden(deploymentEmpty, Boolean(latest) || latestRevisionResult?.status !== "fulfilled");
+    const needsAttention =
+      latest &&
+      (deploymentPending(latestDeploymentStatus) ||
+        latestOverviewUnavailable ||
+        latestDeploymentRecord?.warnings?.length ||
+        (latestDeploymentRecord?.cleanup && latestDeploymentRecord.cleanup.status !== "succeeded"));
+    setHidden(deploymentAttention, !needsAttention || selectedTab === "deployment");
+    let attentionText = "A deployment is queued or in progress.";
+    if (latestDeploymentRecord?.warnings?.length) {
+      attentionText = "The latest deployment has startup warnings.";
+    }
+    if (latestDeploymentRecord?.cleanup && latestDeploymentRecord.cleanup.status !== "succeeded") {
+      attentionText = "Deployment resource cleanup needs attention.";
+    }
+    if (latestOverviewUnavailable) {
+      attentionText = "Current version and version history could not be refreshed.";
+    }
+    const attentionKey = needsAttention ? `${latest.id}:${attentionText}` : "";
+    if (deploymentAttention.dataset.message !== attentionKey) {
+      deploymentAttention.dataset.message = attentionKey;
+    }
+    if (needsAttention && deploymentAttention.dataset.rendered !== attentionKey) {
+      deploymentAttention.dataset.rendered = attentionKey;
+      deploymentAttention.replaceChildren(
+        element("p", {}, attentionText),
+        versionLink("View deployment", latest.id, "deployment"),
+      );
+    }
     if (!latest) {
       showRecovery(null);
       delete latestDeploymentValue.dataset.outcome;
@@ -2448,10 +2349,10 @@ export async function renderAgentDetail(
             ? `The current version, ${shortId(currentRevisionId ?? "")}, is one you cannot read, so this page cannot tell whether the failed v${latest.revision} deployment affects it.`
             : null,
           failureBehindUnknown
-            ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether the failed v${latest.revision} deployment affects it.${olderCursor ? " Show older versions to check." : ""}`
+            ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether the failed v${latest.revision} deployment affects it.${olderCursor ? " Load older versions to check." : ""}`
             : null,
           successBehindUnknown
-            ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether it is newer than v${latest.revision}.${olderCursor ? " Show older versions to check." : ""}`
+            ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether it is newer than v${latest.revision}.${olderCursor ? " Load older versions to check." : ""}`
             : null,
           // The hint is about versions known to exist; a requested one may not (finding D750).
           (newerHidden || failureBehindHidden) && !currentIsAccepted ? readAccessHint : null,
@@ -2575,6 +2476,7 @@ export async function renderAgentDetail(
     const labels = new Map(revisions.map((revision) => [revision.id, `v${revision.revision}`]));
     stopPanel.setVersionLabel((id) => labels.get(id));
     renderCurrentVersion();
+    nativeAdmin.updateTarget();
     renderVersions(
       revisions,
       snapshot,
@@ -3811,6 +3713,23 @@ export async function renderAgentDetail(
     }
   }
 
+  function snapshotErrorPanel(cause: unknown, tabContext: DetailContext) {
+    return errorPanel(
+      cause,
+      tabContext,
+      () => {
+        context.deniedReads?.forget(snapshotPath);
+        context.navigate(target(selected, selectedTab), namespaceId, true);
+      },
+      {
+        version: selected !== "draft",
+        // The current version, every listed one and one this tab deployed are known to exist.
+        exists:
+          selected === currentRevisionId || listedRevisions.has(selected) || deployedHere(selected),
+      },
+    );
+  }
+
   async function renderTab({ activated = false } = {}) {
     // A Logs view left before it showed no longer holds the cards below it back.
     view.classList.remove("agent-logs-opening");
@@ -3837,7 +3756,11 @@ export async function renderAgentDetail(
     // page the heading stays in view instead.
     const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
-    versionEvidence.hidden = ["workspace", "logs", "access"].includes(selectedTab);
+    deploymentPanels.hidden = selectedTab !== "deployment";
+    content.hidden = selectedTab === "deployment";
+    pageDisclosure.hidden = selected !== "draft" && !["deployment", "access"].includes(selectedTab);
+    deploymentAttention.hidden =
+      selectedTab === "deployment" || !deploymentAttention.dataset.message;
     setLayoutShape();
     if (stripTop !== null) {
       const moved = tabs.getBoundingClientRect().top - stripTop;
@@ -3910,6 +3833,21 @@ export async function renderAgentDetail(
     // Retain the panel's height during reads so loading does not jump the scroll position.
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
     content.replaceChildren();
+    if (tab === "deployment") {
+      if (selected !== "draft") {
+        const data = await (details ??= loadDetails());
+        if (!tabContext.isCurrent() || deleting) {
+          return;
+        }
+        if (data && "error" in data) {
+          versionEvidence.replaceChildren(snapshotErrorPanel(data.error, tabContext));
+        }
+      }
+      state.reusable = false;
+      state.loading = false;
+      content.style.minHeight = "";
+      return;
+    }
     if (tab === "workspace") {
       const workspace = renderWorkspaceFiles(
         tabContext,
@@ -4098,24 +4036,7 @@ export async function renderAgentDetail(
     state.loading = false;
     if (data && "error" in data) {
       state.reusable = false;
-      content.append(
-        errorPanel(
-          data.error,
-          tabContext,
-          () => {
-            context.deniedReads?.forget(snapshotPath);
-            context.navigate(target(selected, selectedTab), namespaceId, true);
-          },
-          {
-            version: selected !== "draft",
-            // The current version, every listed one and one this tab deployed are known to exist.
-            exists:
-              selected === currentRevisionId ||
-              listedRevisions.has(selected) ||
-              deployedHere(selected),
-          },
-        ),
-      );
+      content.append(snapshotErrorPanel(data.error, tabContext));
     } else if (data) {
       renderConfigurationTab(tabContext, tab, data);
     }
@@ -4914,7 +4835,7 @@ export async function renderAgentDetail(
         // A caller who may not edit the Configuration opens the draft to read it; the entry does
         // not offer an editor it has none of (finding 2436).
         const entryLabel = () =>
-          configurationReadOnly() ? "Open version draft" : "Edit current Configuration";
+          configurationReadOnly() ? "Open draft" : "Edit current Configuration";
         const entry = button(entryLabel(), () => {
           const edit = !configurationReadOnly();
           // The draft this navigation opens takes it with its editor open. Saving
