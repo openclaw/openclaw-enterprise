@@ -2476,19 +2476,12 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
       [
         { id: "openai-compatible/gpt-5", name: "Primary model" },
         { id: "openai-compatible/small", name: "Small model", contextWindow: 16000 },
-        ...[
-          "image",
-          "image-fallback",
-          "pdf",
-          "utility",
-          "summary",
-          "gmail",
-          "hook",
-          "channel",
-        ].map((id) => ({
-          id: `openai-compatible/${id}`,
-          name: id,
-        })),
+        ...["image", "image-fallback", "pdf", "utility", "summary", "gmail", "hook", "channel"].map(
+          (id) => ({
+            id: `openai-compatible/${id}`,
+            name: id,
+          }),
+        ),
         { id: "openai-compatible/entry-heartbeat", name: "entry-heartbeat" },
         { id: "openai-compatible/reviewer", name: "reviewer" },
       ].toSorted(byModelId),
