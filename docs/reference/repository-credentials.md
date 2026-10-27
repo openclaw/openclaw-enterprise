@@ -1,9 +1,8 @@
 # Repository credentials
 
-Repository bindings select the Git HTTPS and GitHub API operations an Agent may use.
-OCC saves grants. The [Token Service](#token-service-lifecycle) prepares credentials.
-See the [operator guide](../guides/repository-credentials.md) and
-[native prepared Git](repository-credentials/prepared-native-git.md).
+A repository binding selects the Git or GitHub API operations an Agent may use.
+OCC saves the grant. The [Token Service](#token-service-lifecycle) prepares credentials.
+See the [operator guide](../guides/repository-credentials.md) for setup.
 
 Prepared native Git requires dedicated Codex (API key or ChatGPT service account)
 without a Sandbox Driver. Unsupported Sandbox
@@ -181,17 +180,17 @@ restrictions still apply; API paths and repository authority are unchanged.
 
 ## Token Service lifecycle
 
-The worker signs a short-lived JSON Web Token (JWT) with the GitHub App private
-key. GitHub exchanges the JWT for an installation token. The trusted sender uses
-it for repository operations. Both the signing key and token stay outside the Agent.
+For `acme/widgets`, the worker signs a short-lived JSON Web Token (JWT) with the GitHub App key.
+GitHub exchanges it for an installation token scoped to the repository and
+`metadata: read`. The worker verifies the reply and commits the token encrypted
+in PostgreSQL. The trusted sender uses that version for an authorized GET.
 
-For a repository grant the worker requests one repository ID and the approved
-permissions. The opt-in [installation profile](repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation)
-inherits all repositories and permissions available to the App installation. OCE adds
-no repository or ref restriction to that profile.
+[Native Git](repository-credentials/prepared-native-git.md#what-a-request-authorizes) needs a separate `git-write` grant for one writable ref.
+The opt-in [installation profile](repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation)
+inherits the installation's repositories and permissions.
 
-Renewal preserves scope and session deadlines. A cold request cannot mint a token.
-See the [preparation and retirement timeline](../flows/credential-source-refresh.md#6-oce-prepared-github-core).
+Only the worker can request a replacement token. Renewal cannot extend a Git session.
+[Follow key rotation and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
 `PREPARED_GITHUB_RECOVERY_REQUIRED` (`quarantined` or `blocked`) requires
 [recovery by the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
 

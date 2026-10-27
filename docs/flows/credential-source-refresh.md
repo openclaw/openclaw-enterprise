@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-26
-last_updated_session: authoring-run/31aa1352-e139-4622-8019-4b5c08958c21
+updated: 2026-10-27
+last_updated_session: authoring-run/49b987ad-6c12-4e7c-8848-4d14b179981a
 ---
 
 # Credential source refresh Flow
@@ -18,7 +18,7 @@ the refresh grant. The Harness receives a placeholder and account metadata. An
 operator connection can retrieve an access token for authorized discovery.
 These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
-For [GitHub access](#6-oce-prepared-github-core), the OCE worker owns issuance.
+For [GitHub access](#6-issue-and-renew-a-github-installation-token), the OCE worker owns issuance.
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
 can use committed tokens but cannot trigger issuance.
 
@@ -229,58 +229,73 @@ RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses a
 out-of-band provider drift; lookup and mutation are not atomic. A failure leaves
 the record `deleting` for retry.
 
-### 6. OCE-prepared GitHub core
+<a id="6.-oce-prepared-github-core"></a>
+<a id="6-oce-prepared-github-core"></a>
+
+### 6. Issue and renew a GitHub installation token
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
 
-The worker records an `issuing` attempt, signs a short-lived JSON Web Token
-(JWT) with the admitted App key and rechecks ownership before sending it to
-`POST /app/installations/{installation_id}/access_tokens`. The Installation
-selects the HTTPS issuer and trust roots. PostgreSQL stores token bytes encrypted
-under a dedicated 32-byte custody key that must survive worker restarts.
+The worker records an `issuing` attempt, signs a short-lived JSON Web Token (JWT) with the App key and rechecks ownership
+before `POST /app/installations/{installation_id}/access_tokens`. The JWT expires five minutes after signing. The Installation selects the HTTPS issuer and trust roots.
 
-For one repository, the worker sends its numeric ID and requested permissions
-and checks the returned ID, name and permissions. An explicitly approved
-`github-installation` request sends `{}` to use the installation's selection and
-permissions. The worker checks expiry and commits the new version before use.
+```mermaid
+graph TD
+  W["<b>Worker</b><br/>Holds App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
+  G -->|Installation token| W
+  W -->|Verify and commit| P[("<b>PostgreSQL</b><br/>Encrypted token")]
+  P -->|Authorized use| S["<b>Trusted sender</b><br/>Uses token"]
+  classDef owner fill:#e7f1ec,stroke:#789884,color:#263e33
+  classDef issuer fill:#f0eaf6,stroke:#9584ab,color:#392c42
+  classDef stored fill:#e8eff6,stroke:#8498a9,color:#283746
+  class W,S owner
+  class G issuer
+  class P stored
+  linkStyle default stroke:#89919a
+```
 
-Git through `repositoryBindings` has four limits. Prepared metadata reads share
-the two token limits. To withdraw a metadata read, withdraw its credential-source binding.
+Issuance runs in the background. For each request, the trusted reader selects
+a usable committed version. Native Git reads through the worker's private socket.
+A cold or expired read returns `not_ready`. PostgreSQL custody requires a persistent
+32-byte encryption key.
 
-| Limit                                 | What happens when it ends                                                                                                                                                                                                         |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Repository approval                   | Expiry or removal stops new authorizations. [Standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent) permits another finite session for the same running Agent and scope until removal. |
-| Execution's repository session        | The session stops authorizing requests. Renewing the token cannot extend it.                                                                                                                                                      |
-| Local safe-use cutoff (`usableUntil`) | The reader stops selecting the token 60 seconds before GitHub expiry to allow for clock skew. Requests can require more remaining time.                                                                                           |
-| GitHub token expiry (`expires_at`)    | The token expires at GitHub. The worker separately tracks local denial and confirmed revocation.                                                                                                                                  |
+For `acme/widgets`, the worker requests repository ID `12345` and
+`metadata: read`. It checks the returned ID, name, permissions and expiry. The approved `github-installation` profile sends `{}` and
+inherits the installation's scope.
 
-**Cold use and renewal.** The Resolver reads only committed material matching
-the current admission. Cold or expired reads return `not_ready` without requesting
-issuance. An eligible token remains readable during renewal. Committing its
-replacement retires it. Before authorizing a protected send, OCC rechecks
-authority and material. [Protected request flow](credential-source-egress.md)
+**Renewal.** An eligible token stays available while the worker prepares its
+replacement. Committing the new version retires the old one. OCC rechecks the
+grant and material version before authorizing a [protected send](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
 
-**Key rotation and withdrawal.** When the worker observes a changed signing-key
-version, it advances the owner epoch and retires the old material before it can
-publish a token signed with the new key. Withdrawal stops new authorizations.
-An already authorized send can finish. For an Agent-bound metadata source,
-Agent deletion also fences use and renewal immediately. The next worker pass
-disables its token family and retires the current token. Agent deletion can finish
-before GitHub revocation. Source deletion waits up to 25 seconds for an in-flight
-revocation and returns `409` if custody is still unsettled.
+| Limit                                | Effect                                                                                                                                                                                                              |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository approval (Git)            | Removal or expiry stops new authorizations. [Standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent) permits another finite session for the same running Agent and scope. |
+| Execution's repository session (Git) | The session ends at its deadline even if the token is fresh.                                                                                                                                                        |
+| Local cutoff (`usableUntil`)         | Readers stop selecting the token 60 seconds before GitHub expiry. A request may require more remaining time.                                                                                                        |
+| GitHub expiry (`expires_at`)         | GitHub sets a one-hour [installation token lifetime](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).               |
 
-**Uncertain outcomes.** If GitHub's answer or the local commit receipt is lost,
-the original attempt blocks replay. The [response parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
-retains a uniquely identified token for cleanup even if its scope is ambiguous.
-Duplicate root token fields leave no unique candidate. The worker records possible
-revocation before calling `DELETE /installation/token`. HTTP 204 confirms revocation. A lost answer leaves
-revocation unconfirmed, without automatic replay. The store can settle an old
-attempt once no token from it can still be live, allowing for clock skew.
-Expiry does not confirm revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+Prepared metadata reads share the two token limits. Withdrawing their
+credential-source binding stops new authorizations. A send already authorized
+can finish.
+
+**Key rotation and withdrawal.** When the signing-key version changes, the worker
+advances the owner epoch and retires old material before publishing a replacement.
+Deleting the bound Agent stops new use and renewal immediately. The next worker pass
+disables the token family and retires its token. Agent deletion can finish before
+GitHub revocation. Source deletion waits up to 25 seconds for in-flight revocation,
+then returns `409` if custody remains unsettled.
+
+**Uncertain outcomes.** A lost issuance response or commit receipt blocks replay.
+The [response parser](repository-credentials.md#4-reserve-acquire-and-dispatch) retains
+an identifiable token for cleanup even with ambiguous scope. Duplicate root token
+fields leave no unique candidate. The worker records possible revocation before
+`DELETE /installation/token`. Only HTTP 204 confirms revocation. A lost response
+stays unconfirmed without automatic replay. After all possible tokens expire,
+allowing for clock skew, the store can settle the attempt. [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key)
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
 clears token buffers after publication, including on failure. Callers own their
-detached warm reads. Clearing a local buffer cannot revoke a provider token.
+detached warm reads. Clearing a buffer cannot revoke a token.
 
 ## Debugging and Verification
 
@@ -318,6 +333,8 @@ detached warm reads. Clearing a local buffer cannot revoke a provider token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 10:53: Illustrate installation token issuance and distinguish renewal from permission to send. (authoring-run/49b987ad-6c12-4e7c-8848-4d14b179981a - 0418ef3a2c)
 
 - 2026-10-26 22:20: Distinguish Git session limits from metadata access. (authoring-run/31aa1352-e139-4622-8019-4b5c08958c21 - c1fee5d433)
 
