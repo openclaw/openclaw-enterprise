@@ -238,10 +238,9 @@ unresolved cleanup survives that window. Restart loses standalone correlations.
 No correlation recovers a bearer.
 
 A bearer needs a live process and upstream authorization. Replacement tokens must cover
-the remaining exchange budget and safety margin. After verified TLS, an owned exchange
-retains its credential through replacement and invokes any configured standing callback before
-first write. Prepared Git
-checks its original [one-use permit](repository-credentials/prepared-native-git.md#what-a-request-authorizes), cancellation and send deadline.
+the remaining exchange budget and safety margin. An owned exchange keeps its credential
+through replacement and runs any configured standing callback after verified TLS, before
+first write. Prepared Git checks its original [one-use permit](repository-credentials/prepared-native-git.md#what-a-request-authorizes), cancellation and send deadline.
 
 Authentication and cleanup expire separately in elapsed monotonic time from capture;
 delayed acquisition settlement extends neither. The GitHub adapter allows 60 seconds
@@ -257,9 +256,9 @@ completed auxiliary finalization; historical revoked/expired counters may remain
 nonzero. Uncertain issuance blocks automatic minting; uncertain pushes or API
 mutations are never replayed automatically.
 
-If session construction fails, renewal access closes immediately, but retained
+If session construction fails, renewal access closes immediately; retained
 cleanup material counts against session capacity and shutdown's
-`pendingAuxiliary` until admitted callbacks finish and it is disposed.
+`pendingAuxiliary` until admitted callbacks finish and disposal completes.
 
 ## GitHub response data
 
@@ -315,8 +314,7 @@ so they continue after expiry or with stale pins. Generation
 pinning does not promise a command-wide snapshot across arbitrary subprocesses.
 
 Native settings override these defaults; other helpers can retain credentials.
-Our helper ignores `store` and `erase`. There is no command-wide preflight or
-automatic retry of an uncertain mutation.
+Our helper ignores `store` and `erase`. There is no command-wide preflight.
 
 The API launcher requires GitHub CLI **2.103.2**, `GH_HOST=github.com`, a gateway
 hostname with verified TLS, and HTTPS port 443. Its private `hosts.yml` uses the
