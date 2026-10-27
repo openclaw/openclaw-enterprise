@@ -106,16 +106,30 @@ Resolve neither contacts the provider nor signs, issues, refreshes or schedules 
 | `prepare`, `removeRefresh` | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it. |
 | `CredentialIssuer.issue`, `inspect`, `retire` | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
 
-For OCE-managed dynamic credentials, the **Token Service** owns this lifecycle and the warm
-reader. Start with the worker's existing background preparation, encrypted custody and fenced
-issuer attempts. The GitHub adapter issues, validates and retires an installation token. A trusted
-sender can receive only eligible, committed material for its admitted grant and isolation. The
-authorizer can check that the exact installed attempt and value version are still current without
-reading the token. A cold or expired lookup issues nothing. Distinguish confirmed retirement,
+An Installation selects its Token Service through `drivers.credential_refresh`.
+For an existing GitHub-only Installation that omits this field, the loader resolves the
+prepared GitHub configuration to the native implementation. The API and worker use that
+same selection. An explicit selection must support the configured credential types.
+An Installation using only static Secrets can omit both settings.
+
+For GitHub, use the worker's existing preparation, encrypted custody and fenced issuer
+attempts. Native repository Git signs with its worker-mounted App key. The metadata issuer
+reads its authorized Namespace Secret. Each keeps its existing grant, key and delivery
+scope. A cold or expired send triggers no issuer call. Distinguish confirmed retirement,
 expiry without confirmed revocation, and an operation whose outcome is still unknown.
 
-These interfaces can run in one process. [Protected Git](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval)
-uses this owner. OpenShell can remain the lifecycle owner for a different credential family.
+For OpenShell OAuth, the selected implementation enrolls the grant with its OpenShell
+Backend and can delegate routine renewal to it. An Installation using both GitHub and
+OAuth dispatches each credential type to its configured issuer through the same Token
+Service. Only one issuer can replace a rotating grant. The protected sender can consume
+only eligible, committed material for its admitted grant and isolation.
+
+For authenticated catalog discovery, OCC checks the caller's rights on the exact source
+before Token Service can retrieve an access token and account metadata. OCC rechecks
+authorization before using that credential inside the server-side discovery callback.
+OpenShell can renew a token to meet the discovery operation's minimum validity. Runtime
+sends use the warm-read contract above. [Protected Git](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval)
+uses a prepared token.
 
 ## Control operation recovery
 
