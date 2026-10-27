@@ -391,6 +391,32 @@ export async function waitForGatewayReady(containerName, readinessAttempts = 60)
   });
 }
 
+// The source of a request (see readinessProbe) that answers 200 while an OpenClaw
+// Gateway process runs in the container, else 503. Both launchers spawn OpenClaw
+// only after their pre-launch steps (state migration decision, approver and tool
+// policy checks), so a case that asserts only those steps can stop there instead
+// of paying for the full start: about 21 of a start's 24 CPU-seconds to /readyz
+// are OpenClaw's own (4 CPUs, 2026-10-27). Each case still starts OpenClaw.
+export const openClawGatewaySpawnedRequest = `async () => {
+  const fs = require("node:fs");
+  const marker = ["/app/openclaw.mjs", "gateway", ""].join(String.fromCharCode(0));
+  for (const pid of fs.readdirSync("/proc")) {
+    if (!/^[0-9]+$/.test(pid)) continue;
+    try {
+      if (fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").includes(marker)) return 200;
+    } catch {}
+  }
+  return 503;
+}`;
+
+export async function waitForGatewaySpawn(containerName) {
+  return waitForContainerReady(containerName, {
+    label: "OpenClaw Gateway spawn",
+    request: openClawGatewaySpawnedRequest,
+    timeoutMs: cpuScaledImageTimeoutMs(60_000),
+  });
+}
+
 // Waits until `request` (see readinessProbe) answers 2xx inside the running
 // container, failing early when the container stops.
 export async function waitForContainerReady(containerName, { label, request, timeoutMs }) {
@@ -504,6 +530,8 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
     tmpfs = ["/home/node:size=1024m,uid=1000,gid=1000,mode=700"],
     volumes = [],
     network = "none",
+    // "ready" waits for /readyz; "spawned" only until OpenClaw starts (waitForGatewaySpawn).
+    until = "ready",
     waitUntilReady = true,
     withAppServer = true,
   } = options;
@@ -559,7 +587,11 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
   }
 
   try {
-    await waitForGatewayReady(containerName, readinessAttempts);
+    if (until === "spawned") {
+      await waitForGatewaySpawn(containerName);
+    } else {
+      await waitForGatewayReady(containerName, readinessAttempts);
+    }
     const pluginList = collectPlugins ? await listGatewayPlugins(containerName) : undefined;
     const logs = await runDocker(["logs", containerName]);
     return {
