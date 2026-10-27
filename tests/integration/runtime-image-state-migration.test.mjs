@@ -226,8 +226,9 @@ async function assertReleasedGatewayMigratesOnce(startGateway) {
 // f8386bc7 runtime image (2026.9.9, shared state schema 20) left it: native setup
 // and one node start, which saved its device identity. Recorded for finding 2685,
 // where every such Harness failed workspace setup after an upgrade until Doctor
-// moved its client credentials. The archive holds the shared state database with
-// that identity deleted, then vacuumed; each run saves a fresh one in its place.
+// moved its client credentials. The archive holds the initialized workspace (Git
+// sample hooks left out) and the shared state database with that identity
+// deleted, then vacuumed; each run saves a fresh one in its place.
 const olderWorkspaceNodeState = fileURLToPath(
   new URL(
     "../fixtures/runtime-state/workspace-node-state-openclaw-f8386bc7.tar.gz",
@@ -303,9 +304,13 @@ function schema(path) {
         "SELECT value_json FROM config_machine_state WHERE state_key = 'state.schema.contentVersion'",
       ).get()?.value_json ?? "0"));
     } catch {}
-    const row = database.prepare("SELECT device_id FROM device_identities WHERE identity_key = 'primary'");
+    // The current schema keeps client credentials elsewhere; only an older copy has this table.
     let backedUpDeviceId;
-    try { backedUpDeviceId = row.get()?.device_id; } catch {}
+    try {
+      backedUpDeviceId = database.prepare(
+        "SELECT device_id FROM device_identities WHERE identity_key = 'primary'",
+      ).get()?.device_id;
+    } catch {}
     return { version: Math.max(header, marker), deviceId: backedUpDeviceId };
   } finally {
     database.close();
@@ -320,7 +325,7 @@ process.stdout.write(JSON.stringify({
   deviceId,
   identityStatus: identity.status,
   migrated: schema(shared).version,
-  backups: backups.map((name) => schema(state + "/state/" + name)),
+  backups: backups.map((name) => ({ name, ...schema(state + "/state/" + name) })),
   current,
 }));
 `;
@@ -368,8 +373,8 @@ describe("runtime image released state migration", { concurrency: 3 }, () => {
     "runtime image migrates an older workspace node's credentials before the dedicated Harness starts",
     imageTestOptions,
     async (t) => {
-      // The Agent's workspace claim subpath, over the Harness's private home.
-      const volume = await gatewayStateVolume(t, "/home/node/.openclaw-node", {
+      // Stands in for the Agent's workspace claim: its workspace and node state subpaths.
+      const volume = await gatewayStateVolume(t, "/home/node", {
         seed: "tar -xzf /workspace-node-state.tar.gz -C /home/node",
         seedVolumes: [`${olderWorkspaceNodeState}:/workspace-node-state.tar.gz:ro`],
       });
@@ -390,10 +395,8 @@ describe("runtime image released state migration", { concurrency: 3 }, () => {
           "none",
           "--tmpfs",
           "/tmp:size=64m,mode=1777",
-          "--tmpfs",
-          "/home/node:size=256m,uid=1000,gid=1000",
           "--volume",
-          `${volume}:/home/node/.openclaw-node`,
+          `${volume}:/home/node`,
           "--entrypoint",
           "/usr/bin/tini",
           image,
@@ -430,10 +433,17 @@ describe("runtime image released state migration", { concurrency: 3 }, () => {
         "Doctor migrated to another schema: update OPENCLAW_STATE_DATABASE_SCHEMA_VERSION with the OpenClaw pin.",
       );
       // The node keeps the identity its Gateway paired, and Doctor kept the older
-      // database, identity included, beside the migrated one.
+      // database, identity included, beside the migrated one. Doctor also keeps a
+      // table-scoped snapshot for the credential move (*.scoped.bak).
       assert.equal(outcome.identityStatus, 0);
       assert.equal(outcome.deviceId, outcome.savedDeviceId);
-      assert.deepEqual(outcome.backups, [{ version: 20, deviceId: outcome.savedDeviceId }]);
+      assert.deepEqual(
+        outcome.backups
+          .filter(({ name }) => !name.endsWith(".scoped.bak"))
+          .map(({ version, deviceId }) => ({ version, deviceId })),
+        [{ version: 20, deviceId: outcome.savedDeviceId }],
+        JSON.stringify(outcome.backups),
+      );
       // Current state starts without Doctor.
       assert.equal(current.status, 0, current.output);
       assert.doesNotMatch(current.output, /openclaw doctor --fix|"phase":"state-migration"/);
