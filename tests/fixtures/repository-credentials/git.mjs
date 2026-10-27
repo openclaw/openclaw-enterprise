@@ -86,7 +86,14 @@ async function copyRepositoryTemplate(repository, bare, seed) {
 // supplies CGI framing and a controlled provider authentication check.
 export async function startGitSmartHttpFixture(
   t,
-  { authorize = () => true, repository = "fixture/repository", tls, observeRequest } = {},
+  {
+    authorize = /** @type {(authorization: string | undefined, boundary: "git") => boolean} */ (
+      () => true
+    ),
+    repository = "fixture/repository",
+    tls,
+    observeRequest,
+  } = {},
 ) {
   tls ??= await createTlsMaterial(t);
   const directory = await temporaryDirectory(t, "repository-credentials-git-");

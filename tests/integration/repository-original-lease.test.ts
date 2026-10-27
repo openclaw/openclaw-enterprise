@@ -39,7 +39,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-test("an approved exchange keeps its original lease through replacement and withdrawal fences the first write", async (t) => {
+test("an owned exchange keeps its original lease through replacement and an injected standing callback fences the first write", async (t) => {
   const resources = createTestResourceScope(t);
   const clock = createControlledClock();
   const config = await createLoopbackServiceConfiguration(resources, { credentialMarginMs: 100 });
