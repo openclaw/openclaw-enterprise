@@ -1,63 +1,66 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-27"
-last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
+last_updated_session: authoring-run/8b9a8483-089c-4430-8fde-0370c4a4bb2e
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-An Agent process requests repository metadata; its authenticated supervisor captures
-the request and response connection. OpenClaw Control Plane (OCC) decides credential
-access, request sending and response release. The bundled legacy supervisor
-cannot enforce this exchange. See the [release cutoff](../reference/credential-sources/protected-inference.md)
+A dedicated Agent process asks GitHub for a repository's identity. Its authenticated supervisor
+captures the request and holds the reply. OpenClaw Control Plane (OCC) decides credential access,
+request sending and response release. The bundled legacy supervisor cannot enforce this exchange. See the
+[release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [Credential Proxy threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
 
-- Trigger: the supervisor opens `HttpInstallationExchange.Exchange` over authenticated TLS for one request
+- A [source binding](../reference/credential-sources.md#bind-a-source-to-an-agent) and admitted
+  revision plan establish the route at deployment. Installation requires a current verified
+  loaded-enforcement receipt; the Agent's service principal needs `credential_source:operate`.
+- Trigger: the supervisor opens one authenticated TLS stream, `HttpInstallationExchange.Exchange`,
+  for credential resolution, send authorization and response release
   (`apps/controller/src/drivers/egress-proxy/openshell-authority.ts:createOpenShellEgressAuthority`).
-- Assumptions: an admitted revision plan, a current verified loaded-enforcement receipt,
-  and source `operate` permission for the running Agent's service principal.
 
 ## Flow
 
-A dedicated Agent's prepared `github-app-metadata` source targets
-repository ID `12345`, name `acme/widgets`. Its process requests
-`GET /repos/acme/widgets` at the admitted origin with an empty body.
+### Follow the metadata GET
 
-1. **Classify the request.** The GitHub adapter checks method, origin, path, headers
-   and body against the route; a second repository or `POST /repos/acme/widgets/pulls`
-   fails before credential access.
-2. **Authorize access.** OCC checks installation, execution, binding, withdrawal and
-   the Agent's current `credential_source:operate`. The resolver selects a committed,
-   usable token; only the trusted sender receives its injection header.
-3. **Authorize send.** OCC rechecks authority and material on the same exchange.
-   Withdrawal after resolution gives no permit; an acknowledged permit authorizes
-   this exact request within its deadline.
-4. **Release repository identity.** The sender holds GitHub's complete response.
-   The adapter requires `200` JSON up to 64 KiB, the admitted numeric ID
-   and matching repository name (ASCII case may differ). It returns
-   `{"id":12345,"full_name":"acme/widgets"}` in admitted spelling with
-   `Content-Type: application/json` and `Cache-Control: no-store`. Mismatches
-   withhold responses; other upstream fields and headers stay outside the workload.
+Suppose the revision admits `github-app-metadata` for repository ID `12345`,
+`acme/widgets`, at `https://api.github.com`.
 
-Credential-free metadata follows these rules, records `no_material_required`
-and adds no credential header.
-[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/e573b7de03bafa2e84ea072d8c10cef7320575d4/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+1. **Match the request.** The supervisor captures the process's bodyless
+   `GET /repos/acme/widgets` and binds the reply to that exchange. The GitHub adapter checks
+   method, origin, path, headers and body against the route. Another repository or
+   `POST /repos/acme/widgets/pulls` fails before credential access.
+2. **Resolve the token.** OCC checks installation, execution, binding, withdrawal and the
+   Agent's current `credential_source:operate`. The resolver selects the worker's committed,
+   usable installation token. Only the trusted supervisor receives its
+   `Authorization: Bearer …` header.
+3. **Permit one send.** On the same stream, OCC rechecks authority and the token version.
+   Grant withdrawal after resolution gives no permit. An acknowledged permit lets the supervisor
+   start this exact request by its deadline; it does not confirm receipt by GitHub.
+4. **Release the identity.** The supervisor submits GitHub's complete reply. The adapter requires
+   `200` JSON of at most 64 KiB with the admitted numeric ID and name (ASCII letter case may differ).
+   If GitHub returns `"full_name":"Acme/Widgets"` and a description, the caller can receive only
+   `{"id":12345,"full_name":"acme/widgets"}` in admitted spelling, with `Content-Type: application/json`
+   and `Cache-Control: no-store`. If GitHub returns ID `67890`, the supervisor withholds its response
+   after the request reached GitHub. Other upstream fields and headers stay outside the workload.
+
+The credential-free metadata profile applies the same filters, records `no_material_required`
+and sends no credential header.
+[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 
 ```mermaid
 graph TD
-  A["Capture request and recipient"] --> B{"Exact route and current access?"}
-  B -- "denied" --> X["Refuse send"]
-  B -- "allowed" --> C["Resolve material or record none required"]
-  C --> D{"Commit fresh send authorization"}
-  D -- "withdrawn, duplicate or uncertain" --> X
-  D -- "acknowledged" --> E["Supervisor sends before deadline"]
-  E --> F{"Protect response on the same exchange"}
-  F -- "approved and live" --> G["Release approved bytes; delivery unconfirmed"]
-  F -- "unsafe, late or failed" --> H["Withhold response; provider effects may exist"]
+  A["<b>Resolve token</b><br/>Match route and access"] -->|Denied| X["Refuse before send"]
+  A -->|Header ready| B["<b>Authorize send</b><br/>Recheck grant and version"]
+  B -->|Denied| X
+  B -->|Permit| C["<b>Send GET</b><br/>Hold GitHub's reply"]
+  C --> D{"Valid identity<br/>and live caller?"}
+  D -->|Yes| G["Release ID and name"]
+  D -->|No| H["Withhold reply"]
 ```
 
 Installed enforcement requires transport, provider and workload observation.
@@ -350,6 +353,10 @@ None.
 
 ## Changelog
 
+- 2026-10-27 20:44: Reconcile the repository metadata request flow. (authoring-run/8b9a8483-089c-4430-8fde-0370c4a4bb2e - 46de15b641c4389d7536468cb645ba64553b5f64)
+
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
+
+- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

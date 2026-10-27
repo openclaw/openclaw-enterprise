@@ -2809,6 +2809,9 @@ function runtimeProviderSetupUpdate(
 
 // These are the two workspace-node payloads actually produced before private state
 // initialization (b64bb6b8). Never accept a different program based on its name or owner.
+// TODO: remove the private-state upgrade shim and matchesWorkspaceNodeStateUpgrade when the
+// corresponding workspace-node programs can no longer reconstruct either pinned payload. Preserve
+// these predecessor pins while priorCodexPayloads uses them for unversioned-launch adoption.
 const beforePrivateNodeState = {
   ordinary: "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
   protected: "58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",

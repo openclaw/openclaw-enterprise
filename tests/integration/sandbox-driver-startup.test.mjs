@@ -1978,58 +1978,81 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   );
   assert.deepEqual(calls, [["getSandbox", name, calls[0][2]]]);
 
+  // Each admission can adopt only its independently pinned pre-private-state payload.
+  // Remove this case with the private-state upgrade shim when neither payload can be reconstructed.
+  const previousParts = (program) =>
+    nodeProgramArguments(
+      program.replace(
+        /mkdirSync\(state, \{ recursive: true, mode: 0o700 \}\);[\s\S]*?chmodSync\(state, 0o700\);/,
+        "mkdirSync(state, { recursive: true });",
+      ),
+    ).slice(1);
+  const payloadHash = (parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+  const admissions = {
+    ordinary: {
+      program: AGENT_WITH_NODE_ENTRYPOINT,
+      approval: undefined,
+      hash: "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
+    },
+    protected: {
+      program: LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+      approval: "protected-codex-no-connection-retry:v1",
+      hash: "58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",
+    },
+  };
   const saved = sandboxes.get(name);
   const prefix = saved.spec.command.slice(0, RUNTIME_WRAPPER_COMMAND.length + 1);
+  const storeProgram = (parts) => {
+    const stored = { ...saved, spec: { ...saved.spec, command: [...prefix, ...parts] } };
+    sandboxes.set(name, stored);
+    return stored;
+  };
   const requestProgram = (program, admission) =>
     driver.provisionHarness({
       ...context,
       revision: { ...revision, compute: { driverId: "kubernetes", admission } },
       requirements: { ...codexRequirements(revision), command: harnessRuntimeCommand(program) },
     });
-  const protectedApproval = "protected-codex-no-connection-retry:v1";
-  for (const [program, admission, previousHash] of [
-    [
-      AGENT_WITH_NODE_ENTRYPOINT,
-      undefined,
-      "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
-    ],
-    [
-      LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
-      protectedApproval,
-      "58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",
-    ],
+  calls.length = 0;
+  for (const [own, other] of [
+    [admissions.ordinary, admissions.protected],
+    [admissions.protected, admissions.ordinary],
   ]) {
-    // Each complete stored payload is pinned to its independent pre-upgrade producer.
-    const previous = program.replace(
-      /mkdirSync\(state, \{ recursive: true, mode: 0o700 \}\);[\s\S]*?chmodSync\(state, 0o700\);/,
-      "mkdirSync(state, { recursive: true });",
-    );
-    const previousParts = nodeProgramArguments(previous).slice(1);
-    assert.equal(
-      createHash("sha256").update(JSON.stringify(previousParts)).digest("hex"),
-      previousHash,
-    );
-    const stored = { ...saved, spec: { ...saved.spec, command: [...prefix, ...previousParts] } };
-    sandboxes.set(name, stored);
-    calls.length = 0;
-    assert.deepEqual(await requestProgram(program, admission), first);
+    const parts = previousParts(own.program);
+    assert.equal(payloadHash(parts), own.hash);
+    const stored = storeProgram(parts);
+    assert.deepEqual(await requestProgram(own.program, own.approval), first);
     await assert.rejects(
-      requestProgram(program + "\n0;", admission),
+      requestProgram(own.program + "\n0;", own.approval),
       /exact AgentRevision ownership and content/,
     );
     await assert.rejects(
-      requestProgram(program, admission ? undefined : protectedApproval),
+      requestProgram(own.program, other.approval),
       /exact AgentRevision ownership and content/,
     );
-    if (admission === protectedApproval) {
+    // A pinned payload cannot cross admissions, even when the requested program and approval agree.
+    await assert.rejects(
+      requestProgram(other.program, other.approval),
+      /exact AgentRevision ownership and content/,
+    );
+    if (own === admissions.protected) {
       await assert.rejects(
-        requestProgram(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT, admission),
+        requestProgram(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT, own.approval),
         /exact AgentRevision ownership and content/,
       );
     }
     assert.equal(sandboxes.get(name), stored);
-    assert.ok(calls.every(([method]) => method === "getSandbox" || method === "getService"));
   }
+  // A stored payload matching neither pinned hash cannot be adopted.
+  const unknown = previousParts(AGENT_WITH_NODE_ENTRYPOINT + "\n0;");
+  assert.ok(![admissions.ordinary.hash, admissions.protected.hash].includes(payloadHash(unknown)));
+  const unknownStored = storeProgram(unknown);
+  await assert.rejects(
+    requestProgram(admissions.ordinary.program, admissions.ordinary.approval),
+    /exact AgentRevision ownership and content/,
+  );
+  assert.equal(sandboxes.get(name), unknownStored);
+  assert.ok(calls.every(([method]) => method === "getSandbox" || method === "getService"));
   sandboxes.set(name, saved);
 
   // ALREADY_EXISTS (a create that outlived its 24 h replay record) adopts this revision's Sandbox.
