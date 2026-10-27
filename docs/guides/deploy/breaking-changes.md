@@ -22,6 +22,23 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-27: chart listener ports start at 1024
+
+**What breaks.** Helm rendering refuses `api.port`, `metrics.port`,
+`slackProxy.port` or `egressAuthority.port` below `1024`. These Pods run as a
+non-root user without capabilities, so such a port fails to bind where the
+container runtime keeps ports below 1024 privileged. It also refuses number or
+boolean `egressAuthority.clients` label values, which Kubernetes refused when
+Helm applied the NetworkPolicy.
+
+**Who is affected.** Helm installs that set one of these ports below `1024`.
+
+**How to tell.** Helm fails before applying anything, naming the setting and
+the range `1024 to 65535`.
+
+**Steps.** Choose a port from `1024` through `65535` and update callers of that
+Service port. Quote label values.
+
 ## 2026-10-27: OpenClaw retired its memory flush and cyber failover models
 
 **What breaks.** The OpenClaw update of 2026-10-27 removed
