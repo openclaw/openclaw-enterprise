@@ -3173,6 +3173,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 additionalProperties: false,
                 properties: {
                   ...WORKLOAD_PEER_SCHEMA.properties,
+                  mode: { const: "fixed" },
                   address: { type: "string", minLength: 1 },
                   port: { type: "integer", minimum: 1, maximum: 65535 },
                 },
