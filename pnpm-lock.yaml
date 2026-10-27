@@ -158,6 +158,9 @@ importers:
       '@openclaw-enterprise/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@openclaw-enterprise/iam':
+        specifier: workspace:*
+        version: link:../iam
       '@openclaw-enterprise/utils':
         specifier: workspace:*
         version: link:../utils

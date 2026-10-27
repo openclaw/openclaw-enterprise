@@ -28,7 +28,6 @@ import type {
   EgressSelectionEvidence,
   ProtectedEgressSource,
   PreparedTokenIssuer,
-  PreparedTokenSource,
   StaticEgressSource,
   VersionedSecretValue,
 } from "@openclaw-enterprise/contracts";
@@ -66,14 +65,14 @@ export interface EgressAuthorityPorts {
     lifetime: CredentialReadLifetime,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
   readonly readPrepared?: PreparedTokenIssuer["readWarm"];
-  /** The exact current selection and the possible-send receipt share this transaction. */
-  authorizePrepared?(
+  /** Check the exact selection, then mint once immediately before the possible-send receipt. */
+  authorizeSend(
     use: CapturedEgressUse,
-    source: PreparedTokenSource,
+    source: ProtectedEgressSource,
     attempt: SendAttempt,
-    authorization: AuthorizedSend,
+    mintAuthorization: () => AuthorizedSend | EgressRefusal,
   ): Promise<StoredSendReceipt | EgressRefusal>;
-  readonly receipts: Pick<EgressSendReceipts, "begin" | "authorize" | "record" | "observe">;
+  readonly receipts: Pick<EgressSendReceipts, "begin" | "record" | "observe">;
 }
 
 /**
@@ -908,76 +907,74 @@ export class CredentialProxy implements CredentialProxyExchange {
       return deny({ kind: "cancelled" });
     }
     // Fresh transport and policy checks follow possibly slow durable persistence and exact selection.
-    let decision: ProtectedEgressSource | EgressRefusal;
     let finalPeer: EgressPeer | undefined;
     try {
       finalPeer = await this.verifyPeer(authorization);
       if (!finalPeer || !isDeepStrictEqual(finalPeer, peer)) {
         return deny({ kind: "denied", code: "identity" });
       }
-      // Prepared currentness must stay locked through receipt commit below.
-      decision =
-        record.source.adoption === "prepared"
-          ? record.source
-          : await this.ports.check(record.use, record.evidence);
     } catch {
       return deny({ kind: "unavailable", code: "authority" });
-    }
-    if (!("key" in decision) || !isDeepStrictEqual(decision, record.source)) {
-      return deny("key" in decision ? { kind: "denied", code: "stale_configuration" } : decision);
     }
     if (signal.aborted) {
       return deny({ kind: "cancelled" });
     }
-    const now = this.ports.now();
-    const sendStartBy = Math.min(
-      now + 1000,
-      Date.parse(record.use.request.deadlineAt),
-      record.evidence.kind === "no_material_required"
-        ? Infinity
-        : Date.parse(record.evidence.usableUntil),
-      Date.parse(finalPeer.expiresAt),
-      record.peerExpiresAt,
-    );
-    if (
-      !(sendStartBy > now) ||
-      this.records.get(handle) !== record ||
-      record.phase !== "checking"
-    ) {
-      return deny({ kind: "deadline_exceeded" });
-    }
-    const authorized: AuthorizedSend = immutableCopy({
-      association: record.association,
-      requestDigest: createHash("sha256")
-        .update(
-          JSON.stringify({
-            ...record.use.request,
-            body: Buffer.from(record.use.request.body).toString("base64"),
-          }),
-        )
-        .digest("hex"),
-      injectionDigest: record.digest,
-      authorizedAt: new Date(now).toISOString(),
-      sendStartBy: new Date(sendStartBy).toISOString(),
-    });
+    let authorized: AuthorizedSend | undefined;
+    let sendStartBy = 0;
+    const mintAuthorization = (): AuthorizedSend | EgressRefusal => {
+      // This closure belongs to one reserved registration; a permit is never extended.
+      if (authorized || signal.aborted || !this.owns(record.association, record.use)) {
+        return { kind: "cancelled" };
+      }
+      const now = this.ports.now();
+      sendStartBy = Math.min(
+        now + 1000,
+        Date.parse(record.use.request.deadlineAt),
+        record.evidence.kind === "no_material_required"
+          ? Infinity
+          : Date.parse(record.evidence.usableUntil),
+        Date.parse(finalPeer.expiresAt),
+        record.peerExpiresAt,
+      );
+      if (
+        !(sendStartBy > now) ||
+        this.records.get(handle) !== record ||
+        record.phase !== "checking"
+      ) {
+        return { kind: "deadline_exceeded" };
+      }
+      authorized = immutableCopy({
+        association: record.association,
+        requestDigest: createHash("sha256")
+          .update(
+            JSON.stringify({
+              ...record.use.request,
+              body: Buffer.from(record.use.request.body).toString("base64"),
+            }),
+          )
+          .digest("hex"),
+        injectionDigest: record.digest,
+        authorizedAt: new Date(now).toISOString(),
+        sendStartBy: new Date(sendStartBy).toISOString(),
+      });
+      return authorized;
+    };
     if (!this.owns(record.association, record.use)) {
       return deny({ kind: "denied", code: "identity" });
     }
     try {
-      const committed =
-        record.source.adoption === "prepared"
-          ? await this.ports.authorizePrepared!(
-              record.use,
-              record.source,
-              record.attempt,
-              authorized,
-            )
-          : await this.ports.receipts.authorize(peer.sender, record.attempt, authorized);
+      const committed = await this.ports.authorizeSend(
+        record.use,
+        record.source,
+        record.attempt,
+        mintAuthorization,
+      );
       if ("kind" in committed) {
         return deny(committed);
       }
       // Never repair/replay a lost acknowledgment or extend the bound across this await.
       if (
+        !authorized ||
         !isDeepStrictEqual(committed.authorization, authorized) ||
         signal.aborted ||
         this.records.get(handle) !== record ||
@@ -990,6 +987,10 @@ export class CredentialProxy implements CredentialProxyExchange {
         return refuse("invalid_handle");
       }
     } catch {
+      if (!authorized) {
+        // Discard before awaiting settlement: a retained callback cannot mint during refusal.
+        return deny({ kind: "unavailable", code: "authority" });
+      }
       this.discard(handle, record);
       return { kind: "refused", error: { kind: "unavailable", code: "authority" } };
     }
@@ -997,7 +998,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     record.phase = "permitted";
     return {
       kind: "allow",
-      authorization: authorized,
+      authorization: authorized!,
       sendStartBy: new Date(sendStartBy).toISOString(),
       injectionDigest: record.digest,
       noMaterialRequired: record.evidence.kind === "no_material_required",

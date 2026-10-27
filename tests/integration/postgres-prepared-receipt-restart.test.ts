@@ -179,8 +179,10 @@ test(
       implementation: "github",
       backendId: registry.backendId,
     };
-    // Register the future pool before the listener so teardown closes the listener first.
-    const restartPool = testPool(resources, { connectionString: databaseUrl, max: 2 });
+    // Register the future pools before the listener so teardown closes the listener first.
+    const restartPools = Array.from({ length: 2 }, () =>
+      testPool(resources, { connectionString: databaseUrl, max: 2 }),
+    );
     let journal = await startRepositoryReceiptServer({ ...receiptOptions, state });
     resources.after(() => journal.close());
     const controlSocket = join(dirname(useSocket), "control.sock");
@@ -197,7 +199,7 @@ test(
       },
     );
     const gitOptions = { tls: gh.tls, authorize: gh.authorize };
-    const git = await startGitSmartHttpFixture(resources, gitOptions);
+    const git = await startGitSmartHttpFixture(t, gitOptions);
     const gate = await gateApiHandshake(resources, gh.origin);
     const apiOrigin = gate.origin;
     // The original issuer and the sender pin the same API authority through this gate.
@@ -435,22 +437,23 @@ test(
       assert.deepEqual(dispose.mock.calls[0]!.arguments.slice(2), [original.generation, expected]);
       assert.equal(read.mock.callCount() - readsBefore, 2);
       assert.deepEqual(await row(), terminal);
-      // Replace the receipt authority and its state connection. The fresh reader asks the
-      // original receipt API; this does not claim a restarted session service retained its map.
-      await journal.close();
-      const restartedState = new PostgresPlatformState(restartPool);
-      journal = await startRepositoryReceiptServer({ ...receiptOptions, state: restartedState });
-      const restartedReader = new RepositoryReceiptClient(
-        receiptOptions.controlSocket,
-        randomUUID(),
-      );
-      assert.deepEqual(await restartedReader.status(sessionId), expected);
-      assert.deepEqual(await restartedReader.status(sessionId), expected);
-      assert.equal(dispose.mock.callCount(), 1);
-      assert.deepEqual(
-        await restartedState.read((v) => v.repositorySessions.findBrokerReceipt(admissionId)),
-        terminal,
-      );
+      // Each fresh authority and database pool must recover the original receipt independently.
+      // The session service remains running; this does not test restoration of its local map.
+      for (const restartPool of restartPools) {
+        await journal.close();
+        const restartedState = new PostgresPlatformState(restartPool);
+        journal = await startRepositoryReceiptServer({ ...receiptOptions, state: restartedState });
+        const restartedReader = new RepositoryReceiptClient(
+          receiptOptions.controlSocket,
+          randomUUID(),
+        );
+        assert.deepEqual(await restartedReader.status(sessionId), expected);
+        assert.equal(dispose.mock.callCount(), 1);
+        assert.deepEqual(
+          await restartedState.read((v) => v.repositorySessions.findBrokerReceipt(admissionId)),
+          terminal,
+        );
+      }
     } finally {
       gate.release();
       await op.catch(() => {});

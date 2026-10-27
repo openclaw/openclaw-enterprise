@@ -53,7 +53,8 @@
     "tests/integration/postgres-standing-execution.test.ts",
     "tests/integration/postgres-standing-session-worker.test.ts",
     "tests/integration/postgres-standing-expiry-authority.test.ts",
-    "tests/integration/credential-proxy-withdrawal.test.ts"
+    "tests/integration/credential-proxy-withdrawal.test.ts",
+    "tests/integration/postgres-egress-policy-transaction.test.ts"
   ],
   "files": [
     {
@@ -489,6 +490,46 @@
         "ordinary revision authorization distinguishes State unavailable",
         "ordinary revision authorization distinguishes IAM unavailable",
         "ordinary revision authorization distinguishes backend unavailable"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-egress-policy-transaction.test.ts",
+      "expectedTests": [
+        "memory: static policy transaction - revoke first",
+        "memory: static policy transaction - permit first",
+        "memory: static policy transaction - lost commit reply",
+        "memory: no material policy transaction - revoke first",
+        "memory: no material policy transaction - permit first",
+        "memory: no material policy transaction - lost commit reply",
+        "postgres: static policy transaction - revoke first",
+        "postgres: static policy transaction - permit first",
+        "postgres: static policy transaction - lost commit reply",
+        "postgres: no material policy transaction - revoke first",
+        "postgres: no material policy transaction - permit first",
+        "postgres: no material policy transaction - lost commit reply",
+        "postgres: supported revoke waits for the final authorization transaction",
+        "postgres: native send reads policy after a pending withdrawal commits",
+        "directory: fresh final allow through authenticated exchange",
+        "directory: fresh final deny through authenticated exchange",
+        "directory: fresh final unavailable through authenticated exchange",
+        "callback: fresh final allow through authenticated exchange",
+        "callback: fresh final deny through authenticated exchange",
+        "callback: fresh final unavailable through authenticated exchange",
+        "memory: no material slow final runtime verification precedes the short send window",
+        "memory: no material slow final runtime verification does not block DELETE",
+        "postgres: static slow final runtime verification precedes the short send window",
+        "postgres: static slow final runtime verification does not block DELETE",
+        "postgres: external directory withdrawal after final read can race receipt commit",
+        "a short send window expiring after receipt commit cannot be renewed or replayed",
+        "final runtime verification false preserves refusal and audit meaning",
+        "final runtime verification unavailable preserves refusal and audit meaning",
+        "final runtime verification unknown preserves refusal and audit meaning",
+        "Compute placement ignores a resolver's own call through authenticated exchange",
+        "final placement binds the original Compute receiver",
+        "final placement binds the original Compute method",
+        "final placement binds the original Credential Proxy method",
+        "authorization throw before mint fences a retained callback",
+        "authorization throw after mint fences a retained callback"
       ]
     }
   ]

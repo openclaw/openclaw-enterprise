@@ -8,6 +8,8 @@ This record preserves the dated changes to the repository credential service flo
 
 ## Changelog
 
+- 2026-10-27 13:11: Keep uncertain admission and disposal observation on the original owner. (authoring-run/eee8818e-6453-492f-acc7-5e5a3f1fe630 - bb7fa74e2d95bdd21648b36ad5c65558b0baffa9)
+
 - 2026-10-27 11:09: Separate prepared startup from development authority and defer listener admission until socket setup completes. (authoring-run/51557b14-ec25-4b33-98f2-b5a16d00d6ea - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 - 2026-10-23 16:25: Require patched gh 2.103.2 in image and client version checks; pin its published checksum manifest. (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)

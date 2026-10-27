@@ -206,8 +206,9 @@ The trusted worker or local operator uses HTTP over a private mode-0600 Unix soc
 | `GET /v1/sessions/{id}`                                           | Private session and cleanup status                          |
 | `POST /v1/sessions/{id}/close`                                    | Immediate local closure status; cleanup reported separately |
 
-The service/operator owns the socket's private parent. Clients never mount it.
-Control bodies are limited to 16 KiB. HTTPS exposes no admission or close endpoint.
+The socket's parent is private to the service/operator and never mounted into
+the client. Control bodies are limited to 16 KiB. The HTTPS client listener has
+no admission or close endpoint.
 
 `X-Admission-Id` combines a 13-digit Unix-millisecond timestamp, hyphen and
 lowercase UUIDv4; the CLI prints this nonsecret ID before dispatch. HTTP 201
@@ -216,50 +217,47 @@ status only; conflicts fail. Follow
 [lost-response recovery](../guides/repository-credentials/standalone-service.md#recover-an-admission)
 before explicitly requesting replacement material.
 
-The worker checks the registry-backed broker's private `durableAdmissionVersion: 1`
-before new attempts and readiness; an unavailable or older broker blocks both.
-This check proves neither journal availability, absence nor disposal; recovery,
-closure and runtime retirement do not depend on it.
+Registry-backed brokers privately advertise `durableAdmissionVersion: 1`, which
+the worker checks before new attempts and readiness; an unavailable or older
+broker blocks both. The check proves neither journal availability, absence nor
+disposal; recovery, closure and runtime retirement do not depend on it.
 
 Platform admission binds `namespaceId`, `repositoryRef`, normalized `profile`,
-`expectedBinding` and `deadlineWallMs` to the persisted attempt. The worker's
-private receipt socket commits the reservation before the broker constructs the
-selected route or releases a bearer. Recovery can fence a missing admission.
-Only the original broker records its exact `DISPOSED` result. Status confirms
-disposal from the matching committed observation; otherwise it remains unknown.
-Receipts contain no credentials and stay with attempt history. Journal failure
-blocks new bound admission and proves neither absence nor disposal.
+`expectedBinding` and `deadlineWallMs` to the persisted attempt. The worker's private
+receipt socket reserves before the broker constructs the selected route or releases a
+bearer. Recovery can durably fence a missing admission; unconfirmed reservations,
+active sessions and disposals remain unknown. Only the original broker records its
+exact `DISPOSED` result. Credential-free receipts remain with attempt history.
+Journal failure prevents new bound admission and proves neither absence nor disposal.
 
 Unseen IDs must be under 60 seconds old and never future-dated. Process-local
 correlations stop at twice the session limit and can return `overloaded`;
 unresolved cleanup survives that window. Restart loses standalone correlations.
 No correlation recovers a bearer.
 
-Bearers need a live process and upstream authorization. Replacement tokens must cover
-the remaining exchange budget and safety margin. Owned exchanges retain credentials
-through replacement and invoke configured standing callbacks after verified TLS, before
-first write. Prepared Git checks its original
-[one-use permit](repository-credentials/prepared-native-git.md#what-a-request-authorizes),
-cancellation and send deadline there.
+A bearer needs a live process and upstream authorization. Replacement tokens must cover
+the remaining exchange budget and safety margin. An owned exchange keeps its credential
+through replacement and runs any configured standing callback after verified TLS, before
+first write. Prepared Git checks its original [one-use permit](repository-credentials/prepared-native-git.md#what-a-request-authorizes), cancellation and send deadline.
 
-Authentication and cleanup use separate monotonic deadlines from capture; late
-acquisition extends neither. The GitHub adapter allows 60 seconds of provider clock
-skew and stops authentication before reported expiry. Cleanup retains its one-hour
-bound from local receipt. Forward wall-clock changes can deny authentication but
-cannot establish remote expiration.
+Authentication and cleanup expire separately in elapsed monotonic time from capture;
+delayed acquisition settlement extends neither. The GitHub adapter allows 60 seconds
+of provider clock skew and stops authentication before reported expiry. Cleanup retains
+its one-hour bound from local receipt. A forward wall-clock change can deny authentication
+but cannot prove remote expiration.
 
-Closing or expiring a session cancels owned exchanges. Status observes expiry without
-canceling or starting cleanup. Afterward, clock rollback cannot restore use,
-even for reserved exchanges. `CLOSED` does not confirm revocation. Private control status
-distinguishes pending, revoked, expired and uncertain credentials, plus auxiliary cleanup.
+Closing or expiring a session prevents use and cancels owned exchanges. Status observes
+expiry without cancellation or cleanup; clock rollback cannot restore use, including
+reserved exchanges. `CLOSED` does not prove revocation. Private control status distinguishes pending, revoked,
+expired and uncertain credentials and auxiliary cleanup.
 `DISPOSED` requires settled actions, resolved access-token obligations and
 completed auxiliary finalization; historical revoked/expired counters may remain
 nonzero. Uncertain issuance blocks automatic minting; uncertain pushes or API
 mutations are never replayed automatically.
 
-If session construction fails, renewal access closes immediately, but retained
+If session construction fails, renewal access closes immediately; retained
 cleanup material counts against session capacity and shutdown's
-`pendingAuxiliary` until admitted callbacks finish and it is disposed.
+`pendingAuxiliary` until admitted callbacks finish and disposal completes.
 
 ## GitHub response data
 
@@ -315,8 +313,7 @@ so they continue after expiry or with stale pins. Generation
 pinning does not promise a command-wide snapshot across arbitrary subprocesses.
 
 Native settings override these defaults; other helpers can retain credentials.
-Our helper ignores `store` and `erase`. There is no command-wide preflight or
-automatic retry of an uncertain mutation.
+Our helper ignores `store` and `erase`. There is no command-wide preflight.
 
 The API launcher requires GitHub CLI **2.103.2**, `GH_HOST=github.com`, a gateway
 hostname with verified TLS, and HTTPS port 443. Its private `hosts.yml` uses the

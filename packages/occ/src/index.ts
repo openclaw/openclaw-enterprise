@@ -1,3 +1,4 @@
+import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 
 export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
@@ -5472,28 +5473,108 @@ export class OpenClawController {
         },
         readPrepared: (source, lifetime) =>
           this.preparedIssuer(source.key.provider).readWarm(source, lifetime),
-        authorizePrepared: async (use, source, attempt, authorization) => {
+        authorizeSend: async (use, source, attempt, mintAuthorization) => {
           if (this.transactionContext.getStore()) {
             return { kind: "unavailable", code: "authority" };
           }
+          const material = attempt.material;
+          if (!material) {
+            return { kind: "denied", code: "scope_mismatch" };
+          }
+          const execution = use.route.binding.execution;
+          const deny = (code: Extract<EgressRefusal, { kind: "denied" }>["code"]) =>
+            this.transact((state) => this.denyEgressUse(state, use, code, material));
+          const driver = this.selectedDriver("credential_proxy");
+          const verify = driver.verifyInstallation;
+          const { compute, resolve } = this.credentialPlacement();
+          // No policy/source locks and no one-second permit during trusted runtime I/O.
+          const runtime = await this.state.read(async (state) => ({
+            namespace: await state.namespaces.findNamespace(execution.namespaceId),
+            revision: await state.revisions.findRevision(
+              execution.namespaceId,
+              execution.agentId,
+              execution.revisionId,
+            ),
+            installed: await state.credentialSources.findEgressInstallation(
+              use.peer.sender.id,
+              use.peer.sandboxId,
+            ),
+          }));
+          const remaining = Date.parse(use.request.deadlineAt) - this.clock().getTime();
+          if (remaining <= 0) {
+            return { kind: "deadline_exceeded" };
+          }
+          if (
+            !runtime.namespace ||
+            !runtime.revision ||
+            !isDeepStrictEqual(runtime.installed, use.installation)
+          ) {
+            return deny("stale_configuration");
+          }
+          const { namespace, revision } = runtime;
+          const verified = await Reflect.apply(verify, driver, [
+            {
+              namespace: await this.credentialGatewayOperation(() =>
+                Reflect.apply(resolve, compute, [namespace]),
+              ),
+              revision,
+              plan: use.installation.plan,
+              signal: AbortSignal.timeout(Math.ceil(remaining)),
+            },
+            use.installation,
+          ]);
+          if (verified !== true) {
+            return verified === false
+              ? deny("stale_configuration")
+              : { kind: "unavailable", code: "authority" };
+          }
+          const authority = this.authorizationAuthority(execution.servicePrincipalId);
+          const authorize = authority.authorize;
+          const decide = () =>
+            this.authorizationDecision(
+              execution.servicePrincipalId,
+              "operate",
+              {
+                kind: "credential_source",
+                namespaceId: execution.namespaceId,
+                id: use.route.binding.source.source.id,
+              },
+              authority,
+              authorize,
+            );
+          const native =
+            !this.authorization &&
+            NativeIAMDriver.usesStateForAuthorization(authority, authorize, this.state);
+          const observed = native ? undefined : await decide();
+          if (observed && !observed.decision.allowed) {
+            return deny("unauthorized");
+          }
           return this.transact(async (state) => {
-            // A sender cannot supply this transaction or substitute a cached currentness decision.
-            const material = attempt.material;
-            if (
-              !material ||
-              (material.kind !== "prepared_token" && material.kind !== "prepared_github")
-            ) {
-              return { kind: "denied", code: "scope_mismatch" } as const;
-            }
-            const current = await this.checkEgressUseIn(state, use, material);
+            await this.lockNamespace(state, execution.namespaceId);
+            const decision = observed ?? (await decide());
+            await state.agents.lockAgent(execution.namespaceId, execution.agentId);
+            const current = await this.checkEgressUseIn(state, use, material, undefined, {
+              namespace,
+              revision,
+              decision: decision.decision,
+            });
             if (!("key" in current)) {
               return current;
             }
             if (
               !isDeepStrictEqual(current, source) ||
-              this.clock().getTime() >= Date.parse(authorization.sendStartBy)
+              this.selectedDriver("credential_proxy") !== driver ||
+              driver.verifyInstallation !== verify ||
+              this.selectedDriver("compute") !== compute ||
+              compute.resolveSandboxNamespace !== resolve ||
+              this.authorizationAuthority(execution.servicePrincipalId) !== authority ||
+              authority.authorize !== authorize
             ) {
-              return { kind: "denied", code: "stale_configuration" } as const;
+              return this.denyEgressUse(state, use, "stale_configuration", material);
+            }
+            const authorization = mintAuthorization();
+            if ("kind" in authorization) {
+              return authorization;
             }
             return EgressSendReceipts.authorizeIn(
               state.egressSendReceipts,
@@ -5601,11 +5682,53 @@ export class OpenClawController {
     return this.transact((state) => this.checkEgressUseIn(state, use, material, stream));
   }
 
+  private async denyEgressUse(
+    state: PlatformUnitOfWork,
+    use: CapturedEgressUse,
+    code: Extract<EgressRefusal, { kind: "denied" }>["code"],
+    material?: EgressSelectionEvidence,
+    stream?: { readonly until: string },
+  ): Promise<EgressRefusal> {
+    const execution = use.route.binding.execution;
+    await state.audit.append({
+      id: `aud_${crypto.randomUUID()}`,
+      installationId: this.installation.id,
+      namespaceId: execution.namespaceId,
+      occurredAt: this.timestamp(),
+      kind: "authorization_denial",
+      actorId: execution.servicePrincipalId,
+      source: "occ",
+      action: "openclaw.egress.authorize",
+      resource: {
+        kind: "credential_source",
+        namespaceId: execution.namespaceId,
+        id: use.route.binding.source.source.id,
+      },
+      outcome: "denied",
+      details: {
+        code,
+        phase: stream
+          ? "during_response"
+          : material === undefined
+            ? "before_access"
+            : "before_send",
+        requestId: use.id,
+        revisionId: execution.revisionId,
+      },
+    });
+    return { kind: "denied", code };
+  }
+
   private async checkEgressUseIn(
     state: PlatformUnitOfWork,
     use: CapturedEgressUse,
     material?: EgressSelectionEvidence,
     stream?: { readonly until: string },
+    finalCheck?: {
+      readonly namespace: Readonly<Namespace>;
+      readonly revision: Readonly<AgentRevision>;
+      readonly decision: AuthorizationDecision;
+    },
   ): Promise<ProtectedEgressSource | EgressRefusal> {
     const execution = use.route.binding.execution;
     const target = {
@@ -5613,33 +5736,8 @@ export class OpenClawController {
       namespaceId: execution.namespaceId,
       id: use.route.binding.source.source.id,
     };
-    const deny = async (
-      code: Extract<EgressRefusal, { kind: "denied" }>["code"],
-    ): Promise<EgressRefusal> => {
-      await state.audit.append({
-        id: `aud_${crypto.randomUUID()}`,
-        installationId: this.installation.id,
-        namespaceId: execution.namespaceId,
-        occurredAt: this.timestamp(),
-        kind: "authorization_denial",
-        actorId: execution.servicePrincipalId,
-        source: "occ",
-        action: "openclaw.egress.authorize",
-        resource: target,
-        outcome: "denied",
-        details: {
-          code,
-          phase: stream
-            ? "during_response"
-            : material === undefined
-              ? "before_access"
-              : "before_send",
-          requestId: use.id,
-          revisionId: execution.revisionId,
-        },
-      });
-      return { kind: "denied", code };
-    };
+    const deny = (code: Extract<EgressRefusal, { kind: "denied" }>["code"]) =>
+      this.denyEgressUse(state, use, code, material, stream);
     if (
       execution.installationId !== this.installation.id ||
       !isDeepStrictEqual(execution, use.installation.plan.execution)
@@ -5716,15 +5814,18 @@ export class OpenClawController {
     // A stored installation is an immutable association, not a readiness lease.
     // The selected adapter rechecks the current authenticated runtime at both checks.
     if (
-      !(await driver.verifyInstallation(
-        {
-          namespace: await this.credentialNamespace(namespace),
-          revision,
-          plan: use.installation.plan,
-          signal: AbortSignal.timeout(Math.ceil(remaining)),
-        },
-        use.installation,
-      ))
+      finalCheck
+        ? !isDeepStrictEqual(finalCheck.namespace, namespace) ||
+          !isDeepStrictEqual(finalCheck.revision, revision)
+        : !(await driver.verifyInstallation(
+            {
+              namespace: await this.credentialNamespace(namespace),
+              revision,
+              plan: use.installation.plan,
+              signal: AbortSignal.timeout(Math.ceil(remaining)),
+            },
+            use.installation,
+          ))
     ) {
       return deny("stale_configuration");
     }
@@ -5739,7 +5840,13 @@ export class OpenClawController {
       return deny("unsupported_operation");
     }
     try {
-      await this.authorize(execution.servicePrincipalId, "operate", target);
+      if (finalCheck) {
+        if (!finalCheck.decision.allowed) {
+          return deny("unauthorized");
+        }
+      } else {
+        await this.authorize(execution.servicePrincipalId, "operate", target);
+      }
     } catch (error) {
       if (error instanceof AuthorizationDeniedError) {
         return deny("unauthorized");
@@ -11341,8 +11448,9 @@ export class OpenClawController {
     principalId: string,
     action: AuthorizationRequest["action"],
     resource: ResourceRef,
+    selected: IAMDriver = this.authorizationAuthority(principalId),
+    authorize?: IAMDriver["authorize"],
   ): Promise<Readonly<DeployAgentAuthorization>> {
-    const selected = this.authorizationAuthority(principalId);
     const request = Object.freeze({
       principalId,
       action,
@@ -11352,7 +11460,7 @@ export class OpenClawController {
     try {
       decision = this.authorization
         ? await this.authorization(request)
-        : await selected.authorize(request);
+        : await Reflect.apply(authorize ?? selected.authorize, selected, [request]);
     } catch {
       throw new DependencyUnavailableError(
         "The selected authorization Driver could not verify the operation.",
@@ -13387,6 +13495,11 @@ export class OpenClawController {
 
   /** Credential Gateways share the paired Sandbox's view, whose name is Compute's placement. */
   private async credentialNamespace(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>> {
+    const { compute, resolve } = this.credentialPlacement();
+    return this.credentialGatewayOperation(() => Reflect.apply(resolve, compute, [namespace]));
+  }
+
+  private credentialPlacement() {
     let compute: ComputeDriver;
     try {
       compute = this.selectedDriver("compute");
@@ -13399,7 +13512,7 @@ export class OpenClawController {
         "The selected Compute Driver cannot place Credential Gateway sources.",
       );
     }
-    return this.credentialGatewayOperation(() => resolve.call(compute, namespace));
+    return { compute, resolve };
   }
 
   /** A protected source is offered only by the selected pair and its installed lifecycle owner. */
