@@ -485,7 +485,7 @@ const bakeInput = {
   smokeRuntimeTag: "127.0.0.1:5000/oce-smoke/runtime:0123456789abcdef0123456789abcdef01234567",
   context: "/work/runtime-trust",
   providerContext: "/work/provider-image",
-  nodeRuntimeBaseImage: `docker.io/library/node:24-bookworm-slim@sha256:${"a".repeat(64)}`,
+  nodeRuntimeBaseImage: `docker.io/library/node:24.22.1-bookworm-slim@sha256:${"a".repeat(64)}`,
   openclawSource: {
     commit: "b".repeat(40),
     sourceArchiveSha256: "c".repeat(64),
@@ -607,7 +607,7 @@ test("the provider image is the runtime's pinned Node base with only the runtime
   );
   assert.match(
     runtimeNodeBaseImage(dockerfile),
-    /^docker\.io\/library\/node:24\.\d+\.\d+-bookworm-slim@sha256:[a-f0-9]{64}$/,
+    /^docker\.io\/library\/node:24\.22\.1-bookworm-slim@sha256:[a-f0-9]{64}$/,
   );
   assert.throws(
     () => runtimeNodeBaseImage("ARG NODE_RUNTIME_BASE_IMAGE=node:24-bookworm-slim\n"),

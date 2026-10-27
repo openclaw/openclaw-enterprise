@@ -315,7 +315,7 @@ Native settings override these defaults; other helpers can retain credentials.
 Our helper ignores `store` and `erase`. There is no command-wide preflight or
 automatic retry of an uncertain mutation.
 
-The API launcher requires GitHub CLI **2.100.0**, `GH_HOST=github.com`, a gateway
+The API launcher requires GitHub CLI **2.103.2**, `GH_HOST=github.com`, a gateway
 hostname with verified TLS, and HTTPS port 443. Its private `hosts.yml` uses the
 experimental `api_host` routing option and stores only the gateway bearer in
 `oauth_token`. The launcher admits the

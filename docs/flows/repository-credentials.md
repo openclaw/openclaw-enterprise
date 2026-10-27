@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-10-15
-last_updated_session: authoring-run/3af8b480-048d-4e5e-a05c-f5a92f357ccd
+updated: 2026-10-23
+last_updated_session: authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668
 ---
 
 # Repository credential service flow
@@ -166,7 +166,7 @@ detects inconsistent material; it is not an atomic snapshot or authorization.
 `apps/controller/src/drivers/repo/github/credentials/client/environment.ts:createClientEnvironment`
 keeps gh token/config isolation while preserving normal HOME and system Git
 configuration. `apps/controller/src/drivers/repo/github/credentials/client/commands.ts:prepareGhCommand`
-checks gh 2.100.0 and the canonical host/port profile.
+checks gh 2.103.2 and the canonical host/port profile.
 `apps/controller/src/drivers/repo/github/credentials/client/launch.ts:launchClient`
 provides single-session stock Git execution, signal forwarding and original child
 exit status. `executeClientCommand` preserves numeric exits and maps signal
@@ -352,6 +352,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 16:25: Require patched gh 2.103.2 in image and client version checks; pin its published checksum manifest. (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
 
 - 2026-10-15 20:51: Separate token custody from ambiguous response evidence. (authoring-run/3af8b480-048d-4e5e-a05c-f5a92f357ccd - 53c4297eb1e0894042a1698609c3e672aef2c97b)
 

@@ -299,7 +299,7 @@ refuses.
 
 ## Render files
 
-Run the renderer from the repository root with Node.js 24 or newer. With native
+Run the renderer from the repository root with Node.js 24.22.1 or newer. With native
 admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
