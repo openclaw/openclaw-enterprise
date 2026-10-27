@@ -117,10 +117,11 @@ function isUserEmailConflict(error: unknown): boolean {
 }
 
 /**
- * The deterministic, non-deliverable address of a just-in-time trusted external account: a
- * digest of the exact provider instance and subject, so the same identity always maps to the
- * same address and a concurrent enrolment cannot create a second account. An operator or the
- * account holder can replace it with a real address later.
+ * The deterministic, non-deliverable fallback address of a just-in-time trusted external
+ * account whose token carried no usable email claim: a digest of the exact provider instance
+ * and subject, so the same identity always maps to the same address and a concurrent
+ * enrolment cannot create a second account. An operator or the account holder can replace
+ * it with a real address later.
  */
 export function trustedExternalAccountEmail(providerId: string, subject: string): string {
   return `oidc.${createHash("sha256").update(`${providerId}\0${subject}`).digest("hex")}@users.openclaw.invalid`;
@@ -607,14 +608,24 @@ export class PostgresHumanAuthentication {
    * Just-in-time enrolment for one external identity whose verified token carried the
    * operator-configured trust claim: writes the user, its identity-only sign-in method, its
    * Principal and its enrolment in one transaction, with no Role, grant or password. The
-   * caller has already verified the identity against its provider. A concurrent sign-in that
-   * committed the same identity first makes this call return that account's snapshot instead
-   * of creating a second one. Returns undefined when the identity still cannot be enrolled
-   * (for example its deterministic address is taken by an unrelated account).
+   * caller has already verified the identity against its provider, and supplies the sign-in
+   * attempt's creation time: exactly as for an attached identity, any later account or
+   * method change invalidates the attempt, so an identity that only appeared (or changed)
+   * after the attempt began is refused rather than served. `attempt.email` is the address
+   * the same verified token carried, with `emailVerified` only when the token asserted it;
+   * without one the account gets the deterministic placeholder address. Returns undefined
+   * when the identity cannot be enrolled: the attempt is stale, an unrelated account
+   * already holds the resolved address (accounts are never matched or linked by email, so
+   * this fails closed), or the identity is unusable.
    */
   async provisionTrustedExternalAccount(
     providerId: string,
     subject: string,
+    attempt: {
+      readonly createdAt: Date;
+      readonly email?: string;
+      readonly emailVerified?: boolean;
+    },
   ): Promise<HumanAuthenticationSnapshot | DisabledExternalAccount | undefined> {
     if (
       providerId === "credential" ||
@@ -623,7 +634,8 @@ export class PostgresHumanAuthentication {
     ) {
       return undefined;
     }
-    const email = trustedExternalAccountEmail(providerId, subject);
+    const email = attempt.email ?? trustedExternalAccountEmail(providerId, subject);
+    const emailVerified = attempt.emailVerified === true;
     return this.state.transact(async (unit) => {
       const [attached] = await this.query(
         unit,
@@ -632,24 +644,72 @@ export class PostgresHumanAuthentication {
       );
       if (attached !== undefined) {
         // A concurrent sign-in of the same identity committed while this one exchanged its
-        // code; serve that account rather than creating a second one.
+        // code. Its enrolment postdates this attempt, so the shared currentness check
+        // refuses this attempt and the person signs in again, rather than serving an
+        // account state the attempt never saw.
         const user = await this.lockUser(unit, attached.user_id as string);
-        return this.snapshotOrDisabled(unit, user, providerId, subject);
+        return this.snapshotOrDisabled(unit, user, providerId, subject, attempt.createdAt);
       }
-      const userId = randomUUID();
+      // A savepoint keeps this transaction usable after a uniqueness conflict: PostgreSQL
+      // aborts the whole transaction on the error, and the recovery below must still read.
+      await this.query(unit, "SAVEPOINT oce_trusted_enrol");
       try {
+        const userId = randomUUID();
         await this.query(
           unit,
           `INSERT INTO occ."user" (id, name, email, email_verified, image, created_at, updated_at)
-           SELECT $1, $2, $3, false, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
-          [userId, "OIDC member", email],
+           SELECT $1, $2, $3, $4, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
+          [userId, "OIDC member", email, emailVerified],
         );
+        const methodId = randomUUID();
+        await this.query(
+          unit,
+          `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
+           VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
+          [methodId, subject, providerId, userId],
+        );
+        const principalId = randomUUID();
+        const installationId = await this.state.insertNativeIAMPrincipal(unit, {
+          principal: { id: principalId, kind: "principal", issuer: this.issuer, subject: userId },
+          roles: [],
+          bindings: [],
+        });
+        if (installationId !== this.installationId) {
+          throw new ScopeViolationError("The account belongs to a different Installation.");
+        }
+        await this.query(
+          unit,
+          `INSERT INTO occ.human_authentication_accounts (user_id, installation_id, principal_id)
+           VALUES ($1, $2, $3)`,
+          [userId, this.installationId, principalId],
+        );
+        await this.audit(unit, "authentication.account.self-enrol", principalId, {
+          userId,
+          providerId,
+          principalId,
+          methodId,
+        });
+        // These rows are this transaction's own writes under lock, so the attempt's
+        // currentness guard does not apply to them; it guards externally created state
+        // only (the branches above and below).
+        const user = await this.lockUser(unit, userId);
+        const snapshot = await this.snapshotOrDisabled(unit, user, providerId, subject);
+        await this.query(unit, "RELEASE SAVEPOINT oce_trusted_enrol");
+        return snapshot;
       } catch (error) {
-        // The deterministic address is taken: the same identity committed concurrently (its
-        // method row appears now) or an unrelated account holds the address (it does not).
-        if (!isUserEmailConflict(error)) {
+        if (!isUserEmailConflict(error) && !isExternalIdentityConflict(error)) {
           throw error;
         }
+        await this.query(unit, "ROLLBACK TO SAVEPOINT oce_trusted_enrol");
+        if (!isUserEmailConflict(error)) {
+          // Unreachable through the email guard above; kept so a concurrent attach of the
+          // same identity can never create a duplicate account. Nothing of this enrolment
+          // persisted.
+          return undefined;
+        }
+        // The resolved address is taken: the same identity committed concurrently (its
+        // method row appears now, but postdates this attempt) or an unrelated account holds
+        // the address and accounts are never linked by email. Both fail closed.
         const [committed] = await this.query(
           unit,
           `SELECT user_id FROM occ.account WHERE provider_id = $1 AND account_id = $2 AND identity_only`,
@@ -659,47 +719,8 @@ export class PostgresHumanAuthentication {
           return undefined;
         }
         const user = await this.lockUser(unit, committed.user_id as string);
-        return this.snapshotOrDisabled(unit, user, providerId, subject);
+        return this.snapshotOrDisabled(unit, user, providerId, subject, attempt.createdAt);
       }
-      const methodId = randomUUID();
-      try {
-        await this.query(
-          unit,
-          `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
-           VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
-          [methodId, subject, providerId, userId],
-        );
-      } catch (error) {
-        if (!isExternalIdentityConflict(error)) {
-          throw error;
-        }
-        // Unreachable through the email guard above; kept so a concurrent attach of the same
-        // identity can never create a duplicate account.
-        return undefined;
-      }
-      const principalId = randomUUID();
-      const installationId = await this.state.insertNativeIAMPrincipal(unit, {
-        principal: { id: principalId, kind: "principal", issuer: this.issuer, subject: userId },
-        roles: [],
-        bindings: [],
-      });
-      if (installationId !== this.installationId) {
-        throw new ScopeViolationError("The account belongs to a different Installation.");
-      }
-      await this.query(
-        unit,
-        `INSERT INTO occ.human_authentication_accounts (user_id, installation_id, principal_id)
-         VALUES ($1, $2, $3)`,
-        [userId, this.installationId, principalId],
-      );
-      await this.audit(unit, "authentication.account.self-enrol", principalId, {
-        userId,
-        providerId,
-        principalId,
-        methodId,
-      });
-      const user = await this.lockUser(unit, userId);
-      return this.snapshotOrDisabled(unit, user, providerId, subject);
     });
   }
 

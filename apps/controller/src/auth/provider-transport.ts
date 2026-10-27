@@ -58,9 +58,17 @@ export type ProviderDenial = "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABL
 // unavailable provider also says why, for the operator log. The membership denials come only
 // from GitHub's sign-in allowlist, after the provider authenticated `subject`. `trusted` is
 // set only by a provider whose verified token carried the operator-configured trust claim
-// (OIDC), and admits an otherwise unknown identity to just-in-time enrolment.
+// (OIDC), and admits an otherwise unknown identity to just-in-time enrolment; the same
+// trusted token may carry the enrolled account's `email`, marked verified only when it
+// asserted `email_verified` exactly true.
 export type ProviderExchange =
-  | { readonly subject: string; readonly login?: string | undefined; readonly trusted?: true }
+  | {
+      readonly subject: string;
+      readonly login?: string | undefined;
+      readonly trusted?: true;
+      readonly email?: string;
+      readonly emailVerified?: true;
+    }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }
   | { readonly denial: "PROVIDER_UNAVAILABLE"; readonly failure?: ProviderFailure }
   | {

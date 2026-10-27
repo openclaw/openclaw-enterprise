@@ -13,6 +13,7 @@ for setup.
 | `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
 | `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
 | `OCC_AUTH_OIDC_TRUST_CLAIM`, `OCC_AUTH_OIDC_TRUST_VALUE`     | Not rendered by the chart.                          | Experimental trust claim; see below.                                                        |
+| `OCC_AUTH_OIDC_TRUST_EMAIL_CLAIM`                            | Not rendered by the chart.                          | Experimental; which claim the trusted token's email comes from. Default `email`.            |
 
 With `auth.oidc.enabled`, the chart adds the API-only egress policy
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
@@ -26,10 +27,14 @@ Experimental trust-claim enrolment (env-var only; the Helm chart does not render
 yet): `OCC_AUTH_OIDC_TRUST_CLAIM` and `OCC_AUTH_OIDC_TRUST_VALUE` are both-or-neither, or
 startup fails. When set, a verified ID token whose named claim equals the exact value
 vouches for its subject: an unknown identity is authenticated and enrolled just-in-time as
-a human account with no grants and a placeholder email. Only `openid` is requested, so the
-IdP must issue the claim into the ID token itself. Without the claim, or with a different
-value, unknown identities are refused as before; see
+a human account with no grants. Only `openid` is requested, so the IdP must issue the
+claim into the ID token itself. Without the claim, or with a different value, unknown
+identities are refused as before; see
 [trust-claim enrolment](../../guides/deploy/oidc-sign-in.md#trust-claim-enrolment-experimental).
+The optional `OCC_AUTH_OIDC_TRUST_EMAIL_CLAIM` (default `email`) names the claim the same
+token may carry as the enrolled account's email address, marked verified only when the
+token asserts `email_verified` exactly true; without a usable value the account gets a
+deterministic placeholder address.
 
 `auth.oidc.caSecretName` and `auth.oidc.caSecretKey` optionally select a public PEM
 CA bundle from a Secret in the release namespace. Both default to empty; set both

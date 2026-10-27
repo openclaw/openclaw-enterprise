@@ -27,7 +27,8 @@
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
     "tests/integration/postgres-github-session-cookie.test.mjs",
     "tests/integration/postgres-service-api-keys.test.mjs",
-    "tests/integration/postgres-auth-binding.test.mjs"
+    "tests/integration/postgres-auth-binding.test.mjs",
+    "tests/integration/postgres-oidc-trusted-claim.test.mjs"
   ],
   "files": [
     {
@@ -171,6 +172,13 @@
       "path": "tests/integration/postgres-auth-binding.test.mjs",
       "expectedTests": [
         "PostgreSQL auth binding pins transactions, rolls back failures, and preserves caller pool ownership"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-oidc-trusted-claim.test.mjs",
+      "expectedTests": [
+        "OIDC trust-claim configuration is both-or-neither with a valid name and value",
+        "PostgreSQL OIDC trust-claim sign-in enrolls unknown claimed identities with no grants"
       ]
     }
   ]

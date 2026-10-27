@@ -906,10 +906,25 @@ export function createHumanLogin(
               if (snapshot === undefined && exchange.trusted === true) {
                 // The operator configured this provider's verified tokens to vouch for realm
                 // members (a trusted OIDC claim): enrol the unknown identity with no grant
-                // instead of refusing it. Only an OIDC exchange sets `trusted`.
+                // instead of refusing it. Only an OIDC exchange sets `trusted`. The attempt
+                // creation time travels with the enrolment so an identity that only appeared
+                // or changed after this attempt began still refuses, exactly as an attached
+                // identity would.
                 snapshot = await state.provisionTrustedExternalAccount(
                   provider.providerId,
                   exchange.subject,
+                  {
+                    createdAt: attempt.createdAt,
+                    // The email the same trusted token carried, when it did.
+                    ...(exchange.email === undefined
+                      ? {}
+                      : {
+                          email: exchange.email,
+                          ...(exchange.emailVerified === undefined
+                            ? {}
+                            : { emailVerified: exchange.emailVerified }),
+                        }),
+                  },
                 );
               }
               if (!snapshot) {
