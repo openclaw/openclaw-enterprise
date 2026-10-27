@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-27"
-last_updated_session: authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad
+last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
 ---
 
 # Protected credential request flow
@@ -151,12 +151,14 @@ refuses; peer expiry must be valid and future at resolution, send and response l
 or handle cannot transfer custody. Closing the stream cancels it. Cancellation or expiry
 releases material; pending policy or receipt work keeps its slot. No pipelining.
 
-`packages/occ/src/credential-proxy.ts:resolve` then moves the slot to the verified Sandbox's share,
-maps the peer to persisted installation state and classifies one exact route through its
-provider. Before capture or policy I/O, it reserves the UUIDv7 request ID; its creation time
-fixes the 30-second replay horizon. Slots and IDs are
-[bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
-unsupported or ambiguous operations refuse before reserving one.
+`packages/occ/src/credential-proxy.ts:resolve` moves the slot to the verified Sandbox's share,
+maps the peer to persisted installation state and pins eligible providers and methods before
+classification. Ambiguity blocks classification. OCC rechecks pins before and after provider
+use and at material access, send authorization and response release. Changes restored between checks
+escape detection. Secret Driver network access and supervisor response writes remain downstream.
+After one exact route matches, OCC reserves a UUIDv7 request ID before capture or policy I/O.
+Creation fixes the 30-second replay horizon. [Slots and IDs are bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
+unsupported or ambiguous operations refuse before reservation.
 
 Supplier enrollment starts at its authenticated current supervisor hello, not the first
 exchange. The supplier must keep the corresponding private key outside the Agent and
@@ -329,10 +331,6 @@ None.
 
 ## Changelog
 
-- 2026-10-27 14:03: Document the accompanying send authorization transaction. (authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad - 61c38c4c5a008bbdd8ad8eb2d70aa68492b7fdcc)
-
-- 2026-10-27 13:15: Document the accompanying Compute readiness capability boundary. (authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de - f6396abd5698efacabfeb150ef6cd38cdef6e814)
-
-- 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
+- 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

@@ -107,6 +107,7 @@
     "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
     "tests/integration/credential-proxy-peer-pin.test.ts",
+    "tests/integration/credential-proxy-provider-pin.test.ts",
     "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
@@ -497,6 +498,20 @@
         "exchange busy lifetime observation requires a live exact owner",
         "duplicate send retains only an exact authenticated lifetime contraction",
         "duplicate send contraction bounds pending receipt work"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-proxy-provider-pin.test.ts",
+      "expectedTests": [
+        "credential exchange refuses a conflicted eligible provider before route fallback",
+        "credential exchange refuses duplicate and substituted providers before material access",
+        "credential exchange refuses provider replacement during a pending Secret read",
+        "credential exchange withholds a response after provider method replacement",
+        "credential exchange preserves the original possible-send receipt after provider drift",
+        "credential exchange withholds an observed response after provider replacement",
+        "credential exchange cuts a cached stream lease after provider replacement",
+        "an unbound source update keeps its admitted provider when same-type providers reorder",
+        "a source update withholds resolved material after its provider or injector changes"
       ]
     },
     {
