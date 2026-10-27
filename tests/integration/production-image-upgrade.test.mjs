@@ -260,9 +260,12 @@ case "$*" in
   *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
   *'namespaceId: $namespace.id'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","baselineRevisionId":"rev_test"}' ;;
-  *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test"}' ;;
+  *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0,"gatewayUid":"gateway-test-uid"}' ;;
   *'{namespaceId: $namespaceId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","deploymentId":"rev_candidate"}' ;;
-  *'{namespace: .metadata.namespace, name: .metadata.name}'*) printf '%s\\n' '{"namespace":"tenant-test","name":"gateway-test"}' ;;
+  *'{namespace: .metadata.namespace, name: .metadata.name,'*) printf '%s\\n' '{"namespace":"tenant-test","name":"gateway-test","restarts":0,"uid":"gateway-test-uid"}' ;;
+  *' .uid') cat >/dev/null; printf '"gateway-test-uid"\\n' ;;
+  *'.restarts'*|*'.gatewayRestarts'*) cat >/dev/null; printf '0\\n' ;;
+  *'.lastState.terminated.reason'*) cat >/dev/null; printf '0\\tnone\\n' ;;
   *'spec.containers'*'length'*)
     attempts=0
     [[ ! -f "$RUNTIME_COUNT_COUNTER" ]] || attempts=$(cat "$RUNTIME_COUNT_COUNTER")
@@ -299,7 +302,7 @@ esac
     "kubectl",
     `printf 'kubectl %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
-  *'exec gateway-test --container gateway -- node /app/openclaw.mjs doctor --lint --json --severity-min error'*)
+  *'exec gateway-test --container gateway -- env NODE_OPTIONS=--max-old-space-size=384 node /app/openclaw.mjs doctor --lint --json --severity-min error'*)
     if [[ "$DOCTOR_FAILURE" == "1" ]]; then
       printf 'doctor found an error\\n' >&2
       exit 53
@@ -397,11 +400,13 @@ esac
     completed.stdout,
     /runtime image; controller image remained unchanged and 1 running Agents selected new revisions/u,
   );
+  // This stand-in kubectl serves no cgroup files, so Doctor runs without the free-memory gate.
+  assert.match(completed.stderr, /running OpenClaw Doctor without checking its free memory/u);
   assert.equal((await readFile(readinessCounter, "utf8")).trim(), "2");
   assert.equal((await readFile(runtimeCountCounter, "utf8")).trim(), "3");
   assert.match(
     await readFile(commandLog, "utf8"),
-    /exec gateway-test --container gateway -- node \/app\/openclaw\.mjs doctor --lint --json --severity-min error/u,
+    /exec gateway-test --container gateway -- env NODE_OPTIONS=--max-old-space-size=384 node \/app\/openclaw\.mjs doctor --lint --json --severity-min error/u,
   );
 });
 

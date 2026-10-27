@@ -1,7 +1,7 @@
 // Runtime image cases split from runtime-image-startup.test.mjs so CI can run
 // them beside it: the Harness entrypoint initializes its workspace without
 // replacing owner edits, and the Gateway treats a read-only Kubernetes
-// configuration as externally managed.
+// configuration as externally managed and starts with OCE's Node options.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
@@ -232,7 +232,7 @@ test(
 );
 
 test(
-  "runtime image tells OpenClaw that a read-only Kubernetes configuration is externally managed",
+  "runtime image starts the Kubernetes Gateway with its externally managed marker and Node options",
   imageTestOptions,
   async (t) => {
     // An embedded OpenClaw Gateway starts from the Configuration OCC mounts read-only.
@@ -242,9 +242,16 @@ test(
       entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
       volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
       withAppServer: false,
+      // An operator's own Node options on the container.
+      extraEnvironment: ["NODE_OPTIONS=--max-old-space-size=3072"],
     });
+    const environment = await gatewayProcessEnvironment(containerName);
+    assert.ok(environment.includes("OPENCLAW_CONFIG_READONLY=1"));
+    // The wrapper caps V8's semi-space for the Gateway (finding 2700) and keeps the
+    // operator's options after it, so an operator's own flag still wins.
     assert.ok(
-      (await gatewayProcessEnvironment(containerName)).includes("OPENCLAW_CONFIG_READONLY=1"),
+      environment.includes("NODE_OPTIONS=--max-semi-space-size=8 --max-old-space-size=3072"),
+      environment.find((entry) => entry.startsWith("NODE_OPTIONS=")),
     );
     // OpenClaw promotes its last-known-good backup just after it reports ready,
     // and only then releases its post-ready work. That work includes the remote

@@ -731,9 +731,28 @@ describe("CI preparation", { concurrency }, () => {
     assert.match(warmed.stderr, /^\[image-cache-warm\] runtime build$/m);
     assert.match(warmed.stderr, /^\[image-cache-warm\] controller cache export$/m);
     assert.match(warmed.stderr, /^\[image-cache-warm\] runtime cache export$/m);
-    const buildx = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    const all = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    // The runtime image's OpenClaw build runs alone before that image's build, which
+    // reuses it: on the warm runner it cannot fit beside the bridge tests.
+    const stage = all.filter(({ args }) => args.includes("openclaw-build"));
+    const buildx = all.filter((call) => !stage.includes(call));
     const builds = buildx.filter(({ args }) => args.includes("--load"));
     const exports = buildx.filter(({ args }) => !args.includes("--load"));
+    assert.match(warmed.stderr, /^\[image-cache-warm\] runtime openclaw-build build$/m);
+    const runtimeLoad = builds.find(({ args }) => !args.includes("--target"));
+    assert.equal(stage.length, 1);
+    assert.ok(all.indexOf(stage[0]) < all.indexOf(runtimeLoad));
+    const runtimeTag = runtimeLoad.args.indexOf("-t");
+    assert.deepEqual(stage[0].args, [
+      "buildx",
+      "build",
+      "--output",
+      "type=cacheonly",
+      "--target",
+      "openclaw-build",
+      ...runtimeLoad.args.slice(3, runtimeTag),
+      ...runtimeLoad.args.slice(runtimeTag + 2),
+    ]);
     assert.deepEqual(
       builds.map(({ args }) => (args.includes("--target") ? "controller" : "runtime")).sort(),
       ["controller", "runtime"],
