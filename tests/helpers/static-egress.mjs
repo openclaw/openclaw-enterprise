@@ -237,6 +237,8 @@ export async function staticEgressFixture(
     policy: undefined,
     deleted: [],
     workspaceVisible: true,
+    policyStatusRequests: 0,
+    policyStatusUnavailable: false,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
   const gatewayCapabilities = ["openshell.supervisor-middleware.contract", ...capabilities].sort();
@@ -319,6 +321,11 @@ export async function staticEgressFixture(
       callback(null, observed.service);
     },
     GetSandboxPolicyStatus(call, callback) {
+      observed.policyStatusRequests += 1;
+      if (observed.policyStatusUnavailable) {
+        callback({ code: grpc.status.UNAVAILABLE });
+        return;
+      }
       if (call.request.workspace_scope.workspace !== runtimeNamespace.name) {
         callback({ code: grpc.status.NOT_FOUND });
         return;
