@@ -1111,10 +1111,12 @@ function permissionDescription(
 function clientInstallation(
   installation: Readonly<Installation>,
   computeDriver: Readonly<ComputeDriver> | undefined,
+  nativeAdminEnabled: boolean,
 ): Record<string, unknown> {
   const agentProvisioning = computeDriver?.agentProvisioning;
   const capabilities = {
     ...installation.capabilities,
+    ...(nativeAdminEnabled ? { nativeAdmin: true } : {}),
     ...(agentProvisioning === undefined
       ? {}
       : {
@@ -1790,6 +1792,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
     ...createAgentHandlers({
+      nativeAdmin: options.nativeAdmin,
+      publicOrigin,
+      installationId,
       resolveHarness: options.resolveHarness,
       requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
       rejectDeployment: (request, context) =>
@@ -2174,7 +2179,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         });
         controller = created;
         reply.status(201).send({
-          data: clientInstallation(created.installation, options.computeDriver),
+          data: clientInstallation(
+            created.installation,
+            options.computeDriver,
+            options.nativeAdmin?.enabled === true,
+          ),
           meta: { requestId: request.id },
         });
         return;
@@ -2200,6 +2209,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: clientInstallation(
           await controller.getInstallation(context.actorId),
           options.computeDriver,
+          options.nativeAdmin?.enabled === true,
         ),
         meta: { requestId: request.id },
       });

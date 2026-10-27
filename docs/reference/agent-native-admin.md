@@ -1,14 +1,29 @@
 # Agent native admin UI
 
-Agent native admin UI access lets an authorized operator open the selected Agent's native OpenClaw administration UI from the platform console. It is an explicit pilot capability for trusted operators. It exposes the stock native administrator surface for one Agent Gateway, subject to [Gateway managed mode](#gateway-managed-mode).
+Native admin UI is a trusted-operator pilot that exposes one Agent Gateway’s stock administration surface, subject to [Gateway managed mode](#gateway-managed-mode).
 
-The feature is disabled by default. When enabled, the console shows **Native admin UI** on the Agent detail tabs only for callers with exact Agent `administer` permission. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
+The feature is disabled by default. When enabled, the console shows native access to exact Agent administrators. OCC resolves the Agent host and proxies native HTTP and WebSocket traffic using the operator’s OCE session.
 
 ## Who can open it
 
-Native admin UI is the only Agent chat surface in the console, and it is for exact Agent `administer` holders with a human session (see [Authorization and availability](#authorization-and-availability)). Other people message the Agent through a channel its Configuration sets up, such as [Slack](../guides/integrations/slack.md), or ask someone who can edit that Configuration to let them in. An operator with cluster access can check a real response with [model verification](../guides/operate/model-verification.md) or the [OpenClaw TUI](../guides/deploy/production-tui.md).
+Native admin UI is the console’s Agent chat surface. It requires a human session and exact Agent `administer` permission. Other users need a configured channel such as [Slack](../guides/integrations/slack.md). Operators with cluster access can use [model verification](../guides/operate/model-verification.md) or the [OpenClaw TUI](../guides/deploy/production-tui.md).
 
 Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup rejects enablement (`<Provider> sign-in does not support native administration.`). That profile issues a host-only `__Host-openclaw_occ.session_token` session cookie on HTTPS, which cannot carry the `Domain` attribute that lets Agent hosts read the [shared session](authentication.md#native-admin-shared-sessions).
+
+## Enable during creation
+
+On **Create Agent**, select **Enable Native admin UI** before creating a supported
+Dedicated Agent. The option is off by default and unavailable until the
+Installation enables native admin access. The API accepts `nativeAdmin: true` on
+`POST /namespaces/:namespaceId/agents/provision`.
+
+Provisioning saves `controlUi.enabled`, the exact derived HTTPS origin (including
+its port), `gateway.publicOrigin`, and trusted-proxy admin device approval in the
+initial Configuration. It preserves existing allowed origins, Secret bindings,
+and unrelated settings. Conflicting authentication modes, unsupported auth fields,
+disabled device authentication, and host-header origin fallback are refused.
+Retries retain the same Agent identity and prepared Configuration. Enabling this
+option does not grant the creator Agent `administer` permission.
 
 ## Requirements
 

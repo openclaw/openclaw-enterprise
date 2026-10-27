@@ -152,6 +152,7 @@ export interface CreateAgentDraft {
   rendered: PresetLaunchSettings;
   presetOptions: PresetOptions;
   touched: boolean;
+  nativeAdmin: boolean;
   inputs: Record<string, string>;
   edited: boolean;
   manualModel: boolean;
@@ -2134,6 +2135,20 @@ function renderAgentForm(
     removeCredentialRegistration,
     submit,
   );
+  const nativeAdmin = element("input", {
+    type: "checkbox",
+    id: "native-admin",
+    "aria-describedby": "native-admin-help",
+  });
+  nativeAdmin.checked = draft.nativeAdmin ?? false;
+  let nativeAdminAvailable = false;
+  const nativeAdminHelp = element("p", { id: "native-admin-help", className: "hint" });
+  const nativeAdminField = element(
+    "div",
+    { className: "field" },
+    element("label", {}, nativeAdmin, " Enable Native admin UI"),
+    nativeAdminHelp,
+  );
   const channelEditor = element("div", { className: "create-channels" });
   // The intro names repository access only where the Installation offers it (finding 2423).
   const introText = (repositoryAccess: boolean) =>
@@ -2148,6 +2163,7 @@ function renderAgentForm(
     ...(presetBadge ? [presetBadge] : []),
     field("Agent name", name, "Unique within this Namespace."),
     authSection,
+    nativeAdminField,
     capabilityStatus,
     retryCapabilityDiscovery,
     element(
@@ -2263,6 +2279,7 @@ function renderAgentForm(
   const isTouched = () => touched || edited;
   const captureDraft = (): CreateAgentDraft => ({
     touched: isTouched(),
+    nativeAdmin: nativeAdmin.checked,
     rendered,
     presetOptions,
     // Keep raw editor text, including invalid JSON. Password controls are deliberately excluded.
@@ -2705,6 +2722,22 @@ function renderAgentForm(
     for (const node of actions.querySelectorAll("button")) {
       node.disabled = pending;
     }
+    nativeAdmin.disabled ||=
+      Boolean(savedConfiguration) || !nativeAdminAvailable || !shouldProvision();
+    let nativeAdminHint =
+      "Chat with this Agent through its OCE URL after deployment. Requires Agent administer permission; enables native administration and trusted-proxy device approval.";
+    if (!capabilityDiscoveryDone) {
+      nativeAdminHint = "Native admin UI availability depends on installation capabilities.";
+    } else if (!nativeAdminAvailable) {
+      nativeAdminHint =
+        "Native admin UI access is not enabled on this installation. Ask an Installation administrator to enable it.";
+    } else if (!shouldProvision()) {
+      nativeAdminHint = "Native admin UI setup requires Dedicated provisioning.";
+    }
+    setText(nativeAdminHelp, nativeAdminHint);
+    if (!planLocked && capabilityDiscoveryDone && (!nativeAdminAvailable || !shouldProvision())) {
+      nativeAdmin.checked = false;
+    }
     updatePluginDiscovery();
     pluginFields.setDisabled(planLocked);
     channelEditor.toggleAttribute("inert", planLocked || saved);
@@ -3122,6 +3155,7 @@ function renderAgentForm(
       if (!defaultApprovers.hidden) {
         defaultApprovers.refreshNames();
       }
+      nativeAdminAvailable = installation.capabilities?.nativeAdmin === true;
       nativeWorkersAvailable = installation.capabilities?.nativeWorkers !== undefined;
       const openclawModes = installation.capabilities?.openclaw?.executionModes;
       openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
@@ -3756,6 +3790,7 @@ function renderAgentForm(
       if (shouldProvision()) {
         const plan = {
           requestId: provisioningRequestId,
+          ...(nativeAdmin.checked && nativeAdminAvailable ? { nativeAdmin: true } : {}),
           ...body,
           harnessAuth,
           configuration: {

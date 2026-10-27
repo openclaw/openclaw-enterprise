@@ -760,6 +760,12 @@ export const ProvisionAgentConfigurationBody = Type.Object(
 export const ProvisionAgentBody = Type.Object(
   {
     requestId: RequestId,
+    nativeAdmin: Type.Optional(
+      Type.Boolean({
+        description:
+          "Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false.",
+      }),
+    ),
     initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
     workspaceDefaultsId: Type.Optional(CreateAgentBody.properties.workspaceDefaultsId),
     name: Name,
