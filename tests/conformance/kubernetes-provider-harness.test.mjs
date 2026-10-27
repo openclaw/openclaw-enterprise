@@ -604,7 +604,7 @@ for (const scenario of transportScenarios) {
 for (const scenario of transportScenarios) {
   test(`provider Harness ready credential attachment still requires ${scenario.name}`, async () => {
     const fixture = await endpointWithGateway();
-    const { driver, revision } = fixture;
+    const { revision } = fixture;
     fixture.observePods([fixture.pod("ready")]);
     const harnessObservations = [];
     fixture.sandbox.harnessStatus = async (context) => {
