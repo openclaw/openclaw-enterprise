@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -183,4 +184,58 @@ func TestK3dAPIEgressReal(t *testing.T) {
 		t.Fatal("unchanged endpoints caused another write")
 	}
 	t.Logf("real API replacement passed; namespace/release refusal, changed owner/object conflict, dry-run and no-op passed")
+	t.Run("namespace recreation during policy acquisition", func(t *testing.T) {
+		// Delay the real policy GET with an installation replacement. Every read
+		// and write still goes to Kubernetes; the wrapper only controls timing.
+		dockerPath, err := exec.LookPath("docker")
+		if err != nil {
+			t.Fatal(err)
+		}
+		directory := t.TempDir()
+		policyPath := filepath.Join(directory, "policy.json")
+		replacementPath := filepath.Join(directory, "replacement.json")
+		if err := os.WriteFile(policyPath, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		for key, value := range map[string]string{
+			"EGRESS_TEST_DOCKER": dockerPath, "EGRESS_TEST_CONTEXT": dockerContext,
+			"EGRESS_TEST_NODE": "k3d-" + cluster + "-server-0", "EGRESS_TEST_NAMESPACE": namespace,
+			"EGRESS_TEST_POLICY": policyPath, "EGRESS_TEST_REPLACEMENT": replacementPath,
+		} {
+			t.Setenv(key, value)
+		}
+		wrapper := `#!/bin/sh
+set -eu
+case "$*" in
+  *" -n $EGRESS_TEST_NAMESPACE get networkpolicy openclaw-enterprise-dependency-egress -o json")
+    if [ ! -f "$EGRESS_TEST_REPLACEMENT" ]; then
+      kube() { "$EGRESS_TEST_DOCKER" --context "$EGRESS_TEST_CONTEXT" exec -i "$EGRESS_TEST_NODE" kubectl --request-timeout=8s "$@"; }
+      kube delete namespace "$EGRESS_TEST_NAMESPACE" --wait=true >/dev/null
+      kube create namespace "$EGRESS_TEST_NAMESPACE" >/dev/null
+      kube create -f - -o json <"$EGRESS_TEST_POLICY" >"$EGRESS_TEST_REPLACEMENT"
+    fi
+    ;;
+esac
+exec "$EGRESS_TEST_DOCKER" "$@"
+`
+		if err := os.WriteFile(filepath.Join(directory, "docker"), []byte(wrapper), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if err := ReconcileK3dAPIEgress(ctx, opts); err == nil {
+			t.Fatal("recreated namespace was adopted using the previous installation UID")
+		}
+		replacement, err := os.ReadFile(replacementPath)
+		if err != nil {
+			t.Fatal("namespace replacement did not execute:", err)
+		}
+		var installed map[string]any
+		if err := json.Unmarshal(replacement, &installed); err != nil {
+			t.Fatal(err)
+		}
+		if get()["metadata"].(map[string]any)["resourceVersion"] != installed["metadata"].(map[string]any)["resourceVersion"] {
+			t.Fatal("stale installation authority changed the replacement policy")
+		}
+		t.Log("recreated namespace refused; replacement policy resourceVersion unchanged")
+	})
 }
