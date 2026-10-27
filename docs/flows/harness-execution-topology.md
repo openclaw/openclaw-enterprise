@@ -161,6 +161,26 @@ closes only its channel. Malformed framing or loss of the shared IPC stream
 stops the revision fail-closed. These paths do not add destinations, credentials,
 retries or sandbox permissions.
 
+`deploy/runtime/openclaw-node-message-pipe.patch` changes the native node
+launcher's message transport. A package that declares `byte-pipe-v1` uses a
+private byte stream on POSIX systems; existing installed packages retain their
+Node IPC protocol. Both paths keep bootstrap acknowledgement, authenticated
+readiness, restart selection and parent-loss termination. Frames are limited
+to 1 MiB and queued writes to 4 MiB or 256 messages. The byte stream does not
+receive ancillary file descriptors, so Box can continue to deny `recvmsg`.
+The runtime build applies and tests this patch before compiling OpenClaw; the
+SandboxDriver does not replace native supervision or patch Node's IPC methods.
+
+`deploy/runtime/Dockerfile:openclaw-build` applies the pinned-runtime pairing
+publication repair before compilation. A pending write for another device does
+not invalidate a node's committed pairing. Binding reads install committed
+receipts before use; token revocation, rotation, removal and changed approvals
+still reject stale dispatch. Unknown publication state and foreign-revision
+invalidation remain fail-closed. This is an OpenClaw Gateway repair shared by
+all Sandbox Drivers; it adds no transport retry or provider-specific auth rule.
+`scripts/build-runtime-assets.mjs:289` records the patch hash
+in the image provenance. Real Gateway and SQLite regressions run during assembly.
+
 Dedicated Harnesses use ServiceAccounts separate from their Gateway. Compute owns the Gateway; SandboxDriver owns the native Harness. Its node retains identity, workspace and model credentials. OpenShell's version provider delivers setup and the Gateway CA; startup combines inherited trust, writes a private one-use target and reconnects with the persisted device token. Renewal and cleanup retain exact provider ownership.
 
 `internal/occdev/kubernetes.go:writeInstallation` permits Node and pinned Codex model egress. Native workers connect outbound without an app-server endpoint. Compute binds `dedicated-native` with `inference: "worker"`; a missing or disconnected Harness fails without Gateway inference. Exact callbacks and session admission scope transport to the Agent.
