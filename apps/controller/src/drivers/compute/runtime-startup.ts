@@ -78,11 +78,9 @@ export function openClawStateMigrationHelper(owner: "Gateway" | "Harness", retry
   return String.raw`
 function outdatedOpenClawDatabases(stateDirectory) {
   const { join } = require("node:path");
-  const candidates = [];
-  const sharedPath = join(stateDirectory, "state", "openclaw.sqlite");
-  if (require("node:fs").existsSync(sharedPath)) {
-    candidates.push({ path: sharedPath, current: ${OPENCLAW_STATE_DATABASE_SCHEMA_VERSION}, shared: true });
-  }
+  const candidates = [
+    { path: join(stateDirectory, "state", "openclaw.sqlite"), current: ${OPENCLAW_STATE_DATABASE_SCHEMA_VERSION}, shared: true },
+  ];
   let agentIds = [];
   try {
     agentIds = require("node:fs").readdirSync(join(stateDirectory, "agents"));
@@ -95,7 +93,6 @@ function outdatedOpenClawDatabases(stateDirectory) {
       current: ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION},
     });
   }
-  if (candidates.length === 0) return [];
   // Outside the per-database try: without the module, startup fails instead of skipping.
   const { DatabaseSync } = require("node:sqlite");
   const outdated = [];
