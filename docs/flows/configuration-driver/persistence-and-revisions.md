@@ -122,7 +122,12 @@ Next OCC reads the selected Configuration Driver's stored document. For the
 bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
 When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
-stored reusable Configuration and its generation remain unchanged. Compute then
+stored reusable Configuration and its generation remain unchanged. OCC then sets
+`messages.queue.allowCollaborativeSteering: false` and
+`tools.exec.applyPatch.workspaceOnly: true` where the copy leaves them unset
+([`admitGatewaySecurityDefaults`](../../../packages/occ/src/configuration-settings.ts)),
+so OpenClaw's `personal` security preset does not loosen them, and refuses a
+non-boolean value or a non-object on their path. Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
 [the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)

@@ -218,6 +218,56 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
+/**
+ * Settings OCE keeps at the value OpenClaw used before its `security.preset` (default
+ * `personal`, openclaw/openclaw#185477), which fills them only when unset. Without them, another
+ * participant's message could steer a running turn under the first requester's authority, and
+ * apply_patch could write outside the workspace. An explicit value in the Configuration wins.
+ */
+export const GATEWAY_SECURITY_DEFAULTS: readonly (readonly [string, boolean])[] = [
+  ["messages.queue.allowCollaborativeSteering", false],
+  ["tools.exec.applyPatch.workspaceOnly", true],
+];
+
+/**
+ * Deployment admission fills each unset GATEWAY_SECURITY_DEFAULTS setting, for every Compute
+ * Driver and execution mode. It refuses a non-object on the setting's path or a non-boolean
+ * value, which the Gateway would refuse at startup.
+ */
+export function admitGatewaySecurityDefaults(
+  values: Readonly<OpenClawConfigurationDocument>,
+): OpenClawConfigurationDocument {
+  const refuse = (setting: string, requirement: string) =>
+    new ConfigurationHarnessError(`Configuration setting ${setting} ${requirement}.`);
+  const fill = (
+    parent: Readonly<OpenClawConfigurationDocument>,
+    path: readonly string[],
+    value: boolean,
+    walked: string,
+  ): OpenClawConfigurationDocument => {
+    const [key, ...rest] = path as [string, ...string[]];
+    const setting = walked === "" ? key : `${walked}.${key}`;
+    const current = parent[key];
+    if (rest.length === 0) {
+      if (current !== undefined && typeof current !== "boolean") {
+        throw refuse(setting, "must be true or false");
+      }
+      return current === undefined ? { ...parent, [key]: value } : parent;
+    }
+    if (current !== undefined && asRecord(current) === undefined) {
+      throw refuse(setting, "must be an object");
+    }
+    const child = (current ?? {}) as Readonly<OpenClawConfigurationDocument>;
+    const next = fill(child, rest, value, setting);
+    return next === child ? parent : { ...parent, [key]: next };
+  };
+  let admitted = values as OpenClawConfigurationDocument;
+  for (const [setting, value] of GATEWAY_SECURITY_DEFAULTS) {
+    admitted = fill(admitted, setting.split("."), value, "");
+  }
+  return admitted;
+}
+
 // `${NAME}`, or an object naming a source and an id (OpenClaw's SecretRef).
 function isCredentialReference(value: unknown): boolean {
   if (typeof value === "string") {

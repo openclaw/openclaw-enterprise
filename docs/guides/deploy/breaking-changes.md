@@ -23,6 +23,28 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-27: deploy Agents again to keep strict steering and apply_patch limits
+
+**What breaks.** The OpenClaw update of 2026-10-27 adds `security.preset`, with
+the default `personal`. When a Configuration does not set them, this preset lets
+another participant's message steer a running turn under the first requester's
+authority (`messages.queue.allowCollaborativeSteering`), and lets `apply_patch`
+write outside the workspace (`tools.exec.applyPatch.workspaceOnly`). Deployment
+now sets the earlier values, `false` and `true`, when they are not set. An Agent
+version deployed before the upgrade keeps its document, so its Gateway uses the
+new defaults until the next deployment. With steering off, a message from
+another participant during a running turn now runs as a separate turn after it,
+instead of a refusal.
+
+**Who is affected.** Agents deployed before the upgrade whose Configuration does
+not set these settings.
+
+**How to tell.** The Agent version's `configuration` does not contain
+`messages.queue.allowCollaborativeSteering`.
+
+**Steps.** After the upgrade, deploy each Agent again. To keep the refusal, set
+`messages.queue.collaborativeSteeringFallback: "reject"` in the Configuration.
+
 ## 2026-10-27: chart listener ports start at 1024
 
 **What breaks.** Helm rendering refuses `api.port`, `metrics.port`,
