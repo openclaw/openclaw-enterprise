@@ -105,6 +105,7 @@
     "tests/conformance/split-layout-adopt.test.mjs",
     "tests/conformance/url-authority.test.mjs",
     "tests/integration/static-egress.test.mjs",
+    "tests/integration/token-retirement.test.ts",
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
@@ -471,6 +472,12 @@
     },
     {
       "path": "tests/conformance/url-authority.test.mjs"
+    },
+    {
+      "path": "tests/integration/token-retirement.test.ts",
+      "expectedTests": [
+        "token retirement preserves failed stages without replay or disclosing errors"
+      ]
     },
     {
       "path": "tests/integration/credential-proxy-peer-pin.test.ts",
