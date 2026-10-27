@@ -435,7 +435,10 @@
       "path": "tests/integration/repository-credentials-admission.test.mjs"
     },
     {
-      "path": "tests/integration/repository-native-cutover.test.ts"
+      "path": "tests/integration/repository-native-cutover.test.ts",
+      "expectedTests": [
+        "prepared OPEN constructs only the selected route after its original reservation"
+      ]
     },
     {
       "path": "tests/integration/repository-credentials-driver.test.mjs"

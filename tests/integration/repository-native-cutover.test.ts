@@ -56,6 +56,19 @@ async function fixture(t: TestContext) {
     maximumDurationSeconds: 600,
     repositories: [
       {
+        repositoryRef: "other-project",
+        repositoryId: "790",
+        repository: "example/other-project",
+        namespaces: [
+          {
+            namespaceId,
+            profiles: ["git-write"],
+            transport: "git-only",
+            pushRefAllowlist: ["refs/heads/other"],
+          },
+        ],
+      },
+      {
         repositoryRef: "project",
         repositoryId: "789",
         repository: "example/project",
@@ -109,6 +122,7 @@ async function fixture(t: TestContext) {
     let opens = 0;
     const admissions = createControlAdmission(
       {
+        prepareOpen: service.prepareOpen,
         open(input, standing) {
           opens++;
           return service.open(input, standing);
@@ -252,6 +266,76 @@ test("prepared sender opens through the actual control handler and binds durable
       ?.state,
     "disposed",
   );
+});
+
+test("prepared OPEN constructs only the selected route after its original reservation", async (t) => {
+  const f = await fixture(t);
+  let constructions = 0;
+  let materialCalls = 0;
+  await f.serve({
+    ...f.prepared,
+    createPrepared(...args: Parameters<typeof f.prepared.createPrepared>) {
+      constructions++;
+      const backend = f.prepared.createPrepared(...args);
+      return {
+        ...backend,
+        authorize(...authorizeArgs: Parameters<typeof backend.authorize>) {
+          materialCalls++;
+          return backend.authorize(...authorizeArgs);
+        },
+      };
+    },
+  });
+  const { input, wire } = await f.attempt();
+  await assert.rejects(
+    f.client.open(
+      { ...wire, expectedBinding: { ...wire.expectedBinding, grantId: "wrong" } },
+      input.admissionId,
+      AbortSignal.timeout(3000),
+    ),
+    { name: "RepositoryCredentialControlError" },
+  );
+  assert.equal(constructions, 0);
+  assert.equal(materialCalls, 0);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const originalTransact = f.state.transact;
+  const transact = originalTransact.bind(f.state);
+  let transactions = 0;
+  // Hold the real receipt listener at its State transaction, before it can reserve.
+  f.state.transact = async function (work) {
+    if (transactions++ === 0) {
+      entered.resolve();
+      await release.promise;
+    }
+    return transact(work);
+  };
+  const pending = f.client.open(wire, input.admissionId, AbortSignal.timeout(3000));
+  t.after(async () => {
+    f.state.transact = originalTransact;
+    release.resolve();
+    await pending.catch(() => {});
+  });
+  await entered.promise;
+  assert.equal(constructions, 0);
+  assert.equal(materialCalls, 0);
+  release.resolve();
+  const opened = await pending;
+  assert.equal(opened.kind, "created");
+  if (opened.kind !== "created") {
+    return;
+  }
+  assert.equal(constructions, 1);
+  assert.equal(materialCalls, 0);
+  assert.equal(transactions, 2);
+  assert.deepEqual(opened.result.client.pushRefAllowlist, ["refs/heads/review"]);
+  assert.deepEqual(opened.result.session.binding, wire.expectedBinding);
+  const receipt = await f.state.read((view) =>
+    view.repositorySessions.findBrokerReceipt(input.admissionId),
+  );
+  assert.equal(receipt?.state, "active");
+  assert.equal(receipt?.sessionId, opened.result.session.sessionId);
+  await f.client.close(opened.result.session.sessionId, AbortSignal.timeout(3000));
 });
 
 test("a development-token peer swapped after readiness cannot serve prepared OPEN", async (t) => {
