@@ -12,6 +12,7 @@ import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
   gatewayManagedModeEnvironment,
+  gatewayNodeOptionsEnvironment,
   openClawStateMigrationHelper,
   startupPhaseHelper,
 } from "../runtime-startup.ts";
@@ -2960,7 +2961,7 @@ function startGatewayProcess() {
   const spawned = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-    { stdio: "inherit", env: { ...gatewayEnvironment(), ...${gatewayManagedModeEnvironment(managedMode)} } },
+    { stdio: "inherit", env: { ...gatewayEnvironment(), ...${gatewayManagedModeEnvironment(managedMode)}, ...${gatewayNodeOptionsEnvironment()} } },
   );
   child = spawned;
   childRunning = true;

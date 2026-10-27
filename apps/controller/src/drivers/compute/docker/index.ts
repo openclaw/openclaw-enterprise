@@ -50,6 +50,7 @@ import {
 import { embeddedGatewayRecoveryPreamble } from "../embedded-gateway-owner.ts";
 import {
   gatewayManagedModeEnvironment,
+  gatewayNodeOptionsEnvironment,
   openClawStateMigrationHelper,
   startupPhaseHelper,
 } from "../runtime-startup.ts";
@@ -271,7 +272,7 @@ function startGateway() {
   const child = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-    { stdio: "inherit", env: { ...process.env, ...${gatewayManagedModeEnvironment(managedMode)} } },
+    { stdio: "inherit", env: { ...process.env, ...${gatewayManagedModeEnvironment(managedMode)}, ...${gatewayNodeOptionsEnvironment()} } },
   );
   forwardTermination(child);
   child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));

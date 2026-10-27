@@ -16,6 +16,20 @@ export function gatewayManagedModeEnvironment(managedMode: boolean): string {
   );
 }
 
+// V8 sizes each isolate's young generation from the memory it sees: in a 4 GiB
+// container a semi-space may grow to 64 MiB, in the Gateway's main isolate and in
+// each of its ~25 worker_threads isolates. The flag is process-wide and overrides
+// per-worker resourceLimits. On a remote test VM (median of 5, 1 CPU, finding
+// 2700), 8 MiB cut the first-turn peak 2.56 -> 2.26 GiB (-12%) for +1.5% CPU to
+// readiness and no slower first turn; 4 MiB saved 0.15 GiB more but cost +7% CPU
+// and +14% first-turn time. An operator's NODE_OPTIONS comes last, so it wins.
+const GATEWAY_NODE_OPTIONS = "--max-semi-space-size=8";
+
+// Program text for the Gateway child's NODE_OPTIONS entry, spread after its environment.
+export function gatewayNodeOptionsEnvironment(): string {
+  return `{ NODE_OPTIONS: [${JSON.stringify(GATEWAY_NODE_OPTIONS)}, process.env.NODE_OPTIONS].filter(Boolean).join(" ") }`;
+}
+
 // One stderr JSON line per startup phase, for deploy-time measurement. Callers
 // pass fixed phase names only: never provider, model, credential or path values.
 // A failed phase may add a fixed upper-case cause code, which the Collector exports,
