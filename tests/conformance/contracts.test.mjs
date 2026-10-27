@@ -492,6 +492,7 @@ test("only a codex_pat Harness binding names a ServiceAccount source, and only e
 // evidence from inside its Sandbox, where Agent code can answer in its place.
 
 const runtimeSources = [
+  "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts",
   "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
   "../../apps/controller/src/drivers/compute/runtime-startup.ts",
 ];

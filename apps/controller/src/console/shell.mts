@@ -1,6 +1,6 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { displayDate } from "./agents/list.mjs";
-import { button, element, type statusBlock } from "./dom.mjs";
+import { button, describeDisabled, element, type statusBlock, requestIdLine } from "./dom.mjs";
 import type { createNavigation, pages } from "./navigation.mjs";
 
 interface Account {
@@ -52,6 +52,10 @@ export function brandContents(placement: "navigation" | "sign-in") {
   return [logo, element("span", { className: "brand-name", title: displayName }, displayName)];
 }
 
+// The page panel's sentence that says why no Namespace can be selected. The header's disabled
+// selector is described by it (finding D749); the panel renders below the header afterwards.
+export const NAMESPACE_ACCESS_REASON_ID = "namespace-access-reason";
+
 export function panel(
   target: HTMLElement,
   title: string,
@@ -66,7 +70,7 @@ export function panel(
       { className: "state-panel", role: "status" },
       element("h2", {}, title),
       element("p", {}, description),
-      requestId ? element("p", { className: "request-id" }, `Request ID: ${requestId}`) : null,
+      requestId ? requestIdLine(requestId) : null,
       action ? button(actionLabel, action) : null,
     ),
   );
@@ -157,6 +161,8 @@ export function createShell({
   let namespaces: readonly Namespace[] = [];
   let namespaceId: string | null = null;
   let observabilityUrl: string | null = null;
+  // The shown shell's Observability link, if any.
+  let observabilityLink: HTMLAnchorElement | null = null;
   let menuControls: ReturnType<typeof createAccountMenus> | null = null;
   let drawerControls: {
     shell: HTMLElement;
@@ -349,9 +355,25 @@ export function createShell({
     };
   }
 
+  // A reader with no Namespace sees a panel whose sentence says why the selector is disabled
+  // (finding D749). Only a shown panel describes it: on any other page, such as Settings, the
+  // selector names no reason that is not there.
+  function describeNamespaceSelector(select: HTMLSelectElement) {
+    describeDisabled(
+      select,
+      session && !namespaceAdmissionPending && namespaces.length === 0
+        ? // The page view may still be detached from the document while it renders.
+          (select.closest(".shell") ?? document).querySelector<HTMLElement>(
+            `#${NAMESPACE_ACCESS_REASON_ID}`,
+          )
+        : null,
+    );
+  }
+
   function updateNamespaceSelector(select: HTMLSelectElement) {
     const readable = namespaceAdmissionPending ? [] : namespaces;
     select.disabled = namespaceAdmissionPending || !session || readable.length === 0;
+    describeNamespaceSelector(select);
     select.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
       // Once this session knows the Namespace list, admission names the selection instead of
@@ -361,8 +383,9 @@ export function createShell({
         : "Checking access…";
       if (session && !namespaceAdmissionPending) {
         // The page's panel names the missing access; the disabled selector only says it is empty
-        // (finding 2371).
-        placeholder = namespaceId === null ? "None" : "Namespace unavailable";
+        // (finding 2371). Its "Namespace" label already names the kind, so the compact control
+        // fits the whole word (finding 2423).
+        placeholder = namespaceId === null ? "None" : "Unavailable";
       }
       select.append(element("option", { value: "", disabled: true, selected: true }, placeholder));
     }
@@ -582,20 +605,20 @@ export function createShell({
       });
       nav.append(link);
     }
+    observabilityLink = null;
     if (session && observabilityUrl) {
-      nav.append(
-        element(
-          "a",
-          {
-            href: observabilityUrl,
-            target: "_blank",
-            rel: "noopener noreferrer",
-          },
-          element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
-          "Observability",
-          externalLinkIcon(),
-        ),
+      observabilityLink = element(
+        "a",
+        {
+          href: observabilityUrl,
+          target: "_blank",
+          rel: "noopener noreferrer",
+        },
+        element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
+        "Observability",
+        externalLinkIcon(),
       );
+      nav.append(observabilityLink);
     }
     const revision =
       document.querySelector<HTMLMetaElement>('meta[name="occ-build-revision"]')?.content ?? "";
@@ -626,7 +649,9 @@ export function createShell({
               "span",
               {
                 className: "occ-version",
-                title: knownRevision ? `OCC commit ${revision}` : "OCC build revision unavailable",
+                title: knownRevision
+                  ? `Control plane commit ${revision}`
+                  : "Control plane build revision unavailable",
               },
               knownRevision ? revision.slice(0, 8) : "dev",
             )
@@ -796,18 +821,24 @@ export function createShell({
     return { view, refresh, diagnostics, scopeSelector, actions };
   }
 
-  function sameControl(node: Element, root: HTMLElement) {
-    // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
-    // Other links (Observability) keep the href comparison.
+  // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
+  // Other links (Observability) keep the href comparison.
+  function isSameControl(candidate: Element, node: Element) {
     const nav = node.getAttribute("data-nav");
     return (
-      [...root.querySelectorAll<HTMLElement>(node.localName)].find(
-        (candidate) =>
-          candidate.className === node.className &&
-          (nav
-            ? candidate.getAttribute("data-nav") === nav
-            : candidate.getAttribute("href") === node.getAttribute("href")) &&
-          candidate.textContent === node.textContent,
+      candidate.localName === node.localName &&
+      candidate.className === node.className &&
+      (nav
+        ? candidate.getAttribute("data-nav") === nav
+        : candidate.getAttribute("href") === node.getAttribute("href")) &&
+      candidate.textContent === node.textContent
+    );
+  }
+
+  function sameControl(node: Element, root: HTMLElement) {
+    return (
+      [...root.querySelectorAll<HTMLElement>(node.localName)].find((candidate) =>
+        isSameControl(candidate, node),
       ) ?? null
     );
   }
@@ -825,7 +856,7 @@ export function createShell({
           : `No accessible ${pages[feature].toLowerCase()}`,
         feature === "backends"
           ? "No experimental Backends are configured for this Installation."
-          : "Ask an administrator to provision resources or grant access, then refresh.",
+          : "Ask an Installation administrator to provision resources or grant access, then refresh.",
         "Refresh",
         () => void loadPage(),
       );
@@ -937,6 +968,66 @@ export function createShell({
       }
     }
   });
+  // Each render of a load replaces the shell (the held page, "Loading…", then the page). A press
+  // on a sidebar, top bar or page header control that a render replaces before the release gets
+  // no click on its replacement: the browser drops the click or sends it to an ancestor, so the
+  // control's handler never runs (finding 2505). A release on that control in the shown shell
+  // activates it instead. Taps send their mouse events together on release, so only a held mouse
+  // press can straddle a render.
+  const shellControls =
+    ".sidebar a[href], .sidebar button, .topbar button, .page-header a[href], .page-header button";
+  let pressedControl: Element | null = null;
+  let activatedOnRelease: Element | null = null;
+  document.addEventListener(
+    "mousedown",
+    (event) => {
+      pressedControl =
+        event.button === 0 && event.target instanceof Element
+          ? event.target.closest(shellControls)
+          : null;
+    },
+    { capture: true },
+  );
+  document.addEventListener("mouseup", (event) => {
+    const pressed = pressedControl;
+    pressedControl = null;
+    const released =
+      event.target instanceof Element ? event.target.closest<HTMLElement>(shellControls) : null;
+    if (
+      !pressed ||
+      pressed.isConnected ||
+      !released ||
+      !event.isTrusted ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey ||
+      !isSameControl(released, pressed)
+    ) {
+      return;
+    }
+    // A browser that still sends this release's click to the control must not activate it twice.
+    activatedOnRelease = released;
+    setTimeout(() => {
+      activatedOnRelease = null;
+    });
+    released.click();
+  });
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (
+        event.isTrusted &&
+        event.target instanceof Node &&
+        activatedOnRelease?.contains(event.target)
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    { capture: true },
+  );
   document.addEventListener("keydown", (event) => {
     if (!drawerControls?.shell.classList.contains("drawer-open")) {
       return;
@@ -965,6 +1056,12 @@ export function createShell({
     renderRows,
     switchNamespace,
     updateNamespaces,
+    // The page view calls this once it shows (or replaces) the no-Namespace panel.
+    describeNamespaceSelector() {
+      if (namespaceSelect) {
+        describeNamespaceSelector(namespaceSelect);
+      }
+    },
     // The shown shell's control, outside its page view, that matches one from an earlier
     // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
     // toggle. A new shell's account menus start closed, so their items give way to their toggle (the
@@ -991,6 +1088,13 @@ export function createShell({
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);
+    },
+    // The shown page learned that the caller does not administer the Installation, whose
+    // administrators alone get the link (finding D760).
+    dropObservabilityLink() {
+      observabilityUrl = null;
+      observabilityLink?.remove();
+      observabilityLink = null;
     },
     setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;

@@ -47,13 +47,19 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * and Secret are the test Drivers.
  *
  * @param t the test context; pools and the app close after it.
+ * @param {object} options
  * @param options.label names the Drivers (`<label>-pg-iam`, …) and, when this run bootstraps
  *   the database, its Installation.
  * @param options.authSecret the session signing secret (at least 32 characters).
- * @param options.createAuditSink receives the PostgreSQL audit sink and returns the sink the
+ * @param [options.createAuditSink] receives the PostgreSQL audit sink and returns the sink the
  *   app writes to (default: that sink).
- * @param options.appOptions extra Fastify app options, such as `agentRuntimeLogs`. They are
+ * @param [options.appOptions] extra Fastify app options, such as `agentRuntimeLogs`. They are
  *   spread last, so they may also replace a default above.
+ * @param [options.controllerOptions]
+ * @param [options.stateOptions]
+ * @param [options.sandboxDriver]
+ * @param [options.transportDatabaseUrl]
+ * @param [options.poolOptions]
  * @returns `{ pool, state, controller, computeDriver, app, principal, inject, deployAgent }`.
  *   `inject(method, url, body)` sends an administrator request. `deployAgent(name)` creates a
  *   ready Namespace, an Agent Configuration and API-key Secret, and an Agent whose

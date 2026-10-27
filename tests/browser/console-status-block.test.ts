@@ -6,6 +6,7 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   consoleViewports,
@@ -18,12 +19,22 @@ import {
   newPage,
   selectSecret,
   statusTone,
+  grantStaleConfigurationUpdate,
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
   openAdvancedSettings,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
+import {
+  AGENT_SAVE_DENIED,
+  CONFIGURATION_SAVE_DENIED,
+  DIAGNOSTICS_DENIED,
+  notIncluded,
+  RELOAD_DRAFT_BEFORE_SAVING,
+  REPOSITORY_ACCESS_CHANGED,
+  REPOSITORY_EDITS_PENDING,
+} from "../helpers/refusal-text.mjs";
 
 // Errors, warnings and notices share one status block (UX plan C1): a stripe and wash in the
 // tone's design-token colours, with the text in the body colour. A refusal after a request takes
@@ -147,11 +158,11 @@ const onScreen = (locator: Locator) =>
     };
   });
 
-const FORBIDDEN = {
-  status: 403,
-  contentType: "application/json",
-  body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Forbidden" } }),
-};
+// The API's 403 carries a request ID, which the console shows with a refusal.
+const FORBIDDEN_REQUEST_ID = "req_00000000-0000-4000-8000-000000000403";
+const FORBIDDEN = apiErrorResponse(403, "FORBIDDEN", "Forbidden", {
+  requestId: FORBIDDEN_REQUEST_ID,
+});
 
 // The API's 403 for a policy write.
 const forbidden = async (route: Route) => {
@@ -263,7 +274,7 @@ test("Share Agent refusals", async (t) => {
         // Every existing word is kept.
         assert.equal(
           await alert.textContent(),
-          `${SHARE_REFUSAL} Refresh sharing to inspect current policy before another change.`,
+          `${SHARE_REFUSAL} Refresh sharing to inspect current policy before another change. Request ID: ${FORBIDDEN_REQUEST_ID}`,
         );
         assertPaint(await statusPaint(alert), "danger", "Share refusal");
       },
@@ -393,9 +404,6 @@ test("Notices and the sign-in alert", async (t) => {
   );
 });
 
-const AGENT_REFUSAL =
-  "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.";
-
 const SECRET_ACCESS_REFUSED =
   /^Authentication source saved, but the request to grant this Agent access to the selected Secret was refused\. /;
 
@@ -470,12 +478,12 @@ test("Authentication source save outcomes", async (t) => {
       const rolesWhenWritten = await recordWrites(feedback);
       await page.route(agentUrl, forbidden);
       await save.click();
-      const refusal = page.getByRole("alert").filter({ hasText: AGENT_REFUSAL });
+      const refusal = page.getByRole("alert").filter({ hasText: AGENT_SAVE_DENIED });
       await refusal.waitFor();
-      assert.deepEqual(await lineState(feedback), dangerAlert(AGENT_REFUSAL));
+      assert.deepEqual(await lineState(feedback), dangerAlert(AGENT_SAVE_DENIED));
       assertPaint(await statusPaint(refusal), "danger", "authentication 403");
       await assertFocusedInView(t, refusal);
-      assert.deepEqual(await rolesWhenWritten(AGENT_REFUSAL), ["alert"]);
+      assert.deepEqual(await rolesWhenWritten(AGENT_SAVE_DENIED), ["alert"]);
 
       // Saving again: while its preflight read runs, the line is quiet progress, not the old
       // refusal.
@@ -547,16 +555,14 @@ test("Authentication source save outcomes", async (t) => {
     "an authentication source save with an unknown outcome stays a danger alert",
     async (t) => {
       const { page, save, agentUrl } = await authenticationSourcePage(t, "auth-unknown");
+      // A gateway in front of the API answers 502 (the API never does), with its own page and no
+      // API envelope: the save may or may not have reached the API.
       await page.route(agentUrl, async (route) => {
         if (route.request().method() === "GET") {
           await route.continue();
           return;
         }
-        await route.fulfill({
-          status: 502,
-          contentType: "application/json",
-          body: JSON.stringify({ error: { code: "BAD_GATEWAY", message: "Bad gateway" } }),
-        });
+        await route.fulfill(proxyErrorResponse(502));
       });
       await save.click();
       await page.locator("form > p.status[data-tone=danger][role=alert]").waitFor();
@@ -614,7 +620,7 @@ test("Repository access save refusals", async (t) => {
     await page.locator("#repository-default-git-read").check();
     await page.getByRole("button", { name: "Save repository access" }).click();
     const refusal = page.getByRole("alert").filter({
-      hasText: "Repository access changed while you were editing. Reload this draft before saving.",
+      hasText: REPOSITORY_ACCESS_CHANGED,
     });
     await refusal.waitFor();
     assertPaint(await statusPaint(refusal), "danger", "repository refusal");
@@ -644,16 +650,16 @@ test("Repository access save refusals", async (t) => {
       const rolesWhenWritten = await recordWrites(feedback);
       const refuse = async () => {
         await save.click();
-        const refusal = page.getByRole("alert").filter({ hasText: AGENT_REFUSAL });
+        const refusal = page.getByRole("alert").filter({ hasText: AGENT_SAVE_DENIED });
         await refusal.waitFor();
-        assert.deepEqual(await lineState(feedback), dangerAlert(AGENT_REFUSAL));
+        assert.deepEqual(await lineState(feedback), dangerAlert(AGENT_SAVE_DENIED));
         return refusal;
       };
       await page.locator("#repository-default-git-read").check();
       const refusal = await refuse();
       assertPaint(await statusPaint(refusal), "danger", "repository 403");
       await assertFocusedInView(t, refusal);
-      assert.deepEqual(await rolesWhenWritten(AGENT_REFUSAL), ["alert"]);
+      assert.deepEqual(await rolesWhenWritten(AGENT_SAVE_DENIED), ["alert"]);
 
       // An edit (back to the saved access): guidance in a quiet status.
       await page.locator("#repository-default-git-full").check();
@@ -663,18 +669,10 @@ test("Repository access save refusals", async (t) => {
       await page.locator("#repository-default-git-read").check();
       await refuse();
       await page.getByRole("link", { name: "← Agents", exact: true }).click();
-      assert.deepEqual(
-        await lineState(feedback),
-        quietStatus("Save or cancel repository changes before leaving this tab."),
-      );
+      assert.deepEqual(await lineState(feedback), quietStatus(REPOSITORY_EDITS_PENDING));
     },
   );
 });
-
-const CONFIGURATION_REFUSAL =
-  "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
-const CONFIGURATION_CHANGED =
-  "The saved Configuration changed while you were editing. Reload this draft before saving.";
 
 test("Configuration save outcomes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -693,6 +691,9 @@ test("Configuration save outcomes", async (t) => {
     marker: string,
     credentials?: ConsoleFixture["credentials"],
   ) {
+    if (credentials) {
+      await grantStaleConfigurationUpdate(page);
+    }
     await login(
       page,
       fixture,
@@ -715,7 +716,7 @@ test("Configuration save outcomes", async (t) => {
         const { page } = await newPage(t, fixture, { browser, context: { viewport } });
         await editConfiguration(page, agent, "edited by a reader", reader.credentials);
         await page.getByRole("button", { name: "Save Configuration" }).click();
-        const alert = page.getByRole("alert").filter({ hasText: CONFIGURATION_REFUSAL });
+        const alert = page.getByRole("alert").filter({ hasText: CONFIGURATION_SAVE_DENIED });
         await alert.waitFor();
         await assertFocusedInView(t, alert);
         assertPaint(await statusPaint(alert), "danger", "Configuration refusal");
@@ -743,9 +744,9 @@ test("Configuration save outcomes", async (t) => {
       // Saved elsewhere while this editor was open.
       await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("other"));
       await page.getByRole("button", { name: "Save Configuration" }).click();
-      await page.getByRole("alert").filter({ hasText: CONFIGURATION_CHANGED }).waitFor();
-      assert.deepEqual(await lineState(feedback), dangerAlert(CONFIGURATION_CHANGED));
-      assert.deepEqual(await rolesWhenWritten(CONFIGURATION_CHANGED), ["alert"]);
+      await page.getByRole("alert").filter({ hasText: RELOAD_DRAFT_BEFORE_SAVING }).waitFor();
+      assert.deepEqual(await lineState(feedback), dangerAlert(RELOAD_DRAFT_BEFORE_SAVING));
+      assert.deepEqual(await rolesWhenWritten(RELOAD_DRAFT_BEFORE_SAVING), ["alert"]);
 
       await page.getByRole("link", { name: "← Agents", exact: true }).click();
       assert.deepEqual(
@@ -770,8 +771,8 @@ test("Configuration save outcomes", async (t) => {
       );
       const save = page.getByRole("button", { name: "Save Configuration" });
       const refused = async () => {
-        await page.getByRole("alert").filter({ hasText: CONFIGURATION_REFUSAL }).waitFor();
-        assert.deepEqual(await lineState(feedback), dangerAlert(CONFIGURATION_REFUSAL));
+        await page.getByRole("alert").filter({ hasText: CONFIGURATION_SAVE_DENIED }).waitFor();
+        assert.deepEqual(await lineState(feedback), dangerAlert(CONFIGURATION_SAVE_DENIED));
       };
       await save.click();
       await refused();
@@ -803,18 +804,15 @@ test("Configuration save outcomes", async (t) => {
   for (const outcome of [
     {
       name: "conflict",
-      status: 409,
-      error: {
-        code: "RESOURCE_CONFLICT",
-        message: "Conflict.",
-        details: [{ path: "/expectedGeneration" }],
-      },
-      text: CONFIGURATION_CHANGED,
+      // The API's stale-generation refusal.
+      response: apiErrorResponse(409, "RESOURCE_CONFLICT", "Conflict.", {
+        details: [{ path: "/expectedGeneration", code: "INVALID_VALUE" }],
+      }),
+      text: RELOAD_DRAFT_BEFORE_SAVING,
     },
     {
       name: "unknown outcome",
-      status: 500,
-      error: { code: "INTERNAL", message: "Held." },
+      response: apiErrorResponse(500, "INTERNAL_ERROR", "Held."),
       text: "Outcome unknown. Configuration may have been saved. Reload this draft before saving again.",
     },
   ]) {
@@ -828,14 +826,7 @@ test("Configuration save outcomes", async (t) => {
         t,
         page,
         `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-        {
-          method: "PATCH",
-          fulfill: {
-            status: outcome.status,
-            contentType: "application/json",
-            body: JSON.stringify({ error: outcome.error }),
-          },
-        },
+        { method: "PATCH", fulfill: outcome.response },
       );
       const feedback = await editConfiguration(page, agent, "edited");
       const save = page.getByRole("button", { name: "Save Configuration" });
@@ -945,7 +936,7 @@ async function answerDiagnostics(page: Page, revisionId: string) {
   return runs;
 }
 
-const DIAGNOSTICS_REASON = "Your access does not include running diagnostics for this Agent.";
+const DIAGNOSTICS_REASON = DIAGNOSTICS_DENIED;
 
 test("Run diagnostics access and outcomes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -1015,8 +1006,10 @@ test("Run diagnostics access and outcomes", async (t) => {
         await run.click();
         const alert = observations.getByRole("alert").filter({
           // An Installation administrator grants access, not a Namespace one (finding 2260).
-          hasText:
-            "Diagnostics require Agent read and operate access plus read access to this version. Granting them needs Installation administration access: ask an Installation administrator to check those grants.",
+          hasText: notIncluded(
+            "running diagnostics for this version",
+            "Agent read and operate on this Agent and AgentRevision read on this version",
+          ),
         });
         await alert.waitFor();
         const view = await refusalView(alert);

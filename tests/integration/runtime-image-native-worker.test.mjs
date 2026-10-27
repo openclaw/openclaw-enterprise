@@ -8,7 +8,10 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import {
+  cpuScaledImageTimeoutMs,
+  imageSmokeTimeoutMultiplier,
+} from "../helpers/image-smoke-timeout.mjs";
 import { assertAllPassed } from "../helpers/node-test-summary.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -42,14 +45,27 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
         new URL("../fixtures/runtime-workspace-node.mjs", import.meta.url),
         "utf8",
       );
+      // The fixture bounds every CLI call and wait by one deadline 10 s inside this
+      // exec timeout, so a hung call fails with its own name.
+      const execTimeoutMs = 240_000 * imageSmokeTimeoutMultiplier;
       const { stdout } = await runDocker(
-        ["exec", containerName, "node", "--input-type=module", "-e", source],
-        { timeout: 240_000 * imageSmokeTimeoutMultiplier },
+        [
+          "exec",
+          "-e",
+          `WORKSPACE_PROOF_BUDGET_MS=${execTimeoutMs - 10_000}`,
+          containerName,
+          "node",
+          "--input-type=module",
+          "-e",
+          source,
+        ],
+        { timeout: execTimeoutMs },
       );
       const result = JSON.parse(stdout);
       assert.equal(result.sameIdentityAfterRestart, true);
       assert.equal(result.singleBootstrapCompletion, true);
       assert.equal(result.commands.length, 7);
+      t.diagnostic(`slowest gateway call: ${result.slowestCallMs} ms`);
     },
   );
 
@@ -65,6 +81,8 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
         "tests/conformance/workspace-node-supervisor.test.mjs",
         "tests/helpers/available-port.mjs",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+        "apps/controller/src/drivers/compute/embedded-gateway-owner.ts",
+        "apps/controller/src/drivers/compute/gateway-tool-policy.ts",
         "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
         "apps/controller/src/drivers/compute/node-program.ts",
         "apps/controller/src/drivers/compute/runtime-startup.ts",
@@ -155,14 +173,14 @@ process.exit(child.status ?? 1);
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const cp = require("node:child_process");
-const entrypoints = JSON.parse(fs.readFileSync(0, "utf8"));
+const { entrypoints, schemaMs, startupMs } = JSON.parse(fs.readFileSync(0, "utf8"));
 const manifest = { kind: "openclaw", selections: {}, pluginApprovers: [] };
 const base = {
   gateway: { mode: "local", bind: "loopback", controlUi: { enabled: false },
     auth: { mode: "token", token: "synthetic-approver-startup-token" } },
   logging: { consoleLevel: "error" },
 };
-const schemaResult = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "schema", "--json"], { encoding: "utf8", timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+const schemaResult = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "schema", "--json"], { encoding: "utf8", timeout: schemaMs, maxBuffer: 8 * 1024 * 1024 });
 assert.equal(schemaResult.status, 0, schemaResult.stderr);
 const supportsSlackApprovers = JSON.parse(schemaResult.stdout).properties?.approvals?.properties?.plugin?.properties?.slack !== undefined;
 async function scenario(entrypoint, channel, label) {
@@ -180,7 +198,7 @@ async function scenario(entrypoint, channel, label) {
   child.stdout.on("data", value => { output += value; });
   child.stderr.on("data", value => { output += value; });
   const exited = new Promise(resolve => child.once("exit", resolve));
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + startupMs;
   const incompatible = channel?.enabled !== false && channel !== undefined && !supportsSlackApprovers;
   try {
     let observed = false;
@@ -225,6 +243,14 @@ async function scenario(entrypoint, channel, label) {
   console.log("PLUGIN_APPROVER_STARTUP_PASSED");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 `;
+      // The waits scale with the runner's CPUs: the lane's other files start runtimes
+      // at the same time, so a slow start under that load is not a failure. A start
+      // that never reports its outcome still fails within startupMs. The container
+      // reads the schema once, then starts six runtimes one after another (two
+      // launchers, Slack absent, disabled and configured): its limit is their sum
+      // plus a minute to create and remove the container.
+      const schemaMs = cpuScaledImageTimeoutMs(30_000);
+      const startupMs = cpuScaledImageTimeoutMs(45_000);
       const { stdout } = await runDocker(
         [
           "run",
@@ -244,10 +270,14 @@ async function scenario(entrypoint, channel, label) {
           "-e",
           launch,
         ],
-        { timeout: 180_000 * imageSmokeTimeoutMultiplier },
+        { timeout: schemaMs + 6 * startupMs + 60_000 * imageSmokeTimeoutMultiplier },
         JSON.stringify({
-          docker: nodeProgramArguments(DOCKER_GATEWAY_RUNTIME_ENTRYPOINT),
-          kubernetes: nodeProgramArguments(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT),
+          entrypoints: {
+            docker: nodeProgramArguments(DOCKER_GATEWAY_RUNTIME_ENTRYPOINT),
+            kubernetes: nodeProgramArguments(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT),
+          },
+          schemaMs,
+          startupMs,
         }),
       );
       assert.match(stdout, /PLUGIN_APPROVER_STARTUP_PASSED/);

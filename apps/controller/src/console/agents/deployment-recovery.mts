@@ -6,8 +6,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { requestFailure } from "../api-client.mjs";
+import { deploymentFailureStep } from "../deployment-failure-steps.mjs";
 import { element, setHidden, setText } from "../dom.mjs";
-import { namespacePath } from "./list.mjs";
+import { modelCredentialRejectedAsk } from "./access-reasons.mjs";
+import { agentSaveDenial, namespacePath } from "./list.mjs";
 import { logTextDenied } from "./logs.mjs";
 
 type RecoveryTab = "credentials" | "configuration" | "logs";
@@ -39,29 +41,15 @@ const DEPLOYMENT_FAILURE_LINKS: Readonly<Record<string, Exclude<RecoveryTab, "lo
   // Kubernetes Compute fails activation at once when the Gateway refuses its own in-Pod
   // CLI (#1128); the Configuration's gateway password reference is what lets it in.
   AGENT_GATEWAY_UNAUTHORIZED: "configuration",
+  // The stored Harness authentication is unusable; the step is choosing it again.
+  INVALID_HARNESS_AUTH: "credentials",
 };
 
-// The API's message for a failure that deploying the same Agent again can clear (an outage
-// that outlasted every attempt, a lost worker claim, an approval or driver that changed since
-// admission) starts a sentence with "Deploy again". The recovery offers Deploy again for those
-// messages only, so it never contradicts the step the message names. A message that names no
-// step at all (a deadline that passed, a Driver that cannot run this Harness) mentions none of
-// deploy, ask or check, and the banner adds the generic advice to it.
-const DEPLOY_AGAIN_STEP = /(?:^|[.;]\s)Deploy again\b/u;
-const NAMED_STEP = /\b(?:deploy|ask|check)\b/iu;
-
-/**
- * The next step a failed deployment's API message names: "deploy-again" when it says to deploy
- * again, "named" for any other step, and null for none.
- */
-export function deploymentFailureStep(message: string | null | undefined) {
-  if (typeof message !== "string" || message.length === 0) {
-    return null;
-  }
-  if (DEPLOY_AGAIN_STEP.test(message)) {
-    return "deploy-again";
-  }
-  return NAMED_STEP.test(message) ? "named" : null;
+/** A model credential held in an OCC Secret, whose value Secret update replaces in place. */
+export function secretBackedCredential(
+  harnessAuth: { method: string; source?: { kind: string } } | null | undefined,
+) {
+  return harnessAuth?.source?.kind === "secret";
 }
 
 const DEPLOYMENT_FAILURE_LINK_LABELS = {
@@ -189,18 +177,34 @@ export function createDeploymentRecovery(
       );
     // The API's message states this failure's own next step (finding 1393); the banner leads
     // with it, so that step is in view rather than only in Deployment details below the fold
-    // (finding 1898). The generic advice stays for a record without one.
-    const step = deploymentFailureStep(errorMessage);
+    // (finding 1898). OCC's table names the kind of step for each code, so the banner never
+    // guesses it from the text and never adds logs advice to a failure no runtime logged
+    // (finding 2537). The generic advice stays for a record without a message.
+    const step = code ? deploymentFailureStep(code) : null;
     const generic = logsAllowed
       ? "Check the failed version’s logs before deploying a new version."
       : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
-    let impact = errorMessage ? (step ? errorMessage : `${errorMessage} ${generic}`) : generic;
+    // The API's step for a rejected model credential is to update it in Credentials, which needs
+    // Agent update. A caller whose permission answer denies that is told which grants fix it and
+    // who gives them instead: a Secret-backed credential can also be replaced in place with
+    // Secret update, which the answer does not cover (finding D750). The API still authorizes
+    // each save.
+    const harnessAuth = "harnessAuth" in agent ? agent.harnessAuth : undefined;
+    const credentialFixDenied =
+      code === "RUNTIME_AUTHENTICATION_FAILED" &&
+      harnessAuth?.method !== "runtime" &&
+      permissions !== null &&
+      !(permissions.update === true && agentSaveDenial(permissions) === undefined);
+    const failureText = credentialFixDenied
+      ? modelCredentialRejectedAsk(secretBackedCredential(harnessAuth))
+      : errorMessage;
+    let impact = failureText || generic;
     if (servingImpact === "replacement-failed") {
-      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${errorMessage ? ` ${errorMessage}` : ""}`;
+      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failureText ? ` ${failureText}` : ""}`;
     } else if (servingImpact === "selected-failed") {
-      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${errorMessage ? ` ${errorMessage}` : ""}`;
+      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failureText ? ` ${failureText}` : ""}`;
     }
-    if ((servingImpact || step) && !logsAllowed) {
+    if ((servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
       // Without the Logs link this is the reader's only way to the logs (finding 1484).
       impact += " Ask someone with log access to check the failed version’s logs.";
     }
@@ -209,7 +213,7 @@ export function createDeploymentRecovery(
     setText(recoveryCode, code ?? "");
     setHidden(recoveryCode, !code);
     setText(recoveryRest, code ? `). ${impact}` : ` ${impact}`);
-    // Deploying again is the whole next step only where the API's message says so. The draft
+    // Deploying again is the whole next step only where OCC's table says so. The draft
     // it opens builds Deploy new version only from a readable Configuration, so the link waits
     // for a successful read of it (finding 1931).
     const deployAgainAllowed =
@@ -219,12 +223,22 @@ export function createDeploymentRecovery(
       code && Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : undefined;
-    // Without update, the draft's only step is Deploy new version, which it builds only from a
+    // Agent-side saves need Agent update and the source grants each update also checks; the draft
+    // page disables its editors without them (finding 2441). Open Credentials leads to one.
+    const agentEditable =
+      permissions?.update === true && agentSaveDenial(permissions) === undefined;
+    // Open Configuration leads to the Configuration editor, which saves with Configuration update
+    // and Secret operate on each Secret the Configuration binds, not with an Agent update
+    // (finding 2450). A positive answer is required, as before.
+    const configurationEditable =
+      permissions?.configurationUpdate === true &&
+      permissions.configurationSecretsOperate !== false;
+    // Without them, the draft's only step is Deploy new version, which it builds only from a
     // readable Configuration, so "Open version draft" waits for the same read (finding 1944).
     const openDraftAllowed =
       guidance === "configuration" &&
       configurationAvailable &&
-      permissions?.update !== true &&
+      !configurationEditable &&
       permissions?.deploy === true;
     if ((deployAgainAllowed || openDraftAllowed) && readableConfigurationId !== configurationId) {
       checkConfigurationReadable(configurationId);
@@ -232,16 +246,15 @@ export function createDeploymentRecovery(
     const canOpenConfiguration =
       guidance === "configuration" &&
       configurationAvailable &&
-      (permissions?.update === true ||
-        (openDraftAllowed && readableConfigurationId === configurationId));
+      (configurationEditable || (openDraftAllowed && readableConfigurationId === configurationId));
     const canOpenCredentials =
       guidance === "credentials" &&
-      permissions?.update === true &&
+      agentEditable &&
       (!("harnessAuth" in agent) || agent.harnessAuth?.method !== "runtime");
     const tab = canOpenConfiguration || canOpenCredentials ? guidance : null;
     const nextLabel =
       tab &&
-      (canOpenConfiguration && permissions?.update !== true
+      (canOpenConfiguration && !configurationEditable
         ? "Open version draft"
         : DEPLOYMENT_FAILURE_LINK_LABELS[tab]);
     const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;
@@ -252,8 +265,8 @@ export function createDeploymentRecovery(
         : null;
       const logs = logsAllowed ? versionLink(`Open ${version} Logs`, latest.id, "logs") : null;
       const next = tab && nextLabel ? versionLink(nextLabel, "draft", tab) : null;
-      // The first action is the one primary on the page: Deploy again where the message says
-      // to, else the failed version's Logs. The others are secondary buttons.
+      // The first action is the one primary on the page: Deploy again where redeploying can
+      // help, else the failed version's Logs. The others are secondary buttons.
       const actions = [again, logs, next].filter((action) => action !== null);
       actions.forEach((action, index) => {
         action.className = index === 0 ? "button button--primary" : "button";

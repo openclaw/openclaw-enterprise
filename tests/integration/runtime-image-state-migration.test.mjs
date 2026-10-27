@@ -5,9 +5,22 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import {
+  EMBEDDED_GATEWAY_OWNER_STARTUP,
+  GATEWAY_NAMESPACE_PROBE,
+  INITIALIZE_EMBEDDED_GATEWAY_OWNER,
+} from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
+import {
+  AGENT_WITH_NODE_ENTRYPOINT,
+  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION,
+  OPENCLAW_STATE_DATABASE_SCHEMA_VERSION,
+} from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import {
+  image,
   imageTestOptions,
   runDocker,
   gatewayStateVolume,
@@ -15,6 +28,125 @@ import {
   jsonLogEntries,
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
+
+test("embedded Gateway restart recovers only its signed Pod owner", imageTestOptions, async (t) => {
+  const keyDir = "/run/oce-gateway-owner-key";
+  const startDir = "/run/oce-gateway-owner-start";
+  const keyVolume = await gatewayStateVolume(t, keyDir);
+  const startVolume = await gatewayStateVolume(t, startDir);
+  const pod = "85576b7d-39b1-4739-8541-366548813cd1";
+  const env = { OPENCLAW_EMBEDDED_GATEWAY_OWNER: "1", OPENCLAW_STATE_DIR: "/tmp/state" };
+  const run = (script, { uid = pod, init = false, readOnly = false } = {}) =>
+    runDocker([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--hostname",
+      "signed-owner-fixture",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--user",
+      "1000:1000",
+      "--tmpfs",
+      "/tmp:mode=1777",
+      "--volume",
+      `${keyVolume}:${keyDir}${init ? "" : ":ro"}`,
+      "--volume",
+      `${startVolume}:${startDir}${readOnly ? ":ro" : ""}`,
+      ...Object.entries({ ...env, OPENCLAW_POD_UID: uid }).flatMap(([name, value]) => [
+        "--env",
+        name + "=" + value,
+      ]),
+      "--entrypoint",
+      "/usr/bin/tini",
+      image,
+      "-s",
+      "--",
+      "node",
+      "-e",
+      script,
+    ]);
+  const fs = 'require("node:fs")';
+  const privateKey = JSON.stringify(startDir + "/private.pem");
+  const owner = JSON.stringify(startDir + "/owner.json");
+  const assertConsumed = `require("node:assert/strict").equal(${fs}.existsSync(${privateKey}), false);`;
+  await run(INITIALIZE_EMBEDDED_GATEWAY_OWNER, { init: true });
+  // The sampler cannot retire its key on a read-only startup volume. User code must not run.
+  await assert.rejects(
+    run(EMBEDDED_GATEWAY_OWNER_STARTUP + '\nconsole.log("started");', { readOnly: true }),
+    /EROFS|read-only file system/i,
+  );
+  const { stdout } = await run(
+    EMBEDDED_GATEWAY_OWNER_STARTUP +
+      "\n" +
+      assertConsumed +
+      `console.log(${fs}.readFileSync(${owner}, "utf8"));`,
+  );
+  const record = JSON.parse(stdout);
+  const prior = JSON.parse(record.statement);
+  assert.equal(prior.pod, pod);
+
+  // Each invocation is a separate private Linux PID namespace, as with a kubelet restart.
+  // The lock is synthetic. The replacement runs the shipping OC CLI against it.
+  const recover = async (candidate, namespace, uid = pod) => {
+    const setup = `
+      const fs = require("node:fs");
+      const root = process.env.OPENCLAW_STATE_DIR;
+      const dir = root + "/tmp/openclaw-1000", lock = dir + "/gateway.state.lock";
+      fs.mkdirSync(dir, {recursive:true,mode:0o700}); fs.mkdirSync(root + "/state", {recursive:true,mode:0o700});
+      fs.rmSync(${owner}, {force:true});
+      fs.writeFileSync(${owner}, ${JSON.stringify(JSON.stringify(candidate))});
+      fs.writeFileSync(lock, JSON.stringify({pid:999999, createdAt:"2026-01-01T00:00:00.000Z",
+        configPath:root + "/openclaw.json", stateDir:root, role:"gateway",
+        pidNsInitStartTicks:${namespace.pidNsInitStartTicks},
+        processNamespace:${JSON.stringify({ platform: namespace.platform, host: namespace.host, identity: namespace.identity, pidNsInode: namespace.pidNsInode })}}), {mode:0o600});
+      console.log("observed kernels", ${JSON.stringify(namespace)}, ${GATEWAY_NAMESPACE_PROBE});
+    `;
+    return run(
+      setup +
+        EMBEDDED_GATEWAY_OWNER_STARTUP +
+        '\nconsole.log("lock-present=" + fs.existsSync(lock));',
+      { uid },
+    );
+  };
+  const foreign = { ...prior.namespace, host: "unrelated-gateway" };
+  const matching = await recover(record, prior.namespace);
+  assert.match(matching.stdout, /lock-present=false\s*$/, matching.stdout + matching.stderr);
+  assert.match((await recover(record, foreign)).stdout, /lock-present=true\s*$/);
+  const later = {
+    ...prior.namespace,
+    pidNsInitStartTicks: prior.namespace.pidNsInitStartTicks + 1,
+  };
+  assert.match((await recover(record, later)).stdout, /lock-present=true\s*$/);
+  assert.match(
+    (await recover(record, prior.namespace, "a96d9704-ce9f-4917-846f-73613e629c43")).stdout,
+    /lock-present=true\s*$/,
+  );
+  assert.match(
+    (
+      await recover(
+        { ...record, statement: JSON.stringify({ ...prior, namespace: foreign }) },
+        foreign,
+      )
+    ).stdout,
+    /lock-present=true\s*$/,
+  );
+  // A previous model can write a key and signed claim into scratch. A retried init
+  // must keep its own verifier. Missing Pod identity must still retire the scratch key.
+  const { stdout: forged } = await run(`
+    const crypto = require("node:crypto"), {privateKey} = crypto.generateKeyPairSync("ed25519");
+    ${fs}.writeFileSync(${privateKey}, privateKey.export({type:"pkcs8",format:"pem"}));
+    const statement = ${JSON.stringify(JSON.stringify({ ...prior, namespace: foreign }))};
+    console.log(JSON.stringify({ statement, signature:crypto.sign(null,Buffer.from(statement),privateKey).toString("base64") }));
+  `);
+  await run(INITIALIZE_EMBEDDED_GATEWAY_OWNER, { init: true });
+  await run(EMBEDDED_GATEWAY_OWNER_STARTUP + "\n" + assertConsumed, { uid: "" });
+  assert.match((await recover(JSON.parse(forged), foreign)).stdout, /lock-present=true\s*$/);
+});
 
 // OpenClaw state written by the 2026-09-28 release's runtime image
 // (ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:f17a66a18de9d4231c9579faf90573d80bef1278aaaf63135b6c6ce0b71a23b3,
@@ -70,7 +202,8 @@ async function assertReleasedGatewayMigratesOnce(startGateway) {
     ["ok"],
     released.logs,
   );
-  assert.match(released.logs, /from schema 23 to \d+ with openclaw doctor --fix/);
+  // The shared state database (schema 19) and the main agent database (schema 23).
+  assert.match(released.logs, /from schema 19 to \d+, 23 to \d+ with openclaw doctor --fix/);
   assert.doesNotMatch(released.logs, /uses schema version 23/);
   const migrated = await agentDatabaseFacts(released.containerName);
   assert.equal(
@@ -89,9 +222,117 @@ async function assertReleasedGatewayMigratesOnce(startGateway) {
   assert.deepEqual(await agentDatabaseFacts(current.containerName), migrated);
 }
 
-// Each case seeds its own state volume and starts its own Gateway containers:
-// random volume and container names, no shared port. Both run at once.
-describe("runtime image released state migration", { concurrency: 2 }, () => {
+// A dedicated Codex Agent's workspace node state as a Harness on the OpenClaw
+// f8386bc7 runtime image (2026.9.9, shared state schema 20) left it: native setup
+// and one node start, which saved its device identity. Recorded for finding 2685,
+// where every such Harness failed workspace setup after an upgrade until Doctor
+// moved its client credentials. The archive holds the initialized workspace (Git
+// sample hooks left out) and the shared state database with that identity
+// deleted, then vacuumed; each run saves a fresh one in its place.
+const olderWorkspaceNodeState = fileURLToPath(
+  new URL(
+    "../fixtures/runtime-state/workspace-node-state-openclaw-f8386bc7.tar.gz",
+    import.meta.url,
+  ),
+);
+
+// Runs in the runtime image as the Harness user. Saves a device identity in the
+// older store's row format (key "primary", id = SHA-256 of the raw Ed25519 public
+// key), starts the real Harness program twice with only its long-lived children
+// replaced, and reports what the current OpenClaw then reads. Never prints a key.
+const WORKSPACE_NODE_UPGRADE = String.raw`
+const crypto = require("node:crypto");
+const { readdirSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const { DatabaseSync } = require("node:sqlite");
+const [entrypoint, timeoutMs] = [process.argv[1], Number(process.argv[2])];
+const state = "/home/node/.openclaw-node";
+const shared = state + "/state/openclaw.sqlite";
+const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+const savedDeviceId = crypto.createHash("sha256")
+  .update(Buffer.from(publicKey.export({ format: "jwk" }).x, "base64url")).digest("hex");
+const savedAt = Date.now();
+const older = new DatabaseSync(shared);
+older.prepare("INSERT INTO device_identities VALUES ('primary', ?, ?, ?, ?, ?)").run(
+  savedDeviceId,
+  publicKey.export({ type: "spki", format: "pem" }),
+  privateKey.export({ type: "pkcs8", format: "pem" }),
+  savedAt,
+  savedAt,
+);
+older.close();
+const harness = [
+  'const cp = require("node:child_process");',
+  "const realSpawn = cp.spawn;",
+  "cp.spawn = (command, args, options) => {",
+  '  if (args[1] === "doctor") return realSpawn(command, args, options);',
+  '  console.log("HARNESS_CHILD_STARTED " + (args[0] === "/app/openclaw.mjs" ? "node" : "codex"));',
+  '  return new (require("node:events").EventEmitter)();',
+  "};",
+  entrypoint,
+].join("\n");
+const start = () => {
+  const result = spawnSync(process.execPath, ["-e", harness], {
+    env: {
+      PATH: process.env.PATH,
+      HOME: "/home/node",
+      OPENCLAW_NODE_STATE_DIR: state,
+      OPENCLAW_NODE_SETUP_CODE: "synthetic-setup",
+      OPENCLAW_WORKSPACE_DIR: "/home/node/workspace",
+    },
+    encoding: "utf8",
+    timeout: timeoutMs,
+  });
+  return { status: result.status, signal: result.signal, output: result.stdout + result.stderr };
+};
+const upgraded = start();
+const identity = spawnSync(process.execPath, ["/app/openclaw.mjs", "node", "identity", "--json"], {
+  env: { PATH: process.env.PATH, HOME: "/home/node", OPENCLAW_STATE_DIR: state,
+    OPENCLAW_CONFIG_PATH: state + "/openclaw.json", OPENCLAW_NO_AUTO_UPDATE: "1" },
+  encoding: "utf8",
+  timeout: 60_000,
+});
+let deviceId;
+try { deviceId = JSON.parse(identity.stdout).deviceId; } catch {}
+function schema(path) {
+  const database = new DatabaseSync(path, { readOnly: true });
+  try {
+    const header = database.prepare("PRAGMA user_version").get().user_version;
+    let marker = 0;
+    try {
+      marker = Number(JSON.parse(database.prepare(
+        "SELECT value_json FROM config_machine_state WHERE state_key = 'state.schema.contentVersion'",
+      ).get()?.value_json ?? "0"));
+    } catch {}
+    // The current schema keeps client credentials elsewhere; only an older copy has this table.
+    let backedUpDeviceId;
+    try {
+      backedUpDeviceId = database.prepare(
+        "SELECT device_id FROM device_identities WHERE identity_key = 'primary'",
+      ).get()?.device_id;
+    } catch {}
+    return { version: Math.max(header, marker), deviceId: backedUpDeviceId };
+  } finally {
+    database.close();
+  }
+}
+const backups = readdirSync(state + "/state")
+  .filter((name) => name.startsWith("openclaw.sqlite.pre-startup-migration-") && name.endsWith(".bak"));
+const current = start();
+process.stdout.write(JSON.stringify({
+  savedDeviceId,
+  upgraded,
+  deviceId,
+  identityStatus: identity.status,
+  migrated: schema(shared).version,
+  backups: backups.map((name) => ({ name, ...schema(state + "/state/" + name) })),
+  current,
+}));
+`;
+
+// Each case seeds its own state volume and starts its own containers: random
+// volume and container names, no shared port. All run at once.
+describe("runtime image released state migration", { concurrency: 3 }, () => {
   test(
     "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
     imageTestOptions,
@@ -125,6 +366,88 @@ describe("runtime image released state migration", { concurrency: 2 }, () => {
           withAppServer: false,
         }),
       );
+    },
+  );
+
+  test(
+    "runtime image migrates an older workspace node's credentials before the dedicated Harness starts",
+    imageTestOptions,
+    async (t) => {
+      // Stands in for the Agent's workspace claim: its workspace and node state subpaths.
+      const volume = await gatewayStateVolume(t, "/home/node", {
+        seed: "tar -xzf /workspace-node-state.tar.gz -C /home/node",
+        seedVolumes: [`${olderWorkspaceNodeState}:/workspace-node-state.tar.gz:ro`],
+      });
+      // Doctor's full repair pass takes about 20 s, and over a minute on a busy runner.
+      const startMs = 240_000 * imageSmokeTimeoutMultiplier;
+      const { stdout } = await runDocker(
+        [
+          "run",
+          "--rm",
+          "--user",
+          "1000:1000",
+          "--read-only",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--network",
+          "none",
+          "--tmpfs",
+          "/tmp:size=64m,mode=1777",
+          "--volume",
+          `${volume}:/home/node`,
+          "--entrypoint",
+          "/usr/bin/tini",
+          image,
+          "-s",
+          "--",
+          "node",
+          "-e",
+          WORKSPACE_NODE_UPGRADE,
+          AGENT_WITH_NODE_ENTRYPOINT,
+          String(startMs),
+        ],
+        { timeout: 2 * startMs + 120_000 * imageSmokeTimeoutMultiplier },
+      );
+      const outcome = JSON.parse(stdout);
+      const { upgraded, current } = outcome;
+      // Without Doctor, native setup refuses the older client credentials
+      // ("backed-up migration custody") and the Harness never starts its children.
+      assert.equal(upgraded.status, 0, upgraded.output);
+      assert.match(upgraded.output, /from schema 20 to \d+ with openclaw doctor --fix/);
+      for (const phase of ["state-migration", "workspace-baseline"]) {
+        assert.deepEqual(
+          jsonLogEntries(upgraded.output)
+            .filter((entry) => entry.event === "runtime.startup_phase" && entry.phase === phase)
+            .map(({ outcome }) => outcome),
+          ["ok"],
+          upgraded.output,
+        );
+      }
+      assert.equal(upgraded.output.match(/HARNESS_CHILD_STARTED (node|codex)/g)?.length, 2);
+      assert.doesNotMatch(upgraded.output, /migration custody|PRIVATE KEY/);
+      assert.equal(
+        outcome.migrated,
+        OPENCLAW_STATE_DATABASE_SCHEMA_VERSION,
+        "Doctor migrated to another schema: update OPENCLAW_STATE_DATABASE_SCHEMA_VERSION with the OpenClaw pin.",
+      );
+      // The node keeps the identity its Gateway paired, and Doctor kept the older
+      // database, identity included, beside the migrated one. Doctor also keeps a
+      // table-scoped snapshot for the credential move (*.scoped.bak).
+      assert.equal(outcome.identityStatus, 0);
+      assert.equal(outcome.deviceId, outcome.savedDeviceId);
+      assert.deepEqual(
+        outcome.backups
+          .filter(({ name }) => !name.endsWith(".scoped.bak"))
+          .map(({ version, deviceId }) => ({ version, deviceId })),
+        [{ version: 20, deviceId: outcome.savedDeviceId }],
+        JSON.stringify(outcome.backups),
+      );
+      // Current state starts without Doctor.
+      assert.equal(current.status, 0, current.output);
+      assert.doesNotMatch(current.output, /openclaw doctor --fix|"phase":"state-migration"/);
+      assert.equal(current.output.match(/HARNESS_CHILD_STARTED (node|codex)/g)?.length, 2);
     },
   );
 });

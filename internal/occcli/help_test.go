@@ -67,7 +67,8 @@ func TestAgentPolicyGroupRejectsUnknownCommands(t *testing.T) {
 	for _, args := range [][]string{{"agent", "policy", "nosuch"}, {"agent", "policy", "gett"}} {
 		out, errOut, err := runHelp(t, args...)
 		want := `unknown command "` + args[2] + `" for "occ agent policy"`
-		if err == nil || err.Error() != want {
+		// "gett" also gets a suggestion; "nosuch" keeps the exact text.
+		if err == nil || !strings.HasPrefix(err.Error(), want) || (args[2] == "nosuch" && err.Error() != want) {
 			t.Fatalf("occ %v error = %v, want %q", args, err, want)
 		}
 		if out != "" || errOut != "" {

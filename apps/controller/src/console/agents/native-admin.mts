@@ -4,7 +4,7 @@ import type { AgentAccessContext } from "./credential-access.mjs";
 import { message } from "./list.mjs";
 
 const warning =
-  "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions and can be overwritten by deployment.";
+  "Gateway managed mode restricts administrative changes by default. OCE deployments can overwrite changes made while managed mode is off.";
 
 type Availability =
   | { status: "available"; url: string }
@@ -46,6 +46,8 @@ export function renderNativeAdminAccess(
     deniedReads?: { has(path: string): boolean; remember(path: string): void };
   },
   path: string,
+  // The caller's latest advisory Agent administer answer; undefined when it is unknown.
+  administerAllowed?: () => Promise<boolean | undefined>,
 ) {
   const statusPath = `${path}/native-admin`;
   const status = element("p", { className: "hint", role: "status" }, "Checking access…");
@@ -128,6 +130,20 @@ export function renderNativeAdminAccess(
     status.textContent = "Checking access…";
     updateControls();
     try {
+      // A caller whose permission answer says no is not asked: the probe's 403 would be a
+      // console error and an audited denial for each Agent page. An unknown answer still asks.
+      if ((await administerAllowed?.()) === false) {
+        if (!context.isCurrent()) {
+          return;
+        }
+        current = undefined;
+        failed = false;
+        status.textContent = "";
+        return;
+      }
+      if (!context.isCurrent()) {
+        return;
+      }
       const result = await context.request(statusPath);
       if (!context.isCurrent()) {
         return;

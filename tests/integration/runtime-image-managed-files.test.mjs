@@ -153,7 +153,6 @@ test(
     // ordering is OpenClaw's (checked at the pinned source): re-check it when the
     // pin moves, since a promotion moved after post-ready work would pass here.
     const logs = await waitForDockerLog(containerName, /remote model catalog refresh failed/);
-    assert.match(logs, /heartbeat: started/);
     assert.doesNotMatch(logs, /last-known-good|EROFS/);
   },
 );

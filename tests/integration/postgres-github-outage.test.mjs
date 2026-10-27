@@ -20,6 +20,7 @@ import {
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
+import { signInRateLimited } from "../helpers/refusal-text.mjs";
 
 const adminEmail = "outage-recovery@example.test";
 const password = "outage-member-password";
@@ -209,6 +210,29 @@ test(
         assert.equal(await sessionCount(), before, "no session is issued");
       },
     );
+
+    // A State failure while consuming the attempt or capturing the identity reaches the
+    // controller unchanged (github-login-transport), which reports an outage, not a refusal.
+    for (const [method, remoteAddress] of [
+      ["consumeAttempt", "192.0.2.61"],
+      ["snapshotExternal", "192.0.2.62"],
+    ]) {
+      await t.test(`a callback whose ${method} fails says sign-in is unavailable`, async (t) => {
+        provider.mode = "up";
+        t.mock.method(PostgresHumanAuthentication.prototype, method, () =>
+          Promise.reject(new Error("fixture State outage")),
+        );
+        const before = await sessionCount();
+        const callback = await memberGitHubSignIn(remoteAddress);
+        assert.equal(callback.statusCode, 302);
+        assert.equal(
+          callback.headers.location,
+          "/console/?authError=github&authReason=unavailable",
+        );
+        assert.equal(callback.headers["set-cookie"], undefined);
+        assert.equal(await sessionCount(), before, "no session is issued");
+      });
+    }
 
     await t.test("GitHub sign-in recovers without a restart", async () => {
       provider.mode = "up";
@@ -447,7 +471,19 @@ test(
       const fresh = await passwordSignIn(app, origin, disabledMember, "192.0.2.83");
       assert.equal(stale.statusCode, 429, stale.body);
       assert.equal(fresh.statusCode, 429, fresh.body);
-      assert.deepEqual(bodyOf(stale), bodyOf(fresh));
+      // Each refusal names its own wait, which counts down between the two requests (finding
+      // 2608: 60 vs 59 across a second boundary). Check each message against its own Retry-After,
+      // then require the rest of the two answers to match.
+      const limitedBodyOf = (response) => {
+        const body = bodyOf(response);
+        assert.equal(
+          body.error.message,
+          signInRateLimited(Number(response.headers["retry-after"])),
+          response.body,
+        );
+        return { ...body, error: { ...body.error, message: undefined } };
+      };
+      assert.deepEqual(limitedBodyOf(stale), limitedBodyOf(fresh));
       // Enabling the account again restores entries issued under the unchanged password;
       // resetting the password is what revokes them for good.
       await changeAccount(disabledMember.id, "enable");

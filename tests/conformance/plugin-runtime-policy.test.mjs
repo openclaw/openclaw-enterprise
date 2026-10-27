@@ -740,6 +740,10 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   });
   const configPath = "/home/node/.openclaw/openclaw.json";
   const atStart = JSON.parse(files.get(configPath));
+  assert.equal(
+    atStart.plugins.entries.codex.config.appServer.remoteWorkspaceRoot,
+    "/sandbox/enterprise",
+  );
   assert.deepEqual(atStart.plugins.entries.codex.config.appServer.nativeHookRelay, {
     ...baseConfig.plugins.entries.codex.config.appServer.nativeHookRelay,
     credentialDirectory: hookDirectory,
@@ -755,7 +759,7 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   assert.deepEqual(atStart.cron, { triggers: { enabled: false } });
   // The memory flush run gets Gateway-local read and write despite the excludes.
   assert.deepEqual(atStart.agents, {
-    defaults: { compaction: { memoryFlush: { enabled: false } } },
+    defaults: { compaction: { memoryFlush: { enabled: false } }, modelSelectionScope: "session" },
   });
   // Defaults the owner never set are not reported as overridden.
   assert.ok(
@@ -806,10 +810,7 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
     nodeId: "enrolled-node",
     remoteRoot: "/sandbox/enterprise",
   });
-  assert.equal(
-    applied.plugins.entries.codex.config.appServer.remoteWorkspaceRoot,
-    "/sandbox/enterprise",
-  );
+  assert.deepEqual(applied.plugins.entries.codex, atStart.plugins.entries.codex);
   // The write was a whole-file replacement, not an in-place rewrite.
   assert.equal(
     [...files.keys()].some((path) => path.includes(".workspace-node-")),
@@ -1112,7 +1113,7 @@ test("a Gateway given its node in the environment configures it at start and arm
     "environment-node",
   );
   assert.equal(sandbox.process.env.OPENCLAW_WORKSPACE_NODE_PATH, undefined);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter(({ args }) => args?.[1] === "gateway").length, 1);
   assert.deepEqual(intervals, [], "no binding poll without a binding path");
   assert.deepEqual(workspaceNodeState(sandbox), { nodeId: undefined, failure: undefined });
   assert.deepEqual(kills, []);
@@ -1226,6 +1227,7 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
     defaults: {
       model: "codex/gpt-test",
       compaction: { memoryFlush: { enabled: false, softThresholdTokens: 1000 } },
+      modelSelectionScope: "session",
     },
   });
   // The codex row keeps its models but not a transport a built-in run could reach,
@@ -1344,7 +1346,8 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
       message,
     );
   }
-  // Without a workspace node the Gateway's workspace is its own, so nothing is withheld.
+  // A remote Codex Harness still needs the model policy and Gateway-local
+  // exclusions while the workspace node is unavailable.
   const localBase = codexGatewayConfig();
   localBase.models = {
     providers: { codex: { baseUrl: "https://model.example.test/v1", models: [] } },
@@ -1357,10 +1360,14 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
     local.files.get("/home/node/.openclaw/openclaw.json") ??
       local.files.get("/etc/openclaw/openclaw.json"),
   );
-  assert.equal(localConfig.plugins.entries.codex.config.codexDynamicToolsExclude, undefined);
-  assert.equal(localConfig.cron, undefined);
-  assert.equal(localConfig.agents, undefined);
+  assert.deepEqual(
+    localConfig.plugins.entries.codex.config.codexDynamicToolsExclude,
+    GATEWAY_LOCAL_CODEX_TOOLS,
+  );
+  assert.deepEqual(localConfig.cron, { triggers: { enabled: false } });
+  assert.deepEqual(localConfig.agents, { defaults: { modelSelectionScope: "session" } });
   assert.deepEqual(localConfig.models, localBase.models);
+  assert.equal(localConfig.plugins.entries.codex.config.appServer.remoteWorkspaceRoot, undefined);
 });
 
 test("Gateway launch binds the enrolled node without expanding owner writes or changing its snapshot", async () => {
@@ -1371,7 +1378,13 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
       entries: {
         codex: {
           enabled: true,
-          config: { appServer: { transport: "websocket", url: "wss://harness.example.test" } },
+          config: {
+            appServer: {
+              transport: "websocket",
+              url: "wss://harness.example.test",
+              remoteWorkspaceRoot: "/owner/harness-workspace",
+            },
+          },
         },
       },
     },
@@ -1420,10 +1433,7 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   assert.deepEqual(effective.plugins.entries.codex, {
     enabled: true,
     config: {
-      appServer: {
-        ...baseConfig.plugins.entries.codex.config.appServer,
-        remoteWorkspaceRoot: "/home/node/workspace",
-      },
+      appServer: baseConfig.plugins.entries.codex.config.appServer,
       codexDynamicToolsExclude: GATEWAY_LOCAL_CODEX_TOOLS,
     },
   });
@@ -1599,4 +1609,232 @@ test("a timed-out workspace binding probe releases the poll and can recover", as
   openClaw = pluginList("active", 2);
   await poll.callback();
   assert.deepEqual(workspaceNodeState(sandbox), { nodeId: "enrolled-node", failure: undefined });
+});
+
+const dedicatedGatewayLaunchers = [
+  {
+    name: "Kubernetes dedicated OpenClaw",
+    env: {
+      OPENCLAW_NATIVE_WORKER_PROFILE: "oce-native",
+      OPENCLAW_WORKSPACE_NODE_ID: "a".repeat(64),
+    },
+  },
+  {
+    name: "Kubernetes dedicated Codex",
+    env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+  },
+  {
+    name: "Docker dedicated Codex",
+    launcher: "docker",
+    env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+  },
+];
+
+for (const launcher of dedicatedGatewayLaunchers) {
+  test(`${launcher.name} applies the reviewed tool ceiling before native startup`, async () => {
+    const baseConfig = codexGatewayConfig();
+    baseConfig.tools = {
+      profile: "coding",
+      allow: ["read", "sessions"],
+      alsoAllow: ["gateway", "diffs"],
+      deny: ["sessions_send"],
+    };
+    baseConfig.agents = { defaults: { modelSelectionScope: "agent" } };
+    baseConfig.cron = { enabled: true, triggers: { enabled: true } };
+    baseConfig.plugins.entries.codex.config.codexDynamicToolsExclude = ["web_search"];
+    const { calls, files } = await runOpenClawRuntimeHelper(undefined, [], {
+      ...launcher,
+      baseConfig,
+    });
+    const native = calls.findIndex(({ args }) => args?.[1] === "gateway");
+    const validate = calls.findIndex(
+      ({ args }) => args?.[1] === "config" && args[2] === "validate",
+    );
+    assert.ok(
+      validate >= 0 && validate < native,
+      "validate the final config before starting the native Gateway",
+    );
+    const effective = JSON.parse(files.get(calls[validate].options.env.OPENCLAW_CONFIG_PATH));
+    const { gatewayPolicy, ...ordinaryTools } = effective.tools;
+    assert.deepEqual(
+      ordinaryTools,
+      baseConfig.tools,
+      "ordinary restrictions and plugin grants are retained",
+    );
+    assert.deepEqual(gatewayPolicy.allow, [
+      "sessions",
+      "sessions_list",
+      "sessions_history",
+      "sessions_search",
+      "sessions_send",
+      "sessions_spawn",
+      "sessions_yield",
+      "subagents",
+      "session_status",
+      "agents_list",
+      "automations",
+      "message",
+      "ask_user",
+      "progress_card",
+      "get_goal",
+      "create_goal",
+      "update_goal",
+      "ls",
+      "read",
+      "write",
+      "edit",
+      "apply_patch",
+      "exec",
+      "process",
+    ]);
+    assert.equal(gatewayPolicy.allow.includes("gateway"), false);
+    assert.equal(
+      gatewayPolicy.allow.includes("diffs"),
+      false,
+      "a plugin tool grant is not policy approval",
+    );
+    assert.deepEqual(Object.keys(gatewayPolicy.actions).sort(), [
+      "automations",
+      "message",
+      "process",
+      "sessions",
+      "subagents",
+    ]);
+    assert.equal(gatewayPolicy.actions.message.includes("send"), true);
+    assert.equal(gatewayPolicy.actions.message.includes("set-profile"), false);
+    assert.deepEqual(gatewayPolicy.automations, { scope: "caller", allowCommandJobs: false });
+    assert.equal(effective.agents.defaults.modelSelectionScope, "session");
+    assert.deepEqual(effective.cron, { enabled: true, triggers: { enabled: false } });
+    if (launcher.env.APP_SERVER_URL !== undefined) {
+      assert.deepEqual(effective.plugins.entries.codex.config.codexDynamicToolsExclude, [
+        "web_search",
+        ...GATEWAY_LOCAL_CODEX_TOOLS,
+      ]);
+    }
+    assert.deepEqual(
+      effective.gateway.auth,
+      baseConfig.gateway.auth,
+      "human Gateway authorization remains unchanged",
+    );
+    assert.deepEqual(
+      JSON.parse(files.get("/etc/openclaw/openclaw.json")),
+      baseConfig,
+      "the admitted revision is untouched",
+    );
+  });
+
+  for (const [failure, options] of [
+    [
+      "unknown runtime source",
+      {
+        files: [
+          [
+            "/opt/oce/runtime/provenance.json",
+            JSON.stringify({
+              source: "https://github.com/openclaw/openclaw",
+              commit: "a".repeat(40),
+            }),
+          ],
+        ],
+      },
+    ],
+    [
+      "schema validation refusal",
+      {
+        configValidationResponse: {
+          status: 1,
+          stdout: JSON.stringify({ valid: false }),
+          stderr: "unsupported gatewayPolicy",
+        },
+      },
+    ],
+  ]) {
+    test(`${launcher.name} holds ${failure} unready without starting model work`, async () => {
+      const messages = [];
+      const intervals = [];
+      const { calls } = await runOpenClawRuntimeHelper(undefined, [], {
+        ...launcher,
+        ...options,
+        baseConfig: codexGatewayConfig(),
+        intervals,
+        console: { error: (message) => messages.push(message) },
+      });
+      assert.equal(
+        calls.some(({ args }) => args?.[1] === "gateway"),
+        false,
+      );
+      assert.ok(messages.some((message) => message.includes("required tool policy")));
+      assert.ok(
+        intervals.some(({ ms }) => ms === 3_600_000),
+        "keep the failed workload available for diagnosis",
+      );
+    });
+  }
+}
+
+test("a dedicated Gateway permits concrete OCE tool additions and preserves empty or narrower policy", async () => {
+  for (const gatewayPolicy of [
+    { allow: [] },
+    { allow: ["sessions", "diffs"], actions: { sessions: ["patch"] } },
+  ]) {
+    const baseConfig = codexGatewayConfig();
+    baseConfig.tools = { alsoAllow: ["plugins"], gatewayPolicy };
+    const { files } = await runOpenClawRuntimeHelper(undefined, [], {
+      env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+      baseConfig,
+    });
+    const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json")).tools
+      .gatewayPolicy;
+    assert.deepEqual(effective.allow, gatewayPolicy.allow);
+    assert.deepEqual(effective.actions, gatewayPolicy.actions ?? {});
+    assert.deepEqual(effective.automations, { scope: "caller", allowCommandJobs: false });
+  }
+});
+
+test("a dedicated Gateway takes approved tools from the immutable revision rather than native admin config", async () => {
+  const admitted = codexGatewayConfig();
+  admitted.tools = {
+    gatewayPolicy: { allow: ["sessions", "read"], actions: { sessions: ["patch", "reset"] } },
+  };
+  const mutable = structuredClone(admitted);
+  mutable.tools.gatewayPolicy = {
+    allow: ["sessions", "plugins"],
+    actions: { sessions: ["patch"] },
+  };
+  const { files } = await runOpenClawRuntimeHelper(undefined, [], {
+    env: {
+      APP_SERVER_URL: "ws://harness.example.test:18790",
+      OPENCLAW_CONFIG_PATH: "/home/node/.openclaw/openclaw.json",
+    },
+    files: [
+      ["/home/node/.openclaw/openclaw.json", JSON.stringify(mutable)],
+      ["/etc/openclaw-managed/openclaw.json", JSON.stringify(admitted)],
+    ],
+  });
+  assert.deepEqual(
+    JSON.parse(files.get("/home/node/.openclaw/openclaw.json")).tools.gatewayPolicy,
+    {
+      allow: ["sessions"],
+      actions: { sessions: ["patch"] },
+      automations: { scope: "caller", allowCommandJobs: false },
+    },
+  );
+});
+
+test("the embedded Docker launcher retains ordinary Gateway configuration", async () => {
+  const baseConfig = {
+    gateway: { mode: "local" },
+    tools: { allow: ["gateway"] },
+    cron: { triggers: { enabled: true } },
+  };
+  const { calls, files } = await runOpenClawRuntimeHelper(undefined, [], {
+    launcher: "docker",
+    baseConfig,
+  });
+  assert.equal(calls.filter(({ args }) => args?.[1] === "gateway").length, 1);
+  assert.equal(
+    calls.some(({ args }) => args?.[1] === "config"),
+    false,
+  );
+  assert.deepEqual(JSON.parse(files.get("/etc/openclaw/openclaw.json")), baseConfig);
 });

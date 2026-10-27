@@ -32,12 +32,12 @@ If the deployment was accepted, use the returned version ID to check its
 GET /namespaces/:namespaceId/agents/:agentId/deployments/:revisionId
 ```
 
-| Status      | Next check                                                                                                                   |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `queued`    | If it stays queued, ask the operator whether a worker is available.                                                          |
-| `running`   | A worker holds the work. If it stays running, ask the operator to check workload startup, storage, and required credentials. |
-| `failed`    | Give the returned error code and version ID to the operator. Correct the reported cause before requesting a new deployment.  |
-| `succeeded` | The requested work completed; this does not establish live model availability. Verify a model response separately.           |
+| Status      | Next check                                                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `queued`    | If it stays queued, ask the operator whether a worker is available.                                                            |
+| `running`   | A worker started the work. If it stays running, ask the operator to check workload startup, storage, and required credentials. |
+| `failed`    | Follow the next step in `error.message`. If it names an administrator or operator, give them the error code and version ID.    |
+| `succeeded` | The requested work completed; this does not establish live model availability. Verify a model response separately.             |
 
 For Kubernetes workload problems, operators can use the
 [Compute failure checks](../../reference/drivers/kubernetes-compute.md#failure-conditions).
@@ -65,6 +65,37 @@ to verify your local setup or ask an operator to
 [verify a production workload](../deploy/production-agents.md#verify-production-workloads).
 Check for an actual answer from the configured model, not just a selected
 version or successful file read.
+
+## An embedded Gateway reports an unverifiable state owner
+
+A hard stop can leave the old Gateway's locks on the Agent's volume. With
+Gateway managed mode on or off, OCE can recover a verified Docker predecessor
+or the first eligible Kubernetes container in the same Pod. A new Pod cannot
+verify the previous Pod's owner. An older image may also lack a record of the
+original PID 1 start time. If the replacement reports an unverifiable owner,
+use the following procedure.
+
+1. Record the Agent, state volume and original container ID. On Kubernetes,
+   also record the Pod UID and node. Stop the Agent in OCC and verify with the
+   compute provider that the exact container exited. A missing Pod or expired
+   heartbeat alone cannot establish this. If its node is unreachable, keep the
+   Agent stopped until the infrastructure operator verifies shutdown.
+   [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
+2. Keep other writers off the volume. Start a maintenance container from the
+   Gateway's pinned image as its runtime user. Mount the retained volume and
+   configuration at the Gateway's paths and use its state directory and profile.
+   Inspect the holders without starting a Gateway.
+
+   ```sh
+   node /app/openclaw.mjs gateway recover-lock --json
+   ```
+
+3. Match every reported holder to the stopped workload. If any holder could
+   still write or cannot be identified, leave all locks in place. Otherwise repeat the
+   command with `--confirm` and the exact `confirmation` fingerprint from the
+   inspection. If OpenClaw reports a changed record, inspect and verify its holders again.
+4. Exit the maintenance container, deploy the Agent again and send a chat
+   message to verify it can use its retained state.
 
 ## A save or deployment lost its response
 

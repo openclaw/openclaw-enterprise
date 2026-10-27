@@ -14,6 +14,32 @@ OCC, which runs as application Pods on your nodes. For Agent model
 authentication, follow [production Agent deployment](production-agents.md).
 Console workspace files also require [private gateway routing](#enable-console-workspace-files).
 
+## Update an existing EKS installation
+
+Use `scripts/upgrade-production-images` from the selected release checkout; follow
+[Upgrade production images](production-upgrade.md).
+
+1. Select controller, runtime, or both by immutable digest. Repository-enabled
+   releases also require controller and broker digests. Use the matching chart
+   and OCC CLI; see [published images](published-images.md) and
+   [private image delivery](private-registry-images.md).
+2. Complete the [upgrade checklist](upgrade-checklist.md) and
+   [baseline](upgrade-baseline.md). Restore the populated database backup into a
+   separate disposable database; compare migration receipts and retained data.
+3. Preview with `helm template`, which renders locally without applying resources.
+   [`--preflight-only` rehearsal](production-upgrade.md#rehearse-before-the-maintenance-window)
+   runs a server dry run and creates temporary Pods and a Secret. Depending on the
+   rendered egress policies, it also creates a NetworkPolicy. Inspect for leftovers.
+4. Assign one upgrade operator. Freeze other Helm changes. Pause OCC autoscalers and
+   automatic restarts, and stop other writers to this database. For runtime upgrades, freeze Agent deployments and
+   draft edits. Run the command without `--preflight-only` using a new evidence
+   directory, then complete [release verification](production-upgrade.md#verify-the-release)
+   and [workspace checks](#verify-workspace-routing).
+
+On failure, follow [upgrade recovery](production-upgrade-recovery.md). Helm rollback
+cannot reverse committed migrations or restore Agent-volume data. Verify older
+software can read retained state.
+
 ## Prepare AWS infrastructure
 
 Provision these resources through your reviewed infrastructure workflow before

@@ -1,23 +1,20 @@
 # Kubernetes Compute Driver
 
-The Kubernetes Compute Driver provisions or adopts one namespace per tenant,
-creating each Agent’s gateway. Dedicated Gateways and Harnesses use separate
-Pods, identities and volumes; embedded OpenClaw combines them in one Pod.
-The experimental `executionCluster` configuration selects a second Kubernetes
-API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/kubernetes.md#two-cluster-validation)
-before using it; cloud deployment and complete runtime acceptance remain pending.
-Optional `executionCluster.caBundle` accepts at most 65,536 characters of X.509 PEM
-certificates and whitespace. Diagnostics identify `/executionCluster/...`
-fields, including `/executionCluster/caBundle`.
+Kubernetes Compute provisions or adopts one namespace per tenant and creates each
+Agent’s gateway. Dedicated Gateways and Harnesses use separate Pods, identities
+and volumes; embedded OpenClaw shares one Pod. Experimental `executionCluster`
+places dedicated Harnesses in a second cluster;
+[cloud and complete runtime acceptance remain pending](../../testing/kubernetes.md#two-cluster-validation).
+Optional `executionCluster.caBundle` accepts up to 65,536 characters of X.509 PEM
+certificates and whitespace. Diagnostics identify `/executionCluster/...` fields,
+including `/executionCluster/caBundle`.
 
-New managed namespaces use `oce-` plus the first 15 hexadecimal
-characters of the Namespace ID's SHA-256 digest: stable, DNS-safe, and short
-enough for an OpenShell pre.5 operator Workspace name. Earlier managed namespaces
-named `oce-<slug>-<hash12>` remain valid only if discovery finds the exact tenant label,
-matching `namespace-id` annotation, and OpenClaw manager label; the Driver never
-creates this form. Wrong names or duplicate tenant claims fail closed. Adopted
-namespaces keep their operator-selected names; OpenShell rejects names that
-exceed that Workspace limit.
+New managed namespaces use `oce-` plus 15 hexadecimal characters of the Namespace
+ID’s SHA-256 digest, which fits OpenShell pre.5 Workspace names. Earlier
+`oce-<slug>-<hash12>` namespaces require the exact tenant label, matching
+`namespace-id` annotation and OpenClaw manager label; the Driver never creates
+this form. Wrong names or duplicate tenant claims fail closed. Adopted namespaces
+keep their names; OpenShell rejects names exceeding its Workspace limit.
 
 The optional [OpenShell Sandbox Driver](openshell-sandbox.md) is designed to
 own dedicated Codex and native OpenClaw Harness Pods while Compute keeps the
@@ -34,25 +31,9 @@ Operator contracts:
 ## Existing split-layout installations
 
 Releases before #925 kept each Namespace's Gateways, Gateway state and canonical
-Secrets in a separate `oce-gateways-<hash>` namespace. In a single cluster, API
-and worker startup refuse these storage namespaces without the tenant discovery
-label. The check changes nothing. Inspect the storage
-targets before replacing the controller images:
-
-```sh
-kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace
-```
-
-In a single cluster, a row with an empty `NAMESPACE` column is a split-layout
-tenant. The two-cluster profile's control-cluster rows are expected.
-
-Adopt each tenant in place with the
-[split-layout upgrade](../../guides/deploy/split-layout-upgrade.md):
-the storage namespace becomes the tenant namespace and keeps its Secrets,
-Configurations and Gateway state, and the old namespace's claims and Agent
-Secrets move into it. Compute accepts the `oce-gateways-<hash>` name as a tenant
-namespace only while it keeps its own storage label. Do not add the tenant label
-by hand: the old namespace's claims, routes and transport Secrets would not move.
+Secrets in a separate `oce-gateways-<hash>` namespace. Check for and adopt these
+tenants with [Existing split-layout installations](kubernetes-compute/split-layout-installations.md)
+before replacing the controller images.
 
 ## Requirements
 
@@ -115,14 +96,13 @@ leave preparation at `ready: false` and prevent activation. Pods with a valid
 deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or
 role do not count.
 
-Errors include malformed or incomplete Pod lists, invalid identity or condition
-fields, duplicate condition types, contradictory Harness requirement labels,
-and pagination indicating more results. Missing optional
-Pod status or conditions means not ready. Preparation errors run the existing
-workload cleanup hooks; activation errors occur before changing routing.
-Cancelled observations cannot report ready. Checks cover Kubernetes workload
-readiness and label uniqueness; they do not attest provider Sandbox IDs or Pod UIDs,
-authenticate guests, or fence runtime generations.
+Malformed or incomplete Pod lists, invalid identities or conditions, duplicate
+condition types, contradictory Harness labels, and pagination with more results
+are errors. Missing optional status or conditions means not ready. Preparation
+errors run workload cleanup hooks; activation errors precede routing changes.
+Cancelled observations cannot report ready. Checks establish workload readiness
+and label uniqueness, not Sandbox IDs, Pod UIDs, guest authentication or runtime
+generation fencing.
 
 ## Configuration
 
@@ -251,8 +231,10 @@ Harness configuration selects the Agent's execution topology:
   profile mandatory, so sessions use the enrolled Harness without a Cloud Worker
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,
-  token-limit, input, reasoning, and cost metadata at the approved
-  `https://api.openai.com/v1` endpoint.
+  token-limit, input, reasoning, and cost metadata. Custom endpoints require
+  endpoint-bound `credential_source` authentication and HTTPS on port 443 ending
+  in `/v1`. Secret-backed keys require `https://api.openai.com/v1`. Model URLs
+  reject credentials, queries, fragments and wildcards.
 
 Dedicated replacement opts into the [exclusive preparation contract](compute.md#production-revision-stages):
 the worker stops predecessors before starting the new Harness. This permits RWO
@@ -351,6 +333,14 @@ model turn.
 - **Agent configuration is rejected:** Confirm the selected Harness supports
   its execution mode; external channels and provider-issued access tokens
   require dedicated execution.
+- **An Agent with repository bindings is refused for its Codex proxy:** Agent
+  save, provisioning and deployment answer `400` when
+  `plugins.entries.codex.config.appServer.networkProxy` has `enabled: false`, a
+  `mode` other than `limited` or `full`, a non-boolean `allowLocalBinding`, or
+  `domains` that is not an object mapping each host to `allow` or `deny`.
+  Preparation also refuses a deny of the broker hostname, which only session
+  material names. Fix or delete the named setting, or remove the bindings; see
+  [repository broker policy](kubernetes-compute/networking-and-isolation.md#networking).
 - **Approved traffic fails or denied traffic succeeds:** Verify NetworkPolicy
   enforcement, configured DNS selectors, gateway-client selectors, and any
   configured channel proxy address.

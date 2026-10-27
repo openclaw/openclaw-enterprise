@@ -4,7 +4,6 @@ import test from "node:test";
 import type {
   AgentDeploymentStatusWire,
   AgentReadWire,
-  AgentResponse,
   AgentRevisionResponse,
   ConfigurationWire,
   PresetWire,
@@ -19,7 +18,7 @@ import {
   waitForEnabled,
   isMaskedSecretValue,
 } from "./console-agents-browser-helpers.mjs";
-import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
+import { openCreateSecretDialog, createAgentThroughForm } from "./console-agents-test-support.mjs";
 import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -114,15 +113,7 @@ for (const issuesEnabled of [true, false]) {
     }
     const profile = issuesEnabled ? "git-full" : "git-write";
     const label = issuesEnabled ? "Contributor" : "Contributor · no issue management";
-    const createdResponse = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-        response.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-    const response = await createdResponse;
-    assert.equal(response.status(), 201);
-    const { data: agent }: AgentResponse = await response.json();
+    const agent = await createAgentThroughForm(page, fixture, namespace.id);
     const expectedBindings = [
       { repositoryRef: "application", profile },
       { repositoryRef: "documentation", profile },

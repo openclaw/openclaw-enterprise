@@ -6,13 +6,16 @@ import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  apiRequests,
   detailUrl,
   fileBrowser,
   login,
   nativeValues,
   newPage,
+  writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import { openAdvancedSettings } from "./console-agents-test-support.mjs";
+import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -84,12 +87,8 @@ async function filledCreateForm(
     context: { viewport: { width, height: 900 } },
   });
   // Every API write the form sends, by method and path.
-  const writes = [];
-  page.on("request", (request) => {
-    if (request.method() !== "GET") {
-      writes.push(`${request.method()} ${new URL(request.url()).pathname}`);
-    }
-  });
+  const requests = apiRequests(page, fixture.origin);
+  const writes = () => writeRequests(requests).map(({ method, path }) => `${method} ${path}`);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByLabel("Preset template").selectOption({ label: preset.name });
   await page.getByLabel("Name", { exact: true }).fill(name.toLowerCase().replaceAll(" ", "-"));
@@ -118,7 +117,7 @@ async function filledCreateForm(
     pluginJson,
     writes,
     // What happened before the form was submitted.
-    since: { writes: writes.length, audit: audit.events.length },
+    since: { writes: writes().length, audit: audit.events.length },
     agentsUrl,
     isAgentPost: isPost(agentsUrl),
     isPreflight: isPost(`${agentsUrl}/validate`),
@@ -175,7 +174,7 @@ async function refusedCreateForm(t, name, entries, width = 1280) {
 // Nothing reached the API but the preflight: no Secret, Configuration or Agent exists.
 async function assertNothingSaved(form) {
   const { fixture, audit, namespace, writes, since } = form;
-  assert.deepEqual(writes.slice(since.writes), [
+  assert.deepEqual(writes().slice(since.writes), [
     `POST /namespaces/${namespace.id}/agents/validate`,
   ]);
   assert.deepEqual((await fixture.request("GET", `/namespaces/${namespace.id}/agents`)).data, []);
@@ -263,15 +262,25 @@ test("Create Agent refuses a plugin pair before saving anything and keeps the fo
 // The preflight passed, so the form saved its Secret and Configuration before Agent create
 // refused, and the saved Configuration locked the harness (finding 2391). The preflight now
 // names the binding Agent create will use (only the method of the Secret the Preset saves next)
-// and refuses first.
+// and refuses first. Kubernetes Compute offers Agent provisioning for every Dedicated Agent, which
+// skipped the preflight and saved the Secret before provisioning refused (finding 2395), so this
+// fixture keeps provisioning.
 test("Create Agent refuses a Dedicated Agent the Installation cannot place before saving anything", async (t) => {
   const form = await filledCreateForm(
     t,
     "Unplaceable Codex",
     {},
-    { selected: "{}", harness: "codex", options: { channelRuntime: true, routed: false } },
+    {
+      selected: "{}",
+      harness: "codex",
+      options: { channelRuntime: true, routed: false, agentProvisioning: true },
+    },
   );
-  const { page, configuration, isPreflight } = form;
+  const { fixture, page, configuration, isPreflight } = form;
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities.agentProvisioning, {
+    executionModes: ["dedicated"],
+  });
   const refused = page.waitForResponse(isPreflight);
   await submitWithKeyboard(page);
   const response = await refused;
@@ -279,11 +288,7 @@ test("Create Agent refuses a Dedicated Agent the Installation cannot place befor
   assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "api_key" });
   const alert = page.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
   await alert.waitFor();
-  assert.ok(
-    (await alert.textContent()).startsWith(
-      "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration. Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.",
-    ),
-  );
+  assert.ok((await alert.textContent()).startsWith(CODEX_PLACEMENT_REFUSAL));
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   await assertNothingSaved(form);
   // Nothing is saved, so the form can still follow that advice.

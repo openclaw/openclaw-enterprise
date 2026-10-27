@@ -176,7 +176,9 @@ Namespace with `accessMode: installation`, and select that reference with
 `profile: github-installation` in the Agent's `repositoryBindings`, as its only
 binding (Agent save and deploy refuse it next to another). No default profile or
 wildcard selects this scope. The installed sender must positively confirm
-`github_installation` support.
+`github_installation` support. With the bundled OpenShell Credential Proxy, that
+needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
+`409 RESOURCE_CONFLICT`, and on a gateway other than 0.1.5, `503`.
 
 OCE does not add a ref allowlist to installation scope. GitHub's membership,
 permissions and branch rules set its limit. See
@@ -199,7 +201,13 @@ each token and session still expires. Remove standing approval with its current
 approval generation **before** clearing the repository binding. An already
 authorized request can finish after withdrawal.
 
-A repository-scoped one-draft grant spends its allowance at authorization, before
+By default (`draftPullLimit: one-per-grant`), a repository-scoped draft grant allows one
+draft, and every Agent and version that has the grant shares it. To let Agents open a new
+draft from the same review ref, set `draftPullLimit: none` in the Namespace policy. OCE then
+records each draft use without spending an allowance; the draft-only, head and base checks
+still apply. This changes the grant identity: deploy a new version to use it.
+
+A one-draft grant spends its allowance at authorization, before
 OCE knows whether GitHub created a draft. On an uncertain push or draft outcome,
 inspect the original remote ref or PR and retained operation; do not replay it.
 See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
@@ -313,8 +321,8 @@ uncertain request outcomes before retrying.
 ## GitHub App key rotated or revoked
 
 See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
-A ready Agent is not evidence of usable Git material. A rejected key can leave
-already issued material usable until expiry, then close requests.
+A ready Agent is not evidence of usable Git material. A changed key retires
+issued material within about a minute, even when GitHub rejects the new key.
 
 ## Move from the earlier trial
 

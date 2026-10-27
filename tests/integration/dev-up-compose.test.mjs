@@ -55,13 +55,24 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   assert.ok(
     dockerLogs.some((entry) => entry.args.join(" ") === `image inspect ${defaultRuntimeImage}`),
   );
-  assert.ok(
-    dockerLogs.some(
-      (entry) =>
-        entry.args.join(" ") ===
-        `build -f deploy/runtime/Dockerfile --tag ${defaultRuntimeImage} .`,
-    ),
+  const source = JSON.parse(
+    await readFile(new URL("../../deploy/runtime/openclaw-source.json", import.meta.url), "utf8"),
   );
+  const runtimeBuild = dockerLogs.find((entry) => entry.args[0] === "build");
+  assert.deepEqual(runtimeBuild?.args, [
+    "build",
+    "-f",
+    "deploy/runtime/Dockerfile",
+    "--build-arg",
+    `OPENCLAW_COMMIT=${source.commit}`,
+    "--build-arg",
+    `OPENCLAW_SOURCE_SHA256=${source.sourceArchiveSha256}`,
+    "--build-arg",
+    `OPENCLAW_BUILD_TIMESTAMP=${source.buildTimestamp}`,
+    "--tag",
+    defaultRuntimeImage,
+    ".",
+  ]);
   assert.ok(
     dockerLogs.some(
       (entry) =>
@@ -114,11 +125,31 @@ test("dev-up starts Docker without Compose options on Bash 3.2", async (t) => {
   assert.match(result.stdout, /Container engine: Docker/);
 });
 
+test("dev-up refuses an invalid source identity before building or starting Compose", async (t) => {
+  const fixture = await createFixture(t);
+  const sourcePath = join(fixture.fixtureRepository, "deploy/runtime/openclaw-source.json");
+  const source = JSON.parse(await readFile(sourcePath, "utf8"));
+  // A malformed timestamp must not reach Docker or start a stack with an unbuildable image.
+  source.buildTimestamp = "2026-02-30T00:00:00Z";
+  await writeFile(sourcePath, JSON.stringify(source));
+
+  const result = await runDevUp([], fixture.env);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot read a valid deploy\/runtime\/openclaw-source.json/);
+  const dockerLogs = await readJsonLines(fixture.dockerLog);
+  assert.ok(dockerLogs.every((entry) => entry.args[0] !== "build"));
+  const composeCommands = composeInvocations(dockerLogs);
+  assert.ok(composeCommands.every((entry) => !entry.args.includes("up")));
+});
+
 test("dev-up preserves a selected custom runtime image and skips the quickstart build", async (t) => {
   const fixture = await createFixture(t);
   const keyOutput = join(fixture.directory, "custom-service-key.json");
   const env = { ...fixture.env, OPENCLAW_DEV_PORT: "4137" };
   const override = await customRuntimeOverride(fixture);
+  // A prebuilt selection does not consume this checkout's runtime source identity.
+  await writeFile(join(fixture.fixtureRepository, "deploy/runtime/openclaw-source.json"), "{}");
   const result = await runDevUp(
     ["--key-output", keyOutput, "--", ...composeOptions(fixture, override)],
     env,

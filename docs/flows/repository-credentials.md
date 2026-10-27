@@ -187,7 +187,10 @@ the exchange deadline remains enforced.
 
 `createAgentHandler` checks framing and delegates authentication to the bound
 factory. Unauthenticated valid Git routes receive a Basic challenge; authenticated
-requests reserve capacity before forwarding bodies. GitHub plans routes through
+requests reserve capacity before forwarding bodies. Each refusal of an authenticated
+request, and each framing refusal whose credential names an open session, emits one
+[`repository-credentials.denied`](../reference/repository-credentials/prepared-native-git.md#read-broker-refusals)
+record. GitHub plans routes through
 `apps/controller/src/drivers/repo/github/credentials/routes.ts:createRoutePolicy`, using
 `apps/controller/src/drivers/repo/github/credentials/routes/classification.ts:classifyRoute`
 to classify target, method, profile and query. All profiles admit upload-pack discovery and execution;

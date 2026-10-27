@@ -14,6 +14,22 @@ const OCSF_SEVERITIES: Readonly<Record<string, RuntimeLogLevel>> = Object.freeze
 });
 
 /**
+ * OpenShell's policy DNS answers a lookup with a placeholder address from 198.18.0.0/15 or
+ * fd23:6f70:656e::/48 (openshell-supervisor-network `policy_dns/runtime.rs` at the pinned rev)
+ * and dials the real host itself. A denial that its mapping could not resolve names only the
+ * placeholder, which is no destination a rule can name.
+ */
+function openShellPlaceholderAddress(host: string): boolean {
+  return /^198\.1[89]\.\d{1,3}\.\d{1,3}$/.test(host) || /^fd23:6f70:656e:/i.test(host);
+}
+
+// `CONFIG:PUBLISHED [INFO] Policy DNS mapped <host> resolved=<ips> synthetic=<ip> ports=...` and
+// `CONFIG:OBSERVATION [INFO] Policy DNS staged unapproved name <host> synthetic=<ip> for TCP
+// policy review`: the only records that tie a placeholder address to its host.
+const PLACEHOLDER_MAPPING =
+  /^CONFIG:[A-Z_]{1,32} \[[A-Z]{3,5}\] Policy DNS (?:mapped|staged unapproved name) ([^\s]{1,253}) (?:resolved=\S{0,4096} )?synthetic=([0-9a-f.:]{3,45})(?:\s|$)/i;
+
+/**
  * Fields recovered from one OpenShell OCSF shorthand line, for example
  * `HTTP:GET [INFO] ALLOWED curl(42) -> GET https://host/p?q=1 [policy:web engine:opa]` or
  * `PROC:LAUNCH [INFO] git(7) [cmd:git clone https://...]`. OpenShell pushes OCSF events
@@ -57,9 +73,25 @@ function ocsfFields(message: string): {
       fields.url = request[2]!;
     }
   } else if (rest.startsWith("NET:")) {
-    const target = /-> ([^\s:/]{1,253})(?::(\d{1,5}))?/.exec(rest);
+    // `... curl(42) -> host:443`, or `NET:REFUSE [MED] DENIED host` when no process is known
+    // (a DNS refusal names the query only, D772). An IPv6 literal is written bare, so its port
+    // is the last `:<digits>`.
+    const target =
+      /-> ((?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}):(\d{1,5})(?=[\s/]|$)/i.exec(rest) ??
+      /-> ([^\s:/]{1,253})(?::(\d{1,5}))?/.exec(rest) ??
+      (actor === null && fields.action !== undefined
+        ? /^NET:[A-Z_]{1,32} \[[A-Z]{3,5}\] [A-Z]{3,16} ([^\s:/()[\]]{1,253})(?::(\d{1,5}))?(?:\s|$)/.exec(
+            rest,
+          )
+        : null);
     if (target !== null) {
-      fields.dst_host = target[1]!;
+      // OpenShell's policy DNS answers with a placeholder address and logs the host it stands
+      // for separately (D771); the address alone names no destination.
+      if (openShellPlaceholderAddress(target[1]!)) {
+        fields.dst_placeholder_ip = target[1]!;
+      } else {
+        fields.dst_host = target[1]!;
+      }
       if (target[2] !== undefined) {
         fields.dst_port = target[2];
       }
@@ -118,4 +150,43 @@ export function openShellLogDecision(line: Readonly<SandboxLogLine>): SandboxLog
     fields,
     ...(metadata === undefined ? {} : { decision: metadata }),
   };
+}
+
+/**
+ * Decorates a read in log order. A denial that names a placeholder address takes its host
+ * from the latest policy DNS record for that address earlier in the same read (D771): the
+ * mapping is logged when the lookup is answered, just before the connection it serves, and
+ * moves to a new address when the policy changes. Without such a record the decision names
+ * no host, so nothing proposes a rule for the placeholder. Only `decision` depends on the
+ * other lines; `fields` stay a function of the line alone, which keeps the line hashes that
+ * de-duplicate overlapping reads stable.
+ */
+export function openShellLogDecisions(
+  lines: readonly Readonly<SandboxLogLine>[],
+): SandboxLogLine[] {
+  const hosts = new Map<string, string>();
+  return lines.map((line) => {
+    const decorated = openShellLogDecision(line);
+    if (decorated === line) {
+      return decorated;
+    }
+    const mapping = PLACEHOLDER_MAPPING.exec(decorated.message);
+    // Only a placeholder address is ever looked up below (`dst_placeholder_ip`), so a record
+    // whose `synthetic=` lies outside the range is never read and needs no check of its own.
+    if (mapping !== null) {
+      // A workload can look up a placeholder-shaped name such as `198.18.0.5.`, and policy DNS
+      // maps it like any other name. That name is no destination either, so the address names
+      // no host until a later record maps it to a real one.
+      if (openShellPlaceholderAddress(mapping[1]!.replace(/\.$/, ""))) {
+        hosts.delete(mapping[2]!.toLowerCase());
+      } else {
+        hosts.set(mapping[2]!.toLowerCase(), mapping[1]!);
+      }
+    }
+    const placeholder = decorated.fields.dst_placeholder_ip;
+    const host = placeholder === undefined ? undefined : hosts.get(placeholder.toLowerCase());
+    return host === undefined || decorated.decision === undefined
+      ? decorated
+      : { ...decorated, decision: { ...decorated.decision, host } };
+  });
 }

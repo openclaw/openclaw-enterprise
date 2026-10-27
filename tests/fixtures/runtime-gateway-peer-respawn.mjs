@@ -193,7 +193,14 @@ try {
   const [before] = await gatewayProcess();
   initialGateway = before;
   assert.equal(before.token, appServerToken("harness-startup-1"));
-  assert.equal(linearEnabled(JSON.parse(await readFile(configPath, "utf8"))), false);
+  const initialConfig = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(linearEnabled(initialConfig), false);
+  assert.equal(initialConfig.tools.gatewayPolicy.allow.includes("sessions"), true);
+  assert.equal(initialConfig.tools.gatewayPolicy.allow.includes("plugins"), false);
+  assert.deepEqual(initialConfig.tools.gatewayPolicy.automations, {
+    scope: "caller",
+    allowCommandJobs: false,
+  });
   if (outageExit) {
     // The wrapper must still notice its child exit while peer status is unavailable.
     peer = undefined;
@@ -280,6 +287,12 @@ try {
   if (writableInitialConfig) {
     const edited = JSON.parse(await readFile(configPath, "utf8"));
     edited.messages = { ...edited.messages, responsePrefix: "Native admin edit" };
+    // A native admin can edit ordinary configuration. On respawn, only OCE's
+    // admitted revision can approve model tools; local edits cannot widen it.
+    edited.tools.gatewayPolicy.allow.push("plugins");
+    edited.tools.gatewayPolicy.actions.plugins = ["list"];
+    edited.agents.defaults.modelSelectionScope = "agent";
+    edited.cron.triggers.enabled = true;
     await writeFile(configPath, JSON.stringify(edited));
   }
 
@@ -317,7 +330,11 @@ try {
     await setTimeout(200);
   }
   assert.equal(after.token, appServerToken("harness-startup-2"));
-  assert.equal(linearEnabled(JSON.parse(await readFile(configPath, "utf8"))), true);
+  const recoveredConfig = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(linearEnabled(recoveredConfig), true);
+  assert.deepEqual(recoveredConfig.tools.gatewayPolicy, initialConfig.tools.gatewayPolicy);
+  assert.equal(recoveredConfig.agents.defaults.modelSelectionScope, "session");
+  assert.equal(recoveredConfig.cron.triggers.enabled, false);
   if (writableInitialConfig) {
     assert.equal(
       JSON.parse(await readFile(configPath, "utf8")).messages.responsePrefix,

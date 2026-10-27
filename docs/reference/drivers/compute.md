@@ -30,9 +30,9 @@ Commits must be full lowercase Git SHAs; missing IDs or provenance remain `null`
 Results exclude separate Sandbox Driver workloads. Neither Docker nor Kubernetes
 [derives commits](../console/debug-fields.md#where-the-source-commit-comes-from)
 from a moved tag. Kubernetes
-[inspects](../console/debug-fields.md#inspection-scope) revision-owned Pods and
-binds its private metadata read to the Pod UID and running container ID; both
-commits apply only to containers with that image ID.
+[inspects](../console/debug-fields.md#inspection-scope) revision-owned Pods by
+Pod UID and running container ID; both commits apply only to containers with
+that image ID.
 
 Optional `discoverHarnessModels({provider, apiKey})` returns native model IDs
 and names without persisting credentials. OCC checks Agent creation authority
@@ -40,8 +40,7 @@ first. Bundled Kubernetes and Docker call the official OpenAI and
 Anthropic model-list APIs with a 10-second timeout, a 4 MiB limit per response,
 at most 10 pages and 10,000 models, and no redirects. Discovery requires
 [OCC API egress](../console/create-and-deploy.md#create-an-agent) to each
-provider; it neither provisions runtime credentials nor proves model
-compatibility. Unsupported or unavailable discovery permits manual model entry.
+provider; it neither provisions runtime credentials nor proves model compatibility. Unsupported or unavailable discovery permits manual model entry.
 
 The bundled Codex OAuth device-login implementation is **Experimental**.
 Optional `startHarnessDeviceAuthorization(harnessId)` returns a public challenge
@@ -190,10 +189,10 @@ apply that configuration and reject unsupported changes. The Driver operator own
 log destinations, credentials, redaction, access, and delivery; the bundled
 Collector's privacy and export guarantees do not apply.
 
-The gateway and Harness emit their own logs in either mode. OCC does not
-transport them, and neither OCC nor Compute streams, stores or exports them;
-authorized readers fetch redacted pages on demand through the Driver, with a
-512 KiB response limit. OCC process logs, lifecycle results and audit records use their own paths.
+The gateway and Harness emit their own logs in either mode. Neither OCC nor
+Compute transports, stores or exports them; authorized readers fetch redacted
+pages on demand through the Driver, with a 512 KiB response limit. OCC process
+logs, lifecycle results and audit records use their own paths.
 
 ## IAM
 
@@ -312,14 +311,14 @@ prove readiness. See [Kubernetes startup status](kubernetes-compute.md#plugin-st
 
 ## Troubleshooting
 
-| Symptom                                 | What to check                                                                                                                                              |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Startup fails                           | The selected Driver, required production stages, hooks, and preflight errors; preflight warnings alone do not block startup. Fix it and confirm startup.   |
-| Deployment fails before work is queued  | The Harness and authentication settings, and whether `validateHarnessAuth` exists. Fix the combination or Driver and confirm OCC creates a revision.       |
-| Revision stays unready                  | The reported Namespace, Agent and revision, workload readiness and authentication, and plugin startup-status trust. Fix it and confirm readiness.          |
-| Cleanup or replacement stalls           | Revocation, hooks, and Sandbox cleanup; a missing workload alone does not prove cleanup succeeded. Fix it and retry until cleanup or activation completes. |
-| Maintenance stops after a policy change | The original Principal's authority and IAM availability. Restore the permission or start a newly authorized operation; confirm reconciliation resumes.     |
-| Credential setup partially fails        | Refresh stored status before retrying; confirm the required groups report configured. That does not prove the provider accepts them.                       |
+| Symptom                                 | What to check                                                                                                                                           |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Startup fails                           | The selected Driver, required production stages, hooks, and preflight errors; preflight warnings alone do not block startup. Fix it; confirm startup.   |
+| Deployment fails before work is queued  | The Harness and authentication settings, and whether `validateHarnessAuth` exists. Fix the combination or Driver; confirm OCC creates a revision.       |
+| Revision stays unready                  | The reported Namespace, Agent and revision, workload readiness and authentication, and plugin startup-status trust. Fix it; confirm readiness.          |
+| Cleanup or replacement stalls           | Revocation, hooks, and Sandbox cleanup; a missing workload alone does not prove cleanup succeeded. Fix it; retry until cleanup or activation completes. |
+| Maintenance stops after a policy change | The original Principal's authority and IAM availability. Restore the permission or start a newly authorized operation; confirm reconciliation resumes.  |
+| Credential setup partially fails        | Refresh stored status before retrying; confirm the required groups report configured; that does not prove the provider accepts them.                    |
 
 ## Implementations
 

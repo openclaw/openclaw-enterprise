@@ -1,5 +1,5 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import { GENERIC_DENIAL, namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import {
   button,
   element,
@@ -7,6 +7,7 @@ import {
   setHidden,
   setText,
   statusBlock,
+  requestIdLine,
 } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
@@ -14,7 +15,8 @@ import {
   type LifecycleError,
   keptResources,
 } from "./lifecycle-confirmation.mjs";
-import { message } from "./list.mjs";
+import { AGENT_DELETE_DENIED, askForGrant } from "./access-reasons.mjs";
+import { AGENT_STATUS_READ_NEED, describeFailure } from "./list.mjs";
 
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
 export const DELETION_POLL_MS = 3000;
@@ -31,7 +33,7 @@ export function createAgentDeletion(
     className: "danger-zone-row deletion-note",
     "aria-labelledby": "agent-deletion-title",
   });
-  const permissionNotice = "Your access does not include deleting this Agent.";
+  const permissionNotice = AGENT_DELETE_DENIED;
   let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
@@ -111,9 +113,7 @@ export function createAgentDeletion(
               "div",
               { className: "status", "data-tone": "danger", role: "alert" },
               element("p", { className: "status-body" }, state.error.text),
-              state.error.requestId
-                ? element("p", { className: "request-id" }, `Request ID: ${state.error.requestId}`)
-                : null,
+              state.error.requestId ? requestIdLine(state.error.requestId) : null,
             ),
           ]
         : []),
@@ -230,7 +230,7 @@ export function createAgentDeletion(
         clearTimeout(pollTimer);
       } else {
         state.error = {
-          text: `Could not refresh deletion status. ${message(cause)}`,
+          text: `Could not refresh deletion status. ${describeFailure(cause, { need: AGENT_STATUS_READ_NEED })}`,
           requestId: error.requestId,
         };
         // Stop polling on errors; the reader can retry with Refresh deletion status.
@@ -329,22 +329,27 @@ export function createAgentDeletion(
       dialog.close();
       let text;
       if (error.status === 403) {
+        // The API's named denial (finding 2534), or a retry refusal such as another actor's
+        // deletion; an older API's generic denial gets the console's text.
         text =
-          state.deleting &&
+          namedDenial(cause) ??
+          (state.deleting &&
           error.serverMessage !== undefined &&
-          error.serverMessage !== "The exact platform operation was not authorized."
+          error.serverMessage !== GENERIC_DENIAL
             ? error.serverMessage
-            : "You do not have permission to delete this Agent. Ask an administrator for Agent delete access.";
+            : `You do not have permission to delete this Agent. ${askForGrant("Agent delete on it")}`);
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
           "This Agent is no longer available for deletion. Refresh its status to return to the Agents list if it is gone.";
-      } else if (error.status === 409) {
-        state.needsRefresh = true;
-        text =
-          "This Agent could not be deleted in its current state. Refresh its status before trying again.";
-      } else if (error.status === 400 || error.status === 429) {
-        text = message(cause);
+      } else if (error.status === 400 || error.status === 409 || error.status === 429) {
+        // The API's own reason for a 400 or 409, such as a lifecycle change during deletion.
+        state.needsRefresh = error.status === 409;
+        text = describeFailure(cause, {
+          mutation: true,
+          conflict: "This Agent could not be deleted in its current state.",
+          next: "Refresh deletion status before trying again.",
+        });
       } else {
         state.needsRefresh = true;
         text =

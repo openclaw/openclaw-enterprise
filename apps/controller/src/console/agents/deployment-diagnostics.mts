@@ -3,14 +3,46 @@ import type {
   AgentDeploymentStatusWire,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure } from "../api-client.mjs";
-import { button, element, focusSaveOutcome, patchChildren, statusBlock } from "../dom.mjs";
-import { askInstallationAdministrator } from "./credential-access.mjs";
+import {
+  button,
+  describeDisabled,
+  element,
+  focusSaveOutcome,
+  patchChildren,
+  statusBlock,
+} from "../dom.mjs";
 import type { DeploymentContext } from "./deployment-evidence.mjs";
+import { DIAGNOSTICS_DENIED, notIncluded } from "./access-reasons.mjs";
 import { displayDate, message, neutralDeploymentOutcome } from "./list.mjs";
 
 // The console's delay for loading text (console.css .delayed-status): a diagnostics answer within
 // it never shows the waiting line (finding 1714).
 const DIAGNOSTICS_WAITING_DELAY_MS = 250;
+let diagnosticsPanels = 0;
+
+type DiagnosticCheck = AgentDeploymentDiagnosticsWire["checks"][number];
+
+// The gateway reports a version with no Slack channel as a failed configuration check with code
+// NOT_CONFIGURED, and leaves its other Slack checks unknown. Nothing failed, so the rows say so in
+// words instead of "failed (NOT_CONFIGURED)" (finding 2549).
+function slackNotConfigured(check: DiagnosticCheck) {
+  return (
+    check.component === "gateway" &&
+    check.check === "configuration" &&
+    check.state === "failed" &&
+    check.code === "NOT_CONFIGURED"
+  );
+}
+
+function checkResult(check: DiagnosticCheck, noSlack: boolean) {
+  if (slackNotConfigured(check)) {
+    return "not set up";
+  }
+  if (noSlack && check.component === "gateway" && check.state === "unknown" && !check.code) {
+    return "not checked";
+  }
+  return `${check.state}${check.code ? ` (${check.code})` : ""}`;
+}
 
 export function createVersionDiagnostics(
   context: DeploymentContext,
@@ -18,6 +50,7 @@ export function createVersionDiagnostics(
   revisionId: string,
   recordedStatus: () => AgentDeploymentStatusWire | null,
   operateAllowed: Promise<boolean | undefined>,
+  isCurrentVersion: () => boolean,
 ) {
   const section = element("section", { className: "agent-card version-diagnostics" });
   let diagnostics: AgentDeploymentDiagnosticsWire | null = null;
@@ -33,6 +66,8 @@ export function createVersionDiagnostics(
   // deployment poll re-renders the panel, and patchChildren drops attributes that render()
   // does not set (finding 1712).
   let outcomeId: string | null = null;
+  // The denial that describes the disabled button (finding D749); stable across polls.
+  const deniedId = `diagnostics-denied-${++diagnosticsPanels}`;
 
   async function run() {
     if (loading || operateDenied || !context.isCurrent()) {
@@ -135,13 +170,14 @@ export function createVersionDiagnostics(
       );
     }
     const checks = element("dl", { className: "credential-status-list" });
+    const noSlack = diagnostics.checks.some(slackNotConfigured);
     for (const check of diagnostics.checks) {
       checks.append(
         element("dt", {}, `${check.component} / ${check.check}`),
         element(
           "dd",
           {},
-          `${check.state}${check.code ? ` (${check.code})` : ""} · ${check.checkedAt ? displayDate(check.checkedAt) : "No check time"}`,
+          `${checkResult(check, noSlack)} · ${check.checkedAt ? displayDate(check.checkedAt) : "No check time"}`,
         ),
       );
     }
@@ -167,13 +203,7 @@ export function createVersionDiagnostics(
     const unreachable =
       checks.length > 0 &&
       checks.every((check) => check.state === "unknown" && check.code === "UNAVAILABLE");
-    const slackNotConfigured = checks.some(
-      (check) =>
-        check.component === "gateway" &&
-        check.check === "configuration" &&
-        check.state === "failed" &&
-        check.code === "NOT_CONFIGURED",
-    );
+    const noSlack = checks.some(slackNotConfigured);
     const recorded = recordedStatus();
     const failure =
       recorded?.status === "failed" && !neutralDeploymentOutcome(recorded) ? recorded.error : null;
@@ -183,9 +213,9 @@ export function createVersionDiagnostics(
         "UNAVAILABLE means the runtime did not answer, so these checks could not run. The gateway is usually stopped, still starting, or failed to start.",
       );
     }
-    if (slackNotConfigured) {
+    if (noSlack) {
       hints.push(
-        "NOT_CONFIGURED means this version has no Slack channel, so Slack authentication and connectivity were not checked. An Agent that does not use Slack always reports this; it is not a model or deployment error.",
+        "Slack is not set up for this version, so there is nothing to check. An Agent that does not use Slack always shows this; it is not a model or deployment error.",
       );
     }
     if (failure?.code) {
@@ -208,29 +238,34 @@ export function createVersionDiagnostics(
 
   // The version's record calls this on every deployment poll: rewrite only what changed.
   function render() {
+    // A failed version that is not current never ran, or no longer runs: there is no runtime to
+    // check, so the panel is not offered (finding 2403). Its record and Logs stay.
+    const recorded = recordedStatus();
+    const nothingToCheck =
+      recorded?.status === "failed" && !neutralDeploymentOutcome(recorded) && !isCurrentVersion();
+    if (section.hidden !== nothingToCheck) {
+      section.hidden = nothingToCheck;
+    }
     const { status } = requestFailure(error);
+    // The button keeps its label while it waits, as Deploy and Save do: the status line below
+    // is the one announcement, and a changed label inside the Agent view's live region was
+    // announced as well (finding 1698).
+    const runButton = button("Run diagnostics for this version", () => void run(), {
+      disabled: waitingShown || operateDenied,
+      ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
+    });
+    const denied = operateDenied
+      ? statusBlock("info", null, DIAGNOSTICS_DENIED, [], { id: deniedId })
+      : null;
+    describeDisabled(runButton, denied);
     patchChildren(section, [
       element(
         "div",
         { className: "deployment-heading" },
         element("h3", {}, "Current observations"),
-        // The button keeps its label while it waits, as Deploy and Save do: the status line
-        // below is the one announcement, and a changed label inside the Agent view's live
-        // region was announced as well (finding 1698).
-        button("Run diagnostics for this version", () => void run(), {
-          disabled: waitingShown || operateDenied,
-          ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
-        }),
+        runButton,
       ),
-      ...(operateDenied
-        ? [
-            statusBlock(
-              "info",
-              null,
-              "Your access does not include running diagnostics for this Agent.",
-            ),
-          ]
-        : []),
+      denied,
       element(
         "p",
         { className: "muted" },
@@ -247,7 +282,10 @@ export function createVersionDiagnostics(
               "danger",
               null,
               status === 403
-                ? `Diagnostics require Agent read and operate access plus read access to this version. Granting them ${askInstallationAdministrator("check those grants")}`
+                ? notIncluded(
+                    "running diagnostics for this version",
+                    "Agent read and operate on this Agent and AgentRevision read on this version",
+                  )
                 : status === 503
                   ? "Current-runtime diagnostics are unavailable. This Compute Driver may not support them, or the runtime may be unreachable. Check the runtime and try again."
                   : message(error),

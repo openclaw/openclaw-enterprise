@@ -175,7 +175,9 @@ reviewed `OCC_TEST_CODEX_SECCOMP_PROFILE`. If running inside a container against
 a host Docker daemon, mount the repository and fixture temporary directory at
 the same absolute host paths and set `TMPDIR` to that shared directory.
 `OCC_DOCKER_BIN` selects an alternate executable. For emulated startup, set
-`OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER` to an integer from 1 to 10.
+`OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER` to an integer from 1 to 10. Some startup
+waits are sized for 8 CPUs and grow on runners with fewer CPUs, because CI runs
+image test files side by side.
 
 ## Repository runtime volume test environment
 

@@ -74,6 +74,7 @@ export async function startServiceListeners(
     upstreamOrigins,
     trustedUpstreamOrigins = new Set(upstreamOrigins),
     providerQueue,
+    log,
   },
 ) {
   const [{ createCredentialService }, { startListeners }] = await Promise.all([
@@ -94,6 +95,7 @@ export async function startServiceListeners(
     trustedUpstreamOrigins,
     clock,
     upstreamCa: tls.ca,
+    ...(log === undefined ? {} : { log }),
   });
   return { service, listeners };
 }

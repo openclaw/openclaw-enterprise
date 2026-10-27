@@ -48,8 +48,12 @@ function computeDriver({
   agentProvisioning = false,
   sandboxDriver,
   credentialGatewayDriver,
+  // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
+  // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
+  implementation = "test-memory-lifecycle",
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
+    gatewayRuntime: true,
     repositoryCredentials,
     sandboxDriver,
     credentialGatewayDriver,
@@ -58,12 +62,10 @@ function computeDriver({
   });
 
   return Object.assign(driver, {
-    implementation: "test-memory-lifecycle",
-    // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
-    // does not provision unless repository credentials ask for them.
-    ...(channelRuntime && !repositoryCredentials
-      ? { requiresAgentRuntimeCredentials: undefined }
-      : {}),
+    implementation,
+    // Gateway startup and transport credentials are simulated unless repository credentials
+    // are in scope. Console, OCC and IAM routes still use production code.
+    ...(repositoryCredentials ? {} : { requiresAgentRuntimeCredentials: undefined }),
     // Most Console cases use drafts. Branch-selection tests can retain the actual
     // Compute capability while verifying that their flow avoids the durable queue.
     ...(agentProvisioning ? {} : { agentProvisioning: undefined }),
@@ -257,6 +259,7 @@ export function fileConsoleApp(options = {}) {
 }
 
 export async function createConsoleAppFixture(t, options = {}) {
+  const defaultAgentGatewayManagedMode = options.agentGatewayManagedMode;
   const installationId = `ins_${randomUUID()}`;
   // The ports are part of the origins the app is configured with, so hold them until the
   // listeners bind them; a released probe port can be taken by another listener meanwhile.
@@ -420,6 +423,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         agentProvisioning: options.agentProvisioning,
         sandboxDriver: options.sandboxDriver,
         credentialGatewayDriver: options.credentialGatewayDriver,
+        implementation: options.computeImplementation,
       }),
     configurationDriver:
       configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
@@ -768,6 +772,9 @@ export async function createConsoleAppFixture(t, options = {}) {
           ? {}
           : { credentialSources: options.credentialSources }),
         ...(options.executionMode === undefined ? {} : { executionMode: options.executionMode }),
+        ...(defaultAgentGatewayManagedMode === undefined
+          ? {}
+          : { gatewayManagedMode: defaultAgentGatewayManagedMode }),
       },
     });
     assert.equal(agent.status, 201);
@@ -842,6 +849,29 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   /**
+   * Runs `run` while the real IAM Driver throws on each authorization request `failing` selects,
+   * as an IAM outage on those decisions would, and restores the Driver afterwards.
+   * @template T
+   * @param {(request: { action: string, resource: { kind: string, id: string } }) => boolean} failing
+   * @param {() => Promise<T>} run
+   * @returns {Promise<T>}
+   */
+  async function withIamOutage(failing, run) {
+    const authorize = iamDriver.authorize;
+    iamDriver.authorize = async (request) => {
+      if (failing(request)) {
+        throw new Error("IAM outage");
+      }
+      return authorize.call(iamDriver, request);
+    };
+    try {
+      return await run();
+    } finally {
+      iamDriver.authorize = authorize;
+    }
+  }
+
+  /**
    * A Namespace member: an account whose one Role in `namespaceId` holds exactly `grants`, as
    * [action, resourceKind] pairs. It has no Installation access.
    * @param {string} label
@@ -875,8 +905,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     memoryDatabase,
     provisionedAccounts,
     policy,
+    // The sink State and the API audit to: `options.auditSink`, or one the fixture made.
+    auditSink,
     // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.
     iamDriver,
+    withIamOutage,
     rawRequest,
     request,
     signIn,
@@ -900,4 +933,48 @@ export async function createConsoleAppFixture(t, options = {}) {
       return controller;
     },
   };
+}
+
+// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
+// grant or revoke after sign-in: State reads the policy on each request.
+export function memberRole(fixture, label) {
+  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
+  assert.ok(role, `member ${label} has a Role`);
+  return role;
+}
+
+/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
+export function grantMember(fixture, label, grants) {
+  memberRole(fixture, label).permissions.push(
+    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
+  );
+}
+
+// The authorization denials an InMemoryAuditSink recorded: all of them, or those for `action`,
+// an exact action name or a RegExp for a family of actions.
+export function authorizationDenials(auditSink, action) {
+  const matches =
+    action === undefined
+      ? () => true
+      : typeof action === "string"
+        ? (name) => name === action
+        : (name) => action.test(name);
+  return auditSink
+    .list()
+    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
+}
+
+// Runs `send` and returns its response with the checks its authorization denials name, as
+// { action, kind, id }, so a refusal can be shown to be audited once, for its own target.
+export async function denialsDuring(auditSink, send) {
+  const before = authorizationDenials(auditSink).length;
+  const response = await send();
+  const denials = authorizationDenials(auditSink)
+    .slice(before)
+    .map(({ authorization: { action, resource } }) => ({
+      action,
+      kind: resource.kind,
+      id: resource.id,
+    }));
+  return { response, denials };
 }

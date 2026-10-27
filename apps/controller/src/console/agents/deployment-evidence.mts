@@ -16,6 +16,7 @@ import {
   message,
   neutralDeploymentOutcome,
   outcomeLabel,
+  readFailureReason,
 } from "./list.mjs";
 import { pluginWarningText } from "./plugins.mjs";
 
@@ -74,9 +75,10 @@ function runtimeFailureCauseText(cause: RuntimeFailureCause) {
   if (cause.kind === "PROBE_STATUS" && (detail === "rate_limit" || detail === "billing")) {
     return PROBE_STATUS_DETAIL_TEXT[detail] + retry;
   }
+  // A kind this console does not know gets a sentence, not its raw code (finding 2538).
   const label = Object.hasOwn(RUNTIME_FAILURE_CAUSE_LABELS, cause.kind)
     ? RUNTIME_FAILURE_CAUSE_LABELS[cause.kind]
-    : cause.kind;
+    : "The runtime check failed";
   if (!detail) {
     return label;
   }
@@ -186,10 +188,11 @@ function deploymentProgress(record: Deployment) {
   const status = deploymentOutcome(record);
   const progress = record.progress;
   const workDescriptions = {
-    queued: progress?.lastAttempt
-      ? "Waiting to continue deployment."
-      : "Waiting for a worker claim.",
-    running: "A worker claim is active.",
+    queued: "Waiting for a worker claim.",
+    // A started deploy stays running between its attempts (finding 2456).
+    running: progress?.nextAttemptAt
+      ? "Deployment work started; waiting for the next attempt."
+      : "A worker claim is active.",
     failed: "Deployment work failed; check the recorded error and current version.",
     superseded: "Deployment work stopped because a newer version superseded this one.",
     stopped: "Deployment work ended because the Agent was stopped.",
@@ -296,7 +299,6 @@ export function createDeploymentStatusPanel(
   const refresh = button(
     "Refresh deployment",
     () => {
-      readerRefresh = true;
       if (loading && polling) {
         // A quiet poll is reading: refresh once it lands.
         refreshQueued = true;
@@ -320,12 +322,15 @@ export function createDeploymentStatusPanel(
   // A quiet poll leaves Refresh alone, unless the reader presses it during the poll.
   let polling = false;
   let refreshQueued = false;
-  let readerRefresh = false;
   let record: Deployment | null = null;
   let error: unknown = null;
   let overviewUnavailable = false;
-  // Tallest the details have been since a deploy was seen pending; see render().
+  // The refused or failed overview read, when one was, so its text says why (finding 2538).
+  let overviewError: unknown = null;
+  // Tallest the details have been since a deploy was seen pending; see reserveHeight().
   let reservedHeight: number | null = null;
+  const heightObserver =
+    typeof ResizeObserver === "function" ? new ResizeObserver(() => holdHeight()) : null;
   let pollTimer: number | undefined;
   // The last record read. A transient read failure (a network error, a timeout, a 5xx) does not
   // end a pending deploy, so polling goes on from it (finding 2085).
@@ -367,6 +372,7 @@ export function createDeploymentStatusPanel(
     polling = poll;
     error = null;
     overviewUnavailable = false;
+    overviewError = null;
     render();
     try {
       const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
@@ -407,6 +413,10 @@ export function createDeploymentStatusPanel(
           }
         } else {
           overviewUnavailable = true;
+          overviewError =
+            [agentResult, revisionsResult].find(
+              (result): result is PromiseRejectedResult => result.status === "rejected",
+            )?.reason ?? null;
         }
       }
     } catch (cause) {
@@ -423,10 +433,6 @@ export function createDeploymentStatusPanel(
       if (context.isCurrent()) {
         loading = false;
         render();
-        // A Refresh pressed during a poll is answered by the read queued after it.
-        if (!poll) {
-          readerRefresh = false;
-        }
         onStatusChange({
           outcome: record ? deploymentOutcome(record) : null,
           record,
@@ -469,9 +475,11 @@ export function createDeploymentStatusPanel(
             {
               // One retire cleanup per version: OAuth bootstrap or repository credential resources.
               queued:
-                "Revision cleanup pending. This version's resources have not been confirmed removed; the controller will retry.",
-              running:
-                "Revision cleanup is running. This version's resources have not been confirmed removed.",
+                "Revision cleanup pending. This version's resources have not been confirmed removed.",
+              // A started cleanup stays running between its attempts (finding 2466).
+              running: record.cleanup.nextAttemptAt
+                ? "Revision cleanup started. This version's resources have not been confirmed removed; the controller will retry."
+                : "Revision cleanup is running. This version's resources have not been confirmed removed.",
               succeeded: "Revision cleanup completed for this version.",
               failed:
                 "Revision cleanup failed. Ask an operator to inspect the retained cleanup obligation.",
@@ -540,7 +548,7 @@ export function createDeploymentStatusPanel(
       );
       previousEvidence = evidence;
     }
-    const changed = patchChildren(content, [
+    patchChildren(content, [
       element(
         "p",
         { className: "muted" },
@@ -552,33 +560,49 @@ export function createDeploymentStatusPanel(
             statusBlock(
               "danger",
               null,
-              "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
+              `Current version and version history could not be refreshed. ${
+                overviewError === null
+                  ? "Use the page Refresh control to retry."
+                  : readFailureReason(overviewError)
+              }`,
             ),
           ]
         : []),
     ]);
-    reserveHeight(changed);
+    reserveHeight();
   }
 
-  // A deploy's details grow when its first attempt is recorded and shrink when it settles, and
-  // each change moved the cards below, Share Agent then among them (finding 1598). Once a deploy is
-  // seen pending, the details keep the tallest height they have shown, until the reader's own
-  // Refresh after the deploy gives the space back.
-  function reserveHeight(changed: boolean) {
+  // A deploy's details grow and shrink as its attempts are recorded, and each change moved the
+  // cards below, Share Agent then among them (finding 1598). While a deploy is seen pending, the
+  // details keep the tallest height they have shown. Once it settles the space is given back in
+  // the same render as the outcome, so a finished deploy leaves no empty card (finding 2369).
+  function reserveHeight() {
     const pending = deploymentPending(record?.status) || deploymentPending(record?.cleanup?.status);
     if (pending) {
-      reservedHeight ??= 0;
-    } else if (readerRefresh && !polling && reservedHeight !== null) {
+      if (reservedHeight === null) {
+        reservedHeight = 0;
+        heightObserver?.observe(content);
+      }
+      holdHeight();
+    } else if (reservedHeight !== null) {
       reservedHeight = null;
+      heightObserver?.disconnect();
       content.style.removeProperty("min-height");
+    }
+  }
+
+  // The first load renders the panel before the page shows it, where it measures 0, so a height
+  // taken only on a render lost the first Queued height and the details shrank for In progress
+  // (finding 2456). The observer also measures once the panel is shown, before that frame paints.
+  function holdHeight() {
+    if (reservedHeight === null) {
       return;
     }
-    if (reservedHeight === null || !changed) {
-      return;
+    const height = content.getBoundingClientRect().height;
+    if (height > reservedHeight) {
+      reservedHeight = height;
+      content.style.minHeight = `${height}px`;
     }
-    content.style.removeProperty("min-height");
-    reservedHeight = Math.max(reservedHeight, content.getBoundingClientRect().height);
-    content.style.minHeight = `${reservedHeight}px`;
   }
 
   void loadStatus();
@@ -591,7 +615,18 @@ export function createVersionDeploymentEvidence(
   context: DeploymentContext,
   path: string,
   revisionId: string,
-  { shared, operateAllowed }: { shared: boolean; operateAllowed: Promise<boolean | undefined> },
+  {
+    shared,
+    operateAllowed,
+    isCurrentVersion,
+    onRecord,
+  }: {
+    shared: boolean;
+    operateAllowed: Promise<boolean | undefined>;
+    isCurrentVersion: () => boolean;
+    // Each record this panel shows, read here or handed over by the page.
+    onRecord: (record: Deployment) => void;
+  },
 ) {
   const section = element("section", { className: "agent-card version-deployment-record" });
   let status: Deployment | null = null;
@@ -609,6 +644,7 @@ export function createVersionDeploymentEvidence(
     revisionId,
     () => status,
     operateAllowed,
+    isCurrentVersion,
   );
   // Bumped whenever a newer record arrives from elsewhere so a slower read cannot overwrite it.
   let generation = 0;
@@ -645,6 +681,9 @@ export function createVersionDeploymentEvidence(
         loading = false;
         render();
         diagnostics.render();
+        if (status) {
+          onRecord(status);
+        }
       }
     }
   }
@@ -661,6 +700,7 @@ export function createVersionDeploymentEvidence(
     error = null;
     render();
     diagnostics.render();
+    onRecord(next);
   }
 
   // Deployment activity hands each 5 s poll's record to show(): rewrite only what changed
@@ -738,6 +778,8 @@ export function createVersionDeploymentEvidence(
     show,
     release,
     setFailureShownAbove,
+    // The page calls this when its current version changes.
+    renderDiagnostics: diagnostics.render,
     applyOperate: diagnostics.applyOperate,
   };
 }

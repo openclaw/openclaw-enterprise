@@ -102,7 +102,7 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 				}
 				return n, err
 			})
-			if err := runLogsCommandTo(t, ctx, stub, sink, &notices, "agent", "logs", "agt_1", "--revision", "rev_1", "--source", "gateway", "--follow"); err != nil {
+			if err := runLogsCommandTo(t, ctx, stub, sink, &notices, "agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--revision", "rev_00000000-0000-4000-8000-000000000001", "--source", "gateway", "--follow"); err != nil {
 				t.Fatal(err)
 			}
 			if len(*sleeps) != 1 {

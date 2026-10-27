@@ -7,7 +7,12 @@ import type {
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import { element, button, setStatusTone } from "../dom.mjs";
-import { message, namespacePath } from "./list.mjs";
+import {
+  AGENT_CREATE_DENIED,
+  askAdministratorTo,
+  REPOSITORY_CHOICES_AGENT_DENIED,
+} from "./access-reasons.mjs";
+import { describeFailure, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
   repositoryProfiles,
@@ -18,7 +23,14 @@ import {
 type RepositoryContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
   operatorId?: string;
+  installationAdmin?: boolean | null;
 };
+
+// An Installation without repository access (no Repo Driver selected, or draft-only discovery).
+const REPOSITORY_ACCESS_NOT_CONFIGURED =
+  "This Installation has no repository access, so this Agent cannot use repositories.";
+const REPOSITORY_SETUP_GUIDE =
+  "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md";
 
 interface SearchState {
   query: string;
@@ -283,7 +295,11 @@ export function createRepositoryFields(
   const profileLabel = (profile: string) =>
     repositoryProfile(profile)?.label ?? "Unknown access level";
   const isSettled = () => state.discovery !== "loading";
-  const blocksCreate = () => !["loading", "ready", "draft-only"].includes(state.discovery);
+  // Without repository settings the API still accepts an empty binding list, so removing every
+  // selection unblocks Create Agent and the Repositories tab's Save (findings 2397, 2398).
+  const blocksCreate = () =>
+    !["loading", "ready", "draft-only", "not-configured"].includes(state.discovery) ||
+    (state.discovery === "not-configured" && state.selected.size > 0);
   const editable = () => !state.disabled && isSettled() && !blocksCreate();
   const isDirty = () => JSON.stringify(accessIntent()) !== initialAccess;
 
@@ -323,6 +339,9 @@ export function createRepositoryFields(
   }
 
   function changed({ preserveResults = false } = {}) {
+    if (state.discovery === "draft-only" || state.discovery === "not-configured") {
+      showSetupLink();
+    }
     validation.hidden = true;
     revealInvalidSelections();
     render({ preserveResults });
@@ -1063,37 +1082,27 @@ export function createRepositoryFields(
     state.discovery = discovery;
     if (state.discovery === "denied") {
       setStatusTone(status, "danger");
+      // Agent options authorize Agent update; new-Agent options, Agent create (finding D753).
       status.textContent = initial.agentId
-        ? "Repository choices are denied because you are not authorized to update this Agent."
-        : "Repository choices are denied because you are not authorized to create Agents in this Namespace.";
+        ? REPOSITORY_CHOICES_AGENT_DENIED
+        : `Repository choices are not shown. ${AGENT_CREATE_DENIED}`;
     } else if (state.discovery === "conflict") {
       setStatusTone(status, "danger");
+      // The API's 409 names the state, such as an Agent being deleted.
       status.textContent = initial.agentId
-        ? "Repository choices conflict with the current Agent or Namespace. Reload this draft before continuing."
+        ? describeFailure(error, {
+            conflict: "Repository choices conflict with the current Agent or Namespace.",
+            next: "Reload this draft before continuing.",
+          })
         : "This Namespace no longer accepts new Agents.";
     } else if (clearSelections) {
       setStatusTone(status, "danger");
-      status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
+      status.textContent = `Repository choices could not be reloaded. ${describeFailure(error)} Retry the reload or start a new draft.`;
     } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
-      setStatusTone(status, null);
-      status.replaceChildren(
-        "Repository access is not available in this Installation's configuration. ",
-        element(
-          "a",
-          {
-            href: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
-            target: "_blank",
-            rel: "noopener noreferrer",
-          },
-          "Set up repository access",
-        ),
-        state.discovery === "draft-only"
-          ? ". You can continue without repository access."
-          : ". You can’t save repository changes on this page until an operator sets up repository access.",
-      );
+      showSetupLink();
     } else {
       setStatusTone(status, "danger");
-      status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
+      status.textContent = `Repository choices could not be loaded. ${describeFailure(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
     }
     retry.hidden = clearSelections || ["draft-only", "not-configured"].includes(state.discovery);
     revealInvalidSelections();
@@ -1105,6 +1114,35 @@ export function createRepositoryFields(
           ? "unavailable"
           : state.discovery,
     };
+  }
+
+  // The status line for an Installation without repository access. Only an Installation
+  // administrator can set it up, so only a known administrator gets the setup guide; anyone else
+  // is told whom to ask, in the console's words (finding D754).
+  function showSetupLink() {
+    setStatusTone(status, null);
+    const next =
+      state.selected.size > 0
+        ? ` Remove the selected repositories${initial.agentId ? " and save" : ""} to continue without repository access.`
+        : !initial.agentId
+          ? " You can continue without repository access."
+          : isDirty()
+            ? " Save to continue without repository access."
+            : "";
+    status.replaceChildren(
+      `${REPOSITORY_ACCESS_NOT_CONFIGURED} `,
+      ...(context.installationAdmin === true
+        ? [
+            element(
+              "a",
+              { href: REPOSITORY_SETUP_GUIDE, target: "_blank", rel: "noopener noreferrer" },
+              "Set up repository access",
+            ),
+            ".",
+          ]
+        : [askAdministratorTo("set it up")]),
+      next,
+    );
   }
 
   function recordSuccessfulSave() {
@@ -1133,7 +1171,9 @@ export function createRepositoryFields(
     isDirty,
     isSettled,
     blocksCreate,
-    /** Repository access is not set up in this Installation: no save can succeed here. */
+    /** Repository access is not set up in this Installation: only an empty selection saves. */
     notConfigured: () => state.discovery === "not-configured",
+    /** The Installation has no repository access to offer: the section shows only its setup link. */
+    unavailable: () => state.discovery === "draft-only" || state.discovery === "not-configured",
   };
 }
