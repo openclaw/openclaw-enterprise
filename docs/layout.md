@@ -70,6 +70,10 @@ container/Sandbox log types. `index.ts` remains their public export entrypoint.
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
 
+`deploy/local/` contains host service templates for retained local installations.
+The API endpoint recovery service invokes the CLI implementation in
+`internal/occdev/`; it does not run in a tenant Pod or extend a Driver contract.
+
 HTTP error details live in `apps/controller/src/http/error-details.ts`.
 It translates schema failures into detail paths and expected values. `http/errors.ts`
 owns platform-error mapping, response formatting, and removal of request values
