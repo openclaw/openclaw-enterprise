@@ -590,6 +590,138 @@ function kubectl(stack, args, options = {}) {
   });
 }
 
+// The ordinary dev profile has an additive subnet API grant. Remove that
+// test-owned grant so recovery is proved under the exact-host chart boundary.
+async function proveAPIEgressRecovery(stack) {
+  const namespace = stack.state.platformNamespace;
+  const name = "openclaw-enterprise-dependency-egress";
+  const get = async (kind, resource) =>
+    JSON.parse(
+      (await kubectl(stack, ["-n", namespace, "get", kind, resource, "-o", "json"])).stdout,
+    );
+  const policy = await get("networkpolicy", name);
+  const ns = await get("namespace", namespace);
+  const endpoint = JSON.parse(
+    (await kubectl(stack, ["-n", "default", "get", "endpoints", "kubernetes", "-o", "json"]))
+      .stdout,
+  );
+  const addresses = endpoint.subsets.flatMap(({ addresses }) => addresses.map(({ ip }) => ip));
+  const port = endpoint.subsets[0].ports[0].port;
+  const index = policy.spec.egress.findIndex(
+    ({ ports }) => ports?.length === 1 && ports[0].port === port,
+  );
+  assert.ok(index >= 0, "chart has no API destination rule");
+  const stale = ["192.0.2.1", "192.0.2.2"].find((ip) => !addresses.includes(ip));
+  assert.ok(stale, "no unused documentation address");
+  const supplementary = await get("networkpolicy", "openclaw-development-kubernetes-egress");
+  assert.equal(
+    supplementary.metadata.labels["app.kubernetes.io/managed-by"],
+    "openclaw-development",
+  );
+  await kubectl(stack, ["-n", namespace, "delete", "networkpolicy", supplementary.metadata.name]);
+  const patch = (to) =>
+    kubectl(
+      stack,
+      ["-n", namespace, "patch", "networkpolicy", name, "--type=json", "--patch-file=/dev/stdin"],
+      {
+        input: JSON.stringify([
+          { op: "test", path: "/metadata/uid", value: policy.metadata.uid },
+          { op: "replace", path: `/spec/egress/${index}/to`, value: to },
+        ]),
+      },
+    );
+  const worker = JSON.parse(
+    (
+      await kubectl(stack, [
+        "-n",
+        namespace,
+        "get",
+        "pods",
+        "-l",
+        "app.kubernetes.io/component=worker",
+        "-o",
+        "json",
+      ])
+    ).stdout,
+  ).items;
+  assert.equal(worker.length, 1);
+  // Use the worker's actual Pod, projected identity and CA. Never export its
+  // token, and open a fresh connection so an old conntrack entry cannot pass.
+  const probe = `const fs = require("node:fs"); const https = require("node:https");
+    const base = "/var/run/secrets/kubernetes.io/serviceaccount/";
+    const req = https.get("https://kubernetes.default.svc/version", {
+      ca: fs.readFileSync(base + "ca.crt"), agent: false,
+      headers: { authorization: "Bearer " + fs.readFileSync(base + "token", "utf8") }
+    }, res => { res.resume(); process.exitCode = res.statusCode === 200 ? 0 : 2; });
+    req.setTimeout(2500, () => { req.destroy(); process.exitCode = 3; });
+    req.on("error", () => { process.exitCode = 3; });`;
+  const reachable = async () => {
+    try {
+      await kubectl(
+        stack,
+        ["-n", namespace, "exec", worker[0].metadata.name, "--", "node", "-e", probe],
+        { timeout: 8000 },
+      );
+      return true;
+    } catch (error) {
+      if (error.result?.code === 3) {
+        return false;
+      }
+      throw error;
+    }
+  };
+  await patch([{ ipBlock: { cidr: `${stale}/32` } }]);
+  try {
+    // NetworkPolicy programming is asynchronous; wait for the deliberately
+    // stale destination to deny a new connection before invoking recovery.
+    let denied = false;
+    for (let attempt = 0; attempt < 10 && !denied; attempt += 1) {
+      denied = !(await reachable());
+      if (!denied) {
+        await delay(1000);
+      }
+    }
+    assert.ok(denied, "stale API destination did not block the worker");
+    const dockerContext = (await run("docker", ["context", "show"])).stdout.trim();
+    await run(occ, [
+      "dev",
+      "reconcile-k3d-api-egress",
+      "--docker-context",
+      dockerContext,
+      "--cluster",
+      stack.state.cluster,
+      "--namespace",
+      namespace,
+      "--namespace-uid",
+      ns.metadata.uid,
+      "--release",
+      policy.metadata.annotations["meta.helm.sh/release-name"],
+      "--api-port",
+      String(port),
+      "--apply",
+    ]);
+    const repaired = await get("networkpolicy", name);
+    assert.deepEqual(
+      repaired.spec.egress[index].to.map(({ ipBlock }) => ipBlock.cidr).sort(),
+      addresses.map((ip) => `${ip}/32`).sort(),
+    );
+    const expected = structuredClone(policy.spec);
+    expected.egress[index].to = repaired.spec.egress[index].to;
+    assert.deepEqual(repaired.spec, expected, "recovery changed another policy field");
+    let recovered = false;
+    for (let attempt = 0; attempt < 10 && !recovered; attempt += 1) {
+      recovered = await reachable();
+      if (!recovered) {
+        await delay(1000);
+      }
+    }
+    assert.ok(recovered, "installed recovery did not restore worker API connectivity");
+    log("API egress: stale exact destination denied; installed CLI restored worker connectivity");
+  } finally {
+    await patch(policy.spec.egress[index].to);
+  }
+}
+
 // Answer api.openai.com inside the cluster with the stand-in provider. Agent
 // Pods reach it through their ordinary model egress NetworkPolicy and verify
 // its certificate against the CA added to the runtime image.
@@ -1595,6 +1727,21 @@ async function smoke() {
   try {
     stack = await step("Local Setup (occ dev up)", () => startLocalSetup(environment));
     stack.agents = [];
+    await step("API egress real ownership and write conflicts", async () => {
+      const dockerContext = (await run("docker", ["context", "show"])).stdout.trim();
+      await run(
+        "go",
+        ["test", "./internal/occdev", "-run", "^TestK3dAPIEgressReal$", "-count=1", "-v"],
+        {
+          env: {
+            ...process.env,
+            OCC_TEST_K3D_API_EGRESS_CLUSTER: stack.state.cluster,
+            OCC_TEST_K3D_API_EGRESS_DOCKER_CONTEXT: dockerContext,
+          },
+          label: "api-egress",
+        },
+      );
+    });
     const namespaces = await stack.api("GET", "/namespaces");
     stack.namespaceId = namespaces.find(({ name }) => name === "default")?.id;
     assert.ok(stack.namespaceId, "Local Setup created no default Namespace");
@@ -1633,6 +1780,7 @@ async function smoke() {
       await readLogs(stack, codex.agent, "gateway");
       await readLogs(stack, codex.agent, "agent");
     });
+    await step("installed exact API egress recovery", () => proveAPIEgressRecovery(stack));
     await step("stop both Agents", () =>
       Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]),
     );
