@@ -158,8 +158,10 @@ test(
         allowed: boolean,
       ) => {
         const before = observations();
-        assert.equal(await discovery(session.bearer), allowed ? 200 : 503);
-        assert.deepEqual(observations(), {
+        const status = await discovery(session.bearer);
+        const after = observations();
+        assert.equal(status, allowed ? 200 : 503);
+        assert.deepEqual(after, {
           ownerCalls: before.ownerCalls + 1,
           requests: before.requests + Number(allowed),
           authenticated: before.authenticated + Number(allowed),
@@ -178,6 +180,15 @@ test(
         assert.deepEqual(
           result.rows,
           allowed ? [{ admission_id: admissionId, operation: q.operation }] : [],
+        );
+        t.diagnostic(
+          JSON.stringify({
+            status,
+            ownerCalls: after.ownerCalls - before.ownerCalls,
+            committedUses: result.rows.length,
+            originRequests: after.requests - before.requests,
+            authenticatedRequests: after.authenticated - before.authenticated,
+          }),
         );
       };
       const setBinding = (enabled: boolean) =>
