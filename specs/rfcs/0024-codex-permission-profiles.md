@@ -9,6 +9,7 @@ author: kevinlin-openai
 - **ID:** RFC-0024
 - **Created:** 2026-10-27
 - **Last updated:** 2026-10-27
+- **RFC PR:** [#3907](https://github.com/openclaw/openclaw-enterprise/pull/3907)
 
 ## Decision and scope
 
@@ -114,8 +115,10 @@ no project instructions, disabled tools and integrations, read-only sandbox,
 explicit model and compatible endpoint, bounded execution and retry, and refusal
 of tool events or invalid output. Keep endpoint overrides explicit even though
 the generated file also supplies the endpoint. A successful login alone must not
-make the Agent ready. The actual probe must complete its model turn and return
-the expected `READY` result.
+make the Agent ready. Preserve the existing success rule: the probe must complete
+one model turn with a nonempty assistant response and no disallowed events. The
+verification prompt requests `READY`; this proposal does not tighten the runtime
+check to an exact string match.
 
 ## Delivery and verification
 
