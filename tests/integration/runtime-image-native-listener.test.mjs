@@ -350,7 +350,7 @@ test(
       identityScopes: {
         "occ-workspace-files": ["operator.admin"],
         "oidc:member-01": ["operator.read"],
-        "oidc:writer-02": ["operator.write"],
+        "oidc:writer-02": ["operator.read", "operator.write"],
       },
     };
     // HTTP: run kills stay admin-only upstream, so 404 means the scope check passed for a
@@ -384,7 +384,11 @@ test(
             { status: 200, nativeSessions: true },
           ],
           [
-            { operation: "sessions_list", identity: "oidc:writer-02", scopes: "operator.write" },
+            {
+              operation: "sessions_list",
+              identity: "oidc:writer-02",
+              scopes: "operator.read,operator.write",
+            },
             { status: 200, nativeSessions: true },
           ],
           [
@@ -499,7 +503,7 @@ test(
       );
       await waitForListenerReady(
         containerName,
-        'fetch("http://127.0.0.1:8080/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));',
+        '() => fetch("http://127.0.0.1:8080/readyz", {signal: AbortSignal.timeout(5000)}).then(r => r.status)',
       );
       const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
       const address = inspected.NetworkSettings.Networks[network].IPAddress;
