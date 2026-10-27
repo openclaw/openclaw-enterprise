@@ -12846,9 +12846,13 @@ export class OpenClawController {
     required: boolean,
   ): Promise<void> {
     if (required) {
+      // The denial names gatewayManagedMode: the rest of the request needs no Installation grant
+      // (finding 2691).
       await this.authorize(principalId, "administer", {
         kind: "installation",
         id: this.installation.id,
+      }).catch((error: unknown) => {
+        throw QualifiedAuthorizationDeniedError.qualify(error, "gateway_managed_mode");
       });
     }
   }

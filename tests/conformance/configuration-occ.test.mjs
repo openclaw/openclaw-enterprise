@@ -29,7 +29,7 @@ import {
 } from "../helpers/development.mjs";
 import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
 import { refusedAnswer } from "../helpers/refusal-answers.mjs";
-import { INSTALLATION_ADMINISTER_DENIED } from "../helpers/refusal-text.mjs";
+import { GATEWAY_MANAGED_MODE_DENIED } from "../helpers/refusal-text.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
@@ -324,7 +324,8 @@ test("only an Installation administrator opts an Agent out of Gateway managed mo
       configuration: ["read"],
     },
   });
-  const denied = { status: 403, code: "FORBIDDEN", message: INSTALLATION_ADMINISTER_DENIED };
+  // The denial names the one field that needs the grant (finding 2691).
+  const denied = { status: 403, code: "FORBIDDEN", message: GATEWAY_MANAGED_MODE_DENIED };
   const refused = (work) => refusedAnswer(work, { actorId: member });
   const create = (principalId, name, mode) =>
     controller.createAgent(principalId, {

@@ -391,6 +391,13 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
   );
 }
 
+// Managed mode also keeps the Gateway tool allowlist as deployed; with it off, Gateway
+// administrators can widen it until the next managed deployment (finding 2690).
+const GATEWAY_MANAGED_MODE_HINT =
+  "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs. With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.";
+// Shown instead of the control to a caller who cannot change the setting (finding 2690).
+const GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY =
+  "Only an Installation administrator can change Gateway managed mode.";
 // The summary card's note, first deployment or redeploy alike, for a version this tab deployed
 // that the caller cannot read (finding D755).
 const DEPLOYED_VERSION_UNREADABLE = "You cannot read the version you deployed.";
@@ -3477,11 +3484,7 @@ export async function renderAgentDetail(
         "section",
         { hidden: true },
         element("h3", {}, "Gateway managed mode"),
-        element(
-          "p",
-          { className: "hint" },
-          "Managed mode restricts Gateway administrators from changing Gateway configuration, opening Gateway-local terminals, and running Gateway-hosted command jobs. Changing this setting does not change Harness Gateway policies. Deploy a new version to apply it.",
-        ),
+        element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_HINT),
         element("div", { className: "form-actions" }, action, reload),
         feedback,
       );
@@ -4947,7 +4950,10 @@ export async function renderAgentDetail(
                 element("div", { className: "form-actions" }, currentConfigurationEntry),
                 nativeDocument(values, "View admitted native configuration"),
               ),
-          draft ? data.managedMode.control : null,
+          draft
+            ? (data.managedMode.control ??
+                element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY))
+            : null,
         ),
       );
     }

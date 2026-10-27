@@ -31,6 +31,10 @@ export const NAMESPACE_CREATE_DENIED =
   "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
 export const INSTALLATION_ADMINISTER_DENIED =
   "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
+// An Agent create or update whose gatewayManagedMode alone needs Installation administer names the
+// field (finding 2691).
+export const GATEWAY_MANAGED_MODE_DENIED =
+  "Not authorized: changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
   "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";

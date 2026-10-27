@@ -22018,7 +22018,7 @@ test("Kubernetes embedded setup uses a Main roster entry's workspace", async () 
   );
 });
 
-test("dedicated Gateway tool policy is checked at Agent admission for both Harnesses", () => {
+test("Gateway tool policy is checked at Configuration save and at Agent admission for every topology", () => {
   const driver = new KubernetesComputeDriver(options());
   const rejectedPolicies = [
     [{ allow: ["plugins"] }, /must not grant Gateway administrative tools/],
@@ -22031,55 +22031,47 @@ test("dedicated Gateway tool policy is checked at Agent admission for both Harne
     [{ allow: ["dashboard"] }, /actions.dashboard must list/],
     [null, /must be an object/],
   ];
-  for (const id of ["openclaw", "codex"]) {
-    const harness = { id, version: "1.0.0", mode: "dedicated" };
+  const acceptedPolicies = [
+    undefined,
+    { allow: [] },
+    { allow: ["sessions", "diffs"], actions: { sessions: ["patch"] } },
+    { allow: ["dashboard"], actions: { dashboard: ["read"] } },
+  ];
+  // The embedded Gateway applies the policy natively too, so it gets the same checks (finding
+  // 2688), and Configuration save, which knows no topology, refuses the same policies with the
+  // same text (finding 2689).
+  const topologies = [
+    ["openclaw", "dedicated"],
+    ["codex", "dedicated"],
+    ["openclaw", "embedded"],
+  ];
+  for (const [id, mode] of topologies) {
+    const harness = { id, version: "1.0.0", mode };
     const config = createHarnessConfiguration(id, "gpt-4o-mini");
+    const withPolicy = (gatewayPolicy) => ({
+      ...config,
+      tools: gatewayPolicy === undefined ? {} : { gatewayPolicy },
+    });
     for (const [gatewayPolicy, expected] of rejectedPolicies) {
+      const label = `${id} ${mode} ${JSON.stringify(gatewayPolicy)}`;
       assert.throws(
-        () =>
-          driver.validateHarnessAuth(
-            harness,
-            apiKeyAuth,
-            {
-              ...config,
-              tools: { gatewayPolicy },
-            },
-            null,
-          ),
-        expected,
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, withPolicy(gatewayPolicy), null),
+        { name: "ConfigurationHarnessError", message: expected },
+        label,
+      );
+      assert.throws(
+        () => driver.validateConfiguration(withPolicy(gatewayPolicy)),
+        { name: "ConfigurationHarnessError", message: expected },
+        label,
       );
     }
-    for (const gatewayPolicy of [
-      undefined,
-      { allow: [] },
-      { allow: ["sessions", "diffs"], actions: { sessions: ["patch"] } },
-      { allow: ["dashboard"], actions: { dashboard: ["read"] } },
-    ]) {
-      assert.doesNotThrow(() =>
-        driver.validateHarnessAuth(
-          harness,
-          apiKeyAuth,
-          {
-            ...config,
-            tools: gatewayPolicy === undefined ? {} : { gatewayPolicy },
-          },
-          null,
-        ),
+    for (const gatewayPolicy of acceptedPolicies) {
+      const label = `${id} ${mode} ${JSON.stringify(gatewayPolicy)}`;
+      assert.doesNotThrow(
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, withPolicy(gatewayPolicy), null),
+        label,
       );
+      assert.doesNotThrow(() => driver.validateConfiguration(withPolicy(gatewayPolicy)), label);
     }
   }
-  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
-  assert.doesNotThrow(
-    () =>
-      driver.validateHarnessAuth(
-        embedded,
-        apiKeyAuth,
-        {
-          ...createHarnessConfiguration("openclaw", "gpt-4o-mini"),
-          tools: { gatewayPolicy: { allow: ["gateway"] } },
-        },
-        null,
-      ),
-    "dedicated baseline does not alter embedded configuration",
-  );
 });

@@ -997,6 +997,85 @@ test("Configuration save refuses an agents roster every deployment refuses, with
   }
 });
 
+test("Configuration save refuses a Gateway tool policy that every OpenClaw topology refuses, with deployment's text", async () => {
+  // Findings 2688 and 2689. Save and deployment run the real Kubernetes Compute rules. The
+  // Agent is embedded, the default: its Gateway applies the policy natively, so a policy only
+  // dedicated admission refused saved, deployed and then failed every turn.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-tool-policy-integration", ...configurationRules),
+  });
+  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Tool policy consumer",
+    secretName: "tool-policy-key",
+  });
+  const administrative = setting(
+    "tools.gatewayPolicy.allow",
+    "must not grant Gateway administrative tools",
+  );
+  const sessionsActions = setting(
+    "tools.gatewayPolicy.actions.sessions",
+    "must list the permitted actions",
+  );
+  // Each refused policy is refused at Configuration create and update. A row stored before the
+  // rule still reads; deployment of the embedded Agent refuses it with the same text.
+  for (const [gatewayPolicy, message] of [
+    [{ allow: ["gateway"] }, administrative],
+    [{ allow: ["sessions_list", "nodes"] }, administrative],
+    [{ allow: ["sessions"] }, sessionsActions],
+    [
+      { allow: ["sessions"], actions: { sessions: ["bogus"] } },
+      setting("tools.gatewayPolicy.actions.sessions", "must use reviewed task actions"),
+    ],
+    [
+      { allow: ["group:fs"] },
+      setting("tools.gatewayPolicy.allow", "must name a concrete tool or action"),
+    ],
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, withPolicy(gatewayPolicy), message);
+  }
+
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(
+    configurationDriver,
+    agent.configurationId,
+    withPolicy({ allow: ["sessions"] }),
+  );
+  const saved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assertRefused(saved, sessionsActions, { label: "Agent save" });
+  // An administrator repairs the row by saving a policy that lists the actions.
+  const repairedValues = withPolicy({ allow: ["sessions"], actions: { sessions: ["patch"] } });
+  const repaired = await request(context.app, "PATCH", agent.item, {
+    body: { values: repairedValues },
+  });
+  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
+  assert.deepEqual(repaired.body.data.values, repairedValues);
+  const resaved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
+
+  // A Preset save refuses the same text. A tool that waits on a variable without a default is
+  // checked when a Configuration is created from the Preset; a default fills it here.
+  await refusedOnSave(context, withPolicy({ allow: ["gateway"] }), administrative);
+  const waiting = withPolicy({ allow: ["{{ vars.tool }}"] });
+  const filled = await savePreset(context, {
+    variables: { tool: { type: "string", default: "terminal" } },
+    configuration: { values: waiting },
+  });
+  assertRefused(filled, administrative);
+  const deferred = await savePreset(
+    context,
+    { variables: { tool: { type: "string" } }, configuration: { values: waiting } },
+    "Tool-deferred",
+  );
+  assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
+});
+
 test("Preset save refuses an agents roster every deployment refuses, as Configuration save does", async (t) => {
   // Finding 1308: Preset save skipped the agents shape and Gateway roster rules, so a Preset
   // with a roster every deployment refuses saved and failed only when a launch created its

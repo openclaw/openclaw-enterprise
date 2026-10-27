@@ -89,8 +89,10 @@ const agentUpdateExample = `  cat > agent.json <<'JSON'
 JSON
   occ agent update <agent-id> --file agent.json
 
-  configurationId is required in every update, also when you change only
-  harnessAuth: copy it from occ agent get <agent-id>. Omitted harnessAuth,
-  executionMode, backendId and plugins keep their saved values; "harnessAuth": null
-  clears the binding. The update changes the draft only; deploy to use it. See
+  Each update names configurationId or gatewayManagedMode (or both); send
+  configurationId also when you change only harnessAuth: copy it from
+  occ agent get <agent-id>. Changing gatewayManagedMode needs Installation
+  administer. Omitted harnessAuth, executionMode, backendId, plugins and
+  gatewayManagedMode keep their saved values; "harnessAuth": null clears the
+  binding. The update changes the draft only; deploy to use it. See
   https://docs-enterprise.openclaw.org/reference/agents/`

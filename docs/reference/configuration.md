@@ -293,7 +293,8 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
 ## Gateway tool policy
 
 Dedicated OpenClaw on Kubernetes and Codex on Kubernetes or Docker apply the
-Gateway policy after plugin grants. Model access requires concrete names in
+Gateway policy after plugin grants. An embedded OpenClaw Gateway applies a
+policy only when the Configuration sets one. Model access requires concrete names in
 `tools.gatewayPolicy.allow`. Plugin approval and `tools.alsoAllow` alone grant
 no additional model tools.
 
@@ -316,6 +317,11 @@ empty `allow` withholds Gateway tools. Action-bearing tools, such as `dashboard`
 require explicit allowed actions. Baseline actions can only narrow; administrative tools and
 additional baseline actions are rejected. Profiles, denies and Codex dynamic-tool
 exclusions still apply.
+
+On Kubernetes Compute, Configuration save and Agent save refuse a policy that
+breaks these rules for every topology, with the message deployment gives. A
+Configuration saved before this check still reads, but Agent save and deployment
+refuse it: correct `tools.gatewayPolicy` and save the Configuration again.
 
 Compute enforces `automations.scope: "caller"` and `allowCommandJobs: false` under
 `tools.gatewayPolicy`, plus `agents.defaults.modelSelectionScope: "session"` and

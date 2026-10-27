@@ -205,7 +205,7 @@ import {
   requireWorkspaceNodePlugins,
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
-import { managedGatewayConfiguration } from "../gateway-tool-policy.ts";
+import { managedGatewayConfiguration, validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
@@ -4683,8 +4683,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
-   * model credentials only through the Harness authentication binding, and model selections
-   * and provider apiKeys on the primary model's provider.
+   * model credentials only through the Harness authentication binding, the Gateway tool policy,
+   * and model selections and provider apiKeys on the primary model's provider.
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
@@ -4701,6 +4701,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError);
     requireHarnessCredentialBinding(configuration, callerSettingError, options);
+    // Every OpenClaw topology applies the tool policy, embedded too (findings 2688, 2689).
+    validateGatewayToolPolicy(configuration, callerSettingError, options);
   }
 
   getGatewayEndpoint(revision: AgentRevision): string | undefined {
