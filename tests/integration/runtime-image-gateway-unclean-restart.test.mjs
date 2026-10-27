@@ -14,6 +14,8 @@ import {
 } from "../helpers/harness-configuration.mjs";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
+  assertGatewayFirstTurnMemory,
+  gatewayMemoryPeak,
   image,
   imageTestOptions,
   runDocker,
@@ -219,6 +221,10 @@ for (const [recovery, title] of [
       assert.equal(firstTurn.status, 200, `first Gateway turn: ${JSON.stringify(firstTurn)}`);
       assert.equal(firstTurn.content, "READY");
     });
+    // OpenClaw starts most of its worker threads on the first turn, which sets
+    // the Gateway's memory high-water mark (finding 2700). The peak includes the
+    // turn client above, which runs in the same container.
+    await assertGatewayFirstTurnMemory(t, await gatewayMemoryPeak(first.containerName));
     const { stdout: id } = await runDocker(["inspect", "--format", "{{.Id}}", first.containerName]);
     const gatewayId = id.trim();
     await runDocker(["kill", "--signal", "KILL", gatewayId]);
