@@ -38,8 +38,12 @@ const send = framed(
   process.stdout,
   (message) => {
     if (message.type === "open") {
-      if (channels.has(message.id) || channels.size >= MAX_CHANNELS) {
-        throw new Error("Duplicate or excessive channel");
+      if (channels.has(message.id)) {
+        throw new Error("Duplicate channel");
+      }
+      if (channels.size >= MAX_CHANNELS) {
+        send({ id: message.id, type: "close" });
+        return;
       }
       const socket = connect({ host: "127.0.0.1", port: manifest.port });
       channels.set(message.id, socket);

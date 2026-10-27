@@ -43,13 +43,14 @@ export function serveHarness(manifest, { reader, writer, terminate }) {
       if (message.type === "open") {
         // No host, port, URL, command, or credential chosen by the workload is
         // accepted here. This one route is derived from the exact Agent's setup.
-        if (
-          stopping ||
-          !manifest.gateway ||
-          channels.has(message.id) ||
-          channels.size >= MAX_CHANNELS
-        ) {
+        if (stopping || !manifest.gateway || channels.has(message.id)) {
           throw new Error("Unapproved channel");
+        }
+        // Both peers may allocate the last slot before receiving the other's
+        // open. Refuse that channel without terminating established sessions.
+        if (channels.size >= MAX_CHANNELS) {
+          send({ id: message.id, type: "close" });
+          return;
         }
         const socket = connect({ host: manifest.gateway.host, port: manifest.gateway.port });
         socket.setTimeout(30000, () => socket.destroy());

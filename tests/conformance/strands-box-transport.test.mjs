@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
@@ -126,6 +129,134 @@ async function tcpPair(t) {
   });
   return { client, socket };
 }
+
+test(
+  "Strands supervisor refuses a racing channel without disconnecting admitted clients",
+  { timeout: 10000 },
+  async (t) => {
+    const harness = await supervisor(t);
+    const clients = [];
+    for (let i = 0; i < MAX_CHANNELS; i++) {
+      const client = await harness.client();
+      clients.push(client);
+      client.write(`GET / HTTP/1.1\r\nAuthorization: Bearer ${harness.token}\r\n\r\n`);
+    }
+    for (
+      let i = 0;
+      harness.frames.filter((frame) => frame.type === "open").length < MAX_CHANNELS && i < 100;
+      i++
+    ) {
+      await delay(10);
+    }
+    const admitted = harness.frames.filter((frame) => frame.type === "open");
+    assert.equal(admitted.length, MAX_CHANNELS);
+    // The peer can have allocated its final slot before seeing our last open.
+    const racing = randomUUID();
+    harness.reader.write(JSON.stringify({ id: racing, type: "open" }) + "\n");
+    assert.deepEqual(harness.frames.at(-1), { id: racing, type: "close" });
+    assert.ok(harness.server.listening);
+    assert.equal(harness.gateway.connections, 0);
+    const received = once(clients[0], "data");
+    harness.reader.write(
+      JSON.stringify({
+        id: admitted[0].id,
+        type: "data",
+        data: Buffer.from("still connected").toString("base64"),
+      }) + "\n",
+    );
+    assert.equal((await received)[0].toString(), "still connected");
+    // Duplicate live IDs remain protocol corruption, even when the table is full.
+    harness.reader.write(JSON.stringify({ id: admitted[0].id, type: "open" }) + "\n");
+    assert.equal(harness.server.listening, false);
+  },
+);
+
+test(
+  "Strands contained receiver refuses capacity overflow and retains native connections",
+  { timeout: 10000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "strands-channel-test-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const sockets = [];
+    const native = createTcpServer((socket) => {
+      sockets.push(socket);
+      socket.on("error", () => {});
+      socket.pipe(socket);
+    });
+    await new Promise((resolve) => native.listen(0, "127.0.0.1", resolve));
+    t.after(() => {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      native.close();
+    });
+    const manifest = join(directory, "manifest.json");
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        port: native.address().port,
+        // A non-Node lifetime fixture does not load the image-only proxy preload.
+        command: ["/bin/sleep", "60"],
+        environment: {},
+        workspace: directory,
+      }),
+    );
+    const inner = spawn(
+      process.execPath,
+      [new URL("../../deploy/runtime/strands-box/inner.mjs", import.meta.url).pathname, manifest],
+      {
+        // The proxy route is not used by these native incoming channels.
+        env: { ...process.env, HTTPS_PROXY: "http://127.0.0.1:9" },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    t.after(async () => {
+      if (inner.exitCode === null) {
+        const ended = once(inner, "exit");
+        inner.kill("SIGTERM");
+        await ended;
+      }
+    });
+    const frames = [];
+    const output = new PassThrough();
+    output.resume();
+    framed(
+      inner.stdout,
+      output,
+      (frame) => frames.push(frame),
+      () => {},
+    );
+    const send = (frame) => inner.stdin.write(JSON.stringify(frame) + "\n");
+    const ids = Array.from({ length: MAX_CHANNELS }, () => randomUUID());
+    for (const id of ids) {
+      send({ id, type: "open" });
+    }
+    for (let i = 0; sockets.length < MAX_CHANNELS && i < 100; i++) {
+      await delay(10);
+    }
+    assert.equal(sockets.length, MAX_CHANNELS);
+    const racing = randomUUID();
+    send({ id: racing, type: "open" });
+    send({ id: ids[0], type: "data", data: Buffer.from("native survives").toString("base64") });
+    for (
+      let i = 0;
+      !frames.some((frame) => frame.id === ids[0] && frame.type === "data") && i < 100;
+      i++
+    ) {
+      await delay(10);
+    }
+    assert.ok(frames.some((frame) => frame.id === racing && frame.type === "close"));
+    assert.equal(
+      Buffer.from(
+        frames.find((frame) => frame.id === ids[0] && frame.type === "data").data,
+        "base64",
+      ).toString(),
+      "native survives",
+    );
+    assert.equal(inner.exitCode, null);
+    assert.equal(sockets.length, MAX_CHANNELS);
+  },
+);
 
 test(
   "Strands slow downstream closes only its channel and retains the shared transport",
