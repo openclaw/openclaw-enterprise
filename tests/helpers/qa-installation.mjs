@@ -881,8 +881,8 @@ export async function prepareQaPreset(f, presetName) {
   );
   const codex = presetName === "Codex";
   const desiredPlugin = codex ? "codex-plugin" : "occ-plugin";
-  // The launcher's Gateway resources already match the production example (4Gi
-  // limit), which the full native repository workload needs; only the plugin varies.
+  // The launcher's Gateway resources match the production example, whose memory
+  // limit covers the full native repository workload; only the plugin varies.
   if (f.configuration.drivers.plugin?.id !== desiredPlugin) {
     assert.ok(
       f.agents.every((agent) => agent.stopped),
