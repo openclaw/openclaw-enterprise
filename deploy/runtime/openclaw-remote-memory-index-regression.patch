@@ -1,3 +1,46 @@
+diff --git a/extensions/memory-core/src/memory/manager-embedding-policy.test.ts b/extensions/memory-core/src/memory/manager-embedding-policy.test.ts
+--- a/extensions/memory-core/src/memory/manager-embedding-policy.test.ts
++++ b/extensions/memory-core/src/memory/manager-embedding-policy.test.ts
+@@ -1,6 +1,7 @@
+ // Memory Core tests cover manager embedding policy plugin behavior.
+ import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
+ import { describe, expect, it, vi } from "vitest";
++import { withMemoryMaintenanceAuthority } from "./maintenance-authority.js";
+ import {
+   buildMemoryEmbeddingBatches,
+   runMemoryEmbeddingBatchRetryWithSplit,
+@@ -68,6 +69,31 @@
+ }
+
+ describe("memory embedding policy", () => {
++  it("does not issue another request after maintenance authority is revoked during backoff", async () => {
++    let current = true;
++    const run = vi.fn(async () => {
++      throw new Error("embeddings failed: 429 rate limit");
++    });
++    await expect(
++      withMemoryMaintenanceAuthority(
++        () => {
++          if (!current) {
++            throw new Error("operator revoked");
++          }
++        },
++        () =>
++          runMemoryEmbeddingRetryLoop({
++            profile: "index",
++            run,
++            waitForRetry: async () => {
++              current = false;
++            },
++          }),
++      ),
++    ).rejects.toThrow("operator revoked");
++    expect(run).toHaveBeenCalledTimes(1);
++  });
++
+   it("splits large files across multiple embedding batches", () => {
+     const line = "a".repeat(4200);
+     const batches = buildMemoryEmbeddingBatches([chunk(line), chunk(line)], 8000);
 diff --git a/extensions/memory-core/src/memory/manager-workspace-files.test.ts b/extensions/memory-core/src/memory/manager-workspace-files.test.ts
 --- a/extensions/memory-core/src/memory/manager-workspace-files.test.ts
 +++ b/extensions/memory-core/src/memory/manager-workspace-files.test.ts
@@ -20,7 +63,7 @@ diff --git a/extensions/memory-core/src/memory/manager-workspace-files.test.ts b
  import {
    getMemoryWorkspaceMaintenance,
    listWorkspaceMemoryFiles,
-@@ -103,6 +107,95 @@
+@@ -103,6 +107,199 @@
        },
      };
    }
@@ -30,33 +73,114 @@ diff --git a/extensions/memory-core/src/memory/manager-workspace-files.test.ts b
 +    await fs.writeFile(path.join(harness, "memory/notes.md"), "alpha Harness canonical notes.");
 +    await fs.writeFile(path.join(fixture.paths.memory, "notes.md"), "beta Gateway decoy.");
 +    const cfg = createConfig();
-+    const status = await indexMemoryOnGateway({
-+      cfg,
-+      agentId: "main",
-+      force: true,
-+      assertCurrent() {},
++    const { MemoryIndexManager } = await import("./manager.js");
++    const syncStatus = vi.spyOn(MemoryIndexManager.prototype, "status").mockImplementation(() => {
++      throw new Error("Gateway maintenance must not read SQLite synchronously");
 +    });
-+    expect(status.files).toBe(1);
-+    expect(status.custom?.workspaceHost).toBe("remote");
++    try {
++      const status = await indexMemoryOnGateway({
++        cfg,
++        agentId: "main",
++        force: true,
++        assertCurrent() {},
++      });
++      expect(status.files).toBe(1);
++      expect(status.chunks).toBeGreaterThan(0);
++      expect(status.custom?.workspaceHost).toBe("remote");
++    } finally {
++      syncStatus.mockRestore();
++    }
 +    const manager = await fixture.getFreshManager(cfg, "status");
 +    expect(await manager.search("canonical", { minScore: 0 })).toHaveLength(1);
 +    expect(await manager.search("decoy", { minScore: 0 })).toEqual([]);
 +  });
 +
-+  it("does not publish a replacement after the maintenance operator loses authority", async () => {
-+    const { harness, files } = await registerHarness();
-+    const filename = path.join(harness, "memory/notes.md");
-+    await fs.writeFile(filename, "alpha original canonical notes.");
-+    const cfg = createConfig();
-+    await indexMemoryOnGateway({ cfg, agentId: "main", force: true, assertCurrent() {} });
-+    await fs.writeFile(filename, "beta revoked replacement.");
++  it.each(["none", "openai", "batch-test"])(
++    "does not embed or publish after maintenance authority is revoked (%s)",
++    async (provider) => {
++      const { harness, files } = await registerHarness();
++      const filename = path.join(harness, "memory/notes.md");
++      await fs.writeFile(filename, "alpha original canonical notes.");
++      const cfg = createConfig({
++        provider,
++        batchEnabled: provider === "batch-test",
++        cacheEnabled: false,
++      });
++      await indexMemoryOnGateway({ cfg, agentId: "main", force: true, assertCurrent() {} });
++      const before = {
++        inline: fixture.provider.embedBatchCalls,
++        batch: fixture.provider.providerRuntimeBatchCalls.length,
++      };
++      if (provider === "openai") {
++        expect(before.inline).toBeGreaterThan(0);
++      }
++      if (provider === "batch-test") {
++        expect(before.batch).toBeGreaterThan(0);
++      }
++      await fs.writeFile(filename, "beta revoked replacement.");
++      let current = true;
++      const read = files.readForIndexing.bind(files);
++      vi.spyOn(files, "readForIndexing").mockImplementation(async (file) => {
++        const result = await read(file);
++        current = false;
++        return result;
++      });
++      await expect(
++        indexMemoryOnGateway({
++          cfg,
++          agentId: "main",
++          force: true,
++          assertCurrent() {
++            if (!current) {
++              throw new Error("operator revoked");
++            }
++          },
++        }),
++      ).rejects.toThrow("operator revoked");
++      expect(fixture.provider.embedBatchCalls).toBe(before.inline);
++      expect(fixture.provider.providerRuntimeBatchCalls).toHaveLength(before.batch);
++      const manager = await fixture.getFreshManager(cfg, "status");
++      expect(await manager.search("original", { minScore: 0 })).toHaveLength(1);
++      expect(await manager.search("replacement", { minScore: 0 })).toEqual([]);
++    },
++  );
++
++  it("passes maintenance disconnection to an in-flight inline provider", async () => {
++    const { harness } = await registerHarness();
++    await fs.writeFile(path.join(harness, "memory/notes.md"), "cancelled provider input.");
++    const cfg = createConfig({ provider: "openai", cacheEnabled: false });
++    const connection = new AbortController();
++    let calls = 0;
++    fixture.provider.beforeEmbedBatch = async (options) => {
++      calls += 1;
++      connection.abort(new Error("operator disconnected"));
++      // This is the real dispatch signal received by the provider contract.
++      expect(options?.signal?.aborted).toBe(true);
++      options?.signal?.throwIfAborted();
++    };
++    await expect(
++      indexMemoryOnGateway({
++        cfg,
++        agentId: "main",
++        force: true,
++        assertCurrent() {},
++        signal: connection.signal,
++      }),
++    ).rejects.toThrow("operator disconnected");
++    expect(calls).toBe(1);
++    const manager = await fixture.getFreshManager(cfg, "status");
++    expect((await manager.statusAsync()).files).toBe(0);
++  });
++
++  it("does not retry a provider batch after maintenance authority is revoked", async () => {
++    const { harness } = await registerHarness();
++    await fs.writeFile(path.join(harness, "memory/notes.md"), "revoked batch input.");
++    const cfg = createConfig({ provider: "batch-test", batchEnabled: true, cacheEnabled: false });
 +    let current = true;
-+    const read = files.readForIndexing.bind(files);
-+    vi.spyOn(files, "readForIndexing").mockImplementation(async (file) => {
-+      const result = await read(file);
++    fixture.provider.providerRuntimeBatchEntered = () => {
 +      current = false;
-+      return result;
-+    });
++    };
++    fixture.provider.providerRuntimeBatchErrors = [new Error("provider batch timed out")];
 +    await expect(
 +      indexMemoryOnGateway({
 +        cfg,
@@ -69,9 +193,32 @@ diff --git a/extensions/memory-core/src/memory/manager-workspace-files.test.ts b
 +        },
 +      }),
 +    ).rejects.toThrow("operator revoked");
++    expect(fixture.provider.providerRuntimeBatchCalls).toHaveLength(1);
++    expect(fixture.provider.embedBatchCalls).toBe(0);
 +    const manager = await fixture.getFreshManager(cfg, "status");
-+    expect(await manager.search("original", { minScore: 0 })).toHaveLength(1);
-+    expect(await manager.search("replacement", { minScore: 0 })).toEqual([]);
++    expect((await manager.statusAsync()).files).toBe(0);
++  });
++
++  it("reads populated maintenance status without using the Gateway SQLite connection", async () => {
++    const { harness } = await registerHarness();
++    await fs.writeFile(path.join(harness, "memory/notes.md"), "canonical worker snapshot.");
++    const cfg = createConfig();
++    await indexMemoryOnGateway({ cfg, agentId: "main", force: true, assertCurrent() {} });
++    const manager = await fixture.getFreshManager(cfg, "status");
++    const expected = manager.status();
++    const database = Reflect.get(manager, "publishedDatabase");
++    const prepare = vi.spyOn(database.db, "prepare").mockImplementation(() => {
++      throw new Error("status accessed SQLite on the Gateway thread");
++    });
++    try {
++      const actual = await manager.statusAsync();
++      expect(actual.files).toBe(expected.files);
++      expect(actual.chunks).toBe(expected.chunks);
++      expect(actual.sourceCounts).toEqual(expected.sourceCounts);
++      expect(actual.vector?.index).toEqual(expected.vector?.index);
++    } finally {
++      prepare.mockRestore();
++    }
 +  });
 +
 +  it("validates admin maintenance requests before acquiring a manager", async () => {
@@ -113,7 +260,7 @@ diff --git a/extensions/memory-core/src/memory/manager-workspace-files.test.ts b
 +      message: "Memory maintenance operator authority is no longer current.",
 +    });
 +  });
- 
+
    it("still rejects maintenance absent from an opted-in Memory host", async () => {
      await registerHarness();
 diff --git a/packages/memory-host-sdk/src/host/types.test.ts b/packages/memory-host-sdk/src/host/types.test.ts
@@ -127,7 +274,7 @@ diff --git a/packages/memory-host-sdk/src/host/types.test.ts b/packages/memory-h
    resolveMemorySearchStaleness,
    type MemoryProviderStatus,
  } from "./types.js";
- 
+
  describe("memory search staleness", () => {
 +  it("routes remote workspace index maintenance through the authenticated Gateway", () => {
 +    expect(
