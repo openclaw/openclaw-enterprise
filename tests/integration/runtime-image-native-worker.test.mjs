@@ -63,7 +63,7 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
       // Exercise the production worker bootstrap in the real image. Substitute its model probe and
       // enrollment peer; the child resolves and executes the installed binary with the actual launch env.
       const probe = `const r = require("node:child_process").spawnSync("gog", ["--version"], {encoding:"utf8"});
-console.log(JSON.stringify(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}));
+console.log(JSON.stringify(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0], markerVisible:process.env.GOG_ACCESS_TOKEN===undefined?undefined:"present"}));
 process.exit(r.error ? 0 : r.status);`;
       const launch = `
 const cp = require("node:child_process"), realSpawn = cp.spawn;
@@ -79,7 +79,7 @@ Object.assign(process.env, {
   TEST_MODEL_KEY:"fixture", OPENCLAW_HARNESS_PROBE_CONFIG:'{"agents":{"defaults":{"model":"openai/test"}}}'
 });
 ${NATIVE_WORKER_ENTRYPOINT}`;
-      const worker = (digest, mounts = []) =>
+      const worker = (digest, mounts = [], environment = []) =>
         runDocker(
           [
             "run",
@@ -96,6 +96,7 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
               ? []
               : ["-e", "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + digest]),
             ...mounts,
+            ...environment.flatMap((entry) => ["--env", entry]),
             "--entrypoint",
             "node",
             image,
@@ -116,6 +117,20 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
       assert.deepEqual(JSON.parse((await worker(expected)).stdout.trim()), {
         version: "v" + version,
       });
+      const marker =
+        "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
+      const bound = "OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV=GOG_ACCESS_TOKEN";
+      assert.deepEqual(JSON.parse((await worker(expected, [], [marker])).stdout), {
+        version: "v" + version,
+      });
+      assert.deepEqual(JSON.parse((await worker(expected, [], [bound, marker])).stdout), {
+        version: "v" + version,
+        markerVisible: "present",
+      });
+      await assert.rejects(
+        worker(expected, [], [bound, "GOG_ACCESS_TOKEN=not-an-issued-placeholder"]),
+        (error) => /requires its scoped OpenShell credential placeholder/.test(error.stderr),
+      );
       await assert.rejects(worker("0".repeat(64)), (error) =>
         /image integrity check: \/usr\/local\/lib\/oce\/plugins\/google\/release\.json/.test(
           error.stderr,

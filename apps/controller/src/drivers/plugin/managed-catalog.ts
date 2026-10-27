@@ -118,16 +118,24 @@ export function managedCredentialBinding(selections: PluginDesiredState | undefi
   return { slot, sourceId, credential };
 }
 
-function acceptsSource(slot: ManagedCredentialSlot, source: CredentialSource): boolean {
+function isSlotSource(slot: ManagedCredentialSlot, source: CredentialSource): boolean {
   const config = source.config;
-  const scopes = config.scope?.split(" ") ?? [];
   return (
-    source.state === "ready" &&
     source.ownerCapability === "credential_gateway" &&
     source.egress === undefined &&
     source.type === "oauth2-refresh-token" &&
     config.token_url === slot.tokenEndpoint &&
     config.env_var === slot.delivery.env &&
+    slot.requests.some(({ url }) => new URL(url).hostname === config.host)
+  );
+}
+
+function acceptsSource(slot: ManagedCredentialSlot, source: CredentialSource): boolean {
+  const config = source.config;
+  const scopes = config.scope?.split(" ") ?? [];
+  return (
+    isSlotSource(slot, source) &&
+    source.state === "ready" &&
     (config.binary === undefined || config.binary === managedGoogleInstall.binaryPath) &&
     (config.port ?? "443") === "443" &&
     slot.requiredScopes.every((scope) => scopes.includes(scope)) &&
@@ -164,15 +172,7 @@ export function managedCredentialSources(
   const active = sources.filter(
     (source) =>
       source.id === binding?.sourceId ||
-      !Object.values(managedGoogleInstall.credentials).some(
-        (slot) =>
-          source.ownerCapability === "credential_gateway" &&
-          source.egress === undefined &&
-          source.type === "oauth2-refresh-token" &&
-          source.config.token_url === slot.tokenEndpoint &&
-          source.config.env_var === slot.delivery.env &&
-          slot.requests.some((rule) => new URL(rule.url).hostname === source.config.host),
-      ),
+      !Object.values(managedGoogleInstall.credentials).some((slot) => isSlotSource(slot, source)),
   );
   if (!binding) return active;
   const tools = active.filter((source) => source.id !== modelSourceId);

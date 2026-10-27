@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-10-27
-last_updated_session: authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1
+last_updated_session: 01a169f0-a851-7b81-8e83-ff597893aa21
 ---
 
 # Agent Plugin Deployment Flow
@@ -138,7 +138,7 @@ Deployment revalidates selections and Configuration, records the Driver and
 policy-only plugin map in an Agent revision, and queues it. Native app mapping,
 release metadata, and configuration resolve later.
 
-For [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json), the selection includes the package version. Kubernetes passes the release digest to both roles. The Gateway verifies the install-check skill, and the dedicated worker verifies `gog` before enrollment.
+For Google Workspace the Agent pins its account and release digest. The Gateway loads the skill. OpenShell verifies the worker’s request against the release before substituting the bearer. [Source and worker flow](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -363,6 +363,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 17:55: Trace the Google account binding and the worker’s guarded request. (01a169f0-a851-7b81-8e83-ff597893aa21)
 
 - 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)
 

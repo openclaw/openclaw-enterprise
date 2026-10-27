@@ -4726,6 +4726,13 @@ const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
 let nodeStateCurrent = outdatedNodeDatabases.length === 0;
 
 const googleRelease = installedGoogleRelease();
+const googleCredentialEnv = process.env.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV;
+if (googleCredentialEnv !== undefined && (
+  googleCredentialEnv !== "GOG_ACCESS_TOKEN" ||
+  googleRelease?.credentials?.account?.delivery?.env !== googleCredentialEnv ||
+  !/^openshell:resolve:env:s[0-9a-f]{64}_GOG_ACCESS_TOKEN$/.test(process.env.GOG_ACCESS_TOKEN ?? "")
+)) throw new Error("The selected Google account requires its scoped OpenShell credential placeholder.");
+if (googleCredentialEnv === undefined) delete process.env.GOG_ACCESS_TOKEN;
 const googleBin = "/usr/local/lib/oce/plugins/google/bin";
 const enableGoogleCli = googleRelease?.capabilities.harness.includes("cli");
 if (enableGoogleCli) {

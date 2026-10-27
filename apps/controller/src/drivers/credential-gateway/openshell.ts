@@ -28,6 +28,7 @@ import {
   sha256Hex,
 } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
+import { managedCredentialBinding, managedGoogleInstall } from "../plugin/managed-catalog.ts";
 
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
 
@@ -102,6 +103,7 @@ interface OpenShellSourceType {
    */
   validate(
     config: Readonly<Record<string, string>>,
+    options: OpenShellCredentialGatewayOptions,
     gateway?: OpenShellGatewayPlacement,
   ): Readonly<Record<string, string>> | void;
   /** Catalog secret field → the provider credential key OpenShell exposes. */
@@ -149,6 +151,11 @@ const ENDPOINT_CONFIG = Object.freeze([
 
 const OAUTH2_CONFIG = Object.freeze([
   ...ENDPOINT_CONFIG,
+  Object.freeze({
+    name: "binary",
+    required: false,
+    description: "Restrict this source to one executable from the installation toolBinaries.",
+  }),
   Object.freeze({
     name: "token_url",
     required: true,
@@ -290,9 +297,16 @@ function validateEndpointConfig(type: string, config: Readonly<Record<string, st
 function validateOAuth2Config(
   type: string,
   config: Readonly<Record<string, string>>,
+  options: OpenShellCredentialGatewayOptions,
   gateway: OpenShellGatewayPlacement | undefined,
 ): Readonly<Record<string, string>> | void {
   validateEndpointConfig(type, config);
+  if (config.binary !== undefined && !options.toolBinaries?.includes(config.binary)) {
+    throw new CredentialSourceConfigError(
+      "binary",
+      "The OAuth2 binary must be an executable in the installation toolBinaries.",
+    );
+  }
   if (!TOKEN_URL.test(config.token_url ?? "") || !URL.canParse(config.token_url ?? "")) {
     throw new CredentialSourceConfigError(
       "token_url",
@@ -361,7 +375,7 @@ function bearerProfile(
       },
     ],
     endpoints: [{ ...bearerTokenEndpoint(config), protocol: "rest" }],
-    binaries: requiredToolBinaries(options),
+    binaries: requiredToolBinaries(options, credential.refresh ? config.binary : undefined),
     inferenceCapable: false,
   };
 }
@@ -384,7 +398,7 @@ function oauth2SourceType(
       rotation: "refresh",
     }),
     refresh: Object.freeze({ strategy, configMaterial: Object.freeze(["client_id", "scope"]) }),
-    validate: (config, gateway) => validateOAuth2Config(type, config, gateway),
+    validate: (config, options, gateway) => validateOAuth2Config(type, config, options, gateway),
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
@@ -655,13 +669,22 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
  * OpenShell lets any binary use a profile with an empty binary list, so a bearer-token profile is
  * never written without `toolBinaries`. Never reconcile existing profiles to an empty list.
  */
-function requiredToolBinaries(options: OpenShellCredentialGatewayOptions): readonly string[] {
+function requiredToolBinaries(
+  options: OpenShellCredentialGatewayOptions,
+  binary?: string,
+): readonly string[] {
   if (options.toolBinaries === undefined || options.toolBinaries.length === 0) {
     throw new OpenShellCredentialGatewayFailure(
       "OpenShell bearer-token profiles require configured toolBinaries.",
     );
   }
-  return options.toolBinaries;
+  if (binary === undefined) {
+    return options.toolBinaries;
+  }
+  if (!options.toolBinaries.includes(binary)) {
+    throw new StoredCredentialSourceConfigError("binary");
+  }
+  return [binary];
 }
 
 function validateOptions(options: OpenShellCredentialGatewayOptions): void {
@@ -884,6 +907,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     // registration's profile check refuses those names before any gateway write.
     return sourceType(input.type, this.options, this.refresh).validate(
       input.config,
+      this.options,
       this.backend.client.placement(),
     );
   }
@@ -898,7 +922,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     // validateSourceConfig does (400); OCC passes this ScopeViolationError through, while a
     // CredentialSourceConfigError would surface as a 503 (finding 2536).
     try {
-      type.validate(input.config, this.placement(context));
+      type.validate(input.config, this.options, this.placement(context));
     } catch (error) {
       if (error instanceof CredentialSourceConfigError) {
         throw new CredentialSourceRegistrationConfigError(error.field, error.message);
@@ -1069,6 +1093,18 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   ): Promise<readonly CredentialSourceAttachment[]> {
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
+    const binding = managedCredentialBinding(context.revision.plugins?.plugins);
+    if (binding) {
+      const source = context.sources.find(({ id }) => id === binding.sourceId);
+      const binaries =
+        source?.type === "oauth2-refresh-token" &&
+        requiredToolBinaries(this.options, source.config.binary);
+      if (!binaries || binaries.length !== 1 || binaries[0] !== managedGoogleInstall.binaryPath) {
+        throw new ScopeViolationError(
+          "The bound Google account must grant only the pinned Google executable. Set binary on this OAuth2 source when its installation allows other tools.",
+        );
+      }
+    }
     const attachments: CredentialSourceAttachment[] = [];
     const environment = new Set<string>();
     for (const source of context.sources) {
