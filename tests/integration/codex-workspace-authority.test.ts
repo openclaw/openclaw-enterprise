@@ -929,7 +929,9 @@ test("bundled workspace registration admits the five native routes and refuses s
         plan: mixed,
         revision: { ...f.context.revision, egressPlan: mixed },
       }),
-      /not qualified|no OpenShell release is qualified/i,
+      profile === "git-write"
+        ? { name: "RepositoryGitSenderUnqualifiedError", code: "REPOSITORY_GIT_SENDER_UNQUALIFIED" }
+        : { name: "CredentialProxyAdmissionError", reason: "installationPreview" },
     );
   }
   // Derive the joint policy from the same five routes that the registered API admitted.
@@ -1341,17 +1343,21 @@ test("bundled workspace registration admits the five native routes and refuses s
   assert.ok((await f.resolve(wrongModel)).refused);
   assert.equal(f.secretReads, reads);
   // The configured name and capability list cannot substitute for the selected implementation.
+  const registrationUnavailable = {
+    name: "RetryLaterError",
+    message: /gateway does not offer the protected egress middleware/,
+  };
   f.observed.available = false;
-  await assert.rejects(worker.configure(f.context), /no negotiated/);
+  await assert.rejects(worker.configure(f.context), registrationUnavailable);
   f.observed.available = true;
   f.observed.implementationName = "other/sender";
-  await assert.rejects(worker.configure(f.context), /no negotiated/);
+  await assert.rejects(worker.configure(f.context), registrationUnavailable);
   f.observed.implementationName = "oce/static-egress";
   f.observed.implementationVersion = "2";
-  await assert.rejects(worker.configure(f.context), /no negotiated/);
+  await assert.rejects(worker.configure(f.context), registrationUnavailable);
   f.observed.implementationVersion = "1";
   f.observed.requiredCapabilities = ["openshell.supervisor-middleware.contract"];
-  await assert.rejects(worker.configure(f.context), /no negotiated/);
+  await assert.rejects(worker.configure(f.context), registrationUnavailable);
   const beforeStockRead = f.secretReads;
   const unavailable = await f.request("POST", f.path, {
     body: {
