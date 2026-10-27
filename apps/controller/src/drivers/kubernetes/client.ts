@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import type { AgentOptions } from "node:https";
 import type {
@@ -14,6 +15,16 @@ import {
   currentComputeOperationLifetime,
 } from "../compute/operation-context.ts";
 import type { KubernetesAuthentication } from "./authentication.ts";
+
+// The SDK awaits authentication and middleware before entering the HTTP transport.
+const requestGuards = new AsyncLocalStorage<() => void>();
+
+export function withKubernetesRequestGuard<T>(
+  guard: (() => void) | undefined,
+  request: () => Promise<T>,
+): Promise<T> {
+  return guard ? requestGuards.run(guard, request) : request();
+}
 
 type KubernetesSdk = typeof import("@kubernetes/client-node");
 
@@ -132,6 +143,7 @@ export function nonRedirectingHttpLibrary(sdk: KubernetesSdk): HttpLibrary {
           "TimeoutError",
         );
       }
+      requestGuards.getStore()?.();
       const dispatcher = request.getDispatcher();
       const response = await fetch(request.getUrl(), {
         method: request.getHttpMethod().toString(),

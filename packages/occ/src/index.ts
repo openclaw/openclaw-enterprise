@@ -5471,23 +5471,44 @@ export class OpenClawController {
         check: (use, material, stream, provider) =>
           this.checkEgressUse(use, material, stream, provider),
         read: async (source, lifetime, isProviderCurrent) => {
+          const driver = this.secretDriver(source.secretDriver.id);
+          const read = driver.readCredentialInput;
+          if (!read) {
+            throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
+          }
+          const selectionCurrent = () => {
+            try {
+              return (
+                isProviderCurrent() &&
+                this.secretDriver(source.secretDriver.id) === driver &&
+                driver.readCredentialInput === read
+              );
+            } catch {
+              return false;
+            }
+          };
+          const requireSelection = () => {
+            if (!selectionCurrent()) {
+              throw new DependencyUnavailableError(
+                "Selected credential reader or provider changed.",
+              );
+            }
+          };
           const secret = await this.state.read((state) =>
             state.secrets.findSecret(source.secret.namespaceId, source.secret.id),
           );
           if (lifetime.signal.aborted || !secret || secret.driverId !== source.secretDriver.id) {
             throw new DependencyUnavailableError("Selected credential material is unavailable.");
           }
-          const driver = this.secretDriver(secret.driverId);
-          if (!driver.readCredentialInput) {
-            throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
-          }
-          if (!isProviderCurrent()) {
-            throw new DependencyUnavailableError("Selected credential provider changed.");
-          }
-          return {
-            ...(await driver.readCredentialInput({ secret, lifetime, retention: "none" })),
-            materialId: secret.backendRef.uid,
-          };
+          requireSelection();
+          const material = await read.call(driver, {
+            secret,
+            lifetime,
+            retention: "none",
+            selectionCurrent,
+          });
+          requireSelection();
+          return { ...material, materialId: secret.backendRef.uid };
         },
         readPrepared: (source, lifetime) =>
           this.preparedIssuer(source.key.provider).readWarm(source, lifetime),
