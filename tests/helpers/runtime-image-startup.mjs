@@ -515,7 +515,19 @@ export function jsonLogEntries(output) {
 export async function gatewayStateVolume(t, mountPath, { seed, seedVolumes = [] } = {}) {
   const volume = `oce-runtime-image-state-${randomBytes(6).toString("hex")}`;
   await runDocker(["volume", "create", volume]);
-  t.after(() => runDocker(["volume", "rm", "-f", volume]).catch(() => {}));
+  // node:test runs `after` hooks in registration order, so this one runs before
+  // the hooks that remove the containers started on the volume later, and Docker
+  // refuses to remove a volume in use. Remove those containers first.
+  t.after(async () => {
+    const users = await runDocker(["ps", "-aq", "--filter", `volume=${volume}`]).catch(
+      () => undefined,
+    );
+    const ids = users?.stdout.split(/\s+/).filter(Boolean) ?? [];
+    if (ids.length > 0) {
+      await runDocker(["rm", "-f", ...ids]).catch(() => {});
+    }
+    await runDocker(["volume", "rm", "-f", volume]).catch(() => {});
+  });
   // As root, like the Docker Driver's workspace setup: a new volume mounted
   // below the image's home can be root-owned.
   await runDocker([
