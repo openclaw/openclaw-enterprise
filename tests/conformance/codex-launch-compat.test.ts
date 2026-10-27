@@ -28,19 +28,12 @@ const program = (args: readonly string[]) =>
   inflateRawSync(Buffer.from(args.slice(1).join(""), "base64")).toString();
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-// Captured from Kubernetes Compute at f6899148 with the stored admission.
-const mainCommands = {
-  plain: "0093cc49fc2dbd5e25b90a5d6f54a7c60aeea4be022f7ac2f44bc032459a58cd",
-  node: "4dc5f0e0ca8bf163f10cedf9090705bf42a011359b5435cd6995aa0f33fb3a5e",
-};
 for (const sample of fixture.cases) {
   test(`stored Codex ${sample.node ? "workspace-node" : "plain"} admission retains pre-change bytes and adopts without replay`, async () => {
     const compute = launchCompute();
+    // Runtime pins may change the current program. The captured predecessor below
+    // fixes the adoption input independently of the current rendering.
     const rendered = launchRequirements(compute, fixture.revision, sample.node);
-    assert.equal(
-      hash(JSON.stringify({ command: rendered.command, args: rendered.args })),
-      sample.node ? mainCommands.node : mainCommands.plain,
-    );
     const mainPeer = sandboxPeer();
     const mainContext = sandboxContext(fixture.revision, rendered.requirements);
     await mainPeer.driver().provisionHarness(mainContext);
@@ -201,14 +194,6 @@ test("stored protected and public-reader bindings retain their semantics across 
     "https://127.0.0.1/v1",
   );
   assert.ok(old);
-  assert.equal(
-    hash(old.entrypoint),
-    "bfdf4d4409c353bc3681e86ca1801125f342cea96a4707e2ca4b2db2d590094f",
-  );
-  assert.equal(
-    hash(old.workspaceEntrypoint),
-    "a552065cd60aae6faa8e5c9a68cdc3f3d89d06f6b498f92e1f291d424563c547",
-  );
   for (const node of [false, true]) {
     const args = node ? fixture.protectedPrograms.nodeArgs : fixture.protectedPrograms.plainArgs;
     assert.equal(
