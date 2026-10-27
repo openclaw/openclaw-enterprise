@@ -645,8 +645,8 @@ test("swapped standard Slack token keys get the list, not role-labelled pickers"
 // the Slack settings read. An Installation administrator's console reads that grant for each: a
 // missing one marks its row, holds Deploy and offers Retry Secret access, which grants exactly that
 // Secret without saving bindings.
-async function agentWithoutGrant(t, { name, slackValues, bindings, ungranted }) {
-  const fixture = await createConsoleAppFixture(t);
+async function agentWithoutGrant(t, { name, slackValues, bindings, ungranted, fixtureOptions }) {
+  const fixture = await createConsoleAppFixture(t, fixtureOptions);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(`${name} grant`, { ready: true });
   const secrets = {};
@@ -917,6 +917,10 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     slackValues: {},
     bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
     ungranted: appGranted ? null : "SLACK_APP_TOKEN",
+    // The deploy then checks the grants the console commits through the IAM API, as in
+    // production, not only the fixture's seeded policy; deployment admits Slack only with an
+    // Installation channel runtime.
+    fixtureOptions: appGranted ? { provisionedPeople: [], channelRuntime: true } : undefined,
   });
   const replacement = await fixture.createSecret(namespace.id, "Replacement bot token", "xoxb-new");
   const { page } = await newPage(t, fixture);
@@ -979,12 +983,13 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
     releaseWrite();
   }
-  // The save ends with a grant read still to come, so it does not point to Deploy yet. (With the
-  // app grant present, the unheld read after a save that dropped the first may already have
-  // settled.)
-  const saveStatus = page.locator("section.channel-secrets p.hint[role=status]");
-  await saveStatus.filter({ hasText: /^Channel Secret bindings saved\./ }).waitFor();
-  if (!(appGranted && readLandsDuringSave)) {
+  // The save ends with a grant read still to come, so it does not point to Deploy yet. With the
+  // app grant present, the save's own unheld recheck may already have settled and named Deploy.
+  const saveStatus = page
+    .locator("section.channel-secrets p.hint[role=status]")
+    .filter({ hasText: /^Channel Secret bindings saved\./ });
+  await saveStatus.waitFor();
+  if (!appGranted) {
     assert.equal(await saveStatus.textContent(), "Channel Secret bindings saved.");
   }
   if (!readLandsDuringSave) {
@@ -1014,7 +1019,7 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     );
     await deploy.click();
     const response = await deployResponse;
-    assert.equal(response.status(), 202);
+    assert.equal(response.status(), 202, await response.text());
     const deployed = (await response.json()).data;
     const after = (await fixture.request("GET", revisionsPath)).data;
     assert.deepEqual(
