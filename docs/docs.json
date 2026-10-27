@@ -1024,6 +1024,14 @@
                     "label": "Overview"
                   },
                   {
+                    "page": "taxonomy",
+                    "label": "Document Types"
+                  },
+                  {
+                    "page": "contributing/documentation-templates",
+                    "label": "Templates"
+                  },
+                  {
                     "page": "local-preview",
                     "label": "Preview and Validate"
                   },

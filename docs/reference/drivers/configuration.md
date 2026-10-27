@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # ConfigurationDriver contract
 
 ## Overview

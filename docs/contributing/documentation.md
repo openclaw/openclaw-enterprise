@@ -30,6 +30,9 @@ they keep their URLs and remain searchable.
 
 ## Write and name the page
 
+Use the [documentation taxonomy](../taxonomy.md) to select a kind and its template.
+Start with the [general page templates](documentation-templates.md) when no kind applies.
+
 For proposals and implementation planning, follow
 [RFCs and implementation plans](specifications.md), including numbering,
 document ownership, and historical preservation.

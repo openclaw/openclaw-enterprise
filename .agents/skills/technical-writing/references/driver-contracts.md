@@ -1,6 +1,6 @@
-# Driver contract documentation template
+# Write a Driver contract
 
-Use this template when writing or rewriting a base Driver contract under
+Use the [Driver contract template](../assets/reference-driver.md) when writing or updating a base Driver contract under
 `docs/reference/drivers/`. Document the shared capability rather than a concrete
 backend. Inspect the exported interface and its actual callers before asserting
 behavior. Preserve existing guarantees and incoming anchors when reorganizing a
@@ -25,12 +25,8 @@ each operation, cover inputs, results, preconditions, side effects, and failure
 meaning. Explain what happens when an optional method is absent and whether a
 caller or production mode nevertheless requires it.
 
-Use a compact operation table when helpful:
-
-```markdown
-| Operation | Required? | Inputs and preconditions | Result / side effects | Failure or absence |
-| --------- | --------- | ------------------------ | --------------------- | ------------------ |
-```
+Use the template's member table. Mark an optional method as required for a
+named mode when its caller refuses that mode without it.
 
 Do not duplicate an entire source interface merely to list fields. Include a
 small shared-contract example when it clarifies a boundary; keep backend setup
@@ -104,31 +100,7 @@ These are coverage prompts, not new runtime obligations:
   preparation versus installation; approval policy; exported methods versus
   bundled implementation helpers.
 
-## Copyable outline
-
-```markdown
-# <Name>Driver contract
-
-## Overview
-
-## Interface
-
-### Core interface
-
-### Optional additions
-
-## IAM
-
-## Lifecycle
-
-## Limits
-
-## Troubleshooting
-
-## Implementations
-
-## Related
-```
+## Check the page
 
 Before handoff, verify source claims, relative links, heading anchors, navigation,
 formatting, and the repository word budget. Reference checks do not establish
