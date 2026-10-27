@@ -23,8 +23,7 @@ function assertAuthenticationAllowed(
   if (
     state.finalized ||
     !state.plans.has(plan) ||
-    !record?.accepted ||
-    record.expiresAt === undefined ||
+    !record ||
     clock.wallNow() >= record.expiresAt ||
     clock.monotonicNow() - record.observedMono >= record.expiresAt - record.observedWall
   ) {

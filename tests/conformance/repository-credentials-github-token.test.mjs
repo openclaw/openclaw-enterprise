@@ -7,10 +7,10 @@ import { admitSession } from "../../apps/controller/src/drivers/repo/credentials
 import { validateGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/credentials/config.ts";
 import {
   classifyGitHubToken,
-  createGitHubDriverFactory,
-  createGitHubKeyOwner,
   createGitHubStaticTokenOwner,
-} from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
+} from "../../apps/controller/src/drivers/repo/github/credentials/static-token.ts";
+import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/credentials/factory.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   githubConfigurationData,

@@ -3,11 +3,10 @@ import type { RepositoryBackend } from "../../credentials/backend-contracts.ts";
 import { createGitHubDriver } from "./driver.ts";
 import { snapshotBinding } from "../../credentials/sessions.ts";
 import { validateGitHubConfiguration } from "./config.ts";
-import { permissionsForProfile } from "./profiles.ts";
+import { permissionsForProfile, staticTokenGraphqlPolicy } from "./profiles.ts";
 import { createRoutePolicy } from "./routes.ts";
 import { createGatewayAuthentication } from "./gateway-authentication.ts";
 import { createGrantResolver } from "./grants.ts";
-import { createStaticTokenSource } from "./token-source/static.ts";
 import type { GitHubDriverFactory, GitHubFactoryOptions, GitHubTokenProfile } from "./types.ts";
 
 export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHubDriverFactory {
@@ -50,14 +49,21 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
     options.trustedEndpoints?.gitOrigin ?? "https://github.com",
   );
   const gatewayOrigin = githubProviderOrigin(options.gatewayOrigin);
-  const source = createStaticTokenSource(options.authority, { config, limits: options.limits });
+  const owner = options.authority;
+  const leaseMs = config.leaseSeconds * 1000;
+  // Acquisition must cover an exchange deadline and both credential margins.
+  if (
+    leaseMs < options.limits.exchangeMs + 2 * options.limits.credentialMarginMs ||
+    (config.allowGraphql && owner.tokenClass !== "fine-grained")
+  ) {
+    throw new Error("invalid-configuration");
+  }
   const grants = createGrantResolver({
     config,
     gatewayOrigin,
-    source,
     selectedBinding,
   });
-  const { pushRefAllowlist } = source;
+  const { pushRefAllowlist } = config;
   const policy = (profile: GitHubTokenProfile) =>
     createRoutePolicy({
       repository: config.repository,
@@ -73,8 +79,8 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
           config.leaseSeconds * 1000 - 2 * options.limits.credentialMarginMs,
         ),
       },
-      graphql: source.graphql(profile),
-      ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
+      graphql: staticTokenGraphqlPolicy(profile, config.allowGraphql),
+      pushRefAllowlist,
     });
   const unauthenticatedPolicy = policy("git-write");
   const authentication = createGatewayAuthentication({
@@ -97,13 +103,8 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
         custody,
         clock,
         routes: policy(profile),
-        source,
-        session: {
-          profile,
-          permissions: permissionsForProfile(profile),
-          repositoryId: config.repositoryId,
-          repository: config.repository,
-        },
+        owner,
+        leaseMs,
       });
     },
   });
