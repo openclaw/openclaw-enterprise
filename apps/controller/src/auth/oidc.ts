@@ -25,10 +25,14 @@ export type OidcTokenAuth = "client_secret_post" | "client_secret_basic";
  * The operator-configured claim that vouches for realm members: a verified ID token whose
  * `name` claim equals `value` authenticates an otherwise unknown subject, which is then
  * enrolled just-in-time with no grant. Both parts are required together.
+ * `emailClaim` names the claim the same token may carry as the enrolled account's email
+ * address (default `email`); without a usable value the enrolment falls back to the
+ * deterministic placeholder address.
  */
 export interface OidcTrustClaim {
   readonly name: string;
   readonly value: string;
+  readonly emailClaim: string;
 }
 
 export interface OidcLoginConfiguration {
@@ -72,6 +76,7 @@ const optionalVariables = [
   "OCC_AUTH_OIDC_ENROLLMENT",
   "OCC_AUTH_OIDC_TRUST_CLAIM",
   "OCC_AUTH_OIDC_TRUST_VALUE",
+  "OCC_AUTH_OIDC_TRUST_EMAIL_CLAIM",
 ] as const;
 
 const dnsName =
@@ -156,12 +161,19 @@ export function oidcLoginConfiguration(
   }
   const trustClaimName = environment.OCC_AUTH_OIDC_TRUST_CLAIM?.trim();
   const trustClaimValue = environment.OCC_AUTH_OIDC_TRUST_VALUE?.trim();
+  const trustEmailClaimName = environment.OCC_AUTH_OIDC_TRUST_EMAIL_CLAIM?.trim();
   if (
     (trustClaimName === undefined || trustClaimName.length === 0) !==
     (trustClaimValue === undefined || trustClaimValue.length === 0)
   ) {
     throw new Error(
       "OCC_AUTH_OIDC_TRUST_CLAIM and OCC_AUTH_OIDC_TRUST_VALUE must be configured together.",
+    );
+  }
+  const trustConfigured = trustClaimName !== undefined && trustClaimName.length > 0;
+  if (!trustConfigured && trustEmailClaimName !== undefined && trustEmailClaimName.length > 0) {
+    throw new Error(
+      "OCC_AUTH_OIDC_TRUST_EMAIL_CLAIM requires OCC_AUTH_OIDC_TRUST_CLAIM and OCC_AUTH_OIDC_TRUST_VALUE.",
     );
   }
   let trustClaim: OidcTrustClaim | undefined;
@@ -174,7 +186,19 @@ export function oidcLoginConfiguration(
     if (!trustClaimValuePattern.test(trustClaimValue)) {
       throw new Error("OCC_AUTH_OIDC_TRUST_VALUE must be 1 to 256 printable characters.");
     }
-    trustClaim = { name: trustClaimName, value: trustClaimValue };
+    if (trustEmailClaimName !== undefined && !trustClaimNamePattern.test(trustEmailClaimName)) {
+      throw new Error(
+        "OCC_AUTH_OIDC_TRUST_EMAIL_CLAIM must be a claim name of 1 to 64 letters, digits, underscore, hyphen or colon.",
+      );
+    }
+    trustClaim = {
+      name: trustClaimName,
+      value: trustClaimValue,
+      emailClaim:
+        trustEmailClaimName === undefined || trustEmailClaimName.length === 0
+          ? "email"
+          : trustEmailClaimName,
+    };
   }
   return {
     ...(environment.OCC_AUTH_OIDC_ENROLLMENT === undefined
@@ -236,6 +260,27 @@ export function oidcNonce(secret: string, state: string): string {
   return createHmac("sha256", secret).update(`oce-oidc-nonce\0${state}`).digest("base64url");
 }
 
+// The email a trusted token carries for the identity it enrolls, when the configured email
+// claim holds a usable address: normalized to the `occ."user"` email invariant
+// (lower-cased, trimmed, 3 to 320 characters, one `@` with non-empty sides) because the
+// enrolment inserts it directly. Any other value falls back to the caller's deterministic
+// placeholder address. `email_verified` is honored only when the token asserts exactly
+// true; the claim name for it is always the standard one, whatever the email claim is.
+function trustedEmail(
+  claims: Readonly<Record<string, unknown>>,
+  emailClaim: string,
+): { email?: string; emailVerified?: true } {
+  const value = claims[emailClaim];
+  if (typeof value !== "string") {
+    return {};
+  }
+  const email = value.trim().toLowerCase();
+  if (email.length < 3 || email.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(email)) {
+    return {};
+  }
+  return claims.email_verified === true ? { email, emailVerified: true } : { email };
+}
+
 export async function exchangeOidcSubject(
   config: ResolvedOidcLoginConfiguration,
   code: string,
@@ -276,6 +321,7 @@ export async function exchangeOidcSubject(
       jwks,
       now: Date.now(),
     });
+<<<<<<< HEAD
     if (claims === undefined) {
       return { denial: "EXTERNAL_IDENTITY_REJECTED" };
     }
@@ -299,8 +345,15 @@ export async function exchangeOidcSubject(
         },
       };
     }
-    if (config.trustClaim !== undefined && claims[config.trustClaim.name] === config.trustClaim.value) {
-      return { subject: claims.sub as string, trusted: true };
+    if (
+      config.trustClaim !== undefined &&
+      claims[config.trustClaim.name] === config.trustClaim.value
+    ) {
+      return {
+        subject: claims.sub as string,
+        trusted: true,
+        ...trustedEmail(claims, config.trustClaim.emailClaim),
+      };
     }
     return { subject: claims.sub as string };
   } catch (error) {
