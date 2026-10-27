@@ -5,6 +5,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { protectedText, redactQaError } from "./qa-secrets.mjs";
+import { runQaCheck } from "./qa-check.mjs";
 
 const execute = promisify(execFile);
 const text = (message) =>
@@ -36,24 +37,7 @@ export async function verifyQaStrandsSandbox(artifacts) {
   async function save() {
     await writeFile(evidence, JSON.stringify(result, null, 2) + "\n", { mode: 0o600 });
   }
-  async function check(name, action) {
-    const entry = { name, status: "running", startedAt: new Date().toISOString() };
-    result.checks.push(entry);
-    await save();
-    process.stderr.write(`# Strands Box: ${name}\n`);
-    try {
-      const value = await action();
-      entry.status = "passed";
-      return value;
-    } catch (error) {
-      entry.status = "failed";
-      entry.error = String(redactQaError(error));
-      throw redactQaError(error);
-    } finally {
-      entry.finishedAt = new Date().toISOString();
-      await save();
-    }
-  }
+  const check = (name, action) => runQaCheck({ result, save, name, action });
   async function api(method, path, body) {
     const response = await fetch(new URL(path, url), {
       method,
@@ -726,7 +710,7 @@ export async function verifyQaStrandsSandbox(artifacts) {
     result.finishedAt = new Date().toISOString();
     result.passed = failures.length === 0;
     result.errors = failures.map((error) => String(redactQaError(error)));
-    await save();
+    await save().catch((error) => failures.push(redactQaError(error)));
   }
   if (failures.length > 0) {
     throw new AggregateError(failures, "Strands sandbox acceptance failed");
