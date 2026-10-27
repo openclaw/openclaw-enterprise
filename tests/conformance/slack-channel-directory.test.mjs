@@ -216,7 +216,8 @@ test("Slack directory searches paginated user names and qualifies results with w
         { id: "UALICE", name: "alice", profile: { display_name: "Alice" } },
         { id: "UDELETED", name: "alice-old", deleted: true },
       ],
-      response_metadata: { next_cursor: "" },
+      // Slack documents null, like an empty or absent cursor, as the final page.
+      response_metadata: { next_cursor: null },
     });
   });
 
