@@ -8,6 +8,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
@@ -58,7 +59,11 @@ if (args.includes("login")) {
   assert.equal(process.env.CODEX_ACCESS_TOKEN, undefined);
   assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
   assert.equal(args[args.indexOf("-a") + 1], "never");
-  assert.ok(args.includes("--ignore-user-config") && args.includes("--ignore-rules"));
+  assert.equal(args.includes("--ignore-user-config"), false);
+  assert.ok(args.includes("--ignore-rules"));
+  // The emitted launcher must write the runtime config before spawning the authentication probe.
+  const nativeConfig = fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8");
+  assert.match(nativeConfig, /\[permissions\."custom-investigation"\.network\]\nenabled = true/);
   assert.ok(args.includes("--ephemeral"));
   const prior = fs.readFileSync("/home/node/calls", "utf8").trim().split("\n")
     .map(JSON.parse).filter((call) => call.includes("exec")).length;
@@ -172,6 +177,11 @@ async function startLauncher(
       "-e",
       "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
       ...Object.entries(auth).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
+      ...Object.entries(pluginRuntimeEnvironment({
+        kind: "codex",
+        selections: {},
+        permissionProfiles: { "custom-investigation": { extends: ":workspace", network: { enabled: true } } },
+      })).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
       "-e",
       "OPENCLAW_HARNESS_MODEL=codex/fixture-model",
       "-e",

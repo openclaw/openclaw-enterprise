@@ -483,6 +483,7 @@
             ],
             "hidden": [
               "guides/repository-credentials/standalone-service",
+              "reference/drivers/codex-permission-profiles",
               "guides/repository-credentials/development-token",
               "reference/repository-credentials/development-token",
               "reference/repository-credentials/openshell-git",

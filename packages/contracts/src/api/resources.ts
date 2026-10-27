@@ -1340,6 +1340,9 @@ export const AgentRevisionSchema = Type.Object(
         {
           driver: Type.Ref("PluginDriverIdentity"),
           plugins: Type.Ref("PluginDesiredState"),
+          runtimeConfiguration: Type.Optional(
+            Type.Object({}, { additionalProperties: Type.Ref("SafeJsonValue") }),
+          ),
         },
         { additionalProperties: false },
       ),

@@ -139,7 +139,11 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "plugin") {
-    return typeof candidate.listCatalog === "function";
+    return (
+      typeof candidate.listCatalog === "function" &&
+      (candidate.snapshotRuntimeConfiguration === undefined ||
+        typeof candidate.snapshotRuntimeConfiguration === "function")
+    );
   }
   if (driver.capability === "channel") {
     return (

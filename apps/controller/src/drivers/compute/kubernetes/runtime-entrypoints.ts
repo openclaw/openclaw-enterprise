@@ -3928,15 +3928,15 @@ function probeCodexAuthentication(timeout) {
     ];
     result = spawnSync(codexExecutable(), [
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
-      "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+      "-a", "never", "exec", "--ephemeral", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
       "--model", selectedModel.slice(selectedModel.indexOf("/") + 1),
       "-c", "cli_auth_credentials_store=file",
       "-c", 'web_search="disabled"',
       "-c", "project_doc_max_bytes=0",
       "-c", "check_for_update_on_startup=false",
-      // The authentication probe ignores user config, so carry the admitted
-      // compatible endpoint explicitly and use its HTTPS Responses transport.
+      // Load the generated CODEX_HOME config for permission definitions, but keep the
+      // admitted compatible endpoint explicit and use its HTTPS Responses transport.
       ...(pluginRuntime?.manifest.modelEndpoint === undefined ? [] : [
         "-c", "model_provider=" + JSON.stringify(pluginRuntime.manifest.modelEndpoint.modelProvider),
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + '.name="OpenAI-compatible"',

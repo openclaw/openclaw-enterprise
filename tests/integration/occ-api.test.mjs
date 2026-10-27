@@ -4,6 +4,10 @@ import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/sl
 import { validateModelCredentialReferences } from "../../apps/controller/src/drivers/configuration/model-auth.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import {
+  pluginRuntimeConfigMapData,
+  pluginRuntimeSpecForRevision,
+} from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -3808,6 +3812,52 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(pluginFreeRevision.data.pluginApprovers, [
     { channel: "slack", id: "team:T123:user:U456" },
   ]);
+});
+
+test("Agent deployment snapshots Codex permission profiles without plugin selections", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "permission-profile-api");
+  const configuration = await createConfiguration(controller, namespace.id, createHarnessConfiguration("codex", "gpt-6-astra"));
+  const permissionProfiles = { "custom-investigation": { extends: ":workspace", network: { enabled: true } } };
+  const first = new CodexPluginDriver({ permissionProfiles });
+  controller.fixture.controller.registerDriver(first);
+  controller.fixture.controller.selectDriver("plugin", first.id);
+  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "profile-agent", executionMode: "dedicated", configurationId: configuration.id },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  await controller.fixture.controller.handleNamespaceLifecycle(controller.fixture.principal.id, namespace.id, "ready");
+  await bindHarnessKey(controller.fixture, namespace.id, created.data);
+  const path = `/namespaces/${namespace.id}/agents/${created.data.id}`;
+  const deployed = await controller.request("POST", `${path}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  assert.deepEqual(deployed.data.plugins, {
+    driver: { id: first.id, implementation: first.implementation },
+    plugins: {},
+    runtimeConfiguration: { permissionProfiles },
+  });
+  const originalConfig = pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(deployed.data))["config.toml"];
+  assert.match(originalConfig, /\[permissions\."custom-investigation"\.network\]\nenabled = true/);
+
+  // Reconfiguration is a new Driver selection; old revisions must remain renderable from storage.
+  const replacementProfiles = { "custom-investigation": { extends: ":read-only", network: { enabled: false } } };
+  const replacement = new CodexPluginDriver({ permissionProfiles: replacementProfiles }, { id: "codex-reconfigured" });
+  controller.fixture.controller.registerDriver(replacement);
+  controller.fixture.controller.selectDriver("plugin", replacement.id);
+  const historical = await controller.request("GET", `${path}/revisions/${deployed.data.id}`);
+  assert.equal(historical.status, 200, JSON.stringify(historical.body));
+  assert.equal(pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(historical.data))["config.toml"], originalConfig);
+  const next = await controller.request("POST", `${path}/deploy`);
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+  assert.deepEqual(next.data.plugins.runtimeConfiguration, { permissionProfiles: replacementProfiles });
+  assert.match(pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(next.data))["config.toml"], /\[permissions\."custom-investigation"\.network\]\nenabled = false/);
+
+  // Empty selections cannot bypass the same Harness boundary that protects selected plugins.
+  const incompatible = await createConfiguration(controller, namespace.id, createHarnessConfiguration("openclaw", "gpt-5.1"));
+  const changed = await controller.request("PATCH", path, { body: { configurationId: incompatible.id } });
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+  assertApiError(await controller.request("POST", `${path}/deploy`), 400, "INVALID_REQUEST");
 });
 
 test("Agent plugin reviewer selection preserves omission and rejects unsupported tool scope", async () => {

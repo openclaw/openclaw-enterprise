@@ -15,6 +15,11 @@ import {
   publicGithubReadSkill,
 } from "../repo/github/public-read/codex.ts";
 import { harnessEgressEnrollment, type HarnessEgressEnrollment } from "./egress-enrollment.ts";
+import {
+  codexRevisionPermissionProfiles,
+  codexPermissionProfilesToml,
+  type CodexPermissionProfiles,
+} from "../plugin/codex-permission-profiles.ts";
 
 export const PLUGIN_RUNTIME_DIRECTORY = "/etc/openclaw/plugin-runtime";
 export const PLUGIN_RUNTIME_MANIFEST = "runtime.json";
@@ -66,6 +71,7 @@ export type PluginRuntimeSpec =
   | {
       readonly kind: "codex";
       readonly selections: PluginDesiredState;
+      readonly permissionProfiles?: CodexPermissionProfiles;
       readonly approvalPolicy?: string | undefined;
       readonly pluginApprovers?: AgentRevision["pluginApprovers"];
       readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
@@ -161,6 +167,10 @@ export function pluginRuntimeSpecForRevision(
   if (!validPluginRevisionState(state) || !validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin selections are invalid.");
   }
+  if (state.runtimeConfiguration !== undefined && state.driver.implementation !== CODEX_PLUGIN_DRIVER_IMPLEMENTATION) {
+    throw new Error("The selected Plugin Driver does not support saved runtime configuration.");
+  }
+  const permissionProfiles = codexRevisionPermissionProfiles(state.runtimeConfiguration);
   if (
     repositoryBrokerNetworkPolicy !== undefined &&
     state.driver.implementation !== "occ/codex-plugin"
@@ -172,6 +182,7 @@ export function pluginRuntimeSpecForRevision(
       ? {
           kind: "codex",
           selections: state.plugins,
+          ...(permissionProfiles === undefined ? {} : { permissionProfiles }),
           approvalPolicy: codexSessionApprovalPolicy(revision),
           ...(revision.egressPlan === undefined
             ? {}
@@ -230,7 +241,8 @@ function codexToml(
     (runtime.providerTools === "none" ? 'web_search = "disabled"\n\n' : "") +
     (approvalPolicy === undefined
       ? plugins
-      : `approval_policy = ${JSON.stringify(approvalPolicy)}\n\n${plugins}`);
+      : `approval_policy = ${JSON.stringify(approvalPolicy)}\n\n${plugins}`) +
+    codexPermissionProfilesToml(runtime.permissionProfiles);
   const endpoint = runtime.modelEndpoint;
   if (
     runtime.providerTools === "none" &&

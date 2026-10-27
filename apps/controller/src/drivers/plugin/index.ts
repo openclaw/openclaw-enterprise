@@ -36,6 +36,11 @@ import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
 import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
 import { deniedOpenClawSelection, openClawToolDenialMessage } from "./openclaw-tool-denial.ts";
 import { validateCodexAutomaticReviewerPolicy } from "../../gateway/codex-approval-policy.ts";
+import {
+  CODEX_PERMISSION_PROFILES_SCHEMA,
+  validateCodexPermissionProfiles,
+  type CodexPermissionProfiles,
+} from "./codex-permission-profiles.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -67,6 +72,7 @@ const CODEX_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
     codexExecutable: { type: "string", minLength: 1 },
     codexHome: { type: "string", minLength: 1 },
     requestTimeoutMs: { type: "integer", minimum: 1, maximum: 60_000 },
+    permissionProfiles: CODEX_PERMISSION_PROFILES_SCHEMA,
   },
 });
 
@@ -235,6 +241,7 @@ function requiredString(value: unknown, path: string): string {
 function validateCodexConfiguration(configuration: unknown): {
   catalogSource: "hosted" | "openai-curated";
   reader: ConstructorParameters<typeof NativeCodexPluginCatalogReader>[0] | undefined;
+  permissionProfiles: CodexPermissionProfiles | undefined;
 } {
   const value = asRecord(configuration);
   if (value === undefined) {
@@ -242,7 +249,7 @@ function validateCodexConfiguration(configuration: unknown): {
   }
   const keys = Object.keys(value);
   for (const key of keys) {
-    if (!["catalogSource", "codexExecutable", "codexHome", "requestTimeoutMs"].includes(key)) {
+    if (!["catalogSource", "codexExecutable", "codexHome", "requestTimeoutMs", "permissionProfiles"].includes(key)) {
       throw new PluginValidationError(`Codex Plugin Driver configuration.${key} is unsupported.`);
     }
   }
@@ -250,12 +257,13 @@ function validateCodexConfiguration(configuration: unknown): {
   if (catalogSource !== "hosted" && catalogSource !== "openai-curated") {
     throw new PluginValidationError("catalogSource must be hosted or openai-curated.");
   }
+  const permissionProfiles = validateCodexPermissionProfiles(value.permissionProfiles);
   if (
     value.codexExecutable === undefined &&
     value.codexHome === undefined &&
     value.requestTimeoutMs === undefined
   ) {
-    return { catalogSource, reader: undefined };
+    return { catalogSource, reader: undefined, permissionProfiles };
   }
   for (const field of ["codexExecutable", "codexHome"] as const) {
     if (value[field] === undefined) {
@@ -281,6 +289,7 @@ function validateCodexConfiguration(configuration: unknown): {
   }
   return {
     catalogSource,
+    permissionProfiles,
     reader: {
       codexExecutable,
       codexHome,
@@ -437,6 +446,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   }
   private readonly catalogReader: CodexPluginCatalogReader | undefined;
   private readonly catalogSource: "hosted" | "openai-curated";
+  private readonly permissionProfiles: CodexPermissionProfiles | undefined;
   readonly discoveryCredential: "required" | "none";
 
   static validateConfiguration(
@@ -504,6 +514,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
       requireConfiguration(CodexPluginDriver, configuration),
     );
     super(selection, { id: CODEX_DRIVER_ID, implementation: CODEX_IMPLEMENTATION });
+    this.permissionProfiles = discovery.permissionProfiles;
     this.catalogSource = discovery.catalogSource;
     this.discoveryCredential = discovery.catalogSource === "openai-curated" ? "none" : "required";
     this.catalogReader =
@@ -525,5 +536,11 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
       );
     }
     return this.catalog(await this.catalogReader.listCatalog(context.signal));
+  }
+
+  snapshotRuntimeConfiguration(): Readonly<Record<string, unknown>> | undefined {
+    return this.permissionProfiles === undefined
+      ? undefined
+      : immutableCopy({ permissionProfiles: this.permissionProfiles });
   }
 }

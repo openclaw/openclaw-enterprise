@@ -83,6 +83,44 @@ const pairCatalog = Object.freeze([
 ]);
 const pair = Object.freeze({ "occ-plugin:pair": Object.freeze({ enabled: true }) });
 
+test("Codex permission profiles validate without catalog discovery and freeze their input", () => {
+  const permissionProfiles = {
+    "custom-investigation": { extends: ":workspace", network: { enabled: true } },
+    "custom-offline": { extends: "custom-investigation", network: { enabled: false } },
+  };
+  const driver = new CodexPluginDriver({ permissionProfiles });
+  permissionProfiles["custom-investigation"].network.enabled = false;
+  const snapshot = driver.snapshotRuntimeConfiguration();
+  assert.equal(snapshot.permissionProfiles["custom-investigation"].network.enabled, true);
+  assert.equal(snapshot.permissionProfiles["custom-offline"].network.enabled, false);
+  assert.throws(() => { snapshot.permissionProfiles["custom-offline"].extends = ":workspace"; }, TypeError);
+  assert.equal(new CodexPluginDriver().snapshotRuntimeConfiguration(), undefined);
+});
+
+test("Codex permission profiles reject unsupported shapes and invalid inheritance", () => {
+  const profile = { extends: ":workspace", network: { enabled: true } };
+  for (const permissionProfiles of [
+    null,
+    [],
+    { custom: { ...profile, filesystem: {} } },
+    { custom: { ...profile, network: { enabled: true, domains: {} } } },
+    { custom: { ...profile, network: { enabled: "true" } } },
+    { custom: { network: { enabled: true } } },
+    { custom: { extends: ":workspace" } },
+    { "": profile },
+    { ":custom": profile },
+    { "line\nbreak": profile },
+    { "unpaired\ud800": profile },
+    { custom: { ...profile, extends: ":danger-full-access" } },
+    { custom: { ...profile, extends: "missing" } },
+    { custom: { ...profile, extends: "custom" } },
+    { first: { ...profile, extends: "second" }, second: { ...profile, extends: "first" } },
+  ]) {
+    assert.throws(() => new CodexPluginDriver({ permissionProfiles }));
+    assert.notDeepEqual(CodexPluginDriver.validateConfiguration({ permissionProfiles }), []);
+  }
+});
+
 function codexSelection(pluginId = linearPluginId, overrides = {}) {
   return {
     [pluginId]: {

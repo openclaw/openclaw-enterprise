@@ -21,6 +21,9 @@ default, hosted plugin discovery and Codex runtime authentication both use a
 `codex_pat` token that you supply later: add a same-Namespace Secret or enter
 the PAT during Agent creation. The renderer does not create the token or make
 catalog discovery ready.
+If the token's managed requirements name a profile whose definition is missing,
+add [Codex permission profiles](../../reference/drivers/codex-permission-profiles.md)
+to trusted Installation configuration before deploying a new Agent revision.
 
 Both profiles enable:
 

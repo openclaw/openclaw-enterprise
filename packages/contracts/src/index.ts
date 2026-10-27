@@ -166,7 +166,7 @@ import {
   PluginToolDefaultsSchema,
 } from "./api/resources.ts";
 import { Check } from "typebox/value";
-import { PluginApproversSchema } from "./api/common.ts";
+import { JsonValue, PluginApproversSchema } from "./api/common.ts";
 import type {
   RepositoryExecutionIdentity,
   RepositoryAccess,
@@ -823,6 +823,7 @@ export interface PluginCatalogPage {
 export interface PluginRevisionState {
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
+  readonly runtimeConfiguration?: Readonly<Record<string, unknown>>;
 }
 
 export type PluginValidationFailure = (message: string) => never;
@@ -881,11 +882,18 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   const record = asRecord(value);
   if (
     record === undefined ||
-    Object.keys(record).some((key) => key !== "driver" && key !== "plugins")
+    Object.keys(record).some((key) => key !== "driver" && key !== "plugins" && key !== "runtimeConfiguration")
   ) {
     return false;
   }
   if (!validPluginDriverIdentity(record.driver) || record.plugins === undefined) {
+    return false;
+  }
+  if (
+    record.runtimeConfiguration !== undefined &&
+    (asRecord(record.runtimeConfiguration) === undefined ||
+      !Check({ SafeJsonValue: JsonValue }, JsonValue, record.runtimeConfiguration))
+  ) {
     return false;
   }
   try {
@@ -2100,6 +2108,12 @@ export interface PluginDiscoveryAuthentication {
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   readonly policyCapabilities: PluginPolicyCapabilities;
+  /**
+   * Side-effect-free snapshot of validated nonsecret JSON settings for this Driver's runtime.
+   * OCC copies it into each new revision, including plugin-free revisions. Runtime rendering
+   * consumes that saved snapshot, never current startup configuration. Omit when none is needed.
+   */
+  snapshotRuntimeConfiguration?(): Readonly<Record<string, unknown>> | undefined;
   /** Checks policy support without installing plugins or performing authenticated discovery. */
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;
   /**

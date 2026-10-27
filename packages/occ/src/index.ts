@@ -233,6 +233,7 @@ import {
   normalizeLoggingLevel,
   normalizePluginDesiredState,
   normalizePluginApprovers,
+  validPluginRevisionState,
   normalizePresetTemplate,
   presetTemplateDefaultsWithPlaceholders,
   PresetValidationError,
@@ -10251,8 +10252,11 @@ export class OpenClawController {
           sandbox?.id,
         );
       }
+      const selectedPlugin = this.selections.has("plugin") ? this.pluginDriver() : undefined;
+      const runtimeConfiguration = selectedPlugin?.snapshotRuntimeConfiguration?.();
       const pluginState =
-        lockedAgent.plugins === undefined || Object.keys(lockedAgent.plugins).length === 0
+        (lockedAgent.plugins === undefined || Object.keys(lockedAgent.plugins).length === 0) &&
+        runtimeConfiguration === undefined
           ? undefined
           : (() => {
               const driver = this.pluginDriver();
@@ -10261,15 +10265,20 @@ export class OpenClawController {
                 lockedAgent.pluginApprovers,
                 "stored",
               );
-              return immutableCopy({
+              const snapshot = immutableCopy({
                 driver: { id: driver.id, implementation: driver.implementation },
-                plugins: lockedAgent.plugins,
+                plugins: lockedAgent.plugins ?? {},
+                ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }),
               } satisfies PluginRevisionState);
+              if (!validPluginRevisionState(snapshot)) {
+                throw new ConfigurationHarnessError("Plugin Driver runtime configuration is invalid.");
+              }
+              return snapshot;
             })();
       // Agent saves check the plugins against the Configuration they name, but a later
       // Configuration save does not know which Agents use it: check the admitted pair again.
       this.validatePluginConfiguration(pluginState?.plugins, admittedConfiguration);
-      this.validatePluginHarness(pluginState?.plugins, revisionHarness);
+      this.validatePluginHarness(pluginState?.plugins, revisionHarness, runtimeConfiguration !== undefined);
       // Decode every earlier revision: one that is unreadable refuses the deploy here (503,
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
@@ -14182,12 +14191,18 @@ export class OpenClawController {
   private validatePluginHarness(
     plugins: PluginDesiredState | undefined,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+    hasRuntimeConfiguration = false,
   ): void {
-    if (plugins === undefined || Object.keys(plugins).length === 0) {
+    if (!hasRuntimeConfiguration && (plugins === undefined || Object.keys(plugins).length === 0)) {
       return;
     }
     const required = pluginRuntimeHarnessRequirement(this.pluginDriver().implementation, harness);
     if (required !== undefined) {
+      if (hasRuntimeConfiguration) {
+        throw new ConfigurationHarnessError(
+          `The Installation's Plugin Driver runtime settings require ${required}: change the Harness or ask an Installation administrator to change the Driver settings.`,
+        );
+      }
       throw new ConfigurationHarnessError(
         `The Installation's Plugin Driver runs plugins only in ${required}: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.`,
       );

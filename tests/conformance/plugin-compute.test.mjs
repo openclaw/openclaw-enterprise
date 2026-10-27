@@ -468,6 +468,33 @@ test("compute renders plugin-free Codex revisions with native default-deny plugi
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[plugins\._default\]\nenabled = false/m);
 });
 
+test("compute renders saved Codex permission profiles with quoted names and no default selection", () => {
+  const name = 'custom."investigation"';
+  const state = {
+    driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+    plugins: {},
+    runtimeConfiguration: {
+      permissionProfiles: { [name]: { extends: ":workspace", network: { enabled: true } } },
+    },
+  };
+  const runtime = pluginRuntimeSpecForRevision(revision({ plugins: state }));
+  const data = pluginRuntimeConfigMapData(runtime);
+  const native = data[PLUGIN_RUNTIME_CODEX_CONFIG];
+  assert.ok(native.includes('[permissions."custom.\\"investigation\\""]\nextends = ":workspace"'));
+  assert.ok(native.includes('[permissions."custom.\\"investigation\\"".network]\nenabled = true'));
+  assert.doesNotMatch(native, /^default_permissions\s*=/m);
+  assert.match(native, /^plugins = false$/m);
+  assert.equal(JSON.parse(pluginRuntimeEnvironment(runtime)[PLUGIN_RUNTIME_ENVIRONMENT]).codexConfigurationToml, native);
+
+  // A corrupt persisted definition must fail preparation, not silently drop the setting.
+  for (const runtimeConfiguration of [
+    { unrecognized: {} },
+    { permissionProfiles: { custom: { extends: "missing", network: { enabled: true } } } },
+  ]) {
+    assert.throws(() => pluginRuntimeSpecForRevision(revision({ plugins: { ...state, runtimeConfiguration } })));
+  }
+});
+
 test("compute pins the credential source endpoint in dedicated Codex configuration", () => {
   const baseUrl = "https://models.example.test/api/v1";
   const runtime = pluginRuntimeSpecForRevision(revision(), undefined, baseUrl);

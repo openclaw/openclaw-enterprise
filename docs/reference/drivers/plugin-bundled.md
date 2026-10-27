@@ -120,6 +120,9 @@ inventory; tool approval settings govern hosted app calls, not skill instruction
 Template metadata alone grants no app access. Template lifecycle is deferred.
 
 No PluginDriver is selected by default. Plugin-free deployments remain permitted.
+For operator-supplied native permission definitions, see
+[Codex permission profiles](codex-permission-profiles.md). They also apply to
+plugin-free Codex revisions.
 Nonempty selections require valid supported policy and the same compatible Driver
 at startup. Saving does not perform authenticated discovery. Saved-entry
 readability without the original Driver and the SSH Compute rejection of plugin

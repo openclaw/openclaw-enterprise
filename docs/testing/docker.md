@@ -59,6 +59,11 @@ OCC_TEST_CODEX_PROBE_IMAGE=sha256:<local-image-id> \
 The image may be a repository digest; the test does not pull it. It uses a
 fixture CLI and removes its containers and temporary files. It takes about 95
 seconds and does not prove provider compatibility.
+It checks that the generated native configuration exists before the probe and
+that the probe retains its restrictions while loading that file. A real native
+CLI and authorized model token are required separately to prove profile
+resolution and a successful model turn. Success with one named token does not
+establish equivalence with a CI credential.
 
 ## Docker Compose development test environment
 

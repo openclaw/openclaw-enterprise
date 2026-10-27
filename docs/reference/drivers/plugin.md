@@ -36,6 +36,10 @@ The [shared interface](../../../packages/contracts/src/index.ts) exposes:
   naming the setting becomes `400`; other refusals get fixed text.
 - `listCatalog(context)`: read the catalog for a Namespace, Agent, Harness,
   native Configuration, and abort signal.
+- `snapshotRuntimeConfiguration()` (optional): return validated nonsecret JSON
+  settings for the Driver's runtime, or `undefined`. The synchronous method has
+  no side effects. OCC copies its result into the revision; runtime rendering
+  uses the saved copy. Catalog paths and credentials must not enter this snapshot.
 
 Catalog entries contain `id`, `name`, and `tools`. `tools:null` means unknown;
 `tools:[]` means the observed inventory was empty for that read. Each tool has
@@ -127,8 +131,11 @@ Trusted startup creates the selected bundled Driver and validates its configurat
 The shared interface has no startup, shutdown, or uninstall operation. Saving an
 Agent's requested plugin map validates supported policy, but does not perform
 authenticated catalog discovery; saved entries remain readable even if the original Driver is unavailable. An Agent revision with
-nonempty selections records the selected Driver's ID and implementation and the
-requested IDs and policies, not credential values or native release metadata.
+nonempty selections or runtime configuration records the selected Driver's ID and
+implementation, requested IDs and policies, and optional `runtimeConfiguration`.
+Plugin-free snapshots use an empty plugin map. Driver edits affect subsequent
+deployments; existing revisions retain their saved settings. The runtime renderer
+rejects unsupported saved settings. See [Codex permission profiles](codex-permission-profiles.md).
 
 At runtime, Compute and the bundled preparation helpers resolve current native
 metadata, translate supported policy, and apply it to the specified Agent revision

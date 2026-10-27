@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-26
-last_updated_session: authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba
+updated: 2026-10-27
+last_updated_session: authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5
 ---
 
 # Harness Execution Topology Flow
@@ -73,6 +73,14 @@ Pinned runtime support is automatic; custom images can declare it at startup.
 An associated
 `access_token` additionally requires dedicated Codex; the frozen account
 contains only its OCC identity, credential kind, and opaque Secret reference.
+
+`apps/controller/src/drivers/plugin/index.ts:CodexPluginDriver.snapshotRuntimeConfiguration`
+supplies validated permission definitions. OCC copies this nonsecret Driver state
+into `plugins.runtimeConfiguration`, also when `plugins.plugins` is empty, and
+checks Harness compatibility. Later Driver edits do not change that revision.
+`apps/controller/src/drivers/compute/plugin-runtime.ts:pluginRuntimeSpecForRevision`
+reads the saved state and rejects unsupported definitions before rendering native
+configuration. See [Codex permission profiles](../reference/drivers/codex-permission-profiles.md).
 
 ### 2. Claim work and realize the approved topology
 
@@ -183,8 +191,11 @@ source endpoint before `runtime.codexModelBaseUrl`.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes the HTTPS Responses endpoint/provider pair to the manifest and `config.toml`.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
-uses CLI overrides because the probe ignores user configuration. Account login and
-other Harnesses keep their endpoints; only the Harness holds model credentials.
+loads the generated `CODEX_HOME/config.toml`, including saved permission definitions,
+while retaining explicit endpoint overrides. Its temporary HOME and working directory,
+ignored rules, disabled tools, read-only sandbox, no-approval policy, timeout, and
+output checks remain in force. Account login and other Harnesses keep their
+endpoints; only the Harness holds model credentials.
 
 For admitted inference, Kubernetes Compute records launch behavior in new protected
 dedicated Codex revisions. The authentication probe and app-server disable unbounded
@@ -310,6 +321,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 16:33: Trace immutable Plugin Driver runtime settings and generated configuration loading in the authentication probe. (authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5 - 62a00c3c51)
 
 - 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
 

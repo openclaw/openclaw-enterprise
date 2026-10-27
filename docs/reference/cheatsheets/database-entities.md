@@ -77,6 +77,8 @@ See [per-Agent policies](../sandbox-policies.md).
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 `admitted_spec` includes the explicit v2
 [execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
+Its Plugin Driver state can include nonsecret
+[runtime configuration](../drivers/plugin.md#lifecycle), also for plugin-free revisions.
 
 - `id`
 - `namespace_id`
