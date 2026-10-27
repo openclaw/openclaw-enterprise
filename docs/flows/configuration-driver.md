@@ -18,8 +18,8 @@ document in a tenant-owned ConfigMap.
 Each Configuration requires immutable `kind: "agent"` and a server-managed
 generation; documents preserve unresolved inline SecretRefs without interpreting
 them. Agent deployment authorizes the separate Secret bindings, applies any
-selected Sandbox Driver transformation, and freezes the admitted values into an
-immutable Agent revision. Configuration identity, kind, generation, and Secret
+selected Sandbox Driver transformation, and saves the validated values in the
+Agent revision. Configuration identity, kind, generation, and Secret
 references are recorded separately. This flow stops when OCC persists that
 version and hands off workload reconciliation; the selected Compute Driver
 then owns the Agent gateway, while worker execution and secret resolution remain

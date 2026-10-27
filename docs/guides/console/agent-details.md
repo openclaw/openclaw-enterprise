@@ -42,7 +42,7 @@ Milestones show the saved record:
 
 | Milestone               | Evidence                                                                                         |
 | ----------------------- | ------------------------------------------------------------------------------------------------ |
-| **Admitted**            | OCC saved an immutable AgentRevision and queued its work.                                        |
+| **Admitted**            | OCC saved an AgentRevision and queued its work.                                                  |
 | **Deployment work**     | `queued` awaits the first claim; `running` means work started, including waits between attempts. |
 | **Completion recorded** | `succeeded` means the original work completed activation or was already active.                  |
 

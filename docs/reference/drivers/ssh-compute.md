@@ -191,7 +191,7 @@ document owns logging; the Driver sets no `OPENCLAW_LOG_LEVEL`. Logs go to journ
 ownership and returns; the worker only needs deactivation for the dedicated
 topology, which SSH preparation rejects. `stopRevision` invokes selected
 `beforeWorkloadStop` hooks, stops and disables the unit, and removes `current`
-and `served.json` while retaining the immutable Agent revision snapshot, home, state,
+and `served.json` while retaining the saved Agent revision, home, state,
 and operator credentials. A later deployment can activate its newly saved
 snapshot. `retireRevision` invokes selected
 `beforeWorkloadStop` hooks and removes only that snapshot. If it is still

@@ -117,8 +117,7 @@ necessary.
 
 At deploy, both the actor and the Agent service principal need exact source
 `operate`. Grant the principal a [Namespace IAM Role and AccessBinding](authorization.md#manage-namespace-policy)
-for this source. The Agent needs no underlying Secret permission. The immutable
-Agent revision records the source ID, type and owning Driver ID. Its protected
+for this source. The Agent needs no underlying Secret permission. The Agent revision records the source ID, type and owning Driver ID. Its protected
 plan also fixes the execution, source generation, allowed operation and routes.
 The worker rechecks both principals before provisioning. For a protected
 request, OCC checks current Agent permission before material access and before send.

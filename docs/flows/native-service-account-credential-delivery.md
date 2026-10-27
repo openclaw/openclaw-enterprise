@@ -127,7 +127,9 @@ the admitted reference; draft changes affect only the next explicit deployment.
 
 <span id="3-reauthorize-the-immutable-revision-before-effects" class="anchor-alias"></span>
 
-### 3. Reauthorize the immutable Agent revision before effects
+<span id="3-reauthorize-the-immutable-agent-revision-before-effects" class="anchor-alias"></span>
+
+### 3. Recheck authorization before provisioning the Agent revision
 
 `apps/controller/src/worker.ts:ControllerWorker.resolveRevisionBackend`,
 `resolveRevisionSecretContext`
@@ -273,7 +275,7 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
   provider authorization, an issued ChatGPT credential, and a real Codex turn;
   API fixtures prove only admission or persistence.
 - Verify Secret projections only on intended consumers, source-deletion guards,
-  immutable Agent revision metadata, dispatch denial after revoked grants, and failed
+  Agent revision metadata, dispatch denial after revoked grants, and failed
   auth preventing readiness. Use synthetic sentinels for serialized resources,
   logs, and audit disclosure checks; never print live credentials.
 - [OpenShell testing](../testing/openshell.md) distinguishes explicit unsupported

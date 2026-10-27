@@ -8,9 +8,8 @@ last_updated_session: wf-land-1707
 
 ## Overview
 
-Trusted startup configuration selects the OCC logging level. Authorized Agent
-deployment freezes runtime logging in an immutable Agent revision. Optional
-Collectors export reviewed operational records; PostgreSQL audit remains separate
+Trusted startup configuration selects the OCC logging level. At deployment, OCC
+saves the runtime logging settings in the Agent revision. Optional Collectors export reviewed operational records; PostgreSQL audit remains separate
 durable evidence.
 
 ## Entry Points
@@ -35,7 +34,7 @@ graph TD
     B --> E["Authorized Agent deployment starts"]
     E --> F["Sandbox may transform a Configuration copy"]
     F --> G["Admission stamps platform-owned native logging fields"]
-    G --> H["Persist immutable Agent revision"]
+    G --> H["Save logging settings in the Agent revision"]
   end
 
   subgraph Runtime["Managed runtime"]
@@ -116,7 +115,7 @@ Configuration. Deployment stamps native fields before validation: matching
 `logging.level` and `logging.consoleLevel`, JSON console style, and
 `diagnostics.otel.logs=false`. It drops the retired `logging.redactSensitive` key.
 Runtime code owns console and tool redaction. The source Configuration is unchanged;
-the immutable Agent revision retains the admitted policy across restarts and later edits.
+the Agent revision retains the admitted policy across restarts and later edits.
 
 <a id="4-compute-renders-settings-from-the-revision" class="anchor-alias"></a>
 

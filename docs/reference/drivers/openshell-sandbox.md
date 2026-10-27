@@ -188,7 +188,7 @@ before Sandbox creation. After supervisor readiness, Sandbox initializes
 through private stdin; the Harness verifies completion at its effective path.
 
 For dedicated Codex, OpenShell's `configureAgent` hook removes
-`appServer.networkProxy` and adds this before OCC validates and saves the immutable Agent revision:
+`appServer.networkProxy` and adds this before OCC validates and saves the Agent revision:
 
 ```json
 {

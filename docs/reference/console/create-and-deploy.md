@@ -258,8 +258,8 @@ Open **Open draft** and select **Deploy new version** after storing
 credentials, saving channel Secret bindings, and selecting harness authentication.
 To change plugins, edit **Plugins**, select **Save plugin selections**, then
 deploy. Deployment uses saved Configuration, plugins, and [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode); it does
-not redeploy or roll back viewed snapshots. Every accepted request creates an
-immutable Agent revision, even with unchanged Configuration generation. Earlier versions
+not redeploy or roll back viewed snapshots. Each accepted deployment creates a new
+Agent revision, even when the Configuration generation is unchanged. Earlier versions
 retain their snapshots; see the
 [Plugins tab guide](../../guides/console/configuration-plugins-and-files.md#plugins-tab).
 

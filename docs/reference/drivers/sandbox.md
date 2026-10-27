@@ -8,7 +8,7 @@ kind: reference/driver
 
 `SandboxDriver` confines an Agent Harness's network, filesystem, or processes.
 OpenClaw Control Plane (OCC) selects the Driver, authorizes deployment, and
-saves the immutable Agent revision. [ComputeDriver](compute.md) owns the gateway, workload
+records the configuration selected for deployment in the Agent revision. [ComputeDriver](compute.md) owns the gateway, workload
 identity, baseline isolation, routing, and activation. Sandbox can create a
 dedicated Harness while Compute keeps those responsibilities.
 
@@ -35,7 +35,7 @@ The Requirement column follows the exported type. The behavior column explains w
 
 | Method                                       | Requirement | Caller and behavior                                                                                                                                                                                                                                                                                                   |
 | -------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cleanup`                                    | Required    | Compute passes the immutable revision on stop or retirement. Omission of the revision means Namespace cleanup.                                                                                                                                                                                                        |
+| `cleanup`                                    | Required    | Compute passes the Agent revision on stop or retirement. For Namespace cleanup, it omits the revision.                                                                                                                                                                                                                |
 | `configureAgent`                             | Optional    | Synchronously transform the read-only configuration for the resolved Harness. OCC validates and freezes the result. The runtime cannot change. Without it, OCC keeps the original configuration. Installation reads pass an empty configuration and report `ConfigurationHarnessError` in `openclaw.settingRefusals`. |
 | `validateWorkspaceSetup`                     | Optional    | Synchronously checks the projected configuration. Without it, Compute rejects initial workspace files in a Sandbox. Compute retains its storage and identity checks.                                                                                                                                                  |
 | `ensureNamespace`                            | Optional    | Prepare the backend after Compute prepares baseline Namespace isolation. Without it, Compute proceeds.                                                                                                                                                                                                                |
@@ -83,8 +83,8 @@ The endpoint can supply `tls.caBundle` with public PEM CA certificates for a WSS
 origin. It accepts no private keys, client credentials, or source paths. Omission
 uses system trust. Kubernetes Compute mounts one combined `NODE_EXTRA_CA_CERTS`
 bundle read-only into the dedicated Agent Gateway. Certificate and hostname
-verification remain enabled. Compute creates the immutable revision ConfigMap before Gateway rollout and
-removes it after the revision workloads terminate.
+verification remain enabled. Before Gateway rollout, Compute creates the revision's ConfigMap with `immutable: true`.
+It removes the ConfigMap after the revision workloads terminate.
 Changing its certificates requires a new revision.
 
 `enrollHarness(context, installation, release)` receives a callback from Compute.
@@ -132,7 +132,7 @@ Console's **Live serving** show this status; Agent lists do not.
 ### Provisioning inputs
 
 `SandboxNamespaceContext` carries the Namespace, Compute's Kubernetes client,
-and a cancellation signal. `SandboxHarnessContext` adds the immutable Agent revision
+and a cancellation signal. `SandboxHarnessContext` adds the Agent revision
 and `HarnessWorkloadRequirements`: image and startup command, Agent ServiceAccount,
 projected token audience/expiration/mount/path/read-only setting, approved PVC
 subpaths and mount modes, literal environment or Kubernetes `secretKeyRef`,
