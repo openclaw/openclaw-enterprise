@@ -247,7 +247,8 @@ pickers appear only when each token reads its own standard key. It also lists ev
 Slack settings reference that save requires a binding for. Grant checks cover every bound Secret,
 as the worker's deploy check does, and a bound key no Slack setting reads gets its own row. Deploy
 waits while a grant read is in flight, and the click asks the panel again before its request. A save
-or Retry during a grant read reads the grants again. A 400 that
+or Retry during a grant read reads the grants again; its message names Deploy only once that read
+finds no missing grant. A 400 that
 `apps/controller/src/console/agents/list.mjs:channelBindingRefusal` matches shows the API's
 message and where to fix it.
 An uncertain PATCH blocks another
@@ -351,6 +352,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 - 2026-10-27 09:30: Document the Agent detail version picker, Deployment tab, and direct Agent UI access. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 
+- 2026-10-27: A channel Secrets save names Deploy as the next step only after its grant read confirms access. (#3686 review)
 - 2026-10-26: Credentials lists every Slack reference save requires and checks grants on every bound Secret; Deploy waits for grant reads. (findings 2554, 2558, 2575)
 - 2026-10-25: Credentials reads the default Slack account's token keys and shows a channel setting's save refusal. (findings 2526, 2529, 2540-2542)
 - 2026-10-25: Move step 6 (workspace files) to [its own trace](agent-workspace-files.md); move older entries to history. (finding 2488)

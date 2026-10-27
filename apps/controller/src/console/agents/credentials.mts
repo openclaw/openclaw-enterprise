@@ -525,6 +525,8 @@ function renderSlackBindings(state: ChannelState) {
 // The deploy status while a grant read runs; the page shows it only after 250 ms (finding 2576).
 export const CHECKING_CREDENTIAL_ACCESS =
   "Checking this Agent's credential access before deploying.";
+// The next step a channel Secret save names once the Agent's access to them is confirmed.
+const DELIVER_ON_DEPLOY = " Deploy the new version to deliver them.";
 
 // Why the channel Secrets are read-only: the caller may not update the Configuration, or may not
 // operate a Secret that a save keeps bound, which each Configuration save also needs (finding
@@ -863,6 +865,31 @@ export function createChannelSecretsPanel({
   // A save or Retry overtook a grant read, so the panel reads the grants again once it ends:
   // the dropped answer may have shown a bound Secret the save left ungranted (finding 2575).
   let grantRecheck = false;
+  // Whether the last save was a Retry, so a grant read that settles can restate its outcome.
+  let lastSaveRetry = false;
+
+  // A grant read settled: the save outcome names Deploy only if nothing now holds it.
+  function restateSaveOutcome() {
+    if (!state.saveMessage) {
+      return;
+    }
+    state.saveMessage = saveOutcomeText(lastSaveRetry);
+    if (shown.status && shown.status.textContent !== state.saveMessage) {
+      shown.status.textContent = state.saveMessage;
+    }
+  }
+
+  // A save's outcome points to Deploy only when no grant read is still to come and no bound
+  // Secret waits for its grant: the read that follows may yet hold Deploy (#3686 review).
+  function saveOutcomeText(retry: boolean) {
+    lastSaveRetry = retry;
+    const saved = retry
+      ? "This Agent can use its saved Slack Secrets."
+      : "Channel Secret bindings saved.";
+    return grantRecheck || state.checkingGrants || pendingSecretGrants().length
+      ? saved
+      : `${saved}${DELIVER_ON_DEPLOY}`;
+  }
 
   function renderChannelForm(error: HTMLElement) {
     shown.save = null;
@@ -1123,9 +1150,7 @@ export function createChannelSecretsPanel({
         }
         state.outcomeUnknown = false;
         updateGrantWarning();
-        state.saveMessage = retry
-          ? "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them."
-          : "Channel Secret bindings saved. Deploy the new version to deliver them.";
+        state.saveMessage = saveOutcomeText(retry);
         status.textContent = state.saveMessage;
       } catch (cause) {
         if (!context.isCurrent()) {
@@ -1294,6 +1319,7 @@ export function createChannelSecretsPanel({
       if (read === grantRead) {
         state.checkingGrants = false;
         if (context.isCurrent() && isCurrent()) {
+          restateSaveOutcome();
           shown.updateControls?.();
           onChange();
         }

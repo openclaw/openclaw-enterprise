@@ -664,6 +664,9 @@ async function agentWithoutGrant(t, { name, slackValues, bindings, ungranted }) 
     }),
     { executionMode: "dedicated", secretBindings },
   );
+  if (ungranted === null) {
+    return { fixture, namespace, agent, secrets };
+  }
   // Remove that Secret's grant, as an administrator revoking it would.
   const policyPath = `/namespaces/${namespace.id}/iam`;
   const listed = await fixture.request("GET", `${policyPath}/access-bindings`);
@@ -906,13 +909,14 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
 // the bot token, so the save grants only the new bot Secret. The panel reads the grants again
 // after the save: the app row is flagged and Deploy stays held, as the worker would refuse the
 // deploy with AUTHORIZATION_DENIED (finding 2575). `readLandsDuringSave` releases the held read
-// while the save's Configuration write is held instead of after the save ends.
-async function saveOvertakesGrantRead(t, { readLandsDuringSave }) {
+// while the save's Configuration write is held instead of after the save ends. With `appGranted`,
+// the same save leaves nothing ungranted: Deploy submits once and stores one version.
+async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
-    name: readLandsDuringSave ? "Read during save" : "Read after save",
+    name: `${readLandsDuringSave ? "Read during save" : "Read after save"}${appGranted ? " granted" : ""}`,
     slackValues: {},
     bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    ungranted: "SLACK_APP_TOKEN",
+    ungranted: appGranted ? null : "SLACK_APP_TOKEN",
   });
   const replacement = await fixture.createSecret(namespace.id, "Replacement bot token", "xoxb-new");
   const { page } = await newPage(t, fixture);
@@ -975,9 +979,14 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave }) {
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
     releaseWrite();
   }
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  // The save ends with a grant read still to come, so it does not point to Deploy yet. (With the
+  // app grant present, the unheld read after a save that dropped the first may already have
+  // settled.)
+  const saveStatus = page.locator("section.channel-secrets p.hint[role=status]");
+  await saveStatus.filter({ hasText: /^Channel Secret bindings saved\./ }).waitFor();
+  if (!(appGranted && readLandsDuringSave)) {
+    assert.equal(await saveStatus.textContent(), "Channel Secret bindings saved.");
+  }
   if (!readLandsDuringSave) {
     releaseRead();
     await heldRead.response();
@@ -985,6 +994,36 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave }) {
   await deployStatus
     .filter({ hasText: /Resolve the saved Secret access grant|Ready to deploy/ })
     .waitFor();
+  if (appGranted) {
+    // Positive control: every bound Secret is granted, so Deploy submits once and the API
+    // stores one new version.
+    const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+    const before = (await fixture.request("GET", revisionsPath)).data;
+    assert.equal(await deployStatus.textContent(), "Ready to deploy.");
+    // With nothing left to hold Deploy, the save outcome names it as the next step.
+    await saveStatus
+      .filter({
+        hasText: /^Channel Secret bindings saved\. Deploy the new version to deliver them\.$/,
+      })
+      .waitFor();
+    const deployResponse = page.waitForResponse(
+      (response) =>
+        response.url() ===
+          `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy` &&
+        response.request().method() === "POST",
+    );
+    await deploy.click();
+    const response = await deployResponse;
+    assert.equal(response.status(), 202);
+    const deployed = (await response.json()).data;
+    const after = (await fixture.request("GET", revisionsPath)).data;
+    assert.deepEqual(
+      after.map(({ id }) => id).filter((id) => !before.some((revision) => revision.id === id)),
+      [deployed.id],
+    );
+    assert.equal(deployRequests, 1);
+    return;
+  }
   assert.equal(
     await deployStatus.textContent(),
     "Resolve the saved Secret access grant before deploying.",
@@ -992,8 +1031,18 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave }) {
   assert.equal(await deploy.isDisabled(), true);
   const list = page.locator("section.channel-secrets .credential-status-list");
   assert.equal(await list.getByText(/· Agent access not confirmed$/).count(), 1);
+  // The settled missing-grant state offers Retry and does not direct the user to Deploy.
+  assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).isEnabled(), true);
+  assert.equal(await saveStatus.textContent(), "Channel Secret bindings saved.");
+  assert.equal(
+    await page
+      .locator("section.channel-secrets")
+      .getByText(/Deploy the new version/)
+      .count(),
+    0,
+  );
   assert.equal(deployRequests, 0);
-  // Positive control: Retry Secret access grants the app Secret, and Deploy becomes available.
+  // Retry Secret access grants the app Secret, and Deploy becomes available.
   await page.getByRole("button", { name: "Retry Secret access" }).click();
   await page
     .getByText(
@@ -1009,10 +1058,16 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave }) {
 }
 
 test("a channel Secrets save that ends before the grant read lands reads the grants again", (t) =>
-  saveOvertakesGrantRead(t, { readLandsDuringSave: false }));
+  saveOvertakesGrantRead(t, { readLandsDuringSave: false, appGranted: false }));
 
 test("a grant read that lands during a channel Secrets save is read again after it", (t) =>
-  saveOvertakesGrantRead(t, { readLandsDuringSave: true }));
+  saveOvertakesGrantRead(t, { readLandsDuringSave: true, appGranted: false }));
+
+test("a channel Secrets save that ends before a granted read lands deploys once", (t) =>
+  saveOvertakesGrantRead(t, { readLandsDuringSave: false, appGranted: true }));
+
+test("a granted read that lands during a channel Secrets save deploys once", (t) =>
+  saveOvertakesGrantRead(t, { readLandsDuringSave: true, appGranted: true }));
 
 // Save and deployment admission refuse a signing secret, user token or relay token reference
 // without a binding, as they refuse a token's (finding 2554). The tab listed only the tokens, so
