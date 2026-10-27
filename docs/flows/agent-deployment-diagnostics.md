@@ -133,7 +133,9 @@ and Agent state stay unchanged.
   An `agent` `state-migration` or `workspace-baseline` check with code
   `UNAVAILABLE` is a dedicated Harness or native worker held before Codex or its
   node started: Doctor left its node state older, or `openclaw setup --baseline`
-  failed. The log line names the cause; fix it, then deploy again.
+  failed. The log line names the cause and any invalid setting paths, and
+  OpenClaw's own hints to run `openclaw doctor` are dropped, since the
+  Harness runs Doctor itself. Fix the cause, then deploy again.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout, a
   transient failure or a network or 5xx exit, and the second attempt failed that

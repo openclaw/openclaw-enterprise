@@ -4194,7 +4194,7 @@ export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 function agentWithNodeEntrypoint(entrypoint: string): string {
   return String.raw`
-const { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
+const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { execFile, spawn, spawnSync } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
@@ -4251,28 +4251,41 @@ if (process.env.OPENCLAW_NODE_CA_PEM) {
 } else if (process.env.OPENCLAW_NODE_CA_PATH) {
   nodeEnv.NODE_EXTRA_CA_CERTS = process.env.OPENCLAW_NODE_CA_PATH;
 }
+// At most 64 KiB of a native setup output file: its start, or its end for a tail.
+function workspaceBaselineOutput(path, tail = false) {
+  const descriptor = openSync(path, "r");
+  try {
+    const size = fstatSync(descriptor).size;
+    const buffer = Buffer.alloc(Math.min(size, 65536));
+    const length = readSync(descriptor, buffer, 0, buffer.length, tail ? size - buffer.length : 0);
+    return buffer.toString("utf8", 0, length);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+// OpenClaw's recovery hints name commands (doctor, config validate) that no Agent
+// user can run in this container: the Harness runs Doctor itself, and its failure
+// line names the remedy. Drop each sentence that names one (finding 2699).
+function withoutOpenClawCommandHints(text) {
+  return text.split(/(?<=\.)\s+/)
+    .filter((sentence) => !/\bopenclaw\b.*\b(?:doctor|config validate)\b|\bdoctor commands\b/i.test(sentence))
+    .join(" ");
+}
 // What a failed native setup reported: its message on one line of at most 400
 // characters, and up to five invalid setting paths (names, never values).
 function workspaceBaselineReport(path) {
   let reported;
   try {
-    const buffer = Buffer.alloc(65536);
-    const descriptor = openSync(path, "r");
-    let length;
-    try {
-      length = readSync(descriptor, buffer, 0, buffer.length, 0);
-    } finally {
-      closeSync(descriptor);
-    }
-    reported = JSON.parse(buffer.toString("utf8", 0, length));
+    reported = JSON.parse(workspaceBaselineOutput(path));
   } catch {}
   const message = reported?.error?.message;
-  if (typeof message !== "string") return "reported no error message.";
-  const settings = [...new Set((Array.isArray(reported.issues) ? reported.issues : [])
+  const settings = [...new Set((Array.isArray(reported?.issues) ? reported.issues : [])
     .map((issue) => issue?.path)
     .filter((setting) => typeof setting === "string" && setting.length <= 64 && /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(setting)))].slice(0, 5);
-  return "reported: " +
-    message.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 400).replace(/\.$/, "") +
+  const summary = typeof message === "string"
+    ? withoutOpenClawCommandHints(message.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim()).slice(0, 400).replace(/\.$/, "")
+    : "";
+  return (summary === "" ? "reported no error message" : "reported: " + summary) +
     (settings.length > 0 ? " (invalid settings: " + settings.join(", ") + ")." : ".");
 }
 // The node state on the Agent's workspace claim outlives runtime image upgrades.
@@ -4295,14 +4308,25 @@ if (outdatedDatabases.length > 0 && !(await migrateOpenClawState(state, outdated
 const baselineStartedAt = Date.now();
 const baselineResultPath = join(state, "workspace-baseline.json");
 const baselineResult = openSync(baselineResultPath, "w", 0o600);
+// Setup's diagnostics are replayed once it ends, at most their last 64 KiB,
+// without OpenClaw's recovery hints.
+const baselineOutputPath = join(state, "workspace-baseline.log");
+const baselineOutput = openSync(baselineOutputPath, "w", 0o600);
 let baseline;
 try {
   baseline = spawnSync(process.execPath, [
     "/app/openclaw.mjs", "setup", "--baseline", "--workspace", workspaceDirectory, "--json",
-  ], { env: nodeEnv, stdio: ["inherit", baselineResult, "inherit"] });
+  ], { env: nodeEnv, stdio: ["inherit", baselineResult, baselineOutput] });
 } finally {
   closeSync(baselineResult);
+  closeSync(baselineOutput);
 }
+try {
+  for (const line of workspaceBaselineOutput(baselineOutputPath, true).split("\n")) {
+    const kept = withoutOpenClawCommandHints(line);
+    if (kept.trim() !== "") console.error(kept);
+  }
+} catch {}
 if (baseline.error || baseline.status !== 0) {
   logStartupPhase("workspace-baseline", baselineStartedAt, "failed");
   console.error(

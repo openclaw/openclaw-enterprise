@@ -8,7 +8,7 @@ This record preserves the dated changes to the Agent workspace files flow. See t
 
 ## Changelog
 
-- 2026-10-27 09:00: Hold a failed Harness native setup as check `workspace-baseline` instead of exiting. (fix-2686-status, finding 2686)
+- 2026-10-27 09:00: Hold a failed Harness native setup as check `workspace-baseline` instead of exiting, and drop OpenClaw's doctor hints from its log. (fix-2686-status, findings 2686, 2699)
 
 - 2026-10-10 12:04: Preserve SDK initializer timestamps. (authoring-run/0e9aadda-36b5-4f99-af17-ffde7a3cd26d - f8a837e33b5c03bc0c92065e979485ee06960150)
 

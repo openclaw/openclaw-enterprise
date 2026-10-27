@@ -756,6 +756,69 @@ test("Harness holds on a failed native setup with one bounded line and serves th
   }
 });
 
+test("Harness keeps OpenClaw's recovery hints out of a failed native setup's log", async (t) => {
+  // OpenClaw tells its reader to run doctor or config validate, which no Agent user can
+  // do in the container; the setting it rejected still reaches the log (finding 2699).
+  const stderr = [
+    "Config observe anomaly: /fixture/openclaw.json (size-drop-vs-last-good:542->160)",
+    "Config invalid at /fixture/openclaw.json. Run `openclaw doctor --fix` to apply supported repairs, then re-run setup.",
+    "Fix: openclaw --profile fixture doctor --fix",
+    "Inspect: openclaw config validate",
+    "Audit, status, health, logs, and doctor commands still run with invalid config.",
+    "[openclaw] For help, run `openclaw doctor`.",
+    "",
+  ].join("\n");
+  for (const [message, reported] of [
+    [
+      "OpenClaw config is invalid: /fixture/openclaw.json. Run `openclaw doctor --fix` or `openclaw config validate`.",
+      "reported: OpenClaw config is invalid: /fixture/openclaw.json",
+    ],
+    ["Run `openclaw doctor --fix`.", "reported no error message"],
+  ]) {
+    const directory = await harnessDirectory(t);
+    const outcome = await runHarness(directory, undefined, {
+      setup(options) {
+        writeSync(options.stdio[2], stderr);
+        writeSync(
+          options.stdio[1],
+          JSON.stringify({
+            ok: false,
+            error: { type: "cli_error", message },
+            issues: [{ path: "agents.defaults.skipOptionalBootstrapFiles", message: "invalid" }],
+          }),
+        );
+        return { status: 1, signal: null };
+      },
+    });
+    assert.equal(outcome.holds, 1);
+    assert.deepEqual(
+      outcome.errors.filter((line) => !line.startsWith("{")),
+      [
+        "Config observe anomaly: /fixture/openclaw.json (size-drop-vs-last-good:542->160)",
+        "Config invalid at /fixture/openclaw.json.",
+        `Workspace initialization failed: openclaw setup --baseline (exit-1) ${reported} (invalid settings: agents.defaults.skipOptionalBootstrapFiles). Codex was not started. Fix the cause, then deploy the Agent again.`,
+      ],
+    );
+  }
+});
+
+test("Harness replays a successful native setup's diagnostics", async (t) => {
+  const directory = await harnessDirectory(t);
+  const outcome = await runHarness(directory, undefined, {
+    setup(options) {
+      writeSync(options.stdio[2], `${"z".repeat(70000)}\nfirst note\n\nsecond note\n`);
+      return { status: 0, signal: null };
+    },
+  });
+  assert.deepEqual(
+    outcome.spawned.map(({ name }) => name),
+    ["setup", "codex", "node"],
+  );
+  const replayed = outcome.errors.filter((line) => !line.startsWith("{"));
+  assert.deepEqual(replayed.slice(1), ["first note", "second note"]);
+  assert.ok(replayed[0].length < 65536, "at most the last 64 KiB is replayed");
+});
+
 test("Harness names a failed native setup that reported no message", async (t) => {
   for (const [result, outcome] of [
     [{ status: null, signal: "SIGKILL" }, "SIGKILL"],

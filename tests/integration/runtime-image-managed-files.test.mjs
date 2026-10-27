@@ -166,6 +166,10 @@ for (let attempt = 0; attempt < 3; attempt++) {
     const summary =
       /^Workspace initialization failed: openclaw setup --baseline \(exit-1\) reported: OpenClaw config is invalid: \S+ \(invalid settings: agents\.defaults\.skipBootstrap\)\. Codex was not started\. Fix the cause, then deploy the Agent again\.$/m;
     assert.match(failure.stderr, summary, failure.stderr);
+    // OpenClaw's own diagnostics still reach the log, without its recovery hints:
+    // no Agent user can run doctor or config validate in the container (finding 2699).
+    assert.match(failure.stderr, /^Config invalid at \S+\.$/m, failure.stderr);
+    assert.doesNotMatch(failure.stderr, /openclaw\b.*\b(?:doctor|config validate)\b/i);
     // Compute reads the held check, never the setup's text, on the status port.
     assert.equal(failure.status?.status, 200, failure.stderr);
     const { checkedAt, ...held } = JSON.parse(failure.status.body).runtimeFailure;
