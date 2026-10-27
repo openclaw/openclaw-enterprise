@@ -1843,6 +1843,20 @@ async function assertUpgradedRevisionReadable(db) {
 
 async function canonicalData(db) {
   const result = { presets: [] };
+  const migrationOwnedColumns = {
+    account: ["authentication_version", "identity_only"],
+    agents: [
+      "repository_bindings",
+      "repository_access",
+      "harness_auth_credential_source_id",
+      "plugin_approvers",
+      "credential_sources",
+      "sandbox_policy_editing",
+      "gateway_managed_mode",
+    ],
+    agent_revisions: ["gateway_managed_mode"],
+    controller_work: ["work_kind"],
+  };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
   for (const table of [
@@ -1864,27 +1878,12 @@ async function canonicalData(db) {
     "session",
     ...(hasPresets ? ["presets"] : []),
   ]) {
-    const ignoredColumns =
-      table === "account"
-        ? ["authentication_version", "identity_only"]
-        : table === "agents"
-          ? [
-              "repository_bindings",
-              "repository_access",
-              "harness_auth_credential_source_id",
-              "plugin_approvers",
-              "credential_sources",
-              "sandbox_policy_editing",
-            ]
-          : table === "controller_work"
-            ? ["work_kind"]
-            : [];
     result[table] = (
       await db.app.query(
         // New migration-owned compatibility columns may be defaulted onto
         // existing rows; every previously stored field must remain identical.
         `SELECT to_jsonb(t) - $1::pg_catalog.text[] AS value FROM occ."${table}" t ORDER BY to_jsonb(t)::pg_catalog.text`,
-        [ignoredColumns],
+        [migrationOwnedColumns[table] ?? []],
       )
     ).rows;
   }
@@ -1990,8 +1989,10 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
-      [63, "preProxyHarnessAuth"],
-      [64, "preCredentialDeliveryTargetIndex"],
+      [63, "preGatewayManagedMode"],
+      [64, "preProxyHarnessAuth"],
+      [65, "preCredentialDeliveryTargetIndex"],
+      [66, "preJointCredentialPolicyReduction"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2017,6 +2018,28 @@ test(
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
         await assertUpgradedAuthentication(db);
+        if (history === "preGatewayManagedMode") {
+          await db.app.query(
+            `INSERT INTO occ.agent_revisions
+               (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+             SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id, admitted_spec, now()
+             FROM occ.agent_revisions`,
+            [`rev_${randomUUID()}`],
+          );
+          assert.deepEqual(
+            (
+              await db.app.query(
+                `SELECT a.gateway_managed_mode AS desired, r.gateway_managed_mode AS admitted
+                 FROM occ.agents a JOIN occ.agent_revisions r
+                   ON r.namespace_id = a.namespace_id AND r.agent_id = a.id ORDER BY r.revision_number`,
+              )
+            ).rows,
+            [
+              { desired: true, admitted: false },
+              { desired: true, admitted: true },
+            ],
+          );
+        }
         if (prefix === 59) {
           const upgradedReceipts = await historyReceipts(db.migrator);
           const sessions = await db.app.query("SELECT count(*)::integer AS count FROM occ.session");
@@ -2406,8 +2429,10 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
-      [63, "preProxyHarnessAuth"],
-      [64, "preCredentialDeliveryTargetIndex"],
+      [63, "preGatewayManagedMode"],
+      [64, "preProxyHarnessAuth"],
+      [65, "preCredentialDeliveryTargetIndex"],
+      [66, "preJointCredentialPolicyReduction"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2605,8 +2630,10 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
-      [63, "preProxyHarnessAuth"],
-      [64, "preCredentialDeliveryTargetIndex"],
+      [63, "preGatewayManagedMode"],
+      [64, "preProxyHarnessAuth"],
+      [65, "preCredentialDeliveryTargetIndex"],
+      [66, "preJointCredentialPolicyReduction"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2627,10 +2654,12 @@ test(
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
         // Fail the common reduction grant after admission backfill and repository authority.
         // All pending receipts, schema changes and main-row annotations roll back.
-        // 0064 replaces the Harness validator before issuing any grants.
+        // 0064 adds gateway columns; 0065 replaces the Harness validator.
+        // 0066 changes the delivery index; 0067 changes custody checks.
         const rollbackTag = [
-          [64, "ALTER TABLE"],
-          [63, "CREATE FUNCTION"],
+          [65, "ALTER TABLE"],
+          [64, "CREATE FUNCTION"],
+          [63, "ALTER TABLE"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
@@ -2703,17 +2732,18 @@ test(
     const manifest = JSON.parse(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
-    assert.equal(manifest.entries.length, 65);
     assert.deepEqual(
-      manifest.entries.slice(58).map(({ tag }) => tag),
+      manifest.entries.slice(58, 67).map(({ tag }) => tag),
       [
         "0059_administrator_sandbox_policy_grants",
         "0060_credential_proxy_admission",
         "0061_repository_credential_authority",
         "0062_credential_delivery_custody",
         "0063_prepared_attempt_settlement",
-        "0064_proxy_harness_auth",
-        "0065_credential_delivery_target_index",
+        "0064_gateway_managed_mode",
+        "0065_proxy_harness_auth",
+        "0066_credential_delivery_target_index",
+        "0067_joint_policy_reduction",
       ],
     );
     await seedCanonicalData(db, { preset: true, computeAdmission: true });
@@ -2826,7 +2856,7 @@ test(
       });
     }
 
-    // Discarding all post-main receipts leaves main's exact ledger but the completed
+    // Discarding every new receipt leaves main's exact ledger but the completed
     // catalog. The runner must refuse before replaying any credential migration.
     assert.equal(
       (
@@ -2834,7 +2864,7 @@ test(
           before.receipts.at(-1).id,
         ])
       ).rowCount,
-      manifest.entries.length - before.receipts.length,
+      completed.receipts.length - before.receipts.length,
     );
     assert.deepEqual(await historyReceipts(db.migrator), before.receipts);
     await assertHistoryRefused(
@@ -2901,6 +2931,30 @@ test(
           await db.migrator.query(sql);
         }
         await assertHistoryRefused(db);
+      });
+    }
+    for (const count of [1, 2, 3]) {
+      void context.test(`private feature suffix with ${count} receipts is refused`, async (child) => {
+        const db = await historyDatabase(child, fixture, "featuresuffix", { prefix: 63 });
+        // Only synthetic receipt rows are injected. Never replay or relabel a real
+        // feature database: its original 0064..0066 omit public gateway history.
+        const suffix = manifest.entries.slice(64, 64 + count);
+        for (const entry of suffix) {
+          await db.migrator.query(
+            "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES($1,$2)",
+            [entry.sha256, entry.when - 1],
+          );
+        }
+        const receipts = await historyReceipts(db.migrator);
+        assert.equal(receipts.length, 63 + count);
+        assert.deepEqual(
+          receipts.slice(63).map(({ hash, created_at }) => [hash, Number(created_at)]),
+          suffix.map(({ sha256, when }) => [sha256, when - 1]),
+        );
+        await assertHistoryRefused(
+          db,
+          /applied receipts differ from canonical history; pre-merge preview histories are unsupported/,
+        );
       });
     }
     void context.test("published premerge credential history", async (child) => {

@@ -195,8 +195,9 @@ baseline files, and candidate files you intend to deploy. The helper checks the
 baseline, renders the chart, runs a Helm server dry run, and runs one-shot API
 and worker startup checks. Repository-enabled releases also check the image pair.
 
-The helper creates temporary Pods, a Secret, and a NetworkPolicy in the release
-namespace. The serving OCC writers keep running. Cleanup is best effort; inspect
+The helper creates temporary Pods and a Secret in the release namespace. It
+creates a NetworkPolicy when the rendered egress policies require one. The
+serving OCC writers keep running. Cleanup is best effort; inspect
 the evidence and remove any leftovers using the command below. Keep the evidence
 private because it contains configuration and diagnostics.
 
@@ -242,8 +243,9 @@ before cluster mutation and verifies the deployed pair and broker capability.
 Before it stops anything, the command runs a startup preflight: one-shot API and
 worker Pods on the selected controller image, built from the rendered chart (same
 environment, mounts and service account), with the candidate Installation in a
-temporary Secret and the chart's API and worker dependency egress in a temporary
-NetworkPolicy. Each loads the Installation, Drivers and `presets.files`, then
+temporary Secret and, when the rendered chart includes its dependency-egress
+policy, the chart's API and worker dependency egress in a temporary NetworkPolicy.
+Each loads the Installation, Drivers and `presets.files`, then
 runs the bundled Kubernetes Compute Driver's preflight as startup does, without
 opening the database. Each then checks the stored Installation name, which the
 command reads through OCC, against the image's Name rule. If either fails, as

@@ -1,5 +1,5 @@
 // How the OpenClaw runtime reads environment references in its configuration, at the
-// `OPENCLAW_COMMIT` in `deploy/runtime/Dockerfile`. Update this module when that pin changes.
+// commit in `deploy/runtime/openclaw-source.json`. Update this module when that pin changes.
 // The Console also serves this module (`console-assets.ts`): keep it free of imports and of
 // TypeScript syntax that type stripping cannot erase.
 

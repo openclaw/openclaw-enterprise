@@ -804,6 +804,11 @@ async function createFixture(t, options = {}) {
   const fixtureRepository = join(directory, "repository");
   await mkdir(join(fixtureRepository, "scripts"), { recursive: true });
   await mkdir(join(fixtureRepository, "bin"), { recursive: true });
+  await mkdir(join(fixtureRepository, "deploy/runtime"), { recursive: true });
+  await copyFile(
+    join(repository, "deploy/runtime/openclaw-source.json"),
+    join(fixtureRepository, "deploy/runtime/openclaw-source.json"),
+  );
   for (const script of ["dev-up", "dev-down"]) {
     const destination = join(fixtureRepository, "scripts", script);
     await copyFile(join(repository, "scripts", script), destination);

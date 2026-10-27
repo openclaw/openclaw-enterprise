@@ -232,9 +232,11 @@ The script polls each returned deployment through its authorized status
 operation, confirms the selected version, and waits for all version Pods
 to be `Running` and `Ready` on the candidate runtime digest. Before OpenClaw
 starts, `GATEWAY_RUNTIME_ENTRYPOINT` runs `openclaw doctor --fix
---non-interactive` once when an agent database uses an older schema, such as a
-2026-09-28 release Gateway's; a database still older holds the Gateway unready
-with check `state-migration`. Embedded execution
+--non-interactive` once when its shared state or an agent database uses an older
+schema, such as a 2026-09-28 release Gateway's; a database still older holds the
+Gateway unready with check `state-migration`. A dedicated Harness runs the same
+step on its workspace node state before native setup, and a native worker before
+it connects (`openClawStateMigrationHelper` in `runtime-startup.ts`). Embedded execution
 requires one runtime container; dedicated execution requires both gateway and
 Agent containers. Each replacement gateway then runs read-only
 `openclaw doctor --lint --json --severity-min error`. Failures retain dispatch,
@@ -261,6 +263,16 @@ writes the bundle; an actual empty collection remains valid. After restoring
 the API response path, the operator retries the read and checks the exported
 inventory before proceeding with recovery. Empty
 204 deletes and explicitly accepted 404 responses retain their existing meaning.
+
+On re-creation, `importTenants` filters skipped sources and checks that each
+selected source Namespace has a distinct target name. Saved destination IDs
+remain reserved even when their sources are skipped. It combines those IDs with
+selected unsaved sources resolved from live names, and rejects shared destinations
+before any mutation or ID-map save. The operator
+chooses distinct `--rename` targets, skips a source, or corrects a conflicting
+saved map before retrying. A one-to-one mapping can still reuse an empty target
+and resume. A skipped source without a saved destination reserves nothing.
+The check does not separate resources an older import already merged.
 
 ## Debugging and Verification
 

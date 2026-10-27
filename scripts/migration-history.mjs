@@ -133,7 +133,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 0) {
     return "empty";
   }
-  if (count === 65) {
+  if (count === 66) {
     return "preJointCredentialPolicyReduction";
   }
   if (count === 24) {
@@ -248,9 +248,12 @@ function catalogAtMigrationCount(count, completedCount) {
     return "prePreparedAttemptSettlement";
   }
   if (count === 63) {
-    return "preProxyHarnessAuth";
+    return "preGatewayManagedMode";
   }
   if (count === 64) {
+    return "preProxyHarnessAuth";
+  }
+  if (count === 65) {
     return "preCredentialDeliveryTargetIndex";
   }
   refuse("an incomplete or unsupported development history is installed");

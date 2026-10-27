@@ -51,6 +51,9 @@ authorized Installation-scoped service key. A Namespace-scoped key cannot access
 another Namespace or Installation endpoints. An Installation-scoped key still
 needs its principal’s own grants; it does not inherit the issuer’s. See
 [service key scope](../authentication/service-api-keys.md#request-admission-and-scope).
+An account created with the Installation administrator `roleId` holds only
+`installation:administer` and `installation:read`; see
+[Appoint an administrator](../../guides/topics/iam.md#appoint-an-administrator).
 
 ## Denial messages
 
@@ -74,9 +77,10 @@ operation was not authorized.`
 ## Additional checks
 
 - [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
-  requires Namespace `agent:create`, or exact `agent:read` and `agent:update` for
-  an existing Agent. Start also requires `secret:create` and
-  `credential_source:create`. Polling and closure require the initiating actor
+  (device login) requires Namespace `agent:create`, or exact `agent:read` and
+  `agent:update` for an existing Agent. Start also requires `secret:create` and
+  `credential_source:create`, which no Namespace Role can grant, so only an
+  Installation administrator can start it. Polling and closure require the initiating actor
   and exact session `secret:operate`; source use requires exact
   `credential_source:operate`. The session holds only an opaque Gateway handle.
   Saved-Agent discovery also checks the Agent principal's source grant.
@@ -96,6 +100,8 @@ operation was not authorized.`
   for each source in `credentialSources`. At
   deployment the Agent’s own service principal also needs `secret:operate` on each
   bound Secret and `credential_source:operate` on each source.
+- Creating an Agent with [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode)
+  off or changing the setting also requires `installation:administer`.
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
   [updating a credential source](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid)
   also requires `secret:operate` on each Secret it reads.

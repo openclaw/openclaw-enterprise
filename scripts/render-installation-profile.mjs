@@ -1849,12 +1849,14 @@ function buildRendered(profile, parsed, diagnostics) {
             // scheduling reservation unchanged. Memory requests cover measured
             // use between turns, so the scheduler places Agents by what they
             // actually hold; limits cover measured peaks.
-            // Gateways, embedded or dedicated, held 1.2-1.6 GiB between turns
-            // and peaked at 1.8-2.2 GiB; a dedicated Codex Gateway serving native
-            // admin chat was OOM-killed at 2Gi on its first coding turn.
+            // Since the OpenClaw pin of #2982, an embedded Gateway holds 2.3-2.4 GiB
+            // between turns and peaks at 2.5-2.8 GiB on its first turn, when
+            // OpenClaw starts most of its worker threads (finding 2700); a
+            // dedicated Codex Gateway serving native admin chat was OOM-killed
+            // at 2Gi on its first coding turn.
             gateway: {
-              requests: { cpu: "100m", memory: "1792Mi" },
-              limits: { cpu: "4", memory: "3Gi" },
+              requests: { cpu: "100m", memory: "2560Mi" },
+              limits: { cpu: "4", memory: "4Gi" },
             },
             // A Codex Harness held 0.45-0.57 GiB between turns and peaked at
             // 1 GiB running a test suite and 1.9 GiB running tsc; lint, tsc and

@@ -23,6 +23,7 @@ import {
   deploymentProgressForWork,
   revisionAdmittedBeforeWork,
 } from "../../packages/occ/src/state/controller-work.ts";
+import { DEPLOYMENT_FAILED, WORKSPACE_SETUP_RETRYING } from "../helpers/refusal-text.mjs";
 
 // Findings 1093 and 1094: stops that yield during their Gateway drain (#2145) are rechecked on
 // a faster-growing cadence, do not count as due Work for another draining stop, and log their
@@ -312,8 +313,7 @@ test("a deployment whose workspace setup Kubernetes is retrying says so in its p
       lastAttempt: {
         at: at.toISOString(),
         code: "WORKSPACE_SETUP_RETRYING",
-        message:
-          "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
+        message: WORKSPACE_SETUP_RETRYING,
       },
       nextAttemptAt: availableAt.toISOString(),
     },
@@ -325,8 +325,7 @@ test("a refused workspace setup fails the deployment saying a retry cannot help"
     deploymentErrorForWork({ state: "failed_permanent", reasonCode: "WORKSPACE_SETUP_REFUSED" }),
     {
       code: "WORKSPACE_SETUP_REFUSED",
-      message:
-        "Initial workspace setup refused this version, and retries would too: its files, setup record or runtime defaults differ from what the Agent was created with. Ask an admin to check workspace storage and the runtime image; do not delete the setup record.",
+      message: DEPLOYMENT_FAILED.WORKSPACE_SETUP_REFUSED,
     },
   );
 });

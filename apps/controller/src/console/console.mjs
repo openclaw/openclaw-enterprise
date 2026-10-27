@@ -1,5 +1,5 @@
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
-import { element, button, statusBlock, trackVisualViewport } from "./dom.mjs";
+import { element, button, requestIdDisclosure, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
   agentPageReadRefusal,
   clearResolvedSecretNames,
@@ -209,18 +209,18 @@ function providerFailure(label) {
   return (password) =>
     password
       ? `Could not sign in with ${label}. Try again or use your password.`
-      : `Could not sign in with ${label}. Try again, or ask an administrator to attach your ${label} identity to your account.`;
+      : `Could not sign in with ${label}. Try again, or ask an Installation administrator to attach your ${label} identity to your account.`;
 }
 
 // GitHub sign-in refused by the organization and team allowlist (RFC-0061). The controller
 // sends only these reasons; anything else keeps the generic provider message.
 const githubMembershipFailures = {
   membership: (password) =>
-    `Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access${password ? " or use your password" : ""}.`,
+    `Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access${password ? " or use your password" : ""}.`,
   "membership-unavailable": (password) =>
     password
       ? "Could not check your GitHub organization membership. Try again later or use your password."
-      : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+      : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an Installation administrator.",
 };
 
 // The provider could not answer, or refused this Installation's client: an outage or a
@@ -230,7 +230,7 @@ function providerUnavailableFailure(label) {
   return (password) =>
     password
       ? `${label} sign-in is unavailable right now. Try again later or use your password.`
-      : `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`;
+      : `${label} sign-in is unavailable right now. Try again later. If you are an Installation administrator, use Recovery sign-in.`;
 }
 
 // The callback failed inside OCE (its database or audit store), so no sign-in can finish.
@@ -281,7 +281,7 @@ function providerExchangeFailure(error, label) {
   // configures the provider (it was removed after the start), which the provider list shows
   // anyway. Starting again would fail the same way (finding 2555).
   if (error.status === 403) {
-    return `Could not finish signing in with ${label}. ${label} sign-in is no longer available on this Installation. Use another sign-in method, or ask an administrator.`;
+    return `Could not finish signing in with ${label}. ${label} sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.`;
   }
   return `Could not finish signing in with ${label}. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with ${label} to start again.`;
 }
@@ -499,7 +499,14 @@ function administrationRead(path, options) {
     return sendRequest(path, options);
   }
   if (administrationCheck) {
-    return administrationCheck.then(() => administrationRead(path, options));
+    // A read waiting behind the check belongs to this page: leaving it or signing out aborts the
+    // check's read, which settles nothing, so the waiter is aborted too instead of being sent
+    // under the next page (finding 2643).
+    const pageReads = lifetime.signal;
+    return administrationCheck.then(() => {
+      pageReads.throwIfAborted();
+      return administrationRead(path, options);
+    });
   }
   const owner = sessionOwnerKey(session);
   const read = sendRequest(path, options);
@@ -700,16 +707,35 @@ function takeNativeFragment(current) {
 }
 
 // An Agent page's Secret link (finding D757) opens that Secret on the Secrets page once. Drop the
-// parameter in place before the page loads, so the header's Refresh does not reopen it.
-function takeLinkedSecret() {
+// parameter in place before the page loads, so the header's Refresh does not reopen it, and keep
+// the Secret until the Secrets page shows it or says it is unlisted: a load that ends at sign-in,
+// an expired session or a failed load's Retry still opens it (finding 2645). Another navigation
+// forgets it.
+let linkedSecret = null;
+
+function takeLinkedSecret(fromNavigation) {
   const { url } = route();
   const secretId = url.searchParams.get("secret");
-  if (url.pathname !== "/console/secrets" || secretId === null) {
-    return null;
+  const namespace = url.searchParams.get("namespace");
+  if (url.pathname !== "/console/secrets") {
+    linkedSecret = null;
+  } else if (secretId !== null) {
+    url.searchParams.delete("secret");
+    replaceUrl(url.pathname + url.search);
+    linkedSecret = { id: secretId, namespace };
+  } else if (fromNavigation || linkedSecret?.namespace !== namespace) {
+    linkedSecret = null;
   }
-  url.searchParams.delete("secret");
-  replaceUrl(url.pathname + url.search);
-  return secretId;
+  return linkedSecret?.id ?? null;
+}
+
+// The sign-in destination for a page: its route, with a Secrets page link's Secret not yet shown.
+function loginDestination(current) {
+  const url = new URL(pageUrl(current.target, current.namespace), location.origin);
+  if (current.feature === "secrets" && linkedSecret?.namespace === current.namespace) {
+    url.searchParams.set("secret", linkedSecret.id);
+  }
+  return captureIntent(url.pathname + url.search);
 }
 
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
@@ -1141,7 +1167,7 @@ function clearDrafts() {
 function showExpiredLogin() {
   const current = route();
   // Keep only a validated read destination; reset private views and drafts in showLogin.
-  const destination = pendingIntent ?? captureIntent(pageUrl(current.target, current.namespace));
+  const destination = pendingIntent ?? loginDestination(current);
   showLogin("Your session has expired.", destination);
 }
 
@@ -1429,7 +1455,7 @@ async function loadPage({
   }
   // A refocus or visibility recheck of the shown page, as opposed to a navigation.
   const resumingView = reuseView && !fromNavigation;
-  const linkedSecretId = takeLinkedSecret();
+  const linkedSecretId = takeLinkedSecret(fromNavigation);
   const current = route();
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
@@ -1714,7 +1740,7 @@ async function loadPage({
       const destination =
         providerError !== null || current.feature === "login"
           ? null
-          : (pendingIntent ?? captureIntent(pageUrl(current.target, current.namespace)));
+          : (pendingIntent ?? loginDestination(current));
       showLogin(
         providerError !== null
           ? (reasonFailure ?? providerFailure(providerError.label))
@@ -2441,6 +2467,8 @@ async function loadPage({
         permissions: firstPermissions,
         openSecretId: linkedSecretId,
       });
+      // Shown (its dialog opened or the unlisted note), so a later load does not reopen it.
+      linkedSecret = null;
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;
@@ -2576,11 +2604,15 @@ async function loadPage({
             ? `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`
             : "The read could not be completed. Retry to check current access and saved state.",
       // Retrying a permission refusal gives the same answer; the header's Refresh checks access
-      // again after a grant (finding 2549). The Request ID stays for whoever traces the denial.
+      // again after a grant (finding 2549). The Request ID stays for whoever traces the denial,
+      // behind a disclosure (finding D770).
       error.status === 403 ? undefined : "Retry",
       error.status === 403 ? undefined : () => void loadPage(),
-      error.requestId,
+      error.status === 403 ? null : error.requestId,
     );
+    if (error.status === 403 && error.requestId) {
+      shell.view.querySelector(".state-panel").append(requestIdDisclosure(error.requestId));
+    }
   } finally {
     stopLoadingTimer();
     if (openingAgentLoad === active) {

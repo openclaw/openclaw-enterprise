@@ -23,10 +23,18 @@ export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
 // administrator creates one. `kinds` is the plural, such as "Secrets".
 export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
   `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
+// The same create refused by a Restriction to a caller who administers the Installation, as the
+// console's AGENT_CREATE_RESTRICTED says (finding D769). Other callers get createDenied.
+export const createRestricted = (kind, namespaceId) =>
+  `Not authorized: a Restriction in Namespace ${namespaceId} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
 export const NAMESPACE_CREATE_DENIED =
   "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
 export const INSTALLATION_ADMINISTER_DENIED =
   "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
+// An Agent create or update whose gatewayManagedMode alone needs Installation administer names the
+// field (finding 2691).
+export const GATEWAY_MANAGED_MODE_DENIED =
+  "Not authorized: changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
   "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
@@ -206,8 +214,14 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
 // The Logs tab's refusals use the API's grant words for log text (finding 2599).
 export const LOG_TEXT_DENIED =
   "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
+// The status refusal names only status: the log pane names read_logs itself (finding D763). It
+// names only the grant the caller's answers show missing (finding D753); unknown answers, both.
 export const RUNTIME_STATUS_DENIED =
-  "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Log text needs Agent read_logs (or Agent administer). Ask an Installation administrator for the access you need.";
+  "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Ask an Installation administrator to grant them.";
+export const RUNTIME_STATUS_OPERATE_DENIED =
+  "Runtime status requires Agent operate on this Agent. Ask an Installation administrator to grant it.";
+export const RUNTIME_STATUS_VERSION_DENIED =
+  "Runtime status requires AgentRevision read on this version. Ask an Installation administrator to grant it.";
 // A version link the page cannot list may name a version that does not exist: the API answers
 // both alike, so the console says either may be true (finding D750).
 export const VERSION_UNAVAILABLE =
@@ -233,9 +247,9 @@ export const modelCredentialRejectedAsk = (secretBacked) =>
 export const modelCredentialRejectedReadOnly = (secretBacked) =>
   `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
 // The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
-// slack.ts). Helm settings belong to whoever operates the Installation (finding D750).
+// slack.ts). A member reads who to ask, not Helm keys; the guide lists them (findings D750, D753).
 export const SLACK_ROUTE_NOT_CONFIGURED =
-  "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask the Installation operator to set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.";
+  "The API could not reach Slack and has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask an Installation administrator to give the API a route to Slack; the Slack integration guide lists the Helm settings.";
 // Agent-side save controls, from the caller's permission answer (findings 2441, 2459).
 export const AGENT_UPDATE_DENIED = notIncluded(
   "saving these settings",
@@ -278,9 +292,33 @@ export const DEPLOY_CLUSTER_RBAC_REFUSED =
 // Deployment progress that asks an administrator to act, in fixed copy that never shows the
 // quota's numbers or the image reference (packages/occ/src/state/controller-work.ts).
 export const POD_QUOTA_FULL =
-  "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+  "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.";
 export const IMAGE_PULL_FAILING =
-  "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
+  "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an Installation administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
+export const WORKSPACE_SETUP_RETRYING =
+  "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an Installation administrator to check the Agent's workspace storage and runtime image.";
+// Failed deployments whose next step needs an Installation administrator, or an operator for the
+// cluster's own capacity, keyed by error code (deploymentErrorMessage in controller-work.ts).
+export const DEPLOYMENT_FAILED = {
+  AUTHORIZATION_DENIED:
+    "The deploying account, or the Agent's own identity, lost a permission the revision needs: Agent deploy, Configuration read, or use of a bound Secret, credential source or ServiceAccount. Ask an Installation administrator to grant it, then deploy again.",
+  BACKEND_UNAVAILABLE:
+    "The Backend this revision was admitted with is no longer configured on the Installation. Ask an Installation administrator to restore it, or move the Agent to a configured Backend, then deploy again.",
+  DEPENDENCY_UNAVAILABLE:
+    "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
+  REPOSITORY_BINDING_UNAVAILABLE:
+    "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an Installation administrator to approve it again, then deploy again.",
+  REPOSITORY_DRIVER_MISMATCH:
+    "The Installation no longer selects the repository credential Driver admitted with this revision. Deploy again, choosing approved repository access if refused. If it selects none, remove repository access or ask an Installation administrator to select one.",
+  REPOSITORY_RUNTIME_UNSUPPORTED:
+    "This revision lost repository credentials: they need an embedded OpenClaw or dedicated Codex runtime, no Sandbox Driver, and a Compute Driver set up for them. Ask an Installation administrator to restore that or remove repository access, then deploy again.",
+  RUNTIME_CPU_STARVED:
+    "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an Installation administrator to raise the limit, or an operator to free node capacity, then deploy a new version.",
+  WORKSPACE_SETUP_REFUSED:
+    "Initial workspace setup refused this version, and retries would too: its files, setup record or runtime defaults differ from the Agent's originals. Ask an Installation administrator to check workspace storage and the runtime image; keep the setup record.",
+  WORKSPACE_SETUP_UNSUPPORTED:
+    "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an Installation administrator to select a Compute Driver that supports them, then deploy again, or create the Agent without them.",
+};
 
 // Console refusals for a save the caller may not make, when the API names no grant.
 export const AGENT_SAVE_DENIED =
@@ -351,7 +389,7 @@ export const stopStatusRefreshFailed = (reason) => `${STOP_STATUS_REFRESH_FAILED
 
 // The Agent page's Workspace tab without a deployed, reachable gateway.
 export const WORKSPACE_FILES_UNAVAILABLE =
-  "Workspace files require a deployed Agent with a current version and a reachable gateway.";
+  "Workspace files require a deployed Agent with a current version and a reachable gateway. Deploy the Agent to read or edit them.";
 
 // Saves refused because the saved state changed under the editor. SAVED_CONFIGURATION_CHANGED
 // also opens the channel editor's variant, so a check that reads only it matches both.
@@ -513,6 +551,21 @@ export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable
 export const BOUND_SECRET_READ_REFUSED = `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`;
 // Finding D761. A link to a Secret the readable list leaves out: missing and unreadable alike.
 export const SECRET_LINK_UNLISTED = `This Secret is not in your readable list: it may not exist, or your access does not include reading it. ${askForGrant("Secret read on it")}`;
+// The same link for an Installation administrator, with no ask (finding D769). `shown` is
+// "Secret <id>" for a well-formed linked ID, otherwise "such Secret".
+export const secretLinkUnlistedAdministrator = (shown) =>
+  `No ${shown} is in your readable list for this Namespace.`;
+// A disabled Secret field's hint for a bound Secret the caller may read (finding 2646: a check
+// that it is absent must use this text, not a pasted fragment).
+export const BOUND_SECRET_METADATA = "Secret metadata is bound. Values are never shown.";
+// A version record with no recorded startup failure (agents/deployment-evidence.mts).
+export const NO_PERSISTED_STARTUP_FAILURE = "No persisted startup failure.";
+// Diagnostics hints (agents/deployment-diagnostics.mts): the runtime did not answer, and the
+// version's recorded failure to resolve first.
+export const DIAGNOSTICS_RUNTIME_UNAVAILABLE =
+  "UNAVAILABLE means the runtime did not answer, so these checks could not run. The gateway is usually stopped, still starting, or failed to start.";
+export const diagnosticsRecordedFailure = (code) =>
+  `This version's recorded deployment failed with ${code}; resolve that first. These checks do not test model credentials, so they cannot confirm or clear that failure.`;
 // Finding D760. A link to the Access tab, or its refused policy read, for a reader who does not
 // administer the Installation.
 export const ACCESS_TAB_UNAVAILABLE =
@@ -565,3 +618,60 @@ export const AGENT_PAGE_READ_DENIED = notIncluded(
   "reading this Agent, its versions or its Configuration",
   "Agent read, AgentRevision read and Configuration read on them",
 );
+
+// API answers that are not permission refusals name their cause and next step (finding D762),
+// and who-to-ask text says "Installation administrator" (D763). The 401 for a missing, expired
+// or revoked credential gives header advice only to a request that sent an Authorization header.
+export const CREDENTIAL_REQUIRED =
+  "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Sign in again, or use a current service API key.";
+export const AUTHORIZATION_HEADER_REFUSED =
+  "The API does not accept an Authorization header. Send a service API key in the x-api-key header, or sign in for a session cookie.";
+export const BODY_NOT_JSON = "The request body is not valid JSON.";
+// A Namespace-scoped service key outside its Namespace: the text names only the key's own
+// Namespace, never the requested one.
+export const serviceKeyOutsideNamespace = (namespaceId) =>
+  `This service key works only in Namespace ${namespaceId}; this request is outside it. Ask an Installation administrator to run it.`;
+// `source` is the requested log source, or "such" when none is known.
+export const runtimeLogSourceUnavailable = (source) =>
+  `This Agent version has no ${source} log source. Every version has gateway; only a Dedicated Agent has agent, and only a version deployed with a Sandbox Driver has sandbox.`;
+// GET .../credential-sources/{id}/withdrawal on a readable Agent (404).
+export const WITHDRAWAL_NO_ACTIVE_VERSION =
+  "The Agent has no active version, so it has no credential withdrawals. Deploy the Agent first.";
+export const WITHDRAWAL_NOT_FOUND =
+  "The Agent's active version has no withdrawal for this credential source: either the version does not use it, or no withdrawal was requested for it.";
+// Every per-Agent network policy answer on an Installation that selects no Sandbox Driver: the
+// policy view, validate, save, apply and turning editing on (D774).
+export const NO_SANDBOX_DRIVER_NETWORK_POLICY =
+  "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules.";
+// A policy denial that names only OpenShell's policy DNS placeholder address, with no record
+// of the host it stood for in the loaded log: the row proposes no rule (D771).
+export const PLACEHOLDER_DESTINATION =
+  "OpenShell logged only a placeholder address for this connection, and the record that names its hostname is not in the loaded log, so this denial proposes no rule. Add a rule for the hostname in Manage rules.";
+export const POLICY_RECOMMENDATIONS_NO_SANDBOX =
+  "This version runs without a Sandbox, so it records no network denials to recommend policy from. Policy recommendations need an Agent deployed with a Sandbox Driver such as OpenShell.";
+export const DEVICE_LOGIN_NOT_CONFIGURED =
+  "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.";
+export const REPOSITORY_SETTINGS_MISSING =
+  "This Installation has no repository settings, so no repository credential Driver is selected and an Agent cannot bind repositories. Remove the repository bindings, or ask an Installation administrator to add repository settings to the Installation.";
+// The caller's own denial of the grant an Agent update checks on the Agent's current Harness
+// authentication, which an update that replaces it also needs (finding D763).
+export const currentHarnessAuthDenied = (grant, target) =>
+  `Not authorized: this needs ${grant} on ${target}, the Agent's current Harness authentication: every update checks it, even one that replaces it. Ask an Installation administrator to grant it.`;
+// Native admin status for a caller without Agent administer, on an Installation with native admin
+// off: the grant alone would not open it (finding D762).
+export const nativeAdminOffDenied = (target) =>
+  `${callerDenied("Agent administer", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
+// A request path no route has (finding D764): a trailing slash says so; any other names no route.
+export const ROUTE_TRAILING_SLASH = "No API route has this path: remove the trailing slash.";
+export const ROUTE_NOT_FOUND = "No API route has this path. Check it against the API reference.";
+// Credential Gateway refusals that name the Installation setting and who changes it (D763).
+export const CREDENTIAL_GATEWAY_NOT_CONFIGURED =
+  "This Installation has no Credential Gateway, so credential sources are unavailable. An Installation administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/";
+export const CREDENTIAL_SOURCE_DRIVER_CHANGED =
+  "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver. To update or delete this source, an Installation administrator must first re-select the driver that registered it.";
+// A workspace file read or write on an Agent with no running version, after the Agent grant
+// (finding D768): stopped or never deployed, or a deployment still starting.
+export const workspaceWithoutRunningVersion = (agentId) =>
+  `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`;
+export const workspaceVersionStarting = (agentId) =>
+  `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`;

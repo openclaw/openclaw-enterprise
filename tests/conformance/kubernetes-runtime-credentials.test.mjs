@@ -729,6 +729,7 @@ test("embedded Gateway uses the separate canonical password source", () => {
     configurationId: "cfg_runtime_password_projection",
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     configuration: {
       logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
       diagnostics: { otel: { logs: false } },

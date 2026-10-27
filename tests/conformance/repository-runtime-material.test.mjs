@@ -168,6 +168,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     configurationId: "configuration-repository-material",
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     configuration: {
       gateway: {
         // Kubernetes renders lan for an omitted bind; this admitted document already is.

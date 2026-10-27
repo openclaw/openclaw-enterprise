@@ -4,6 +4,8 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
@@ -994,6 +996,268 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     });
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.deepEqual(saved.body.data.values, values);
+  }
+});
+
+test("Configuration save refuses a Gateway tool policy that every OpenClaw topology refuses, with deployment's text", async () => {
+  // Findings 2688 and 2689. Save and deployment run the real Kubernetes Compute rules. The
+  // Agent is embedded, the default: its Gateway applies the policy natively, so a policy only
+  // dedicated admission refused saved, deployed and then failed every turn.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-tool-policy-integration", ...configurationRules),
+  });
+  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Tool policy consumer",
+    secretName: "tool-policy-key",
+  });
+  const administrative = setting(
+    "tools.gatewayPolicy.allow",
+    "must not grant Gateway administrative tools",
+  );
+  const sessionsActions = setting(
+    "tools.gatewayPolicy.actions.sessions",
+    "must list the permitted actions",
+  );
+  // Each refused policy is refused at Configuration create and update. A row stored before the
+  // rule still reads; deployment of the embedded Agent refuses it with the same text.
+  for (const [gatewayPolicy, message] of [
+    [{ allow: ["gateway"] }, administrative],
+    [{ allow: ["sessions_list", "nodes"] }, administrative],
+    [{ allow: ["sessions"] }, sessionsActions],
+    [
+      { allow: ["sessions"], actions: { sessions: ["bogus"] } },
+      setting("tools.gatewayPolicy.actions.sessions", "must use reviewed task actions"),
+    ],
+    [
+      { allow: ["group:fs"] },
+      setting("tools.gatewayPolicy.allow", "must name a concrete tool or action"),
+    ],
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, withPolicy(gatewayPolicy), message);
+  }
+
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(
+    configurationDriver,
+    agent.configurationId,
+    withPolicy({ allow: ["sessions"] }),
+  );
+  const saved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assertRefused(saved, sessionsActions, { label: "Agent save" });
+  // An administrator repairs the row by saving a policy that lists the actions.
+  const repairedValues = withPolicy({ allow: ["sessions"], actions: { sessions: ["patch"] } });
+  const repaired = await request(context.app, "PATCH", agent.item, {
+    body: { values: repairedValues },
+  });
+  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
+  assert.deepEqual(repaired.body.data.values, repairedValues);
+  const resaved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
+
+  // A Preset save refuses the same text. A tool that waits on a variable without a default is
+  // checked when a Configuration is created from the Preset; a default fills it here.
+  await refusedOnSave(context, withPolicy({ allow: ["gateway"] }), administrative);
+  const waiting = withPolicy({ allow: ["{{ vars.tool }}"] });
+  const filled = await savePreset(context, {
+    variables: { tool: { type: "string", default: "terminal" } },
+    configuration: { values: waiting },
+  });
+  assertRefused(filled, administrative);
+  const deferred = await savePreset(
+    context,
+    { variables: { tool: { type: "string" } }, configuration: { values: waiting } },
+    "Tool-deferred",
+  );
+  assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
+  // A variable can also name an action key; that policy waits too.
+  const keyed = await savePreset(
+    context,
+    {
+      variables: { tool: { type: "string" } },
+      configuration: {
+        values: withPolicy({ allow: ["dashboard"], actions: { "{{ vars.tool }}": ["read"] } }),
+      },
+    },
+    "Tool-key-deferred",
+  );
+  assert.equal(keyed.status, 201, JSON.stringify(keyed.body));
+});
+
+test("Configuration save refuses workspace bootstrap settings native setup refuses, with deployment's text", async () => {
+  // Finding 2699. Compute copies agents.defaults.skipBootstrap and skipOptionalBootstrapFiles into
+  // native workspace setup, which refused an invalid one only after deployment started. Every
+  // save path and deployment now refuse it, naming the setting and what it accepts.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-bootstrap-integration", ...configurationRules),
+  });
+  const withDefaults = (defaults) => ({
+    ...runtimeSelected,
+    agents: { defaults: { ...runtimeDefaults, ...defaults } },
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Bootstrap consumer",
+    secretName: "bootstrap-key",
+  });
+  const skipBootstrap = setting("agents.defaults.skipBootstrap", "must be true or false");
+  const optionalFiles = setting(
+    "agents.defaults.skipOptionalBootstrapFiles",
+    'must be a list of "SOUL.md", "USER.md", "HEARTBEAT.md" or "IDENTITY.md"',
+  );
+  // Each value is refused at Configuration create and update. A row stored before the rule still
+  // reads; deployment refuses it with the same text.
+  for (const [defaults, message] of [
+    [{ skipOptionalBootstrapFiles: ["NOPE.md"] }, optionalFiles],
+    [{ skipOptionalBootstrapFiles: ["SOUL.md", "AGENTS.md"] }, optionalFiles],
+    [{ skipOptionalBootstrapFiles: "SOUL.md" }, optionalFiles],
+    [{ skipOptionalBootstrapFiles: true }, optionalFiles],
+    [{ skipBootstrap: "true" }, skipBootstrap],
+    [{ skipBootstrap: null }, skipBootstrap],
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, withDefaults(defaults), message);
+  }
+
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(
+    configurationDriver,
+    agent.configurationId,
+    withDefaults({ skipOptionalBootstrapFiles: ["NOPE.md"] }),
+  );
+  const saved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assertRefused(saved, optionalFiles, { label: "Agent save" });
+  // Saving the accepted values repairs the row, and the Agent saves again.
+  const repairedValues = withDefaults({
+    skipBootstrap: false,
+    skipOptionalBootstrapFiles: ["SOUL.md", "USER.md", "HEARTBEAT.md", "IDENTITY.md"],
+  });
+  const repaired = await request(context.app, "PATCH", agent.item, {
+    body: { values: repairedValues },
+  });
+  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
+  assert.deepEqual(repaired.body.data.values, repairedValues);
+  const resaved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
+
+  // A Preset save refuses the same text. A value that waits on a variable without a default is
+  // checked when a Configuration is created from the Preset; a default fills it here.
+  await refusedOnSave(
+    context,
+    withDefaults({ skipOptionalBootstrapFiles: ["NOPE.md"] }),
+    optionalFiles,
+  );
+  await acceptedOnSave(
+    context,
+    withDefaults({ skipBootstrap: true, skipOptionalBootstrapFiles: [] }),
+  );
+  const waitingFile = withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}"] });
+  assertRefused(
+    await savePreset(context, {
+      variables: { file: { type: "string", default: "NOPE.md" } },
+      configuration: { values: waitingFile },
+    }),
+    optionalFiles,
+  );
+  const deferredFile = await savePreset(
+    context,
+    { variables: { file: { type: "string" } }, configuration: { values: waitingFile } },
+    "File-deferred",
+  );
+  assert.equal(deferredFile.status, 201, JSON.stringify(deferredFile.body));
+  // Written text around the variable that no accepted name can spell is refused now.
+  assertRefused(
+    await savePreset(
+      context,
+      {
+        variables: { file: { type: "string" } },
+        configuration: {
+          values: withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}.txt"] }),
+        },
+      },
+      "File-suffix",
+    ),
+    optionalFiles,
+  );
+  // A boolean variable fills skipBootstrap with a boolean; a string variable cannot.
+  const waitingSkip = withDefaults({ skipBootstrap: "{{ vars.skip }}" });
+  const deferredSkip = await savePreset(
+    context,
+    { variables: { skip: { type: "boolean" } }, configuration: { values: waitingSkip } },
+    "Skip-deferred",
+  );
+  assert.equal(deferredSkip.status, 201, JSON.stringify(deferredSkip.body));
+  assertRefused(
+    await savePreset(
+      context,
+      { variables: { skip: { type: "string" } }, configuration: { values: waitingSkip } },
+      "Skip-string",
+    ),
+    skipBootstrap,
+  );
+});
+
+test("SSH and Docker Compute refuse at save and deployment a Gateway tool policy their embedded Gateway refuses", async () => {
+  // Finding 2695. SSH Compute (embedded only) and Docker's embedded Gateway apply
+  // tools.gatewayPolicy natively too, so a policy they cannot assemble saved, deployed and then
+  // failed every turn. Save and deployment run each real Driver's Configuration rule.
+  const computes = [
+    [
+      "ssh",
+      new SshComputeDriver({
+        ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
+        hosts: { "tool-policy": { address: "127.0.0.1", user: "root" } },
+        runtime: {
+          nodePath: "/usr/bin/node",
+          openclawPath: "/opt/openclaw/index.js",
+          user: "openclaw",
+          root: "/var/lib/ssh-runtime-test",
+        },
+        network: { gatewayPortRange: { start: 18800, end: 18899 } },
+      }),
+    ],
+    ["docker", new DockerComputeDriver({ images: { gateway: "gateway", agent: "agent" } })],
+  ];
+  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
+  for (const [name, driver] of computes) {
+    const configurationDriver = createConfigurationBackend();
+    const context = await fixture({
+      configurationDriver,
+      computeDriver: createReadyComputeDriver(`compute-tool-policy-${name}`, {
+        implementation: "integration-compute-substrate",
+        validateConfiguration: (...args) => driver.validateConfiguration(...args),
+      }),
+    });
+    const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+      name: `Tool policy consumer ${name}`,
+      secretName: `tool-policy-key-${name}`,
+    });
+    await refusedAtSaveAndDeploy(
+      context,
+      agent,
+      withPolicy({ allow: ["sessions"] }),
+      setting("tools.gatewayPolicy.actions.sessions", "must list the permitted actions"),
+    );
+    await refusedOnSave(
+      context,
+      withPolicy({ allow: ["gateway"] }),
+      setting("tools.gatewayPolicy.allow", "must not grant Gateway administrative tools"),
+    );
+    // A policy that lists the actions saves, as a Configuration and as a Preset.
+    await acceptedOnSave(
+      context,
+      withPolicy({ allow: ["sessions"], actions: { sessions: ["patch"] } }),
+    );
   }
 });
 

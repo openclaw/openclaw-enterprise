@@ -30,7 +30,7 @@ production database, cluster, or credential for tests without explicit approval.
 
 ## Set up a development checkout
 
-Use Node.js 24 or newer, the exact pnpm version in [`package.json`](package.json),
+Use Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer), the exact pnpm version in [`package.json`](package.json),
 and the Go version selected by [`go.mod`](go.mod). In a trusted checkout,
 explicitly prepare dependencies with:
 
@@ -191,7 +191,7 @@ help in the PR description. Credit follows the work; running the merge does not
 make someone its author. Recognition does not grant repository permissions.
 
 Before a release, or when correcting an omission, refresh the README wall from
-the repository root with Node.js 24 or newer and an authenticated GitHub CLI:
+the repository root with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer) and an authenticated GitHub CLI:
 
 ```sh
 pnpm contributors:update

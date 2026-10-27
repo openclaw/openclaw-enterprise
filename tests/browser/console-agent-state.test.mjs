@@ -11,11 +11,13 @@ import {
   authorizationDenials,
   denyRevisionRead,
   detailUrl,
+  expireSessions,
   hasFocus,
   holdRequests,
   grantInstallationAdministration,
   grantMember,
   login,
+  loginThroughForm,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
@@ -44,9 +46,13 @@ import {
   AGENT_STOP_DENIED,
   askForGrant,
   BACKENDS_DENIED,
+  BOUND_SECRET_METADATA,
   BOUND_SECRET_READ_REFUSED,
   BOUND_SECRET_UNLISTED,
+  DIAGNOSTICS_RUNTIME_UNAVAILABLE,
+  diagnosticsRecordedFailure,
   MALFORMED_REQUEST,
+  NO_PERSISTED_STARTUP_FAILURE,
   RESOURCE_CONFLICT,
   requestedVersionUnavailable,
   stopRefused,
@@ -107,6 +113,7 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const activity = await expectDeploymentOutcome(page, "In progress");
   const record = await expectVersionRecord(page, "In progress");
+  await record.getByText(NO_PERSISTED_STARTUP_FAILURE, { exact: true }).waitFor();
   // A new failure must become visible even if the reader folded the pending progress: its card
   // leads the page, and the details stay folded under it.
   await activity.getByText("Deployment details", { exact: true }).press("Enter");
@@ -127,7 +134,7 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
     .getByText("The error and its next step are at the top of this page.", { exact: true })
     .waitFor();
   assert.equal(await record.getByText(authenticationFailure.message, { exact: false }).count(), 0);
-  assert.equal(await record.getByText("No persisted startup failure.").count(), 0);
+  assert.equal(await record.getByText(NO_PERSISTED_STARTUP_FAILURE, { exact: true }).count(), 0);
 });
 
 test("Deployment activity follows pending work until it records a result", async (t) => {
@@ -389,9 +396,9 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
   const observations = page.locator(".version-diagnostics");
   await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
   await observations.getByText("gateway / authentication").waitFor();
-  await observations.getByText(/UNAVAILABLE means the runtime did not answer/).waitFor();
+  await observations.getByText(DIAGNOSTICS_RUNTIME_UNAVAILABLE).waitFor();
   await observations
-    .getByText(/recorded deployment failed with RUNTIME_AUTHENTICATION_FAILED/)
+    .getByText(diagnosticsRecordedFailure("RUNTIME_AUTHENTICATION_FAILED"))
     .waitFor();
   // The failed record does not make the selected version a "Failed version": it is current.
   assert.equal(
@@ -612,9 +619,9 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   );
   assert.equal(await observations.getByText(/NOT_CONFIGURED/).count(), 0);
   await observations
-    .getByText(/recorded deployment failed with RUNTIME_AUTHENTICATION_FAILED/)
+    .getByText(diagnosticsRecordedFailure("RUNTIME_AUTHENTICATION_FAILED"))
     .waitFor();
-  assert.equal(await observations.getByText(/UNAVAILABLE means the runtime/).count(), 0);
+  assert.equal(await observations.getByText(DIAGNOSTICS_RUNTIME_UNAVAILABLE).count(), 0);
 });
 
 test("Agent detail returns to the Agents list once background deletion finishes", async (t) => {
@@ -817,8 +824,13 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   await hint.getByText(BOUND_SECRET_UNLISTED, { exact: true }).waitFor();
   await waitForIdleFetches(member);
   assert.equal(await metadataLink(member).count(), 0);
-  assert.equal(await member.getByText("Secret metadata is bound.").count(), 0);
+  assert.equal(await member.getByText(BOUND_SECRET_METADATA, { exact: true }).count(), 0);
   assert.deepEqual(authorizationDenials(auditSink, /^openclaw\.secrets\./), []);
+  // With Secret read, the same member's disabled field names the bound metadata and links it.
+  grantMember(fixture, "link-reader", [["read", "secret"]]);
+  await member.reload();
+  await hint.getByText(BOUND_SECRET_METADATA, { exact: true }).waitFor();
+  await metadataLink(member).waitFor();
 
   // A member who may update the Agent and operate the Secret, but not read it, can edit the
   // field. Its hint still says why the bound Secret has no name, before how to choose another.
@@ -867,6 +879,40 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   // The Secrets page opens a linked Secret in the same task that draws the list.
   assert.equal(await opened.getByRole("dialog").count(), 0);
   assert.equal(new URL(opened.url()).search, `?namespace=${namespace.id}`);
+
+  // Finding 2645. The link keeps its Secret until the Secrets page shows it: through sign-in when
+  // it opens signed out, through a failed first load's Retry, and through a session that expires
+  // during the load. Each time the dialog opens and the parameter leaves the URL.
+  const expectLinkedDialog = async (page) => {
+    const linked = page.getByRole("dialog", { name: "Linked model key" });
+    await linked.getByText(secret.id, { exact: true }).waitFor();
+    assert.equal(new URL(page.url()).search, `?namespace=${namespace.id}`);
+    await linked.getByRole("button", { name: "Close", exact: true }).click();
+  };
+  const { page: signedOut } = await newPage(t, fixture);
+  await loginThroughForm(signedOut, fixture, secretPage, reader.credentials);
+  await expectLinkedDialog(signedOut);
+
+  const secretList = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
+  await member.route(
+    secretList,
+    (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
+    { times: 1 },
+  );
+  await member.goto(`${fixture.origin}${secretPage}`);
+  await member.getByRole("button", { name: "Retry", exact: true }).click();
+  await expectLinkedDialog(member);
+
+  const expiring = await holdRequests(t, member, secretList, { once: true });
+  await member.goto(`${fixture.origin}${secretPage}`);
+  await expiring.requested;
+  expireSessions(fixture);
+  expiring.release();
+  await member.getByText("Your session has expired").waitFor();
+  await member.getByLabel("Email", { exact: true }).fill(reader.credentials.email);
+  await member.getByLabel("Password").fill(reader.credentials.password);
+  await member.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expectLinkedDialog(member);
 });
 
 // Finding 2619. Backends need Installation administration. A member's Backends page shows the
@@ -1112,6 +1158,13 @@ test("A Backends refusal after administration is revoked is read and audited onc
   );
 });
 
+// Settings shows the Installation Driver configuration heading while its schemas read is still in
+// flight. An administrator's Settings page has settled once the schemas are listed; a revoke
+// before then reaches that read and the API refuses and audits it (finding 2654).
+async function waitForDriverSchemas(page) {
+  await page.getByText(/^Inspect startup settings accepted by the selected Drivers\./).waitFor();
+}
+
 // Finding D760. An administrator revoked while signed in keeps the tab's settled answer, so the
 // first page she opens afterwards sends reads only Installation administration may make: sharing
 // policy, a bound Secret by ID, the Installation's Driver schemas. The API audits each refusal.
@@ -1187,7 +1240,7 @@ test("Installation-administration reads after a revoke are refused and audited o
       revoke = grantInstallationAdministration(fixture, account.principal);
       await page.goto(settingsUrl);
     }
-    await driverSchemas.waitFor();
+    await waitForDriverSchemas(page);
     assert.equal(await observability.getAttribute("href"), url, first);
     revoke();
     await pages[first]();
@@ -1206,7 +1259,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   const named = page.getByRole("link", { name: "Revoked model key", exact: true });
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(settingsUrl);
-  await driverSchemas.waitFor();
+  await waitForDriverSchemas(page);
   revoke();
   await page.goto(agentUrl);
   await named.waitFor();
@@ -1222,7 +1275,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   // the Secret, so she still sees its name.
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(settingsUrl);
-  await driverSchemas.waitFor();
+  await waitForDriverSchemas(page);
   revoke();
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
@@ -1314,7 +1367,7 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
   // Administration again: a page load asks the permission answer, then the probe.
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(`${fixture.origin}${settingsUrl}`);
-  await page.getByRole("heading", { name: "Installation Driver configuration" }).waitFor();
+  await waitForDriverSchemas(page);
   revoke();
   await page.goto(accessUrl);
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
@@ -1380,6 +1433,75 @@ test("A failed permission answer after a Restriction refusal keeps an administra
     ).map((event) => event.action),
     ["openclaw.secrets.read"],
   );
+});
+
+// Finding 2643. The reads that wait behind the first administration read belong to its page.
+// A revoked administrator opens the Access tab; its first read reaches the API, which refuses and
+// audits it, and she leaves before the answer reaches the page. Leaving aborts that read, so
+// nothing settles, and the reads waiting behind it are dropped with their page instead of being
+// sent from the next one: one audited refusal, as when she stays. Signing out at the same point
+// sends nothing either.
+test("Reads waiting behind a pending administration read end with their page", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, {
+    auditSink,
+    observabilityUrl: "https://metrics.example.test/d/operations",
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Left mid-check", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Mid-check key", "hidden-model");
+  const agent = await fixture.createAgent(namespace.id, "Mid-check Agent", nativeValues("x"), {
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  const account = await fixture.createNamespaceMember("mid-check", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  // Sharing policy and a bound Secret by ID: the reads only an administrator's page sends.
+  const administrationPath = (path) => /\/iam\/|\/secrets\/sec_/.test(path);
+  const adminDenials = () =>
+    authorizationDenials(auditSink, /^openclaw\.(observability|backends|iam|secrets)\./);
+  const accessUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
+  const sidebarLink = (name) => page.locator("nav").getByRole("link", { name, exact: true });
+
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(page, fixture, `/console/settings?namespace=${namespace.id}`, account.credentials);
+  await page.getByRole("heading", { name: "Installation Driver configuration" }).waitFor();
+  await waitForIdleFetches(page);
+  revoke();
+
+  for (const [round, leave] of [
+    async () => {
+      await sidebarLink("Agents").first().click();
+      await page.getByRole("link", { name: "Mid-check Agent", exact: true }).first().waitFor();
+    },
+    async () => {
+      await page.locator(".account-toggle").click();
+      await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+      await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+    },
+  ].entries()) {
+    // The tab still takes her for an administrator, so the Access tab sends its reads.
+    const first = await holdRequests(
+      t,
+      page,
+      (address) => administrationPath(new URL(address).pathname),
+      { once: true, afterServer: true },
+    );
+    await page.goto(accessUrl);
+    assert.equal((await first.requested).status(), 403);
+    assert.equal(adminDenials().length, round + 1);
+    const sent = requests.length;
+    await leave();
+    first.release();
+    await waitForIdleFetches(page);
+    assert.deepEqual(
+      requests.slice(sent).filter(({ path }) => administrationPath(path)),
+      [],
+      `round ${round}`,
+    );
+    assert.equal(adminDenials().length, round + 1);
+  }
 });
 
 // Only a Backends refusal settles Installation administration as false (finding 2627). A read that
@@ -2045,7 +2167,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     await observations
       .getByText(/Check this version's recorded outcome and its Logs tab/)
       .waitFor();
-    assert.equal(await observations.getByText(/recorded deployment failed with/).count(), 0);
+    assert.equal(await observations.getByText(diagnosticsRecordedFailure(c.error.code)).count(), 0);
 
     errors.set(c.agent, c.failure);
     await activity.getByRole("button", { name: "Refresh deployment" }).click();

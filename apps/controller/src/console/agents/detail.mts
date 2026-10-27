@@ -170,6 +170,7 @@ interface DraftDetails {
   executionMode: Agent["executionMode"];
   credentials: Credentials | null;
   channelSecretsNote: string;
+  managedMode: { value: Text; action: HTMLButtonElement | null; control: HTMLElement | null };
   setAuthenticationPending(pending: boolean): void;
   setAuthenticationUnsaved(unsaved: boolean): void;
   setDraftEditorState(state: Partial<EditorState>): void;
@@ -390,6 +391,13 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
   );
 }
 
+// Managed mode also keeps the Gateway tool allowlist as deployed; with it off, Gateway
+// administrators can widen it until the next managed deployment (finding 2690).
+const GATEWAY_MANAGED_MODE_HINT =
+  "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs. With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.";
+// Shown instead of the control to a caller who cannot change the setting (finding 2690).
+const GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY =
+  "Only an Installation administrator can change Gateway managed mode.";
 // The summary card's note, first deployment or redeploy alike, for a version this tab deployed
 // that the caller cannot read (finding D755).
 const DEPLOYED_VERSION_UNREADABLE = "You cannot read the version you deployed.";
@@ -2815,6 +2823,11 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
+    const managedMode: DraftDetails["managedMode"] = {
+      value: document.createTextNode(agent.gatewayManagedMode ? "On" : "Off"),
+      action: null,
+      control: null,
+    };
     let authenticationForm: HTMLElement | undefined;
     const retainedAuthentication = context.drafts.get("authentication") as
       AuthenticationDraft | undefined;
@@ -3044,6 +3057,15 @@ export async function renderAgentDetail(
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
       const retainedConfiguration = retainedConfigurationState();
+      if (managedMode.action && managedMode.control) {
+        managedMode.control.hidden = callerPermissions?.update !== true;
+        managedMode.action.disabled =
+          Boolean(managedMode.control.hidden) ||
+          deployPending ||
+          Boolean(deployReloadMessage) ||
+          Boolean(draftEditorNavigationBlock) ||
+          Boolean(credentials?.mutationPending());
+      }
       deploy.disabled = deployIsDisabled();
       if (setupCredentials) {
         // A reader's card offers no editor's action; the status says why (finding 2421).
@@ -3282,6 +3304,7 @@ export async function renderAgentDetail(
           }
           if (
             freshAgent.executionMode !== agent.executionMode ||
+            freshAgent.gatewayManagedMode !== agent.gatewayManagedMode ||
             freshAgent.backendId !== agent.backendId ||
             JSON.stringify(freshAgent.plugins ?? {}) !== JSON.stringify(agent.plugins ?? {})
           ) {
@@ -3390,6 +3413,84 @@ export async function renderAgentDetail(
       // .primary stays for tests that find Deploy new version by it.
       { tone: "primary", className: "primary" },
     );
+    if (context.installationAdmin === true) {
+      const feedback = element("p", { className: "hint", role: "status" });
+      const reload = button("Reload draft", () => void reloadDraftInPlace(context, {}), {
+        hidden: true,
+      });
+      const actionLabel = () =>
+        `Turn ${agent.gatewayManagedMode ? "off" : "on"} managed mode for next deployment`;
+      const action = button(
+        actionLabel(),
+        async () => {
+          const previousBlock = showDraftEditorNavigationBlock;
+          const hold = (text: string, saving = false) => {
+            deployReloadMessage = text;
+            draftEditorNavigationBlock = text || null;
+            draftEditorSaving = saving;
+            showDraftEditorNavigationBlock = text
+              ? () => showLeaveNote(control, text, "end")
+              : previousBlock;
+            content
+              .querySelector(".configuration-draft-editor")
+              ?.toggleAttribute("inert", Boolean(text));
+            updateNavigationControls();
+            updateDeployControls();
+          };
+          feedback.textContent = "";
+          setStatusTone(feedback, null);
+          hold("Saving managed mode. Wait before deploying.", true);
+          try {
+            const savedAgent = agentForPage(
+              await request(path, {
+                method: "PATCH",
+                body: { gatewayManagedMode: !agent.gatewayManagedMode },
+              }),
+            );
+            if (typeof savedAgent.gatewayManagedMode !== "boolean") {
+              throw new Error("The Agent response did not include managed mode.");
+            }
+            if (context.isCurrent()) {
+              agent = savedAgent;
+              managedMode.value.textContent = agent.gatewayManagedMode ? "On" : "Off";
+              action.textContent = actionLabel();
+              feedback.textContent = "Managed mode saved. Deploy a new version to apply it.";
+            }
+          } catch (error) {
+            if (!context.isCurrent()) {
+              return;
+            }
+            if (requestFailure(error).status === 401) {
+              context.onExpired();
+              return;
+            }
+            reload.hidden = refusedWriteStatuses.includes(requestFailure(error).status);
+            feedback.textContent = reload.hidden
+              ? rejectionMessage(refusedSave(error, "managedMode", true), true)
+              : "Managed mode may have been saved. Reload this draft before continuing.";
+            setStatusTone(feedback, "danger");
+          } finally {
+            if (context.isCurrent() && control.isConnected) {
+              hold(reload.hidden ? "" : (feedback.textContent ?? ""));
+              if (feedback.textContent) {
+                focusSaveOutcome(control, [reload, action], feedback);
+              }
+            }
+          }
+        },
+        { disabled: true },
+      );
+      const control = element(
+        "section",
+        { hidden: true },
+        element("h3", {}, "Gateway managed mode"),
+        element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_HINT),
+        element("div", { className: "form-actions" }, action, reload),
+        feedback,
+      );
+      managedMode.action = action;
+      managedMode.control = control;
+    }
     updateDeployControls();
     void readDeploySecretsDenied();
     const draftActions = element(
@@ -3420,6 +3521,7 @@ export async function renderAgentDetail(
       executionMode,
       credentials,
       channelSecretsNote,
+      managedMode,
       setAuthenticationPending(pending) {
         authenticationPending = pending;
         updateDeployControls();
@@ -3909,6 +4011,14 @@ export async function renderAgentDetail(
           options?.fresh && permissionsReadSettled && latestPermissionsRead !== openingRead
             ? rereadPermissions()
             : latestPermissionsRead,
+        // The version read is AgentRevision read: a status refusal names that grant only when
+        // this read was refused (finding D753).
+        versionRead: details.then((result) => {
+          if (result && "snapshot" in result) {
+            return true;
+          }
+          return result && requestFailure(result.error).status === 403 ? false : undefined;
+        }),
         // The failed-version recovery stops offering Logs as soon as they are denied.
         onLogsDenied: () => {
           if (tabContext.isCurrent() && !recovery.section.hidden) {
@@ -4773,6 +4883,10 @@ export async function renderAgentDetail(
         : snapshot.repositoryCredentials?.bindings;
       const details: Parameters<typeof summary>[1] = [
         ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
+        [
+          draft ? "Gateway managed mode" : "Requested Gateway managed mode",
+          draft ? data.managedMode.value : snapshot.gatewayManagedMode ? "On" : "Off",
+        ],
         ["Backend (experimental)", draft ? agent.backendId : snapshot.backendId],
         [
           "Repository access",
@@ -4836,6 +4950,10 @@ export async function renderAgentDetail(
                 element("div", { className: "form-actions" }, currentConfigurationEntry),
                 nativeDocument(values, "View admitted native configuration"),
               ),
+          draft
+            ? (data.managedMode.control ??
+                element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY))
+            : null,
         ),
       );
     }

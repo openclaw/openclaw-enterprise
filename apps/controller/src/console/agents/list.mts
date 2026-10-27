@@ -278,6 +278,7 @@ export function preAdmissionRefusal(cause: unknown) {
 export const SAVE_REFUSALS = Object.freeze({
   configuration: CONFIGURATION_SAVE_REFUSED,
   agent: AGENT_SAVE_REFUSED,
+  managedMode: `Changing Gateway managed mode requires Installation administer, Agent update and Configuration read access, plus access to the Agent's bound resources. ${askAdministratorTo("change this setting")}`,
   read: SAVE_READ_REFUSED,
 });
 
@@ -355,7 +356,7 @@ export function agentSaveDenial(
 // A refused write that a fresh Secret answer explains says so instead (`named`, finding 2453).
 export function refusedSave<Cause>(
   cause: Cause,
-  save: "configuration" | "agent",
+  save: "configuration" | "agent" | "managedMode",
   written: boolean,
   named?: string,
 ) {

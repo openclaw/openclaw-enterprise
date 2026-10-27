@@ -28,8 +28,9 @@ requests show their IDs; manage those references through their supported APIs or
 CLI commands. Hidden consumers appear as a count, and incomplete results are
 marked. Ask an administrator to inspect references you cannot read.
 
-A link to a Secret that is not in your list opens nothing. A note says the
-Secret may not exist or you may not read it.
+A Secret link on an Agent page opens that Secret here, also when you must sign
+in first. A link to a Secret that is not in your list opens nothing. A note says
+the Secret may not exist or you may not read it.
 
 ## Replace a value
 

@@ -16,7 +16,7 @@ import {
   SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
-import { openShellLogDecision } from "./openshell-log-decisions.ts";
+import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import {
   AGENT_POLICY_PREFIX,
   openShellAgentNetworkRules,
@@ -119,6 +119,8 @@ import {
 import { nodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
+  WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS,
+  WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS,
   WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
   WORKSPACE_SETUP_RUNTIME,
 } from "../compute/workspace-setup-runtime.ts";
@@ -1334,13 +1336,13 @@ const WORKSPACE_SETUP_WAIT = String.raw`{
 // Remote execution can outlive a lost RPC response. Keep the lock across the
 // initializer process so a retry cannot race its writes; kernel locks also release
 // after a crash. Private document bytes travel only through stdin, never argv.
-// The runner's refusal status passes through; any other failure exits 1 (finding 1708).
+// Preserve bounded initializer statuses without confusing native setup with lock/runner failures.
 const WORKSPACE_SETUP_EXEC = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 let lock;
-let refused = false;
+let failureExitStatus = 1;
 try {
   const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
   if (!workspace || !path.isAbsolute(workspace)) throw new Error();
@@ -1356,10 +1358,13 @@ try {
     env: { ...process.env, OPENCLAW_WORKSPACE_SETUP_PATH: undefined },
     stdio: ["pipe", "ignore", "ignore", lock], timeout: 250000,
   });
-  refused = !result.error && result.status === ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS};
+  if (!result.error && [${WORKSPACE_SETUP_REFUSED_EXIT_STATUS},
+      ${WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS}, ${WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS}].includes(result.status)) {
+    failureExitStatus = result.status;
+  }
   if (result.error || result.status !== 0) throw new Error();
 } catch {
-  process.exitCode = refused ? ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS} : 1;
+  process.exitCode = failureExitStatus;
 } finally {
   if (lock !== undefined) fs.closeSync(lock);
 }
@@ -4060,10 +4065,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         },
         context.signal,
       );
-    } catch {
+    } catch (error) {
       context.signal.throwIfAborted();
       // Neither API/parser diagnostics nor remote output may disclose initial files.
-      throw new OpenShellSandboxConfigurationFailure("OpenShell workspace initialization failed.");
+      const grpcStatus = asRecord(error)?.grpcStatus;
+      const detail =
+        typeof grpcStatus === "number" &&
+        Number.isInteger(grpcStatus) &&
+        grpcStatus >= 0 &&
+        grpcStatus <= 16
+          ? ` (gRPC status ${grpcStatus})`
+          : "";
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell workspace initialization failed${detail}.`,
+      );
     }
     if (exit === WORKSPACE_SETUP_REFUSED_EXIT_STATUS) {
       // Every retry would refuse the same way: fail the deployment now, as Kubernetes Compute
@@ -4071,7 +4086,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new SandboxWorkspaceSetupRefusedError("OpenShell workspace initialization refused.");
     }
     if (exit !== 0) {
-      throw new OpenShellSandboxConfigurationFailure("OpenShell workspace initialization failed.");
+      let detail = `initializer exit ${exit}`;
+      if (exit === WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS) {
+        detail = `native setup failed; ${detail}`;
+      } else if (exit === WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS) {
+        detail = `native setup timed out; ${detail}`;
+      }
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell workspace initialization failed (${detail}).`,
+      );
     }
   }
 
@@ -4670,7 +4693,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return Object.freeze({
       sandbox: sandbox.resourceName,
       observedAt: new Date().toISOString(),
-      lines: response.lines.map(openShellLogDecision),
+      lines: openShellLogDecisions(response.lines),
       bufferTotal: response.bufferTotal,
     });
   }

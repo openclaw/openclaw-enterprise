@@ -208,11 +208,13 @@ stateCase(
         name: `first-${randomUUID()}`,
         configurationId: firstConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
+        gatewayManagedMode: false,
       }),
       request(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
         name: `second-${randomUUID()}`,
         configurationId: secondConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
+        gatewayManagedMode: false,
       }),
     ]);
     assert.equal(first.status, 201);
@@ -705,6 +707,7 @@ stateCase(
       "configurationId",
       "configurationKind",
       "createdAt",
+      "gatewayManagedMode",
       "harness",
       "harnessAuth",
       "id",

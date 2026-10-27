@@ -18,6 +18,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.mjs";
@@ -797,17 +798,20 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  // Native-only file preparation and the k3d helper bootstrap need no Codex token.
-  // Other OpenShell files and full-lane preparation still include a Codex Agent.
-  const nativeOnly =
+  const openShellGatewayFile =
+    file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+  const openShellApiKey =
     name === "openshell" &&
-    effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
-    (file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs" ||
-      (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"));
-  const requiredInputs = nativeOnly
-    ? ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]
-    : (prepare.requireEnv ?? []);
-  requireEnv(requiredInputs, effectiveEnv);
+    ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
+      (openShellGatewayFile ||
+        (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
+      (openShellGatewayFile && Boolean(effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
+  requireEnv(
+    (prepare.requireEnv ?? []).map((input) =>
+      openShellApiKey && input === "CODEX_ACCESS_TOKEN" ? "OPENAI_API_KEY" : input,
+    ),
+    effectiveEnv,
+  );
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }
@@ -1262,6 +1266,8 @@ async function buildRuntimeImages(
   }
   if (runtime) {
     const tag = `${tagBase}/runtime:local`;
+    const sourceArguments =
+      openclawSource === undefined ? openclawBuildArguments(await readOpenclawSource()) : [];
     builds.push({
       role: "runtime",
       tag,
@@ -1270,6 +1276,7 @@ async function buildRuntimeImages(
           ? [
               ...imageBuildArgs(state, "runtime", localStore),
               ...plainProgress,
+              ...sourceArguments,
               "--pull=false",
               "-f",
               runtimeDockerfile,
@@ -1488,9 +1495,6 @@ async function ensureK3dCluster(statePath, state) {
         }
         return waitForPluginStatusProxySource(cluster, destination);
       });
-      await k3dStage(state, "k3d-storage", () => verifyFixtureStorage(resource));
-    }
-    if (crossNodePluginStatus) {
       await logK3dHost(state, directory, "k3d-host-after");
     }
   } catch (error) {
@@ -1504,7 +1508,10 @@ async function ensureK3dCluster(statePath, state) {
     }
     throw error;
   }
-  await markResourceReady(statePath, state, resource);
+  // The fixture lanes mark the cluster ready when its storage rollout succeeds.
+  if (!crossNodePluginStatus) {
+    await markResourceReady(statePath, state, resource);
+  }
   return resource;
 }
 
@@ -1870,6 +1877,34 @@ async function importFixtureImage(statePath, state, cluster, built) {
   return { image: registered.reference, resourceId: built.resourceId };
 }
 
+// The fixture import needs the ready nodes, not the storage provisioner. Settle
+// both before the lane pins the image, restarts storage, or hands off to cleanup.
+async function prepareFixtureStorageAndImage(statePath, state, cluster, built) {
+  const { lane } = state;
+  const [storage, fixture] = await Promise.allSettled([
+    k3dStage(state, "k3d-storage", () => verifyFixtureStorage(cluster)).then(() =>
+      markResourceReady(statePath, state, cluster),
+    ),
+    timedPreparation(lane, "fixture-image-import", () =>
+      importFixtureImage(statePath, state, cluster, built),
+    ),
+  ]);
+  if (storage.status === "fulfilled" && fixture.status === "fulfilled") {
+    return fixture.value;
+  }
+
+  // Record a bounded phase notice when the image failure has no transport summary.
+  const failure =
+    fixture.status === "rejected"
+      ? (fixture.reason?.k3dImageImportFailure ??
+        "Fixture image preparation failed during fixture-image-import.")
+      : undefined;
+  await captureK3dDiagnostics({ execFile, cluster, lane, statePath, failure }).catch(() =>
+    progress(lane, "k3d diagnostics unavailable"),
+  );
+  throw storage.status === "rejected" ? storage.reason : fixture.reason;
+}
+
 async function pinFixtureImageInK3d(cluster, image) {
   const name = "openclaw-ci-fixture-image-pin";
   const manifestPath = join(cluster.directory, `${name}.json`);
@@ -2119,38 +2154,42 @@ const k3dContainerdWaitMs =
     : 60_000;
 
 async function waitForK3dContainerd(lane, cluster) {
-  // The first failed node ends the wait; the others stop polling.
+  // The first failed node stops polling; drain already-started probes before returning.
   let failed = false;
-  await Promise.all(
-    cluster.nodes.map(async (node) => {
-      const deadline = performance.now() + k3dContainerdWaitMs;
-      for (let attempt = 1; !failed; attempt += 1) {
-        try {
-          await k3dNodeImageCheck(node, ["ctr", "-n", "k8s.io", "version"], "containerd");
-          return;
-        } catch (error) {
-          const remainingMs = deadline - performance.now();
-          if (error.cause?.timedOut === true || remainingMs <= 0) {
-            failed = true;
-            throw error.cause?.timedOut === true
-              ? error
-              : new Error(
-                  `containerd on ${node} did not answer within ${k3dContainerdWaitMs} ms: ${error.message}`,
-                  { cause: error },
-                );
-          }
-          if (failed) {
-            return;
-          }
-          progress(
-            lane,
-            `containerd on ${node} is not answering yet (attempt ${attempt}); retrying.`,
-          );
-          await delay(Math.min(250 * attempt, 2_000, remainingMs));
+  const probes = cluster.nodes.map(async (node) => {
+    const deadline = performance.now() + k3dContainerdWaitMs;
+    for (let attempt = 1; !failed; attempt += 1) {
+      try {
+        await k3dNodeImageCheck(node, ["ctr", "-n", "k8s.io", "version"], "containerd");
+        return;
+      } catch (error) {
+        const remainingMs = deadline - performance.now();
+        if (error.cause?.timedOut === true || remainingMs <= 0) {
+          failed = true;
+          throw error.cause?.timedOut === true
+            ? error
+            : new Error(
+                `containerd on ${node} did not answer within ${k3dContainerdWaitMs} ms: ${error.message}`,
+                { cause: error },
+              );
         }
+        if (failed) {
+          return;
+        }
+        progress(
+          lane,
+          `containerd on ${node} is not answering yet (attempt ${attempt}); retrying.`,
+        );
+        await delay(Math.min(250 * attempt, 2_000, remainingMs));
       }
-    }),
-  );
+    }
+  });
+  try {
+    await Promise.all(probes);
+  } catch (error) {
+    await Promise.allSettled(probes);
+    throw error;
+  }
 }
 
 const containerdSocketUnavailable =
@@ -2290,15 +2329,9 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
       importReference,
     ]);
   } catch (error) {
-    // Keep node state and logs, so a containerd outage shows its cause (finding 1006).
     if (fixtureLanes.has(state.lane)) {
-      await captureK3dDiagnostics({
-        execFile,
-        cluster,
-        lane: state.lane,
-        statePath,
-        failure: `${envName} image import into k3d nodes failed: ${error.message.slice(0, 300)}`,
-      }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
+      // The fixture lane collects node diagnostics after its storage check has also settled.
+      error.k3dImageImportFailure = `${envName} image import into k3d nodes failed: ${error.message.slice(0, 300)}`;
     }
     throw error;
   }
@@ -2580,9 +2613,10 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
   await markResourceReady(statePath, state, logging.resource);
 }
 
-async function prepareLane({ lane, statePath }) {
+async function prepareLane({ lane, statePath, file }) {
   const name = assertLane(lane);
-  await validateLaneInputsBeforeSideEffects(name);
+  const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {
@@ -2690,8 +2724,7 @@ async function prepareLane({ lane, statePath }) {
     case "k3d-fixture-configuration":
     case "k3d-fixture-state":
     case "k3d-fixture-plugins": {
-      // PostgreSQL, the cluster and the fixture build are independent; the
-      // fixture is imported only after the cluster passed its readiness gates.
+      // PostgreSQL, cluster creation and the fixture build are independent.
       const [, cluster, built] = await timedPreparation(
         name,
         "postgres-cluster-fixture-build",
@@ -2711,8 +2744,8 @@ async function prepareLane({ lane, statePath }) {
               ),
           ]),
       );
-      const fixture = await timedPreparation(name, "fixture-image-import", () =>
-        importFixtureImage(resolvedStatePath, state, cluster, built),
+      const fixture = await timedPreparation(name, "fixture-storage-image-import", () =>
+        prepareFixtureStorageAndImage(resolvedStatePath, state, cluster, built),
       );
       // The pin and the storage check are independent; both wait on rollouts.
       await timedPreparation(name, "fixture-pin-storage-verify", () =>

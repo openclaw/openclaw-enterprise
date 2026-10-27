@@ -32,15 +32,17 @@ upstream ranges, certificates and tenant RBAC. Use one worker/service owner with
 `Recreate`; replicas cannot share in-memory sessions. Routing does not establish
 network isolation.
 
-Build the full Agent runtime from the checkout root and select its immutable
+From the checkout root, [resolve the OpenClaw build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
+and build the full Agent runtime in the same Bash shell. Select its immutable
 image reference in Compute configuration:
 
-```sh
+```bash
 docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" \
   -t openclaw-enterprise-runtime:repository-credentials .
 ```
 
-The image includes Git, the client helper and pinned `gh` 2.100.0. Publish or
+The image includes Git, the client helper and pinned `gh` 2.103.2. Publish or
 import it, select its digest and configure model authentication.
 
 ## Keep Git access on the same running Agent

@@ -1037,6 +1037,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     authSecureCookies: true,
     nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    agentGatewayManagedMode: false,
     computeDriver: nativeAdminComputeDriver(gatewayEndpoint),
   });
   await fixture.bootstrap();
@@ -1269,6 +1270,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
     authSecureCookies: true,
     nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    agentGatewayManagedMode: false,
     computeDriver: nativeAdminComputeDriver(
       "wss://private-gateway.example.invalid/namespaces/native-admin/agents/agent",
     ),
@@ -2299,6 +2301,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
       sharedCookieDomain: cookieDomain,
     },
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    agentGatewayManagedMode: false,
     computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/shared"),
   });
   await fixture.bootstrap();

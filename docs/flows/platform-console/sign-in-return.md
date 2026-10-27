@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-10-19
-last_updated_session: authoring-run/e63eaa44-e02d-49aa-b1c6-4711bd49d919
+updated: 2026-10-26
+last_updated_session: fix-2643
 ---
 
 # Console sign-in and destination recovery
@@ -66,8 +66,8 @@ minute. Each reports the origin check with its own text; every other password
 answers `429` with the wait and `503` with an outage message; every refusal
 keeps the endpoint's one message.
 When login interrupts a recognized console route, `navigation.mts` records its
-page, validated Namespace ID, and recognized Agent version and tab without unrelated
-query parameters. Password
+page, validated Namespace ID, recognized Agent version and tab, and a Secrets page
+link's validated Secret ID, without unrelated query parameters. Password
 sign-in carries that intent in the current view; external sign-in stores it in
 tab `sessionStorage` with the one-use attempt ID and a ten-minute limit. The
 console consumes it only after confirming that attempt and its session, and
@@ -96,6 +96,10 @@ later. The
 [authentication flow](../local-password-authentication.md#3-construct-session-authentication)
 owns the server side.
 
+`apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` checks Origin
+before sign-in/out, even for SDK calls bypassing Better Auth middleware; headerless
+CLI requests remain supported. The browser stores no credentials.
+
 ### 2. Authorize the destination
 
 `apps/controller/src/console/console.mjs:loadPage` checks the session and loads
@@ -122,6 +126,8 @@ native-gateway integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 18:00: A Secrets page link's Secret ID survives sign-in. (2645)
 
 - 2026-10-19 22:11: Document return to the requested page after session expiry. (authoring-run/e63eaa44-e02d-49aa-b1c6-4711bd49d919 - 332455338271720ef29c63e5e7fb209fa3da6ec2)
 

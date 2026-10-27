@@ -1734,6 +1734,9 @@ for (const setupMode of executionModes) {
           mode: setupMode,
         },
         compute: { id: driver.id, implementation: driver.implementation },
+        // OCC admits every revision with a durable execution admission; Docker Compute
+        // supports only unprotected execution (no egress plan) and refuses a revision without one.
+        executionAdmission: { version: 2, mode: "unprotected" },
         servicePrincipalId: `sp-workspace-${randomUUID()}`,
         createdAt: namespace.createdAt,
       };

@@ -8,6 +8,7 @@ import { chromium, request as playwrightRequest } from "playwright";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
+import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
@@ -15,6 +16,9 @@ import {
   deploymentErrorForWork,
   deploymentProgressForWork,
 } from "../../packages/occ/src/state/controller-work.ts";
+
+// Shared with the API tests, which drive the same fixture without a browser.
+export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
 
 // What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
 // persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read
@@ -60,21 +64,6 @@ export const AGENT_READ = [
   ["read", "agent_revision"],
   ["read", "configuration"],
 ];
-
-// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
-// grant or revoke after sign-in: State reads the policy on each request.
-function memberRole(fixture, label) {
-  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
-  assert.ok(role, `member ${label} has a Role`);
-  return role;
-}
-
-/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
-export function grantMember(fixture, label, grants) {
-  memberRole(fixture, label).permissions.push(
-    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
-  );
-}
 
 /**
  * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
@@ -1068,16 +1057,6 @@ export const stopAgentButton = (page) =>
   page
     .getByRole("region", { name: "Stop Agent", exact: true })
     .getByRole("button", { name: "Stop Agent", exact: true });
-
-// The authorization denials an InMemoryAuditSink recorded for `action`: an exact action name, or
-// a RegExp for a family of actions.
-export function authorizationDenials(auditSink, action) {
-  const matches =
-    typeof action === "string" ? (name) => name === action : (name) => action.test(name);
-  return auditSink
-    .list()
-    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
-}
 
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
 function contrastRatio(a, b) {

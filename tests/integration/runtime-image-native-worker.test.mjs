@@ -45,14 +45,27 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
         new URL("../fixtures/runtime-workspace-node.mjs", import.meta.url),
         "utf8",
       );
+      // The fixture bounds every CLI call and wait by one deadline 10 s inside this
+      // exec timeout, so a hung call fails with its own name.
+      const execTimeoutMs = 240_000 * imageSmokeTimeoutMultiplier;
       const { stdout } = await runDocker(
-        ["exec", containerName, "node", "--input-type=module", "-e", source],
-        { timeout: 240_000 * imageSmokeTimeoutMultiplier },
+        [
+          "exec",
+          "-e",
+          `WORKSPACE_PROOF_BUDGET_MS=${execTimeoutMs - 10_000}`,
+          containerName,
+          "node",
+          "--input-type=module",
+          "-e",
+          source,
+        ],
+        { timeout: execTimeoutMs },
       );
       const result = JSON.parse(stdout);
       assert.equal(result.sameIdentityAfterRestart, true);
       assert.equal(result.singleBootstrapCompletion, true);
       assert.equal(result.commands.length, 7);
+      t.diagnostic(`slowest gateway call: ${result.slowestCallMs} ms`);
     },
   );
 
@@ -69,6 +82,8 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
         "tests/helpers/available-port.mjs",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
         "apps/controller/src/drivers/compute/codex-workspace-client.ts",
+        "apps/controller/src/drivers/compute/embedded-gateway-owner.ts",
+        "apps/controller/src/drivers/compute/gateway-tool-policy.ts",
         "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
         "apps/controller/src/drivers/compute/node-program.ts",
         "apps/controller/src/drivers/compute/runtime-startup.ts",

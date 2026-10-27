@@ -6,6 +6,7 @@ import { stat } from "node:fs/promises";
 import { posix } from "node:path";
 import type {
   AgentRevision,
+  ConfigurationValidationOptions,
   HarnessAuthSnapshot,
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
@@ -44,6 +45,7 @@ import {
   WORKSPACE_SETUP_RUNTIME,
 } from "../workspace-setup-runtime.ts";
 import { validatePlaintextNativeGateway } from "../native-gateway-transport.ts";
+import { validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 import { SystemSshCommandExecutor, type SshCommandExecutor } from "./executor.ts";
@@ -547,6 +549,21 @@ export class SshComputeDriver implements ComputeDriver {
     sshGatewayAuthentication(configuration);
   }
 
+  // The host's embedded Gateway applies tools.gatewayPolicy natively, so Configuration save,
+  // Preset save and deployment refuse a policy it cannot assemble, with Kubernetes's text
+  // (finding 2695). Preparation does not: a running Agent keeps its passes until a redeploy.
+  validateConfiguration(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void {
+    validateGatewayToolPolicy(
+      configuration,
+      (setting, requirement) =>
+        new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
+      options,
+    );
+  }
+
   // Agent create and update refuse a roster or workspace the host helper refuses at deployment,
   // where the refusal was retried until the deployment failed (findings 2285, 2289). The roster
   // message is Docker's and Kubernetes's. The helper accepts only paths under a directory derived
@@ -696,6 +713,11 @@ export class SshComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): void {
     this.validateRevision(revision);
+    if (revision.gatewayManagedMode) {
+      throw new ConfigurationHarnessError(
+        "Agent setting gatewayManagedMode is not supported on SSH Compute.",
+      );
+    }
     sshGatewayConfigurationDocument(revision.configuration);
     if (
       (context?.secretEnvironment.length ?? 0) > 0 ||

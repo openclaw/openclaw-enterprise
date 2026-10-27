@@ -109,6 +109,7 @@ test(
       configurationId: `cfg_${randomUUID()}`,
       backendId: null,
       harnessAuth: null,
+      gatewayManagedMode: true,
       draft_spec: {},
       executionMode: "embedded",
       servicePrincipalId: `service-agent-${randomUUID()}`,
@@ -120,6 +121,7 @@ test(
       agentId,
       revision: 1,
       backendId: null,
+      gatewayManagedMode: agent.gatewayManagedMode,
       configurationId: `cfg_${randomUUID()}`,
       configurationKind: "agent",
       configurationGeneration: 1,
@@ -551,7 +553,7 @@ test(
         generation: 1,
         createdAt,
       });
-      await unit.agents.createAgent({
+      const agent = await unit.agents.createAgent({
         id: agentId,
         namespaceId,
         name: "Provisioning success",
@@ -570,6 +572,7 @@ test(
         agentId,
         revision: 1,
         backendId: null,
+        gatewayManagedMode: agent.gatewayManagedMode,
         configurationId,
         configurationKind: "agent",
         configurationGeneration: 1,
@@ -1890,6 +1893,7 @@ test(
         agentId: agent.id,
         revision: 1,
         backendId: null,
+        gatewayManagedMode: agent.gatewayManagedMode,
         configurationId: configuration.id,
         configurationKind: "agent",
         configurationGeneration: 1,
@@ -2199,6 +2203,7 @@ test(
           agentId: agent.id,
           revision,
           backendId: null,
+          gatewayManagedMode: agent.gatewayManagedMode,
           configurationId: configuration.id,
           configurationKind: "agent",
           configurationGeneration: 1,

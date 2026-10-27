@@ -273,6 +273,8 @@ an ordinary document does not exempt that document.
 
 ## Documentation editing
 
+Human-verified documents must include `human_verified: true` in their YAML frontmatter.
+
 Before creating, updating, or reviewing documentation and specifications, read
 and apply [technical-writing](.agents/skills/technical-writing/SKILL.md).
 Use ASD-STE100 (Simplified Technical English) and complete its required

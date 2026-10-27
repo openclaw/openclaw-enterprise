@@ -289,6 +289,36 @@ for (const persistence of databaseUrl ? ["memory", "postgres"] : ["memory"]) {
       assert.equal(result.status, 200);
       return result.data;
     };
+    await t.test(
+      "Agent saves reject invalid stored settings before reading the workspace Secret",
+      async (t) => {
+        const driver = f.controller.selectedDriver("configuration");
+        const read = driver.read.bind(driver);
+        t.mock.method(driver, "read", async (reference: Parameters<typeof read>[0]) => ({
+          ...(await read(reference)),
+          values: { agents: { defaults: { skipBootstrap: "false" } } },
+        }));
+        const body = {
+          configurationId: f.agent.configurationId,
+          harnessAuth: { method: "credential_source", sourceId: source.id },
+          credentialSources: [{ sourceId: source.id }],
+        };
+        const agents = `/namespaces/${f.namespace.id}/agents`;
+        for (const [method, path, input] of [
+          ["POST", agents, { ...body, name: "invalid-workspace", executionMode: "dedicated" }],
+          ["PATCH", `${agents}/${f.agent.id}`, body],
+        ] as const) {
+          const beforeRead = f.secretReads;
+          const refused = await f.request(method, path, { body: input });
+          assert.equal(refused.status, 400);
+          assert.equal(
+            refused.body.error.message,
+            "Configuration setting agents.defaults.skipBootstrap must be true or false.",
+          );
+          assert.equal(f.secretReads, beforeRead);
+        }
+      },
+    );
     const agent = await useSource(source);
     const role = await f.request("POST", `/namespaces/${f.namespace.id}/iam/roles`, {
       body: {

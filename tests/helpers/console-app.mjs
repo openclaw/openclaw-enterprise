@@ -53,6 +53,7 @@ function computeDriver({
   implementation = "test-memory-lifecycle",
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
+    gatewayRuntime: true,
     repositoryCredentials,
     sandboxDriver,
     credentialGatewayDriver,
@@ -62,11 +63,9 @@ function computeDriver({
 
   return Object.assign(driver, {
     implementation,
-    // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
-    // does not provision unless repository credentials ask for them.
-    ...(channelRuntime && !repositoryCredentials
-      ? { requiresAgentRuntimeCredentials: undefined }
-      : {}),
+    // Gateway startup and transport credentials are simulated unless repository credentials
+    // are in scope. Console, OCC and IAM routes still use production code.
+    ...(repositoryCredentials ? {} : { requiresAgentRuntimeCredentials: undefined }),
     // Most Console cases use drafts. Branch-selection tests can retain the actual
     // Compute capability while verifying that their flow avoids the durable queue.
     ...(agentProvisioning ? {} : { agentProvisioning: undefined }),
@@ -260,6 +259,7 @@ export function fileConsoleApp(options = {}) {
 }
 
 export async function createConsoleAppFixture(t, options = {}) {
+  const defaultAgentGatewayManagedMode = options.agentGatewayManagedMode;
   const installationId = `ins_${randomUUID()}`;
   // The ports are part of the origins the app is configured with, so hold them until the
   // listeners bind them; a released probe port can be taken by another listener meanwhile.
@@ -772,6 +772,9 @@ export async function createConsoleAppFixture(t, options = {}) {
           ? {}
           : { credentialSources: options.credentialSources }),
         ...(options.executionMode === undefined ? {} : { executionMode: options.executionMode }),
+        ...(defaultAgentGatewayManagedMode === undefined
+          ? {}
+          : { gatewayManagedMode: defaultAgentGatewayManagedMode }),
       },
     });
     assert.equal(agent.status, 201);
@@ -902,6 +905,8 @@ export async function createConsoleAppFixture(t, options = {}) {
     memoryDatabase,
     provisionedAccounts,
     policy,
+    // The sink State and the API audit to: `options.auditSink`, or one the fixture made.
+    auditSink,
     // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.
     iamDriver,
     withIamOutage,
@@ -928,4 +933,48 @@ export async function createConsoleAppFixture(t, options = {}) {
       return controller;
     },
   };
+}
+
+// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
+// grant or revoke after sign-in: State reads the policy on each request.
+export function memberRole(fixture, label) {
+  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
+  assert.ok(role, `member ${label} has a Role`);
+  return role;
+}
+
+/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
+export function grantMember(fixture, label, grants) {
+  memberRole(fixture, label).permissions.push(
+    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
+  );
+}
+
+// The authorization denials an InMemoryAuditSink recorded: all of them, or those for `action`,
+// an exact action name or a RegExp for a family of actions.
+export function authorizationDenials(auditSink, action) {
+  const matches =
+    action === undefined
+      ? () => true
+      : typeof action === "string"
+        ? (name) => name === action
+        : (name) => action.test(name);
+  return auditSink
+    .list()
+    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
+}
+
+// Runs `send` and returns its response with the checks its authorization denials name, as
+// { action, kind, id }, so a refusal can be shown to be audited once, for its own target.
+export async function denialsDuring(auditSink, send) {
+  const before = authorizationDenials(auditSink).length;
+  const response = await send();
+  const denials = authorizationDenials(auditSink)
+    .slice(before)
+    .map(({ authorization: { action, resource } }) => ({
+      action,
+      kind: resource.kind,
+      id: resource.id,
+    }));
+  return { response, denials };
 }

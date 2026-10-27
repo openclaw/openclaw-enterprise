@@ -1,23 +1,18 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-25"
-last_updated_session: authoring-run/14e1a79b-96d6-4e9a-ab22-44a783a1ad50
+updated: "2026-10-26"
+last_updated_session: authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-OCC checks current identity and IAM policy, selects a Secret version and protects responses.
-The selected Driver's authenticated OpenShell supervisor obtains send permission and
-injects credentials outside the Agent; requests cannot change Drivers.
-
-[Supported configuration](../reference/credential-sources/protected-inference.md)
-excludes the bundled legacy supervisor.
-
-[Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
-separately binds recipient observation, committed material and request authorization;
-the Token Service issues, renews and retires material.
+An Agent process asks for repository metadata. Its authenticated supervisor captures
+the request and response connection. OpenClaw Control Plane (OCC) decides whether the
+sender can obtain a credential, send the request and release the response. The bundled legacy supervisor
+cannot enforce this exchange. See the [release cutoff](../reference/credential-sources/protected-inference.md)
+and [Credential Proxy threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
 
@@ -28,268 +23,302 @@ the Token Service issues, renews and retires material.
 
 ## Flow
 
+A dedicated Agent has a prepared `github-app-metadata` source for
+repository ID `12345`, name `acme/widgets`. A process requests
+`GET /repos/acme/widgets` at the admitted origin with an empty body.
+
+1. **Classify the request.** The GitHub adapter checks method, origin, path, headers
+   and body against the route. A second repository or `POST /repos/acme/widgets/pulls`
+   fails before credential access.
+2. **Authorize access.** OCC checks installation, execution, binding, withdrawal and
+   the Agent's current `credential_source:operate`. The resolver selects a committed,
+   usable token; only the trusted sender receives its injection header.
+3. **Authorize send.** On the same exchange, OCC rechecks authority and material.
+   Withdrawal after resolution gives no permit. An acknowledged permit authorizes
+   this exact request within its deadline.
+4. **Release repository identity.** The sender holds GitHub's complete response.
+   The adapter requires `200` JSON at most 64 KiB, with the admitted numeric ID
+   and matching repository name (ASCII letter case may differ). It returns
+   `{"id":12345,"full_name":"acme/widgets"}` in the admitted spelling, with
+   `Content-Type: application/json` and `Cache-Control: no-store`. A mismatch
+   withholds the response; other upstream fields and headers stay outside the workload.
+
+The credential-free metadata profile uses the same rules, records `no_material_required`
+and adds no credential header.
+[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/e573b7de03bafa2e84ea072d8c10cef7320575d4/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+
 ```mermaid
 graph TD
-  A["Capture signed instance and Sandbox"] --> B{"Exact route and fresh access?"}
-  B -- "no" --> X["Refuse: no send"]
-  B -- "yes" --> C["Read material and persist possible send"]
-  C -- "duplicate or unknown" --> X
-  C -- "new attempt" --> D{"Fresh send check and commit"}
-  D -- "denied or uncertain" --> X
-  D -- "acknowledged and owned" --> E["Supervisor send: bounded start"]
-  E --> F{"Protect response and commit observation"}
-  F -- "safe and live" --> G["Return bytes; delivery unconfirmed"]
-  F -- "unsafe, late or failed" --> H["Withhold; effects may exist"]
+  A["Capture request and recipient"] --> B{"Exact route and current access?"}
+  B -- "denied" --> X["Refuse send"]
+  B -- "allowed" --> C["Resolve material or record none required"]
+  C --> D{"Commit fresh send authorization"}
+  D -- "withdrawn, duplicate or uncertain" --> X
+  D -- "acknowledged" --> E["Supervisor sends before deadline"]
+  E --> F{"Protect response on the same exchange"}
+  F -- "approved and live" --> G["Release approved bytes; delivery unconfirmed"]
+  F -- "unsafe, late or failed" --> H["Withhold response; provider effects may exist"]
 ```
 
-Qualify deployed supervisors and networking separately.
+Installed enforcement requires observing the transport, provider and workload.
 
 ## Execution Trace
 
 ### Workspace PAT qualification boundary
 
 `apps/controller/src/composition/driver-packages.ts:createExternalProtectedDriver` and
-the bundled workspace registration select the same PAT verifier.
-`openShellEgressConfiguration` checks the provider's five routes for both Drivers.
-Each caller or its ancestor must match the packaged Codex executable. Each opens its
-own authorized response channel. The workspace-only profile refuses altered routes,
-missing registration and repository bindings.
+the bundled registration use the same PAT verifier. `openShellEgressConfiguration`
+checks five routes for both. Each caller or ancestor must match the packaged Codex
+executable and open its own authorized response channel. The workspace-only profile
+refuses altered routes, missing registration and repository bindings.
 
 `packages/occ/src/index.ts:admitStaticEgressSource` authorizes Secret UID/version access.
 `apps/controller/src/drivers/egress-proxy/codex-workspace-identity.ts:verifySource`
-uses operator trust for HTTPS whoami. Invalid TLS, redirects, ambiguous JSON and
-FedRAMP identities refuse. `egress.verifiedIdentity` records identity/material
-evidence without bearers. Admission and release require current evidence.
-Unbound updates reverify. Bound replacements need separate proof.
+uses operator trust for HTTPS whoami; invalid TLS, redirects, ambiguous JSON and FedRAMP
+identities refuse. `egress.verifiedIdentity` records bearer-free identity and material
+evidence. Admission and release require current evidence; unbound updates reverify and
+bound replacements need separate proof.
 
-`packages/occ/src/index.ts:checkEgressUseIn` verifies the workspace grant before
-lookup and send. Identity and discovery bind workspace/backend, ChatGPT requests
-bind account headers, and catalogs retain the admitted model. The bodyless,
-queryless policy GET requires both lists. The client enforces unchanged fragments.
-Two empty lists mean no policy. Responses over 64 KiB, ambiguous JSON/TOML
-or reflected credentials in decoded keys/strings refuse (32 levels, 4,096 nodes).
-Generation permits generic and managed developer instructions, empty MCP attribution
-and bounded reasoning efforts.
+`packages/occ/src/index.ts:checkEgressUseIn` verifies the workspace grant before lookup
+and send. Identity and discovery bind workspace/backend, ChatGPT requests bind account
+headers, and catalogs retain the admitted model. The bodyless, queryless policy GET
+requires both lists; two empty lists mean no policy. The client enforces unchanged
+fragments. Responses over 64 KiB, ambiguous JSON/TOML or reflected credentials in decoded
+keys/strings refuse (32 levels, 4,096 nodes). Generation permits generic and managed developer
+instructions, empty MCP attribution and bounded reasoning efforts.
 
 `packages/occ/src/index.ts:credentialSourceHarnessAuthSnapshot` records either
-`credentialProxyId` with Namespace, source, provider generation, sender and resolver,
-or `credentialGatewayId`. Save checks model and workspace authority.
+`credentialProxyId` with Namespace, source, provider generation, sender and resolver, or
+`credentialGatewayId`. Save checks model and workspace authority;
 `packages/occ/src/state/platform-state.ts:validHarnessAuthSnapshot` and SQL
-`harness_auth_is_valid` enforce exclusive ownership. The worker reloads the ready
-source. Compute checks `packages/contracts/src/harness-auth.ts:proxyHarnessAuthProvider`
-against the paired Proxy before using the nonsecret marker. Changed, absent or
-ambiguous ownership blocks restoration and dispatch.
+`harness_auth_is_valid` enforce exclusive ownership. The worker reloads the ready source;
+Compute checks `packages/contracts/src/harness-auth.ts:proxyHarnessAuthProvider` against
+the paired Proxy before using its nonsecret marker. Changed, absent or ambiguous ownership
+blocks restoration and dispatch.
 
 ### 1. Admit source and install the revision plan
 
-Authorize the source and Secret before admission; existing sources require opt-in.
-V3 binds Sandbox and Proxy by Driver ID, implementation, configuration digest, execution,
-source generation, grant and routes. Empty routes deny all. The API checks registration;
-workers compare stored references. Sandbox enforcement requires separate evidence.
+OCC checks source and Secret permissions at admission; existing sources need opt-in.
+Version 3 binds Sandbox and Credential Proxy to one registered Driver. The plan identifies
+the Driver, configuration digest, execution, source generation, grant and routes.
+Empty routes deny all. The API checks registration; the worker compares the stored reference.
 
-`packages/occ/src/index.ts:admitProxyPlan` rejects credential-free metadata grants
-that differ from the source; key order does not affect the digest. Mixed online Git/source
-routes require confirmed online authorization and reduction v2 (v8). [Joint admission](joint-model-git-admission.md)
-instead requires reduction v3, one workspace model source, one GitHub installation grant
-and both authenticated middleware registrations. V5/v7 remain unchanged.
-`apps/controller/src/drivers/compute/protected-execution-driver.ts` rechecks capabilities
-before configuration and the installed recipient before release. Model exchange retains
-its authenticated peer key; online Git uses pre-request authorization without an
-exact-dispatch deadline. `packages/occ/src/credential-policy-reduction.ts` removes only
-the selected route/binding and observes the original operation. Missing observation
-keeps withdrawal pending; stale installation cannot expand policy.
+For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects a
+Driver grant that differs from the source; property order does not change the digest.
+Only the bundled Driver recognizes historical protected plans by original capability
+IDs for stored release or custody settlement.
 
-Unprotected revisions remain v2. Only the bundled Driver recognizes historical
-protected capability IDs for stored release/custody settlement. Compute and workers
-recheck admission before launch. PostgreSQL rejects unknown decisions and mixed v2/v3
-fields. Older workers refuse v3: upgrade writers first and qualify release/deny-all.
+[Joint admission](joint-model-git-admission.md) requires reduction v3, one workspace
+model source, one GitHub installation grant and both authenticated middleware
+registrations. `apps/controller/src/drivers/compute/protected-execution-driver.ts` rechecks capabilities
+and the installed recipient. The
+[admission cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+distinguishes independent online Git v8 and v5/v7.
 
-Deploy returns 409 for unmapped Git profiles (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled
-`git-write` (`REPOSITORY_GIT_SENDER_UNQUALIFIED`), fixed Installation limits
-(`CredentialProxyAdmissionError`), or unadmitted sources except the Agent’s ready Gateway
-Harness source beside Git. Preparation repeats both Git checks. Git-only Proxies refuse
-Proxy-owned sources and Agents without Git (409).
+Compute and the worker recheck admission. PostgreSQL rejects unknown decisions and
+mixed v2/v3 fields. Older workers refuse v3.
 
-Compute wires Proxy to Sandbox provisioning. Protected sources require admission and exact source keys; protected workspace-token and API-key logins use nonsecret markers, not Gateway attachments.
-Gateway sources require exact attachments. Egress compares complete prepared policies
-and routes. Authenticated `LoadedPolicyObservationV1` binds source/effective policies,
+Deploy returns `409` for missing Git profiles (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`),
+bundled `git-write` (`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted sources or
+bindings, and Installation limits (`CredentialProxyAdmissionError`). The Agent's ready Gateway
+Harness source is allowed beside Git. A Git-only Proxy refuses Proxy-owned sources
+and Agents without Git. Preparation repeats both Git refusals.
+[Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
+uses a separate worker binding and requires recipient proof before release.
+
+Compute passes Proxy wiring to Sandbox provisioning. Protected sources require
+admission and an exact plan source-key match. Protected workspace-token and API-key
+logins use nonsecret markers, not Gateway attachments, and receive no Gateway
+authentication environment. Gateway-owned sources require their exact attachment.
+The egress Driver compares the complete Sandbox source policy and routes with the plan.
+Authenticated `LoadedPolicyObservationV1` binds source and effective policies to the
 Sandbox, instance, policy version, configuration/environment revisions and capabilities.
-Installation/revalidation enforce the [V1 contract](../reference/credential-sources/protected-inference.md#loaded-enforcement)
-and exact name-only exception. Missing evidence, widening, changed fences or legacy
-observations refuse. Gateway comparison includes unknown fields. Local fingerprints
-cover both hashes and full policies, without supplier-hash or attestation status.
+Installation and revalidation enforce the
+[V1 contract](../reference/credential-sources/protected-inference.md#loaded-enforcement),
+including its exact name-only exception. Missing evidence, widening, changed fences or
+legacy observations refuse. The gateway compares unknown fields. Its local fingerprint
+covers both hashes and full policies; it is neither a supplier hash nor attestation.
 
-Compute sets immutable `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` only for protected Harnesses.
-The helper matches it to the enrollment revision before listening on the existing service port.
-Compute withholds private status revision, port, container name and Pod UID; providers
-receive a verifier instead of the token.
+Compute adds `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from the immutable admitted revision
+only to protected provider Harness requirements. The helper checks it against the manifest
+before opening its authenticated listener. Compute withholds private status revision, port,
+container name and Pod UID; the provider receives the verifier, not the raw token.
 
-Harness awaits enrollment before probing. After installation commit, Compute requeries
-evidence and asks the selected Sandbox to check the exact Sandbox/service and
-execution/plan challenge. Compute signs a fresh process nonce and installation
-with a control-plane-only key. The listener closes before Codex starts; restart
-invalidates stale releases. Startup stays held after 180 seconds. Enrollment neither
-resolves material nor retries business requests. Reconciliation can repeat readiness
-exchanges, including queued active-revision work. Kubernetes has no periodic
-maintenance by default: Harness-only restart recovery is [not automatic](../reference/credential-sources/protected-inference.md#installation-configuration).
+The Harness waits for enrollment before the first model probe. After installation commit,
+Compute requeries evidence; the Sandbox Driver checks the exact Sandbox and service and
+reads the execution/plan challenge. Compute signs its fresh nonce and installation with
+a control-plane-only key. The listener closes before Codex starts; restart invalidates
+stale release. After 180 seconds, startup fails closed and remains held. Reconciliation
+can repeat readiness exchanges, including queued active-revision work. Enrollment neither
+resolves material nor retries business requests. Kubernetes has no default periodic
+maintenance, so Harness-only restart recovery is [not automatic](../reference/credential-sources/protected-inference.md#installation-configuration).
 
 ### 2. Capture identity, operation and first authority decision
 
-Each authenticated TLS stream carries one `HttpInstallationExchange.Exchange`.
-Up to 1,024 openings hold a 32-byte challenge until acceptance, closure or 30 seconds. The owner rechecks the bearer, gateway-signed `exchange_key`
-and supervisor Ed25519 signature over `openshell-exchange-v1`, zero byte, challenge
-and binary opening. Openings cannot supply keys; bearer-only RPCs refuse.
+Each authenticated TLS stream carries one `HttpInstallationExchange.Exchange`. The adapter
+authenticates the bearer and issues a random 32-byte challenge. Up to 1,024 openings await
+signed acceptance, closure or 30 seconds. The owner rechecks the bearer and verifies the
+gateway-signed `exchange_key` and supervisor's Ed25519 signature over `openshell-exchange-v1`,
+a zero byte, the challenge and binary opening. Request JSON cannot supply a key; bearer-only
+RPCs refuse.
 
-The adapter binds stream custody, snapshots the request before awaiting and joins the
-signed path and raw query verbatim; misplaced delimiters, fragments and malformed escapes refuse. Workspace catalog discovery requires exactly
-`GET https://chatgpt.com/backend-api/codex/models?client_version=0.163.0`.
-Proxy bounds and snapshots bodies/headers and reserves auth slots; OCC copies peer
-descriptors. Resolution, send and response lookup require an unexpired peer.
-Send/response require the captured sender, Sandbox, instance, exchange, installation
-and optional peer key. Changed keys refuse; bearers/handles cannot transfer custody.
-Closure cancels; cancellation/expiry releases material, but pending policy/receipt
-work retains its slot. No pipelining.
+The adapter binds stream custody, snapshots the request before awaiting and joins the signed
+path and raw query verbatim. Misplaced delimiters, fragments and malformed escapes refuse.
+Workspace catalog discovery requires exactly
+`GET https://chatgpt.com/backend-api/codex/models?client_version=0.163.0`. Proxy bounds
+bodies and headers and reserves authentication slots; OCC copies peer descriptors.
+Resolution, send and response lookup require an unexpired peer. Send and response require
+the captured sender, Sandbox, instance, exchange, installation and optional peer key.
+Changed keys refuse; bearers and handles cannot transfer custody. Closure cancels.
+Cancellation or expiry releases material; pending policy or receipt work retains its slot.
+No pipelining.
 
 `packages/occ/src/credential-proxy.ts:resolve` assigns the verified Sandbox's slot share,
-maps persisted installation state and classifies one exact provider route. Before
-capture/policy I/O it reserves UUIDv7 identity with a 30-second creation-based replay horizon. [Slots/IDs are bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
-unsupported/ambiguous operations refuse before reservation.
+maps installation state and classifies one route. Before capture or policy I/O it reserves
+a UUIDv7 request ID with a 30-second creation-based replay horizon.
+[Slots and IDs are bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
+unsupported or ambiguous operations refuse before reservation.
 
-Supplier enrollment binds the authenticated supervisor, outside-Agent key and
-downstream reply channel before queueing. `openshell.supervisor-middleware.installation-exchange.v1` is required;
-older executable-restricted grants cannot acquire it.
+Supplier enrollment starts at the authenticated supervisor hello. The supplier keeps its
+private key outside the Agent and pins the downstream reply channel before queueing. The
+complete path is not yet qualified. `openshell.supervisor-middleware.installation-exchange.v1`
+is required; older executable-restricted grants cannot acquire this profile.
 
-Each check uses a fresh transaction, refuses enclosing IAM snapshots, and verifies Namespace/Agent
-state, revision, installation, source generation, withdrawal and exact Agent source permission. `credentialNamespace` supplies runtime placement; IAM/audit
-retain logical Namespace identity. The Driver requeries policy-status evidence against
-the fence; replacement, missing evidence or changed configuration refuses. Denials
-record phase/request attribution without material.
+Each check uses a fresh platform transaction, refuses enclosing transactions to avoid
+IAM snapshot reuse, and verifies Namespace/Agent state, admitted revision, installation,
+source generation, withdrawal and exact Agent source permission. `credentialNamespace`
+supplies runtime placement; IAM and audit retain logical Namespace identity. The Driver
+rechecks policy-status evidence against the fence. Replacement, missing evidence or
+changed configuration refuses. Denials record phase/request attribution without material.
 
 ### 3. Resolve versioned material and authorize its sole send
 
-The Secret Driver verifies ownership and authoritative UID/resourceVersion. Static
-and prepared GitHub reads propagate `{ signal, deadlineAt }` through namespace checks,
-GET, retries and children. Dispatch checks the earliest deadline; invalid deadlines
-refuse and timeouts cannot extend them. GitHub acquisition, transport and injection
-require 1–16,384 nonspace printable ASCII bytes; this does not authenticate them.
+The Secret Driver verifies ownership and authoritative UID/resourceVersion. Static and
+prepared GitHub reads carry `{ signal, deadlineAt }` through namespace checks, GET, retries
+and children. Dispatch checks the earliest deadline; invalid deadlines refuse and timeouts
+cannot extend them. GitHub acquisition, transport and injection require 1–16,384 nonspace
+printable ASCII bytes; this does not authenticate them.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts:readWarm`
-pins committed attempt, material version and earliest material/signed expiry. After `clock_timestamp()` checks, the store
-projects only eligible row/issuer ciphertext.
-Decryption rechecks cancellation/expiry; the outer reader rechecks identity/expiry.
-Replaced/expired selections return `not_ready` unless the signed deadline elapsed.
-Projected bytes cannot be recalled; background custody permits rotation/cleanup.
-The supervisor receives request-scoped headers, an opaque handle and nonsecret evidence.
+pins the committed attempt, material version and earliest material expiry or signed
+deadline. After `clock_timestamp()` checks, the store projects only eligible ciphertext.
+Before decryption it rechecks cancellation and expiry; the outer reader rechecks identity
+and expiry. Replaced or expired selections return `not_ready` unless the signed deadline
+elapsed. Projected bytes cannot be recalled; background custody permits rotation and
+cleanup. The supervisor receives request-scoped headers, an opaque handle and nonsecret evidence.
 
 `packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof` checks
-current metadata, issuer/trust and exact evidence in the platform transaction,
-without another checkout, ciphertext or caller SQL. Statement/lock timeouts honor
-tighter caller limits. Success restores settings before cancellation/expiry checks;
-errors require owner rollback. OCC checks withdrawal, rejection and binding there.
+current metadata, issuer/trust and exact evidence in the platform transaction without
+another checkout, ciphertext or caller SQL. Timeouts honor tighter caller limits. Success
+restores settings before cancellation/expiry checks; errors require owner rollback. OCC
+checks withdrawal, rejection and binding there.
 
-Same-stream authorization echoes deadline, evidence, injection digest. Handle
-reservation precedes `packages/occ/src/egress-send-receipts.ts:EgressSendReceipts.begin`:
-possible dispatch commits before permission, keyed by sender Ref, instance, request/use
-and attempt, bound to store-qualified material and deadline. Duplicate, failed or
-unknown commits refuse, including after restart.
+Same-stream authorization echoes deadline, evidence and injection digest. Handle reservation
+precedes `packages/occ/src/egress-send-receipts.ts:EgressSendReceipts.begin`: possible
+dispatch commits before permission, keyed by sender Ref, instance, request/use and attempt,
+bound to store-qualified material and deadline. Duplicate, failed or unknown commits refuse,
+including after restart.
 
-Sender/OCC bind Sandbox, instance, configuration, peer key, policy hash, authority
-and plan; Git has separate recipient evidence. After fresh identity/policy/material/
-rejection checks, `EgressSendReceipts.authorize` commits execution, installation fence,
-exchange, custody, request/injection digests, authorization time and send deadline:
-at most one second, capped by request/material/identity expiry.
+Sender and OCC bind Sandbox, instance, configuration, peer key, policy hash, authority and
+plan; Git has separate recipient evidence. After fresh identity/policy/material/rejection
+checks, `EgressSendReceipts.authorize` commits execution, installation fence, exchange,
+custody, request/injection digests, authorization time and send deadline: at most one second,
+capped by request/material/identity expiry.
 
-Return rechecks cancellation, ownership and persisted deadlines.
-Lost acknowledgment/handle/deadline refuses; restart cannot reauthorize. Revocation
-can race authorized sends.
+Before permission, the registry rechecks cancellation, ownership and the persisted
+deadline. Lost acknowledgment, handle or deadline yields no permit; restart cannot
+reauthorize. Revocation can race an authorized send. An origin write with a lost reply
+remains a possible effect and must not be retried.
 
 ### 4. Protect response and finish
 
-`packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its peer, request and exchange, removes
-unlisted headers and releases no bytes before the decision. The request deadline bounds
-the first byte. On progress, `renewResponse` rechecks policy at most every 15 seconds;
-withdrawal cuts the stream within that window, and unavailable authority cannot extend
-the lease. A shorter authenticated peer lifetime caps cached leases and held responses;
-later progress cannot extend it.
+`packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its
+peer, request and exchange, removes unlisted headers and withholds bytes until the decision.
+`renewResponse` rechecks policy on progress; the [response policy](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
+describes the 15-second check and lease limits. Unavailable authority cannot extend the lease.
 Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
-For Responses, check client-assembled SDK output-part snapshots, assistant text across
-parts, items or deltas, and Codex's completed and streamed Plan views. Reject ambiguous
-order or indexes. Inspect function arguments as bounded JSON without recursively
-decoding strings. The
+For Responses, check SDK output-part snapshots, joined assistant text and Codex's
+completed and streamed Plan views. Reject ambiguous order or indexes. Inspect function
+arguments as bounded JSON without recursively decoding strings. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-preserves safe response bytes. The origin has already received the credential.
+preserves safe bytes; the origin has already received the credential.
 
 Only this exchange can claim the response. `EgressSendReceipts.observe` atomically records
-the decision and any exact rejection fence without bodies, headers, credentials or handles.
-Failure withholds bytes; success rechecks cancellation and deadline.
+the decision and exact rejection fence, if any, without bodies, headers, credentials or
+handles. Failure withholds bytes; success rechecks cancellation and deadline.
 
-Structured OpenAI `invalid_api_key`, unlike a bare 401, can establish rejection. At
-its next scheduled check, the prepared owner excludes that version.
-Concurrent owners coalesce replacement; uncertain issuance blocks it; late feedback
-cannot invalidate its successor. GitHub metadata has no positive rejection classifier.
+Structured OpenAI `invalid_api_key`, unlike a bare 401, can establish rejection. At its
+next check, the prepared owner excludes that version. Concurrent owners coalesce replacement;
+uncertain issuance blocks it; late feedback cannot invalidate the successor. GitHub metadata
+has no positive rejection classifier.
 
-Erase material after response handling or at deadline. Only pre-permission refusal can settle as undispatched. After possible permission, effects may exist:
-inspect the exact attempt without retrying; returned bytes do not prove delivery.
+Erase material after response handling or at deadline. Only a refusal before permission
+can settle as undispatched. After possible permission, inspect the exact attempt without
+retrying; returned bytes do not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
-The provider normalizes the nonsecret endpoint and classifies requests before credential access. `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools and ordinary Harness components,
-disables provider tools, and uses HTTP Responses without WebSockets or automatic retries.
-The manifest preserves this profile. The `--ignore-user-config` probe disables request/stream retries, including after timeout.
+Before credential access, the provider normalizes the nonsecret endpoint and classifies
+the request. `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps
+local tools and ordinary Harness components, disables provider tools, and uses HTTP
+Responses without WebSockets or automatic retries. The manifest preserves this profile.
+The `--ignore-user-config` probe sets request and stream retries to zero and never
+repeats a timed-out protected probe.
 
 ### 6. Reduce the live credential policy
 
 OCC commits withdrawal before provider action. Under the Agent lock,
 `packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` records an
-exact source/repository compare-and-reduce request in `credential_delivery_reductions`.
-Concurrent reductions wait; recovery observes the operation without another capability
-probe or mutation. The reductions owner manages material-delivery receipts in the same
-store with separately constrained evidence shapes.
+exact source or repository compare-and-reduce in `credential_delivery_reductions`.
+Concurrent reductions wait; recovery observes the original operation without another
+capability probe or mutation. Material-delivery receipts have separate evidence shapes
+in the same store.
 
-Declared reduction v2 covers exact-dispatch Git and online v8. Online v5 and observed-hook
-v6 retain their semantics. Ordinary v3 uses v1 only when the Driver declares it; v2 alone
-does not authorize v1 or multiple static sources.
+[Joint reduction v3](joint-model-git-admission.md#4-withdraw-one-grant) retains the
+other grant and observes each reserved effect before settlement or use.
 
-Independent observation supplies current policy from the exact operation, stable recipient
-and retained plan without changing the original installation receipt.
+Independent observation supplies current policy without changing the installation receipt.
+For model-source withdrawal,
 `apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts:recipients`
-compares the registered sender's observation with the exact confirmed effective installation. Model-source reduction must preserve the original Git grant and all
-stable execution/recipient fields. It returns the original Git delivery fence without
-reinstalling material or changing admission. Arbitrary subsets, stale policies and
-replacement recipients fail. Fresh Git requests require current Token Service
+checks the exact confirmed installation and preserves the Git delivery fence. The
+[joint flow](joint-model-git-admission.md#4-withdraw-one-grant) specifies retained grants,
+recipient checks and settlement. Fresh Git requests still require current Token Service
 approval, session, deadline and material-version checks.
 
-Missing identity, stale operations, incomplete configuration or wrong policy evidence
-keeps withdrawal pending; an identified replacement recipient can require retirement.
-Remaining grants stay unchanged; removing the last route leaves deny-all. Settlement
-cannot reopen withdrawn authorization; the Driver blocks stale installation from
-restoring routes. Reference-peer proof does not qualify released Sandboxes or continued
-model execution.
+Missing identity, stale operations, incomplete configuration or wrong evidence keeps
+withdrawal pending; an identified replacement recipient can require retirement. Remaining
+grants stay unchanged; removing the last route leaves deny-all. Settlement cannot reopen
+withdrawn authorization, and the Driver blocks stale installation from restoring routes.
+Reference-peer proof does not qualify released Sandboxes or continued model execution.
 
 ### 7. Retain installation custody
 
-`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` fixes settlement
-policy: independent confirmation for registered recipients; the original reserving
-worker for snapshots, including bootstrap. Reservations advance the operation fence; confirmation grants no request authority. PostgreSQL keeps the full
-recipient target and rejects a second binding for the same revision and target. Its hash
-index rechecks JSONB equality, even when admission policy exceeds a B-tree entry.
+`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` requires independent
+confirmation for registered recipients and the original reserving worker for snapshots,
+including bootstrap. Reservation advances the operation fence; confirmation grants no
+request authority. PostgreSQL rejects a second binding for the same revision and target.
+Its hash index rechecks JSONB equality even when policy exceeds a B-tree entry.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
 cancels only definitely unsent writes. Uncertain writes stay pending and blocked.
 `release` drops closed routes whose Sandbox is gone; refusal stays.
 See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
-Creation requires the exact live owner; deletion retains custody but prevents use. `apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:confirmDetached`
+Creation requires the exact live owner; deletion retains custody but prevents live use.
+`apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:confirmDetached`
 checks the retained fence, recipient, material, policy and request without another apply.
 
 ## Debugging and Verification
 
 Use the [testing guide](../testing/static-egress.md) to qualify model execution,
-response custody and NetworkPolicy with the selected chart/image. Observe origin and caller independently.
+response custody and NetworkPolicy with the selected chart and image. Observe the
+origin and caller independently.
 
 ## Related docs
 
+- [Credential Proxy overview](../design/credential-proxy.md)
+- [Credential sources and bindings](../reference/credential-sources.md#bind-a-source-to-an-agent)
 - [Joint model and Git admission](joint-model-git-admission.md)
 - [Credential source lifecycle](credential-source-lifecycle.md)
 - [Protected static inference](../reference/credential-sources/protected-inference.md)
@@ -302,6 +331,8 @@ None.
 
 ## Changelog
 
+- 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
+
 - 2026-10-25 03:08: Distinguish Git-only refusal from joint model and Git admission. (authoring-run/14e1a79b-96d6-4e9a-ab22-44a783a1ad50 - 66b50c98b72bd23eeba9e007e8c3d2cdaec81446)
 
 - 2026-10-24 19:46: Trace the accompanying bundled workspace registration and per-request custody. (authoring-run/1303a689-0f82-440b-a43f-1b2869851779 - 96dfb6a485b6632a1feeffc2bd53f10c74152cd1)
@@ -312,11 +343,11 @@ None.
 
 - 2026-10-24 07:10: Bind workspace credentials to their admitted sender and retain Git access after confirmed model withdrawal. (authoring-run/f0f87daa-3c51-4559-b105-23c8c3d6084b - 5ad11ff5e27b16d83e0560d8ca35f1233d48d2af)
 
+- 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
+
 - 2026-10-23 20:14: Preserve exact Proxy ownership through Harness admission, persistence and dispatch. (authoring-run/e93bd191-284b-4701-929c-85a5d446c694 - ef61a85efa8f9a819986a072efb50ca91deca607)
 
 - 2026-10-23 19:40: Record the workspace PAT policy and remaining qualification gates in the accompanying change. (authoring-run/46d0701b-da16-43b1-8c7e-2510a4dd1475 - c250d521a59cb7d1e8be85bf02a112062e5ab259)
-
-- 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
 
 - 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
 
@@ -336,28 +367,4 @@ None.
 
 - 2026-10-21 22:39: Explain conditional recovery of rejected prepared material and its classification limit in the accompanying change. (authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002 - df297cd59e8de130e9eb0599e67f47fa6d85079e)
 
-- 2026-10-16 22:49: Preserve Credential Proxy ownership when deriving Harness authentication environment. (authoring-run/bf50675b-2b74-4724-aeaf-8daecd2a5a29 - 6e302a4851b20191990bcb83d20b045a1462257a)
-
-- 2026-10-16 02:06: Protect independent assistant items and bounded seeded runs, including citation and plan-mode projections. (authoring-run/68ecede6-d2bc-4d49-ae2c-c04150ccb307 - 3ed0e1cbd553b753e3f7d97b720cb7a43b6b5109)
-
-- 2026-10-16 02:04: Bind prepared currentness proof to the active platform transaction. (authoring-run/61a459b9-beed-4357-a96a-8483ab7cc2b9 - 3ed0e1cbd553b753e3f7d97b720cb7a43b6b5109)
-
-- 2026-10-16 01:00: Protect incremental Responses SDK text snapshots and reject ambiguous appended indexes. (authoring-run/92d1c2e7-e68d-4684-b8d1-8bfa0ed99a09 - ed532ec5496e87da37c086cf71949f12a17250c9)
-
-- 2026-10-16 00:27: Bound openings before proof and keep canceled operations charged until pending work settles. (authoring-run/3c418cc2-68fe-4c9a-a34e-9ecb83372b88 - 8df404d0635fa00e8d452cd0b846be3c68d3c4b0)
-
-- 2026-10-15 20:14: Pin request ciphertext access to selected material and its expiry. (authoring-run/a87e5b92-3e56-47e2-8112-82aa89ca28c4 - ab675985805a9d4a855f441a3ba91e836d42a532)
-
-- 2026-10-15 19:23: Unify the read lifetime and exchange owner; detach one request snapshot before verification. (authoring-run/b34da698-7e69-4c1d-a28c-238ed9c7d1d4 - adddcf2c0ce2429fb8fc7b9e503b01a74affdec8)
-
-- 2026-10-15 04:08: Add acknowledged exact dispatch and the pending trusted acceptance integration gate. (authoring-run/77dbaecc-5f2b-4d7c-bd72-178b481d4feb - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
-- 2026-10-15 04:09: Bind capture and response to a possession-authenticated exchange; refuse legacy peers and record the remaining supplier gate. (authoring-run/4ac4c430-12aa-4529-a02a-e1f26041eab4 - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
-- 2026-10-15 04:06: Record the accompanying v2 admission cutoff and refusal before Compute release. (authoring-run/f0b2d2f6-37a8-4c41-b2e8-6c0c61ed8d5a - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
-
-- 2026-10-14 21:54: Join durable sender receipts to the authority, separate response observations from supplier proof, and fence positive rejection atomically. (authoring-run/c11e8dcb-9e87-4682-b47e-e8640a65706d - fc20eb0174eaf8ae9d4ccb327ec65236c49ef4fb)
-
-- 2026-10-14 21:15: Bind protected provider enrollment to a dedicated admitted-revision literal in the accompanying source fix. (authoring-run/a26c0140-0882-40ec-949d-c5fc6eecd0da - 765f1ef22aeba3e98c58a739700c9a0ffba14af4)
-
-- 2026-10-14 14:11: Consume current instance-fenced evidence, finite replay identity and selected Responses HTTP/SSE profile. (01a13a97-c578-77a2-81a7-7366f1380110 - e42cb1674fadaf14ba3d61a4164d1ad3fde9935c)
-
-- 2026-10-14 12:34: Document accompanying static egress implementation and its qualification limits. (authoring-run/fe204745-17c9-4662-82e0-e194d7c187cb - dc5648b67d2618cc43ef07562298e986a94674e7)
+[Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

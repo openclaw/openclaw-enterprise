@@ -45,6 +45,11 @@ export async function fixture(
     standingApproval = false,
     installationAccess = false,
     grantGeneration = /** @type {number | undefined} */ (undefined),
+    tokenLifetimeMs = /** @type {number | undefined} */ (undefined),
+    /** The first owner's clock argument; undefined starts it as the worker does. */
+    ownerClock = /** @type {import("../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts").Clock | undefined} */ (
+      undefined
+    ),
   } = {},
 ) {
   const directory = await socketDirectory(t, "prepared-git-");
@@ -60,6 +65,7 @@ export async function fixture(
     additionalPermissions: [permissions],
     installationAccess,
     draftResponse,
+    ...(tokenLifetimeMs && { tokenLifetimeMs }),
   });
   await writeFile(privateKeyPath, gh.privateKey.export({ type: "pkcs8", format: "pem" }), {
     mode: 0o600,
@@ -247,7 +253,7 @@ export async function fixture(
     ca: gh.tls.ca,
     startWorker: false,
   };
-  owner = await startPreparedGitHubGitOwner(ownerOptions);
+  owner = await startPreparedGitHubGitOwner(ownerOptions, ownerClock);
   return {
     /** Another worker owner on the same database, such as one after an issuer change. */
     async startOwner(overrides) {

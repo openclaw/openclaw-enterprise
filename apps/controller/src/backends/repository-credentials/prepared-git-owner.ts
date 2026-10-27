@@ -11,6 +11,7 @@ import type {
   RepositoryGitInstallationFence,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
+import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
 import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
 import { githubProviderOrigin } from "../../drivers/repo/github/credentials/factory.ts";
 import { preparationIssuerAuthority } from "../../drivers/repo/github/credentials/grants.ts";
@@ -156,11 +157,7 @@ export class PreparedGitHubAppKeyError extends Error {
 }
 
 /** Reads and parses the App key the way issuance uses it, zeroing the file bytes. */
-async function appSigningKey(
-  path: string,
-  appId: string,
-  clock: ReturnType<typeof createSystemClock>,
-) {
+async function appSigningKey(path: string, appId: string, clock: Clock) {
   let bytes: Buffer;
   try {
     bytes = await privateInput(path);
@@ -184,8 +181,13 @@ async function appSigningKey(
 }
 
 /** A single owner of App issuance, renewal, durable uncertainty and retirement.
- * No Git request can call maintain, and neither the broker nor API needs either key mount. */
-export async function startPreparedGitHubGitOwner(options: Options) {
+ * No Git request can call maintain, and neither the broker nor API needs either key mount.
+ * The worker passes no clock; `clock` is a separate argument so that parsed configuration,
+ * which is spread into `options`, can never select it. */
+export async function startPreparedGitHubGitOwner(
+  options: Options,
+  clock: Clock = createSystemClock(),
+) {
   const registry = validateGitHubRepositoryRegistry(options.registry, options.backendId);
   for (const repo of registry.repositories) {
     if (
@@ -198,7 +200,6 @@ export async function startPreparedGitHubGitOwner(options: Options) {
       throw new Error("PREPARED_REPOSITORY_REQUIRES_ONE_EXPLICIT_REVIEW_REF");
     }
   }
-  const clock = createSystemClock();
   const apiOrigin = githubProviderOrigin(options.apiOrigin ?? "https://api.github.com");
   const ca = options.ca;
   const authority = preparationIssuerAuthority(apiOrigin, ca);

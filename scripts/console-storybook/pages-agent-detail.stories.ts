@@ -190,9 +190,12 @@ export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers
 
 export const PolicyDenials = story("policyDenials");
 export const PolicyUnicodeExecutable = story("policyUnicodeExecutable");
+export const PolicyDenialsMany = story("policyDenialsMany");
+export const PolicyRulesPopulated = story("policyRulesPopulated");
 export const PolicyDenialsEmpty = story("policyDenialsEmpty");
 export const PolicyDenialsDisabled = story("policyDenialsDisabled");
 export const PolicyDenialsUnsupported = story("policyDenialsUnsupported");
+export const PolicyDenialsNoSandboxDriver = story("policyDenialsNoSandboxDriver");
 export const PolicyDenialsGap = story("policyDenialsGap");
 export const PolicyDenialsMissingMetadata = story("policyDenialsMissingMetadata");
 export const PolicyDenialsFailed = story("policyDenialsFailed");
@@ -219,3 +222,11 @@ export const ConfigurationRefreshRace = story("policyConfigurationRefresh");
 export const ConfigurationJsonFallback = story("policyConfigurationJson");
 
 export const ConfigurationOwnerDenied = story("policyConfigurationHidden");
+
+export const PolicySuggestionsExpanded = story("policySuggestionsExpanded");
+export const PolicySavedForLater = story("policySavedForLater");
+export const PolicyApplying = story("policyApplying");
+export const PolicyApplied = story("policyApplied");
+export const PolicyRetryApplication = story("policyRetryApplication");
+export const PolicyEditingAdminDenied = story("policyEditingAdminDenied");
+export const PolicyNoNetworkLimits = story("policyNoNetworkLimits");

@@ -33,7 +33,6 @@ import {
   CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
-  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
@@ -63,6 +62,7 @@ import {
   PROXY_REGISTRATION_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
+  REPOSITORY_SETTINGS_MISSING,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
@@ -1084,6 +1084,7 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
   const agent = await f.createAgent({
     repositoryBindings: selection,
     harnessAuth: { method: "runtime" },
+    gatewayManagedMode: false,
   });
   await f.prepareDeployment(agent);
   const path = `${f.collection}/${agent.id}`;
@@ -1372,7 +1373,10 @@ test("Provisioning refuses a Codex network proxy that blocks the repository brok
 
 test("Repository capability remains optional when no repository Backend or Driver is configured", async (t) => {
   const f = await fixture(t, { compute: sshCompute(), repositories: false });
-  const agent = await f.createAgent({ harnessAuth: { method: "runtime" } });
+  const agent = await f.createAgent({
+    harnessAuth: { method: "runtime" },
+    gatewayManagedMode: false,
+  });
   await f.prepareDeployment(agent);
   const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed));
@@ -1398,7 +1402,8 @@ test("Repository capability remains optional when no repository Backend or Drive
     const missingDriver = await f.request(method, path, body);
     assert.equal(missingDriver.status, 409, `${method}: ${JSON.stringify(missingDriver)}`);
     assert.equal(missingDriver.error.code, "RESOURCE_CONFLICT", method);
-    assert.equal(missingDriver.error.message, RepositoryDriverNotConfiguredError.description);
+    // Names the missing settings and who adds them (finding D763).
+    assert.equal(missingDriver.error.message, REPOSITORY_SETTINGS_MISSING);
   }
   assert.equal((await f.request("GET", f.collection)).data.length, 1, "no Agent was created");
   const unchanged = await f.request("GET", `${f.collection}/${agent.id}`);

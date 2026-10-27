@@ -79,6 +79,10 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/gateway-managed-mode",
+                    "label": "Gateway managed mode"
+                  },
+                  {
                     "page": "guides/topics/agent-presets",
                     "label": "Presets"
                   },
@@ -195,6 +199,14 @@
                   {
                     "page": "guides/topics/secrets",
                     "label": "Secrets"
+                  },
+                  {
+                    "page": "design/credential-proxy",
+                    "label": "Credential Proxy"
+                  },
+                  {
+                    "page": "reference/security/credential-proxy",
+                    "label": "Credential Proxy Threat Model"
                   },
                   {
                     "page": "reference/credential-sources",

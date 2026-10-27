@@ -89,7 +89,7 @@ ordered version history and at most one selected version, identified by
 readiness. See [Agent revisions](../../guides/topics/agent-revisions.md).
 
 The Agent revision records the source `configurationId`, `configurationKind`, and
-`configurationGeneration`, its complete saved native `configuration`
+`configurationGeneration`, [`gatewayManagedMode`](../agent-native-admin.md#gateway-managed-mode), its complete saved native `configuration`
 document, the approved Harness identity/version/mode, selected Compute identity,
 nullable `backendId`, and `harnessAuth` with its resolved internal source snapshot.
 The auth snapshot contains no credential bytes; public Agent revisions omit private
@@ -125,9 +125,7 @@ predecessor; see [activation order](#the-selected-version-after-a-failed-deploym
 Each Agent owns its gateway across versions; sibling Agents never share one. Kubernetes Compute supports managed authentication; SSH Compute supports
 embedded OpenClaw with [operator-managed runtime credentials](../drivers/ssh-compute.md#credentials-and-supported-boundaries).
 Docker rejects authentication bindings. Each Driver rejects unsupported bindings
-and topologies before deployment. Kubernetes Compute starts either an Agent-owned gateway plus a dedicated
-Codex workload with its separate ServiceAccount, or one embedded combined
-gateway/Harness. Without a SandboxDriver, Compute owns the Codex Deployment;
+and topologies before deployment. On Kubernetes without a SandboxDriver, Compute owns the Codex Deployment;
 with one selected, that Driver provisions the dedicated Harness workload.
 Unless Compute requests
 [exclusive replacement](../drivers/compute.md#production-revision-stages), as
@@ -278,10 +276,8 @@ are defined by the [API reference](../api.md).
 
 ## Stop and resume
 
-In the console, open the Agent, select **Stop Agent**, and confirm. Use
-**Refresh stop status** to reread its desired state and selected version.
-Resume through **Create new version** → **Deploy new version**. See the
-[console controls](../console.md#stop-and-resume-an-agent) for request recovery.
+In the console, use **Stop Agent**, and resume with **Deploy new version**; see the
+[console controls](../console.md#stop-and-resume-an-agent).
 
 `POST /namespaces/:namespaceId/agents/:agentId/stop` is bodyless and requires
 exact-Agent `operate`. A `202` response means OCC committed `desiredRuntimeState:

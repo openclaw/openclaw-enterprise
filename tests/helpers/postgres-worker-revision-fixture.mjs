@@ -555,6 +555,7 @@ export function createWorkerRevisionFixtures(
         namespaceId: namespace.id,
         agentId: owner.id,
         revision: number,
+        gatewayManagedMode: owner.gatewayManagedMode,
         backendId: owner.backendId,
         configuration: { revision: String(number) },
         configurationId: owner.configurationId,

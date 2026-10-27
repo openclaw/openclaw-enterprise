@@ -1,14 +1,26 @@
-// The embedded Gateway restarted after an unclean stop, split from
-// runtime-image-startup-termination.test.mjs. It starts the wrapper through the
-// same scenario helper as the startup probe files.
+// The embedded Gateway restarted on its retained state: after an unclean stop
+// (split from runtime-image-startup-termination.test.mjs; it starts the wrapper
+// through the same scenario helper as the startup probe files), and after Docker
+// Compute stops or replaces it.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { INITIALIZE_EMBEDDED_GATEWAY_OWNER } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
+import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  createHarnessConfiguration,
+  withStubbedProviderEndpoint,
+} from "../helpers/harness-configuration.mjs";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
+  assertGatewayFirstTurnMemory,
+  gatewayMemoryPeak,
   image,
   imageTestOptions,
   runDocker,
   gatewayStateVolume,
+  runtimeImageModel,
 } from "../helpers/runtime-image-startup.mjs";
 import {
   runStartupProbeScenario,
@@ -80,73 +92,46 @@ async function sendFirstTurn(containerName) {
   return JSON.parse(stdout);
 }
 
-// OpenClaw's GATEWAY_OWNER_HEARTBEAT_STALE_MS: a Gateway in another PID
-// namespace, as a restarted container is, cannot verify that the killed owner
-// is gone and refuses the shared state until the owner's heartbeat is 90 s old.
-const ownerHeartbeatStaleMs = 90_000;
-
-// Runs in a one-shot container on the stopped Gateway's state: moves the owner
-// heartbeats back by `ageMs`, leaving the volume as it is that long after the
-// kill. The heartbeats are the mtimes of the Gateway's lock files (every lock
-// file is aged, as real time would) and heartbeat_at of the state database's
-// leases (their other times move with it). The agent database is not opened.
-// With automatic checkpoints off, the process then kills itself, so SQLite
-// does not checkpoint on close and the state database is left with its
-// write-ahead log, as the killed Gateway left it. Prints what it aged as JSON.
-async function ageOwnerHeartbeats({ stateDir, ageMs }) {
-  const fs = await import("node:fs");
-  const path = await import("node:path");
-  const { DatabaseSync } = await import("node:sqlite");
-  const locks = [];
-  const walk = (directory) => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      const file = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        walk(file);
-      } else if (entry.isFile() && entry.name.endsWith(".lock")) {
-        const { atime, mtimeMs } = fs.statSync(file);
-        fs.utimesSync(file, atime, new Date(mtimeMs - ageMs));
-        locks.push(path.relative(stateDir, file));
-      }
-    }
-  };
-  walk(stateDir);
-  const database = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"));
-  database.exec("PRAGMA wal_autocheckpoint = 0");
-  const aged = database
-    .prepare(
-      "UPDATE state_leases SET heartbeat_at = heartbeat_at - :age, expires_at = expires_at - :age, created_at = created_at - :age, updated_at = updated_at - :age RETURNING scope",
-    )
-    .all({ age: ageMs });
-  process.stdout.write(JSON.stringify({ locks, leases: aged.map(({ scope }) => scope) }), () =>
-    process.kill(process.pid, "SIGKILL"),
-  );
-}
-
-async function ageStoppedGatewayHeartbeats(homeVolume, ageMs) {
-  const program = `await (${ageOwnerHeartbeats.toString()})(${JSON.stringify({ stateDir: "/home/node/.openclaw", ageMs })});`;
-  const { stdout, stderr } = await runDocker([
+async function recoverStoppedGateway(gatewayId) {
+  // The test owns this private volume. Act as its operator only after Docker
+  // confirms the exact former owner stopped. Reuse its read-only fixture config
+  // and writable state so OC inspects the same locks the replacement will see.
+  const command = [
     "run",
     "--rm",
-    "--user",
-    "1000:1000",
     "--network",
     "none",
-    "--volume",
-    `${homeVolume}:/home/node`,
+    "--user",
+    "1000:1000",
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--volumes-from",
+    gatewayId,
+    "--tmpfs",
+    "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
+    "--env",
+    "HOME=/home/node",
+    "--env",
+    "OPENCLAW_STATE_DIR=/home/node/.openclaw",
+    "--env",
+    "OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json",
     "--entrypoint",
-    "sh",
+    "node",
     image,
-    "-c",
-    // The program ends with SIGKILL (exit 137); any other exit is a failure.
-    'node --no-warnings --input-type=module -e "$0"; status=$?; [ "$status" -eq 137 ] || exit "$status"',
-    program,
-  ]);
-  try {
-    return JSON.parse(stdout);
-  } catch {
-    throw new Error(`ageing the Gateway heartbeats printed no result: ${stdout} ${stderr}`);
-  }
+    "/app/openclaw.mjs",
+    "gateway",
+    "recover-lock",
+    "--json",
+  ];
+  const { stdout: inspection } = await runDocker(command);
+  const { present, confirmation } = JSON.parse(inspection);
+  assert.equal(present, true, "the hard stop must leave Gateway ownership records");
+  assert.match(confirmation, /^[a-f0-9]{64}$/);
+  const { stdout: recovery } = await runDocker([...command, "--confirm", confirmation]);
+  assert.equal(JSON.parse(recovery).recovered, true);
 }
 
 // Finding 2185: a Gateway Pod went Ready while OpenClaw was still inspecting
@@ -154,49 +139,119 @@ async function ageStoppedGatewayHeartbeats(homeVolume, ageMs) {
 // first chat turn after Start got HTTP 500. A Gateway killed without its
 // SIGTERM drain (OOM kill, node loss) leaves the same lease. Its restart on the
 // same state must stay unready until the agent takes turns.
-test(
-  "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns",
-  { ...imageTestOptions, timeout: 900_000 },
-  async (t) => {
-    const homeVolume = await gatewayStateVolume(t, "/home/node");
+for (const [recovery, title] of [
+  [
+    "Docker",
+    "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns",
+  ],
+  [
+    "Kubernetes",
+    "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner",
+  ],
+  [
+    "operator",
+    "runtime image embedded Gateway serves its first turn after operator-confirmed recovery from an unclean stop",
+  ],
+]) {
+  test(title, { ...imageTestOptions, timeout: 900_000 }, async (t) => {
+    const mountPath = recovery === "Docker" ? "/home/node/.openclaw" : "/home/node";
+    const volume = await gatewayStateVolume(t, mountPath);
+    const stateMount = recovery === "Docker" ? { stateVolume: volume } : { homeVolume: volume };
+    // The named mounts give two Docker containers the lifetime and mount
+    // permissions of one Pod's two emptyDirs. A real PID namespace dies on kill.
+    const podOwner =
+      recovery === "Kubernetes"
+        ? {
+            verifier: await gatewayStateVolume(t, "/run/oce-gateway-owner-key"),
+            scratch: await gatewayStateVolume(t, "/run/oce-gateway-owner-start"),
+          }
+        : undefined;
+    if (podOwner) {
+      await runDocker([
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        "1000:1000",
+        "-v",
+        podOwner.verifier + ":/run/oce-gateway-owner-key",
+        "-v",
+        podOwner.scratch + ":/run/oce-gateway-owner-start",
+        "--entrypoint",
+        "node",
+        image,
+        "-e",
+        INITIALIZE_EMBEDDED_GATEWAY_OWNER,
+      ]);
+    }
     // The first Gateway answers a turn, so its agent database holds a lease,
     // and is then killed with no chance to release it.
     let firstTurn;
+    let terminatedGatewayNamespace;
+    const compute =
+      recovery === "Docker"
+        ? new DockerComputeDriver({ images: { gateway: image, agent: image } })
+        : undefined;
+    const gatewayManagedMode = recovery === "Kubernetes";
     const first = await runStartupProbeScenario(t, {
       kind: "gateway",
       mode: "answer",
-      homeVolume,
+      ...stateMount,
+      podOwner,
+      gatewayManagedMode,
       until: ({ events }) => events.some(observedValue("ready", true)),
       act: async ({ containerName }) => {
         firstTurn = await sendFirstTurn(containerName);
-        await runDocker(["kill", "--signal", "KILL", containerName]);
-        // No heartbeat renewal can follow the aging below.
-        await runDocker(["wait", containerName]);
+        if (compute) {
+          await compute.rememberEmbeddedGateway(
+            containerName,
+            await compute.container(containerName),
+            volume,
+          );
+        }
       },
     });
     await withStartupProbeEvidence(first, async () => {
       assert.equal(firstTurn.status, 200, `first Gateway turn: ${JSON.stringify(firstTurn)}`);
+      assert.equal(firstTurn.content, "READY");
     });
-    // The restart takes over only once the killed owner's heartbeat is stale;
-    // an earlier start refuses the shared state and exits. Age the heartbeats
-    // instead of waiting 92 s in real time. The restart still runs in its own
-    // PID namespace, as a restarted Pod container does, so it reaches the same
-    // stale agent database lease as after a real wait.
-    const aged = await ageStoppedGatewayHeartbeats(homeVolume, ownerHeartbeatStaleMs + 2_000);
-    assert.ok(
-      aged.locks.includes("tmp/openclaw-1000/gateway.state.lock"),
-      `no Gateway lock file to age: ${JSON.stringify(aged)}`,
-    );
-    assert.ok(
-      aged.leases.includes("gateway-owner"),
-      `no owner lease to age: ${JSON.stringify(aged)}`,
-    );
+    // OpenClaw starts most of its worker threads on the first turn, which sets
+    // the Gateway's memory high-water mark (finding 2700). The peak includes the
+    // turn client above, which runs in the same container.
+    await assertGatewayFirstTurnMemory(t, await gatewayMemoryPeak(first.containerName));
+    const { stdout: id } = await runDocker(["inspect", "--format", "{{.Id}}", first.containerName]);
+    const gatewayId = id.trim();
+    await runDocker(["kill", "--signal", "KILL", gatewayId]);
+    const stopped = await runDocker(["wait", gatewayId]);
+    assert.equal(stopped.stdout.trim(), "137", "Docker must confirm the killed Gateway exited");
+    if (compute) {
+      await compute.removeGateway(
+        first.containerName,
+        await compute.container(first.containerName),
+      );
+      terminatedGatewayNamespace = await compute.takeEmbeddedGatewayHandoff(
+        first.containerName,
+        volume,
+      );
+      assert.ok(terminatedGatewayNamespace, "Engine must confirm the same container stopped");
+    } else if (recovery === "operator") {
+      await recoverStoppedGateway(gatewayId);
+    }
     // The restart's first turn goes out as soon as the runtime reports ready.
     let turn;
     const restarted = await runStartupProbeScenario(t, {
+      terminatedGatewayNamespace,
       kind: "gateway",
       mode: "answer",
-      homeVolume,
+      ...stateMount,
+      podOwner,
+      gatewayManagedMode,
       until: ({ phases }) => phaseAt(phases, "native-spawn") !== undefined,
       act: async ({ containerName }) => {
         // A failed exec is reported with the wrapper output below.
@@ -207,6 +262,9 @@ test(
       // Before the fix: HTTP 500 {"error":{"message":"internal error"}}.
       assert.equal(turn.status, 200, `first turn after restart: ${JSON.stringify(turn)}`);
       assert.equal(turn.content, "READY");
+      if (recovery !== "operator") {
+        assert.match(restarted.snapshot.output, /"recovered"\s*:\s*true/);
+      }
       // The restart did inspect the unreleased database in the background
       // after its listener bound: the window this readiness must cover.
       assert.match(restarted.snapshot.output, /previous release not observed/);
@@ -217,6 +275,123 @@ test(
       // the deferred check instead and no such line.
       assert.match(restarted.snapshot.output, /integrityGateReason=stale-lease-full because=[a-z]/);
       assert.match(restarted.snapshot.output, /recovered after background inspection/);
+      if (gatewayManagedMode) {
+        // The launcher sets these only on its native Gateway child, including after a restart.
+        await runDocker([
+          "exec",
+          restarted.containerName,
+          "sh",
+          "-ec",
+          String.raw`pid=$(pgrep -of '^openclaw-gateway')
+for flag do
+  tr '\0' '\n' < "/proc/$pid/environ" | grep -Fxq "$flag" || { echo "Missing $flag" >&2; exit 1; }
+done`,
+          "sh",
+          "OPENCLAW_CONFIG_READONLY=1",
+          "OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS=1",
+          "OPENCLAW_DISABLE_CRON_HOST_EXECUTION=1",
+        ]);
+      }
     });
+  });
+}
+
+// Board finding 2674: Docker Compute force-removed (SIGKILL) a Gateway it had not
+// observed, for example after a controller restart. With retained state (initial
+// workspace files), the killed Gateway's OpenClaw state lock stayed on the volume;
+// the replacement, in a new PID namespace, cannot prove that owner stopped, so it
+// refused the state and exited before readiness. A Gateway stopped with SIGTERM
+// releases the lock. A Gateway the Driver observed is handed off as above.
+test(
+  "runtime image Docker Compute replaces a Gateway on retained state after a controller restart and on redeploy",
+  { ...imageTestOptions, timeout: 600_000 },
+  async (t) => {
+    // The real Docker Compute Driver on the local engine with the image under test.
+    // No model turn runs; the provider endpoint is a stub, so the synthetic key
+    // the Driver requires never leaves the host.
+    const previousKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "synthetic-docker-replacement-key";
+    t.after(() => {
+      if (previousKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousKey;
+      }
+    });
+    const driver = new DockerComputeDriver({ images: { gateway: image, agent: image } });
+    const createdAt = new Date().toISOString();
+    const namespace = {
+      id: `ns-replacement-${randomUUID()}`,
+      name: "Gateway replacement proof",
+      status: "ready",
+      createdAt,
+    };
+    const agentId = `agent-replacement-${randomUUID()}`;
+    const revisionAt = (number) => ({
+      id: `rev-replacement-${number}-${randomUUID()}`,
+      namespaceId: namespace.id,
+      agentId,
+      revision: number,
+      configurationId: `cfg-replacement-${randomUUID()}`,
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      configuration: admitLoggingConfiguration(
+        withStubbedProviderEndpoint(createHarnessConfiguration("openclaw", runtimeImageModel)),
+        "info",
+      ),
+      harness: { id: "openclaw", version: "2026.9.1", mode: "embedded" },
+      compute: { id: driver.id, implementation: driver.implementation },
+      executionAdmission: { version: 2, mode: "unprotected" },
+      servicePrincipalId: `sp-replacement-${randomUUID()}`,
+      createdAt,
+    });
+    // Initial workspace files give the Agent its retained state and workspace
+    // volumes, so each Gateway below opens the state its predecessor left.
+    const setup = {
+      id: `setup-${randomUUID()}`,
+      namespaceId: namespace.id,
+      agentId,
+      completed: false,
+      files: {
+        "AGENTS.md": "# Replacement proof\n",
+        "SOUL.md": "",
+        "IDENTITY.md": "",
+        "USER.md": "",
+      },
+    };
+    const completed = { id: setup.id, namespaceId: namespace.id, agentId, completed: true };
+    t.after(async () => {
+      const result = await driver.deleteNamespace(namespace);
+      assert.equal(result.namespaceDeleted, true, "owned containers, volumes and network removed");
+    });
+    await driver.preflight();
+    assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
+    const first = revisionAt(1);
+    assert.equal((await driver.prepareRevision(first, { workspaceSetup: setup })).ready, true);
+
+    // A restarted controller has a new Driver that never observed the running
+    // Gateway. It stops the Agent, then deploys the next revision on the same state.
+    const restarted = new DockerComputeDriver({ images: { gateway: image, agent: image } });
+    await restarted.preflight();
+    await restarted.stopRevision(first);
+    const second = revisionAt(2);
+    assert.equal(
+      (await restarted.prepareRevision(second, { workspaceSetup: completed })).ready,
+      true,
+      "the Gateway started after Stop must take over the released state",
+    );
+
+    // Redeploy with no Stop, again from a restarted controller: a fresh Driver
+    // never observed the running Gateway, so it stops and removes it (SIGTERM),
+    // not the observed SIGKILL handoff that `restarted` would take.
+    const redeployed = new DockerComputeDriver({ images: { gateway: image, agent: image } });
+    await redeployed.preflight();
+    const third = revisionAt(3);
+    assert.equal(
+      (await redeployed.prepareRevision(third, { workspaceSetup: completed })).ready,
+      true,
+      "the Gateway that replaces a running one must take over its state",
+    );
+    await redeployed.stopRevision(third);
   },
 );
