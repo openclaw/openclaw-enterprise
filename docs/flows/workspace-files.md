@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-10-26
-last_updated_session: authoring-run/f4c463b0-af6d-4850-a166-c663a7e78c64
+updated: 2026-10-27
+last_updated_session: Codex/01a16ff3-354f-7873-a064-92d0ff2bcf0f
 ---
 
 # Agent Workspace Files Flow
@@ -83,6 +83,11 @@ creates a stopped Agent and, when keys were supplied, a private `workspaceSetups
 record keyed by exact Namespace/Agent. No AgentRevision is created. Inputs do
 not enter the Agent, Configuration, Agent revision snapshot, public response, or
 metadata-only create audit. API strings are preserved; Console textareas use LF newlines.
+
+`packages/occ/src/index.ts:updateAgent` keeps an omitted Configuration ID.
+Completed setup is rechecked when the resolved Configuration ID or execution
+mode changes. Saving Gateway managed mode alone keeps both. Pending setup is
+checked on each update; deployment checks completed setup too.
 
 ### 2. Deployment initializes storage before execution
 
@@ -366,6 +371,7 @@ replays it. Cleanup closes the native client.
 
 ## Changelog
 
+- 2026-10-27 07:45: Resolve omitted Configuration IDs before checking Agent update topology. (Codex/01a16ff3-354f-7873-a064-92d0ff2bcf0f - 46f6f41f4763335da2512d5127e7082987df77f8)
 - 2026-10-26 22:29: Point workspace setup to the version and template digest it checks. (authoring-run/f4c463b0-af6d-4850-a166-c663a7e78c64 - 855eeed7cb66c8f85b0ad9672d561bf0a825e621)
 
 - 2026-10-26: An Agent with no running version answers `409` instead of `503`. (fix-dogfood-r51)
@@ -375,9 +381,5 @@ replays it. Cleanup closes the native client.
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 
 - 2026-10-12 22:30: Initial workspace files in a Sandbox are refused at save with a `409`. (fix-1144-1145b - 8aa391300)
-
-- 2026-10-10 12:04: Preserve SDK initializer timestamps. (authoring-run/0e9aadda-36b5-4f99-af17-ffde7a3cd26d - f8a837e33b5c03bc0c92065e979485ee06960150)
-
-- 2026-10-10 01:26: Follow embedded sole-roster Hello metadata while retaining explicit and dedicated targets. (authoring-run/20e38f57-7665-4641-bd09-f3a162733d69 - 5d3c6ac0ca3dc5ab3a6ffc46de8f054da3f7df2d)
 
 [Agent workspace files documentation history](workspace-files/history.md) preserves the older dated entries.

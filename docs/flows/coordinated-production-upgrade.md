@@ -262,6 +262,16 @@ the API response path, the operator retries the read and checks the exported
 inventory before proceeding with recovery. Empty
 204 deletes and explicitly accepted 404 responses retain their existing meaning.
 
+On re-creation, `importTenants` filters skipped sources and checks that each
+selected source Namespace has a distinct target name. Saved destination IDs
+remain reserved even when their sources are skipped. It combines those IDs with
+selected unsaved sources resolved from live names, and rejects shared destinations
+before any mutation or ID-map save. The operator
+chooses distinct `--rename` targets, skips a source, or corrects a conflicting
+saved map before retrying. A one-to-one mapping can still reuse an empty target
+and resume. A skipped source without a saved destination reserves nothing.
+The check does not separate resources an older import already merged.
+
 ## Debugging and Verification
 
 - For chart or admission failures before mutation, inspect `server-dry-run.txt`;

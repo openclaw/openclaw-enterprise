@@ -9634,7 +9634,7 @@ export class OpenClawController {
       // refuses that pair.
       const workspaceSetup = await state.workspaceSetups.find(namespace.id, agent.id);
       const topologyChanged =
-        input.configurationId !== agent.configurationId ||
+        configurationId !== agent.configurationId ||
         (input.executionMode !== undefined && input.executionMode !== agent.executionMode);
       await this.validateSavedAgentTopology(
         state,
