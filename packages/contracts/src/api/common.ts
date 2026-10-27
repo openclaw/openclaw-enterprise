@@ -716,7 +716,7 @@ export const RepositoryBindingSelectionsSchema = Type.Array(RepositoryBindingSel
 
 export const GatewayManagedModeSchema = Type.Boolean({
   description:
-    "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+    "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
 });
 
 export const CreateAgentBody = Type.Object(

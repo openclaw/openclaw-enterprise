@@ -22026,6 +22026,9 @@ test("dedicated Gateway tool policy is checked at Agent admission for both Harne
     [{ allow: ["group:runtime"] }, /concrete tool/],
     [{ allow: ["message"], actions: { message: ["set-profile"] } }, /reviewed task actions/],
     [{ allow: ["sessions"] }, /actions.sessions must list/],
+    // The pinned OpenClaw fails every turn's tool assembly for an action-bearing tool
+    // allowed without actions (finding 2679), so save refuses it.
+    [{ allow: ["dashboard"] }, /actions.dashboard must list/],
     [null, /must be an object/],
   ];
   for (const id of ["openclaw", "codex"]) {
@@ -22050,6 +22053,7 @@ test("dedicated Gateway tool policy is checked at Agent admission for both Harne
       undefined,
       { allow: [] },
       { allow: ["sessions", "diffs"], actions: { sessions: ["patch"] } },
+      { allow: ["dashboard"], actions: { dashboard: ["read"] } },
     ]) {
       assert.doesNotThrow(() =>
         driver.validateHarnessAuth(
