@@ -13,6 +13,11 @@ import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
+const sourceRevision = (
+  await execute("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
+    cwd: repository,
+  })
+).stdout.trim();
 const upgradeScript = fileURLToPath(
   new URL("../../scripts/upgrade-production-images", import.meta.url),
 );
@@ -163,7 +168,7 @@ fi
     ...(images.includes("controller") ? ["--controller-image", controllerImage] : []),
     ...(images.includes("runtime") ? ["--runtime-image", runtimeImage] : []),
     "--source-revision",
-    "c".repeat(40),
+    sourceRevision,
     "--evidence-dir",
     evidenceDirectory,
     "--occ",
@@ -412,7 +417,7 @@ esac
 
 // Argument validation precedes file and cluster access. Keep the kubeconfig
 // absent so an accepted argument reaches a distinct, observable refusal.
-function validationArguments(directory, revision = "d".repeat(40)) {
+function validationArguments(directory, revision = sourceRevision) {
   return [
     "--kubeconfig",
     join(directory, "kubeconfig"),
@@ -432,6 +437,114 @@ function validationArguments(directory, revision = "d".repeat(40)) {
     join(directory, "evidence"),
   ];
 }
+
+// Exercise the real entrypoint and Git checkout; cluster tools only record an
+// unexpected call. Missing private inputs make the next local boundary explicit.
+test("production image upgrades bind the source revision before private inputs", async (t) => {
+  const differentRevision = (sourceRevision[0] === "a" ? "b" : "a") + sourceRevision.slice(1);
+  for (const [scenario, revision, expected] of [
+    ["matching", sourceRevision, /kubeconfig must be a readable regular file/u],
+    ["mismatched", differentRevision, /checkout commit does not match --source-revision/u],
+    ["unavailable", sourceRevision, /could not verify the checkout commit/u],
+    ["nested", sourceRevision, /could not verify the checkout commit/u],
+    ["inherited-git-dir", sourceRevision, /could not verify the checkout commit/u],
+    ["inherited-common-dir", sourceRevision, /kubeconfig must be a readable regular file/u],
+    ["standalone", null, /--controller-image must be an approved immutable/u],
+    ["linked", null, /--controller-image must be an approved immutable/u],
+    ["external-core-worktree", null, /could not verify the checkout commit/u],
+    ["external-git-work-tree", null, /could not verify the checkout commit/u],
+  ]) {
+    await t.test(scenario, async (t) => {
+      const directory = await temporaryDirectory(t, "occ-upgrade-source-");
+      const bin = join(directory, "bin");
+      const log = join(directory, "cluster-calls");
+      await mkdir(bin);
+      for (const command of ["kubectl", "helm"]) {
+        await writeCommand(bin, command, "exit 97\n", { log });
+      }
+      const env = { PATH: `${bin}:${dirname(process.execPath)}:/bin:/usr/bin` };
+      let cwd = repository;
+      if (scenario === "unavailable" || scenario === "inherited-git-dir") {
+        cwd = directory;
+      } else if (scenario === "nested") {
+        cwd = join(repository, "tests");
+      }
+      // Ambient Git metadata must neither supply a missing checkout nor redirect
+      // the current checkout's common directory away from its own gitfile.
+      if (scenario === "inherited-git-dir") {
+        env.GIT_DIR = join(repository, ".git");
+      } else if (scenario === "inherited-common-dir") {
+        env.GIT_COMMON_DIR = join(directory, "missing-common-dir");
+      }
+      let selectedRevision = revision;
+      if (revision === null) {
+        // Real Git metadata can name the right commit but a different worktree.
+        // Keep repositories and identities local to this disposable fixture.
+        const standalone = join(directory, "standalone");
+        const external = join(directory, "external");
+        const gitEnvironment = {
+          ...env,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+        };
+        await execute("git", ["init", standalone], { env: gitEnvironment });
+        const git = (args) => execute("git", args, { cwd: standalone, env: gitEnvironment });
+        await git([
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "Fixture",
+        ]);
+        selectedRevision = (await git(["rev-parse", "HEAD"])).stdout.trim();
+        cwd = standalone;
+        if (scenario === "linked") {
+          await git(["worktree", "add", "--detach", external, "HEAD"]);
+          cwd = external;
+        } else if (scenario === "external-core-worktree") {
+          await mkdir(external);
+          await git(["config", "core.worktree", external]);
+        } else if (scenario === "external-git-work-tree") {
+          await mkdir(external);
+          env.GIT_WORK_TREE = external;
+        }
+      }
+      // Prove both guards are reachable, then clear their setup call receipts.
+      for (const command of ["kubectl", "helm"]) {
+        await assert.rejects(execute(command, [], { env }), { code: 97 });
+      }
+      await rm(log);
+      await assert.rejects(
+        execute(
+          upgradeScript,
+          [
+            ...validationArguments(directory, selectedRevision),
+            "--controller-image",
+            // A bad image gives synthetic checkouts a boundary before helper/input access.
+            revision === null
+              ? "invalid"
+              : `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
+          ],
+          { cwd, env },
+        ),
+        (error) => {
+          assert.equal(error.code, 1);
+          assert.match(error.stderr, expected);
+          return true;
+        },
+      );
+      await assert.rejects(readFile(log), { code: "ENOENT" });
+      await assert.rejects(readFile(join(directory, "evidence")), {
+        code: "ENOENT",
+      });
+    });
+  }
+});
 
 test("production image upgrades refuse uppercase repository paths and bad digests before touching the cluster", async (t) => {
   const directory = await temporaryDirectory(t, "occ-production-upgrade-digest-");

@@ -104,8 +104,11 @@
     "tests/conformance/split-layout-tenants.test.mjs",
     "tests/conformance/split-layout-adopt.test.mjs",
     "tests/conformance/url-authority.test.mjs",
+    "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
     "tests/integration/credential-proxy-peer-pin.test.ts",
+    "tests/integration/credential-proxy-revision-currentness.test.ts",
+    "tests/integration/credential-proxy-stream-exchange.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
@@ -473,6 +476,12 @@
       "path": "tests/conformance/url-authority.test.mjs"
     },
     {
+      "path": "tests/integration/credential-proxy-revision-currentness.test.ts",
+      "expectedTests": [
+        "credential exchange consults revision history only for inactive executions"
+      ]
+    },
+    {
       "path": "tests/integration/credential-proxy-peer-pin.test.ts",
       "expectedTests": [
         "exchange send rejects identity changes before receipt creation",
@@ -488,6 +497,12 @@
         "exchange busy lifetime observation requires a live exact owner",
         "duplicate send retains only an exact authenticated lifetime contraction",
         "duplicate send contraction bounds pending receipt work"
+      ]
+    },
+    {
+      "path": "tests/integration/token-retirement.test.ts",
+      "expectedTests": [
+        "token retirement preserves failed stages without replay or disclosing errors"
       ]
     },
     {
@@ -574,6 +589,15 @@
     },
     {
       "path": "tests/conformance/kubernetes-prepared-repository.test.mjs"
+    },
+    {
+      "path": "tests/integration/credential-proxy-stream-exchange.test.ts",
+      "expectedTests": [
+        "OpenShell exchange: first-renewal outage, then recover",
+        "OpenShell exchange: first-renewal outage, then withdraw",
+        "OpenShell exchange: post-renewal outage, then recover",
+        "OpenShell exchange: post-renewal outage, then withdraw"
+      ]
     },
     {
       "path": "tests/integration/egress-installation-exchange.test.mjs"

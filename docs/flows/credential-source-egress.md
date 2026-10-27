@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-26"
-last_updated_session: authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c
+updated: "2026-10-27"
+last_updated_session: authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de
 ---
 
 # Protected credential request flow
@@ -87,6 +87,11 @@ release or custody settlement.
 Compute rechecks admission with the worker before launch. PostgreSQL rejects
 unknown decisions and mixed v2/v3 fields. Older workers refuse v3. Upgrade
 all writers before admitting it.
+
+For each prepared route, `apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
+selects the current issuer, projects the admitted source and checks readiness. Compute retains
+only these observation methods, without token-read or lifecycle authority. A missing or mismatched
+owner refuses release; a cold source remains pending.
 
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
@@ -222,12 +227,12 @@ lost reply remains a possible effect and must not be retried.
 
 ### 4. Protect response and finish
 
-`packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its peer, request and exchange, removes
-unlisted headers and releases no bytes before the decision. The request deadline bounds
-the first byte. On progress, `renewResponse` rechecks policy at most every 15 seconds;
-withdrawal cuts the stream within that window, and an unavailable authority cannot extend
-the lease. A shorter authenticated peer lifetime caps cached leases and held responses. Later progress
-cannot extend that bound.
+`packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its peer,
+request and exchange, removes unlisted headers and withholds bytes until approval. The request
+deadline bounds the first byte. On progress, `renewResponse` checks policy at most once every
+15 seconds, including during outages. Unavailability preserves the deadline; denial cuts the
+stream. Recovery can renew before expiry. A shorter authenticated peer lifetime caps leases
+and held responses despite later progress.
 Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
 For Responses, check client-assembled SDK output-part snapshots, assistant text across
@@ -318,6 +323,10 @@ None.
 
 ## Changelog
 
+- 2026-10-27 13:15: Document the accompanying Compute readiness capability boundary. (authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de - f6396abd5698efacabfeb150ef6cd38cdef6e814)
+
+- 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
+
 - 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
 
 - 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
@@ -331,13 +340,5 @@ None.
 - 2026-10-22 05:16: Bind exchange identity independently of Git delivery evidence. (authoring-run/601b0e1c-ade5-431c-aa48-1c6775df430a - d5c0a95fc970e8a63f40746ad2e55ac5216580e0)
 
 - 2026-10-22: Streamline flow; preserve authority and recovery boundaries.
-
-- 2026-10-22 04:16: Enforce delivery settlement policy, operation fences and retained detach confirmation in the accompanying changes. (authoring-run/bcd1284f-0d04-4fc7-92e1-b4d5ac1eeb7f - 1544403a30a747898deaf3cf0935094b7812390d)
-
-- 2026-10-22 01:51: Describe final withdrawal and delivery custody in the accompanying schema consolidation. (authoring-run/c692ffd7-9ade-4cb3-80b7-cd02340e0537 - fe6b0002a5bf41e6e418df9848337b285ce53199)
-
-- 2026-10-21 23:40: Describe versioned policy reduction, durable operation recovery and the reference-peer proof boundary. (authoring-run/3e4e8e77-728c-435a-90e9-fe6c9758551c - d8a5a9c77963836fbe54f1dc28f2f8a0c01c5622)
-
-- 2026-10-21 22:39: Explain conditional recovery of rejected prepared material and its classification limit in the accompanying change. (authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002 - df297cd59e8de130e9eb0599e67f47fa6d85079e)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

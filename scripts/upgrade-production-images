@@ -27,6 +27,7 @@ OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connectio
 With the bundled Collector enabled, its config Secret must carry this checkout's
 deploy/logging collector.yaml and kubernetes.yaml; pass --collector-config-reviewed
 only to keep a reviewed custom configuration.
+--timeout-seconds bounds each wait (default 900, at most 86400).
 --doctor-heap-mib sets OpenClaw Doctor's heap cap (default 384); raise it only
 after Doctor ran out of heap. It can change on --resume.
 EOF
@@ -290,6 +291,25 @@ done
 [[ -n "$controller_image" || -n "$broker_image" || -n "$runtime_image" ]] ||
   die "select a controller, broker, or runtime image."
 positive_integer "$timeout_seconds" || die "--timeout-seconds must be positive."
+# Each phase's wait gets the whole timeout; a day is far beyond any of them, so a
+# larger value is likely a unit mistake. Compare lengths before arithmetic, which
+# would wrap a huge value and expire every wait at once.
+if ((${#timeout_seconds} > 5 || timeout_seconds > 86400)); then
+  die "--timeout-seconds must be at most 86400 (24 hours)."
+fi
+full_commit_sha "$source_revision" ||
+  die "--source-revision must be a full lowercase Git commit SHA."
+checkout_revision=$(
+  unset GIT_DIR GIT_COMMON_DIR
+  # Matching HEAD is insufficient when Git assigns this metadata another worktree.
+  # Compare directory identity so symlinked paths still name the physical root.
+  checkout_root=$(git --git-dir=.git rev-parse --show-toplevel 2>/dev/null) || exit 1
+  [[ "$checkout_root" -ef . ]] || exit 1
+  git --git-dir=.git rev-parse --verify 'HEAD^{commit}' 2>/dev/null
+) ||
+  die "could not verify the checkout commit; run this command from the release repository root with Git available."
+[[ "$checkout_revision" == "$source_revision" ]] ||
+  die "checkout commit does not match --source-revision; use the reviewed release checkout."
 positive_integer "$doctor_heap_mib" || die "--doctor-heap-mib must be positive."
 # Leave room for both margins in signed 64-bit shell arithmetic; compare decimal
 # strings before evaluating the untrusted value as an arithmetic expression.
@@ -300,8 +320,6 @@ fi
 [[ -z "$controller_image" ]] || require_immutable_image --controller-image "$controller_image"
 [[ -z "$broker_image" ]] || require_immutable_image --broker-image "$broker_image"
 [[ -z "$runtime_image" ]] || require_immutable_image --runtime-image "$runtime_image"
-full_commit_sha "$source_revision" ||
-  die "--source-revision must be a full lowercase Git commit SHA."
 if ((resume)); then
   [[ -d "$evidence_dir" && ! -L "$evidence_dir" ]] || die "--resume requires the original evidence directory."
   mode=$(private_file_mode "$evidence_dir")

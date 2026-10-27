@@ -1042,6 +1042,8 @@ function imageBuildOutOfTime(role, limitMs) {
   return Object.assign(new Error(message), { imageBuildOutOfTime: true });
 }
 
+const imageBuildTailLines = 40;
+
 // Runs a lane image build command within the lane's budget (unbounded without one).
 async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
   if (budgetMs !== undefined && budgetMs < 1_000) {
@@ -1051,6 +1053,14 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
     return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs: budgetMs });
   } catch (error) {
     if (budgetMs !== undefined && error.timedOut) {
+      // The build's progress names the step that was running (finding 2710: a cold
+      // build stopped after 1305 s with no clue which step stalled).
+      const tail = (error.stderr ?? "").trimEnd().split("\n").slice(-imageBuildTailLines);
+      if (tail.join("").trim()) {
+        process.stderr.write(
+          `[image-build] the ${role} image build's last output:\n${tail.join("\n")}\n`,
+        );
+      }
       throw imageBuildOutOfTime(role, budgetMs);
     }
     throw error;

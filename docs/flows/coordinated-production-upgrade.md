@@ -9,11 +9,10 @@ last_updated_session: "authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585"
 ## Overview
 
 `scripts/upgrade-production-images` updates the OpenClaw Control Plane (OCC),
-Agent runtimes, or both. The controller-only command ends after the OCC API and
-worker recover; it does not request Agent deployments. A runtime release deploys
-a new version for every Agent that was running when the command began and ends
-after the selected Pods are ready and each replacement gateway passes read-only
-Doctor lint. Model and external integration checks remain operator tasks.
+Agent runtimes, or both. Controller-only upgrades end after API and worker recovery,
+without Agent deployments. Runtime upgrades deploy every initially running Agent,
+then wait for ready Pods and read-only Doctor lint. Operators check models and
+external integrations.
 
 ## Entry Points
 
@@ -64,13 +63,16 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
+Before protected-file reads, evidence writes, or cluster access, every upgrade
+attempt requires the repository root's Git `HEAD` to match `--source-revision`.
+This does not verify uncommitted changes or image provenance.
+
 The script verifies protected files, cluster, deployed Helm release, and matching
-OCC and Secret Installation IDs. It compares all protected and live configuration,
-including selected image fields, and captures separate reviewed candidate files. Only
-the Slack directory proxy and curated Codex PluginDriver selection may change;
-other Helm and Installation settings, including new fields, remain protected.
-The broker guard compares references, not ConfigMap or Secret contents. Image
-flags select images after comparison. Runtime releases record each running Agent's
+OCC and Secret Installation IDs. It compares protected and live configuration,
+including image fields, and captures separate reviewed candidates. Only the Slack
+directory proxy and curated Codex PluginDriver selection may change; all other
+settings remain protected. The broker guard compares references, not ConfigMap or
+Secret contents. Image flags apply after comparison. Runtime releases record each running Agent's
 baseline version from complete authorized inventory. Nonterminal deployments,
 missing selected versions, or unready Namespaces stop preparation. Stopped and
 deleting Agents are excluded; pending repository cleanup does not block preparation.
@@ -130,29 +132,28 @@ the unique ID (UID) returned on create, leaving same-name replacements alone;
 `preflight-cleanup.err` records refusals. The operator checks whether an
 ambiguous create left an object behind.
 
-With `--preflight-only`, the helper leaves writers running, retains private
-evidence, and exits without marking preparation complete. The evidence cannot be
-resumed; deployment repeats checks with reviewed inputs in a fresh directory.
+`--preflight-only` leaves writers running and retains private, nonresumable
+evidence without marking preparation complete. Deployment repeats checks with
+reviewed inputs in a fresh directory.
 
-For an upgrade, the script saves candidate inputs, inventory, target identity,
-and parameter hashes, then marks preparation complete. A per-directory lock
-prevents concurrent record use. The operator must freeze other writers,
-autoscalers, Helm changes, and runtime draft edits as specified in the
+An upgrade saves candidate inputs, inventory, target identity, and parameter
+hashes before marking preparation complete. A directory lock prevents concurrent
+use. Operators freeze other writers, autoscalers, Helm changes, and runtime draft
+edits per the
 [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
 `scripts/upgrade-production-images:506`
 
-On every attempt the script rereads Helm status and values and the Installation
-Secret. Only the recorded baseline or candidate values are accepted; the
-Secret's UID, Installation annotation, and other data must match the baseline.
-Without the prepared record, resume stops: inspect the evidence and any remaining
-preflight resources. Resume also binds the original kubeconfig contents,
-inputs, OCC URL, scripts, flow, chart, and pair evidence. It requalifies the pair
-and rejects a changed eligible-node set. Candidate files must still match the saved reviewed inputs; the
-helper applies the saved candidate. Unexpected drift or an in-progress Helm
-release stops the command.
+Every attempt rereads Helm status, values, and the Installation Secret. Only
+recorded baseline or candidate values are accepted; Secret UID, Installation
+annotation, and other data must match the baseline. Resume requires a prepared
+record; otherwise inspect evidence and remaining preflight resources. It binds
+kubeconfig contents, inputs, OCC URL, scripts, flow, chart, and pair evidence,
+requalifies the pair, and rejects changed eligible nodes. Candidates must match
+saved reviewed inputs, which the helper applies. Unexpected drift or an
+in-progress Helm release stops execution.
 
 If a previously started Helm release is deployed at a newer version with the
 candidate values, the script continues without repeating Helm. Otherwise it
@@ -190,13 +191,12 @@ it does not start the old image to undo a committed schema change.
 
 `scripts/upgrade-production-images:694`
 
-The script waits for both OCC Deployments, checks their controller image and
-replica count, and checks the Installation checksum when its configuration
-changed. It requires exactly one named container for each component. For a
-broker-enabled worker it also accepts a restartable init container, provided
-no worker exists in the ordinary container list. It rejects a non-restartable
-init worker or ambiguous placement. It retries authenticated OCC access and verifies the same Installation ID. A
-controller-only release then ends without requesting Agent deployments.
+The script waits for both OCC Deployments and checks controller images,
+replica counts, and changed Installation checksums. Each component needs
+exactly one named container. A broker-enabled worker may instead be a restartable
+init container; non-restartable or ambiguous placement fails. Authenticated OCC
+access is retried and must return the same Installation ID. Controller-only
+releases request no Agent deployments.
 An existing version keeps the Pod specification of the controller that
 deployed it only until the worker prepares it again. Agents with repository
 credentials get a maintenance pass every 30 seconds (the repository Driver's
@@ -235,9 +235,8 @@ names each refused Agent, or a refused service key, saves the message as
 `dispatch/*.rejected`, removes the intent, and stops; `--resume` sends that
 request again.
 
-The script polls each returned deployment through its authorized status
-operation, confirms the selected version, and waits for all version Pods
-to be `Running` and `Ready` on the candidate runtime digest. Before OpenClaw
+The script polls authorized deployment status, confirms the selected version,
+and waits for its Pods to be `Running` and `Ready` on the candidate digest. Before OpenClaw
 starts, `GATEWAY_RUNTIME_ENTRYPOINT` runs `openclaw doctor --fix
 --non-interactive` once when its shared state or an agent database uses an older
 schema, such as a 2026-09-28 release Gateway's; a database still older holds the
@@ -264,11 +263,10 @@ Failures retain dispatch, status, Pod, and Doctor evidence.
 
 `docs/guides/deploy/production-upgrade.md:Verify the release`
 
-Successful script completion proves the selected Helm rollout and OCC access.
-For a runtime release it also proves the recorded deployments and Pods reached
-the checked states and Doctor reported no error. The operator next verifies
-model responses, providers, channels, credentials, workspace continuity, native
-access, and required restore behavior.
+Completion proves the selected Helm rollout and OCC access; runtime upgrades
+also verify recorded deployments, ready Pods, and Doctor without errors.
+Operators then verify model responses, providers, channels, credentials,
+workspace continuity, native access, and required restore behavior.
 
 ### Read-only export after a split-layout refusal
 
@@ -325,6 +323,7 @@ The check does not separate resources an older import already merged.
 
 ## Changelog
 
+- 2026-10-26 23:24: Record source checkout verification before private inputs. (authoring-run/dc3e51c1-8f14-4410-9c70-e4a993ea58fe - 821bee5fe0bb446319fab40ad21055b1e942eb37)
 - 2026-10-25 11:53: Record native scale, Helm upgrade, and rollout failures; preserve recovery. (authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585 - 87784a3230964bd8a7a1763f8350c1fd2b4284e0)
 - 2026-10-25 09:19: Keep preflight kubectl errors in private evidence. (authoring-run/6fccb13c-5ec3-44d5-aded-c3c3e9c1da81 - aaabca1fec6b28fbbb674f48f11f015242f86b59)
 - 2026-10-25 06:51: Identify temporary preflight resources by UID before cleanup. (authoring-run/d15969fb-1113-416f-9573-e045dd683b66 - dd36945fec0ec3de38cd15b971537eb10a90d0e4)
