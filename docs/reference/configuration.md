@@ -19,8 +19,9 @@ Every Agent Configuration has the required, immutable `kind: "agent"`. Its
 SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
 Secrets to selected gateway environment variables; the Secret Driver stores the
 values separately. A reviewed Configuration Driver, bundled or installed, stores
-the native document in development and production. The bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry, so values
-must serialize to less than 1 MiB; a save over that is refused with
+the native document in development and production. The bundled Kubernetes Driver
+uses one `openclaw.json` ConfigMap entry, so values must serialize to less than
+1 MiB; a save over that is refused with
 `400 INVALID_REQUEST` and a message naming the limit. Configuration POST/PATCH
 bodies allow six times 1 MiB plus 32 KiB (6.2 MiB), room for the values and the
 envelope in six-byte JSON escapes; a caller without the create or update grant
@@ -317,8 +318,8 @@ additional baseline actions are rejected. Profiles, denies and Codex dynamic-too
 exclusions still apply. Save and deployment refuse such a policy; a running
 revision keeps an older one until its next deployment.
 
-Dedicated composition also sets `automations.scope: "caller"` and `allowCommandJobs: false` under
-`tools.gatewayPolicy`, plus `agents.defaults.modelSelectionScope: "session"` and
+Dedicated composition also sets `automations.scope: "caller"` and
+`allowCommandJobs: false` under `tools.gatewayPolicy`, plus `agents.defaults.modelSelectionScope: "session"` and
 `cron.triggers.enabled: false`.
 
 Deploy a revision to change the saved policy after old work ends.
