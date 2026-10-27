@@ -1437,6 +1437,9 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
     id: "credential-refresh-api",
     capability: "credential_refresh",
     implementation: "test-recording-refresh",
+    get sources() {
+      return this;
+    },
     async configureRefresh() {
       return { state: "pending" };
     },

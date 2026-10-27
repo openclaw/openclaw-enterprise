@@ -4,19 +4,6 @@ import type { startPreparedGitHubGitOwner } from "../../backends/repository-cred
 import type { OpenShellGitRuntimeEmit } from "../../drivers/egress-proxy/openshell-git-runtime.ts";
 import type { InstallationRuntimeDrivers } from "../installation-config.ts";
 
-/** Worker-selected authority. The sender never chooses its issuer or the host's recipient evidence. */
-export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
-  const { tokenService, repositoryGitDriver: driver, repositoryTransport } = drivers;
-  if (!tokenService) {
-    throw new Error("Prepared repository Git requires the installed Token Service.");
-  }
-  return {
-    tokenService,
-    ...(driver && { protectedGitDriver: driver.ref }),
-    ...(driver && repositoryTransport && { protectedGitEvidence: repositoryTransport.evidence }),
-  };
-}
-
 /**
  * A delivery that keeps failing writes `worker.repository-delivery-pending` at most this often:
  * the reconcile retries every second, which logged about 86,000 lines a day (finding 2251). The

@@ -1,3 +1,4 @@
+import type { PreparedTokenService } from "./prepared-token.ts";
 import type {
   CredentialPolicyWithdrawalOptions,
   ExecutionAdmission,
@@ -1832,11 +1833,8 @@ export interface CredentialAttachmentStatus {
 /** Holds credential sources and applies them outside the Agent workload. */
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
-  /** The token service may refresh to ensure usability; refresh material stays there. Tokens exist only during the callback. */
-  withSourceToken?<T>(
-    context: CredentialSourceContext,
-    use: (token: CredentialSourceToken) => Promise<T>,
-  ): Promise<T>;
+  /** Retained sources may still have a trusted reader after enrollment is disabled. */
+  readonly sourceTokens?: CredentialSourceTokenReader;
   listSourceTypes(context: CredentialGatewayContext): Promise<readonly CredentialSourceType[]>;
   /**
    * Validate nonsecret configuration without I/O, before OCC reads Secrets or stores a record.
@@ -1889,12 +1887,24 @@ export interface CredentialRefreshStatus {
   readonly recoveryAction?: "retry" | "reauthorize" | "fix_configuration" | "investigate";
 }
 
-/**
- * Mints and re-mints tokens for the paired Credential Gateway's `refresh` sources. OCC drives
- * only setup, incident rotation, and status; the implementation refreshes before expiry.
- */
+/** Installation-selected Token Service. Exposes only the credential lifecycles it owns. */
 export interface CredentialRefreshDriver extends Driver {
   readonly capability: "credential_refresh";
+  readonly sources?: CredentialSourceRefresh;
+  readonly sourceTokens?: CredentialSourceTokenReader;
+  readonly preparedTokens?: PreparedTokenService;
+}
+
+/** Verifies source type and ownership before using a token for trusted catalog discovery. */
+export interface CredentialSourceTokenReader {
+  withSourceToken<T>(
+    context: CredentialSourceContext,
+    use: (token: CredentialSourceToken) => Promise<T>,
+  ): Promise<T>;
+}
+
+/** Manages issuer material for a registered source. The implementation owns routine renewal. */
+export interface CredentialSourceRefresh {
   /** Owns the private device exchange; OCC retains only an opaque login handle. */
   startDeviceAuthorization?(
     context: CredentialSourceContext,

@@ -47,6 +47,7 @@ import type {
   SandboxDriver,
   SandboxHarnessObservation,
   CredentialGatewayDriver,
+  CredentialRefreshDriver,
   SecretBindings,
   SecretDriver,
   ResolvedHarnessAuth,
@@ -1147,8 +1148,7 @@ export class ControllerWorker {
   private readonly credentialGateway: CredentialGatewayDriver | undefined;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
-  private readonly preparedTokens:
-    import("@openclaw-enterprise/contracts").PreparedTokenService | undefined;
+  private readonly credentialRefresh: CredentialRefreshDriver | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1240,7 +1240,7 @@ export class ControllerWorker {
     };
     this.state = new PostgresPlatformState(options.pool, {
       workQueue: this.queueOptions,
-      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+      preparedTokenProof: drivers?.credentialRefreshDriver?.preparedTokens?.postgresCurrentProof,
     });
     this.queue = new PostgresWorkQueue(options.pool, this.queueOptions);
     this.backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
@@ -1288,7 +1288,7 @@ export class ControllerWorker {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
     this.protectedDriver = drivers?.protectedDriver;
-    this.preparedTokens = drivers?.tokenService;
+    this.credentialRefresh = drivers?.credentialRefreshDriver;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
@@ -1383,7 +1383,6 @@ export class ControllerWorker {
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioning = new OpenClawController(installation, {
-      preparedTokens: this.preparedTokens,
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
       driverConfigurations: this.driverConfigurations,
@@ -1404,6 +1403,7 @@ export class ControllerWorker {
       this.configuration,
       ...(protectedDriver ? [] : [this.sandbox, this.proxyDriver]),
       this.credentialGateway,
+      this.credentialRefresh,
       this.iam,
       this.secretDriver,
       this.repositoryPolicy,

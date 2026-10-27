@@ -5,6 +5,7 @@ import type {
   Driver,
   BackendDefinition,
   DriverCapability,
+  CredentialRefreshDriver,
   OpenShellBackendDefinition,
 } from "@openclaw-enterprise/contracts";
 import { BACKEND_ID_MAX_CHARACTERS, isBackendId } from "@openclaw-enterprise/contracts";
@@ -525,6 +526,7 @@ export function validateSelectedBackendDrivers(
       throw new DriverSelectionError(`The configured Backend requires its ${label}.`);
     }
   };
+  const refresh = selected.credential_refresh as CredentialRefreshDriver | undefined;
   for (const backend of backends) {
     if (backend.type === "github") {
       requires("repo", backend.drivers.repo, "repository credential Driver");
@@ -538,6 +540,11 @@ export function validateSelectedBackendDrivers(
         "Credential Gateway Driver",
       );
       if (backend.drivers.credential_refresh !== undefined) {
+        if (!refresh?.sources) {
+          throw new DriverSelectionError(
+            "The configured Backend requires its Credential Refresh Driver.",
+          );
+        }
         requires(
           "credential_refresh",
           backend.drivers.credential_refresh,
@@ -553,10 +560,9 @@ export function validateSelectedBackendDrivers(
       }
     }
   }
-  // Refresh state lives with the gateway's source record, so the two roles share one Backend.
-  const refresh = selected.credential_refresh;
+  // Source refresh operates on the gateway's provider records. Prepared issuers own their custody.
   if (
-    refresh !== undefined &&
+    refresh?.sources !== undefined &&
     !backends.some((backend) =>
       backendMembers(backend).includes(`credential_refresh:${refresh.id}`),
     )

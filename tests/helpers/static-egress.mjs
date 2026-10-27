@@ -486,6 +486,16 @@ export async function staticEgressFixture(
     app.controller.registerDriver(catalog);
     app.controller.selectDriver(catalog.capability, catalog.id);
   }
+  if (owner || preparedProvider) {
+    const refresh = {
+      id: "native-token-service",
+      implementation: "native",
+      capability: "credential_refresh",
+      preparedTokens,
+    };
+    app.controller.registerDriver(refresh);
+    app.controller.selectDriver(refresh.capability, refresh.id);
+  }
   const installedDriver = new InstalledDriver(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
     { capabilities: { sandbox, credential_proxy: egress } },

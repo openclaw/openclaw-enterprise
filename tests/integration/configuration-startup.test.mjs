@@ -137,6 +137,43 @@ async function fixture(t, configuration = installation()) {
   return path;
 }
 
+test("one selected Token Service supports OpenShell OAuth and prepared GitHub metadata", async (t) => {
+  for (const implementation of [undefined, "openshell"]) {
+    await t.test(implementation ?? "existing selection", async (t) => {
+      const configuration = credentialProxyInstallation();
+      const id = "connection-tokens";
+      configuration.drivers.credential_refresh = {
+        id,
+        ...(implementation && { implementation }),
+        configuration: {},
+      };
+      configuration.backend[0].drivers.credential_refresh = id;
+      configuration.drivers.credential_proxy.configuration.preparedGitHub = {
+        custodyKeyPath: "/etc/openclaw/prepared-github/custody.key",
+      };
+      const path = await fixture(t, configuration);
+      const drivers = await loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: path },
+      });
+      const refresh = drivers.credentialRefreshDriver;
+      assert.equal(refresh.id, id);
+      const metadata = drivers.proxyDriver.sourceControl.providers.find(
+        (provider) => provider.sourceType.type === "github-app-metadata",
+      );
+      assert.ok(
+        metadata && refresh.preparedTokens.issuer(metadata.ref),
+        "the proxy's admitted type has its configured issuer",
+      );
+      const offered = await drivers.credentialGatewayDriver.listSourceTypes({
+        signal: AbortSignal.timeout(2_000),
+      });
+      assert.ok(offered.some((type) => type.deviceAuthorization?.harnessId === "codex"));
+      assert.equal(typeof refresh.sources.startDeviceAuthorization, "function");
+    });
+  }
+});
+
 test("Credential Proxy startup preserves the selection and refuses retired keys", async (t) => {
   const configuration = credentialProxyInstallation();
   const path = await fixture(t, configuration);

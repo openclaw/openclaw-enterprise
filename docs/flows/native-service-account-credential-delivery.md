@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-16
-last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
+updated: 2026-10-27
+last_updated_session: authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17
 ---
 
 # Harness Authentication Binding Flow
@@ -72,8 +72,9 @@ principal exact source `operate`.
 
 Secret compare-and-swap permits one in-flight poll and fences cancellation. An
 uncertain exchange requires reconnect. Closing or expiring a session removes its
-handle without revoking the source. Plugin discovery uses the Gateway's
-`withSourceToken` callback with current source authorization; the service may
+handle without revoking the source. Plugin discovery uses the
+[Token Service reader](../reference/drivers/credential-refresh.md#plugin-catalog-discovery)
+with current source authorization. The service may
 refresh before returning a usable access token. It continues through
 the saved source after the login session closes.
 
@@ -293,6 +294,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 00:41: Use the selected Token Service to read a device-authorized catalog credential. (authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17 - 09e9cb6e4a452c2f727a7b53b9b2dcbd5ac5503c)
 
 - 2026-10-16 01:36: Keep external OAuth custody while integrating current Sandbox policy. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

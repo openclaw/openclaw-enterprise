@@ -33,7 +33,7 @@ import {
   installationGitAdoption,
   type RepositoryGitRecipientEvidence,
 } from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
-import { TokenService } from "../token-service/service.ts";
+import type { TokenService } from "../token-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 
 export interface PreparedRepositoryGitConfiguration {
@@ -67,7 +67,7 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   protectedGitDriver?: DriverRegistrationRef;
   /** Host-owned durable observer for this selection. A Driver cannot supply these queries. */
   protectedGitEvidence?: RepositoryGitRecipientEvidence;
-  tokenService?: TokenService;
+  tokenService: Pick<TokenService, "ownFamilies">;
 }
 
 function useRequest(input: unknown): PreparedGitHubUseRequest;
@@ -305,7 +305,7 @@ export async function startPreparedGitHubGitOwner(
               : use(input, signal),
         );
   let sources: Awaited<ReturnType<typeof store.discover>> = [];
-  const maintenance = (options.tokenService ?? new TokenService()).ownFamilies({
+  const maintenance = options.tokenService.ownFamilies({
     async discover() {
       sources = await store.discover(({ providerExpiresAt, ...context }) =>
         options.report?.("PREPARED_GITHUB_RETIRED_UNREVOKED", {

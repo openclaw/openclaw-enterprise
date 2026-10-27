@@ -113,21 +113,11 @@ bundle or native-refresh fallback is supported. See
 
 Device-login source types require the paired [Credential Refresh Driver](credential-refresh.md#device-authorization)
 to implement authorization. The Gateway registers the source before login and
-owns its attachment and access-token retrieval; it receives no device-grant
-refresh material.
-
-`withSourceToken(context, use)` supplies a usable `CredentialSourceToken` only for
-an authorized configuration callback: access token and optional trusted account
-ID/FedRAMP classification. The external token service may refresh to satisfy its
-remaining-lifetime requirement. It owns refresh credentials, refresh execution,
-and successor-token persistence; this operation must never return refresh
-material. OCC does not implement refresh or retain the returned access token
-outside the callback.
-
-OCC authorizes the source before retrieval, and the callback rechecks authorization
-before provider I/O. Cancellation or a failed recheck does not undo refresh already
-started by the external service. Source withdrawal and token readiness remain
-that service's responsibility.
+attaches it to the deployed Harness. The selected Token Service supplies the access
+token for [plugin catalog discovery](credential-refresh.md#plugin-catalog-discovery).
+When that reader is absent, the OpenShell Gateway supplies the same reader through
+its optional `sourceTokens` view. Existing accounts can still authorize discovery
+with operator mTLS after the Installation disables enrollment.
 
 `SecretDriver.withValue` supplies static registration inputs. Withdrawal also
 uses Compute's `withdrawCredentialSource` and the Sandbox's `harnessResource`,

@@ -9,6 +9,7 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
+import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -234,14 +235,18 @@ async function fixture(
     },
     /** A source stored before a rule existed, with its provider, as an older release left it. */
     seedStored(type, config) {
+      const toolField = SECRET_FIELD[type];
       const stored = {
         id: "cs_" + randomUUID(),
         namespaceId: namespace.id,
         name: "stored",
         type,
-        config: type === "openai" ? config : toolConfig(type, config),
-        secrets:
-          type === "openai" ? { api_key: secret.ref } : { [SECRET_FIELD[type]]: toolSecret.ref },
+        config: toolField ? toolConfig(type, config) : config,
+        secrets: toolField
+          ? { [toolField]: (toolSecret ?? secret).ref }
+          : type === "openai"
+            ? { api_key: secret.ref }
+            : {},
         ownerCapability: "credential_gateway",
         driverId: driver.id,
         state: "ready",
@@ -289,6 +294,62 @@ async function fixture(
     },
   };
 }
+
+for (const toolSources of [false, true]) {
+  test(`plugin catalog discovery refuses static model and tool credentials with OAuth ${toolSources ? "enabled" : "disabled"}`, async (t) => {
+    const f = await fixture(t, { toolSources });
+    const plugins = new CodexPluginDriver({ catalogSource: "openai-curated" });
+    f.controller.registerDriver(plugins);
+    f.controller.selectDriver("plugin", plugins.id);
+    const source = await f.create("model-only");
+    assert.equal(source.status, 201, JSON.stringify(source.body));
+    // A retained tool source can outlive the toolBinaries that advertised its type.
+    const { stored } = await f.seedStoredRecord("bearer-token", {});
+    for (const id of [source.data.id, stored.id]) {
+      const denied = await f.request("POST", `/namespaces/${f.namespace.id}/agents/plugins`, {
+        body: { credentialSource: { kind: "credential_source", namespaceId: f.namespace.id, id } },
+      });
+      assert.equal(denied.status, 404, JSON.stringify(denied.body));
+      assert.equal(denied.body.error.code, "NOT_FOUND");
+    }
+  });
+}
+
+test("plugin catalog discovery can use a retained Codex source after device enrollment is disabled", async (t) => {
+  const f = await fixture(t);
+  const { stored, name, profileKey } = await f.seedStoredRecord("codex-oauth", {});
+  const accountId = "retained-account";
+  const accessToken = "synthetic-retained-access";
+  f.providers.get(profileKey).config = {
+    "oce.codex.account": JSON.stringify({ accountId, planType: "plus" }),
+  };
+  f.client.getProviderCredential = async (workspace, provider, key) => {
+    assert.deepEqual([workspace, provider, key], [f.namespace.name, name, "CODEX_ACCESS_TOKEN"]);
+    return { value: accessToken };
+  };
+  const plugins = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  const discovery = t.mock.method(plugins, "discoverCatalog", async (auth) => {
+    assert.deepEqual(auth, { accessToken, accountId });
+    return { plugins: [], nextCursor: null };
+  });
+  f.controller.registerDriver(plugins);
+  f.controller.selectDriver("plugin", plugins.id);
+  const agentsPath = `/namespaces/${f.namespace.id}/agents`;
+  const catalog = await f.request("POST", `${agentsPath}/plugins`, {
+    body: {
+      credentialSource: { kind: "credential_source", namespaceId: f.namespace.id, id: stored.id },
+    },
+  });
+  assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+  assert.equal(discovery.mock.callCount(), 1);
+  assert.deepEqual(catalog.data, { plugins: [], nextCursor: null });
+  const start = await f.request("POST", `${agentsPath}/device-authorizations`, {
+    body: { harnessId: "codex" },
+  });
+  assert.equal(start.status, 501, JSON.stringify(start.body));
+  const rotate = await f.request("POST", `${f.path}/${stored.id}/rotate`);
+  assert.equal(rotate.status, 409, JSON.stringify(rotate.body));
+});
 
 test("Installation discovery serializes OpenShell model authentication and refresh source metadata", async (t) => {
   const f = await fixture(t, { toolSources: true });

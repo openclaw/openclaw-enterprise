@@ -2,32 +2,35 @@
 
 ## Overview
 
-`CredentialRefreshDriver` mints and re-mints the tokens of `refresh`-type
-[credential sources](../credential-sources.md). A refresh type, such as an
-OAuth2 client-credentials source, has an issuer and long-lived refresh
-material, such as a client secret or refresh token. The Driver holds that
-material, obtains an access token from the issuer, and obtains a new one before
-it expires. The Agent keeps the same placeholder throughout, so running
-processes need no restart.
+The Installation selects one Token Service through `drivers.credential_refresh`.
+The API and worker resolve that selection from the same Installation YAML.
+The Driver exposes the operations its issuers support.
 
-OpenClaw Control Plane (OCC) owns the source record, its Secret references, and
-authorization. The paired [Credential Gateway](credential-gateway.md) owns the
-source's stored record and applies the current token to the Agent's requests.
-This Driver owns issuer exchange, refresh material, and minted tokens. OCC calls
-it for setup, device authorization, incident rotation, status, and removal.
-Configuration discovery uses the Gateway's [access-token callback](credential-gateway.md#optional-additions);
-OpenShell may refresh during retrieval without an OCC refresh call.
+- **OpenShell OAuth.** The `sources` interface enrolls a source, obtains and
+  renews its access token, reports status, and removes refresh material. OCC
+  authorizes the source and stores its Secret references. The paired Credential
+  Gateway registers the provider. OpenShell holds the refresh grant and supplies
+  each running Agent with its current token through a stable placeholder.
+- **Prepared GitHub tokens.** The `preparedTokens` interface resolves the issuer
+  for the admitted provider. The worker prepares scoped GitHub App installation
+  tokens. A protected request can use an already prepared token. Issuance uses
+  the worker-mounted App key for repository Git or the authorized Namespace
+  Secret for a metadata source. [Prepared repository Git](../repository-credentials/prepared-native-git.md)
 
-Selection is optional. The only implementation is the bundled
-[OpenShell Credential Refresh](openshell-credential-gateway.md#oauth2-refresh-sources),
-which must belong to the same `openshell` [Backend](../backends.md) as the
-selected Credential Gateway. See [Driver selection](selection.md#backend-membership).
-Without it, the gateway's catalog offers no `refresh` types.
+The bundled implementations are `native` and `openshell`. Select one with
+`drivers.credential_refresh.implementation`. Existing OpenShell selections
+that specify only `id` and `configuration` still select OpenShell. Its OAuth
+interface requires membership in the Credential Gateway’s OpenShell Backend.
+Existing GitHub preparation settings select the native service when the
+Installation omits `credential_refresh`. An OpenShell selection can also serve
+configured GitHub preparation. Static credentials alone require no Token Service.
+[Driver selection](selection.md#backend-membership)
 
 ## Interface
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires every
-method below. Startup rejects a Driver that omits one.
+The [Driver contract](../../../packages/contracts/src/index.ts) requires at
+least one of `sources` or `preparedTokens`. A Driver that supplies `sources`
+implements these four operations.
 
 | Operation          | Inputs and preconditions                                                                       | Result or side effects                                                                          | Failure or absence                                                              |
 | ------------------ | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
@@ -42,7 +45,26 @@ an implementation-owned `failureCode`, and a `recoveryAction` of `retry`,
 `reauthorize`, `fix_configuration`, or `investigate`. It never carries a token,
 refresh material, or text from the issuer.
 
-A `CredentialSourceType` whose `rotation` is `refresh` needs this Driver. The four refresh methods are required; device authorization adds optional hooks.
+A source whose `rotation` is `refresh` requires the `sources` interface.
+Device authorization uses its optional login hooks. Trusted catalog discovery uses the separate `sourceTokens` reader.
+
+## Plugin catalog discovery
+
+For a managed OAuth source, OCC calls the selected Token Service's
+`sourceTokens.withSourceToken(context, use)`. If that reader is absent, a
+Gateway that owns the source may supply its `sourceTokens` view. The bundled
+OpenShell Gateway supplies the same OpenShell reader so an enrolled source
+remains usable after new device logins are disabled.
+
+OCC authorizes the exact source before asking for a token. The callback
+rechecks the caller’s grants and, for a saved Agent binding, the Agent’s grants
+and binding before contacting the catalog.
+It receives the access token and optional trusted account ID and FedRAMP
+classification. The Console receives the catalog result.
+
+OpenShell retrieves the access token over its operator mTLS connection. It can
+renew the token to meet the five-minute minimum remaining lifetime. The refresh
+grant and its successors stay with OpenShell.
 
 ## Device authorization
 
@@ -79,9 +101,7 @@ credentials belong to the source, not to OCC.
 
 ## Lifecycle
 
-The API and worker construct the Driver at startup from trusted Installation
-configuration; only the API calls it. The interface has no initializer or
-destructor.
+For a registered OpenShell OAuth source, OCC performs the following operations.
 
 1. **Registration.** OCC calls the gateway's `registerSource` with config only;
    resolved Secret values go only to this Driver. After it succeeds, OCC calls
@@ -113,8 +133,8 @@ destructor.
 
 ## Limits
 
-- One Credential Refresh Driver can be selected per Installation, and only on
-  the selected Credential Gateway's Backend.
+- One Token Service is selected per Installation. An OpenShell OAuth selection
+  must match the Credential Gateway’s Backend.
 - OCC does not poll refresh status or audit background refresh failures; read
   the source to see them.
 - The experimental `codex-oauth` model source uses device authorization; OAuth2
@@ -133,9 +153,9 @@ destructor.
 
 ## Implementations
 
-- [OpenShell Credential Refresh](openshell-credential-gateway.md#oauth2-refresh-sources):
-  bundled; configures OpenShell's gateway-owned refresh on the provider the
-  OpenShell Credential Gateway registered.
+- `native` serves configured GitHub App issuers.
+- `openshell` enrolls OAuth sources on the paired OpenShell Backend and serves
+  any configured GitHub App issuers. [OpenShell OAuth sources](openshell-credential-gateway.md#oauth2-refresh-sources)
 
 ## Related
 

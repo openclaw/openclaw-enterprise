@@ -1,3 +1,4 @@
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -232,6 +233,7 @@ export async function fixture(
     });
   await admit(sessionId, attempt.admissionId);
   const ownerOptions = {
+    tokenService: new TokenService(),
     pool,
     controlSocket: join(directory, "control.sock"),
     driverId,

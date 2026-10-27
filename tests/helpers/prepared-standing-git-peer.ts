@@ -1,3 +1,4 @@
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
 import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import assert from "node:assert/strict";
@@ -159,6 +160,7 @@ export async function preparedStandingGitPeer(
   });
   const prepared = await startPreparedGitHubGitOwner(
     {
+      tokenService: new TokenService(),
       registry,
       pool,
       driverId: backendId,

@@ -506,8 +506,8 @@ test(
     let source!: PreparedGitHubEgressSource;
     let app!: Awaited<ReturnType<typeof postgresApp>>;
     let trustedRejection = false;
-    const createOwner = (tokens?: TokenService) =>
-      new PostgresPreparedGitHubLifecycle(key, secretDriver, gh.origin, gh.tls.ca, tokens);
+    const createOwner = (tokens = new TokenService()) =>
+      new PostgresPreparedGitHubLifecycle(tokens, key, secretDriver, gh.origin, gh.tls.ca);
     const options = {
       secretValue: gh.privateKey.export({ format: "pem", type: "pkcs8" }),
       protectedSourceOnly: true,
