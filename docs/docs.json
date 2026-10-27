@@ -664,6 +664,7 @@
             "hidden": [
               "guides/deploy/service-keys",
               "guides/deploy/local-operations",
+              "guides/deploy/local-memory",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
               "guides/deploy/production-tui",
