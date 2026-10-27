@@ -63,12 +63,6 @@ export function createDeviceCredentialDrivers({
     async attachForRevision() {
       assert.fail("this fixture proves API admission, not runtime attachment");
     },
-    async attachmentStatus() {
-      assert.fail("this fixture proves API admission, not runtime attachment");
-    },
-    async withdraw() {
-      assert.fail("closing a login must not withdraw runtime credentials");
-    },
   };
   const refresh = {
     id: "device-credential-refresh",

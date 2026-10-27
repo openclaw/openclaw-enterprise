@@ -309,14 +309,7 @@ test("a stored binding's denial names its Secret only to a caller who may read t
       return { state: "ready" };
     },
     ...Object.fromEntries(
-      [
-        "updateSource",
-        "rotateSource",
-        "removeSource",
-        "attachForRevision",
-        "attachmentStatus",
-        "withdraw",
-      ].map((name) => [
+      ["updateSource", "rotateSource", "removeSource", "attachForRevision"].map((name) => [
         name,
         async () => {
           throw new Error(`${name} is not exercised: the save is refused first`);

@@ -1941,8 +1941,6 @@ for (const harnessAuth of ["api_key", "credential_source"]) {
               "sourceStatus",
               "removeSource",
               "attachForRevision",
-              "attachmentStatus",
-              "withdraw",
             ].map((method) => context.mock.method(drivers.credentialGatewayDriver, method))
           : []),
         ...(sourceBacked
@@ -2071,12 +2069,6 @@ function sourceProvisioningDrivers() {
     },
     async attachForRevision() {
       assert.fail("this case ends at provisioning handoff");
-    },
-    async attachmentStatus() {
-      assert.fail("this case ends at provisioning handoff");
-    },
-    async withdraw() {
-      assert.fail("this case has no deployed Sandbox");
     },
   };
   const sandboxDriver = {

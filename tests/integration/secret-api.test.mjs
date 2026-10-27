@@ -1373,12 +1373,6 @@ function createRecordingCredentialGateway() {
     async attachForRevision() {
       throw new Error("not exercised");
     },
-    async attachmentStatus() {
-      throw new Error("not exercised");
-    },
-    async withdraw() {
-      throw new Error("not exercised");
-    },
   };
 }
 

@@ -80,12 +80,6 @@ function withCredentialGateway(drivers) {
     async attachForRevision() {
       return [];
     },
-    async attachmentStatus() {
-      return [];
-    },
-    async withdraw(context) {
-      return { sourceId: context.sourceId, state: "pending" };
-    },
   };
   return {
     ...drivers,

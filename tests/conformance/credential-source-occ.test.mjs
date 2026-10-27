@@ -153,12 +153,6 @@ function createTestCredentialGateway(options = {}) {
     async attachForRevision(context) {
       return context.sources.map((source) => ({ sourceId: source.id, ref: `ref-${source.id}` }));
     },
-    async attachmentStatus(context) {
-      return context.sources.map((source) => ({ sourceId: source.id, state: "ready" }));
-    },
-    async withdraw() {
-      throw new Error("not exercised");
-    },
   };
 }
 

@@ -1337,10 +1337,13 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
 // withdrawn, so a Sandbox hidden from the identity (GetSandbox and DetachSandboxProvider answer
 // NOT_FOUND for it) must not read as absent while it keeps resolving the credential. The gateway
 // confirms absence through GetWorkspace and fails a refusal with SANDBOX_GATEWAY_UNAUTHORIZED.
-test("the OpenShell Credential Gateway reports a withdrawal absent only once the Workspace confirms it", async () => {
-  const { client, driver, context } = credentialGatewayOverProviders();
+test("the OpenShell Sandbox reports a withdrawal absent only once the Workspace confirms it", async (t) => {
+  const client = {};
+  const { sandboxDriver } = await loadInstallationFile(t, sandboxInstallation(), {
+    createOpenShellBackend: () => backendFor(client),
+  });
   const sourceId = "cs_00000000-0000-4000-8000-0000000000c1";
-  const { namespace, signal } = context(sourceId);
+  const { namespace, signal } = namespaceContext();
   const workspace = openShellWorkspaceName(namespace);
   const provider = openShellProviderName(sourceId);
   const sandbox = "sb-credential";
@@ -1371,7 +1374,7 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
     return { state: "PROVIDER_READINESS_STATE_REVOKED" };
   };
   const withdraw = (recheck) =>
-    driver.withdraw({
+    sandboxDriver.credentialAttachments.withdraw({
       namespace,
       revision: { harness: { id: "codex", mode: "dedicated" } },
       sandbox: { resourceName: sandbox },

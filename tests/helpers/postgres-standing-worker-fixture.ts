@@ -35,8 +35,6 @@ export function observationGateway(): CredentialGatewayDriver {
     sourceStatus: unused,
     removeSource: unused,
     attachForRevision: unused,
-    attachmentStatus: unused,
-    withdraw: unused,
   };
 }
 

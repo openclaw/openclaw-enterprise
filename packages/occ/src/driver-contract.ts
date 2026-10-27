@@ -100,8 +100,6 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         "sourceStatus",
         "removeSource",
         "attachForRevision",
-        "attachmentStatus",
-        "withdraw",
       ].every((operation) => typeof candidate[operation] === "function")
     );
   }
@@ -127,6 +125,10 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     return (
       sandboxFacets(candidate.facets) &&
       sandboxPolicyContract(candidate) &&
+      (candidate.credentialAttachments === undefined ||
+        ["status", "withdraw"].every(
+          (name) => typeof asRecord(candidate.credentialAttachments)?.[name] === "function",
+        )) &&
       (candidate.repositoryAccess === undefined ||
         [
           "verifyExecution",
