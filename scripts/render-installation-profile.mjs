@@ -1850,7 +1850,7 @@ function buildRendered(profile, parsed, diagnostics) {
             // use between turns, so the scheduler places Agents by what they
             // actually hold; limits cover measured peaks.
             // Since the OpenClaw pin of #2982, an embedded Gateway holds 2.3-2.4 GiB
-            // between turns and peaks at 2.6-2.8 GiB on its first turn, when
+            // between turns and peaks at 2.5-2.8 GiB on its first turn, when
             // OpenClaw starts most of its worker threads (finding 2700); a
             // dedicated Codex Gateway serving native admin chat was OOM-killed
             // at 2Gi on its first coding turn.

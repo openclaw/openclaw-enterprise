@@ -44,7 +44,7 @@ what each Agent actually holds; limits cover measured peaks:
 
 | Pod                             | Request  | Limit | Measured                                                                                                                                                                                          |
 | ------------------------------- | -------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gateway (embedded or dedicated) | `2560Mi` | `4Gi` | embedded: 1.5 to 1.6 GiB at ready, 2.3 to 2.4 GiB between turns, peaks of 2.6 to 2.8 GiB on the first turn (no swap); a dedicated Codex Gateway serving native admin chat was OOM-killed at `2Gi` |
+| Gateway (embedded or dedicated) | `2560Mi` | `4Gi` | embedded: 1.5 to 1.6 GiB at ready, 2.3 to 2.4 GiB between turns, peaks of 2.5 to 2.8 GiB on the first turn (no swap); a dedicated Codex Gateway serving native admin chat was OOM-killed at `2Gi` |
 | Codex Harness                   | `768Mi`  | `6Gi` | 0.45 to 0.57 GiB between turns, 1 GiB running a test suite, 1.9 GiB running `tsc`; lint, `tsc` and tests together were OOM-killed at `2Gi` and reached a `4Gi` limit                              |
 | Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                                                  |
 
