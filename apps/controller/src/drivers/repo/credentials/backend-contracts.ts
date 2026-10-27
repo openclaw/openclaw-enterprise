@@ -158,6 +158,11 @@ export interface RepositoryBackend {
   finalize(attempt: AttemptContext): Promise<FinalizeOutcome>;
   settle(original: AcquireOutcome | RetireOutcome | FinalizeOutcome): Promise<void>;
   plan(request: SessionAuthenticatedRequest): RequestPlan | Denied;
+  /**
+   * The trusted lifecycle owner invokes the returned authenticator with temporary bytes
+   * from the exact credential record identified by `credential`. The reference alone
+   * does not grant access to bytes; the authenticator must not retain them.
+   */
   prepareAuthentication(
     credential: CredentialRef,
     plan: RequestPlan,

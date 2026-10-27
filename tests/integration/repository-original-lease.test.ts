@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import type { TLSSocket } from "node:tls";
 import type {
   AttemptContext,
   CredentialRef,
@@ -19,9 +23,20 @@ import {
   createLoopbackServiceConfiguration,
   gatewayRequest,
 } from "../fixtures/repository-credentials/service.mjs";
-import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
+import {
+  createGitHubTokenServiceFactory,
+  startServiceListeners,
+} from "../fixtures/repository-credentials/service-resources.mjs";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
 
 test("an approved exchange keeps its original lease through replacement and withdrawal fences the first write", async (t) => {
   const resources = createTestResourceScope(t);
@@ -31,8 +46,8 @@ test("an approved exchange keeps its original lease through replacement and with
   const tokens = [`github_pat_${"a".repeat(36)}`, `github_pat_${"b".repeat(36)}`];
   const expected = tokens.map((token) => digest(`Bearer ${token}`));
   const observed: string[] = [];
-  const replacementEntered = Promise.withResolvers<void>();
-  const releaseReplacement = Promise.withResolvers<void>();
+  const replacementEntered = deferred<void>();
+  const releaseReplacement = deferred<void>();
   resources.after(() => releaseReplacement.resolve());
   const origin = await listen(
     resources,
@@ -111,8 +126,8 @@ test("an approved exchange keeps its original lease through replacement and with
     providerQueue: undefined,
     log: undefined,
   });
-  const originalPaused = Promise.withResolvers<void>();
-  const resumeOriginal = Promise.withResolvers<void>();
+  const originalPaused = deferred<void>();
+  const resumeOriginal = deferred<void>();
   resources.after(() => resumeOriginal.resolve());
   let pauseNextStanding = false;
   const opened = service.open({ durationSeconds: 3600, profile: "git-read" }, async () => {
@@ -163,3 +178,124 @@ test("an approved exchange keeps its original lease through replacement and with
   assert.equal(observed.length, 3, "withdrawal must send zero origin requests");
   assert.ok(copies.every((copy) => copy.every((byte) => byte === 0)));
 });
+
+const firstWriteCases = [
+  { name: "standing denial prevents eager Expect headers", mode: "standing-denied" },
+  { name: "authentication rejection closes a pending dispatch", mode: "authentication-rejected" },
+  { name: "a confirmed TLS close before the first write is not dispatched", mode: "peer-closed" },
+  { name: "authentication rejection after the first write remains uncertain", mode: "written" },
+] as const;
+
+for (const { name, mode } of firstWriteCases) {
+  test(name, async (t) => {
+    const resources = createTestResourceScope(t);
+    const clock = createControlledClock();
+    const config = await createLoopbackServiceConfiguration(resources);
+    const tls = await createTlsMaterial(resources);
+    const connected = deferred<TLSSocket>();
+    const received = deferred<ServerResponse>();
+    const paused = deferred<void>();
+    const resume = deferred<void>();
+    const rejected = deferred<void>();
+    const requests: string[] = [];
+    const onRequest = (request: IncomingMessage, response: ServerResponse) => {
+      requests.push(request.headers.expect ?? "");
+      received.resolve(response);
+      if (mode !== "written") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ id: 73, full_name: "fixture/repository" }));
+      }
+    };
+    const server = createServer(tls, onRequest);
+    server.on("checkContinue", onRequest);
+    server.once("secureConnection", (socket) => connected.resolve(socket));
+    const origin = await listen(resources, server);
+    const backendFactory: RepositoryBackendFactory = await createGitHubTokenServiceFactory(
+      resources,
+      {
+        config,
+        clock,
+        token: `github_pat_${"c".repeat(36)}`,
+        trustedEndpoints: { apiOrigin: origin, gitOrigin: origin, ca: tls.ca },
+      },
+    );
+    let authenticating = false;
+    const factory: RepositoryBackendFactory = {
+      ...backendFactory,
+      create(input) {
+        const backend = backendFactory.create(input);
+        return {
+          ...backend,
+          prepareAuthentication: ((ref, plan) => {
+            const authenticate = backend.prepareAuthentication(ref, plan);
+            return (bytes, send) => {
+              authenticating = true;
+              return authenticate(bytes, async (request) => {
+                const sending = send({
+                  ...request,
+                  headers: { ...request.headers, ExPeCt: "100-continue" },
+                });
+                if (mode === "authentication-rejected" || mode === "written") {
+                  void sending.catch(() => {});
+                  await (mode === "written" ? received.promise : paused.promise);
+                  rejected.resolve();
+                  throw new Error("authentication-failed");
+                }
+                return sending;
+              });
+            };
+          }) satisfies RepositoryBackend["prepareAuthentication"],
+        };
+      },
+    };
+    const { service, listeners } = await startServiceListeners(resources, {
+      config,
+      factory,
+      clock,
+      tls,
+      upstreamOrigins: [origin],
+      providerQueue: undefined,
+      log: undefined,
+    });
+    resources.after(() => resume.resolve());
+    const opened = service.open({ durationSeconds: 3600, profile: "git-read" }, async () => {
+      if (authenticating) {
+        paused.resolve();
+        await resume.promise;
+        if (mode === "standing-denied") {
+          throw new Error("standing-withdrawn");
+        }
+      }
+    });
+    const response = gatewayRequest(
+      { config, opened, listeners, tls },
+      "/repos/fixture/repository",
+    );
+    void response.catch(() => {});
+    await paused.promise;
+    const socket = await connected.promise;
+    if (mode === "standing-denied") {
+      // Keep the gate closed long enough for an eager HTTP header write to reach the peer.
+      await delay(50);
+      assert.deepEqual(requests, []);
+    } else if (mode === "authentication-rejected") {
+      await rejected.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } else if (mode === "peer-closed") {
+      const closed = once(socket, "close");
+      socket.end();
+      await closed;
+    }
+    resume.resolve();
+    if (mode === "written") {
+      const upstreamResponse = await received.promise;
+      await rejected.promise;
+      upstreamResponse.destroy();
+      assert.equal((await response).status, 502);
+      assert.deepEqual(requests, [""], "one request was written without the reserved Expect field");
+    } else {
+      assert.equal((await response).status, 503);
+      assert.deepEqual(requests, [], "a refused exchange must write no upstream HTTP request");
+    }
+  });
+}

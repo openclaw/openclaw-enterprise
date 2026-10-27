@@ -170,11 +170,19 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       stopInput = options.clock.schedule(plan.limits.inputMs, cancel);
       await connected;
       const req = outbound;
-      await context.gate.dispatch(cancel, () => {
-        // Once this write starts, an error is a possible dispatch; never replay it.
-        dispatched = true;
-        req.flushHeaders();
-      });
+      await context.gate.dispatch(
+        cancel,
+        () => {
+          // Once this write starts, an error is a possible dispatch; never replay it.
+          dispatched = true;
+          req.flushHeaders();
+        },
+        () => {
+          if (req.destroyed || !req.socket?.writable) {
+            throw new Error("upstream-closed");
+          }
+        },
+      );
       const wire = new ByteLimit(plan.limits.inputWireBytes, inputStall.reset);
       const decoded = new ByteLimit(plan.limits.inputDecodedBytes, inputStall.reset);
       const source = options.input ?? options.request;

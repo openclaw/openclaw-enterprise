@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
 updated: 2026-10-27
-last_updated_session: authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37
+last_updated_session: authoring-run/53fbc611-31df-40b6-b106-b4035812ccb6
 ---
 
 # Repository credential service flow
@@ -233,18 +233,19 @@ The worker validates the live grant and lends prepared material for that exchang
 Missing or uncertain material does not cause request-time issuance. The explicit
 development token factory instead borrows its process-owned static token.
 
-The handler and sender independently capture allowed upstream origins.
+Handler and sender capture allowed origins independently.
 `apps/controller/src/drivers/repo/credentials/transport/request-headers.ts:createUpstreamHeaders`
-validates adapter fields, rejects case-insensitive duplicates and reconstructs
-headers within byte and field-count limits. Credential bytes stay inside private
-callbacks. For owned credentials, the gate rechecks standing at the first upstream
-write after verified TLS; denial sends no request. Possibly dispatched requests
-are not replayed. The final-response-header timer starts after input completes
-unless headers already arrived. Connection, upload, stall and total deadlines
-remain active in their phases. Upload-pack has separate response-byte, first-header,
-stall and total budgets; other requests retain ordinary limits. Every plan is capped
-by `maxExchangeMs` and the session deadline; static-token upload-pack is also capped
-by its lease. The byte counter applies backpressure without buffering the pack.
+validates adapter fields within byte and field-count limits, rejects case-insensitive
+duplicates, and removes reserved fields such as `Expect` before request construction.
+After verified TLS, owned exchanges recheck configured standing before first write.
+Prepared sends check their original one-use permit, cancellation and send deadline
+there. Gate denial or confirmed
+pre-write socket close prevents HTTP writes. The response-header timer starts
+after upload unless headers arrived. Connection, upload, stall and total deadlines
+apply. Upload-pack has separate response-byte, first-header, stall and total
+budgets; other requests retain ordinary limits. Every plan obeys `maxExchangeMs` and
+the session deadline; static-token upload-pack also obeys its lease. The byte counter
+applies backpressure without buffering the pack.
 
 ### 5. Deliver an outcome and release ownership
 
@@ -274,13 +275,13 @@ I/O, then sends fixed `502 exchange-uncertain` after settlement. Cancellation,
 deadlines, input failure and post-header failure destroy the incoming connection,
 including later cancellation while error delivery remains owned.
 
-`apps/controller/src/drivers/repo/credentials/lifecycle/exchange.ts:executeExchange` joins
-tracked I/O before releasing credential use and returning exchange capacity to
-the service owner. Transport returns completed, not-dispatched or
-possibly-dispatched outcomes. The handler ignores response `close` after
-`writableFinished`; premature close cancels the exchange. Possibly dispatched
-mutations have no automatic replay. Original provider settlement and cleanup
-ownership outlive outward requests.
+`apps/controller/src/drivers/repo/credentials/lifecycle/exchange.ts:executeExchange`
+closes a rejecting authenticator's gate, drains its admitted sender, then classifies
+the result. Committed writes remain possibly dispatched and are never replayed.
+Outcomes are completed, not-dispatched or possibly-dispatched. The
+exchange joins tracked I/O before releasing credential use and capacity. The handler
+ignores response `close` after `writableFinished`; premature close cancels the
+exchange. Original provider settlement and cleanup outlive requests.
 
 ### 6. Close locally and finish cleanup
 
@@ -354,6 +355,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 14:02: Classify failed authentication after sender drainage. (authoring-run/53fbc611-31df-40b6-b106-b4035812ccb6 - 9d53c40b47afc7915d22a011ba721a880101b5ba)
 
 - 2026-10-27 13:13: Preserve the selected exchange credential through rotation and authorize the first write. (authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37 - 852146b8faea0fd083abd2255190eed5c0e5f43d)
 

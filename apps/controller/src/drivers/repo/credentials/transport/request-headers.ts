@@ -12,6 +12,7 @@ const RESERVED = new Set([
   "trailer",
   "transfer-encoding",
   "upgrade",
+  // Node can send this field before the dispatch gate opens.
   "expect",
   "cookie",
   "content-length",

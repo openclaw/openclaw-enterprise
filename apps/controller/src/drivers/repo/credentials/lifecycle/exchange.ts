@@ -50,6 +50,7 @@ export async function executeExchange(
   let senderWork: Promise<ExchangeOutcome> | undefined;
   let senderFinished = false;
   let dispatchAttempted = false;
+  let dispatchClosed = false;
   let dispatchWork: Promise<unknown> | undefined;
   const failure = (): ExchangeOutcome =>
     Object.freeze({
@@ -63,18 +64,25 @@ export async function executeExchange(
       const bounds = Object.freeze({ signal, deadlineMonoMs: exchange.deadline });
       let assertSendStart: () => void;
       const gate: DispatchGate = Object.freeze({
-        dispatch<T>(stop: () => void, open: () => T): T | Promise<T> {
+        dispatch<T>(stop: () => void, open: () => T, assertReady?: () => void): T | Promise<T> {
           if (dispatchAttempted) {
             throw new Error("DISPATCH_CLOSED");
           }
           dispatchAttempted = true;
           const commit = () => {
-            if (exchange.dispatched || exchange.finished || signal.aborted || senderFinished) {
+            if (
+              dispatchClosed ||
+              exchange.dispatched ||
+              exchange.finished ||
+              signal.aborted ||
+              senderFinished
+            ) {
               throw new Error("DISPATCH_CLOSED");
             }
             if (owner.clock.monotonicNow() >= exchange.deadline) {
               throw new Error("DISPATCH_EXPIRED");
             }
+            assertReady?.();
             assertSendStart();
             exchange.cancellations.add(stop);
             exchange.dispatched = true;
@@ -169,7 +177,9 @@ export async function executeExchange(
         ? failure()
         : outcome;
     } catch {
-      return failure();
+      // An authenticator can reject after admitting a sender. Close its gate
+      // before joining it, then classify from the settled dispatch state.
+      dispatchClosed = true;
     } finally {
       await senderWork?.catch(() => {});
       acceptingIO = false;
@@ -179,6 +189,7 @@ export async function executeExchange(
       }
       owner.finish();
     }
+    return failure();
   })();
   try {
     return await waitWithin(work, exchange.controller.signal, exchange.deadline, owner.clock);

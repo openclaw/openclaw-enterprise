@@ -236,25 +236,25 @@ correlations stop at twice the session limit and can return `overloaded`;
 unresolved cleanup survives that window. Restart loses standalone correlations.
 No correlation recovers a bearer.
 
-The session bearer works while its process and upstream authorization survive.
-A replacement token must cover the remaining exchange budget plus the safety margin.
-An exchange retains its credential through replacement; standing is rechecked
-before its first upstream write.
+A bearer requires a live process and upstream authorization. Replacement tokens must
+cover the remaining exchange budget and safety margin. An owned exchange keeps its
+credential through replacement; the service rechecks configured standing after
+verified TLS, before the first upstream write. Prepared sends check their original
+one-use permit, cancellation and send deadline there.
 
-Authentication eligibility and terminal cleanup expiry are separate deadlines,
-both in elapsed monotonic time from the original capture; delayed acquisition
-settlement cannot extend either. The GitHub adapter allows 60 seconds of provider
-clock skew and conservatively stops authentication before the reported expiry.
-Cleanup retains the one-hour bound from local receipt. A forward wall-clock
-change can deny authentication but cannot establish remote expiration.
+Authentication and cleanup expire separately in elapsed monotonic time from capture;
+delayed acquisition settlement extends neither. The GitHub adapter allows 60 seconds
+of provider clock skew and stops authentication before reported expiry. Cleanup retains
+its one-hour bound from local receipt. A forward wall-clock change can deny authentication
+but cannot prove remote expiration.
 
-Closing or expiring a session prevents new use immediately and cancels owned
-exchanges. `CLOSED` does not imply confirmed revocation. Private control status
-distinguishes pending, revoked, expired and uncertain credentials, plus auxiliary cleanup.
+Closing or expiry immediately prevents new use and cancels owned exchanges. `CLOSED`
+does not prove revocation. Private control status distinguishes pending, revoked,
+expired and uncertain credentials and auxiliary cleanup.
 `DISPOSED` requires settled actions, resolved access-token obligations and
 completed auxiliary finalization; historical revoked/expired counters may remain
-nonzero. An uncertain issuance blocks automatic minting; uncertain pushes or API
-mutations are never automatically replayed.
+nonzero. Uncertain issuance blocks automatic minting; uncertain pushes or API
+mutations are never replayed automatically.
 
 If session construction fails, renewal access closes immediately, but retained
 cleanup material counts against session capacity and shutdown's
