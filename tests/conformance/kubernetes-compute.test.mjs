@@ -22075,3 +22075,37 @@ test("Gateway tool policy is checked at Configuration save and at Agent admissio
     }
   }
 });
+
+test("an active embedded revision whose stored Gateway tool policy predates the rule keeps its maintenance passes", async () => {
+  // Finding 2694. The worker prepares and activates the active revision again on maintenance
+  // and recovery passes (every 30 s with repository credentials). A revision admitted before
+  // Agent admission checked the embedded policy must keep those passes until a redeploy, which
+  // admission refuses with the Configuration save text.
+  const { driver, revision, state, context } = workspaceSetupFixture(true);
+  revision.configuration = {
+    ...structuredClone(revision.configuration),
+    tools: { gatewayPolicy: { allow: ["sessions"] } },
+  };
+  state.ready = true;
+  await prepareUntilReady(driver, revision, context);
+  await driver.activateRevision(revision, context);
+  // The maintenance pass: preparation and activation of the same, now active, revision.
+  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+  await driver.activateRevision(revision, context);
+  const refused = {
+    name: "ConfigurationHarnessError",
+    message: /tools\.gatewayPolicy\.actions\.sessions must list the permitted actions/,
+  };
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        revision.configuration,
+        revision.secretBindings,
+      ),
+    refused,
+    "a new deployment",
+  );
+  assert.throws(() => driver.validateConfiguration(revision.configuration), refused, "save");
+});

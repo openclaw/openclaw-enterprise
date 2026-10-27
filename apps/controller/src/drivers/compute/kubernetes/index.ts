@@ -4442,6 +4442,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     credentialSourceType?: CredentialSourceType,
   ): void {
     this.validateAdmittedHarnessAuth(
+      "admission",
       harness,
       auth,
       configuration,
@@ -4493,8 +4494,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   // validateHarnessAuth's rules for a document that may carry Compute's rendered settings:
-  // preparation passes the admitted revision's.
+  // preparation and activation pass the admitted revision's, also on maintenance and recovery
+  // passes of the active revision.
   private validateAdmittedHarnessAuth(
+    stage: "admission" | "preparation",
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
@@ -4525,7 +4528,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Only dedicated execution serves main, so that rule stays here, at deployment.
     requireOpenClawRoster(configuration);
     // The same rules as Configuration save, with its messages, for a row stored before them.
-    this.validateConfigurationContent(configuration);
+    this.validateConfigurationContent(configuration, undefined, stage === "admission");
     if (native || codex) {
       requireDedicatedMainAgentDefault(
         configuration,
@@ -4698,11 +4701,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private validateConfigurationContent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
+    toolPolicy = true,
   ): void {
     enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError);
     requireHarnessCredentialBinding(configuration, callerSettingError, options);
     // Every OpenClaw topology applies the tool policy, embedded too (findings 2688, 2689).
-    validateGatewayToolPolicy(configuration, callerSettingError, options);
+    // Preparation and activation skip it: an active revision saved before this rule keeps its
+    // maintenance and recovery passes until a redeploy, which admission checks (finding 2694).
+    // Dedicated preparation still checks its composed policy (managedGatewayConfiguration).
+    if (toolPolicy) {
+      validateGatewayToolPolicy(configuration, callerSettingError, options);
+    }
   }
 
   getGatewayEndpoint(revision: AgentRevision): string | undefined {
@@ -6259,6 +6268,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
     await this.prepareRevisionStage("harness_auth", async () =>
       this.validateAdmittedHarnessAuth(
+        "preparation",
         revision.harness,
         revision.harnessAuth,
         admittedRevision.configuration,
@@ -7524,6 +7534,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.verifyGatewayRoutingConfiguration(admittedRevision);
     const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
     this.validateAdmittedHarnessAuth(
+      "preparation",
       revision.harness,
       revision.harnessAuth,
       admittedRevision.configuration,
