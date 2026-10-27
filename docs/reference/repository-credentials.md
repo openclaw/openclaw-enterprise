@@ -206,9 +206,8 @@ The trusted worker or local operator uses HTTP over a private mode-0600 Unix soc
 | `GET /v1/sessions/{id}`                                           | Private session and cleanup status                          |
 | `POST /v1/sessions/{id}/close`                                    | Immediate local closure status; cleanup reported separately |
 
-The socket's parent is private to the service/operator and never mounted into
-the client. Control bodies are limited to 16 KiB. The HTTPS client listener has
-no admission or close endpoint.
+The service/operator owns the socket's private parent, which is never mounted
+into the client. Control bodies are limited to 16 KiB; HTTPS exposes no admission or close endpoint.
 
 `X-Admission-Id` combines a 13-digit Unix-millisecond timestamp, hyphen and
 lowercase UUIDv4; the CLI prints this nonsecret ID before dispatch. HTTP 201
@@ -217,40 +216,41 @@ status only; conflicts fail. Follow
 [lost-response recovery](../guides/repository-credentials/standalone-service.md#recover-an-admission)
 before explicitly requesting replacement material.
 
-Registry-backed brokers privately advertise `durableAdmissionVersion: 1`, which
-the worker checks before new attempts and readiness; an unavailable or older
-broker blocks both. The check proves neither journal availability, absence nor
-disposal; recovery, closure and runtime retirement do not depend on it.
+The worker checks the registry-backed broker's private `durableAdmissionVersion: 1`
+before new attempts and readiness; an unavailable or older broker blocks both.
+This check proves neither journal availability, absence nor disposal; recovery,
+closure and runtime retirement do not depend on it.
 
 Platform admission binds `namespaceId`, `repositoryRef`, normalized `profile`,
 `expectedBinding` and `deadlineWallMs` to the persisted attempt. The worker's
-private receipt socket commits a reservation before the broker releases a bearer.
-A recovery-only lookup can durably fence a missing admission; a reservation or
-active session without a confirmed terminal receipt remains unknown. Only the
-original broker can record its exact `DISPOSED` result. Receipts contain no
-credentials and remain with attempt history. Journal failure prevents new bound
-admission and cannot establish absence or disposal.
+private receipt socket commits a reservation before bearer release. A recovery-only
+lookup can durably fence a missing admission. Only the original broker records its
+exact `DISPOSED` result; status recovers disposal from a matching committed
+observation, otherwise the outcome remains unknown. Receipts contain no credentials
+and remain with attempt history. Journal failure prevents new bound admission and
+cannot establish absence or disposal.
 
 Unseen IDs must be under 60 seconds old and never future-dated. Process-local
 correlations stop at twice the session limit and can return `overloaded`;
 unresolved cleanup survives that window. Restart loses standalone correlations.
 No correlation recovers a bearer.
 
-A bearer requires a live process and upstream authorization. Replacement tokens must
-cover the remaining exchange budget and safety margin. An owned exchange keeps its
-credential through replacement; the service rechecks configured standing after
-verified TLS, before the first upstream write. Prepared sends check their original
-one-use permit, cancellation and send deadline there.
+A bearer requires a live process and upstream authorization. Replacement tokens
+must cover the exchange budget and safety margin. Owned exchanges retain their
+credential through replacement and recheck configured standing after verified TLS,
+before the first upstream write. Prepared sends check their original one-use permit,
+cancellation and send deadline there.
 
-Authentication and cleanup expire separately in elapsed monotonic time from capture;
-delayed acquisition settlement extends neither. The GitHub adapter allows 60 seconds
-of provider clock skew and stops authentication before reported expiry. Cleanup retains
-its one-hour bound from local receipt. A forward wall-clock change can deny authentication
-but cannot prove remote expiration.
+Authentication and cleanup use separate monotonic deadlines from capture; late
+acquisition extends neither. The GitHub adapter allows 60 seconds of provider clock
+skew and stops authentication before reported expiry. Cleanup retains its one-hour
+bound from local receipt. Forward wall-clock changes can deny authentication but
+cannot establish remote expiration.
 
-Closing or expiry immediately prevents new use and cancels owned exchanges. `CLOSED`
-does not prove revocation. Private control status distinguishes pending, revoked,
-expired and uncertain credentials and auxiliary cleanup.
+Closing or expiring a session cancels owned exchanges. Status observes expiry without
+canceling or starting cleanup. Afterward, clock rollback cannot restore use,
+even for reserved exchanges. `CLOSED` does not confirm revocation. Private control status
+distinguishes pending, revoked, expired and uncertain credentials, plus auxiliary cleanup.
 `DISPOSED` requires settled actions, resolved access-token obligations and
 completed auxiliary finalization; historical revoked/expired counters may remain
 nonzero. Uncertain issuance blocks automatic minting; uncertain pushes or API

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
 updated: 2026-10-27
-last_updated_session: authoring-run/53fbc611-31df-40b6-b106-b4035812ccb6
+last_updated_session: authoring-run/dadaaea1-48d6-4917-ab44-18b1cfbeccb8
 ---
 
 # Repository credential service flow
@@ -30,7 +30,7 @@ protected files and control; clients receive session files and public connection
 graph TD
   Operator["Worker or operator<br/>opens session"] --> Admission["Service freezes grant<br/>and creates bearer"]
   Admission -->|Construction failed| ConstructionCleanup["Seal renewal access<br/>drain unpublished custody"]
-  Operator -->|Repeat admission ID| Recovery["Return public status<br/>close and reopen explicitly"]
+  Operator -->|Uncertain admission| Recovery["Inspect original owner<br/>and known session status"]
   Admission --> Files["CLI publishes private<br/>client directory"]
   Files --> Client["Stock Git helper or pinned gh<br/>selects exact session"]
   Staged["Staged runtime generation"] --> Native["Prepare native include<br/>without reading bearers"]
@@ -106,19 +106,21 @@ a digest; only the original admission response contains the bearer.
 `apps/controller/src/drivers/repo/credentials/server.ts:startListeners` owns the
 correlation registry from
 `apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission`.
-The registry holds at most twice the configured `sessions` count.
-Admission IDs bind the complete request: platform Namespace, repository reference,
-normalized profile, expected grant and absolute deadline. Registry mode requires
-this binding and independently resolves its fingerprint. A worker-owned private
-journal reserves the exact attempt before bearer delivery; recovery durably fences
-a missing admission. The broker opens the session before reserving, so a capacity
-or shutdown refusal leaves no receipt and the same admission can retry or be
-fenced. When the broker refuses a reserved admission as invalid, or cannot record
-its session, it fences its own reservation. A fence that does not commit stays
-with that admission, and the next open or recovery fences it; past the admission
-window a sweep retries it and forgets it once the fence commits, so it stops
-counting toward capacity. Known nondelivery closes the session.
-Reconciliation cannot recover a bearer, change its binding or replay provider work.
+The registry holds at most twice the configured `sessions` count. Admission IDs
+bind the Namespace, repository reference, profile, expected grant and absolute
+deadline. Registry mode independently resolves that binding. A worker-owned
+journal reserves the exact attempt before bearer delivery. The broker opens before
+reserving, so capacity or shutdown refusal writes no receipt. Invalid or unbound
+reservations are fenced; a failed fence remains with its admission until a later
+recovery or maintenance sweep confirms it. Known nondelivery closes the session.
+
+An uncertain response retains its admission ID. Inspect the original owner and
+any known session; reconciliation cannot recover a bearer or authorize replacement.
+Status cannot close sessions or publish disposal. After a lost disposal acknowledgement,
+`createControlAdmission` checks the original receipt's session, binding, deadline and
+cleanup counts. Unresolved evidence remains unavailable. `createCredentialService`
+retains observed expiry across wall-clock correction, denies bearer use and leaves
+cleanup to the lifecycle owner.
 
 The receipt and operator control clients reject private-socket replies over
 16,384 bytes before destroying the response.
@@ -230,6 +232,11 @@ authentication bytes.
 Production native requests use
 `apps/controller/src/drivers/repo/github/credentials/warm-use.ts:authorizePreparedGitSend`.
 The worker validates the live grant and lends prepared material for that exchange.
+`executeExchange` checks the session before requesting prepared authorization and
+after it returns. `apps/controller/src/drivers/repo/credentials/transport/upstream.ts:createUpstreamSender`
+enters the exchange's dispatch gate at its first HTTP write, which checks the session
+again. If an issued permit cannot be submitted, the original settlement receives
+`not-submitted`.
 Missing or uncertain material does not cause request-time issuance. The explicit
 development token factory instead borrows its process-owned static token.
 
@@ -356,28 +363,16 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 
 ## Changelog
 
+- 2026-10-27 14:38: Preserve observed expiry at the first upstream write for owned and prepared exchanges. (authoring-run/dadaaea1-48d6-4917-ab44-18b1cfbeccb8 - b9fe4f8bb5b3321d1c0965297443fa174520c481)
+
+- 2026-10-27 14:12: Enforce observed expiry throughout prepared authorization and dispatch. (authoring-run/d086ce54-15b3-490d-8361-a992c4445d7f - 7e2feb0a3388f35364d943f0de778a5a5af8e944)
+
 - 2026-10-27 14:02: Classify failed authentication after sender drainage. (authoring-run/53fbc611-31df-40b6-b106-b4035812ccb6 - 9d53c40b47afc7915d22a011ba721a880101b5ba)
+
+- 2026-10-27 13:32: Retain observed session expiry through wall-clock correction. (authoring-run/190e7ec1-f80f-46f3-8a1c-06a9976abbc4 - bc4d77fb896d89b02b561a7e5f213e713ee40d13)
 
 - 2026-10-27 13:13: Preserve the selected exchange credential through rotation and authorize the first write. (authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37 - 852146b8faea0fd083abd2255190eed5c0e5f43d)
 
-- 2026-10-27 11:09: Separate prepared startup from development authority and defer listener admission until socket setup completes. (authoring-run/51557b14-ec25-4b33-98f2-b5a16d00d6ea - 0418ef3a2c116b73f025281395d92477daf665d2)
+- 2026-10-27 13:11: Keep uncertain admission and disposal observation on the original owner. (authoring-run/eee8818e-6453-492f-acc7-5e5a3f1fe630 - bb7fa74e2d95bdd21648b36ad5c65558b0baffa9)
 
-- 2026-10-23 16:25: Require patched gh 2.103.2 in image and client version checks; pin its published checksum manifest. (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
-
-- 2026-10-15 20:51: Separate token custody from ambiguous response evidence. (authoring-run/3af8b480-048d-4e5e-a05c-f5a92f357ccd - 53c4297eb1e0894042a1698609c3e672aef2c97b)
-
-- 2026-10-15 04:44: Bound upload-pack streaming separately while retaining exchange and credential fencing. (authoring-run/35418147-f92b-4808-96cf-a6db4d91f2bb - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
-
-- 2026-10-14 12:23: Document prompt rejection of oversized private-socket replies. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
-
-- 2026-10-15 04:05: Project closed metadata reads; reject actual trailers before release. (authoring-run/ec233aef-e8c7-46e0-b7ca-d1e180dd99aa - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
-
-- 2026-10-13 07:40: Past its window, a sweep fences a refused admission's reservation again and forgets it once the fence commits. (fix-1196-1197)
-
-- 2026-10-12 07:39: A refused admission keeps a reservation whose fence did not commit, and the next open or recovery fences it. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
-
-- 2026-10-06 19:36: Preserve native child signal exit statuses in the shared client executor. (authoring-run/6fa93358-8fd9-4675-9684-511f79da8969 - 86bf3dd99470b86d4c46568f48455f695daabde5)
-
-- 2026-10-03: Refuse GraphQL bodies that select the provider clone credential before dispatch.
-
-- Earlier entries (3) are in this page's Git history.
+- [Earlier entries](repository-credentials/history.md) are preserved in the documentation history.

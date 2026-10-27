@@ -6,6 +6,7 @@ import { createServer } from "node:https";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TLSSocket } from "node:tls";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type {
   AttemptContext,
   CredentialRef,
@@ -184,6 +185,10 @@ const firstWriteCases = [
   { name: "authentication rejection closes a pending dispatch", mode: "authentication-rejected" },
   { name: "a confirmed TLS close before the first write is not dispatched", mode: "peer-closed" },
   { name: "authentication rejection after the first write remains uncertain", mode: "written" },
+  {
+    name: "observed owned-session expiry fences the first write after clock rollback",
+    mode: "observed-expiry",
+  },
 ] as const;
 
 for (const { name, mode } of firstWriteCases) {
@@ -220,12 +225,21 @@ for (const { name, mode } of firstWriteCases) {
       },
     );
     let authenticating = false;
+    let cleanupActions = 0;
     const factory: RepositoryBackendFactory = {
       ...backendFactory,
       create(input) {
         const backend = backendFactory.create(input);
         return {
           ...backend,
+          retire(...args) {
+            cleanupActions++;
+            return backend.retire(...args);
+          },
+          finalize(...args) {
+            cleanupActions++;
+            return backend.finalize(...args);
+          },
           prepareAuthentication: ((ref, plan) => {
             const authenticate = backend.prepareAuthentication(ref, plan);
             return (bytes, send) => {
@@ -257,6 +271,8 @@ for (const { name, mode } of firstWriteCases) {
       providerQueue: undefined,
       log: undefined,
     });
+    let disposals = 0;
+    service.observeDisposal(() => disposals++);
     resources.after(() => resume.resolve());
     const opened = service.open({ durationSeconds: 3600, profile: "git-read" }, async () => {
       if (authenticating) {
@@ -274,7 +290,20 @@ for (const { name, mode } of firstWriteCases) {
     void response.catch(() => {});
     await paused.promise;
     const socket = await connected.promise;
-    if (mode === "standing-denied") {
+    if (mode === "observed-expiry") {
+      // TLS is established and the credential is held, but the first HTTP write is still gated.
+      await clock.advance(1, 3_601_000);
+      const client = new UnixRepositoryCredentialControlClient({
+        controlSocket: config.gateway.controlSocket,
+      });
+      assert.equal(
+        (await client.status(opened.session.sessionId, AbortSignal.timeout(5_000)))?.state,
+        "CLOSED",
+      );
+      assert.equal(cleanupActions, 0, "status must not initiate credential cleanup");
+      assert.equal(disposals, 0, "status must not publish disposal");
+      await clock.advance(1, -3_599_000);
+    } else if (mode === "standing-denied") {
       // Keep the gate closed long enough for an eager HTTP header write to reach the peer.
       await delay(50);
       assert.deepEqual(requests, []);
@@ -293,6 +322,14 @@ for (const { name, mode } of firstWriteCases) {
       upstreamResponse.destroy();
       assert.equal((await response).status, 502);
       assert.deepEqual(requests, [""], "one request was written without the reserved Expect field");
+    } else if (mode === "observed-expiry") {
+      const outcome = await response.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      assert.deepEqual(requests, [], "an expired owned session must send no origin HTTP request");
+      assert.ok(outcome instanceof Error);
+      assert.equal((outcome as NodeJS.ErrnoException).code, "ECONNRESET");
     } else {
       assert.equal((await response).status, 503);
       assert.deepEqual(requests, [], "a refused exchange must write no upstream HTTP request");

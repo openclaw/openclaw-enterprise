@@ -20,6 +20,8 @@
     "tests/integration/container-resume.test.mjs",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
     "tests/integration/repository-credentials-control.test.mjs",
+    "tests/integration/repository-credential-operator-recovery.test.ts",
+    "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
     "tests/integration/container-release.test.mjs",
     "tests/integration/password-sign-in-audit.test.mjs",
@@ -406,6 +408,12 @@
     },
     {
       "path": "tests/integration/repository-credentials-control.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credential-operator-recovery.test.ts"
+    },
+    {
+      "path": "tests/integration/repository-receipt-observation.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-shutdown.test.mjs"
