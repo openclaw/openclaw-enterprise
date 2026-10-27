@@ -1,7 +1,15 @@
+/// <reference lib="es2024.promise" />
+
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import { request } from "node:http";
+import { request as requestHttps } from "node:https";
+import { syncBuiltinESMExports } from "node:module";
+import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
 import {
+  appendFile,
   cp,
   link,
   mkdir,
@@ -14,14 +22,59 @@ import {
   chmod,
   lstat,
 } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import test from "node:test";
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { availablePort, reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { credentialClientPath } from "../fixtures/repository-credentials/runtime.mjs";
+import type { RuntimeRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
+import type { ClientFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import type {
+  SafeConfigurationSummary,
+  SessionStatus,
+  ShutdownSummary,
+} from "../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
+
+interface PortReservation {
+  port: number;
+  reusePort: boolean;
+  release(): Promise<void>;
+}
+
+interface ProcessExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+interface HealthResponse {
+  status: number | undefined;
+  body: { ready: boolean; protocolVersion: number };
+}
+
+interface PackageManifest {
+  dependencies?: Record<string, string>;
+}
+
+interface MaterialManifest {
+  version: 1;
+  generation: string;
+  bindings: Array<
+    Pick<
+      RuntimeRepositoryBinding,
+      "repositoryRef" | "sessionId" | "deadlineWallMs" | "directory" | "client"
+    >
+  >;
+}
+
+type ServiceEvent =
+  | { event: "started"; authority: string; tokenClass?: string }
+  | ({ event: "shutdown" } & ShutdownSummary);
 
 const root = resolve(".");
+const moduleGuard = join(root, "tests/fixtures/repository-credentials/module-guard.ts");
 
 test(
   "detached credential service and client run without workspace packages or node_modules",
@@ -32,23 +85,8 @@ test(
       longest: "prepared-git-use.sock",
     });
     const build = join(temporary, "build");
-    await mkdir(join(build, "scripts"), { recursive: true });
-    await mkdir(join(build, "apps/controller/dist"), { recursive: true });
-    await cp(
-      join(root, "scripts/build-repository-credentials.mjs"),
-      join(build, "scripts/build-repository-credentials.mjs"),
-    );
-    // Exercise the real artifact builder on the current controller output. A root
-    // TypeScript build is a prerequisite; no detached source package exists.
-    await cp(join(root, "apps/controller/dist"), join(build, "apps/controller/dist"), {
-      recursive: true,
-    });
-    await cp(
-      join(root, "deploy/runtime/repository-credentials"),
-      join(build, "deploy/runtime/repository-credentials"),
-      { recursive: true },
-    );
-    await symlink(join(root, "node_modules"), join(build, "node_modules"));
+    // A root TypeScript build is a prerequisite; stage its actual emitted output.
+    await stageArtifactInputs(build);
     const built = spawnSync(
       process.execPath,
       [join(build, "scripts/build-repository-credentials.mjs")],
@@ -59,6 +97,27 @@ test(
       },
     );
     assert.equal(built.status, 0, built.stdout + built.stderr);
+    // Make the real emitted signer reachable under a new name. The package
+    // builder must reject its authority rather than relying on a filename list.
+    const emittedCredentials = join(build, "apps/controller/dist/drivers/repo/github/credentials");
+    await cp(
+      join(emittedCredentials, "material.js"),
+      join(emittedCredentials, "package-issuer-control.js"),
+    );
+    await appendFile(
+      join(build, "apps/controller/dist/repository-credentials.js"),
+      '\nimport "./drivers/repo/github/credentials/package-issuer-control.js";\n',
+    );
+    const issuerRejected = spawnSync(
+      process.execPath,
+      [join(build, "scripts/build-repository-credentials.mjs")],
+      { encoding: "utf8", timeout: 30000, env: { PATH: process.env.PATH } },
+    );
+    assert.notEqual(issuerRejected.status, 0);
+    assert.match(
+      issuerRejected.stderr,
+      /Unsupported service cryptographic capability in drivers\/repo\/github\/credentials\/package-issuer-control\.js/,
+    );
     const artifact = join(build, ".build/repository-credentials/service");
     const runtime = join(temporary, "runtime");
     await cp(artifact, runtime, { recursive: true });
@@ -140,12 +199,9 @@ test(
     assert.equal(openssl.status, 0);
     await chmod(key, 0o600);
     await chmod(certificate, 0o644);
-    // Both services below bind a configured gateway port long after it is chosen. Hold each
-    // port until its service has bound it, so no other socket takes it in between.
-    const serviceReservation = await reservePort();
+    // Hold the gateway port across the prepared and development process launches.
+    const serviceReservation: PortReservation = await reservePort();
     t.after(serviceReservation.release);
-    const developmentReservation = await reservePort();
-    t.after(developmentReservation.release);
     const registryFile = join(temporary, "registry.json");
     await writeFile(
       registryFile,
@@ -175,84 +231,160 @@ test(
       { mode: 0o600 },
     );
     const configuration = join(temporary, "service.json");
-    await writeFile(
-      configuration,
-      JSON.stringify({
-        gateway: {
-          publicOrigin: "https://credentials.example.test",
-          listen: `127.0.0.1:${serviceReservation.port}`,
-          tlsCertFile: certificate,
-          tlsKeyFile: key,
-          controlSocket: join(sockets, "control.sock"),
-        },
-        sessionPolicy: {
-          maximumDurationSeconds: 172800,
-          defaultProfile: "git-write",
-          allowedProfiles: ["git-read", "git-write", "git-full"],
-        },
-        backend: {
-          kind: "github-prepared-git-registry",
-          backendId: "github-fixture",
-          registryFile,
-        },
-      }),
-      { mode: 0o600 },
-    );
+    const preparedConfiguration = {
+      gateway: {
+        publicOrigin: "https://credentials.example.test",
+        listen: `127.0.0.1:${serviceReservation.port}`,
+        tlsCertFile: certificate,
+        tlsKeyFile: key,
+        controlSocket: join(sockets, "control.sock"),
+      },
+      sessionPolicy: {
+        maximumDurationSeconds: 172800,
+        defaultProfile: "git-write",
+        allowedProfiles: ["git-read", "git-write", "git-full"],
+      },
+      backend: {
+        kind: "github-prepared-git-registry",
+        backendId: "github-fixture",
+        registryFile,
+      },
+    };
+    await writeFile(configuration, JSON.stringify(preparedConfiguration), { mode: 0o600 });
     const checked = spawnSync(
       process.execPath,
       [
+        "--import",
+        moduleGuard,
         join(runtime, "dist/composition/repository-credentials/check-config.js"),
         "--check-config",
         configuration,
       ],
       { cwd: runtime, env: { PATH: process.env.PATH }, encoding: "utf8", timeout: 10000 },
     );
-    assert.equal(checked.status, 0, checked.stderr);
-    assert.equal(JSON.parse(checked.stdout).valid, true);
+    assert.equal(
+      checked.status,
+      0,
+      checked.stderr.split("\n", 1)[0] ?? "configuration check failed",
+    );
     assert.equal(checked.stdout.includes("PRIVATE KEY"), false);
+    const checkedSummary: SafeConfigurationSummary = JSON.parse(checked.stdout);
+    assert.equal(checkedSummary.valid, true);
     // The development token authority needs the process flag in both argv parsers.
     const token = `gho_${"p".repeat(36)}`;
     const tokenFile = join(temporary, "token");
     await writeFile(tokenFile, `${token}\n`, { mode: 0o600 });
     const tokenConfiguration = join(temporary, "token-service.json");
-    const preparedConfiguration = JSON.parse(await readFile(configuration, "utf8"));
+    const developmentConfiguration = {
+      gateway: {
+        ...preparedConfiguration.gateway,
+        listen: `127.0.0.1:${serviceReservation.port}`,
+        controlSocket: join(sockets, "token-control.sock"),
+      },
+      sessionPolicy: {
+        maximumDurationSeconds: 28800,
+        defaultProfile: "git-write",
+        allowedProfiles: ["git-read", "git-write"],
+      },
+      limits: { gitPushInputBytes: 67108864 },
+      backend: {
+        kind: "github-token",
+        providerInstanceId: "fixture",
+        configVersion: "1",
+        repositoryId: "789",
+        repository: "example/project",
+        tokenFile,
+        developmentOnly: true,
+        pushRefAllowlist: ["refs/heads/agent/*"],
+      },
+    };
+    await writeFile(tokenConfiguration, JSON.stringify(developmentConfiguration), { mode: 0o600 });
+    const entry = (script: string, args: string[]) => {
+      const result = spawnSync(
+        process.execPath,
+        ["--import", moduleGuard, join(runtime, "dist", script), ...args],
+        {
+          cwd: runtime,
+          env: {
+            PATH: process.env.PATH,
+            CREDENTIAL_TEST_TOKEN_FILE: tokenFile,
+            CREDENTIAL_TEST_DEVELOPMENT: args.includes("--development-authority") ? "1" : "0",
+          },
+          encoding: "utf8",
+          timeout: 10000,
+        },
+      );
+      assert.equal(
+        result.stdout.includes(token) || result.stderr.includes(token),
+        false,
+        "emitted entrypoint exposed the fixture credential",
+      );
+      return result;
+    };
+    const checkConfig = "composition/repository-credentials/check-config.js";
+    const preparedEntry = entry("repository-credentials.js", [
+      "--config",
+      configuration,
+      "--check-config",
+    ]);
+    assert.equal(preparedEntry.status, 0, preparedEntry.stderr);
+    const preparedSummary: SafeConfigurationSummary = JSON.parse(preparedEntry.stdout);
+    assert.equal(preparedSummary.authority, "github-prepared-git-registry");
+    const malformedOriginConfiguration = join(temporary, "malformed-origin.json");
     await writeFile(
-      tokenConfiguration,
+      malformedOriginConfiguration,
       JSON.stringify({
-        gateway: {
-          ...preparedConfiguration.gateway,
-          listen: `127.0.0.1:${developmentReservation.port}`,
-          controlSocket: join(sockets, "token-control.sock"),
-        },
-        sessionPolicy: {
-          maximumDurationSeconds: 28800,
-          defaultProfile: "git-write",
-          allowedProfiles: ["git-read", "git-write"],
-        },
-        limits: { gitPushInputBytes: 67108864 },
-        backend: {
-          kind: "github-token",
-          providerInstanceId: "fixture",
-          configVersion: "1",
-          repositoryId: "789",
-          repository: "example/project",
-          tokenFile,
-          developmentOnly: true,
-          pushRefAllowlist: ["refs/heads/agent/*"],
-        },
+        ...preparedConfiguration,
+        backend: { ...preparedConfiguration.backend, gitOrigin: "not-an-origin" },
       }),
       { mode: 0o600 },
     );
-    const entry = (script, args) =>
-      spawnSync(process.execPath, [join(runtime, "dist", script), ...args], {
-        cwd: runtime,
-        env: { PATH: process.env.PATH },
-        encoding: "utf8",
-        timeout: 10000,
-      });
-    const checkConfig = "composition/repository-credentials/check-config.js";
+    const malformedOrigin = entry(checkConfig, ["--check-config", malformedOriginConfiguration]);
+    assert.deepEqual(
+      [malformedOrigin.status, malformedOrigin.stderr],
+      [1, "invalid-configuration\n"],
+    );
+    const retiredConfiguration = join(temporary, "retired.json");
+    for (const kind of ["github-app", "github-app-registry"]) {
+      await writeFile(
+        retiredConfiguration,
+        JSON.stringify({
+          ...preparedConfiguration,
+          backend: { kind, privateKeyFile: tokenFile },
+        }),
+        { mode: 0o600 },
+      );
+      const ordinary = entry(checkConfig, ["--check-config", retiredConfiguration]);
+      const optedIn = entry(checkConfig, [
+        "--check-config",
+        retiredConfiguration,
+        "--development-authority",
+      ]);
+      assert.equal(ordinary.status, 1);
+      assert.match(ordinary.stderr, /^GitHub App signing gateway retired:/);
+      assert.deepEqual([optedIn.status, optedIn.stderr], [ordinary.status, ordinary.stderr]);
+      assert.equal(ordinary.stderr.includes("credential-test-token-open"), false);
+    }
     const refused = entry(checkConfig, ["--check-config", tokenConfiguration]);
     assert.deepEqual([refused.status, refused.stderr], [1, "invalid-configuration\n"]);
+    const missingConfigurationOptIn = join(temporary, "missing-development-opt-in.json");
+    await writeFile(
+      missingConfigurationOptIn,
+      JSON.stringify({
+        ...developmentConfiguration,
+        backend: { ...developmentConfiguration.backend, developmentOnly: false },
+      }),
+      { mode: 0o600 },
+    );
+    const configurationRefused = entry(checkConfig, [
+      "--check-config",
+      missingConfigurationOptIn,
+      "--development-authority",
+    ]);
+    assert.deepEqual(
+      [configurationRefused.status, configurationRefused.stderr],
+      [1, "invalid-configuration\n"],
+    );
     for (const result of [
       entry(checkConfig, ["--check-config", tokenConfiguration, "--development-authority"]),
       entry("repository-credentials.js", [
@@ -263,9 +395,10 @@ test(
       ]),
     ]) {
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.stdout.includes(token), false);
+      assert.equal(result.stderr, "credential-test-token-open\n");
+      const { authority, tokenClass }: SafeConfigurationSummary = JSON.parse(result.stdout);
       assert.deepEqual(
-        (({ authority, tokenClass }) => ({ authority, tokenClass }))(JSON.parse(result.stdout)),
+        { authority, tokenClass },
         { authority: "github-token-development", tokenClass: "oauth" },
       );
     }
@@ -281,63 +414,78 @@ test(
         args.join(" "),
       );
     }
-    // A started development service names its authority and token class, never the token.
-    const development = spawn(
+    // The prepared entrypoint starts without development authority modules.
+    // A real protocol reply establishes completed startup before SIGTERM.
+    const preparedRuntime = join(temporary, "prepared-runtime");
+    await cp(runtime, preparedRuntime, { recursive: true });
+    for (const module of ["factory.js", "driver.js", "static-token.js"]) {
+      await rm(join(preparedRuntime, "dist/drivers/repo/github/credentials", module));
+    }
+    const preparedService = spawn(
       process.execPath,
       [
-        ...reservedPortArgs(developmentReservation),
-        join(runtime, "dist/repository-credentials.js"),
+        ...reservedPortArgs(serviceReservation),
+        "--import",
+        moduleGuard,
+        join(preparedRuntime, "dist/repository-credentials.js"),
         "--config",
-        tokenConfiguration,
-        "--development-authority",
+        configuration,
       ],
       {
-        cwd: runtime,
-        env: { PATH: process.env.PATH },
+        cwd: preparedRuntime,
+        env: { PATH: process.env.PATH, CREDENTIAL_TEST_DEVELOPMENT: "0" },
         stdio: ["ignore", "pipe", "pipe"],
+        timeout: 15000,
+        killSignal: "SIGKILL",
       },
     );
-    let developmentOutput = "";
-    development.stdout.on("data", (chunk) => (developmentOutput += chunk));
-    development.stderr.on("data", (chunk) => (developmentOutput += chunk));
-    const developmentExit = new Promise((resolve) =>
-      development.once("close", (code, signal) => resolve({ code, signal })),
-    );
+    let preparedOutput = "";
+    preparedService.stdout.on("data", (chunk) => (preparedOutput += chunk));
+    preparedService.stderr.on("data", (chunk) => (preparedOutput += chunk));
+    const preparedExit = new Promise<ProcessExit>((resolve, reject) => {
+      preparedService.once("error", reject);
+      preparedService.once("close", (code, signal) => resolve({ code, signal }));
+    });
     try {
       await waitUntil(
-        "the development service to report started",
-        () => developmentOutput.includes('"event":"started"'),
+        "the prepared service to answer its readiness probe",
+        async () => {
+          try {
+            const health = await controlHealth(join(sockets, "control.sock"));
+            return (
+              health.status === 200 &&
+              health.body.ready === true &&
+              health.body.protocolVersion === 1
+            );
+          } catch {
+            return false;
+          }
+        },
         { timeoutMs: 5000, intervalMs: 10 },
       );
-      assert.ok(
-        developmentOutput.includes(
-          '{"event":"started","authority":"github-token-development","tokenClass":"oauth"}\n',
-        ),
-        "development service did not report its authority",
-      );
-      // The service reports "started" after its listeners are bound.
-      await developmentReservation.release();
-      development.kill("SIGTERM");
-      assert.deepEqual(await developmentExit, { code: 0, signal: null });
-      assert.equal(developmentOutput.includes(token), false);
+      preparedService.kill("SIGTERM");
+      assert.deepEqual(await preparedExit, { code: 0, signal: null });
+      assert.equal(preparedOutput.includes(token), false);
     } finally {
-      if (development.exitCode === null && development.signalCode === null) {
-        development.kill("SIGKILL");
+      if (preparedService.exitCode === null && preparedService.signalCode === null) {
+        preparedService.kill("SIGKILL");
       }
-      await developmentExit;
+      await preparedExit;
     }
-    const manifest = JSON.parse(await readFile(join(runtime, "package.json"), "utf8"));
-    assert.deepEqual(manifest.dependencies ?? {}, {});
-    assert.deepEqual(
-      JSON.parse(await readFile(join(client, "package.json"), "utf8")).dependencies ?? {},
-      {},
+    const manifest: PackageManifest = JSON.parse(
+      await readFile(join(runtime, "package.json"), "utf8"),
     );
+    const clientManifest: PackageManifest = JSON.parse(
+      await readFile(join(client, "package.json"), "utf8"),
+    );
+    assert.deepEqual(manifest.dependencies ?? {}, {});
+    assert.deepEqual(clientManifest.dependencies ?? {}, {});
     // Detached operator admission is development-only. Prepared native admission
     // requires the real worker receipt owner and is covered by the PostgreSQL suite.
     await writeFile(
       configuration,
       JSON.stringify({
-        ...JSON.parse(await readFile(tokenConfiguration, "utf8")),
+        ...developmentConfiguration,
         gateway: preparedConfiguration.gateway,
       }),
       { mode: 0o600 },
@@ -346,6 +494,8 @@ test(
       process.execPath,
       [
         ...reservedPortArgs(serviceReservation),
+        "--import",
+        moduleGuard,
         join(runtime, "dist/repository-credentials.js"),
         "--config",
         configuration,
@@ -353,36 +503,40 @@ test(
       ],
       {
         cwd: runtime,
-        env: { PATH: process.env.PATH },
+        env: { PATH: process.env.PATH, CREDENTIAL_TEST_DEVELOPMENT: "1" },
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 15000,
+        killSignal: "SIGKILL",
       },
     );
     let stdout = "";
     service.stdout.on("data", (chunk) => {
       stdout += chunk;
     });
-    service.stderr.resume();
-    const exited = new Promise((resolve, reject) => {
+    service.stderr.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    const exited = new Promise<ProcessExit>((resolve, reject) => {
       service.once("error", reject);
       service.once("close", (code, signal) => resolve({ code, signal }));
     });
     try {
       const socket = join(sockets, "control.sock");
       await waitUntil(
-        () =>
-          `the emitted process to bind its control socket or exit (exit code ${service.exitCode})`,
-        async () => (await lstat(socket).catch(() => undefined)) || service.exitCode !== null,
+        "the emitted development process to report started",
+        () => stdout.includes('"event":"started"') || service.exitCode !== null,
         { timeoutMs: 5000, intervalMs: 10 },
       );
+      assert.equal(service.exitCode, null, "emitted process exited before startup");
       assert.ok(
-        (await lstat(socket)).isSocket(),
-        "emitted process did not bind its control socket",
+        stdout.includes(
+          '{"event":"started","authority":"github-token-development","tokenClass":"oauth"}\n',
+        ),
       );
       // The control socket is bound after the gateway port, so the hold can end.
       await serviceReservation.release();
       const clientRoot = join(client, "dist/drivers/repo/github/credentials/client");
-      const invoke = (entrypoint, args, input) =>
+      const invoke = (entrypoint: string, args: string[], input?: string) =>
         spawnSync(process.execPath, [join(clientRoot, entrypoint), ...args], {
           cwd: client,
           env: { PATH: process.env.PATH },
@@ -403,7 +557,7 @@ test(
         sessionDirectory,
       ]);
       assert.equal(opened.status, 0, "emitted operator admission failed");
-      const session = JSON.parse(opened.stdout);
+      const session: SessionStatus = JSON.parse(opened.stdout);
       assert.equal(session.state, "OPEN");
       assert.equal((await lstat(join(sessionDirectory, "bearer"))).mode & 0o777, 0o600);
       const status = invoke("operator.js", [
@@ -414,7 +568,8 @@ test(
         session.sessionId,
       ]);
       assert.equal(status.status, 0, "emitted operator status failed");
-      assert.equal(JSON.parse(status.stdout).sessionId, session.sessionId);
+      const observedStatus: SessionStatus = JSON.parse(status.stdout);
+      assert.equal(observedStatus.sessionId, session.sessionId);
       const filled = invoke(
         "launch.js",
         [sessionDirectory, "git", "credential", "fill"],
@@ -428,18 +583,39 @@ test(
       );
       assert.equal(filled.stderr.includes(bearer), false);
       assert.equal(opened.stdout.includes(bearer), false);
+      // Push-policy launchers require packaged hooks. The source-selected helper
+      // can still consume these same private session files through its real CLI.
+      const sourceFilled = spawnSync(
+        process.execPath,
+        [credentialClientPath("git-helper"), sessionDirectory, "get"],
+        {
+          cwd: root,
+          env: { PATH: process.env.PATH },
+          encoding: "utf8",
+          input: "protocol=https\nhost=credentials.example.test\npath=example/project.git\n\n",
+          timeout: 10000,
+        },
+      );
+      assert.equal(sourceFilled.status, 0, "source-selected credential helper failed");
+      assert.ok(sourceFilled.stdout.includes(`password=${bearer}\n`));
+      assert.equal(sourceFilled.stderr.includes(bearer), false);
       // Stage the same immutable material contract consumed by the installed
       // preparer, then move it to its final path before asking the detached helper.
       const stagingRoot = join(temporary, "material-staging");
       const finalRoot = join(temporary, "material");
       await mkdir(stagingRoot, { mode: 0o700 });
       await mkdir(join(stagingRoot, "sessions"), { mode: 0o700 });
-      const metadata = JSON.parse(await readFile(join(sessionDirectory, "client.json"), "utf8"));
-      metadata.client.pushRefAllowlist = ["refs/heads/agent/*"];
+      const originalMetadata: ClientFiles = JSON.parse(
+        await readFile(join(sessionDirectory, "client.json"), "utf8"),
+      );
+      const metadata: ClientFiles = {
+        ...originalMetadata,
+        client: { ...originalMetadata.client, pushRefAllowlist: ["refs/heads/agent/*"] },
+      };
       await writeFile(join(sessionDirectory, "client.json"), JSON.stringify(metadata), {
         mode: 0o600,
       });
-      const identity = ["project", session.sessionId];
+      const identity: [string, string] = ["project", session.sessionId];
       const directoryName = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
       const generation = createHash("sha256")
         .update(JSON.stringify([identity]))
@@ -461,7 +637,7 @@ test(
               client: metadata.client,
             },
           ],
-        }),
+        } satisfies MaterialManifest),
         { mode: 0o600 },
       );
       const prepared = invoke("native-git.js", ["prepare", stagingRoot, finalRoot]);
@@ -486,7 +662,7 @@ test(
       const checkout = join(temporary, "git-checkout");
       assert.equal(spawnSync("/usr/bin/git", ["init", checkout], { encoding: "utf8" }).status, 0);
       const inputFile = join(temporary, "push-input");
-      const invokeHook = async (ref) => {
+      const invokeHook = async (ref: string) => {
         await writeFile(
           inputFile,
           "HEAD " + "1".repeat(40) + " " + ref + " " + "0".repeat(40) + "\n",
@@ -523,14 +699,26 @@ test(
         session.sessionId,
       ]);
       assert.equal(closed.status, 0, "emitted operator close failed");
-      assert.notEqual(JSON.parse(closed.stdout).state, "OPEN");
+      const closedStatus: SessionStatus = JSON.parse(closed.stdout);
+      assert.equal(closedStatus.state, "CLOSED");
+      assert.equal(closedStatus.sessionId, session.sessionId);
+      assert.deepEqual(await controlHealth(socket), {
+        status: 200,
+        body: { ready: true, protocolVersion: 1 },
+      });
       service.kill("SIGTERM");
       assert.deepEqual(await exited, { code: 0, signal: null });
+      assert.equal(
+        stdout.includes(token) || stdout.includes(bearer),
+        false,
+        "emitted service exposed a fixture credential",
+      );
       const summary = stdout
         .split("\n")
         .filter(Boolean)
-        .map((line) => JSON.parse(line))
+        .map((line): ServiceEvent => JSON.parse(line))
         .find((event) => event.event === "shutdown");
+      assert.ok(summary, "emitted service must report completed shutdown");
       assert.equal(summary.graceExpired, false);
     } finally {
       if (service.exitCode === null && service.signalCode === null) {
@@ -583,7 +771,7 @@ test("credential artifact builder rejects dependencies outside its emitted closu
     { encoding: "utf8", timeout: 10000, env: { PATH: process.env.PATH } },
   );
   assert.equal(valid.status, 0, valid.stdout + valid.stderr);
-  const cases = [
+  const cases: Array<[label: string, source: string, target?: string, expected?: RegExp]> = [
     ["missing emitted dependency", 'import "./missing.js";'],
     ["workspace dependency", 'import "@openclaw-enterprise/occ";'],
     ["escaping dependency", 'import "../../../outside.js";'],
@@ -647,7 +835,7 @@ test("emitted credential Docker contexts contain only staged runtime inputs", as
     join(root, "deploy/runtime/repository-credentials/.dockerignore"),
     "utf8",
   );
-  const hooks = JSON.parse(
+  const hooks: string[] = JSON.parse(
     await readFile(join(root, "deploy/runtime/repository-credentials/hooks.json"), "utf8"),
   );
   for (const name of ["service", "client"]) {
@@ -675,7 +863,7 @@ test("emitted credential Docker contexts contain only staged runtime inputs", as
   }
 });
 
-async function snapshot(directory) {
+async function snapshot(directory: string) {
   const entries = await readdir(directory, { recursive: true, withFileTypes: true });
   return Promise.all(
     entries
@@ -700,20 +888,7 @@ test("runtime image client stage emits the full build's client from its own inpu
   const temporary = await temporaryDirectory(t, "credential-client-stage-");
   // Reference: the artifact builder on the current full controller output.
   const full = join(temporary, "full");
-  await mkdir(join(full, "scripts"), { recursive: true });
-  await cp(
-    join(root, "scripts/build-repository-credentials.mjs"),
-    join(full, "scripts/build-repository-credentials.mjs"),
-  );
-  await cp(join(root, "apps/controller/dist"), join(full, "apps/controller/dist"), {
-    recursive: true,
-  });
-  await cp(
-    join(root, "deploy/runtime/repository-credentials"),
-    join(full, "deploy/runtime/repository-credentials"),
-    { recursive: true },
-  );
-  await symlink(join(root, "node_modules"), join(full, "node_modules"));
+  await stageArtifactInputs(full);
   const reference = spawnSync(
     process.execPath,
     [join(full, "scripts/build-repository-credentials.mjs")],
@@ -734,22 +909,26 @@ test("runtime image client stage emits the full build's client from its own inpu
     /^FROM \S+ AS \S+\nWORKDIR \/build$/mu,
   );
   assert.doesNotMatch(stages.get("repository-client-build") ?? "", /^WORKDIR /mu);
-  const ignored = (path) =>
+  const ignored = (path: string) =>
     /(?:^|\/)(?:dist|node_modules)(?:\/|$)|\.log$/u.test(relative(root, path));
   const stage = join(temporary, "stage");
   let copied = 0;
   for (const name of ["repository-credentials-deps", "repository-client-build"]) {
-    assert.ok(stages.has(name), `runtime Dockerfile must define ${name}`);
-    for (const [, flags, operands] of stages.get(name).matchAll(/^COPY((?: --\S+)*) (.+)$/gmu)) {
+    const recipeStage = stages.get(name);
+    assert.ok(recipeStage, `runtime Dockerfile must define ${name}`);
+    for (const [, flags, operands] of recipeStage.matchAll(/^COPY((?: --\S+)*) (.+)$/gmu)) {
+      assert.ok(flags !== undefined);
+      assert.ok(operands);
       if (flags.includes(" --from=")) {
         continue;
       }
       const paths = operands.trim().split(/\s+/u);
       const destination = paths.pop();
+      assert.ok(destination, "COPY must have a destination");
       for (const source of paths) {
         const target =
           paths.length > 1 || destination.endsWith("/")
-            ? join(stage, destination, source.split("/").pop())
+            ? join(stage, destination, basename(source))
             : join(stage, destination);
         await mkdir(join(target, ".."), { recursive: true });
         await cp(join(root, source), target, {
@@ -798,3 +977,129 @@ test("runtime image client stage emits the full build's client from its own inpu
   assert.notEqual(rejected.status, 0);
   assert.match(rejected.stderr, /Usage: build-repository-credentials\.mjs \[--client-only\]/);
 });
+
+// Exercise real HTTP parsing and the same private readiness response as the worker.
+function controlHealth(socketPath: string): Promise<HealthResponse> {
+  return new Promise((resolve, reject) => {
+    const outgoing = request({ socketPath, path: "/healthz", agent: false }, (response) => {
+      let body = "";
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.once("error", reject);
+      response.once("end", () => {
+        try {
+          resolve({ status: response.statusCode, body: JSON.parse(body) });
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    outgoing.setTimeout(2000, () => outgoing.destroy(new Error("health-timeout")));
+    outgoing.once("error", reject);
+    outgoing.end();
+  });
+}
+
+test(
+  "credential readiness waits for pending control socket setup",
+  { timeout: 10000 },
+  async (t) => {
+    const port: number = await availablePort();
+    const tls = await createTlsMaterial(t);
+    const gatewayStatus = (): Promise<number | undefined> =>
+      new Promise((resolve, reject) => {
+        const outgoing = requestHttps(
+          {
+            hostname: "127.0.0.1",
+            port,
+            path: "/fixture/repository.git/info/refs?service=git-upload-pack",
+            headers: { host: "credentials.example.test" },
+            ca: tls.ca,
+            agent: false,
+          },
+          (response) => {
+            response.resume();
+            response.once("error", reject);
+            response.once("end", () => resolve(response.statusCode));
+          },
+        );
+        outgoing.setTimeout(2000, () => outgoing.destroy(new Error("gateway-timeout")));
+        outgoing.once("error", reject);
+        outgoing.end();
+      });
+    const original = fs.chmod;
+    const held = Promise.withResolvers<string>();
+    const release = Promise.withResolvers<void>();
+    // Hold only the real listener's chmod. No startup or HTTP behavior is replaced.
+    fs.chmod = async (path, mode) => {
+      if (String(path).endsWith(".sock")) {
+        held.resolve(String(path));
+        await release.promise;
+      }
+      return original(path, mode);
+    };
+    syncBuiltinESMExports();
+    let started = false;
+    const starting = startCredentialServiceFixture(t, {
+      tls,
+      gateway: { listen: `127.0.0.1:${port}` },
+    }).then((fixture) => {
+      started = true;
+      return fixture;
+    });
+    try {
+      const socket = await Promise.race([
+        held.promise,
+        starting.then(() => {
+          throw new Error("listener did not reach socket setup");
+        }),
+      ]);
+      assert.ok((await lstat(socket)).isSocket(), "binding alone precedes readiness");
+      await assert.rejects(controlHealth(socket), isConnectionReset);
+      await assert.rejects(gatewayStatus(), isConnectionReset);
+      assert.equal(started, false, "socket setup must finish before startup resolves");
+      release.resolve();
+      await starting;
+      assert.equal(
+        await gatewayStatus(),
+        401,
+        "the ready gateway must challenge unauthenticated Git",
+      );
+      assert.deepEqual(await controlHealth(socket), {
+        status: 200,
+        body: { ready: true, protocolVersion: 1 },
+      });
+    } finally {
+      release.resolve();
+      fs.chmod = original;
+      syncBuiltinESMExports();
+      await starting;
+    }
+  },
+);
+
+function isConnectionReset(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ECONNRESET" || error.code === "EPIPE")
+  );
+}
+
+async function stageArtifactInputs(directory: string): Promise<void> {
+  await mkdir(join(directory, "scripts"), { recursive: true });
+  await cp(
+    join(root, "scripts/build-repository-credentials.mjs"),
+    join(directory, "scripts/build-repository-credentials.mjs"),
+  );
+  await cp(join(root, "apps/controller/dist"), join(directory, "apps/controller/dist"), {
+    recursive: true,
+  });
+  await cp(
+    join(root, "deploy/runtime/repository-credentials"),
+    join(directory, "deploy/runtime/repository-credentials"),
+    { recursive: true },
+  );
+  await symlink(join(root, "node_modules"), join(directory, "node_modules"));
+}

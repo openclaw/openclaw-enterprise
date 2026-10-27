@@ -424,6 +424,10 @@ export async function waitForContainerReady(containerName, { label, request, tim
   }
 }
 
+// `openclaw plugins list --json` builds its own plugin registry snapshot: about 3 CPU-seconds
+// and 2.4-9.1 s beside a just-ready Gateway on 1, 2 or 4 shared CPUs (measured 2026-10). On a
+// CI runner busy with four image files it still once passed runDocker's 60 s default, so only
+// cases that assert on the list run it (runGatewaySmoke's collectPlugins).
 export async function listGatewayPlugins(containerName) {
   const { stdout } = await runDocker([
     "exec",
@@ -489,7 +493,7 @@ export async function gatewayStateVolume(t, mountPath, { seed, seedVolumes = [] 
 
 export async function runGatewaySmoke(t, harnessId, options = {}) {
   const {
-    collectPlugins = harnessId === "codex",
+    collectPlugins = false,
     configuration = createAdmittedRuntimeImageConfiguration(harnessId, {
       enableSlack: harnessId === "openclaw",
     }),

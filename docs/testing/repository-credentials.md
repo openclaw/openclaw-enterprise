@@ -93,7 +93,7 @@ a running Kubernetes Pod or model turn.
 
 ```sh
 pnpm credentials:build
-node --test tests/integration/repository-credentials-package.test.mjs
+node --test tests/integration/repository-credentials-package.test.ts
 ```
 
 This verifies the emitted service and client without workspace source or runtime
