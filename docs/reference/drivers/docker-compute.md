@@ -187,8 +187,10 @@ published port cannot reach while the healthcheck on loopback passes: a
 
 The container implementation renders `gateway.auth.mode: password` when native
 Configuration omits the mode. Explicit `password` and `trusted-proxy` are supported.
-Only supported authentication fields and modes are admitted. These rules do not
-remove the harness-authentication admission limit above.
+Only supported authentication fields and modes are admitted: deployment refuses
+another mode, such as `token` or `none`, or an unsupported field, such as
+`gateway.auth.token`, with `409` before it stops the running revision. These rules
+do not remove the harness-authentication admission limit above.
 
 With password mode, omitting `gateway.auth.password` selects the managed
 `OPENCLAW_GATEWAY_PASSWORD` reference. An explicit reference to that variable also
