@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-10-25
-last_updated_session: fix-postland-1025b
+updated: "2026-10-25"
+last_updated_session: authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937
 ---
 
 # Agent provisioning flow
@@ -181,6 +181,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-25 16:40: Require human ingress scope headers and preserve current provisioning checks while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
 
 - 2026-10-21 13:21: Validate native identity grants before rollout and clarify external human ingress; accompanying local changes. (authoring-run/aba975bf-8e97-4c9d-9e34-dc2c9c79d591 - 4accde87c)
 

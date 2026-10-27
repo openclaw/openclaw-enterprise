@@ -253,8 +253,8 @@ test(
   },
 );
 
-// The probe stands in for the proxy on the Gateway's network: one HTTP call to the
-// admin-only run kill, or one WebSocket connect as an operator without a device.
+// The probe stands in for the proxy on the Gateway's network: native HTTP calls
+// or a WebSocket connect as an operator without a device.
 const trustedProxyProbe = String.raw`
 import WebSocket from "/app/node_modules/ws/index.js";
 const [address, encoded] = process.argv.slice(2);
@@ -264,9 +264,12 @@ const proxyHeaders = ({ identity, scopes }) => ({
   ...(scopes === undefined ? {} : { "x-openclaw-scopes": scopes }),
 });
 async function http(request) {
-  const response = await fetch("http://" + address + ":8080/sessions/probe-session/kill", {
+  const invoke = request.operation === "sessions_list";
+  const path = invoke ? "/tools/invoke" : "/sessions/probe-session/kill";
+  const response = await fetch("http://" + address + ":8080" + path, {
     method: "POST",
-    headers: proxyHeaders(request),
+    headers: { ...proxyHeaders(request), ...(invoke ? { "content-type": "application/json" } : {}) },
+    ...(invoke ? { body: JSON.stringify({ tool: "sessions_list", args: {} }) } : {}),
     signal: AbortSignal.timeout(10000),
   });
   return { status: response.status, body: await response.text() };
@@ -321,23 +324,25 @@ test(
     const subnet = JSON.parse((await runDocker(["network", "inspect", network])).stdout)[0].IPAM
       .Config[0].Subnet;
     assert.ok(subnet);
-    const directory = await mkdtemp(join(tmpdir(), "oce-native-scopes-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "oce-native-scopes-");
     const probePath = join(directory, "probe.mjs");
     await writeFile(probePath, trustedProxyProbe, { mode: 0o644 });
     const humanAuth = {
       mode: "trusted-proxy",
       trustedProxy: {
         userHeader: "x-occ-identity",
-        allowUsers: ["occ-workspace-files", "oidc:member-01"],
+        allowUsers: ["occ-workspace-files", "oidc:member-01", "oidc:writer-02"],
       },
       identityScopes: {
         "occ-workspace-files": ["operator.admin"],
         "oidc:member-01": ["operator.read"],
+        "oidc:writer-02": ["operator.write"],
       },
     };
     // HTTP: run kills stay admin-only upstream, so 404 means the scope check passed for a
     // session that does not exist, 403 names the missing scope and 401 is refused admission.
+    // sessions_list also proves an allowed native operation on the same endpoint as
+    // its missing-header/read-only denials; a missing-session 404 alone proves no I/O.
     // WebSocket: a refused proxy identity falls back to device authentication, which this
     // device-less operator connect cannot satisfy; "hello" carries the granted scopes.
     const scopeCases = [
@@ -355,6 +360,26 @@ test(
           [
             { identity: "occ-workspace-files", scopes: "operator.admin" },
             { status: 404, body: /Session not found/ },
+          ],
+          [
+            {
+              operation: "sessions_list",
+              identity: "occ-workspace-files",
+              scopes: "operator.admin",
+            },
+            { status: 200, nativeSessions: true },
+          ],
+          [
+            { operation: "sessions_list", identity: "oidc:writer-02", scopes: "operator.write" },
+            { status: 200, nativeSessions: true },
+          ],
+          [
+            { operation: "sessions_list", identity: "oidc:member-01" },
+            { status: 401, body: /Unauthorized/ },
+          ],
+          [
+            { operation: "sessions_list", identity: "oidc:member-01", scopes: "operator.read" },
+            { status: 403, body: /missing scope: operator\.write/ },
           ],
           [
             { kind: "ws", identity: "occ-workspace-files" },
@@ -385,6 +410,14 @@ test(
           [
             { identity: "oidc:member-01", scopes: "operator.read" },
             { status: 403, body: /missing scope: operator\.admin/ },
+          ],
+          [
+            { operation: "sessions_list", identity: "oidc:member-01" },
+            { status: 200, nativeSessions: true },
+          ],
+          [
+            { operation: "sessions_list", identity: "oidc:member-01", scopes: "operator.read" },
+            { status: 403, body: /missing scope: operator\.write/ },
           ],
           [
             { kind: "ws", identity: "oidc:member-01" },
@@ -475,12 +508,18 @@ test(
       const outcomes = JSON.parse(remote.stdout.trim());
       for (const [position, [request, expected]] of requests.entries()) {
         const outcome = outcomes[position];
-        const description = `${label}: ${request.kind ?? "http"} ${request.identity} with ${
+        const description = `${label}: ${request.operation ?? request.kind ?? "http"} ${request.identity} with ${
           request.scopes === undefined ? "no scope header" : `x-openclaw-scopes=${request.scopes}`
         }: ${JSON.stringify(outcome)}`;
         assert.equal(outcome.status, expected.status, description);
         if (expected.body !== undefined) {
           assert.match(outcome.body, expected.body, description);
+        }
+        if (expected.nativeSessions) {
+          const body = JSON.parse(outcome.body);
+          assert.equal(body.ok, true, description);
+          assert.ok(Array.isArray(body.result?.details?.sessions), description);
+          assert.equal(body.result.details.count, body.result.details.sessions.length, description);
         }
         if (expected.scopes !== undefined) {
           assert.deepEqual(outcome.scopes, expected.scopes, description);

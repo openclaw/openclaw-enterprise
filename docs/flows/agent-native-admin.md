@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-20
-last_updated_session: agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c
+updated: "2026-10-25"
+last_updated_session: authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937
 ---
 
 # Agent Native Admin UI Flow
@@ -235,6 +235,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-25 16:40: Preserve current native-admin flow and identity-grant eligibility while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
 
 - 2026-10-15 21:41: Allowed narrow device enrollment with machine admin grants. (authoring-run/4a439216-a1ba-4628-b96e-660a9db92d59 - e03429ce3d889b0ac07fedad801aacacc3498a6a)
 
