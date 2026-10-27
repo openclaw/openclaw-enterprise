@@ -25,7 +25,7 @@ test(
     let readsBeforeAdmission;
     const repository = { id: 7311, full_name: "fixture/credential-free" };
     const { f, pool, proxy, receipt, assertLostDispatch } = await commitLossScenario(t, {
-      // Gateway and Proxy IDs are in distinct capability namespaces and may legally coincide.
+      // A protected proxy may share the ordinary Backend source owner ID.
       proxyDriverId: "openshell-credentials",
       preparedGitHub: new Proxy(
         {},
@@ -98,10 +98,10 @@ test(
         {
           sourceId: f.source.id,
           sourceType: f.source.type,
-          credentialProxyId: f.controller.selectedDriver("credential_gateway").id,
+          credentialProxyId: "openshell-credentials",
         },
       ],
-      "a new protected source names the Proxy even when the Gateway has the same ID",
+      "a new protected source names the Proxy even when the Backend source owner has the same ID",
     );
     const capture = (changed) => captureMetadata(f, changed);
     const resolve = async (captured, peer) => {

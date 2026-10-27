@@ -19,7 +19,7 @@ import { InMemoryPlatformState, PluginDiscoveryError } from "../../packages/occ/
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
+import { createDeviceCredentials } from "../helpers/device-credentials.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 import { listen } from "../helpers/listen.mjs";
 
@@ -55,7 +55,7 @@ async function createFixture(
     secretDriver = createTestSecretDriver(),
     logger,
     onSend,
-    credentialGatewayDriver,
+    credentialSources,
     sandboxDriver,
   } = {},
 ) {
@@ -67,7 +67,7 @@ async function createFixture(
     secretDriver,
     logger,
     onSend,
-    credentialGatewayDriver,
+    credentialSources,
     sandboxDriver,
   });
   await fixture.bootstrap();
@@ -614,9 +614,9 @@ test("Saved Agent plugin discovery requires exact Agent and Secret grants before
 });
 
 test("Saved Agent source discovery denies missing grants and rechecks revocation after retrieval", async (t) => {
-  const { gateway, refresh, calls } = createDeviceCredentialDrivers();
+  const { credentialSources, refresh, calls } = createDeviceCredentials();
   const fixture = await createFixture(t, {
-    credentialGatewayDriver: gateway,
+    credentialSources,
     sandboxDriver: {
       id: "source-discovery-sandbox",
       capability: "sandbox",
@@ -625,10 +625,8 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
       async cleanup() {},
     },
   });
-  for (const driver of [gateway, refresh]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
-  }
+  fixture.controller.registerDriver(refresh);
+  fixture.controller.selectDriver("credential_refresh", refresh.id);
   const registered = await fixture.request(
     "POST",
     `/namespaces/${fixture.namespace.id}/credential-sources`,
@@ -638,7 +636,7 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
   const source = registered.data.ref;
   // The external credential service is simulated. Its ready token must still pass
   // the real Fastify/OCC/IAM checks; this does not prove OpenShell export or injection.
-  gateway.sources.set(source.id, "ready");
+  credentialSources.sources.set(source.id, "ready");
   const agent = await fixture.createAgent(
     fixture.namespace.id,
     "Source discovery Agent",
@@ -676,7 +674,7 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
   const path = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`;
   const tokenReads = () => calls.filter(({ operation }) => operation === "withSourceToken").length;
   // Existing accounts retain discovery even if the current catalog stops offering new sign-ins.
-  gateway.listSourceTypes = async () => [];
+  credentialSources.listSourceTypes = async () => [];
   const remove = (binding) =>
     fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(binding), 1);
   const allowed = await fixture.request("POST", path, { session, body: {} });

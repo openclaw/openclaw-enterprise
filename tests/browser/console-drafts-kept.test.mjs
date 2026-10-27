@@ -950,7 +950,7 @@ test("a refused credential registration keeps no draft", async (t) => {
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Registration create", { ready: true });
   const { page } = await newPage(t, fixture);
-  // The Installation provisions dedicated Agents through a Credential Gateway model source.
+  // The Installation provisions dedicated Agents with a Backend-registered model source.
   await routeInstallationWithoutProvisioning(page, fixture, {
     agentProvisioning: { executionModes: ["dedicated"] },
     credentialSources: {

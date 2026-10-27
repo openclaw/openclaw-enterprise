@@ -1,17 +1,16 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-27
-last_updated_session: authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17
+last_updated_session: authoring-run/a5c6bf1e-ef1c-4bd0-916e-8a8c6b0e5802
 ---
 
 # Credential source refresh Flow
 
 ## Overview
 
-For an OAuth2 source, the API registers an empty provider. The paired Refresh
-Driver configures the issuer and requests the first token. The gateway renews it
-before expiry while the Agent keeps one placeholder. See the
-[credential source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
+OCC registers an empty OAuth2 provider through the Backend and requests the first
+token through the selected Token Service. OpenShell renews it before expiry. The
+Agent keeps one placeholder. See [binding and withdrawal](credential-source-lifecycle.md).
 
 In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
 the refresh grant. The Harness receives a placeholder and account metadata. An
@@ -30,9 +29,9 @@ can use committed tokens but cannot trigger issuance.
 - Source: `packages/occ/src/index.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:rotateCredentialSource`
 - Source: `apps/controller/src/drivers/credential-refresh/openshell.ts:OpenShellCredentialRefreshDriver`
-- The Installation selects the OpenShell Backend's `credential_gateway` and
-  `credential_refresh` Drivers. Configured `toolBinaries` enable tool OAuth2 types.
-  The gateway must trust and reach the issuer's `token_url`.
+- OpenShell OAuth enrollment requires Backend `credentialSources` and a selected
+  `credential_refresh` Driver. Tool OAuth2 types require `toolBinaries`.
+  The gateway must trust and reach `token_url`.
 
 ## Flow
 
@@ -57,13 +56,11 @@ graph TD
 
 `packages/occ/src/index.ts:createCredentialSource`
 
-The API validates the request against the gateway catalog. Device-authorized
-types defer the first mint to the completion path below. A type whose
-`rotation` is `refresh` resolves the selected Credential Refresh Driver inside
-the first transaction, so a missing selection fails before any gateway call.
-The API reads the Secret values, commits the record as `registering`, and calls
-the gateway's `registerSource` with config only: a refresh type's Secret values
-are issuer material, so only the refresh Driver receives them.
+OCC validates the request against the Backend catalog and resolves the selected
+refresh Driver before any provider call. Device login defers the first mint until
+authorization completes. OCC reads the Secrets, commits `registering` and calls
+the Backend's `registerSource` with configuration. Only the Token Service
+receives issuer material.
 
 The gateway posts the issuer material to `token_url` from its own network
 position, so `validateOAuth2Config` refuses a `token_url` host that is an IP
@@ -101,7 +98,7 @@ Issuers in other namespaces keep their Service names. OCC stores `token_url` as
 the controller's URL parser serializes it (`new URL(token_url).href`), so the
 gateway parses the spelling that was checked.
 
-`apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
+`apps/controller/src/backends/openshell-credential-sources.ts:registerSource`
 imports a per-source OpenShell profile whose `access_token` credential declares
 the OAuth2 strategy, `token_url`, and refresh-material names. It creates the
 provider without a credential value, because OpenShell resolves a
@@ -129,7 +126,7 @@ marks the source `ready` with its audit event.
 
 For a type declaring `deviceAuthorization.harnessId`, OCC registers the empty
 source before asking the paired Refresh Driver to start device login. It then
-stores the opaque handle, actor, source, and Driver IDs in the session Secret.
+stores the opaque handle, actor, source, Backend owner ID and Token Service ID in the session Secret.
 The HTTP handler in `apps/controller/src/index.ts` records the successful start
 before sending the session reference. The audit event identifies the Agent or
 Namespace, not the session Secret.
@@ -170,7 +167,8 @@ version.
 
 For catalog discovery, the [OpenShell Token Service reader](../reference/drivers/credential-refresh.md#plugin-catalog-discovery) verifies
 source ownership and reads account metadata with its ordinary Backend identity.
-Operator mTLS authorizes `GetProviderCredentials`. OpenShell may renew to meet
+The Installation retains this reader when it disables new logins or uses the native
+Token Service for GitHub. Operator mTLS authorizes `GetProviderCredentials`. OpenShell may renew to meet
 the five-minute lifetime minimum. OCC rechecks caller authority and saved-Agent
 binding and grant before passing the token to the Plugin Driver. Discovery
 outlives the login session. Cancellation or denial cannot undo a started refresh.
@@ -182,11 +180,10 @@ outlives the login session. Cancellation or denial cannot undo a started refresh
 OpenShell re-mints the token before it expires and writes it to the provider.
 The Sandbox proxy substitutes the current token for the stable placeholder on
 each request, so a running Harness needs no restart. OCC makes no call.
-`GET` on the source adds `refreshStatus` to the gateway status; OpenShell's
+`GET` on the source combines the Backend's source status with `refreshStatus`; OpenShell's
 `refreshed` state reports `ready`, its error states report `failed` with a
-recovery action, and missing established refresh state reports `failed`. OCC finds the
-type through `refreshDriverForSource`, which tolerates a type the catalog no
-longer offers: that source keeps its gateway status without `refresh`.
+recovery action, and missing established refresh state reports `failed`. If the type leaves the catalog, `refreshDriverForSource` preserves the Backend status
+without `refresh`.
 
 ### 4. Update and rotation
 
@@ -196,9 +193,9 @@ longer offers: that source keeps its gateway status without `refresh`.
 wait on the issuer. A field the catalog marks `issuerRotated` (`refresh_token`)
 must name a different Secret than the recorded one, or the update returns `409`
 before any Secret read: OpenShell may hold a newer token. `PATCH` then reads
-its Secrets and checks the gateway status. For a `refresh` type it calls
+its Secrets and checks the Backend's source status. For a `refresh` type it calls
 `configureRefresh` with a new request ID, then `rotate`, instead of the
-gateway's `updateSource`. A non-`ready` mint returns `503` before OCC replaces
+Backend's `updateSource`. A non-`ready` mint returns `503` before OCC replaces
 the Secret references, but OpenShell keeps the new material, the next `GET`
 reports the failed mint, and OCC records a `failure` audit event. OpenShell
 starts a new authorization epoch on each reconfiguration, even one whose mint
@@ -218,9 +215,9 @@ whose outcome is unknown records neither event.
 `packages/occ/src/index.ts:deleteCredentialSource`
 
 After the usual reference check and `deleting` mark, OCC calls `removeRefresh`,
-then the gateway's `removeSource`. Before `DeleteProviderRefresh`,
+then the Backend's `removeSource`. Before `DeleteProviderRefresh`,
 `apps/controller/src/drivers/credential-refresh/openshell-source-tokens.ts:ownedProvider`
-checks the exact source Namespace and paired Gateway ID, then the current
+checks the exact source Namespace and registering Backend owner ID, then the current
 provider's manager/source labels and profile identity. A missing provider is
 already clean; a foreign provider or failed lookup refuses cleanup. The deletion
 RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses absence. The check protects against
@@ -308,7 +305,7 @@ detached warm reads. Clearing a local buffer cannot revoke a provider token.
 ## Related docs
 
 - [CredentialRefreshDriver contract](../reference/drivers/credential-refresh.md)
-- [OpenShell Credential Gateway](../reference/drivers/openshell-credential-gateway.md#oauth2-refresh-sources)
+- [OpenShell credential sources](../reference/drivers/openshell-credential-gateway.md#oauth2-refresh-sources)
 - [Credential sources](../reference/credential-sources.md#rotate-a-refresh-source)
 - [Credential source lifecycle flow](credential-source-lifecycle.md)
 
@@ -317,6 +314,8 @@ detached warm reads. Clearing a local buffer cannot revoke a provider token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 01:41: Trace OAuth enrollment, retained token reads and cleanup through their configured owners. (authoring-run/a5c6bf1e-ef1c-4bd0-916e-8a8c6b0e5802 - 64584aa62aa9402740a930c50f437ed4aa13708f)
 
 - 2026-10-27 00:47: Trace authorized catalog token retrieval through the selected Token Service. (authoring-run/5f2d68c9-a379-48d1-b61e-f9971c654e17 - 09e9cb6e4a452c2f727a7b53b9b2dcbd5ac5503c)
 

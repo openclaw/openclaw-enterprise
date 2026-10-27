@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
 import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   codexDeviceAuthorizationState,
@@ -198,8 +199,11 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
     },
   };
   const backend = {
+    credentialSources: {
+      id: "credential-gateway-openshell",
+      configuration: { binaries: ["/usr/local/bin/codex"] },
+    },
     drivers: {
-      credential_gateway: "credential-gateway-openshell",
       credential_refresh: "credential-refresh-openshell",
     },
     client: {
@@ -209,25 +213,36 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
       placement: () => undefined,
     },
   };
-  const driver = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/local/bin/codex"] },
-    { backend },
+  const credentialProfiles = new OpenShellCredentialProfiles(
+    backend.credentialSources.configuration,
+    {
+      id: backend.credentialSources.id,
+      refresh: true,
+    },
   );
+  const sources = new OpenShellCredentialSources(backend, credentialProfiles);
+  const attachments = openShellCredentialAttachments(backend.client, credentialProfiles);
   const refresh = new OpenShellCredentialRefreshDriver({}, { backend });
   const namespace = { id: "ns-fixture", name: "oauth-fixture" };
   const context = (id) => ({
     namespace,
     signal: AbortSignal.timeout(10_000),
-    source: { id, type: "codex-oauth", namespaceId: namespace.id, driverId: driver.id, config: {} },
+    source: {
+      id,
+      type: "codex-oauth",
+      namespaceId: namespace.id,
+      driverId: sources.id,
+      config: {},
+    },
   });
   const register = async (id) => {
     const current = context(id);
-    await driver.registerSource(current, { type: "codex-oauth", config: {}, secrets: {} });
+    await sources.registerSource(current, { type: "codex-oauth", config: {}, secrets: {} });
     return current;
   };
   return {
-    driver,
-    attachments: openShellCredentialAttachments(backend.client, driver.profiles),
+    attachments,
+    sources,
     refresh,
     providers,
     profiles,
@@ -344,7 +359,7 @@ test("configured OAuth material stays pending until the gateway establishes its 
   assert.deepEqual(await f.refresh.pollDeviceAuthorization(owner, login.privateState), {
     status: "ready",
   });
-  assert.deepEqual(await f.driver.sourceStatus(owner), { state: "ready" });
+  assert.deepEqual(await f.sources.sourceStatus(owner), { state: "ready" });
   assert.equal(
     f.http.length,
     calls,

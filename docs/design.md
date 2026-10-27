@@ -164,8 +164,8 @@ for the provisioning sequence.
 ## Drivers
 
 Installation configuration selects compute, configuration, IAM, and Secret
-implementations, plus channel and optional service-account, plugin, repository, Sandbox, and
-Credential Gateway integrations. [Driver development](contributing/driver-development.md)
+implementations, plus channel and optional service-account, plugin, repository, Sandbox, Token Service, and
+Credential Proxy implementations. [Driver development](contributing/driver-development.md)
 links to contracts; [selection](reference/drivers/selection.md) defines trusted
 package loading. [Backends](reference/backends.md) supply authenticated clients
 to related Drivers within their documented experimental scope. Driver-owned
@@ -180,9 +180,8 @@ An optional SandboxDriver participates through Compute and can provision a
 dedicated Harness. Its cleanup for each Agent revision and Namespace must complete before
 Compute releases the corresponding infrastructure.
 
-A CredentialGatewayDriver holds registered model credentials and supplies
-attachments for each Agent revision to its paired Sandbox; activation waits for applied
-attachments. The OpenShell development profile implements a plugin-free
+OCC registers model credential sources with the configured Backend. The paired Sandbox
+prepares each revision’s provider attachments, and Compute waits for them before activation. The OpenShell development profile implements a plugin-free
 dedicated Codex path through experimental provider files and bearer passthrough.
 Real activation remains conditional on the documented identity, storage,
 admission, and gateway-authentication preconditions. See

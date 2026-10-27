@@ -330,7 +330,7 @@ function installationDrivers({
   repoDriver,
   pluginDriver,
   sandboxDriver,
-  credentialGatewayDriver,
+  credentialSources,
 }) {
   return {
     installation: {
@@ -347,7 +347,7 @@ function installationDrivers({
                 drivers: { repo: repoDriver.id },
               },
             ]),
-        ...(credentialGatewayDriver === undefined
+        ...(credentialSources === undefined
           ? []
           : [
               {
@@ -357,10 +357,8 @@ function installationDrivers({
                   endpoint: "http://127.0.0.1:8080",
                   insecureTransport: "network-policy",
                 },
-                drivers: {
-                  sandbox: sandboxDriver.id,
-                  credential_gateway: credentialGatewayDriver.id,
-                },
+                credentialSources: { id: credentialSources.id, configuration: {} },
+                drivers: { sandbox: sandboxDriver.id },
               },
             ]),
       ],
@@ -390,22 +388,13 @@ function installationDrivers({
                 configuration: {},
               },
             }),
-        ...(credentialGatewayDriver === undefined
-          ? {}
-          : {
-              credential_gateway: {
-                id: credentialGatewayDriver.id,
-                implementation: credentialGatewayDriver.implementation,
-                configuration: {},
-              },
-            }),
       },
     },
     computeDriver,
     configurationDriver,
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
-    ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+    ...(credentialSources === undefined ? {} : { credentialSources }),
     ...(repoDriver === undefined ? {} : { repositoryPolicy: repoDriver }),
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     createIAMDriver: (state) =>
@@ -467,7 +456,7 @@ async function createFixture(context, options = {}) {
     repoDriver: options.repoDriver,
     pluginDriver: options.pluginDriver,
     sandboxDriver: options.sandboxDriver,
-    credentialGatewayDriver: options.credentialGatewayDriver,
+    credentialSources: options.credentialSources,
   });
   const app = await composePostgresDevelopment(
     {
@@ -1940,7 +1929,7 @@ for (const harnessAuth of ["api_key", "credential_source"]) {
               "updateSource",
               "sourceStatus",
               "removeSource",
-            ].map((method) => context.mock.method(drivers.credentialGatewayDriver, method))
+            ].map((method) => context.mock.method(drivers.credentialSources, method))
           : []),
         ...(sourceBacked
           ? [
@@ -2040,9 +2029,8 @@ for (const harnessAuth of ["api_key", "credential_source"]) {
 // not claim OpenShell injection or a live model turn.
 function sourceProvisioningDrivers() {
   const stored = new Set();
-  const credentialGatewayDriver = {
+  const credentialSources = {
     id: "credential-gateway-provisioning",
-    capability: "credential_gateway",
     implementation: "test-credential-store",
     validateSourceConfig() {},
     async listSourceTypes() {
@@ -2093,13 +2081,13 @@ function sourceProvisioningDrivers() {
   };
   const topology = new KubernetesComputeDriver(
     conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
-    { id: "source-provisioning-topology", sandboxDriver, credentialGatewayDriver },
+    { id: "source-provisioning-topology", sandboxDriver, credentialSources },
   );
   const computeDriver = createRuntimeComputeDriver();
   computeDriver.validateHarnessAuth = topology.validateHarnessAuth.bind(topology);
   // Namespace placement and actual transport effects remain the established runtime fixture.
   computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
-  return { computeDriver, sandboxDriver, credentialGatewayDriver };
+  return { computeDriver, sandboxDriver, credentialSources };
 }
 
 async function createProvisioningModelSource(fixture, namespaceId) {
@@ -2244,7 +2232,7 @@ test(
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
     const drivers = sourceProvisioningDrivers();
-    drivers.credentialGatewayDriver.registerSource = async () => {
+    drivers.credentialSources.registerSource = async () => {
       throw new Error("synthetic uncertain credential registration");
     };
     const fixture = await createFixture(context, drivers);
@@ -2290,8 +2278,8 @@ test(
     // A selected gateway change cannot reuse another gateway's accepted source.
     const switched = await createFixture(context, {
       ...drivers,
-      credentialGatewayDriver: {
-        ...drivers.credentialGatewayDriver,
+      credentialSources: {
+        ...drivers.credentialSources,
         id: "credential-gateway-replacement",
       },
     });
@@ -2306,8 +2294,8 @@ test(
     const events = [];
     const worker = await createFixture(context, {
       ...drivers,
-      credentialGatewayDriver: {
-        ...drivers.credentialGatewayDriver,
+      credentialSources: {
+        ...drivers.credentialSources,
         id: "credential-gateway-replacement",
       },
       onWorkerEvent: (event) => events.push(event),

@@ -42,8 +42,8 @@ export const protectedSourceInputs = {
 };
 
 /**
- * The static egress fixture (real app, IAM, controller, OpenShell Credential Proxy and Gateway
- * Drivers; supplier wires are fixtures) with one Agent bound to a live-adopted protected source,
+ * The static egress fixture (real app, IAM, controller, OpenShell Credential Proxy
+ * and Backend source owner, with controlled supplier transports) with one Agent bound to a live-adopted protected source,
  * not yet deployed. `restart` opens the same platform state with a controller for the same
  * Installation after a change of its Driver selection, as a new API process would.
  */
@@ -73,13 +73,14 @@ export async function protectedSourceFixture(t, { githubMetadata = false, ...opt
   const path = `/namespaces/${namespaceId}/credential-sources`;
 
   /**
-   * A controller for the same state whose Installation selects the Drivers in `keep` (Compute,
-   * Configuration, IAM and Secret always), registered as the running API registered them.
+   * Reopen the same state without Credential Proxy. When requested, keep the
+   * paired OpenShell Sandbox and its original Backend source owner.
    */
-  function restart(keep) {
+  function restart({ keepOpenShell = false } = {}) {
     const sandbox = f.controller.selectedDriver("sandbox");
     const controller = new OpenClawController(f.controller.installation, {
       state,
+      ...(keepOpenShell && { credentialSources: f.credentialSources }),
       backends: backendFixtures,
       defaultPresets: [],
       bundledPresetVersions: [],
@@ -92,7 +93,13 @@ export async function protectedSourceFixture(t, { githubMetadata = false, ...opt
         },
       ],
     });
-    for (const capability of ["iam", "configuration", "compute", "secret", ...keep]) {
+    for (const capability of [
+      "iam",
+      "configuration",
+      "compute",
+      "secret",
+      ...(keepOpenShell ? ["sandbox"] : []),
+    ]) {
       const driver = f.controller.selectedDriver(capability);
       controller.registerDriver(driver);
       controller.selectDriver(capability, driver.id);
@@ -132,7 +139,7 @@ export async function protectedSourceFixture(t, { githubMetadata = false, ...opt
       body: { name: `${name} key`, value: "synthetic-embedded-key" },
     });
     assert.equal(secret.status, 201, JSON.stringify(secret.body));
-    return restart([]).createAgent(
+    return restart().createAgent(
       administratorId,
       {
         namespaceId,

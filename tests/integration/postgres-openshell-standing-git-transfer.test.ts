@@ -1,3 +1,4 @@
+import { workerSourceBackend } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -5,11 +6,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type {
-  AgentRevision,
-  Backend,
-  ComputeRevisionContext,
-} from "../../packages/contracts/src/index.ts";
+import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
 import { exerciseInstallationRequests } from "../helpers/openshell-installation-github-requests.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import {
@@ -34,14 +31,15 @@ import {
   waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
-import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { CREDENTIAL_SOURCE_OWNER_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { options } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   openShellProviderName,
-  type OpenShellGateway,
+  type OpenShellBackend,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
 import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -101,17 +99,20 @@ test(
         return { close: async () => {} };
       },
     );
-    const gatewayId = CREDENTIAL_GATEWAY_FIXTURE_ID;
-    const modelBackend: Backend<OpenShellGateway> = {
+    const gatewayId = CREDENTIAL_SOURCE_OWNER_ID;
+    const sourceConfig = { binaries: ["/usr/bin/codex"] };
+    const modelBackend: OpenShellBackend = {
       id: "fixture-gateway",
-      drivers: { credential_gateway: gatewayId },
+      drivers: {},
+      credentialSources: { id: gatewayId, configuration: sourceConfig },
       client: { placement: () => undefined, clientForNamespace: () => client },
     } as never;
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/bin/codex"] },
-      { id: gatewayId, backend: modelBackend },
-    );
-    const modelAttachments = openShellCredentialAttachments(modelBackend.client, gateway.profiles);
+    const profiles = new OpenShellCredentialProfiles(sourceConfig, {
+      id: gatewayId,
+      refresh: false,
+    });
+    const sources = new OpenShellCredentialSources(modelBackend, profiles);
+    const modelAttachments = openShellCredentialAttachments(modelBackend.client, profiles);
     const { f, key, driver, revision, predecessor, registry, owner, approval, credentials } =
       await standingExecutionFixture(
         t,
@@ -135,10 +136,10 @@ test(
           },
           activePredecessor: true,
           protectedDriver: protectedGit.owner,
-          credentialGateway: gateway,
           ...(modelConfig && { modelConfig }),
         }),
         { sandbox: protectedGit.sandboxConfiguration },
+        sources,
       );
     const { prepared, registrationName, gh, send, input } = peer;
     const authority = prepared.protectedGit!;
@@ -214,7 +215,7 @@ test(
       {
         ...revision.compute,
         protectedDriver: protectedGit.owner,
-        credentialGatewayDriver: gateway,
+        credentialSources: sources,
       },
     );
     const metadata = {
@@ -433,15 +434,19 @@ test(
             events.push(e);
           }
         },
-        transformDrivers: (d: { installation: { drivers: object } }) => ({
+        transformDrivers: (d: {
+          installation: {
+            backend: readonly import("../../packages/contracts/src/index.ts").BackendDefinition[];
+          };
+        }) => ({
           ...d,
-          credentialGatewayDriver: gateway,
+          credentialSources: sources,
           installation: {
             ...d.installation,
-            drivers: {
-              ...d.installation.drivers,
-              credential_gateway: { id: gatewayId },
-            },
+            backend: [
+              ...d.installation.backend,
+              workerSourceBackend(sources.id, protectedGit.owner.require("sandbox").id),
+            ],
           },
           repositoryPolicy: driver,
           protectedDriver: protectedGit.owner,

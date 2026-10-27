@@ -19,7 +19,8 @@ import {
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
 import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
@@ -51,6 +52,7 @@ import {
   CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
   DependencyUnavailableError,
+  InstalledDriver,
   SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
   SandboxWorkspaceSetupRefusedError,
@@ -87,13 +89,13 @@ function sandboxInstallation() {
         port: 50051,
         insecureTransport: "network-policy",
       },
-      drivers: { sandbox: "openshell-sandbox", credential_gateway: "openshell-credentials" },
+      drivers: { sandbox: "openshell-sandbox" },
+      credentialSources: {
+        id: "openshell-credentials",
+        configuration: { binaries: ["/app/bin/model-client"] },
+      },
     },
   ];
-  configuration.drivers.credential_gateway = {
-    id: "openshell-credentials",
-    configuration: { binaries: ["/app/bin/model-client"] },
-  };
   configuration.drivers.sandbox = {
     id: "openshell-sandbox",
     configuration: {
@@ -128,7 +130,11 @@ function sandboxInstallation() {
 function backendFor(gatewayClient) {
   return {
     id: "openshell",
-    drivers: { sandbox: "openshell-sandbox", credential_gateway: "openshell-credentials" },
+    drivers: { sandbox: "openshell-sandbox" },
+    credentialSources: {
+      id: "openshell-credentials",
+      configuration: { binaries: ["/app/bin/model-client"] },
+    },
     client: new OpenShellGateway({ serviceName: "openshell-gateway" }, { gatewayClient }),
   };
 }
@@ -618,52 +624,66 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
   );
 });
 
-test("startup composes both OpenShell members from one Backend", async (t) => {
+test("startup shares the OpenShell source profiles with the selected Sandbox", async (t) => {
   // An explicit hard_requirement composes like the omitted default above.
   const configuration = sandboxInstallation();
   configuration.drivers.sandbox.configuration.policy.landlockCompatibility = "hard_requirement";
-  const store = credentialGatewayOverProviders();
+  const store = openShellSourceStore();
   const createdDriver = await loadInstallationFile(t, configuration, {
     createOpenShellBackend: (definition) =>
       createOpenShellBackend(definition, { gatewayClient: store.client }),
   });
 
-  assert.ok(createdDriver.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
-  assert.equal(createdDriver.credentialGatewayDriver.id, "openshell-credentials");
-  assert.equal(createdDriver.installation.drivers.credential_gateway.implementation, "openshell");
+  assert.ok(createdDriver.credentialSources instanceof OpenShellCredentialSources);
+  assert.equal(createdDriver.credentialSources.id, "openshell-credentials");
+  assert.equal(
+    createdDriver.installation.backend[0].credentialSources.id,
+    createdDriver.credentialSources.id,
+  );
   assert.deepEqual(createdDriver.installation.backend[0].drivers, {
     sandbox: createdDriver.sandboxDriver.id,
-    credential_gateway: createdDriver.credentialGatewayDriver.id,
   });
   const registration = store.context("cs_installed-model");
-  registration.source.driverId = createdDriver.credentialGatewayDriver.id;
-  await createdDriver.credentialGatewayDriver.registerSource(registration, store.input());
+  registration.source.driverId = createdDriver.credentialSources.id;
+  await createdDriver.credentialSources.registerSource(registration, store.input());
   const attachments = await createdDriver.sandboxDriver.credentialAttachments.prepare(
     store.revisionContext([registration.source]),
   );
   assert.deepEqual(attachments, [
     { sourceId: registration.source.id, ref: openShellProviderName(registration.source.id) },
   ]);
+  await assert.rejects(
+    loadInstallationFile(t, configuration, {
+      createOpenShellBackend: (definition) =>
+        createOpenShellBackend(
+          {
+            ...definition,
+            credentialSources: { ...definition.credentialSources, id: "another-source-owner" },
+          },
+          { gatewayClient: store.client },
+        ),
+    }),
+    /credential source owner/,
+  );
 });
 
-test("startup pairs the Credential Refresh Driver with its gateway on one OpenShell Backend", async (t) => {
+test("startup pairs the Credential Refresh Driver with the OpenShell source owner", async (t) => {
   const refreshing = () => {
     const configuration = sandboxInstallation();
     configuration.backend[0].drivers.credential_refresh = "openshell-refresh";
     configuration.drivers.credential_refresh = { id: "openshell-refresh", configuration: {} };
-    configuration.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
+    configuration.backend[0].credentialSources.configuration.toolBinaries = ["/usr/bin/curl"];
     return configuration;
   };
   const createdDriver = await loadInstallationFile(t, refreshing());
   assert.equal(createdDriver.credentialRefreshDriver.id, "openshell-refresh");
   assert.deepEqual(createdDriver.installation.backend[0].drivers, {
     sandbox: "openshell-sandbox",
-    credential_gateway: "openshell-credentials",
     credential_refresh: "openshell-refresh",
   });
   // The gateway offers refresh types only when its Backend can mint their tokens.
   const signal = AbortSignal.timeout(2_000);
-  const offered = await createdDriver.credentialGatewayDriver.listSourceTypes({ signal });
+  const offered = await createdDriver.credentialSources.listSourceTypes({ signal });
   assert.deepEqual(
     offered
       .filter(({ rotation }) => rotation === "refresh")
@@ -681,12 +701,12 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
     ["oauth2-refresh-token.refresh_token"],
   );
   const withoutRefresh = sandboxInstallation();
-  withoutRefresh.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
+  withoutRefresh.backend[0].credentialSources.configuration.toolBinaries = ["/usr/bin/curl"];
   const staticOnly = await loadInstallationFile(t, withoutRefresh);
   assert.equal(staticOnly.installation.drivers.credential_refresh, undefined);
   assert.equal(staticOnly.credentialRefreshDriver.sources, undefined);
   assert.deepEqual(
-    (await staticOnly.credentialGatewayDriver.listSourceTypes({ signal })).map(({ type }) => type),
+    (await staticOnly.credentialSources.listSourceTypes({ signal })).map(({ type }) => type),
     ["openai", "codex-pat", "bearer-token"],
   );
 
@@ -699,8 +719,8 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
     [(c) => (c.drivers.credential_refresh.implementation = "unknown"), /implementation must be/],
     [(c) => delete c.backend[0].drivers.credential_refresh, unpaired],
     [
-      (c) => delete c.drivers.credential_gateway,
-      /drivers\.credential_refresh requires drivers\.credential_gateway/,
+      (c) => delete c.backend[0].credentialSources,
+      /credentialSources requires an id and configuration/,
     ],
     [
       (c) => (c.drivers.credential_refresh.configuration = { interval: 60 }),
@@ -711,21 +731,16 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
   }
 });
 
-test("startup identifies the rejected Credential Gateway executable", (t) =>
+test("startup identifies the rejected OpenShell source executable", (t) =>
   rejectsAtStartup(
     t,
     (c) => {
-      c.drivers.credential_gateway.configuration.toolBinaries = ["bin/curl"];
+      c.backend[0].credentialSources.configuration.toolBinaries = ["bin/curl"];
     },
     structuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
   ));
 
-test("startup rejects an OpenShell Backend whose members are not both selected", async (t) => {
-  await rejectsAtStartup(
-    t,
-    (c) => delete c.drivers.credential_gateway,
-    /drivers\.credential_gateway must match the selected drivers\.credential_gateway\.id/,
-  );
+test("startup requires the Backend’s selected OpenShell Sandbox", async (t) => {
   await rejectsAtStartup(
     t,
     (c) => (c.backend[0].drivers.sandbox = "another-sandbox"),
@@ -4226,11 +4241,11 @@ test("shipped startup names a rejected OpenShell policy without logging its name
 });
 
 /**
- * The OpenShell Credential Gateway over a recording provider store. Each provider's labels say
+ * The OpenShell source owner and Sandbox over a recording provider store. Each provider's labels say
  * which credential source owns it; the gateway may act only on its own source's provider.
  * Kept beside the OpenShell Sandbox cases: both members come from one OpenShell Backend.
  */
-function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = {}) {
+function openShellSourceStore({ keepDeleted = false, toolBinaries } = {}) {
   const providers = new Map();
   const profiles = new Map();
   const deletedProfiles = [];
@@ -4286,16 +4301,18 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
     },
   };
   // Another controller configuration over the same OpenShell store, as after a config change.
-  const backend = {
-    drivers: { credential_gateway: "credential-gateway-openshell" },
-    client: { clientForNamespace: () => client, placement: () => undefined },
-  };
   const driversWith = ({ binaries = ["/usr/local/bin/codex"], toolBinaries } = {}) => {
-    const driver = new OpenShellCredentialGatewayDriver(
-      { binaries, ...(toolBinaries === undefined ? {} : { toolBinaries }) },
-      { backend },
-    );
-    return { driver, attachments: openShellCredentialAttachments(backend.client, driver.profiles) };
+    const configuration = { binaries, ...(toolBinaries && { toolBinaries }) };
+    const backend = {
+      credentialSources: { id: "credential-gateway-openshell", configuration },
+      client: { clientForNamespace: () => client, placement: () => undefined },
+    };
+    const profiles = new OpenShellCredentialProfiles(configuration, {
+      id: backend.credentialSources.id,
+      refresh: false,
+    });
+    const driver = new OpenShellCredentialSources(backend, profiles);
+    return { driver, attachments: openShellCredentialAttachments(backend.client, profiles) };
   };
   const { driver, attachments } = driversWith({ toolBinaries });
   const namespace = { id: "ns_00000000-0000-4000-8000-0000000000aa", name: "placed-tenant" };
@@ -4348,7 +4365,7 @@ async function ready(operation) {
 }
 
 test("Codex PAT profiles admit native startup without granting the whole backend", async () => {
-  const { context, driver, profiles } = credentialGatewayOverProviders();
+  const { context, driver, profiles } = openShellSourceStore();
   const source = context("cs_00000000-0000-4000-8000-0000000000c1");
   await driver.registerSource(
     { ...source, source: { ...source.source, type: "codex-pat" } },
@@ -4374,7 +4391,7 @@ test("Codex PAT profiles admit native startup without granting the whole backend
 });
 
 test("each Codex PAT source gets its own provider profile, stable across replays", async () => {
-  const { context, driver, profileWrites, profiles, providers } = credentialGatewayOverProviders();
+  const { context, driver, profileWrites, profiles, providers } = openShellSourceStore();
   const register = (id) => {
     const owner = context(id);
     return driver.registerSource(
@@ -4419,7 +4436,7 @@ test("OpenShell source and Sandbox operations act only on the source's own provi
     providers,
     revisionContext,
     source,
-  } = credentialGatewayOverProviders();
+  } = openShellSourceStore();
   const owner = "cs_00000000-0000-4000-8000-0000000000b1";
   const other = "cs_00000000-0000-4000-8000-0000000000b2";
   await ready(driver.registerSource(context(owner), input()));
@@ -4463,7 +4480,7 @@ test("OpenShell source and Sandbox operations act only on the source's own provi
 });
 
 test("OpenShell preserves the main-era owned profile lifecycle without a migration", async () => {
-  const f = credentialGatewayOverProviders();
+  const f = openShellSourceStore();
   const context = f.context("cs_main-era");
   const otherContext = f.context("cs_main-era-other");
   for (const owner of [context, otherContext]) {
@@ -4505,7 +4522,7 @@ test("OpenShell preserves the main-era owned profile lifecycle without a migrati
 });
 
 test("OpenShell main-era interrupted registration survives restart without replaying credentials", async () => {
-  const f = credentialGatewayOverProviders();
+  const f = openShellSourceStore();
   const context = f.context("cs_owned-retry");
   const create = f.client.createProvider;
   const unavailable = new Error("create provider unavailable");
@@ -4542,7 +4559,7 @@ test("OpenShell main-era interrupted registration survives restart without repla
 });
 
 test("OpenShell main-era cleanup resumes after provider deletion without losing another source", async () => {
-  const f = credentialGatewayOverProviders();
+  const f = openShellSourceStore();
   const context = f.context("cs_interrupted-delete");
   const other = f.context("cs_delete-survivor");
   await f.driver.registerSource(context, f.input());
@@ -4567,7 +4584,7 @@ test("OpenShell main-era cleanup resumes after provider deletion without losing 
 });
 
 test("OpenShell concurrent registrations preserve the first provider's credentials", async () => {
-  const f = credentialGatewayOverProviders();
+  const f = openShellSourceStore();
   const context = f.context("cs_concurrent-registration");
   const read = f.client.getProviderProfile;
   // Both registrations observe profile absence. Import's create-only contract refuses
@@ -4585,7 +4602,7 @@ test("OpenShell concurrent registrations preserve the first provider's credentia
 });
 
 test("OpenShell rejects a foreign provider appearing after preflight without erasing the profile", async () => {
-  const f = credentialGatewayOverProviders();
+  const f = openShellSourceStore();
   const context = f.context("cs_provider-race");
   const create = f.client.createProvider;
   let foreign;
@@ -4606,7 +4623,7 @@ test("OpenShell rejects a foreign provider appearing after preflight without era
 });
 
 test("OpenShell registration does not adopt an unknown provider create outcome", async () => {
-  const f = credentialGatewayOverProviders();
+  const f = openShellSourceStore();
   const context = f.context("cs_unknown-create");
   const create = f.client.createProvider;
   const failure = new Error("transport lost after provider create");
@@ -4621,8 +4638,7 @@ test("OpenShell registration does not adopt an unknown provider create outcome",
 });
 
 test("the OpenShell Sandbox never attaches a source of another Namespace", async () => {
-  const { attachments, context, driver, input, revisionContext, source } =
-    credentialGatewayOverProviders();
+  const { attachments, context, driver, input, revisionContext, source } = openShellSourceStore();
   const owner = "cs_00000000-0000-4000-8000-0000000000c1";
   await driver.registerSource(context(owner), input());
   // The provider is genuinely owned, so only the Namespace check can refuse.
@@ -4636,8 +4652,8 @@ test("the OpenShell Sandbox never attaches a source of another Namespace", async
   assert.equal((await attachments.prepare(revisionContext([source(owner)]))).length, 1);
 });
 
-test("the OpenShell Credential Gateway refuses an empty secret before creating a provider", async () => {
-  const { calls, context, driver, input, providers } = credentialGatewayOverProviders();
+test("the OpenShell source owner refuses an empty secret before creating a provider", async () => {
+  const { calls, context, driver, input, providers } = openShellSourceStore();
   await assert.rejects(
     driver.registerSource(context("cs_00000000-0000-4000-8000-0000000000d1"), input("")),
     ScopeViolationError,
@@ -4647,7 +4663,7 @@ test("the OpenShell Credential Gateway refuses an empty secret before creating a
 });
 
 test("OpenShell credential source removal fails while the provider survives deletion", async () => {
-  const { context, driver, input, providers } = credentialGatewayOverProviders({
+  const { context, driver, input, providers } = openShellSourceStore({
     keepDeleted: true,
   });
   const owner = "cs_00000000-0000-4000-8000-0000000000e1";
@@ -4657,7 +4673,7 @@ test("OpenShell credential source removal fails while the provider survives dele
 });
 
 test("the OpenShell bearer-token type exists only with toolBinaries and validates its endpoint", async () => {
-  const modelOnly = credentialGatewayOverProviders();
+  const modelOnly = openShellSourceStore();
   assert.deepEqual(
     (await modelOnly.driver.listSourceTypes({})).map(({ type }) => type),
     ["openai", "codex-pat"],
@@ -4673,14 +4689,9 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   );
   assert.throws(
     () =>
-      new OpenShellCredentialGatewayDriver(
+      new OpenShellCredentialProfiles(
         { binaries: ["/usr/local/bin/codex"], toolBinaries: ["bin/curl"] },
-        {
-          backend: {
-            drivers: { credential_gateway: "credential-gateway-openshell" },
-            client: { clientForNamespace: () => ({}) },
-          },
-        },
+        { id: "credential-gateway-openshell", refresh: false },
       ),
     (error) => {
       assert.ok(error instanceof SharedConfigurationValidationError);
@@ -4693,7 +4704,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   );
 
   const { attachments, calls, context, deletedProfiles, driver, input, profiles, providers } =
-    credentialGatewayOverProviders({ toolBinaries: ["/usr/bin/curl"] });
+    openShellSourceStore({ toolBinaries: ["/usr/bin/curl"] });
   assert.deepEqual(
     (await driver.listSourceTypes({})).map(({ type }) => type),
     ["openai", "codex-pat", "bearer-token"],
@@ -4848,7 +4859,7 @@ function bearerTokenSources(gateway) {
 }
 
 test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on update and deployment", async () => {
-  const gateway = credentialGatewayOverProviders({
+  const gateway = openShellSourceStore({
     toolBinaries: ["/usr/bin/curl", "/usr/bin/python3"],
   });
   const { driver, driversWith, profileWrites, profiles } = gateway;
@@ -4899,7 +4910,7 @@ test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on 
 });
 
 test("an OpenShell profile write that lost a race to the same profile still attaches", async () => {
-  const gateway = credentialGatewayOverProviders({ toolBinaries: ["/usr/bin/curl"] });
+  const gateway = openShellSourceStore({ toolBinaries: ["/usr/bin/curl"] });
   const { client, driversWith, profiles } = gateway;
   const { bearer, providerOf, register, revisionContext } = bearerTokenSources(gateway);
   const source = bearer("cs_00000000-0000-4000-8000-000000000111");
@@ -4936,7 +4947,7 @@ test("an OpenShell profile write that lost a race to the same profile still atta
 });
 
 test("an OpenShell bearer-token source stays deletable after toolBinaries is removed", async () => {
-  const gateway = credentialGatewayOverProviders({ toolBinaries: ["/usr/bin/curl"] });
+  const gateway = openShellSourceStore({ toolBinaries: ["/usr/bin/curl"] });
   const { deletedProfiles, driversWith, profiles } = gateway;
   const { bearer, input, providerOf, register, revisionContext, sourceContext } =
     bearerTokenSources(gateway);
@@ -6044,7 +6055,8 @@ test("repository.openShell names each unmet requirement, including ones earlier 
       endpoint: "https://gateway.example.test:8443",
       auth: { mode: "mtls", certificatePath: "/c", privateKeyPath: "/k" },
     },
-    drivers: { sandbox: "sandbox", credential_gateway: "gateway" },
+    drivers: { sandbox: "sandbox" },
+    credentialSources: { id: "gateway", configuration: { binaries: ["/usr/bin/codex"] } },
   };
   const met = {
     prepared: true,
@@ -6377,7 +6389,7 @@ test(
       method: "credential_source",
       sourceId: "cs_test",
       sourceType: "openai",
-      credentialGatewayId: protectedGit.credentialGatewayDriver.id,
+      credentialGatewayId: protectedGit.credentialSources.id,
       loginMode: requirements.loginMode,
     };
     const inferenceProvider = openShellProviderName(auth.sourceId);
@@ -6414,7 +6426,7 @@ test(
     // model source survives Git; the runtime-files provider cannot stand in for that source.
     await t.test(
       "protected Sandbox accepts only the separately admitted model alongside Git",
-      async () => {
+      async (t) => {
         const git = protectedGit.sandboxDriver.openShellGit;
         const proxy = protectedGit.proxyDriver;
         const sandbox = protectedGit.sandboxDriver;
@@ -6447,6 +6459,47 @@ test(
         };
         const ctx = { ...context, plan, revision: rev };
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
+        await t.test(
+          "both Installation layouts admit a stored Git revision until its model binary policy changes",
+          async (t) => {
+            const legacy = structuredClone(configuration);
+            const backend = legacy.backend[0];
+            legacy.drivers.credential_gateway = backend.credentialSources;
+            backend.drivers.credential_gateway = backend.credentialSources.id;
+            delete backend.credentialSources;
+            // The released Git registration hashed the model source settings and the repository
+            // authority. The latter includes this fixture's temporary registry path and listener.
+            const previous = new InstalledDriver(
+              {
+                id: gitId,
+                implementation: "openshell",
+                configuration: {
+                  sandbox: legacy.drivers.sandbox.configuration,
+                  backend,
+                  proxy: legacy.drivers.credential_proxy,
+                  modelGateway: legacy.drivers.credential_gateway,
+                  repositoryAuthorityIdentity: protectedGit.authorityIdentity,
+                },
+              },
+              { capabilities: { sandbox, credential_proxy: proxy } },
+              { sandbox: gitId, credential_proxy: gitId },
+            );
+            const stored = { ...rev, egressPlan: { ...plan, driver: previous.ref } };
+            const load = (config) =>
+              loadInstallationFile(t, config, {
+                createOpenShellBackend: () => backendFor(gateway),
+              });
+            protectedGit.computeDriver.validateExecutionAdmission(stored, "stored");
+            (await load(legacy)).computeDriver.validateExecutionAdmission(stored, "stored");
+            const changed = structuredClone(configuration);
+            changed.backend[0].credentialSources.configuration.binaries = ["/app/bin/other-client"];
+            const replacement = await load(changed);
+            assert.throws(
+              () => replacement.computeDriver.validateExecutionAdmission(stored, "stored"),
+              DependencyUnavailableError,
+            );
+          },
+        );
         assert.equal(
           protectedGit.computeDriver.admitRevision(rev),
           "protected-codex-no-connection-retry:v1",
@@ -6905,7 +6958,7 @@ test(
             id: orphan,
             annotations: { "openclaw.dev/prepared-git-binding": "2".repeat(48) },
           });
-          // The model source's provider belongs to the Credential Gateway, which withdraws it.
+          // The Sandbox independently withdraws the model source's provider.
           gateway.providers.delete(inferenceProvider);
           gateway.profiles.delete("inference-profile");
           const workspace = openShellWorkspaceName(ctx.namespace);

@@ -4,11 +4,11 @@ export const DEVICE_ACCESS_TOKEN = "device-access-private-fixture";
 export const DEVICE_ACCOUNT_ID = "workspace-fixture";
 
 /**
- * Simulates only the external Credential Gateway and Refresh contracts. OCC still owns source
+ * Simulates only the external source registration and Token Service contracts. OCC still owns source
  * registration, IAM, login-session fencing, and Agent bindings in the callers.
  * This fixture does not prove provider exchange, refresh, or runtime injection.
  */
-export function createDeviceCredentialDrivers({
+export function createDeviceCredentials({
   now = () => Date.now(),
   approve = async () => true,
   beforePoll = async () => {},
@@ -20,10 +20,8 @@ export function createDeviceCredentialDrivers({
   const record = (operation, context) => {
     calls.push({ operation, sourceId: context.source.id });
   };
-  const gateway = {
-    id: "device-credential-gateway",
-    capability: "credential_gateway",
-    implementation: "test-external-device-service",
+  const credentialSources = {
+    id: "device-credential-sources",
     calls,
     sources,
     validateSourceConfig({ type, config }) {
@@ -121,5 +119,5 @@ export function createDeviceCredentialDrivers({
       handles.delete(context.source.id);
     },
   };
-  return { gateway, refresh, calls };
+  return { credentialSources, refresh, calls };
 }

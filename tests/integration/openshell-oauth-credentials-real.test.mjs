@@ -10,8 +10,9 @@ import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
 import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
@@ -80,13 +81,17 @@ test(
       requestTimeoutMs: 30_000,
       auth: { mode: "mutualTls", ...operatorTls },
     });
+    const sourceConfiguration = {
+      id: "credential-gateway-openshell",
+      configuration: { binaries: ["/usr/local/bin/codex"] },
+    };
     const backend = createOpenShellBackend({
       id: "openshell",
-      implementation: "openshell",
+      type: "openshell",
+      credentialSources: sourceConfiguration,
       configuration: { endpoint, rootCertificatePath, requestTimeoutMs: 30_000, auth, operatorTls },
       drivers: {
         sandbox: "sandbox",
-        credential_gateway: "credential-gateway-openshell",
         credential_refresh: "credential-refresh-openshell",
       },
     });
@@ -102,11 +107,12 @@ test(
     const credentialKey = "CODEX_ACCESS_TOKEN";
     const profileId = name;
     const signal = AbortSignal.timeout(120_000);
-    const driver = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/codex"] },
-      { backend },
-    );
-    const attachments = openShellCredentialAttachments(backend.client, driver.profiles);
+    const credentialProfiles = new OpenShellCredentialProfiles(sourceConfiguration.configuration, {
+      id: sourceConfiguration.id,
+      refresh: true,
+    });
+    const sources = new OpenShellCredentialSources(backend, credentialProfiles);
+    const attachments = openShellCredentialAttachments(backend.client, credentialProfiles);
     const refreshDriver = new OpenShellCredentialRefreshDriver({}, { backend });
     const context = {
       signal,
@@ -114,7 +120,7 @@ test(
       source: {
         id: sourceId,
         namespaceId: workspace,
-        driverId: driver.id,
+        driverId: sources.id,
         type: "codex-oauth",
         config: {},
         secrets: {},
@@ -258,7 +264,7 @@ test(
     // call. Only its Backend's certificate-only export channel may return the token.
     const first = await refreshDriver.sourceTokens.withSourceToken(context, fingerprint);
     assert.notEqual(first, createHash("sha256").update(initialAccessToken).digest("hex"));
-    assert.equal((await driver.sourceStatus(context)).state, "ready");
+    assert.equal((await sources.sourceStatus(context)).state, "ready");
     assert.equal(
       await refreshDriver.sourceTokens.withSourceToken(context, fingerprint),
       first,
@@ -288,7 +294,7 @@ test(
       firstAttachment,
       "re-attaching reads the same source and metadata without reseeding its OAuth credentials",
     );
-    assert.equal((await driver.sourceStatus(context)).state, "ready");
+    assert.equal((await sources.sourceStatus(context)).state, "ready");
     const resolved = await operatorClient.getProviderCredential(
       workspace,
       name,

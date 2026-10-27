@@ -165,13 +165,45 @@ test("one selected Token Service supports OpenShell OAuth and prepared GitHub me
         metadata && refresh.preparedTokens.issuer(metadata.ref),
         "the proxy's admitted type has its configured issuer",
       );
-      const offered = await drivers.credentialGatewayDriver.listSourceTypes({
+      const offered = await drivers.credentialSources.listSourceTypes({
         signal: AbortSignal.timeout(2_000),
       });
       assert.ok(offered.some((type) => type.deviceAuthorization?.harnessId === "codex"));
       assert.equal(typeof refresh.sources.startDeviceAuthorization, "function");
     });
   }
+});
+
+test("released source settings retain the owner and protected revision identity", async (t) => {
+  const canonical = credentialProxyInstallation();
+  const legacy = structuredClone(canonical);
+  const sources = legacy.backend[0].credentialSources;
+  delete legacy.backend[0].credentialSources;
+  legacy.drivers.credential_gateway = sources;
+  legacy.backend[0].drivers.credential_gateway = sources.id;
+  const load = async (configuration) =>
+    loadInstallationConfiguration({
+      mode: "development",
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    });
+  const current = await load(canonical);
+  const released = await load(legacy);
+  assert.deepEqual(released.installation.backend, current.installation.backend);
+  assert.equal(released.credentialSources.id, sources.id);
+  assert.deepEqual(released.protectedDriver.ref, current.protectedDriver.ref);
+  assert.equal(
+    current.protectedDriver.ref.configurationId,
+    "19b3704824579e2dbf23bf3b8a3cea4fb4e90b50e12f805a0fdb25e4d24eba93",
+  );
+  const replacement = structuredClone(canonical);
+  replacement.backend[0].credentialSources.id += "-replacement";
+  assert.notEqual(
+    (await load(replacement)).protectedDriver.ref.configurationId,
+    current.protectedDriver.ref.configurationId,
+  );
+  await assert.rejects(load({ ...canonical, drivers: legacy.drivers }), /legacy driver selector/);
+  legacy.backend[0].drivers.credential_gateway += "-replacement";
+  await assert.rejects(load(legacy), /must match/);
 });
 
 test("Credential Proxy startup preserves the selection and refuses retired keys", async (t) => {
@@ -215,10 +247,10 @@ test("Credential Proxy startup preserves the selection and refuses retired keys"
             candidate.backend,
             {
               sandbox: loaded.sandboxDriver,
-              credential_gateway: loaded.credentialGatewayDriver,
               ...(selected ? { credential_proxy: loaded.proxyDriver } : {}),
             },
             loaded.protectedDriver,
+            loaded.credentialSources.id,
           );
         if (member !== selected) {
           await assert.rejects(
@@ -2680,6 +2712,7 @@ test("closed Installation observes only its operator-bound Namespace, including 
     environment,
     createOpenShellBackend: (definition) => ({
       id: definition.id,
+      credentialSources: definition.credentialSources,
       drivers: definition.drivers,
       client: {
         clientForNamespace: () => ({

@@ -46,17 +46,15 @@ const installation = Object.freeze({
 });
 
 /**
- * Test-only Credential Gateway: records what OCC hands it. These cases prove OCC admission,
- * authorization, and lifecycle; injection itself is proved by the real OpenShell integration.
+ * Records what OCC hands the Backend for registration and cleanup. These cases exercise
+ * OCC admission, authorization, and lifecycle. The OpenShell integration exercises injection.
  */
-function createTestCredentialGateway(options = {}) {
+function createTestBackendCredentialSources(options = {}) {
   const calls = [];
   const stored = new Map();
   const lateCreates = [];
   return {
     id: "credential-gateway-test",
-    capability: "credential_gateway",
-    implementation: "test-recording-gateway",
     calls,
     stored,
     completeLateCreates() {
@@ -306,10 +304,6 @@ async function fixture(options = {}) {
   );
   let now = Date.parse("2026-09-27T12:00:00.000Z");
   const state = new InMemoryPlatformState();
-  const controller = new OpenClawController(installation, {
-    state,
-    now: () => new Date(now),
-  });
   // Deletion is final only once no timed-out registration could still create a gateway copy.
   function passRegistrationFence() {
     now += 71_000;
@@ -318,7 +312,7 @@ async function fixture(options = {}) {
     now += milliseconds;
   }
   const secretDriver = createTestSecretDriver();
-  const gateway = createTestCredentialGateway(options.gateway);
+  const gateway = createTestBackendCredentialSources(options.gateway);
   const refresh = createTestCredentialRefresh(gateway.calls, options.refresh);
   // Compute owns runtime placement; the gateway must see the same name as the paired Sandbox.
   const compute = {
@@ -332,14 +326,23 @@ async function fixture(options = {}) {
     compute,
     createTestConfigurationDriver({ id: "credential-source-configuration" }),
     secretDriver,
-    ...(options.withoutGateway ? [] : [gateway]),
     ...(options.withoutRefresh || options.withoutGateway ? [] : [refresh]),
     ...(options.withoutSandbox ? [] : [createTestSandbox()]),
   ];
-  for (const driver of drivers) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
+  // A reconfigured Installation starts a fresh OCC over its existing records and Drivers.
+  function startController(credentialSources) {
+    const controller = new OpenClawController(installation, {
+      state,
+      now: () => new Date(now),
+      credentialSources,
+    });
+    for (const driver of drivers) {
+      controller.registerDriver(driver);
+      controller.selectDriver(driver.capability, driver.id);
+    }
+    return controller;
   }
+  const controller = startController(options.withoutGateway ? undefined : gateway);
   const namespace = await controller.createNamespace(administrator, { name: "Source tenant" });
 
   async function makeReady() {
@@ -398,6 +401,7 @@ async function fixture(options = {}) {
   return {
     advanceClock,
     controller,
+    startController,
     dedicatedAgent,
     gateway,
     grantAgentSourceOperate,
@@ -518,9 +522,12 @@ test("an OpenShell Backend names its refresh Driver, and the selected one must b
     id: "openshell",
     type: "openshell",
     configuration: { serviceName: "openshell", insecureTransport: "network-policy" },
+    credentialSources: {
+      id: "credential-gateway-test",
+      configuration: { binaries: ["/usr/bin/codex"] },
+    },
     drivers: {
       sandbox: "sandbox-test",
-      credential_gateway: "credential-gateway-test",
       ...(refresh === undefined ? {} : { credential_refresh: refresh }),
     },
   });
@@ -528,17 +535,14 @@ test("an OpenShell Backend names its refresh Driver, and the selected one must b
     () => new OpenClawController(installation, { backends: [backend("")] }),
     /drivers\.credential_refresh must be a Driver ID/,
   );
-  const gateway = createTestCredentialGateway();
+  const gateway = createTestBackendCredentialSources();
   for (const declared of ["credential-refresh-test", undefined]) {
     const controller = new OpenClawController(installation, {
       state: new InMemoryPlatformState(),
       backends: [backend(declared)],
+      credentialSources: gateway,
     });
-    for (const driver of [
-      createTestSandbox(),
-      gateway,
-      createTestCredentialRefresh(gateway.calls),
-    ]) {
+    for (const driver of [createTestSandbox(), createTestCredentialRefresh(gateway.calls)]) {
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
     }
@@ -2958,9 +2962,11 @@ test("an Agent's credentialSources list is validated, and binding or unbinding n
 
 test("binding refuses a missing, deleting, other-Namespace or foreign-gateway source", async () => {
   let failRemove = false;
-  const { controller, dedicatedAgent, gateway, makeReady, namespace } = await fixture({
+  const context = await fixture({
     gateway: { removeError: () => (failRemove ? new Error("gateway unavailable") : undefined) },
   });
+  const { dedicatedAgent, gateway, makeReady, namespace, startController } = context;
+  let { controller } = context;
   await makeReady();
   const registry = (name) =>
     controller.createCredentialSource(administrator, {
@@ -3002,8 +3008,7 @@ test("binding refuses a missing, deleting, other-Namespace or foreign-gateway so
   // A source being deleted still exists, but it can no longer be newly bound.
   await assert.rejects(bind(deleting.id), unavailable);
   // A source registered through a gateway that is no longer selected cannot be bound.
-  controller.registerDriver({ ...gateway, id: "credential-gateway-replacement" });
-  controller.selectDriver("credential_gateway", "credential-gateway-replacement");
+  controller = startController({ ...gateway, id: "credential-gateway-replacement" });
   await assert.rejects(bind(ready.id), DependencyUnavailableError);
   assert.equal(
     (await controller.getAgent(administrator, namespace.id, agent.id)).credentialSources,
@@ -3011,9 +3016,11 @@ test("binding refuses a missing, deleting, other-Namespace or foreign-gateway so
   );
 });
 
-test("after a Credential Gateway change an Agent update can drop the old sources but not keep them", async () => {
-  const { controller, dedicatedAgent, gateway, iamState, makeReady, modelSecret, namespace } =
-    await fixture();
+test("after the Backend source owner changes, an Agent update can drop the old sources but not keep them", async () => {
+  const context = await fixture();
+  const { dedicatedAgent, gateway, iamState, makeReady, modelSecret, namespace, startController } =
+    context;
+  let { controller } = context;
   await makeReady();
   const model = await controller.createCredentialSource(administrator, {
     namespaceId: namespace.id,
@@ -3041,9 +3048,8 @@ test("after a Credential Gateway change an Agent update can drop the old sources
     credentialSources: [{ sourceId: model.id }, { sourceId: registry.id }],
   });
 
-  // The Installation re-selects its Credential Gateway; the old sources stay stored and ready.
-  controller.registerDriver({ ...gateway, id: "credential-gateway-replacement" });
-  controller.selectDriver("credential_gateway", "credential-gateway-replacement");
+  // The Installation changes its source owner. The old sources stay stored and ready.
+  controller = startController({ ...gateway, id: "credential-gateway-replacement" });
   const stored = async () => {
     const current = await controller.getAgent(administrator, namespace.id, agent.id);
     return { harnessAuth: current.harnessAuth, credentialSources: current.credentialSources };
@@ -3363,16 +3369,18 @@ test("a source type the gateway stops offering is a 409 naming the fix, after th
   assert.equal((await deploy()).credentialSources.length, 2);
 });
 
-test("after a Credential Gateway change, every path refuses an old source with one fixed message and DELETE keeps it ready", async () => {
+test("after the Backend source owner changes, every path refuses an old source with one fixed message and DELETE keeps it ready", async () => {
+  const context = await fixture();
   const {
-    controller,
     dedicatedAgent,
     gateway,
     makeReady,
     modelSecret,
     namespace,
     passRegistrationFence,
-  } = await fixture();
+    startController,
+  } = context;
+  let { controller } = context;
   await makeReady();
   const registry = (name) =>
     controller.createCredentialSource(administrator, {
@@ -3414,8 +3422,7 @@ test("after a Credential Gateway change, every path refuses an old source with o
     });
   await update({ harnessAuth: { method: "runtime" }, credentialSources: [{ sourceId: bound.id }] });
 
-  controller.registerDriver({ ...gateway, id: "credential-gateway-replacement" });
-  controller.selectDriver("credential_gateway", "credential-gateway-replacement");
+  controller = startController({ ...gateway, id: "credential-gateway-replacement" });
   const removals = () => gateway.calls.filter(({ operation }) => operation === "removeSource");
   const removalsBefore = removals().length;
   const ownership = (error) => {
@@ -3481,8 +3488,8 @@ test("after a Credential Gateway change, every path refuses an old source with o
     ResourceConflictError,
   );
 
-  // Selecting the registering driver again lets both sources be deleted.
-  controller.selectDriver("credential_gateway", gateway.id);
+  // Restoring the registering Backend owner lets both sources be deleted.
+  controller = startController(gateway);
   passRegistrationFence();
   for (const source of [unbound, stuck]) {
     await controller.deleteCredentialSource(administrator, namespace.id, source.id);

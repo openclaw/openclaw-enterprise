@@ -1,8 +1,13 @@
+import { workerSourceBackend } from "./postgres-worker-revision-fixture.mjs";
 import type { InstallationStartupConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  BackendCredentialSources,
+  BackendDefinition,
+} from "../../packages/contracts/src/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
@@ -22,7 +27,6 @@ export async function standingExecutionFixture(
     controlSocket?: string;
     backendId: string;
     protectedDriver?: import("../../packages/occ/src/index.ts").InstalledDriver;
-    credentialGateway?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver;
     modelConfig?: { base_url: string };
     activePredecessor?: boolean;
     requestedBinding?: {
@@ -31,8 +35,9 @@ export async function standingExecutionFixture(
     };
   }>,
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  credentialSources?: BackendCredentialSources,
 ) {
-  const f = await standingExecutionPlatform(t, testUrl, driverSelections);
+  const f = await standingExecutionPlatform(t, testUrl, driverSelections, credentialSources);
   const external = await setupRepository?.(f.observerPool, f.namespace.id);
   const registry =
     external?.registry ??
@@ -85,18 +90,21 @@ export async function standingExecutionFixture(
   if (predecessor) {
     try {
       await f.start(f.compute, {
-        transformDrivers: (d: { installation: { drivers: object } }) => ({
+        transformDrivers: (d: { installation: { backend: readonly BackendDefinition[] } }) => ({
           ...d,
-          credentialGatewayDriver: external!.credentialGateway,
+          credentialSources,
           protectedDriver: external!.protectedDriver,
           sandboxDriver: external!.protectedDriver?.require("sandbox"),
           proxyDriver: external!.protectedDriver?.require("credential_proxy"),
           installation: {
             ...d.installation,
-            drivers: {
-              ...d.installation.drivers,
-              credential_gateway: { id: external!.credentialGateway!.id },
-            },
+            backend: [
+              ...d.installation.backend,
+              workerSourceBackend(
+                credentialSources!.id,
+                external!.protectedDriver!.require("sandbox").id,
+              ),
+            ],
           },
         }),
       });
@@ -154,11 +162,8 @@ export async function standingExecutionFixture(
     actorId: f.actor.id,
     repositoryCredentials: credentials,
   };
-  if (external?.protectedDriver && external.credentialGateway) {
-    const gateway = external.credentialGateway;
+  if (external?.protectedDriver) {
     f.controller.installDriver(external.protectedDriver, ["sandbox", "credential_proxy"]);
-    f.controller.registerDriver(gateway);
-    f.controller.selectDriver("credential_gateway", gateway.id);
   }
   const revision = (await f.revision(owner, predecessor ? 2 : 1, {
     ...revisionOptions,
@@ -195,6 +200,7 @@ export async function standingExecutionPlatform(
   t: TestContext,
   testUrl: string,
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  credentialSources?: BackendCredentialSources,
 ) {
   await ensurePostgresAgentBootstrap(t, {
     label: "standing-execution",
@@ -212,6 +218,6 @@ export async function standingExecutionPlatform(
       }
     }
   });
-  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections };
+  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections, credentialSources };
   return createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
 }

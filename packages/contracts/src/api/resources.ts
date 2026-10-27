@@ -646,6 +646,7 @@ export const CredentialSourceSchema = Type.Object(
     namespaceId: NamespaceId,
     name: Name,
     type: CredentialSourceType,
+    // Released API discriminator for ordinary Backend sources and protected Proxy sources.
     ownerCapability: Type.Union(
       [Type.Literal("credential_gateway"), Type.Literal("credential_proxy")],
       {

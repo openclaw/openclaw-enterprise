@@ -11,7 +11,8 @@ import {
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
@@ -254,6 +255,8 @@ async function fixture(
     harness = "openclaw",
     configurationDriver = createTestConfigurationDriver(),
     controllerOptions = {},
+    sourceBackend,
+    installCredentialDrivers,
     extraRepositories = [],
     installationAccess = false,
   } = {},
@@ -296,6 +299,10 @@ async function fixture(
       ]
     : [];
 
+  if (sourceBackend) {
+    backends.push(sourceBackend);
+  }
+
   async function compose(registry, Driver) {
     const controller = new OpenClawController(installation, {
       state,
@@ -310,6 +317,9 @@ async function fixture(
       const driver = repositoryDriver(registry, Driver);
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
+    }
+    if (registry !== undefined) {
+      installCredentialDrivers?.(controller, registry);
     }
     if (registry !== undefined || !repositories) {
       await controller.validateBackendConfiguration();
@@ -1717,21 +1727,6 @@ async function protectedOpenShellComposition(
     // authentication; this one is not bound to that pair, so its delivery check is not the subject.
     validateHarnessAuth() {}
   }
-  const f = await fixture(t, {
-    harness: "codex",
-    compute: kubernetesCompute(
-      credentialGateway ? GatewayHarnessComputeDriver : ProtectedGitComputeDriver,
-    ),
-    controllerOptions: {
-      driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
-    },
-    // Every bound repository other than the fixture's own is approved for the Namespace too.
-    extraRepositories: bindings
-      .map(({ repositoryRef }) => repositoryRef)
-      .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
-    installationAccess,
-  });
-  const sandbox = repositorySandbox(f.registry);
   const registration = "oce-prepared-git";
   let gatewayReads = 0;
   const gateway = {
@@ -1765,43 +1760,79 @@ async function protectedOpenShellComposition(
   };
   const backend = {
     id: "openshell",
-    drivers: credentialGateway ? { credential_gateway: "openshell-credentials" } : {},
+    drivers: {},
+    credentialSources: {
+      id: "openshell-credentials",
+      configuration: { binaries: ["/usr/bin/codex"] },
+    },
     client: { clientForNamespace: () => gateway, placement: () => undefined },
   };
-  // Production composes the Proxy with the Git runtime's transport whenever repository Git is
-  // protected; admission only checks that it is there.
-  const git =
-    installationAccess &&
-    new OpenShellGitRuntime(
-      { protectedExecution: true },
-      createGitHubRepositoryDeliveryResolver(
-        validateGitHubRepositoryRegistry(f.registry, backendId),
-      ),
+  const catalog =
+    credentialGateway &&
+    new OpenShellCredentialSources(
+      backend,
+      new OpenShellCredentialProfiles(backend.credentialSources.configuration, {
+        id: backend.credentialSources.id,
+        refresh: false,
+      }),
     );
-  const proxy = new OpenShellCredentialProxyDriver(options, {
-    id: sandbox.id,
-    sandbox,
-    backend,
-    ...(git && {
-      bindRepositoryGit: git.bindRepositoryGit.bind(git),
-      previewEnforcement: git.previewEnforcement.bind(git),
-    }),
-  });
-  const owner = new InstalledDriver(
-    { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
-    { capabilities: { sandbox, credential_proxy: proxy } },
-  );
-  f.controller.registerDriver(owner);
-  f.controller.selectDriver("sandbox", sandbox.id);
-  f.controller.selectDriver("credential_proxy", proxy.id);
-  if (credentialGateway) {
-    const catalog = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/bin/codex"] },
-      { id: "openshell-credentials", backend },
+  function installCredentialDrivers(controller, registry) {
+    const sandbox = repositorySandbox(registry);
+    // Production composes the Proxy with the Git runtime's transport whenever repository Git is
+    // protected; admission only checks that it is there.
+    const git =
+      installationAccess &&
+      new OpenShellGitRuntime(
+        { protectedExecution: true },
+        createGitHubRepositoryDeliveryResolver(
+          validateGitHubRepositoryRegistry(registry, backendId),
+        ),
+      );
+    const proxy = new OpenShellCredentialProxyDriver(options, {
+      id: sandbox.id,
+      sandbox,
+      backend,
+      ...(git && {
+        bindRepositoryGit: git.bindRepositoryGit.bind(git),
+        previewEnforcement: git.previewEnforcement.bind(git),
+      }),
+    });
+    const owner = new InstalledDriver(
+      { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
+      { capabilities: { sandbox, credential_proxy: proxy } },
     );
-    f.controller.registerDriver(catalog);
-    f.controller.selectDriver(catalog.capability, catalog.id);
+    controller.registerDriver(owner);
+    controller.selectDriver("sandbox", sandbox.id);
+    controller.selectDriver("credential_proxy", proxy.id);
   }
+  const f = await fixture(t, {
+    harness: "codex",
+    compute: kubernetesCompute(
+      credentialGateway ? GatewayHarnessComputeDriver : ProtectedGitComputeDriver,
+    ),
+    ...(catalog && {
+      sourceBackend: {
+        id: backend.id,
+        type: "openshell",
+        credentialSources: backend.credentialSources,
+        configuration: { serviceName: "openshell-gateway", insecureTransport: "network-policy" },
+        drivers: {
+          sandbox: "repository-admission-openshell",
+          credential_proxy: "repository-admission-openshell",
+        },
+      },
+    }),
+    installCredentialDrivers,
+    controllerOptions: {
+      ...(catalog && { credentialSources: catalog }),
+      driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
+    },
+    // Every bound repository other than the fixture's own is approved for the Namespace too.
+    extraRepositories: bindings
+      .map(({ repositoryRef }) => repositoryRef)
+      .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
+    installationAccess,
+  });
   return { ...f, gatewayReads: () => gatewayReads };
 }
 

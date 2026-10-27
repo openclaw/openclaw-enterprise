@@ -1223,7 +1223,7 @@ function portableRuntimeCommand(command) {
 }
 
 function bridgeRequirements(context, claimName, subPath) {
-  // The model key reaches Codex only through the Credential Gateway: Compute renders no model
+  // The model key reaches Codex only through the OpenShell provider. Compute renders no model
   // Secret. The Sandbox receives the model source's attachment first, then one for each
   // other source the revision still holds; a withdrawn one is never re-attached.
   assert.equal(
@@ -1603,7 +1603,7 @@ function createIntegrationSandboxDriverFactory(
   const endpointClients = new Map();
   const policyWrites = [];
   let policyWriteBarrier;
-  let backendDrivers;
+  let backendDefinition;
 
   function clientForEndpoint(endpoint) {
     const existing = endpointClients.get(endpoint);
@@ -1643,12 +1643,13 @@ function createIntegrationSandboxDriverFactory(
   }
 
   // Each namespace owns a disposable gateway reached through its current port-forward, so the
-  // shared Backend resolves that endpoint at call time for the Credential Gateway Driver.
+  // shared Backend resolves that endpoint at call time for source registration and Sandbox attachments.
   const createBackend = (definition) => {
-    backendDrivers = definition.drivers;
+    backendDefinition = definition;
     return Object.freeze({
       id: definition.id,
       drivers: definition.drivers,
+      credentialSources: definition.credentialSources,
       client: {
         placement(namespaceName) {
           if (namespaceName === undefined) {
@@ -1794,10 +1795,11 @@ function createIntegrationSandboxDriverFactory(
     }
 
     function backendFor(gatewayClient) {
-      assert.ok(backendDrivers, "The OpenShell Backend must be composed before its Sandbox.");
+      assert.ok(backendDefinition, "The OpenShell Backend must be composed before its Sandbox.");
       return Object.freeze({
         id: "openshell",
-        drivers: backendDrivers,
+        drivers: backendDefinition.drivers,
+        credentialSources: backendDefinition.credentialSources,
         client: new OpenShellGateway({ endpoint: "http://127.0.0.1:1" }, { gatewayClient }),
       });
     }
@@ -2321,7 +2323,7 @@ async function prepareProductionInstallation(
     configuration.drivers.sandbox.configuration.kubernetes.agentResources.limits.memory =
       configuration.drivers.compute.configuration.resources.agent.limits.memory;
     configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "16Gi";
-    configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
+    configuration.backend[0].credentialSources.configuration.binaries = ["/usr/local/bin/node"];
   }
   if (!enableCompatibilityBridges) {
     configuration.drivers.compute.configuration.servicePrincipalCredentials = { mode: "disabled" };
@@ -2367,7 +2369,7 @@ async function prepareProductionInstallation(
       binaries: [{ path: "/usr/bin/python3.11" }],
       endpoints: [{ host: tokenEcho.host, ports: [8082], tls: "skip" }],
     });
-    configuration.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
+    configuration.backend[0].credentialSources.configuration.toolBinaries = ["/usr/bin/curl"];
     // The refresh role must belong to the gateway's Backend, whose provider records it refreshes.
     configuration.backend[0].drivers.credential_refresh = "credential-refresh-openshell-kubernetes";
     configuration.drivers.credential_refresh = {
@@ -2451,14 +2453,11 @@ async function prepareProductionInstallation(
   let { diagnosticWorkerDrivers } = initialWorkerDrivers;
   assert.equal(drivers.sandboxDriver?.capability, "sandbox");
   assert.equal(drivers.sandboxDriver?.id, configuration.drivers.sandbox.id);
-  assert.equal(drivers.credentialGatewayDriver?.capability, "credential_gateway");
+  assert.equal(drivers.credentialSources?.id, configuration.backend[0].credentialSources.id);
   if (keycloak !== undefined) {
     assert.equal(drivers.credentialRefreshDriver?.capability, "credential_refresh");
   }
-  assert.equal(
-    workerDrivers.credentialGatewayDriver?.id,
-    configuration.drivers.credential_gateway.id,
-  );
+  assert.equal(workerDrivers.credentialSources?.id, configuration.backend[0].credentialSources.id);
 
   const observerPool = new pg.Pool({
     connectionString: databaseUrl,
@@ -6158,7 +6157,7 @@ async function assertCredentialRouteEnforcement(topology) {
   // command Codex runs is admitted as Codex. A child that reads the Harness placeholder can
   // authenticate at the source's allowed endpoint; the foreign destination must remain refused.
   // TODO(tool isolation): once Agent tools run in their own Sandbox, outside Codex's process
-  // tree, require this request to be refused and update the Credential Gateway reference.
+  // tree, require this request to be refused and update the OpenShell source reference.
   assert.equal(
     observed.modelPlaceholder.readableFromHarness,
     true,

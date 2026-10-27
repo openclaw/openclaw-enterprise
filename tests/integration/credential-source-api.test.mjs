@@ -8,7 +8,8 @@ import {
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { openShellCredentialAttachments } from "../../apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { openShellSourceTokenReader } from "../../apps/controller/src/drivers/credential-refresh/openshell-source-tokens.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
@@ -122,30 +123,32 @@ async function fixture(
     },
     close() {},
   };
+  const sourceConfiguration = {
+    id: "openshell-credentials",
+    configuration: {
+      binaries: ["/app/bin/codex"],
+      ...(toolSources ? { toolBinaries: ["/usr/bin/curl"] } : {}),
+    },
+  };
   const backend = createOpenShellBackend(
     {
       id: "openshell-test",
       type: "openshell",
+      credentialSources: sourceConfiguration,
       configuration: gateway,
       drivers: {
-        credential_gateway: "openshell-credentials",
         sandbox: "openshell-sandbox",
         ...(toolSources ? { credential_refresh: "openshell-refresh" } : {}),
       },
     },
     { gatewayClient: client },
   );
-  const driver = new OpenShellCredentialGatewayDriver(
-    {
-      binaries: ["/app/bin/codex"],
-      ...(toolSources ? { toolBinaries: ["/usr/bin/curl"] } : {}),
-    },
-    {
-      id: "openshell-credentials",
-      backend,
-    },
-  );
-  const attachments = openShellCredentialAttachments(backend.client, driver.profiles);
+  const credentialProfiles = new OpenShellCredentialProfiles(sourceConfiguration.configuration, {
+    id: sourceConfiguration.id,
+    refresh: toolSources,
+  });
+  const credentialSources = new OpenShellCredentialSources(backend, credentialProfiles);
+  const attachments = openShellCredentialAttachments(backend.client, credentialProfiles);
   let now = Date.parse("2026-10-05T12:00:00Z");
   const computeDriver = {
     ...createDevelopmentComputeDriver({ id: "credential-source-compute" }),
@@ -158,10 +161,9 @@ async function fixture(
     now: () => new Date(now),
     computeDriver,
     secretDriver,
+    credentialSources,
   });
   await app.bootstrap();
-  app.controller.registerDriver(driver);
-  app.controller.selectDriver("credential_gateway", driver.id);
   const refresh = toolSources
     ? new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend })
     : {
@@ -184,7 +186,7 @@ async function fixture(
     });
   return {
     ...app,
-    driver,
+    credentialSources,
     attachments,
     client,
     providers,
@@ -208,7 +210,7 @@ async function fixture(
         config: { base_url: baseUrl },
         secrets: { api_key: secret.ref },
         ownerCapability: "credential_gateway",
-        driverId: driver.id,
+        driverId: credentialSources.id,
         state: "registering",
         createdAt: new Date(now - 71_000).toISOString(),
       };
@@ -232,7 +234,7 @@ async function fixture(
       return app.request("POST", path, { body: this.toolBody(type, config, name) });
     },
     validate(type, config) {
-      return driver.validateSourceConfig({ type, config: toolConfig(type, config) });
+      return credentialSources.validateSourceConfig({ type, config: toolConfig(type, config) });
     },
     /** No source listed, no Secret value read, nothing written to the gateway. */
     async assertNothingSaved() {
@@ -260,7 +262,7 @@ async function fixture(
             ? { api_key: secret.ref }
             : {},
         ownerCapability: "credential_gateway",
-        driverId: driver.id,
+        driverId: credentialSources.id,
         state: "ready",
         createdAt: new Date().toISOString(),
       };
@@ -547,14 +549,14 @@ test("OpenShell custom and default credential profiles keep independent ownershi
   provider.type = "oce-openai";
   assert.equal((await f.request("GET", f.path + "/" + custom.data.id)).data.status.state, "failed");
   await assert.rejects(
-    f.driver.registerSource(context, {
+    f.credentialSources.registerSource(context, {
       type: "openai",
       config: custom.data.config,
       secrets: { api_key: "synthetic-model-key" },
     }),
     /not owned/,
   );
-  await assert.rejects(f.driver.removeSource(context), /not owned/);
+  await assert.rejects(f.credentialSources.removeSource(context), /not owned/);
   provider.type = customProfile.id;
   assert.equal((await f.request("PATCH", f.path + "/" + custom.data.id, { body: {} })).status, 200);
   f.passRegistrationFence();
@@ -857,7 +859,8 @@ test("the OpenShell Backend names its gateway's namespace only from Service-shap
       id: "openshell",
       type: "openshell",
       configuration,
-      drivers: { sandbox: "s", credential_gateway: "c" },
+      drivers: { sandbox: "s" },
+      credentialSources: { id: "c", configuration: { binaries: ["/bin/model"] } },
     }).client.placement(namespace);
   const named = { service: "openshell-gateway", namespace: "openshell-system" };
   for (const configuration of [

@@ -9,7 +9,7 @@ The Driver exposes the operations its issuers support.
 - **OpenShell OAuth.** The `sources` interface enrolls a source, obtains and
   renews its access token, reports status, and removes refresh material. OCC
   authorizes the source and stores its Secret references. The paired Credential
-  Gateway registers the provider. OpenShell holds the refresh grant and supplies
+  Backend registers the provider. OpenShell holds the refresh grant and supplies
   each running Agent with its current token through a stable placeholder.
 - **Prepared GitHub tokens.** The `preparedTokens` interface resolves the issuer
   for the admitted provider. The worker prepares scoped GitHub App installation
@@ -20,7 +20,7 @@ The Driver exposes the operations its issuers support.
 The bundled implementations are `native` and `openshell`. Select one with
 `drivers.credential_refresh.implementation`. Existing OpenShell selections
 that specify only `id` and `configuration` still select OpenShell. Its OAuth
-interface requires membership in the Credential Gateway’s OpenShell Backend.
+interface requires membership in the OpenShell Backend that registers the sources.
 Existing GitHub preparation settings select the native service when the
 Installation omits `credential_refresh`. An OpenShell selection can also serve
 configured GitHub preparation. Static credentials require no issuer configuration.
@@ -134,7 +134,7 @@ For a registered OpenShell OAuth source, OCC performs the following operations.
 ## Limits
 
 - One Token Service is selected per Installation. An OpenShell OAuth selection
-  must match the Credential Gateway’s Backend.
+  must match the Backend that registered the source.
 - OCC does not poll refresh status or audit background refresh failures; read
   the source to see them.
 - The experimental `codex-oauth` model source uses device authorization; OAuth2
@@ -159,7 +159,7 @@ For a registered OpenShell OAuth source, OCC performs the following operations.
 
 ## Related
 
-- [CredentialGatewayDriver contract](credential-gateway.md)
+- [Backend source registration](credential-gateway.md)
 - [Credential sources](../credential-sources.md#rotate-a-refresh-source)
 - [Credential source refresh flow](../../flows/credential-source-refresh.md)
 - [Credential refresh proposal](../../../specs/rfcs/0016-sandbox-credential-injection/credential-refresh.md)

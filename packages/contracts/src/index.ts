@@ -250,7 +250,6 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "plugin",
   "channel",
   "repo",
-  "credential_gateway",
   "credential_refresh",
   "credential_proxy",
 ] as const);
@@ -316,9 +315,13 @@ export interface OpenShellBackendDefinition {
   readonly id: string;
   readonly type: "openshell";
   readonly configuration: OpenShellBackendConfiguration;
+  readonly credentialSources: {
+    /** Stable owner ID persisted on sources and revisions. */
+    readonly id: string;
+    readonly configuration: Readonly<Record<string, unknown>>;
+  };
   readonly drivers: {
     readonly sandbox: string;
-    readonly credential_gateway: string;
     readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;
@@ -337,7 +340,7 @@ export interface BackendSummary {
 
 export interface InstallationCapabilities {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
-  /** A selected Credential Gateway requires source-backed model authentication. */
+  /** A Backend with credential sources requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
   readonly pluginPolicies?: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
   readonly pluginDiscovery?: { readonly credential: "required" | "none" };
@@ -549,7 +552,7 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
+/** Persisted owner discriminator. `credential_gateway` identifies a Backend source owner by its stable ID. */
 export type CredentialSourceOwnerCapability = "credential_gateway" | "credential_proxy";
 
 /** OCC source admission, including its owner and Secret references, never credential values. */
@@ -1406,7 +1409,6 @@ export type DriverByCapability = {
   plugin: PluginDriver;
   channel: ChannelDriver;
   repo: RepositoryPolicyDriver;
-  credential_gateway: CredentialGatewayDriver;
   credential_refresh: CredentialRefreshDriver;
   credential_proxy: CredentialProxyDriver;
 };
@@ -1756,11 +1758,11 @@ export interface SecretDriver extends Driver {
   withValue?<T>(secret: Secret, use: (value: string) => Promise<T>): Promise<T>;
 }
 
-export interface CredentialGatewayContext {
+export interface CredentialOperationContext {
   readonly signal: AbortSignal;
 }
 
-export interface CredentialSourceContext extends CredentialGatewayContext {
+export interface CredentialSourceContext extends CredentialOperationContext {
   /** Resolved by Compute: `name` is the runtime placement shared with the paired Sandbox. */
   readonly namespace: Readonly<Namespace>;
   readonly source: Readonly<CredentialSource>;
@@ -1780,7 +1782,7 @@ export interface CredentialSourceStatus {
   readonly refresh?: CredentialRefreshStatus;
 }
 
-export interface CredentialRevisionContext extends CredentialGatewayContext {
+export interface CredentialRevisionContext extends CredentialOperationContext {
   readonly namespace: Readonly<Namespace>;
   readonly revision: Readonly<AgentRevision>;
   readonly sources: readonly Readonly<CredentialSource>[];
@@ -1789,7 +1791,7 @@ export interface CredentialRevisionContext extends CredentialGatewayContext {
 }
 
 /** Names the one source to revoke from one provisioned revision Sandbox. */
-export interface CredentialWithdrawalContext extends CredentialGatewayContext {
+export interface CredentialWithdrawalContext extends CredentialOperationContext {
   /** Resolved by Compute: `name` is the runtime placement shared with the paired Sandbox. */
   readonly namespace: Readonly<Namespace>;
   readonly revision: Readonly<AgentRevision>;
@@ -1830,10 +1832,10 @@ export interface CredentialAttachmentStatus {
   readonly reason?: string;
 }
 
-/** Holds credential sources and applies them outside the Agent workload. */
-export interface CredentialGatewayDriver extends Driver {
-  readonly capability: "credential_gateway";
-  listSourceTypes(context: CredentialGatewayContext): Promise<readonly CredentialSourceType[]>;
+/** Registers Namespace sources in a Backend. OCC persists its stable ID with each source. */
+export interface BackendCredentialSources {
+  readonly id: string;
+  listSourceTypes(context: CredentialOperationContext): Promise<readonly CredentialSourceType[]>;
   /**
    * Validate nonsecret configuration without I/O, before OCC reads Secrets or stores a record.
    * A returned configuration, with the same fields, is what OCC stores and registers instead of
@@ -1851,7 +1853,7 @@ export interface CredentialGatewayDriver extends Driver {
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus>;
   sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus>;
-  /** Idempotent; an already-absent source counts as removed. */
+  /** Idempotent. An already-absent source counts as removed. */
   removeSource(context: CredentialSourceContext): Promise<void>;
 }
 

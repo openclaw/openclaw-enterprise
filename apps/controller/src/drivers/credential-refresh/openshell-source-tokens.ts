@@ -1,5 +1,4 @@
 import type {
-  Backend,
   CredentialSourceContext,
   CredentialSourceTokenReader,
 } from "@openclaw-enterprise/contracts";
@@ -8,7 +7,7 @@ import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   openShellProviderName,
   openShellWorkspaceName,
-  type OpenShellGateway,
+  type OpenShellBackend,
 } from "../../backends/openshell.ts";
 import type { OpenShellProviderResponse } from "../sandbox/openshell-gateway-client.ts";
 import {
@@ -18,9 +17,7 @@ import {
 } from "./codex-device-authorization.ts";
 
 /** Reads an enrolled source even when the Installation no longer offers new device logins. */
-export function openShellSourceTokenReader(
-  backend: Backend<OpenShellGateway>,
-): CredentialSourceTokenReader {
+export function openShellSourceTokenReader(backend: OpenShellBackend): CredentialSourceTokenReader {
   return {
     async withSourceToken(context, use) {
       const provider = await ownedCodexProvider(backend, context);
@@ -37,7 +34,7 @@ export function openShellSourceTokenReader(
 
 /** Device login proves usability without returning the token to its caller. */
 export async function confirmCodexAccessToken(
-  backend: Backend<OpenShellGateway>,
+  backend: OpenShellBackend,
   context: CredentialSourceContext,
   provider: OpenShellProviderResponse,
 ): Promise<void> {
@@ -46,7 +43,7 @@ export async function confirmCodexAccessToken(
 
 /** Operator mTLS confines the read. OpenShell may refresh to satisfy the requested lifetime. */
 function readCodexAccessToken(
-  backend: Backend<OpenShellGateway>,
+  backend: OpenShellBackend,
   context: CredentialSourceContext,
   provider: OpenShellProviderResponse,
 ) {
@@ -61,7 +58,7 @@ function readCodexAccessToken(
 }
 
 export async function ownedCodexProvider(
-  backend: Backend<OpenShellGateway>,
+  backend: OpenShellBackend,
   context: CredentialSourceContext,
 ): Promise<OpenShellProviderResponse> {
   if (context.source.type !== CODEX_OAUTH_TYPE) {
@@ -77,11 +74,11 @@ export async function ownedCodexProvider(
 }
 
 export async function ownedProvider(
-  backend: Backend<OpenShellGateway>,
+  backend: OpenShellBackend,
   context: CredentialSourceContext,
 ): Promise<OpenShellProviderResponse | undefined> {
   if (
-    context.source.driverId !== backend.drivers.credential_gateway ||
+    context.source.driverId !== backend.credentialSources.id ||
     context.source.namespaceId !== context.namespace.id
   ) {
     throw new ScopeViolationError("The credential source is not owned by this gateway.");

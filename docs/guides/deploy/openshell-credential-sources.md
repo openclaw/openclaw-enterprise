@@ -1,12 +1,11 @@
 # Use a static credential source on the local OpenShell profile
 
-This is the static Credential Gateway setup, which remains available to existing
-Gateway owners. It does not qualify protected Credential Proxy access or transfer
-source ownership. For protected setup and upgrade decisions, start with
+This setup uses a static OpenShell provider and ordinary Sandbox attachments.
+For protected setup and upgrade decisions, start with
 [Credential Proxy setup](../credential-proxy.md).
 
-Use this procedure to register an OpenAI-compatible API key with the OpenShell Credential
-Gateway and bind it to a dedicated Codex Agent on the
+Use this procedure to register an OpenAI-compatible API key with the OpenShell
+Backend and bind it to a dedicated Codex Agent on the
 [local OpenShell profile](local-kubernetes-development.md#start-the-openshell-fail-closed-profile).
 Without Credential Proxy selected, OpenShell keeps its own copy of the key and substitutes it only on requests to
 the source endpoint; the Harness receives only a placeholder. By default the
@@ -52,7 +51,7 @@ model ID yourself.
 If arriving from Credential Proxy setup, use only the `openai` example below,
 obtain whole-execution consent before creation, then
 [return to live-source setup](../credential-proxy.md#register-authorize-and-deploy-an-openai-static-inference-source).
-Fresh creation with Proxy selected is already live and Gateway-owned; the
+Fresh creation with Proxy selected is already live and Backend-owned; the
 copied-key rotation and cleanup later on this page do not describe that path.
 
 Store the key as a Namespace Secret. Build the request file with owner-only
@@ -68,7 +67,7 @@ rm model-secret.json
 For a Codex personal access token, including a service-account token, save that
 token as the Secret above and register `type: "codex-pat"` with
 `secrets: {access_token: $ref}` in the command below. Select dedicated Codex;
-OpenShell keeps the real token outside the Harness. The [Driver reference](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+OpenShell keeps the real token outside the Harness. The [source catalog](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
 defines its permitted endpoints and authentication limits.
 
 Register an API-key Secret as an `openai` credential source:
@@ -91,7 +90,7 @@ SOURCE_ID="$(./bin/occ credential-source create --file credential-source.json -o
 
 Expected result: `STATE` and `GATEWAY STATUS` both show `ready`. The response
 never contains the key. Without Proxy selected, changing the Secret afterward
-does not change the Gateway copy. With Proxy selected, inspect the live-source
+does not change the OpenShell provider’s copy. With Proxy selected, inspect the live-source
 fields in JSON; the column label does not imply a copy was deposited.
 
 ## Create the Agent and grant the source
@@ -244,7 +243,7 @@ the profile instead.
 ## Troubleshoot
 
 - **`credential-source create` returns `503`:** the API cannot reach OpenShell
-  Gateway, or no Credential Gateway is selected. Check that `dev-up` finished
+  Gateway, or the OpenShell Backend source configuration is unavailable. Check that `dev-up` finished
   and that the `openshell-gateway` Pod in `oce-system` is running.
 - **A source stays `registering` or `deleting`:** a registration was
   interrupted or its cleanup failed. Run `./bin/occ credential-source delete`
@@ -252,7 +251,7 @@ the profile instead.
 - **`GATEWAY STATUS` is not `ready`:** read the `reason` from
   `./bin/occ credential-source get "$SOURCE_ID" -o json`.
 - **Deploy returns `409`:** the Agent uses `api_key` or another Secret-backed
-  method. With a Credential Gateway selected, only `credential_source` is
+  method. With OpenShell source registration configured, only `credential_source` is
   accepted.
 - **`credential-source delete` returns `409`:** an Agent draft, active
   version, or pending deployment still references the source. With

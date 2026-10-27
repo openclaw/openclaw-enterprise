@@ -87,9 +87,9 @@ Kubernetes Compute Driver before workers reconcile versions, and fails startup
 when paired with SSH or an installed Compute Driver. OpenShell-selected Agents must use
 dedicated Codex execution; embedded OpenClaw remains unsupported for this
 SandboxDriver. The bundled OpenShell Sandbox also requires an `openshell`
-[Backend](backends.md#openshell-gateway) and a matching
-`drivers.credential_gateway` selection of the
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). An optional
+[Backend](backends.md#openshell-gateway) with
+[credential source settings](drivers/openshell-credential-gateway.md) under
+`backend[].credentialSources`. An optional
 `drivers.credential_refresh` selection on the same Backend adds the
 [Credential Refresh Driver](drivers/credential-refresh.md) for OAuth2 sources.
 

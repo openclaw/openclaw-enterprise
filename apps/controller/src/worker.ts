@@ -46,7 +46,7 @@ import type {
   BackendDefinition,
   SandboxDriver,
   SandboxHarnessObservation,
-  CredentialGatewayDriver,
+  BackendCredentialSources,
   CredentialRefreshDriver,
   SecretBindings,
   SecretDriver,
@@ -164,7 +164,7 @@ export interface ControllerWorkerOptions {
   readonly drivers?: InstallationRuntimeDrivers;
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
-  readonly credentialGatewayDriver?: CredentialGatewayDriver;
+  readonly credentialSources?: BackendCredentialSources;
   readonly proxyDriver?: CredentialProxyDriver;
   readonly pollIntervalMs?: number;
   readonly leaseDurationMs?: number;
@@ -1145,7 +1145,7 @@ export class ControllerWorker {
   private readonly secretDriver: SecretDriver | undefined;
   private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
-  private readonly credentialGateway: CredentialGatewayDriver | undefined;
+  private readonly credentialSources: BackendCredentialSources | undefined;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly credentialRefresh: CredentialRefreshDriver | undefined;
@@ -1291,21 +1291,20 @@ export class ControllerWorker {
     this.credentialRefresh = drivers?.credentialRefreshDriver;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
-    this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
+    this.credentialSources = drivers?.credentialSources ?? options.credentialSources;
     this.proxyDriver =
       this.protectedDriver?.require("credential_proxy") ??
       drivers?.proxyDriver ??
       options.proxyDriver;
     if (
-      (drivers?.installation.drivers.credential_gateway === undefined) !==
-      (drivers?.credentialGatewayDriver === undefined)
+      drivers &&
+      this.backends.find((backend) => backend.type === "openshell")?.credentialSources.id !==
+        drivers.credentialSources?.id
     ) {
-      throw new Error(
-        "The selected Credential Gateway Driver requires shared startup configuration.",
-      );
+      throw new Error("The Backend credential source owner must match Installation configuration.");
     }
-    if (this.credentialGateway !== undefined && this.sandbox === undefined) {
-      throw new Error("The selected Credential Gateway Driver requires a paired Sandbox Driver.");
+    if (this.credentialSources !== undefined && this.sandbox === undefined) {
+      throw new Error("Backend credential sources require a paired Sandbox Driver.");
     }
     if (
       (drivers?.installation.drivers.sandbox === undefined) !==
@@ -1383,6 +1382,7 @@ export class ControllerWorker {
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioning = new OpenClawController(installation, {
+      ...(this.credentialSources && { credentialSources: this.credentialSources }),
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
       driverConfigurations: this.driverConfigurations,
@@ -1402,7 +1402,6 @@ export class ControllerWorker {
     for (const driver of [
       this.configuration,
       ...(protectedDriver ? [] : [this.sandbox, this.proxyDriver]),
-      this.credentialGateway,
       this.credentialRefresh,
       this.iam,
       this.secretDriver,
@@ -3957,7 +3956,7 @@ export class ControllerWorker {
   private assertCredentialWithdrawalOwner(revision: AgentRevision, source: CredentialSource): void {
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
     const owner =
-      source.ownerCapability === "credential_gateway" ? this.credentialGateway : this.proxyDriver;
+      source.ownerCapability === "credential_gateway" ? this.credentialSources : this.proxyDriver;
     if (source.driverId !== owner?.id || !credentialSourceMatchesSnapshot(source, snapshot)) {
       throw new CredentialWithdrawalRefusedError(
         "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
@@ -5346,8 +5345,8 @@ export class ControllerWorker {
     } else if (revision.harnessAuth.method === "credential_source") {
       const auth = revision.harnessAuth;
       if (
-        this.credentialGateway === undefined ||
-        auth.credentialGatewayId !== this.credentialGateway.id
+        this.credentialSources === undefined ||
+        auth.credentialGatewayId !== this.credentialSources.id
       ) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
       }
@@ -5404,7 +5403,7 @@ export class ControllerWorker {
       if (
         sourceOwner !==
         (snapshot.credentialProxyId === undefined
-          ? this.credentialGateway?.id
+          ? this.credentialSources?.id
           : this.proxyDriver?.id)
       ) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };

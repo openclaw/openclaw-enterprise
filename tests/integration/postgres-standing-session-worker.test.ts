@@ -1,9 +1,11 @@
+import { workerSourceBackend } from "../helpers/postgres-worker-revision-fixture.mjs";
+import type { BackendDefinition } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import {
-  observationGateway,
+  observationCredentialSources,
   setupStandingWorkerAuthority,
   setupStandingWorkerDatabase,
 } from "../helpers/postgres-standing-worker-fixture.ts";
@@ -105,8 +107,10 @@ test(
               events.push(e);
             }
           },
-          transformDrivers: (d: { installation: { drivers: object } }) => {
-            const gateway = observationGateway();
+          transformDrivers: (d: {
+            installation: { drivers: object; backend: readonly BackendDefinition[] };
+          }) => {
+            const gateway = observationCredentialSources();
             const sandbox = {
               id: "sandbox-worker-fixture",
               capability: "sandbox" as const,
@@ -118,14 +122,14 @@ test(
               ...d,
               repositoryPolicy: driver,
               nativeRepositorySender: sender,
-              credentialGatewayDriver: gateway,
+              credentialSources: gateway,
               sandboxDriver: sandbox,
               installation: {
                 ...d.installation,
+                backend: [...d.installation.backend, workerSourceBackend(gateway.id, sandbox.id)],
                 drivers: {
                   ...d.installation.drivers,
                   sandbox: { id: sandbox.id, configuration: {} },
-                  credential_gateway: { id: gateway.id, configuration: {} },
                 },
               },
             };

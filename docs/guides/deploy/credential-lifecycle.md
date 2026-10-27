@@ -6,10 +6,9 @@ and every application or Agent that uses it. After replacing a credential,
 verify it through the affected application before revoking the old value, unless
 the old value has been compromised.
 
-For Credential Proxy setup, protected source withdrawal, and Gateway replacement,
+For Credential Proxy setup, protected source withdrawal, and replacing a source owner,
 use [Credential Proxy setup](../credential-proxy.md) and its
-[upgrade procedure](credential-proxy-upgrade.md). Existing static Gateway owners
-can remain. Do not apply a copied-key rotation procedure to live Secret resolution
+[upgrade procedure](credential-proxy-upgrade.md). Existing static sources retain their Backend owner. Do not apply a copied-key rotation procedure to live Secret resolution
 or worker-prepared tokens: their owners and recovery requirements differ.
 
 ## Before changing a credential
@@ -101,8 +100,9 @@ inactive history alone does not retain the source indefinitely.
 ## Use a personal Codex login
 
 Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected
-Credential Refresh Driver for device login, a paired Credential Gateway for
-access-token retrieval and external-token attachments, and Sandbox token injection. The OpenShell PoC requires
+OpenShell Token Service for device login. The OpenShell Backend registers
+the source, and its Sandbox prepares the external-token attachment and injects
+the token on matching requests. The OpenShell PoC requires
 the [upstream gateway API and alias-enabled supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
 There is no installation opt-in flag.
 
@@ -117,8 +117,8 @@ access for subsequent refresh.
    and deploy the Agent. The Console grants the Agent service principal exact
    source `operate` permission. Deployment still requires a successful native
    model probe.
-3. For later plugin edits, use the saved source. OCE asks the Credential Gateway
-   for a usable access token; the token service owns refresh. Another device login
+3. For later plugin edits, use the saved source. OCE asks the Token Service
+   for a usable access token through its trusted reader. Another device login
    is needed only when replacing or recovering the connection.
 4. To replace the connection, sign in from the credential editor, save the new
    source, and deploy. Saving a draft does not change the running version.
@@ -137,7 +137,7 @@ interrupting a deployed Agent. Failed and abandoned sources remain visible in
 credential-source management; delete unused sources separately and remove their
 unreferenced session Secrets.
 
-If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
+If sign-in is unavailable, check the OpenShell Backend’s source configuration and its selected Token Service. For a
 `503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
 upstream provider. The paired Refresh Driver owns the provider exchange; OCC keeps only the
 opaque session handle. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).

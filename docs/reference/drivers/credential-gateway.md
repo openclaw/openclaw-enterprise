@@ -1,38 +1,39 @@
-# CredentialGatewayDriver contract
+# Backend credential source contract
+
+<a id="credentialgatewaydriver-contract"></a>
+<a id="credential-gateway-driver-contract"></a>
 
 ## Overview
 
-`CredentialGatewayDriver` holds credentials outside the Agent workload and
-applies them to the Agent's outbound requests. OpenClaw Control Plane (OCC) owns
-the [credential source](../credential-sources.md) record, its Secret references,
-authorization, and Agent bindings. The Driver owns the stored copy of the value
-and the source-type catalog. The paired
-[SandboxDriver](sandbox.md) prepares the provider attachments for each Agent revision
-and applies them when it creates the Harness. [Compute](compute.md) waits for those
-attachments before activation.
+OCC uses `BackendCredentialSources` to register and manage ordinary
+[credential sources](../credential-sources.md). OCC owns the record, Secret
+references, grants and Agent bindings. The Backend supplies the catalog and stores
+each provider in the Namespace's workspace. At deployment the
+[Sandbox Driver](sandbox.md) prepares the provider attachments and applies them
+when it creates the Harness. [Compute](compute.md) waits for readiness before activation.
 
-Selection is optional. The only implementation is the bundled
-[OpenShell Credential Gateway](openshell-credential-gateway.md), which requires
-the bundled Kubernetes Compute Driver, the bundled OpenShell SandboxDriver, and
-an `openshell` [Backend](../backends.md) that declares both. See
-[Driver selection](selection.md#backend-membership).
+The bundled [OpenShell Backend](openshell-credential-gateway.md) is the only
+implementation. Its `credentialSources` settings configure the source owner.
+The Installation must also select bundled Kubernetes Compute and the paired
+OpenShell Sandbox. See [Backend membership](selection.md#backend-membership).
 
-When a Credential Gateway is selected, it replaces Secret-backed model
-delivery. Agents must authenticate their Harness through a credential source;
-there is no fallback to environment delivery.
+When this Backend supplies Harness credentials, bind the model source through
+`harnessAuth.method: credential_source`. OCC refuses Secret-backed delivery for
+that Harness.
 
 ## Interface
 
 ### Core interface
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires every
-method below. Startup rejects a Driver that omits one.
+The [shared interface](../../../packages/contracts/src/index.ts) defines a stable
+`id` and the operations below. OCC records this ID at registration and checks it
+against the configured Backend before using the source.
 
 | Operation              | Inputs and preconditions                                                                       | Result or side effects                                                                    | Failure or absence                                                                |
 | ---------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | `listSourceTypes`      | Cancellation signal.                                                                           | The implementation's catalog of `CredentialSourceType` entries.                           | OCC treats a failure as dependency unavailable.                                   |
 | `validateSourceConfig` | Catalog-checked type and nonsecret configuration.                                              | Synchronous validation without I/O, Secret reads, or persistence.                         | Invalid values throw `CredentialSourceConfigError` (`400`).                       |
-| `registerSource`       | Ready Namespace, the new source record, and resolved Secret values; none for a `refresh` type. | Stores the value in the gateway and returns `ready`, `pending`, `failed`, or `absent`.    | `failed` or `absent` fails registration; OCC then calls `removeSource`.           |
+| `registerSource`       | Ready Namespace, the new source record, and resolved Secret values; none for a `refresh` type. | Creates the Backend provider and returns `ready`, `pending`, `failed`, or `absent`.       | `failed` or `absent` fails registration; OCC then calls `removeSource`.           |
 | `updateSource`         | Existing source and new resolved values.                                                       | Replaces the stored values for processes started afterwards and returns the source state. | `failed` or `absent` fails the update; OCC keeps the Secret references unchanged. |
 | `sourceStatus`         | Existing source.                                                                               | Live source state and an optional safe reason.                                            | OCC reports `failed` with a fixed reason when the call throws.                    |
 | `removeSource`         | Source record.                                                                                 | Deletes the stored copy. An already-absent source counts as removed.                      | A failure leaves the OCC record `deleting` for retry.                             |
@@ -40,9 +41,9 @@ method below. Startup rejects a Driver that omits one.
 `validateSourceConfig({ type, config })` checks nonsecret values synchronously,
 without network calls or other effects. OCC calls it after catalog field checks,
 before reading Secrets or creating a record. It may return the configuration
-with the same fields in the form the gateway uses, such as a normalized URL;
-OCC then stores and registers that instead of the written values. Invalid values throw
-`CredentialSourceConfigError` with a safe field name and message; HTTP reports
+with the same fields in the form the Backend uses, such as a normalized URL.
+OCC stores and registers the result. For invalid values, the Backend throws
+`CredentialSourceConfigError` with a safe field name and message. HTTP reports
 `400 INVALID_REQUEST`. Do not include submitted values in the error.
 
 The paired Sandbox throws `CredentialSourceRevisionError` from `credentialAttachments.prepare`
@@ -72,16 +73,15 @@ A `CredentialSourceType` declares:
 ### External ChatGPT authentication
 
 The `chatgptAuthTokens` mode receives externally managed ChatGPT authentication
-through a credential source. It is a receiving contract for a Credential
-Gateway and paired Sandbox that already provide OAuth token injection. The
+through a credential source. The Backend registers the account's provider,
+the Token Service manages refresh and the paired Sandbox delivers the placeholder. The
 experimental OpenShell `codex-oauth` type requires the upstream gateway API and
 alias-enabled supervisor described in the [OpenShell Driver reference](openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
 For an `openai`/`chatgptAuthTokens` source, the Sandbox’s `credentialAttachments.prepare` must return
 `externalChatgptAuth` on the source's attachment: `accessTokenPlaceholder`,
-`accountId`, `planType`, and optional `userId`, `accountUserId`, `email`, and `isFedramp`. The
-trusted Driver supplies account metadata from the authenticated connection;
-these fields are not caller-selected Agent configuration. The placeholder must
+`accountId`, `planType`, and optional `userId`, `accountUserId`, `email`, and `isFedramp`. The paired Sandbox supplies account metadata from the authenticated connection.
+The placeholder must
 be the exact value recognized by the egress injector. Real access tokens,
 refresh tokens, and the original ID token stay outside the Harness.
 
@@ -95,8 +95,8 @@ metadata. Native Codex uses that metadata for account identity, plan and
 workspace decisions. This external mode does not run native OAuth refresh;
 the existing native model probe must still succeed before app-server starts.
 
-The external credential service owns refresh and the gateway owns injection
-for inference, hosted app/MCP, and authenticated account/configuration requests.
+The OpenShell Token Service owns refresh. The Sandbox supervisor injects the
+credential for inference, hosted app/MCP, and authenticated account/configuration requests.
 Metadata is projected at provisioning; account metadata changes require a new
 Agent revision. A fresh device login creates a new source for explicit replacement. Native user-identity checks that depend on
 access-token claims are not established with an opaque placeholder.
@@ -108,7 +108,7 @@ bundle or native-refresh fallback is supported. See
 ### Optional additions
 
 Device-login source types require the paired [Credential Refresh Driver](credential-refresh.md#device-authorization)
-to implement authorization. The Gateway registers the source before login.
+to implement authorization. The Backend registers the source before login.
 The paired Sandbox prepares and applies the Harness attachment. The selected Token Service supplies the access
 token for [plugin catalog discovery](credential-refresh.md#plugin-catalog-discovery).
 The Token Service can read an existing OpenShell account over operator mTLS
@@ -123,8 +123,8 @@ the withdrawal without retrying.
 
 ## IAM
 
-The selected IAM Driver authorizes every OCC operation before the Driver is
-called:
+OCC checks the following grants through the selected IAM Driver before it uses
+the source.
 
 - Registration requires `credential_source:create` on the Namespace and
   `secret:operate` on every referenced Secret. OCC reads Secret values only after
@@ -135,7 +135,7 @@ called:
   the deploying actor and the Agent's service principal. The Agent principal needs
   no permission on the underlying Secret.
 
-The Driver receives only authorized, exact-Namespace sources. It must never log,
+The Backend receives only authorized sources in the exact Namespace. It must never log,
 return, or persist a secret value outside its own credential store. OCC never
 stores the value, and Agent revisions and audit records carry only the source ID.
 Gateway credentials, such as the OpenShell Backend's bearer token, are separate
@@ -143,14 +143,14 @@ from OCC authority; see [Permissions](../cheatsheets/permissions.md).
 
 ## Lifecycle
 
-The Driver is constructed at API and worker startup from trusted Installation
-configuration. The interface has no initializer or destructor.
+At startup the API and worker construct the Backend source owner from the same
+trusted Installation configuration.
 
 1. **Registration.** The API validates the request against `listSourceTypes`:
    unknown types, unknown fields, and missing required fields fail before any
-   gateway write. The Driver validates configuration values with
+   provider write. The Backend validates configuration values with
    `validateSourceConfig` before any Secret read or persistence. Compute's `resolveSandboxNamespace` supplies the Namespace's
-   runtime placement, which the gateway shares with the paired Sandbox. The API
+   runtime placement, which the Backend shares with the paired Sandbox. The API
    reads each Secret value and commits the record as `registering`, then calls
    `registerSource` outside the transaction. A second transaction moves the
    record to `ready` with its audit event. For a `refresh` type, the
@@ -159,21 +159,22 @@ configuration. The interface has no initializer or destructor.
    `absent`, OCC calls `removeSource` and deletes the record. If it throws, a
    create may still land, so OCC calls `removeSource` but keeps the record
    `deleting`. OCC finalizes a deletion only 70 seconds after `createdAt`, and a
-   Driver must finish every effect of an aborted registration within 30 seconds
+   Backend must finish every effect of an aborted registration within 30 seconds
    of the abort. A record left `registering` or `deleting` is never usable, and
-   the caller retries DELETE to remove any gateway copy. See
+   the caller retries DELETE to remove any stored provider. See
    [credential sources](../credential-sources.md#register-a-source).
-2. **Admission.** `deployAgent` freezes `{ method, sourceId,
-credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source must
-   be `ready`, and its type must declare `harnessAuth`. A Sandbox must be
+2. **Admission.** `deployAgent` freezes the Harness method, source ID, type, and
+   login mode in the Agent revision. The existing `credentialGatewayId` field
+   holds the stable Backend source owner ID. The source must be `ready`, and
+   its type must declare `harnessAuth`. A Sandbox must be
    selected, and Compute validates the combination; see
    [Harness authentication](../harness-execution.md#harness-authentication).
    Every listed source, including the Harness source, is frozen as
    `{ sourceId, credentialGatewayId, sourceType }` in `credentialSources`.
 3. **Dispatch.** The worker rechecks both `operate` grants, requires the
-   selected gateway to match the snapshot, and loads the current source record.
+   configured source owner to match the snapshot, and loads the current source record.
    A missing, `deleting`, or mismatched source stops the Agent revision. Compute
-   revalidates the binding against the gateway's current catalog entry. The
+   revalidates the binding against the Backend's current catalog entry. The
    worker passes the other listed sources it loaded in
    `ComputeRevisionContext.credentialSources`, omitting the Harness source and any
    withdrawn from the Agent revision.
@@ -210,8 +211,7 @@ adopt or delete the same stored copy.
 
 ## Limits
 
-- One Credential Gateway can be selected per Installation, and it must belong to
-  a configured Backend.
+- An Installation can configure one OpenShell Backend for ordinary source registration.
 - Rotation belongs to the [Credential Refresh Driver](credential-refresh.md).
   Update pushes new static values; running Agents use them after a redeploy.
 - Compute accepts `openai`/`api_key` credential sources for dedicated Codex or
@@ -219,25 +219,25 @@ adopt or delete the same stored copy.
   requires the external-auth attachment described above. The bundled catalog
   includes experimental Codex device login through the paired Refresh Driver.
   Other listed sources need a Sandbox Driver that provisions the Harness.
-- Guided Agent provisioning rejects credential-source Harness authentication.
-  Create the Agent, then deploy it.
-- Installed Credential Gateway packages are unsupported.
+- Guided dedicated Codex and OpenClaw provisioning can use a ready model source.
+  The worker grants the Agent access to that source. See the [provisioning flow](../../flows/agent-provisioning.md).
+- Installation packages cannot supply a credential source Backend implementation.
 
 ## Troubleshooting
 
-| Symptom                                                            | What to check                                                                                                                     |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Registration returns `400`, `404`, or `409`                        | Compare the type and field names with the Driver catalog, and confirm each Secret belongs to the same Namespace.                  |
-| Registration or binding returns `403`                              | Check `credential_source:create` or `operate`, and `secret:operate` on each referenced Secret.                                    |
-| Deployment returns `409` with a gateway selected                   | Change `harnessAuth` to `credential_source`. Secret-backed and account methods are rejected while a gateway is selected.          |
-| Registration or deletion returns `503`, or a read reports `failed` | Check gateway connectivity and credentials. Retry deletion; the record stays `deleting` until the stored copy is removed.         |
-| `503` naming the driver that registered the source                 | Another driver is selected; see [After a Credential Gateway change](../credential-sources.md#after-a-credential-gateway-change).  |
-| An Agent revision never activates                                  | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source. |
+| Symptom                                                            | What to check                                                                                                                                              |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Registration returns `400`, `404`, or `409`                        | Compare the type and field names with the Backend catalog, and confirm each Secret belongs to the same Namespace.                                          |
+| Registration or binding returns `403`                              | Check `credential_source:create` or `operate`, and `secret:operate` on each referenced Secret.                                                             |
+| Deployment returns `409` for Secret-backed Harness authentication  | Bind a source registered by the configured Backend with `harnessAuth.method: credential_source`.                                                           |
+| Registration or deletion returns `503`, or a read reports `failed` | Check gateway connectivity and credentials. Retry deletion; the record stays `deleting` until the stored copy is removed.                                  |
+| `503` naming the driver that registered the source                 | Compare the Backend's source owner ID with the registering ID. See [Source ownership changes](../credential-sources.md#after-a-credential-gateway-change). |
+| An Agent revision never activates                                  | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source.                          |
 
 ## Implementations
 
-- [OpenShell Credential Gateway](openshell-credential-gateway.md): bundled; stores
-  sources as OpenShell providers and injects them at the Sandbox egress proxy.
+- The [OpenShell Backend](openshell-credential-gateway.md) registers and manages
+  providers. Its paired Sandbox supervisor substitutes credentials on matching requests.
 
 ## Related
 

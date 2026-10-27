@@ -96,18 +96,14 @@ function provisioningDrivers(compute = {}) {
 // `compute` holds the Kubernetes Compute fixture's options; the rest are console app options.
 // Composition pairs Kubernetes Compute with the selected Sandbox Driver, which takes initial
 // workspace files as OpenShell's does, so Create Agent's preflight admits the form's files.
-async function modelSourceFixture(t, { compute, ...options } = {}, gatewayMethods = {}) {
+async function modelSourceFixture(t, { compute, ...options } = {}, sourceMethods = {}) {
   const sandboxDriver = { ...nativeSandboxDriver(), validateWorkspaceSetup() {} };
   const drivers = provisioningDrivers({ ...compute, sandboxDriver });
   drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
-  const fixture = await createConsoleAppFixture(t, { ...drivers, sandboxDriver, ...options });
-  await fixture.bootstrap();
   const calls = [];
   const removals = [];
-  const gateway = {
-    id: "console-credential-gateway",
-    capability: "credential_gateway",
-    implementation: "test-model-source",
+  const credentialSources = {
+    id: "console-credential-sources",
     validateSourceConfig() {},
     async listSourceTypes() {
       return [
@@ -130,8 +126,8 @@ async function modelSourceFixture(t, { compute, ...options } = {}, gatewayMethod
     },
     async registerSource(context, input) {
       calls.push({ sourceId: context.source.id, input });
-      return gatewayMethods.registerSource
-        ? gatewayMethods.registerSource(context, input, calls.length)
+      return sourceMethods.registerSource
+        ? sourceMethods.registerSource(context, input, calls.length)
         : { state: "ready" };
     },
     async sourceStatus() {
@@ -144,8 +140,13 @@ async function modelSourceFixture(t, { compute, ...options } = {}, gatewayMethod
       removals.push(context.source.id);
     },
   };
-  fixture.controller.registerDriver(gateway);
-  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const fixture = await createConsoleAppFixture(t, {
+    ...drivers,
+    sandboxDriver,
+    credentialSources,
+    ...options,
+  });
+  await fixture.bootstrap();
   return { fixture, calls, removals };
 }
 
@@ -533,7 +534,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
 });
 
-test("Credential Gateway creation registers the same model source for both dedicated harnesses", async (t) => {
+test("A credential Backend registers the same model source for both dedicated harnesses", async (t) => {
   for (const harness of ["openclaw", "codex"]) {
     await t.test(harness, async (t) => {
       const { fixture, calls } = await modelSourceFixture(
@@ -1430,7 +1431,7 @@ test("Provisioning names the placement setting a Codex-bound Preset cannot work 
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
 });
 
-// The same unplaceable Installation with a Credential Gateway. Create Agent registers the model
+// The same unplaceable Installation with a credential source Backend. Create Agent registers the model
 // Secret as a Credential Source and binds that, which provisioning does not check before its plan,
 // so the preflight did not run: the form saved the Preset's model Secret and registered the source,
 // then provisioning answered the fixed 409 and left both behind (finding 2406). The preflight now
@@ -1468,7 +1469,7 @@ async function assertGatewayPreflightRefusal({
   assert.equal(calls.length, 0);
 }
 
-test("Create Agent refuses an unplaceable Dedicated Agent before a Credential Gateway write", async (t) => {
+test("Create Agent refuses an unplaceable Dedicated Agent before a credential source write", async (t) => {
   const unplaceable = { compute: { channelRuntime: true, routed: false } };
   await t.test("Preset model Secret", async (t) => {
     const { fixture, calls } = await modelSourceFixture(t, unplaceable);

@@ -14,7 +14,8 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { occLogLine } from "../helpers/occ-log-line.ts";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
-  CREDENTIAL_GATEWAY_FIXTURE_ID,
+  CREDENTIAL_SOURCE_OWNER_ID,
+  workerSourceBackend,
   createWorkerRevisionFixtures,
 } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
@@ -46,9 +47,9 @@ import {
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
 
-// Selects a paired Sandbox and Credential Gateway so the worker admits credential-source
-// revisions. Compute stands in for the gateway calls; these doubles only identify the pair.
-function withCredentialGateway(drivers) {
+// The worker matches each admitted source to its Backend registration before invoking Compute.
+// The fake Sandbox and source registry identify that pair for worker tests.
+function withCredentialSources(drivers) {
   const sandboxDriver = {
     id: "sandbox-worker-fixture",
     capability: "sandbox",
@@ -56,10 +57,8 @@ function withCredentialGateway(drivers) {
     facets: ["networking"],
     async cleanup() {},
   };
-  const credentialGatewayDriver = {
-    id: CREDENTIAL_GATEWAY_FIXTURE_ID,
-    capability: "credential_gateway",
-    implementation: "credential-gateway-worker-fixture",
+  const credentialSources = {
+    id: CREDENTIAL_SOURCE_OWNER_ID,
     validateSourceConfig() {},
     async listSourceTypes() {
       return [];
@@ -68,9 +67,6 @@ function withCredentialGateway(drivers) {
       return { state: "ready" };
     },
     async updateSource() {
-      return { state: "ready" };
-    },
-    async rotateSource() {
       return { state: "ready" };
     },
     async sourceStatus() {
@@ -82,14 +78,17 @@ function withCredentialGateway(drivers) {
     ...drivers,
     installation: {
       ...drivers.installation,
+      backend: [
+        ...(drivers.installation.backend ?? []),
+        workerSourceBackend(credentialSources.id, sandboxDriver.id),
+      ],
       drivers: {
         ...drivers.installation.drivers,
         sandbox: { id: sandboxDriver.id, configuration: {} },
-        credential_gateway: { id: credentialGatewayDriver.id, configuration: {} },
       },
     },
     sandboxDriver,
-    credentialGatewayDriver,
+    credentialSources,
   };
 }
 
@@ -288,7 +287,7 @@ function revokingCompute(fixture, withdrawn) {
 function startWithGateway(fixture, compute) {
   return fixture.start(compute, {
     convergenceTimeoutMs: 50,
-    transformDrivers: withCredentialGateway,
+    transformDrivers: withCredentialSources,
   });
 }
 
@@ -347,7 +346,10 @@ test(
   "a source that only a queued withdrawal series blocks is refused with its own 409, not the redeploy advice",
   requiresPostgres,
   async (context) => {
-    const fixture = await setup(context, { maxAttempts: 2 });
+    const fixture = await setup(context, {
+      maxAttempts: 2,
+      credentialSources: withCredentialSources({ installation: { drivers: {} } }).credentialSources,
+    });
     const owner = await agentWithHarnessAndToolSources(fixture, "withdraw-delete", 1);
     const [tool] = toolSources(owner).map(({ sourceId }) => sourceId);
     const { gateway: outage, compute } = gatewayOutage(fixture);
@@ -385,11 +387,6 @@ test(
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, second.id);
     const retry = await queuedWithdrawal(fixture, first);
 
-    const gateway = withCredentialGateway({
-      installation: { drivers: {} },
-    }).credentialGatewayDriver;
-    fixture.controller.registerDriver(gateway);
-    fixture.controller.selectDriver("credential_gateway", gateway.id);
     const deleteSource = (sourceId) =>
       fixture.controller.deleteCredentialSource(fixture.actor.id, fixture.namespace.id, sourceId);
     // Redeploying again cannot help, so the refusal names the wait and Agent deletion instead.
@@ -871,7 +868,7 @@ test(
       },
       {
         convergenceTimeoutMs: 50,
-        transformDrivers: withCredentialGateway,
+        transformDrivers: withCredentialSources,
         emit: (event) => events.push(event),
       },
     );
@@ -1106,7 +1103,7 @@ revisionTest(
           return { sourceId: source.id, state: "revoked" };
         },
       },
-      { emit: (event) => events.push(event), transformDrivers: withCredentialGateway },
+      { emit: (event) => events.push(event), transformDrivers: withCredentialSources },
     );
     await waitFor(
       "the deployment retry to stop at the withdrawal",
@@ -1190,7 +1187,7 @@ revisionTest(
           return { sourceId: source.id, state: "revoked" };
         },
       },
-      { transformDrivers: withCredentialGateway },
+      { transformDrivers: withCredentialSources },
     );
     await fixture.work(active, "succeeded", 30_000);
     await waitFor(
@@ -1255,7 +1252,7 @@ revisionTest(
         return { sourceId: source.id, state: "revoked" };
       },
     };
-    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.start(compute, { transformDrivers: withCredentialSources });
     await fixture.work(first, "succeeded");
     await fixture.stop();
 
@@ -1269,7 +1266,7 @@ revisionTest(
       ["pending", "pending"],
     );
 
-    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.start(compute, { transformDrivers: withCredentialSources });
     await fixture.work(second, "succeeded", 30_000);
     await waitFor(
       "both withdrawals to be revoked",
@@ -1325,7 +1322,7 @@ revisionTest(
     const withdrawn = [];
     const compute = revokingCompute(fixture, withdrawn);
     const first = await fixture.revision(owner, 1);
-    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.start(compute, { transformDrivers: withCredentialSources });
     await fixture.work(first, "succeeded");
     const second = await fixture.revision(owner, 2);
     await fixture.work(second, "succeeded", 30_000);
@@ -1349,7 +1346,7 @@ revisionTest(
       [undefined, "pending", "pending"],
     );
 
-    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.start(compute, { transformDrivers: withCredentialSources });
     await fixture.work(third, "succeeded", 30_000);
     await waitFor(
       "both withdrawals to be revoked",
@@ -1519,7 +1516,7 @@ test(
         };
       },
     };
-    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialSources };
     const first = await fixture.revision(owner, 1);
     await fixture.start(compute, options);
     await fixture.work(first, "succeeded");
@@ -1595,7 +1592,7 @@ for (const harness of [false, true]) {
           };
         },
       };
-      const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+      const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialSources };
       const first = await fixture.revision(owner, 1);
       await fixture.start(compute, options);
       await fixture.work(first, "succeeded");
@@ -1676,7 +1673,7 @@ revisionTest(
         return { sourceId: source.id, state: "revoked" };
       },
     };
-    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialSources };
     await fixture.start(compute, options);
     for (const first of firsts) {
       await fixture.work(first, "succeeded");
@@ -1801,7 +1798,7 @@ for (const successor of [false, true]) {
       const options = {
         convergenceTimeoutMs: 50,
         transformDrivers: (drivers) =>
-          withUnavailableIAM(() => iamUnavailable)(withCredentialGateway(drivers)),
+          withUnavailableIAM(() => iamUnavailable)(withCredentialSources(drivers)),
       };
       const first = await fixture.revision(owner, 1);
       await fixture.start(compute, options);
@@ -1929,7 +1926,7 @@ test(
     const active = await fixture.revision(owner, 1);
     await fixture.start(compute, {
       convergenceTimeoutMs: 50,
-      transformDrivers: withCredentialGateway,
+      transformDrivers: withCredentialSources,
     });
     await fixture.work(active, "succeeded");
     const withdrawal = await requestWithdrawal(fixture, owner, tool, fixture.actor.id);
@@ -1977,13 +1974,13 @@ revisionTest(
         return { sourceId: source.id, state: "revoked" };
       },
     };
-    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.start(compute, { transformDrivers: withCredentialSources });
     await fixture.work(first, "succeeded");
     await fixture.stop();
 
     const second = await fixture.revision(owner, 2);
     const withdrawal = await requestWithdrawal(fixture, owner, sourceId, fixture.actor.id);
-    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.start(compute, { transformDrivers: withCredentialSources });
     // The successor never re-attaches the model source, so its deployment cannot succeed.
     await fixture.work(second, "failed_permanent", 30_000);
     await waitFor(
@@ -2021,7 +2018,7 @@ revisionTest(
     const withdrawn = [];
     const compute = revokingCompute(fixture, withdrawn);
     const startWorker = () =>
-      fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway });
+      fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialSources });
     await startWorker();
     await fixture.work(active, "succeeded");
     await fixture.stop();
@@ -2114,7 +2111,7 @@ revisionTest(
     const withdrawn = [];
     const compute = revokingCompute(fixture, withdrawn);
     const startWorker = () =>
-      fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway });
+      fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialSources });
     // A second operator with the actor's grants, offboarded after requesting a withdrawal.
     const offboarded = `withdraw-offboarded-${randomUUID()}`;
     const owners = [];
@@ -2240,7 +2237,7 @@ revisionTest(
         return { sourceId: source.id, state: source.id === first ? "absent" : "revoked" };
       },
     };
-    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialSources };
     await fixture.start(compute, options);
     await fixture.work(partialRevision, "succeeded");
     await fixture.work(movedRevision, "succeeded");
@@ -2449,7 +2446,7 @@ test(
         return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
       },
     };
-    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialSources };
     const active = await fixture.revision(owner, 1);
     await fixture.start(compute, options);
     await fixture.work(active, "succeeded");
@@ -2573,7 +2570,7 @@ test(
       },
       {
         convergenceTimeoutMs: 50,
-        transformDrivers: withCredentialGateway,
+        transformDrivers: withCredentialSources,
         emit: (event) => events.push(event),
       },
     );
@@ -2652,7 +2649,7 @@ revisionTest(
       },
       {
         convergenceTimeoutMs: 50,
-        transformDrivers: withCredentialGateway,
+        transformDrivers: withCredentialSources,
         emit: (event) => events.push(event),
       },
     );
@@ -2893,7 +2890,7 @@ revisionTest(
           return fixture.compute.prepareRevision(revision, revisionContext);
         },
       },
-      { transformDrivers: withCredentialGateway },
+      { transformDrivers: withCredentialSources },
     );
     await fixture.work(harness.candidate, "failed_permanent");
     await fixture.work(listed.candidate, "failed_permanent");
@@ -3107,7 +3104,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       },
     };
     const start = () =>
-      f.start(compute, { emit: (e) => events.push(e), transformDrivers: withCredentialGateway });
+      f.start(compute, { emit: (e) => events.push(e), transformDrivers: withCredentialSources });
     let originRequests = 0;
     let originBytes = 0;
     async function fetchFromPrivateOrigin() {

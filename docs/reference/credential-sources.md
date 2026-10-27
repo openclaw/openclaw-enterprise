@@ -7,7 +7,7 @@ mode determines who can read the underlying credential and when.
 
 | Delivery mode            | Who holds or reads the credential                                                                                                                                                                                                   |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gateway copy             | The selected OpenShell Credential Gateway stores a copy of a static Secret. The workload receives a placeholder. Its supervisor injects the real value on eligible traffic. Editing the Secret alone leaves the copy unchanged.     |
+| Gateway copy             | The configured OpenShell Backend stores a copy of a static Secret. The workload receives a placeholder. Its supervisor injects the real value on eligible traffic. Editing the Secret alone leaves the copy unchanged.              |
 | Gateway-managed OAuth    | The Credential Refresh Driver holds issuer material and manages access tokens for the Gateway. The workload keeps its placeholder across token renewal.                                                                             |
 | Protected live Secret    | After OCC authorizes an individual request, the trusted resolver reads the current Secret version. The authenticated sender receives the credential header for that request. An existing Gateway source requires explicit adoption. |
 | Worker-prepared token    | For `github-app-metadata`, the issuer owner uses the App key to prepare a GitHub installation token in the background. The request path can select a usable committed token. It cannot mint one.                                    |
@@ -134,7 +134,7 @@ Git clone, push and approved GitHub API operations use separately admitted
 one repository does not grant Git or pull request access. To authenticate the Harness with a
 credential source, select a compatible Gateway source. Source-backed deployment requires a Sandbox. See the [binding and deployment trace](../flows/credential-source-lifecycle.md#4-bind-the-source-to-an-agent).
 
-While a Credential Gateway is selected, deployment and guided provisioning reject
+With a Backend source owner configured, deployment and guided provisioning reject
 `api_key` and `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`.
 Guided provisioning accepts a ready model source in `harnessAuth`, records it in
 the Agent's `credentialSources`, and grants its service principal exact source
@@ -236,7 +236,7 @@ requires exact `delete` and returns `204`:
 
 - It returns `409 RESOURCE_CONFLICT` while an Agent draft, selected version, pending deployment, or queued/running provisioning request references the source. Wait for provisioning, remove the binding and redeploy, or delete the Agent.
 - When only a queued/running withdrawal attempt or retry series blocks it, the `409` is `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`. A withdrawal that never confirms keeps its series queued for up to about an hour, even after redeployment; the request no longer applies once the selected version drops the source. Wait for the series to finish, or delete the Agent: completed deletion drops that work.
-- With neither a Credential Gateway nor a Credential Proxy selected, deletion returns
+- With neither a Backend source owner nor a Credential Proxy configured, deletion returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`. Selecting a different Driver for the recorded owner returns
   `503`. OCC keeps the source record in both cases.
 - OCC marks the record `deleting` before cleanup. For a Gateway copy, OCC asks the Gateway to remove it.
@@ -257,18 +257,19 @@ deleted, and its referenced Secrets cannot be deleted.
 
 ## After a Credential Gateway change
 
-A Gateway-owned source belongs to the Driver that registered it. After the
-Installation selects another driver in `drivers.credential_gateway`, binding,
+OCC stores the registering Backend’s `credentialSources.id` in the source’s `driverId`.
+Existing API records use `ownerCapability: credential_gateway`, and ordinary revision
+snapshots use `credentialGatewayId`. If the Installation changes the owner ID, binding,
 deploying, updating, or deleting an old source returns
 `503 DEPENDENCY_UNAVAILABLE` with one fixed message: "The selected Credential
 Gateway Driver did not register this credential source. …". OCC answers it only
 after the caller's grant and the source lookup. `GET` on such a source reports a
-`failed` status whose reason names the driver change.
+`failed` status whose reason names the owner change.
 
-- To keep an Agent running, register a replacement source through the selected
-  driver, list it in place of the old one, and deploy again.
-- To delete an old source, an administrator reselects its original driver ID,
-  deletes it, then selects the new driver. This also finishes sources left
+- To keep an Agent running, register a replacement source through the configured
+  Backend, list it in place of the old one, and deploy again.
+- To delete an old source, an administrator restores the Backend with its original owner ID,
+  deletes the source, then switches back. This also finishes sources left
   `deleting` by earlier releases, unblocking Namespace and Secret deletion.
 
 ## Errors
@@ -281,14 +282,14 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 | `409 NAMESPACE_NOT_READY`               | Wait for the Namespace to become ready.                                                                                                                             |
 | `409 AGENT_DELETING`                    | A protected source names an Agent being deleted.                                                                                                                    |
 | `409 RESOURCE_CONFLICT`                 | The type, Agent, Driver selection or requested operation is incompatible, the source is still referenced, or its state changed. The message describes the conflict. |
-| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | The operation requires a Credential Gateway and none is selected.                                                                                                   |
+| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | The operation requires a Backend credential source owner.                                                                                                           |
 | `503 DEPENDENCY_UNAVAILABLE`            | A required Driver or issuer is unavailable, a Gateway operation or mint failed, or the selected Driver differs from the recorded owner.                             |
 
 ## Related
 
 - [Protected credential request flow](../flows/credential-source-egress.md)
-- [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md)
-- [CredentialGatewayDriver contract](drivers/credential-gateway.md)
+- [OpenShell credential sources](drivers/openshell-credential-gateway.md)
+- [Backend source registration](drivers/credential-gateway.md)
 - [Credential source lifecycle flow](../flows/credential-source-lifecycle.md)
 - [Credential source withdrawal](credential-sources/withdrawal.md)
 - [Secrets](../guides/topics/secrets.md) and [Permissions](cheatsheets/permissions.md)

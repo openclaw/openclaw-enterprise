@@ -7,10 +7,10 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
-  createDeviceCredentialDrivers,
+  createDeviceCredentials,
   DEVICE_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
-} from "../helpers/device-credential-gateway.mjs";
+} from "../helpers/device-credentials.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
@@ -39,14 +39,14 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
   const clock = createControlledClock();
   const auditSink = new InMemoryAuditSink();
   const secretDriver = createTestSecretDriver();
-  const { gateway, refresh } = createDeviceCredentialDrivers({
+  const { credentialSources, refresh } = createDeviceCredentials({
     now: () => clock.wallNow(),
     ...gatewayOptions,
   });
   const fixture = await createConsoleAppFixture(t, {
     auditSink,
     secretDriver,
-    credentialGatewayDriver: gateway,
+    credentialSources,
     logger,
     now: () => new Date(clock.wallNow()),
     // The existing Console fixture admits revisions without executing Compute.
@@ -61,8 +61,6 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Device login", { ready: true });
-  fixture.controller.registerDriver(gateway);
-  fixture.controller.selectDriver("credential_gateway", gateway.id);
   fixture.controller.registerDriver(refresh);
   fixture.controller.selectDriver("credential_refresh", refresh.id);
   const driver = new CodexPluginDriver();
@@ -115,7 +113,7 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
     request,
     namespace,
     secretDriver,
-    gateway,
+    credentialSources,
     refresh,
     auditSink,
     requests,
@@ -192,7 +190,7 @@ test("Gateway device login saves a source-backed Agent and reuses discovery afte
   assert.equal(login.intervalSeconds, 5);
   assert.equal((await fixture.poll(login)).data.status, "pending");
   assert.equal(
-    fixture.gateway.calls.some((call) => call.operation === "pollDeviceAuthorization"),
+    fixture.credentialSources.calls.some((call) => call.operation === "pollDeviceAuthorization"),
     false,
   );
   const audited = fixture.auditSink.events.length;
@@ -212,7 +210,7 @@ test("Gateway device login saves a source-backed Agent and reuses discovery afte
   const stored = await fixture.stored(login);
   assert.equal(stored.sourceId, ready.source.id);
   assert.equal(stored.version, 2);
-  assert.equal(stored.credentialGatewayId, fixture.gateway.id);
+  assert.equal(stored.credentialGatewayId, fixture.credentialSources.id);
   assert.equal(stored.credentialRefreshId, fixture.refresh.id);
   assert.equal(stored.privateState, undefined);
   assert.equal(stored.credential, undefined);
@@ -280,12 +278,13 @@ test("Gateway device login saves a source-backed Agent and reuses discovery afte
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.equal(saved.data.plugins[0].remoteId, plugin.id);
   assert.equal(
-    fixture.gateway.calls.filter((call) => call.operation === "startDeviceAuthorization").length,
+    fixture.credentialSources.calls.filter((call) => call.operation === "startDeviceAuthorization")
+      .length,
     1,
   );
-  assert.equal(fixture.gateway.sources.get(ready.source.id), "ready");
+  assert.equal(fixture.credentialSources.sources.get(ready.source.id), "ready");
   assert.equal(
-    fixture.gateway.calls.some((call) => call.operation === "removeSource"),
+    fixture.credentialSources.calls.some((call) => call.operation === "removeSource"),
     false,
   );
   const sources = await fixture.request("GET", fixture.sourcesPath);
@@ -313,13 +312,13 @@ test("login handles are actor and Agent scoped while source discovery uses exact
     ).status,
     403,
   );
-  assert.deepEqual(fixture.gateway.calls, []);
+  assert.deepEqual(fixture.credentialSources.calls, []);
   bindRole(fixture.policy, account.principal.id, {
     id: "other-admin-binding",
     roleId: fixture.policy.roles[0].id,
   });
   const login = await readyLogin(fixture);
-  const before = fixture.gateway.calls.length;
+  const before = fixture.credentialSources.calls.length;
   assert.equal((await fixture.poll(login, fixture.path, otherSession)).status, 404);
   assert.equal(
     (
@@ -348,7 +347,7 @@ test("login handles are actor and Agent scoped while source discovery uses exact
     501,
   );
   assert.equal(
-    fixture.gateway.calls.length,
+    fixture.credentialSources.calls.length,
     before,
     "scope refusals must precede external operations",
   );
@@ -483,7 +482,8 @@ test("one poll owns Gateway completion and cancellation fences its result withou
   assert.equal(second.status, 200);
   assert.equal(second.data.status, "pending");
   assert.equal(
-    fixture.gateway.calls.filter((call) => call.operation === "pollDeviceAuthorization").length,
+    fixture.credentialSources.calls.filter((call) => call.operation === "pollDeviceAuthorization")
+      .length,
     1,
   );
   assert.equal(
@@ -497,12 +497,12 @@ test("one poll owns Gateway completion and cancellation fences its result withou
   assert.equal(stored.privateState, undefined);
   assert.equal((await fixture.poll(login)).status, 409);
   assert.equal(
-    fixture.gateway.sources.get(sourceId),
+    fixture.credentialSources.sources.get(sourceId),
     "ready",
     "external completion remains managed after its UI handle is cancelled",
   );
   assert.equal(
-    fixture.gateway.calls.some((call) => call.operation === "removeSource"),
+    fixture.credentialSources.calls.some((call) => call.operation === "removeSource"),
     false,
   );
   assert.equal((await fixture.request("GET", fixture.sourcesPath)).data[0].id, sourceId);
@@ -518,14 +518,18 @@ test("a changed Refresh Driver cannot receive an existing device login handle", 
   const replacement = { ...fixture.refresh, id: "replacement-device-refresh" };
   fixture.controller.registerDriver(replacement);
   fixture.controller.selectDriver("credential_refresh", replacement.id);
-  const before = [...fixture.gateway.calls];
+  const before = [...fixture.credentialSources.calls];
 
   const refused = await fixture.poll(login);
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.deepEqual(fixture.gateway.calls, before, "owner mismatch must precede external calls");
+  assert.deepEqual(
+    fixture.credentialSources.calls,
+    before,
+    "owner mismatch must precede external calls",
+  );
   const stored = await fixture.stored(login);
   assert.equal(stored.version, 2);
-  assert.equal(stored.credentialGatewayId, fixture.gateway.id);
+  assert.equal(stored.credentialGatewayId, fixture.credentialSources.id);
   assert.equal(stored.credentialRefreshId, fixture.refresh.id);
   assert.equal(stored.sourceId, original.sourceId);
   assert.equal(stored.phase, "pending");
@@ -562,7 +566,7 @@ test("a Refresh Driver change during polling fences completion without replaying
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   const stored = await fixture.stored(login);
   assert.equal(stored.version, 2);
-  assert.equal(stored.credentialGatewayId, fixture.gateway.id);
+  assert.equal(stored.credentialGatewayId, fixture.credentialSources.id);
   assert.equal(stored.credentialRefreshId, fixture.refresh.id);
   assert.equal(stored.sourceId, original.sourceId);
   assert.equal(
@@ -570,10 +574,10 @@ test("a Refresh Driver change during polling fences completion without replaying
     "polling",
     "an externally completed grant cannot mark this session ready",
   );
-  assert.equal(fixture.gateway.sources.get(original.sourceId), "ready");
+  assert.equal(fixture.credentialSources.sources.get(original.sourceId), "ready");
   assert.equal((await fixture.request("GET", fixture.sourcesPath)).data[0].id, original.sourceId);
   assert.equal(
-    fixture.gateway.calls.some(
+    fixture.credentialSources.calls.some(
       ({ operation }) => operation === "removeRefresh" || operation === "removeSource",
     ),
     false,
@@ -586,7 +590,9 @@ test("a Refresh Driver change during polling fences completion without replaying
   assert.equal(repeated.data.status, "pending");
   assert.equal(repeated.data.source, undefined);
   assert.equal(
-    fixture.gateway.calls.filter(({ operation }) => operation === "pollDeviceAuthorization").length,
+    fixture.credentialSources.calls.filter(
+      ({ operation }) => operation === "pollDeviceAuthorization",
+    ).length,
     1,
   );
   assertNoCredentials(fixture);
@@ -609,7 +615,7 @@ test("expiry closes the login handle without removing the ready source or its di
     (await fixture.request("DELETE", `${fixture.sourcesPath}/${login.source.id}`)).status,
     204,
   );
-  assert.equal(fixture.gateway.sources.has(login.source.id), false);
+  assert.equal(fixture.credentialSources.sources.has(login.source.id), false);
   assert.equal(
     (
       await fixture.request("POST", fixture.pluginsPath, {
@@ -624,7 +630,7 @@ test("expiry closes the login handle without removing the ready source or its di
 test("missing login-session fencing refuses device authorization before Gateway I/O", async (t) => {
   const fixture = await createFixture(t);
   const login = await fixture.start();
-  const before = fixture.gateway.calls.length;
+  const before = fixture.credentialSources.calls.length;
   delete fixture.secretDriver.compareAndSwap;
   assert.equal(
     (await fixture.request("POST", fixture.path, { body: { harnessId: "codex" } })).status,
@@ -637,7 +643,7 @@ test("missing login-session fencing refuses device authorization before Gateway 
     poll.body.error.message,
     "Device authorization is unavailable for the Secret Driver.",
   );
-  assert.equal(fixture.gateway.calls.length, before);
+  assert.equal(fixture.credentialSources.calls.length, before);
 });
 
 test("a failed Refresh login start retains a manageable source and sanitizes the failure", async (t) => {
@@ -677,13 +683,12 @@ test("a failed Refresh login start retains a manageable source and sanitizes the
     (await fixture.request("DELETE", `${fixture.sourcesPath}/${sources.data[0].id}`)).status,
     204,
   );
-  assert.equal(fixture.gateway.sources.size, 0);
+  assert.equal(fixture.credentialSources.sources.size, 0);
   assertNoCredentials(fixture);
 });
 
-// Finding D762: an Installation that does not select both Drivers device login needs names them
-// and who selects them, after the caller's grants and before any Gateway I/O.
-test("device login without a Credential Gateway and Refresh Driver names them and who selects them", async (t) => {
+// A missing Installation capability is reported after checking caller grants and before external I/O.
+test("device login names the missing Installation capabilities and who configures them", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("No device login", { ready: true });

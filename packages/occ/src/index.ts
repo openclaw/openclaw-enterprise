@@ -141,7 +141,7 @@ import type {
   Configuration,
   ConfigurationDriver,
   ConfigurationValidationOptions,
-  CredentialGatewayDriver,
+  BackendCredentialSources,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSourceRefresh,
@@ -760,6 +760,8 @@ export interface ControllerOptions {
   readonly nativeWorkerSupport?: NativeWorkerSupport;
   /** Installation startup `drivers.credential_proxy.requestCapacity`; defaults when absent. */
   readonly credentialProxyCapacity?: CredentialProxyCapacity;
+  /** Ordinary credential sources managed by the configured Backend. */
+  readonly credentialSources?: BackendCredentialSources;
 }
 
 /** The result of a ServiceAccount deletion. */
@@ -1092,7 +1094,7 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
   "kubernetes-local",
 ]);
 /** Bounds each synchronous Credential Gateway call made while serving an API request. */
-const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
+const CREDENTIAL_OPERATION_TIMEOUT_MS = 30_000;
 const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 const MAX_AGENT_CREDENTIAL_SOURCES = 8;
@@ -1130,11 +1132,10 @@ function harnessDiagnosticCheck(
 }
 
 /**
- * A Credential Gateway must finish any effect of an aborted registration within
- * CREDENTIAL_GATEWAY_TIMEOUT_MS after the abort. Until this long after `createdAt`, an absent
- * gateway copy does not prove that no late create is still in flight, so the record is kept.
+ * A Backend must finish an aborted registration's effects within CREDENTIAL_OPERATION_TIMEOUT_MS
+ * of the abort. Keep the record until this fence so DELETE can remove a late provider create.
  */
-const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
+const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_OPERATION_TIMEOUT_MS + 10_000;
 /**
  * How long after a provisioning Configuration create was recorded an absent Configuration may
  * still be a late create in flight (finding 911). The Kubernetes Driver gives up on a write after
@@ -1283,7 +1284,7 @@ function assertRefreshMinted(status: CredentialRefreshStatus): void {
   );
 }
 
-function assertCredentialGatewayHoldsSource(status: CredentialSourceStatus): void {
+function assertBackendHoldsSource(status: CredentialSourceStatus): void {
   if (status.state === "failed" || status.state === "absent") {
     throw new DependencyUnavailableError("The Credential Gateway did not update the source.");
   }
@@ -1883,6 +1884,7 @@ export class OpenClawController {
   private readonly shouldRecordOperations: boolean;
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
+  private readonly credentialSources: BackendCredentialSources | undefined;
   private readonly registry = new Map<string, RegisteredDriver>();
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private readonly backends: readonly BackendDefinition[];
@@ -1955,6 +1957,7 @@ export class OpenClawController {
       throw new RangeError(capacity.faults.map((fault) => fault.message).join(" "));
     }
     this.credentialProxyCapacity = capacity.capacity;
+    this.credentialSources = options.credentialSources;
     this.backendMap = backendDefinitionMap(this.backends);
     if (
       options.configuredServiceAccountDriverId !== undefined &&
@@ -2088,6 +2091,7 @@ export class OpenClawController {
         ]),
       ),
       this.selections.has("credential_proxy") ? this.selectedProxyOwner() : undefined,
+      this.credentialSources?.id,
     );
   }
 
@@ -2109,23 +2113,24 @@ export class OpenClawController {
     const nativeWorkers = openclaw.executionModes.includes("dedicated")
       ? this.nativeWorkers
       : undefined;
-    const gatewayTypes = this.selections.has("credential_gateway")
-      ? await this.credentialGatewayOperation(() =>
-          this.credentialGatewayDriver().listSourceTypes({
-            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+    const sources = this.credentialSources;
+    const backendTypes = sources
+      ? await this.credentialOperation(() =>
+          sources.listSourceTypes({
+            signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
           }),
         )
       : undefined;
     const protectedTypes = this.protectedSourceTypes().map(({ type }) => type);
     const types = [
       ...protectedTypes,
-      ...(gatewayTypes ?? []).filter((type) => !protectedTypes.some((p) => p.type === type.type)),
+      ...(backendTypes ?? []).filter((type) => !protectedTypes.some((p) => p.type === type.type)),
     ];
     const capabilities = {
       ...declared,
       ...(nativeWorkers === undefined ? {} : { nativeWorkers: { support: nativeWorkers } }),
       openclaw,
-      ...(gatewayTypes || types.length ? { credentialSources: { types } } : {}),
+      ...(backendTypes || types.length ? { credentialSources: { types } } : {}),
     };
     if (!this.selections.has("plugin")) {
       return immutableCopy({ ...this.installation, capabilities });
@@ -2993,9 +2998,9 @@ export class OpenClawController {
         "Agent provisioning requires dedicated Harness authentication.",
       );
     }
-    // A selected gateway owns model delivery for every dedicated Harness. Refuse
+    // A configured source Backend owns model credentials for every dedicated Harness. Refuse
     // incompatible bindings before a job or external resource can be created.
-    this.assertCredentialGatewayDelivery(harnessAuth);
+    this.assertCredentialSourceDelivery(harnessAuth);
     const acceptedInput = Object.freeze({
       requestId,
       namespaceId: input.namespaceId,
@@ -5871,7 +5876,7 @@ export class OpenClawController {
     if (!secret) {
       throw new ScopeViolationError("Prepared credential issuer material is unavailable.");
     }
-    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
+    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS));
     return {
       source: immutableCopy({
         key: {
@@ -5924,7 +5929,7 @@ export class OpenClawController {
       throw new ScopeViolationError("Credential-free metadata requires this dedicated Agent.");
     }
     this.assertProtectedSourceAgent(agent);
-    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
+    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS));
     return immutableCopy({
       key: {
         installationId: this.installation.id,
@@ -5970,7 +5975,7 @@ export class OpenClawController {
     provider.normalizeConfig(config);
     // An Installation property: a Proxy that cannot serve the source refuses it before any
     // Secret is read (finding 2360).
-    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
+    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS));
     const reference = references[provider.sourceType.secrets[0]!.name];
     if (!reference) {
       throw new ScopeViolationError(
@@ -5992,12 +5997,12 @@ export class OpenClawController {
         "Protected egress requires authoritative versioned Secret reads.",
       );
     }
-    const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
+    const signal = AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS);
     const material = await secretDriver.readCredentialInput({
       secret,
       lifetime: {
         signal,
-        deadlineAt: new Date(Date.now() + CREDENTIAL_GATEWAY_TIMEOUT_MS).toISOString(),
+        deadlineAt: new Date(Date.now() + CREDENTIAL_OPERATION_TIMEOUT_MS).toISOString(),
       },
       retention: "none",
     });
@@ -6076,7 +6081,7 @@ export class OpenClawController {
         // Finding 2360: when the Proxy serves only repository Git, replacing the source cannot
         // help, so that refusal comes first. Any other outcome leaves the binding refusal.
         await driver.sourceControl
-          .assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS))
+          .assertAvailable(AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS))
           .catch((error: unknown) => {
             if (error instanceof CredentialProxyRepositoryOnlyError) {
               throw error;
@@ -6106,7 +6111,7 @@ export class OpenClawController {
     }
     const gitAuthorization = await repositoryGitAuthorization(
       driver.sourceControl,
-      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
       gitProfile,
     );
     if (gitAuthorization === "unavailable") {
@@ -6123,7 +6128,7 @@ export class OpenClawController {
     }
     if (reducibleGit && driver.policyReduction?.version === 2) {
       await driver.policyReduction.assertAvailable(
-        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
       );
     }
     let policyReductionVersion: ProxyPlan["policyReductionVersion"] = reducibleGit ? 2 : undefined;
@@ -6199,8 +6204,8 @@ export class OpenClawController {
   }
 
   /**
-   * Registration records the source as `registering` before the gateway write, so an uncertain
-   * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
+   * OCC records the source as `registering` before the Backend write, so an uncertain
+   * outcome leaves a record an operator can list and delete. `audit` builds the
    * success event, committed with the transition to `ready`.
    */
   async createCredentialSource(
@@ -6225,15 +6230,15 @@ export class OpenClawController {
       // An Installation property, so it is reported before any Namespace state.
       this.assertCredentialSourceOwnerSelected();
       const protectedType = this.protectedSourceTypes().find((p) => p.type.type === input.type);
-      const selected = protectedType ? undefined : this.credentialGatewayDriver();
+      const selected = protectedType ? undefined : this.requireCredentialSources();
       if (locked.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
       credentialSourceFieldsMatch(type, "config", written);
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
-      // The Driver may return the configuration in the form it uses, such as a normalized URL:
-      // the stored record, the response and the gateway then agree (finding 1292).
+      // The Backend may normalize source configuration, such as a URL.
+      // The stored record, response and provider then agree (finding 1292).
       const config = Object.freeze({
         ...(protectedType
           ? written
@@ -6301,7 +6306,7 @@ export class OpenClawController {
       );
       return {
         namespace: locked,
-        gateway: selected,
+        sources: selected,
         refresh: refreshDriver,
         deferred: type.deviceAuthorization !== undefined,
         source: registering,
@@ -6309,9 +6314,9 @@ export class OpenClawController {
         values: read,
       };
     });
-    const { namespace, gateway, refresh, deferred, source, values, issuer } = registration;
+    const { namespace, sources, refresh, deferred, source, values, issuer } = registration;
     const config = source.config;
-    const placed = gateway ? await this.credentialNamespace(namespace) : namespace;
+    const placed = sources ? await this.credentialNamespace(namespace) : namespace;
     let status: CredentialSourceStatus;
     // A returned result means every gateway effect of this attempt has finished; a throw does not.
     let terminal = false;
@@ -6321,18 +6326,18 @@ export class OpenClawController {
         await this.preparedIssuer(source.egress.key.provider).configure(
           source.egress,
           issuer,
-          AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
         );
       }
       status =
         source.egress !== undefined
           ? { state: source.egress.adoption === "prepared" ? "pending" : "ready" }
-          : await this.credentialGatewayOperation(() =>
-              gateway!.registerSource(
+          : await this.credentialOperation(() =>
+              sources!.registerSource(
                 {
                   namespace: placed,
                   source,
-                  signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+                  signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
                 },
                 // A refresh type's secrets are issuer material, held only by the refresh Driver.
                 { type: source.type, config, secrets: refresh === undefined ? values : {} },
@@ -6364,8 +6369,8 @@ export class OpenClawController {
         );
         throw error;
       }
-      if (gateway) {
-        await this.abandonCredentialRegistration(placed, gateway, source, terminal, refresh);
+      if (sources) {
+        await this.abandonCredentialRegistration(placed, sources, source, terminal, refresh);
       }
       throw error;
     }
@@ -6383,8 +6388,8 @@ export class OpenClawController {
     });
     if (ready === undefined) {
       // A concurrent deletion owns the prepared family withdrawal. It must not be reconfigured or replayed.
-      if (gateway && source.egress?.adoption !== "prepared") {
-        await this.abandonCredentialRegistration(placed, gateway, source, true, refresh);
+      if (sources && source.egress?.adoption !== "prepared") {
+        await this.abandonCredentialRegistration(placed, sources, source, true, refresh);
       }
       throw new ResourceStateConflictError("The credential source changed during registration.");
     }
@@ -6402,16 +6407,16 @@ export class OpenClawController {
     const context = () => ({
       namespace,
       source,
-      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
     });
-    await this.credentialGatewayOperation(() =>
+    await this.credentialOperation(() =>
       refresh.configureRefresh(context(), {
         config,
         secrets,
         requestId: credentialRefreshRequestId(source.id, "configure"),
       }),
     );
-    return this.credentialGatewayOperation(() =>
+    return this.credentialOperation(() =>
       refresh.rotate(context(), credentialRefreshRequestId(source.id, "rotate")),
     );
   }
@@ -6500,8 +6505,8 @@ export class OpenClawController {
         // After the update grant and lookup: the caller may change this source (finding 2536).
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.update);
       }
-      const gateway = this.ownedCredentialGatewayDriver(source);
-      const type = await this.credentialSourceType(gateway, source.type);
+      const sources = this.ownedCredentialSources(source);
+      const type = await this.credentialSourceType(sources, source.type);
       if (type.deviceAuthorization !== undefined) {
         // Device grants are held by the Refresh Driver, not recorded Secret references.
         // Reconfiguring from an empty reference set could revoke the active grant.
@@ -6579,38 +6584,38 @@ export class OpenClawController {
       const context = () => ({
         namespace: placed,
         source,
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
       });
       let status: CredentialSourceStatus;
       if (type.rotation === "refresh") {
         // A refresh type keeps no static value at the gateway: new material replaces the
         // refresh configuration, and the next mint proves it before OCC commits the references.
         const refresh = this.credentialSourceRefresh();
-        status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
-        assertCredentialGatewayHoldsSource(status);
+        status = await this.credentialOperation(() => sources.sourceStatus(context()));
+        assertBackendHoldsSource(status);
         this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_UPDATE_FAILED");
-        await this.credentialGatewayOperation(() =>
+        await this.credentialOperation(() =>
           refresh.configureRefresh(context(), {
             config: source.config,
             secrets: values,
             requestId: crypto.randomUUID(),
           }),
         );
-        const minted = await this.credentialGatewayOperation(() =>
+        const minted = await this.credentialOperation(() =>
           refresh.rotate(context(), crypto.randomUUID()),
         );
         assertRefreshMinted(minted);
         status = { ...status, refresh: minted };
       } else {
         this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_GATEWAY_UPDATE_FAILED");
-        status = await this.credentialGatewayOperation(() =>
-          gateway.updateSource(context(), {
+        status = await this.credentialOperation(() =>
+          sources.updateSource(context(), {
             type: source.type,
             config: source.config,
             secrets: values,
           }),
         );
-        assertCredentialGatewayHoldsSource(status);
+        assertBackendHoldsSource(status);
       }
       const updated =
         input.secrets === undefined
@@ -6666,8 +6671,8 @@ export class OpenClawController {
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.rotate);
       }
-      const gateway = this.ownedCredentialGatewayDriver(source);
-      const type = await this.credentialSourceType(gateway, source.type);
+      const sources = this.ownedCredentialSources(source);
+      const type = await this.credentialSourceType(sources, source.type);
       if (type.rotation !== "refresh") {
         throw new ResourceStateConflictError(
           "Only a refresh-type credential source can be rotated; update a static source instead.",
@@ -6678,14 +6683,14 @@ export class OpenClawController {
       const context = () => ({
         namespace: placed,
         source,
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
       });
       this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_ROTATION_FAILED");
-      const minted = await this.credentialGatewayOperation(() =>
+      const minted = await this.credentialOperation(() =>
         refresh.rotate(context(), crypto.randomUUID()),
       );
       assertRefreshMinted(minted);
-      const status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
+      const status = await this.credentialOperation(() => sources.sourceStatus(context()));
       return this.credentialSourceMetadata(source, { ...status, refresh: minted });
     });
   }
@@ -6720,7 +6725,7 @@ export class OpenClawController {
    */
   private async abandonCredentialRegistration(
     namespace: Readonly<Namespace>,
-    gateway: CredentialGatewayDriver,
+    sources: BackendCredentialSources,
     source: Readonly<CredentialSource>,
     terminal: boolean,
     refresh?: CredentialSourceRefresh,
@@ -6728,19 +6733,19 @@ export class OpenClawController {
     let removed = true;
     try {
       if (refresh !== undefined) {
-        await this.credentialGatewayOperation(() =>
+        await this.credentialOperation(() =>
           refresh.removeRefresh({
             namespace,
             source,
-            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+            signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
           }),
         );
       }
-      await this.credentialGatewayOperation(() =>
-        gateway.removeSource({
+      await this.credentialOperation(() =>
+        sources.removeSource({
           namespace,
           source,
-          signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
         }),
       );
     } catch {
@@ -6797,7 +6802,7 @@ export class OpenClawController {
         (source.state === "ready" &&
           (await this.preparedIssuer(source.egress.key.provider).ready(
             source.egress,
-            AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+            AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
           )));
       return this.credentialSourceMetadata(source, {
         state: source.state === "ready" && prepared ? "ready" : "pending",
@@ -6805,16 +6810,16 @@ export class OpenClawController {
     }
     let status: CredentialSourceStatus;
     try {
-      const gateway = this.ownedCredentialGatewayDriver(source);
+      const sources = this.ownedCredentialSources(source);
       const context = {
         namespace: await this.credentialNamespace(namespace),
         source,
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
       };
-      status = await gateway.sourceStatus(context);
+      status = await sources.sourceStatus(context);
       const refresh =
         status.state === "ready" || status.state === "pending"
-          ? await this.refreshDriverForSource(gateway, source.type)
+          ? await this.refreshDriverForSource(sources, source.type)
           : undefined;
       if (refresh !== undefined) {
         status = { ...status, refresh: await refresh.refreshStatus(context) };
@@ -6857,7 +6862,7 @@ export class OpenClawController {
   /**
    * Deletion is caller-retried: the record stays `deleting` until the gateway copy is gone,
    * which keeps the Namespace nonempty and blocks new bindings in the meantime. The record moves
-   * to `deleting`, which is one-way, only once the selected gateway registered it, so a refusal
+   * to `deleting`, which is one-way, only once the configured Backend registered it, so a refusal
    * after a gateway change leaves the source as it was.
    */
   async deleteCredentialSource(
@@ -6868,7 +6873,7 @@ export class OpenClawController {
   ): Promise<void> {
     this.assertCredentialSourceTransactionBoundary();
     this.namespaceIdentity(namespaceId);
-    const { namespace, source, gateway } = await this.mutate(async (state) => {
+    const { namespace, source, sources } = await this.mutate(async (state) => {
       const locked = await this.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "credential_source",
         id: credentialSourceId,
@@ -6906,26 +6911,26 @@ export class OpenClawController {
       return {
         namespace: locked,
         source: deleting,
-        gateway: owner.kind === "gateway" ? owner.driver : undefined,
+        sources: owner.kind === "backend" ? owner.sources : undefined,
       };
     });
-    const placed = gateway ? await this.credentialNamespace(namespace) : namespace;
+    const placed = sources ? await this.credentialNamespace(namespace) : namespace;
     const context = () => ({
       namespace: placed,
       source,
-      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
     });
     if (source.egress?.adoption === "prepared") {
       await this.preparedIssuer(source.egress.key.provider).withdraw(
         source.egress,
-        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
       );
-    } else if (gateway && source.egress?.adoption !== "credential_free") {
-      const refresh = await this.refreshDriverForSource(gateway, source.type);
+    } else if (sources && source.egress?.adoption !== "credential_free") {
+      const refresh = await this.refreshDriverForSource(sources, source.type);
       if (refresh !== undefined) {
-        await this.credentialGatewayOperation(() => refresh.removeRefresh(context()));
+        await this.credentialOperation(() => refresh.removeRefresh(context()));
       }
-      await this.credentialGatewayOperation(() => gateway.removeSource(context()));
+      await this.credentialOperation(() => sources.removeSource(context()));
     }
     const fenceMs =
       Date.parse(source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS - this.clock().getTime();
@@ -7551,11 +7556,11 @@ export class OpenClawController {
       return { namespace, source };
     });
     return {
-      gateway: this.ownedCredentialGatewayDriver(source),
+      ownerId: this.ownedCredentialSources(source).id,
       context: {
         namespace: await this.credentialNamespace(namespace),
         source,
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS),
       },
     };
   }
@@ -7568,20 +7573,17 @@ export class OpenClawController {
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
+    const sources = this.credentialSources;
     const refresh = this.credentialRefreshDriver();
-    if (
-      !this.selections.has("credential_gateway") ||
-      !(refresh?.sources || refresh?.preparedTokens)
-    ) {
+    if (!sources || (!refresh?.sources && !refresh?.preparedTokens)) {
       throw new NotImplementedError(
         "agent_device_authorization",
         "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
       );
     }
-    const gateway = this.credentialGatewayDriver();
     const secrets = this.secretDriver();
     if (
-      !refresh?.sources?.startDeviceAuthorization ||
+      !refresh.sources?.startDeviceAuthorization ||
       !refresh.sources.pollDeviceAuthorization ||
       !secrets.withValue ||
       !secrets.compareAndSwap
@@ -7591,8 +7593,8 @@ export class OpenClawController {
         "Device authorization is unavailable for the selected Drivers.",
       );
     }
-    const types = await this.credentialGatewayOperation(() =>
-      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
+    const types = await this.credentialOperation(() =>
+      sources.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS) }),
     );
     const supported = types.filter(
       (type) => type.rotation === "refresh" && type.deviceAuthorization?.harnessId === harnessId,
@@ -7628,7 +7630,7 @@ export class OpenClawController {
       namespaceId,
       ...(agentId === undefined ? {} : { agentId }),
       harnessId,
-      credentialGatewayId: gateway.id,
+      credentialGatewayId: sources.id,
       credentialRefreshId: refresh.id,
       sourceId: source.id,
       phase: "pending",
@@ -7712,14 +7714,14 @@ export class OpenClawController {
     ) {
       throw new ResourceStateConflictError("Device login expired or was cancelled. Connect again.");
     }
-    const { gateway, context } = await this.authorizedCredentialSource(
+    const { ownerId, context } = await this.authorizedCredentialSource(
       principalId,
       namespaceId,
       session.sourceId,
     );
     const refresh = this.credentialRefreshDriver();
     if (
-      gateway.id !== session.credentialGatewayId ||
+      ownerId !== session.credentialGatewayId ||
       refresh?.id !== session.credentialRefreshId ||
       !refresh.sources?.pollDeviceAuthorization
     ) {
@@ -7767,7 +7769,7 @@ export class OpenClawController {
       session.sourceId,
     );
     if (
-      current.gateway.id !== session.credentialGatewayId ||
+      current.ownerId !== session.credentialGatewayId ||
       this.credentialRefreshDriver()?.id !== session.credentialRefreshId
     ) {
       throw new ResourceStateConflictError("The login Driver changed. Connect again.");
@@ -8199,9 +8201,7 @@ export class OpenClawController {
           "The Credential Gateway does not support plugin discovery.",
         );
       }
-      outcome = await this.credentialGatewayOperation(() =>
-        reader.withSourceToken(context, invoke),
-      );
+      outcome = await this.credentialOperation(() => reader.withSourceToken(context, invoke));
     } else if (credential.accessToken !== undefined) {
       outcome = await invoke({ accessToken: credential.accessToken });
     } else if (credential.secretRef !== undefined) {
@@ -9919,7 +9919,7 @@ export class OpenClawController {
         throw new ScopeViolationError("The persisted Agent Harness execution mode is invalid.");
       }
       requireSandboxExecutionMode(sandbox, lockedAgent.executionMode);
-      this.assertCredentialGatewayDelivery(lockedAgent.harnessAuth);
+      this.assertCredentialSourceDelivery(lockedAgent.harnessAuth);
       await this.authorize(principalId, "read", {
         kind: "configuration",
         id: lockedAgent.configurationId,
@@ -11514,7 +11514,7 @@ export class OpenClawController {
         namespaceId,
         id: binding.sourceId,
       });
-      this.assertCredentialGatewaySelected();
+      this.assertBackendCredentialSourcesConfigured();
       const source = await state.credentialSources.lockCredentialSource(
         namespaceId,
         binding.sourceId,
@@ -11524,7 +11524,7 @@ export class OpenClawController {
           "The Harness credential source is unavailable in the exact Namespace.",
         );
       }
-      this.ownedCredentialGatewayDriver(source);
+      this.ownedCredentialSources(source);
     } else {
       if (binding.source.namespaceId !== namespaceId) {
         throw new SecretBindingValidationError(SERVICE_ACCOUNT_CROSS_NAMESPACE);
@@ -11584,8 +11584,8 @@ export class OpenClawController {
    * exists never changes the answer. Callers run it after the caller's `operate` check on the
    * exact source, so a caller without that grant still gets 403 first.
    */
-  private assertCredentialGatewaySelected(): void {
-    if (!this.selections.has("credential_gateway")) {
+  private assertBackendCredentialSourcesConfigured(): void {
+    if (!this.credentialSources) {
       throw new CredentialGatewayNotConfiguredError();
     }
   }
@@ -11627,7 +11627,7 @@ export class OpenClawController {
   /**
    * `operate` on each source an Agent already binds, so an update cannot swap out or drop a
    * source the caller may not use. It reads no record, so it answers the same whether or not the
-   * source still exists, is ready, or belongs to the selected gateway.
+   * source still exists, is ready, or belongs to the configured Backend.
    */
   private async authorizeBoundCredentialSources(
     principalId: string,
@@ -11730,9 +11730,13 @@ export class OpenClawController {
         snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
       } else {
         if (!this.protectedSourceTypes().some((p) => p.type.type === source.type)) {
-          await this.credentialSourceType(owner.driver, source.type);
+          await this.credentialSourceType(owner.sources, source.type);
         }
-        snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
+        snapshots.push({
+          sourceId,
+          credentialGatewayId: owner.sources.id,
+          sourceType: source.type,
+        });
       }
     }
     return immutableCopy(snapshots);
@@ -11833,7 +11837,7 @@ export class OpenClawController {
       );
     }
     if (!statusRead) {
-      this.assertCredentialGatewayDelivery(binding);
+      this.assertCredentialSourceDelivery(binding);
     }
     const backendId = this.backendId(record.plan.backendId as BackendRef | undefined);
     const agent =
@@ -13095,8 +13099,8 @@ export class OpenClawController {
     if (source === undefined || source.state !== "ready") {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
-    const gateway = this.ownedCredentialGatewayDriver(source);
-    const type = await this.credentialSourceType(gateway, source.type);
+    const sources = this.ownedCredentialSources(source);
+    const type = await this.credentialSourceType(sources, source.type);
     if (type.harnessAuth === undefined) {
       throw new ResourceStateConflictError(
         "The credential source type cannot authenticate a Harness.",
@@ -13105,16 +13109,16 @@ export class OpenClawController {
     return immutableCopy({
       method: "credential_source" as const,
       sourceId: source.id,
-      credentialGatewayId: gateway.id,
+      credentialGatewayId: sources.id,
       sourceType: source.type,
       loginMode: type.harnessAuth.loginMode,
     });
   }
 
-  /** A selected Credential Gateway replaces Secret-backed model delivery; no env fallback. */
-  private assertCredentialGatewayDelivery(binding: HarnessAuthBinding | null): void {
+  /** When the Backend supplies Harness credentials, the Harness must bind a credential source. */
+  private assertCredentialSourceDelivery(binding: HarnessAuthBinding | null): void {
     if (
-      this.selections.has("credential_gateway") &&
+      this.credentialSources &&
       binding !== null &&
       binding.method !== "credential_source" &&
       binding.method !== "runtime"
@@ -13137,7 +13141,7 @@ export class OpenClawController {
         );
       }
       return this.credentialSourceType(
-        this.credentialGatewayDriver(auth.credentialGatewayId),
+        this.requireCredentialSources(auth.credentialGatewayId),
         auth.sourceType,
       );
     }
@@ -13273,50 +13277,39 @@ export class OpenClawController {
     }
   }
 
-  /**
-   * The selected Credential Gateway Driver when it registered a source the caller has already
-   * been granted and looked up; otherwise CredentialSourceDriverError, whose fixed message names
-   * the fix. Call it only after the grant and the lookup, so it is no existence oracle. No usable
-   * selected driver is an outage, not an ownership problem: it keeps the generic 503.
-   */
-  private ownedCredentialGatewayDriver(source: CredentialSource): CredentialGatewayDriver {
-    const driver = this.credentialGatewayDriver();
-    if (source.ownerCapability !== "credential_gateway" || driver.id !== source.driverId) {
+  /** After authorization and lookup, distinguish a changed owner from an unavailable Backend. */
+  private ownedCredentialSources(source: CredentialSource): BackendCredentialSources {
+    const sources = this.requireCredentialSources();
+    if (source.ownerCapability !== "credential_gateway" || sources.id !== source.driverId) {
       throw new CredentialSourceDriverError();
     }
-    return driver;
+    return sources;
   }
 
-  private credentialGatewayDriver(expectedId?: string): CredentialGatewayDriver {
-    try {
-      const driver = this.selectedDriver("credential_gateway");
-      if (expectedId !== undefined && driver.id !== expectedId) {
-        throw new Error("Driver identity mismatch.");
-      }
-      return driver;
-    } catch {
+  private requireCredentialSources(expectedId?: string): BackendCredentialSources {
+    const sources = this.credentialSources;
+    if (!sources || (expectedId !== undefined && sources.id !== expectedId)) {
       throw new DependencyUnavailableError(
         "The selected Credential Gateway Driver is unavailable or does not own this source.",
       );
     }
+    return sources;
   }
 
   /**
-   * Reading and deleting an existing source must not depend on the current catalog: a source
-   * stays observable and deletable after its type is no longer offered. An unoffered type
-   * cannot be classified, so it gets no refresh call; without the role, the gateway's own
-   * status and removal are all that is left.
+   * A Backend still reports and removes a source after its type leaves the catalog.
+   * Only a type the catalog classifies as refreshable can also reach the Token Service.
    */
   private async refreshDriverForSource(
-    gateway: CredentialGatewayDriver,
+    sources: BackendCredentialSources,
     type: string,
   ): Promise<CredentialSourceRefresh | undefined> {
     const refresh = this.credentialRefreshDriver()?.sources;
     if (!refresh) {
       return undefined;
     }
-    const catalog = await this.credentialGatewayOperation(() =>
-      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
+    const catalog = await this.credentialOperation(() =>
+      sources.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS) }),
     );
     return catalog.some((entry) => entry.type === type && entry.rotation === "refresh")
       ? refresh
@@ -13339,7 +13332,7 @@ export class OpenClawController {
     return sources;
   }
 
-  private async credentialGatewayOperation<T>(operation: () => Promise<T>): Promise<T> {
+  private async credentialOperation<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation();
     } catch (error) {
@@ -13352,7 +13345,7 @@ export class OpenClawController {
     }
   }
 
-  /** Credential Gateways share the paired Sandbox's view, whose name is Compute's placement. */
+  /** Source registration uses the paired Sandbox's Namespace placement from Compute. */
   private async credentialNamespace(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>> {
     let compute: ComputeDriver;
     try {
@@ -13366,7 +13359,7 @@ export class OpenClawController {
         "The selected Compute Driver cannot place Credential Gateway sources.",
       );
     }
-    return this.credentialGatewayOperation(() => resolve.call(compute, namespace));
+    return this.credentialOperation(() => resolve.call(compute, namespace));
   }
 
   /** A protected source is offered only by the selected pair and its installed lifecycle owner. */
@@ -13385,11 +13378,11 @@ export class OpenClawController {
 
   private assertCredentialSourceOwnerSelected(): void {
     if (!this.selections.has("credential_proxy")) {
-      this.assertCredentialGatewaySelected();
+      this.assertBackendCredentialSourcesConfigured();
     }
   }
 
-  /** Resolve exactly the recorded capability, then check its Driver and protected backend. */
+  /** Resolve the recorded owner and, for protected sources, its Backend identity. */
   private credentialSourceOwner(source: CredentialSource) {
     if (source.ownerCapability === "credential_proxy") {
       const driver = this.selectedProxyOwner().require("credential_proxy");
@@ -13404,7 +13397,7 @@ export class OpenClawController {
       }
       return { kind: "proxy" as const, driver };
     }
-    return { kind: "gateway" as const, driver: this.ownedCredentialGatewayDriver(source) };
+    return { kind: "backend" as const, sources: this.ownedCredentialSources(source) };
   }
 
   /** Recheck the immutable admission and its selected owner in the use or observation transaction. */
@@ -13426,11 +13419,11 @@ export class OpenClawController {
   }
 
   private async credentialSourceType(
-    driver: CredentialGatewayDriver,
+    sources: BackendCredentialSources,
     type: string,
   ): Promise<CredentialSourceType> {
-    const catalog = await this.credentialGatewayOperation(() =>
-      driver.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
+    const catalog = await this.credentialOperation(() =>
+      sources.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_OPERATION_TIMEOUT_MS) }),
     );
     const entry = catalog.find((candidate) => candidate.type === type);
     if (entry === undefined) {

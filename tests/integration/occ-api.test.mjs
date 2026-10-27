@@ -491,6 +491,7 @@ async function createInjectedFixture(options = {}) {
                   : stateWithDeploymentWork(baseState, options.deploymentWorks);
               controller = new OpenClawController(installation, {
                 state: platformState,
+                credentialSources: options.credentialSources,
                 recordOperations: options.recordOperations ?? false,
                 ...(options.backends === undefined ? {} : { backends: options.backends }),
               });
@@ -1223,8 +1224,7 @@ test("credential source registration names the missing Credential Gateway", asyn
   };
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "no-credential-gateway");
-  // This Installation selects no Credential Gateway, like the Kubernetes production profile;
-  // the missing gateway is reported before Namespace readiness or the source catalog.
+  // Preserve the public compatibility error for an Installation without a source owner.
   const rejected = await controller.request(
     "POST",
     `/namespaces/${namespace.id}/credential-sources`,
@@ -1239,6 +1239,30 @@ test("credential source registration names the missing Credential Gateway", asyn
 
 test("Agent reads return the bound credentialSources; revision reads return only source IDs", async () => {
   const fixture = await createInjectedFixture({
+    credentialSources: {
+      id: "credential-gateway-api",
+      validateSourceConfig() {},
+      async listSourceTypes() {
+        return [
+          {
+            type: "registry",
+            config: [{ name: "host", required: true }],
+            secrets: [],
+            rotation: "none",
+          },
+        ];
+      },
+      async registerSource() {
+        return { state: "ready" };
+      },
+      async updateSource() {
+        return { state: "ready" };
+      },
+      async sourceStatus() {
+        return { state: "ready" };
+      },
+      async removeSource() {},
+    },
     computeDriver: createReadyComputeDriver("compute-credential-sources", {
       validateHarnessAuth() {},
       async stopRevision() {},
@@ -1254,35 +1278,6 @@ test("Agent reads return the bound credentialSources; revision reads return only
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "credential-source-binding");
   await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const gateway = {
-    id: "credential-gateway-api",
-    capability: "credential_gateway",
-    implementation: "test-recording-gateway",
-    validateSourceConfig() {},
-    async listSourceTypes() {
-      return [
-        {
-          type: "registry",
-          config: [{ name: "host", required: true }],
-          secrets: [],
-          rotation: "none",
-        },
-      ];
-    },
-    async registerSource() {
-      return { state: "ready" };
-    },
-    async updateSource() {
-      return { state: "ready" };
-    },
-    async rotateSource() {
-      return { state: "ready" };
-    },
-    async sourceStatus() {
-      return { state: "ready" };
-    },
-    async removeSource() {},
-  };
   const sandbox = {
     id: "sandbox-api",
     capability: "sandbox",
@@ -1290,10 +1285,8 @@ test("Agent reads return the bound credentialSources; revision reads return only
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},
   };
-  for (const driver of [gateway, sandbox]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
-  }
+  fixture.controller.registerDriver(sandbox);
+  fixture.controller.selectDriver("sandbox", sandbox.id);
   const source = await controller.request(
     "POST",
     `/namespaces/${namespace.id}/credential-sources`,
@@ -1376,6 +1369,30 @@ test("Agent reads return the bound credentialSources; revision reads return only
 
 test("refresh source PATCH and rotate refuse a stale refresh token and audit a failed gateway effect", async () => {
   const fixture = await createInjectedFixture({
+    credentialSources: {
+      id: "credential-gateway-refresh-api",
+      validateSourceConfig() {},
+      async listSourceTypes() {
+        return [
+          {
+            type: "oauth-user",
+            config: [{ name: "client_id", required: true }],
+            secrets: [{ name: "refresh_token", required: true, issuerRotated: true }],
+            rotation: "refresh",
+          },
+        ];
+      },
+      async registerSource() {
+        return { state: "ready" };
+      },
+      async updateSource() {
+        throw new Error("not exercised");
+      },
+      async sourceStatus() {
+        return { state: "ready" };
+      },
+      async removeSource() {},
+    },
     computeDriver: createReadyComputeDriver("compute-credential-refresh", {
       async resolveSandboxNamespace(namespace) {
         return { ...namespace, name: `placed-${namespace.id.slice(-12)}` };
@@ -1388,32 +1405,6 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "credential-source-refresh-audit");
   await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const gateway = {
-    id: "credential-gateway-refresh-api",
-    capability: "credential_gateway",
-    implementation: "test-recording-gateway",
-    validateSourceConfig() {},
-    async listSourceTypes() {
-      return [
-        {
-          type: "oauth-user",
-          config: [{ name: "client_id", required: true }],
-          secrets: [{ name: "refresh_token", required: true, issuerRotated: true }],
-          rotation: "refresh",
-        },
-      ];
-    },
-    async registerSource() {
-      return { state: "ready" };
-    },
-    async updateSource() {
-      throw new Error("not exercised");
-    },
-    async sourceStatus() {
-      return { state: "ready" };
-    },
-    async removeSource() {},
-  };
   let mint = { state: "ready" };
   const refresh = {
     id: "credential-refresh-api",
@@ -1440,7 +1431,7 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},
   };
-  for (const driver of [gateway, refresh, sandbox]) {
+  for (const driver of [refresh, sandbox]) {
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }

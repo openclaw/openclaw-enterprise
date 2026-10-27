@@ -47,7 +47,7 @@ function computeDriver({
   discoverHarnessModels = async () => [],
   agentProvisioning = false,
   sandboxDriver,
-  credentialGatewayDriver,
+  credentialSources,
   // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
   // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
   implementation = "test-memory-lifecycle",
@@ -56,7 +56,7 @@ function computeDriver({
     gatewayRuntime: true,
     repositoryCredentials,
     sandboxDriver,
-    credentialGatewayDriver,
+    credentialSources,
     channelRuntime,
     routed,
   });
@@ -422,7 +422,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         discoverHarnessModels: options.discoverHarnessModels,
         agentProvisioning: options.agentProvisioning,
         sandboxDriver: options.sandboxDriver,
-        credentialGatewayDriver: options.credentialGatewayDriver,
+        credentialSources: options.sandboxDriver && options.credentialSources,
         implementation: options.computeImplementation,
       }),
     configurationDriver:
@@ -444,6 +444,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     resolveHarness: resolveApprovedHarness,
     createController(installation) {
       controller = new OpenClawController(installation, {
+        credentialSources: options.credentialSources,
         state: platformState,
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
         driverConfigurations: options.driverConfigurations,

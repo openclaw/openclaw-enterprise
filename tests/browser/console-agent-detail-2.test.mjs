@@ -7,7 +7,8 @@ import test from "node:test";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialSources } from "../../apps/controller/src/backends/openshell-credential-sources.ts";
+import { OpenShellCredentialProfiles } from "../../apps/controller/src/backends/openshell-credential-profiles.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
@@ -4836,29 +4837,35 @@ test("Console can repeat Stop without treating the selected version as cleanup c
 });
 
 test("Credentials preserves an existing OpenClaw credential source without offering Codex login", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
+  const sourceConfiguration = {
+    id: "openshell-sources",
+    configuration: { binaries: ["/usr/local/bin/openclaw"] },
+  };
   const backend = createOpenShellBackend({
     id: "openshell-browser",
     type: "openshell",
     configuration: { endpoint: "http://127.0.0.1:9" },
-    drivers: { credential_gateway: "credential-gateway-openshell" },
+    credentialSources: sourceConfiguration,
+    drivers: { sandbox: "openshell-sandbox" },
   });
   t.after(() => backend.client.close());
-  const gateway = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/local/bin/openclaw"] },
-    { backend },
+  const credentialSources = new OpenShellCredentialSources(
+    backend,
+    new OpenShellCredentialProfiles(sourceConfiguration.configuration, {
+      id: sourceConfiguration.id,
+      refresh: false,
+    }),
   );
-  fixture.controller.registerDriver(gateway);
-  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const fixture = await createConsoleAppFixture(t, { credentialSources });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
   const input = await fixture.createSecret(
     namespace.id,
     "OpenAI source input",
     "source-browser-fixture",
   );
   // Source registration is outside this Console test. This is the ready API-key
-  // source state the existing OpenClaw credential-gateway path supports.
+  // source state the OpenShell Backend supplies for OpenClaw.
   const source = await fixture.controller.transact((state) =>
     state.credentialSources.createCredentialSource({
       id: `cs_${randomUUID()}`,
@@ -4868,7 +4875,7 @@ test("Credentials preserves an existing OpenClaw credential source without offer
       config: {},
       secrets: { api_key: input.ref },
       ownerCapability: "credential_gateway",
-      driverId: gateway.id,
+      driverId: credentialSources.id,
       state: "ready",
       createdAt: new Date().toISOString(),
     }),

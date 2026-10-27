@@ -13,7 +13,21 @@ import {
 import { waitFor } from "./wait-for.mjs";
 import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
 
-export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
+export const CREDENTIAL_SOURCE_OWNER_ID = "credential-gateway-worker-fixture";
+
+/**
+ * The model source owner and Sandbox selected by a worker test Installation.
+ * @returns {import("../../packages/contracts/src/index.ts").OpenShellBackendDefinition}
+ */
+export function workerSourceBackend(sourceId, sandboxId) {
+  return {
+    id: "worker-source-backend",
+    type: "openshell",
+    credentialSources: { id: sourceId, configuration: { binaries: ["/app/bin/model-client"] } },
+    configuration: { serviceName: "openshell", insecureTransport: "network-policy" },
+    drivers: { sandbox: sandboxId },
+  };
+}
 
 // Admission locks a Namespace, then its Agent. Every worker transaction that locks a claim's
 // Agent must already hold the Namespace (#1742), or it deadlocks with a concurrent deploy,
@@ -237,6 +251,7 @@ export function createWorkerRevisionFixtures(
       metrics,
       repoDriver,
       driverSelections = {},
+      credentialSources,
       secretAuthMethod = "api_key",
       // Shorter teardown step limits, for a test of the teardown itself.
       disposeLimitsMs: limitsMs,
@@ -315,6 +330,7 @@ export function createWorkerRevisionFixtures(
       { installation, state },
       {
         backends: [],
+        credentialSources,
         driverConfigurations: installationDriverConfigurations({ drivers: driverSelections }),
       },
     );
@@ -356,7 +372,7 @@ export function createWorkerRevisionFixtures(
           config: { host: `api-${index}.example.com`, env_var: `TOOL_TOKEN_${index}` },
           secrets: {},
           ownerCapability: "credential_gateway",
-          driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,
+          driverId: CREDENTIAL_SOURCE_OWNER_ID,
           state: "registering",
           createdAt: new Date().toISOString(),
         };
@@ -380,7 +396,7 @@ export function createWorkerRevisionFixtures(
           config: modelConfig,
           secrets: {},
           ownerCapability: "credential_gateway",
-          driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,
+          driverId: CREDENTIAL_SOURCE_OWNER_ID,
           state: "registering",
           createdAt: new Date().toISOString(),
         };

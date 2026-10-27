@@ -104,7 +104,7 @@ import type {
   SelectedDriverRegistration,
   ConfigurationValidationOptions,
   CredentialAttachmentStatus,
-  CredentialGatewayDriver,
+  BackendCredentialSources,
   CredentialSource,
   CredentialSourceAttachment,
   CredentialSourceType,
@@ -3508,7 +3508,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly preparedRepositoryIngress: boolean;
   private readonly preparedTokens: PreparedTokenService | undefined;
-  private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
+  private readonly credentialSources: BackendCredentialSources | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
 
   private get proxyDriver() {
@@ -4047,7 +4047,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly preparedRepositoryIngress?: true;
       readonly preparedTokens?: PreparedTokenService;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
-      readonly credentialGatewayDriver?: CredentialGatewayDriver;
+      readonly credentialSources?: BackendCredentialSources;
       readonly protectedDriver?: InstalledDriver;
       readonly nodeEnrollment?: GatewayNodeEnrollment;
       readonly readNodeCa?: () => Promise<string | undefined>;
@@ -4084,12 +4084,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.preparedRepositoryIngress = selection.preparedRepositoryIngress === true;
-    if (selection.credentialGatewayDriver !== undefined && this.sandboxDriver === undefined) {
+    if (selection.credentialSources !== undefined && this.sandboxDriver === undefined) {
       throw new ConfigurationFailure(
         "The Credential Gateway Driver requires a paired Sandbox Driver.",
       );
     }
-    this.credentialGatewayDriver = selection.credentialGatewayDriver;
+    this.credentialSources = selection.credentialSources;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
@@ -4562,8 +4562,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       // The paired Sandbox injects the credential, so this path never projects a model Secret.
       if (
         this.sandboxDriver === undefined ||
-        this.credentialGatewayDriver === undefined ||
-        auth.credentialGatewayId !== this.credentialGatewayDriver.id ||
+        this.credentialSources === undefined ||
+        auth.credentialGatewayId !== this.credentialSources.id ||
         credentialSourceType?.type !== auth.sourceType ||
         credentialSourceType.harnessAuth?.loginMode !== auth.loginMode ||
         credentialSourceType.harnessAuth.modelProvider !== "openai" ||
@@ -6039,7 +6039,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       plan.routes.some((route) => !isDeepStrictEqual(route.binding.execution, execution)) ||
       (plan.harnessCredentialSource &&
         (!isDeepStrictEqual(plan.harnessCredentialSource, revision.harnessAuth) ||
-          plan.harnessCredentialSource.credentialGatewayId !== this.credentialGatewayDriver?.id)) ||
+          plan.harnessCredentialSource.credentialGatewayId !== this.credentialSources?.id)) ||
       (!harnessEgressEnrollment(plan).inference
         ? revision.harnessAuth.method !== "runtime"
         : revision.harnessAuth.method !== "credential_source")
@@ -8216,9 +8216,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
     const owner =
-      source.ownerCapability === "credential_gateway"
-        ? this.credentialGatewayDriver
-        : this.proxyDriver;
+      source.ownerCapability === "credential_gateway" ? this.credentialSources : this.proxyDriver;
     if (source.driverId !== owner?.id || !credentialSourceMatchesSnapshot(source, snapshot)) {
       throw new OwnershipFailure(
         "The credential source does not match the revision's admitted owner.",
@@ -11092,7 +11090,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return undefined;
     }
     const sourceType = revision.harnessAuth.sourceType;
-    const catalog = await this.requireCredentialGateway().listSourceTypes({
+    const catalog = await this.requireCredentialSources().listSourceTypes({
       signal: this.operationSignal(),
     });
     return catalog.find((entry) => entry.type === sourceType);
@@ -11107,13 +11105,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return sandbox.credentialAttachments;
   }
 
-  private requireCredentialGateway(): CredentialGatewayDriver {
-    if (this.credentialGatewayDriver === undefined) {
+  private requireCredentialSources(): BackendCredentialSources {
+    if (this.credentialSources === undefined) {
       throw new ConfigurationFailure(
-        "The admitted revision requires the Credential Gateway Driver.",
+        "The admitted revision requires its Backend credential source owner.",
       );
     }
-    return this.credentialGatewayDriver;
+    return this.credentialSources;
   }
 
   /** Only the trusted Sandbox attachment supplies external account metadata and placeholders. */

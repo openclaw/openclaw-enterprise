@@ -433,16 +433,13 @@ export function createOpenShellInstallationConfiguration({
       type: "openshell",
       // The fixture gateway is in-cluster HTTP isolated by the suite's NetworkPolicies.
       configuration: { endpoint: "http://127.0.0.1:1", insecureTransport: "network-policy" },
-      drivers: {
-        sandbox: "sandbox-openshell-kubernetes",
-        credential_gateway: "credential-gateway-openshell-kubernetes",
+      drivers: { sandbox: "sandbox-openshell-kubernetes" },
+      credentialSources: {
+        id: "credential-gateway-openshell-kubernetes",
+        configuration: { binaries: [...openshellCodexBinaries] },
       },
     },
   ];
-  configuration.drivers.credential_gateway = {
-    id: "credential-gateway-openshell-kubernetes",
-    configuration: { binaries: [...openshellCodexBinaries] },
-  };
   configuration.sandboxNetworkPolicyCeiling = [
     {
       id: "python-demo",

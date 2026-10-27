@@ -410,9 +410,10 @@ function openShellSandbox(t, overrides = {}, gateway = {}) {
     id: "workspace-openshell",
     type: "openshell",
     configuration: { endpoint: "http://127.0.0.1:9", insecureTransport: "network-policy" },
-    drivers: {
-      sandbox: "workspace-openshell-sandbox",
-      credential_gateway: "workspace-openshell-credentials",
+    drivers: { sandbox: "workspace-openshell-sandbox" },
+    credentialSources: {
+      id: "workspace-openshell-credentials",
+      configuration: { binaries: ["/usr/bin/codex"] },
     },
   };
   const backend = createOpenShellBackend(definition);

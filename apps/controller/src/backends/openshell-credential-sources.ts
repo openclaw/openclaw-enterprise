@@ -1,7 +1,6 @@
 import type {
-  Backend,
-  CredentialGatewayContext,
-  CredentialGatewayDriver,
+  BackendCredentialSources,
+  CredentialOperationContext,
   CredentialSourceContext,
   CredentialSourceInput,
   CredentialSourceStatus,
@@ -13,76 +12,44 @@ import {
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
-
+import {
+  CODEX_ACCOUNT_CONFIG,
+  CODEX_OAUTH_TYPE,
+} from "../drivers/credential-refresh/codex-device-authorization.ts";
+import { OpenShellProviderAlreadyExistsError } from "../drivers/sandbox/openshell-gateway-client.ts";
+import {
+  openShellProviderName,
+  openShellWorkspaceName,
+  type OpenShellBackend,
+} from "./openshell.ts";
 import {
   knownSourceType,
   MANAGED_BY,
   MANAGED_BY_LABEL,
   NAMESPACE_ID_LABEL,
-  OpenShellCredentialProfiles,
   ownedBy,
   SOURCE_ID_LABEL,
-  type OpenShellCredentialProfileOptions,
+  type OpenShellCredentialProfiles,
   type OpenShellSourceType,
-} from "../../backends/openshell-credential-profiles.ts";
+} from "./openshell-credential-profiles.ts";
 
-import {
-  openShellProviderName,
-  openShellWorkspaceName,
-  type OpenShellGateway,
-  type OpenShellGatewayPlacement,
-} from "../../backends/openshell.ts";
-import { OpenShellProviderAlreadyExistsError } from "../sandbox/openshell-gateway-client.ts";
-
-import {
-  CODEX_OAUTH_TYPE,
-  CODEX_ACCOUNT_CONFIG,
-} from "../credential-refresh/codex-device-authorization.ts";
-
-export interface OpenShellCredentialGatewaySelection {
-  readonly id?: string;
-  readonly implementation?: string;
-  readonly backend: Backend<OpenShellGateway>;
-}
-
-class OpenShellCredentialGatewayFailure extends Error {}
-
-/** Stores OCC credential sources as OpenShell providers; the supervisor injects them. */
-export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver {
-  static readonly configurationSchema = OpenShellCredentialProfiles.configurationSchema;
-  static readonly validateConfiguration = OpenShellCredentialProfiles.validateConfiguration;
-
+/** Registers Namespace credential sources as providers in the Sandbox's OpenShell workspace. */
+export class OpenShellCredentialSources implements BackendCredentialSources {
   readonly id: string;
-  readonly capability = "credential_gateway" as const;
-  readonly implementation: string;
-  readonly profiles: OpenShellCredentialProfiles;
-  private readonly backend: Backend<OpenShellGateway>;
+  private readonly backend: OpenShellBackend;
+  private readonly profiles: OpenShellCredentialProfiles;
 
-  constructor(
-    options: OpenShellCredentialProfileOptions,
-    selection: OpenShellCredentialGatewaySelection,
-  ) {
-    this.id = selection.id ?? "credential-gateway-openshell";
-    this.profiles = new OpenShellCredentialProfiles(options, {
-      id: this.id,
-      refresh: selection.backend.drivers.credential_refresh !== undefined,
-    });
-    this.implementation = selection.implementation ?? "openshell";
-    if (this.implementation !== "openshell") {
-      throw new OpenShellCredentialGatewayFailure(
-        "OpenShell Credential Gateway implementation must be exactly openshell.",
-      );
+  constructor(backend: OpenShellBackend, profiles: OpenShellCredentialProfiles) {
+    if (backend.credentialSources.id !== profiles.id) {
+      throw new Error("The OpenShell Backend does not declare this credential source owner.");
     }
-    if (selection.backend.drivers.credential_gateway !== this.id) {
-      throw new OpenShellCredentialGatewayFailure(
-        "The OpenShell Backend does not declare this Credential Gateway Driver as a member.",
-      );
-    }
-    this.backend = selection.backend;
+    this.backend = backend;
+    this.profiles = profiles;
+    this.id = profiles.id;
   }
 
   async listSourceTypes(
-    _context: CredentialGatewayContext,
+    _context: CredentialOperationContext,
   ): Promise<readonly CredentialSourceType[]> {
     return this.profiles.catalog();
   }
@@ -102,12 +69,13 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
     const type = this.profiles.sourceType(input.type);
+    const placement = this.backend.client.placement(context.namespace.name);
     // validateSourceConfig sees no tenant Namespace, so a gateway in each tenant namespace is
     // known only here. Refuse the request's own value before any gateway write, by field, as
     // validateSourceConfig does (400); OCC passes this ScopeViolationError through, while a
     // CredentialSourceConfigError would surface as a 503 (finding 2536).
     try {
-      type.validate(input.config, this.placement(context));
+      type.validate(input.config, placement);
     } catch (error) {
       if (error instanceof CredentialSourceConfigError) {
         throw new CredentialSourceRegistrationConfigError(error.field, error.message);
@@ -115,7 +83,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       throw error;
     }
     const workspace = openShellWorkspaceName(context.namespace);
-    const client = this.client(context);
+    const client = this.backend.client.clientForNamespace(context.namespace.name);
     const credentials = providerCredentials(type, input);
     const name = openShellProviderName(context.source.id);
     const existing = await client.getProvider(workspace, name, context.signal);
@@ -132,7 +100,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       type,
       context.source.id,
       input.config,
-      this.placement(context),
+      placement,
       context.signal,
     );
     try {
@@ -181,7 +149,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       );
     }
     const workspace = openShellWorkspaceName(context.namespace);
-    const client = this.client(context);
+    const client = this.backend.client.clientForNamespace(context.namespace.name);
     const name = openShellProviderName(context.source.id);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing === undefined) {
@@ -200,7 +168,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       type,
       context.source.id,
       context.source.config,
-      this.placement(context),
+      this.backend.client.placement(context.namespace.name),
       context.signal,
     );
     await client.updateProviderCredentials(
@@ -214,7 +182,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
 
   async sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus> {
     knownSourceType(context.source.type);
-    const provider = await this.client(context).getProvider(
+    const client = this.backend.client.clientForNamespace(context.namespace.name);
+    const provider = await client.getProvider(
       openShellWorkspaceName(context.namespace),
       openShellProviderName(context.source.id),
       context.signal,
@@ -235,7 +204,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     knownSourceType(context.source.type);
     const workspace = openShellWorkspaceName(context.namespace);
     const name = openShellProviderName(context.source.id);
-    const client = this.client(context);
+    const client = this.backend.client.clientForNamespace(context.namespace.name);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined) {
       if (!ownedBy(existing, context.source.id)) {
@@ -245,21 +214,11 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       await client.deleteProvider(workspace, name, context.signal);
       if ((await client.getProvider(workspace, name, context.signal)) !== undefined) {
-        throw new OpenShellCredentialGatewayFailure("The OpenShell provider was not deleted.");
+        throw new Error("The OpenShell provider was not deleted.");
       }
     }
     // Workspace deletion requires no profiles, and each source's profile goes with it.
     await client.deleteProviderProfile(workspace, name, context.signal);
-  }
-
-  private client(context: CredentialGatewayContext & { readonly namespace: { name: string } }) {
-    return this.backend.client.clientForNamespace(context.namespace.name);
-  }
-
-  private placement(
-    context: CredentialGatewayContext & { readonly namespace: { name: string } },
-  ): OpenShellGatewayPlacement | undefined {
-    return this.backend.client.placement(context.namespace.name);
   }
 }
 
