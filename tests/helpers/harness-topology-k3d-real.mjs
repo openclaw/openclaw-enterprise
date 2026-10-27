@@ -2155,7 +2155,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     // transport credentials, exact Secret grants, and the initial deployment.
     const admitted = await adminRequest("POST", `/namespaces/${namespaceId}/agents/provision`, {
       ...launch.agent,
-      requestId: `native-admin-${randomUUID()}`,
+      requestId: `req_${randomUUID()}`,
       nativeAdmin: true,
       configuration: { kind: "agent", ...launch.configuration },
     });
