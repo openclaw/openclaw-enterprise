@@ -14,12 +14,12 @@ network requests still use the configured network policy.
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-The selected upstream source pins Codex `0.162.1`. A temporary
-`stock-codex-0.163.0-alpha.2-dependency-pin.patch` updates its managed version,
+The selected upstream source pins Codex `0.164.0`. A temporary
+`stock-codex-0.163.0-alpha.2-dependency-pin.patch` sets its managed version,
 package manifest, and frozen lockfile to the stock `0.163.0-alpha.2` npm release,
-which supports plugin default enablement. Both Codex entrypoints use that same
-installation; no Codex binary patch is applied. Remove the dependency patch
-when the selected OpenClaw source pins a compatible Codex release.
+the version OCE reviewed for the Codex sandbox seccomp profile. Both Codex
+entrypoints use that same installation; no Codex binary patch is applied. Remove
+the dependency patch when OCE qualifies the Codex release the source pins.
 Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
@@ -96,7 +96,7 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.163.0-alpha.2`                                                                                                 |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The source's package version is `2026.10.6`; it does not identify this custom
+The source's package version is `2026.10.7`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
@@ -178,7 +178,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/cee236c9e9891396a7d672ab016a5e5d9d51a003/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/97a1b4c07336db0c2f0eb52901118983490b7b1e/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
