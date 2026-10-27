@@ -134,7 +134,10 @@ only eligible, committed material for its admitted grant and isolation.
 For authenticated catalog discovery, OCC checks the caller's rights on the exact source
 before Token Service can retrieve an access token and account metadata. OCC rechecks
 authorization before using that credential inside the server-side discovery callback.
-OpenShell can renew a token to meet the discovery operation's minimum validity. Runtime
+OpenShell can renew a token to meet the discovery operation's minimum validity.
+Omitting OAuth enrollment from an existing Installation stops new logins. If a previously
+enrolled source still has an authorized OpenShell operator connection, discovery can use
+the same Token Service reader for that source. Runtime
 sends use the warm-read contract above. [Protected Git](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval)
 uses a prepared token.
 
