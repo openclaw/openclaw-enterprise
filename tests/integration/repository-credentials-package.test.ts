@@ -24,7 +24,11 @@ import {
 } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import test from "node:test";
-import { availablePort, reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import {
+  bindReservedPortInProcess,
+  reservePort,
+  reservedPortArgs,
+} from "../helpers/available-port.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
@@ -1005,7 +1009,12 @@ test(
   "credential readiness waits for pending control socket setup",
   { timeout: 10000 },
   async (t) => {
-    const port: number = await availablePort();
+    // Hold the gateway port until the in-process listener binds it: a port only probed free
+    // can be taken by a parallel test or this fixture's own upstreams first (run 40557988145).
+    const reservation: PortReservation = await reservePort();
+    t.after(() => reservation.release());
+    await bindReservedPortInProcess(reservation);
+    const port: number = reservation.port;
     const tls = await createTlsMaterial(t);
     const gatewayStatus = (): Promise<number | undefined> =>
       new Promise((resolve, reject) => {
@@ -1055,6 +1064,9 @@ test(
           throw new Error("listener did not reach socket setup");
         }),
       ]);
+      // Both listeners are bound once socket setup starts. Release the hold so every
+      // connection below reaches the real listener, not the resetting reservation.
+      await reservation.release();
       assert.ok((await lstat(socket)).isSocket(), "binding alone precedes readiness");
       await assert.rejects(controlHealth(socket), isConnectionReset);
       await assert.rejects(gatewayStatus(), isConnectionReset);
