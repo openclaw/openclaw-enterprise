@@ -26,9 +26,16 @@ func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developm
 	var owner [2]int
 	var readerImage string
 	for index, service := range readers {
-		id, err := r.output(ctx, r.engine, "ps", "--all", "--quiet",
-			"--filter", "label=com.docker.compose.project="+state.ComposeProject,
-			"--filter", "label=com.docker.compose.service="+service)
+		lookup := []string{"ps", "--all", "--quiet",
+			"--filter", "label=com.docker.compose.project=" + state.ComposeProject,
+			"--filter", "label=com.docker.compose.service=" + service}
+		// Docker Compose labels service containers oneoff=False and `compose run`
+		// containers oneoff=True. podman-compose sets no oneoff label, so Podman
+		// keeps the exact-match check below and fails closed on a one-off.
+		if r.engine == "docker" {
+			lookup = append(lookup, "--filter", "label=com.docker.compose.oneoff=False")
+		}
+		id, err := r.output(ctx, r.engine, lookup...)
 		if err != nil {
 			return err
 		}
