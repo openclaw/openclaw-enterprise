@@ -133,11 +133,6 @@ paired Sandbox can consume them. The Sandbox must apply every attachment and
 reject any it did not issue. After the Harness is ready, Compute asks the
 gateway whether each attachment is applied before activating the Agent revision.
 
-A private WSS Harness endpoint may supply public CA trust in `tls.caBundle`. Compute
-projects that bundle through an immutable revision ConfigMap into only this Gateway; Node
-verifies the peer certificate and hostname, activation checks the same trust, and
-retirement removes it after the workloads.
-
 ### Sandbox resource identity
 
 `SandboxResourceRef` contains `namespaceName`, `resourceName`, `agentId`, and
@@ -262,8 +257,6 @@ as the `reason`. OpenShell throws it for gRPC `PERMISSION_DENIED` and
 
 - Supported facets are `networking`, `filesystem`, and `process`; there is no
   `exec` facet, per-tool Sandbox creation, or Sandbox-owned command authorization.
-- Sandbox selection currently requires bundled Kubernetes Compute and dedicated
-  Harness execution. An installed Sandbox package does not broaden that support.
 - The shared interface does not offer a separate readiness or activation method;
   Compute owns both and retains its baseline isolation rules.
 

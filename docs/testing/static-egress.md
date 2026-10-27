@@ -96,8 +96,8 @@ Run the startup coordination integration separately:
 node --test tests/integration/egress-enrollment.test.mjs
 ```
 
-It launches the actual generated entrypoint and uses the selected Sandbox Driver's
-real service client against local HTTP fixtures. A substituted CLI process makes
+It launches the generated entrypoint with the selected Sandbox Driver's real
+service client against local HTTP fixtures. A substituted CLI process makes
 one local request through the real authority path after enrollment. The test proves
 that an absent receipt blocks the first request, a committed receipt alone does not
 release startup, and stale, wrong-instance or wrong-execution releases refuse. A
@@ -117,8 +117,8 @@ it does not reuse or establish custody of the producer's token. That capture cov
 the nested enforcement message, not the complete V1 policy observation. The separate
 `openshell-operation.json` captures the sender's TLS/gRPC request after a 100 ms
 delay. Its deadline remains creation plus 30 seconds. The consumer checks that
-historical operation refuses before material access. These two captures come from
-different synthetic component fixtures, not one installed Sandbox.
+historical operation refuses before material access. The two captures come from
+separate synthetic fixtures, not one installed Sandbox.
 
 ## PostgreSQL state
 
@@ -144,7 +144,7 @@ after process restart. This nonce check does not establish automatic recovery:
 the default Kubernetes selection queues no periodic active-revision maintenance.
 Also verify timeout holds startup without a business retry.
 
-Before qualifying a deployment, additionally prove the actual supervisor requires
+Before qualifying a deployment, also prove the actual supervisor requires
 the credential-access capability, binds the exact loaded policy, refuses missing
 counterparts, withholds response bytes until protection completes, and prevents
 workload bypass. Use the [OpenShell qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
@@ -154,8 +154,8 @@ remain unsupported. Finite SSE is released only complete and under 4 MiB; the
 30-second deadline bounds its first byte, then supervisor progress renews a lease
 (idle five minutes, ceiling fifteen). Fresh revisions with matching candidates are the
 intended installed scope; mixed-version hot upgrades are unsupported and
-no-bypass networking requires separate runtime proof. There is no successful installed native model-turn
-evidence in this consumer suite.
+no-bypass networking needs separate runtime proof. This consumer suite has no
+installed native model-turn evidence.
 
 ## Protected launch packaging
 

@@ -148,6 +148,21 @@ Driver retains the Agent-owned state and workspace volumes used for initial
 workspace setup across stop and version replacement. Without initial workspace
 inputs, writable container tmpfs remains ephemeral.
 
+For a stateful embedded Gateway, the Driver can recover after an unclean stop
+if it observed the old container's private Linux PID namespace while it ran.
+Docker Engine must report that the same container instance exited, and the
+replacement must use the same local state volume. OpenClaw checks every
+recorded holder against that namespace before releasing its locks. If the
+Driver lost its observation or the holders do not match, follow
+[operator recovery](../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+
+The Driver kills an observed embedded Gateway to record its exit. It stops
+every other container before removal: Docker sends SIGTERM and sends SIGKILL
+after 10 seconds. A Gateway that exits on SIGTERM releases its OpenClaw state
+lock, so its replacement needs no recovery. This includes a Gateway that the
+Driver did not observe, for example after a controller restart. If the stop
+fails, the Driver still removes the container and reports the stop failure.
+
 State on that volume outlives runtime image upgrades. Before OpenClaw starts,
 the gateway runs the same agent database migration as a
 [Kubernetes Gateway](kubernetes-compute/storage-and-credentials.md#gateway-storage):

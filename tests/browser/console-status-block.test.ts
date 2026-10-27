@@ -29,6 +29,8 @@ import {
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_SAVE_DENIED,
+  DIAGNOSTICS_DENIED,
+  notIncluded,
   RELOAD_DRAFT_BEFORE_SAVING,
   REPOSITORY_ACCESS_CHANGED,
   REPOSITORY_EDITS_PENDING,
@@ -934,7 +936,7 @@ async function answerDiagnostics(page: Page, revisionId: string) {
   return runs;
 }
 
-const DIAGNOSTICS_REASON = "Your access does not include running diagnostics for this Agent.";
+const DIAGNOSTICS_REASON = DIAGNOSTICS_DENIED;
 
 test("Run diagnostics access and outcomes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -1004,8 +1006,10 @@ test("Run diagnostics access and outcomes", async (t) => {
         await run.click();
         const alert = observations.getByRole("alert").filter({
           // An Installation administrator grants access, not a Namespace one (finding 2260).
-          hasText:
-            "Diagnostics require Agent read and operate access plus read access to this version. Granting them needs Installation administration access: ask an Installation administrator to check those grants.",
+          hasText: notIncluded(
+            "running diagnostics for this version",
+            "Agent read and operate on this Agent and AgentRevision read on this version",
+          ),
         });
         await alert.waitFor();
         const view = await refusalView(alert);

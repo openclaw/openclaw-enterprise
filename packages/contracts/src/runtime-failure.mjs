@@ -28,6 +28,7 @@ export const RUNTIME_DIAGNOSTIC_CODES = Object.freeze([
 
 /** The startup steps a runtime entrypoint holds a failure under. */
 export const RUNTIME_FAILURE_CHECKS = Object.freeze([
+  "gateway-tool-policy",
   "login",
   "model-probe",
   "peer-bridge-record",

@@ -223,7 +223,30 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 			return "", err
 		}
 	} else {
-		if err := r.run(ctx, r.engine, "build", "-f", "deploy/runtime/Dockerfile", "--tag", image, "."); err != nil {
+		const sourcePath = "deploy/runtime/openclaw-source.json"
+		data, err := os.ReadFile(filepath.Join(r.opts.Repository, sourcePath))
+		if err != nil {
+			return "", fmt.Errorf("read runtime source identity: %w", err)
+		}
+		var source struct {
+			Commit              string `json:"commit"`
+			SourceArchiveSHA256 string `json:"sourceArchiveSha256"`
+			BuildTimestamp      string `json:"buildTimestamp"`
+		}
+		if err := json.Unmarshal(data, &source, json.RejectUnknownMembers(true)); err != nil {
+			return "", fmt.Errorf("invalid %s: %w", sourcePath, err)
+		}
+		timestamp, err := time.Parse(time.RFC3339, source.BuildTimestamp)
+		if !regexp.MustCompile(`^[a-f0-9]{40}$`).MatchString(source.Commit) ||
+			!regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(source.SourceArchiveSHA256) ||
+			err != nil || len(source.BuildTimestamp) != 20 || timestamp.Format(time.RFC3339) != source.BuildTimestamp {
+			return "", fmt.Errorf("invalid %s: require a lowercase 40-character commit, 64-character archive SHA-256, and UTC build timestamp YYYY-MM-DDTHH:mm:ssZ", sourcePath)
+		}
+		if err := r.run(ctx, r.engine, "build", "-f", "deploy/runtime/Dockerfile",
+			"--build-arg", "OPENCLAW_COMMIT="+source.Commit,
+			"--build-arg", "OPENCLAW_SOURCE_SHA256="+source.SourceArchiveSHA256,
+			"--build-arg", "OPENCLAW_BUILD_TIMESTAMP="+source.BuildTimestamp,
+			"--tag", image, "."); err != nil {
 			return "", err
 		}
 	}

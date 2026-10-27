@@ -4,6 +4,7 @@ import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { RESOURCE_CONFLICT } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -365,7 +366,8 @@ test("Plugin selections JSON", async (t) => {
   const outcomes = [
     {
       name: "refusal",
-      response: apiErrorResponse(409, "RESOURCE_CONFLICT", "Held."),
+      // The API's catch-all conflict names nothing, so the tab keeps its own sentence.
+      response: apiErrorResponse(409, "RESOURCE_CONFLICT", RESOURCE_CONFLICT),
       shown: (page: Page) =>
         page.getByRole("alert").filter({
           hasText:

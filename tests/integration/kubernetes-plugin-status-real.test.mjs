@@ -208,6 +208,7 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     configurationId: `cfg_${randomUUID()}`,
     configurationKind: "agent",
     configurationGeneration: number,
+    gatewayManagedMode: true,
     configuration: admitLoggingConfiguration(
       withStubbedProviderEndpoint({
         gateway: { controlUi: { enabled: false } },

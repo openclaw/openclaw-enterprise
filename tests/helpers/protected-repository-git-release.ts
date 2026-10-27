@@ -19,6 +19,7 @@ import {
   RepositoryGitSenderUnqualifiedError,
 } from "../../packages/occ/src/index.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { CREDENTIAL_PROXY_INSTALLATION_PREVIEW } from "./refusal-text.mjs";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
@@ -114,7 +115,7 @@ export function protectedRepositoryGitRelease(
       assert.throws(
         () => super.assertRepositoryGitProfileAvailable(profile),
         profile === "github_installation"
-          ? /not qualified for GitHub installation/
+          ? { message: CREDENTIAL_PROXY_INSTALLATION_PREVIEW }
           : RepositoryGitSenderUnqualifiedError,
       );
     }

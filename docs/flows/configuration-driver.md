@@ -135,7 +135,8 @@ shapes fail with `400`. Updates require the complete replacement `values`
 document and accept optional `secretBindings` and `expectedGeneration`, refusing
 a stale one under the row lock with an `/expectedGeneration` `409` detail.
 On the bundled Kubernetes Compute, writes refuse an enabled channel's unbound
-credential reference with deployment's rule (`requireChannelSecretBindings`).
+credential reference, or a Slack token SecretRef the Slack Channel Driver cannot
+read, with deployment's rule (`requireChannelSecretBindings`).
 `kind`, `generation`, and ownership are server-owned. OCC preserves nested values
 and SecretRefs unchanged. Malformed,
 generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
@@ -217,6 +218,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-25: Writes refuse a Slack token SecretRef the Slack Channel Driver cannot read. (finding 2514)
 - 2026-10-25 13:00: Writes, provisioning and the Create Agent preflight refuse an enabled channel's unbound credential reference. (fix-2319, finding 2319)
 - 2026-10-23 13:40: Writes and Preset saves refuse an `agents` model without its provider, with deployment's text. (fix-1828, finding 1828)
 - 2026-10-14 10:30: Writes refuse literals in the other slots OpenClaw marks sensitive ([rules](configuration-driver/persistence-and-revisions.md)). (fix-1309, finding 1309)

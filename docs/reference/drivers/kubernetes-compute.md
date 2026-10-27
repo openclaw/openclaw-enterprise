@@ -31,25 +31,9 @@ Operator contracts:
 ## Existing split-layout installations
 
 Releases before #925 kept each Namespace's Gateways, Gateway state and canonical
-Secrets in a separate `oce-gateways-<hash>` namespace. In a single cluster, API
-and worker startup refuse these storage namespaces without the tenant discovery
-label. The check changes nothing. Inspect the storage
-targets before replacing the controller images:
-
-```sh
-kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace
-```
-
-In a single cluster, a row with an empty `NAMESPACE` column is a split-layout
-tenant. The two-cluster profile's control-cluster rows are expected.
-
-Adopt each tenant in place with the
-[split-layout upgrade](../../guides/deploy/split-layout-upgrade.md):
-the storage namespace becomes the tenant namespace and keeps its Secrets,
-Configurations and Gateway state, and the old namespace's claims and Agent
-Secrets move into it. Compute accepts the `oce-gateways-<hash>` name as a tenant
-namespace only while it keeps its own storage label. Do not add the tenant label
-by hand: the old namespace's claims, routes and transport Secrets would not move.
+Secrets in a separate `oce-gateways-<hash>` namespace. Check for and adopt these
+tenants with [Existing split-layout installations](kubernetes-compute/split-layout-installations.md)
+before replacing the controller images.
 
 ## Requirements
 
@@ -349,6 +333,14 @@ model turn.
 - **Agent configuration is rejected:** Confirm the selected Harness supports
   its execution mode; external channels and provider-issued access tokens
   require dedicated execution.
+- **An Agent with repository bindings is refused for its Codex proxy:** Agent
+  save, provisioning and deployment answer `400` when
+  `plugins.entries.codex.config.appServer.networkProxy` has `enabled: false`, a
+  `mode` other than `limited` or `full`, a non-boolean `allowLocalBinding`, or
+  `domains` that is not an object mapping each host to `allow` or `deny`.
+  Preparation also refuses a deny of the broker hostname, which only session
+  material names. Fix or delete the named setting, or remove the bindings; see
+  [repository broker policy](kubernetes-compute/networking-and-isolation.md#networking).
 - **Approved traffic fails or denied traffic succeeds:** Verify NetworkPolicy
   enforcement, configured DNS selectors, gateway-client selectors, and any
   configured channel proxy address.

@@ -228,24 +228,69 @@ export function cachedResponseSerializers(
   };
 }
 
-// Fastify lowercases the property names of a route's headers schema before compiling it, as
-// request header names arrive lowercased, but only with its default validator compiler; with
-// ours it passes the schema unchanged. So refuse a headers schema that names a header in
-// another case rather than let it never match.
+// These subschemas validate the same instance: either the headers object or one header name.
+// In draft-07, schema-valued dependencies also validate the containing object. Do not descend
+// into header values, annotations or referenced schemas.
+function* sameInstanceSchemas(root: unknown, instance: "headers" | "name") {
+  const pending = new Set([root]);
+  for (const schema of pending) {
+    if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
+      continue;
+    }
+    const branch = schema as Record<string, unknown>;
+    yield branch;
+    for (const child of [branch.not, branch.if, branch.then, branch.else]) {
+      pending.add(child);
+    }
+    for (const children of [branch.allOf, branch.anyOf, branch.oneOf]) {
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          pending.add(child);
+        }
+      }
+    }
+    const dependencies = branch.dependencies;
+    if (instance === "headers" && typeof dependencies === "object" && dependencies !== null) {
+      for (const [name, child] of Object.entries(dependencies)) {
+        assertLowercaseHeaderName(name);
+        if (Array.isArray(child)) {
+          child.forEach(assertLowercaseHeaderName);
+        } else {
+          pending.add(child);
+        }
+      }
+    }
+  }
+}
+
+function assertLowercaseHeaderName(name: unknown): void {
+  if (typeof name === "string" && name !== name.toLowerCase()) {
+    throw new Error(`Route headers schemas must name headers in lowercase: ${name}`);
+  }
+}
+
+// Request header names arrive lowercased, but Fastify passes headers schemas unchanged to
+// custom compilers. Refuse a literal in another case rather than let it silently never match.
 function assertLowercaseHeaders(route: { schema?: unknown; httpPart?: unknown }): void {
-  if (route.httpPart !== "headers" || typeof route.schema !== "object" || route.schema === null) {
+  if (route.httpPart !== "headers") {
     return;
   }
-  const { properties, required } = route.schema as { properties?: unknown; required?: unknown };
-  const names = [
-    ...(typeof properties === "object" && properties !== null ? Object.keys(properties) : []),
-    ...(Array.isArray(required)
-      ? required.filter((name): name is string => typeof name === "string")
-      : []),
-  ];
-  const mixed = names.find((name) => name !== name.toLowerCase());
-  if (mixed !== undefined) {
-    throw new Error(`Route headers schemas must name headers in lowercase: ${mixed}`);
+  for (const { properties, required, propertyNames } of sameInstanceSchemas(
+    route.schema,
+    "headers",
+  )) {
+    if (typeof properties === "object" && properties !== null) {
+      Object.keys(properties).forEach(assertLowercaseHeaderName);
+    }
+    if (Array.isArray(required)) {
+      required.forEach(assertLowercaseHeaderName);
+    }
+    for (const rule of sameInstanceSchemas(propertyNames, "name")) {
+      assertLowercaseHeaderName(rule.const);
+      if (Array.isArray(rule.enum)) {
+        rule.enum.forEach(assertLowercaseHeaderName);
+      }
+    }
   }
 }
 

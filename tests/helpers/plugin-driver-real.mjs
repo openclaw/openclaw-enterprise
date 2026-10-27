@@ -441,10 +441,15 @@ function sanitizedPluginProofWorkerEvents(events, revisionId) {
 
 const sessionEvidenceScript = String.raw`
   const { DatabaseSync } = require("node:sqlite");
+  const { isDeepStrictEqual } = require("node:util");
+  const { zstdDecompressSync } = require("node:zlib");
   const sessionKey = process.argv[1];
   const marker = process.argv[2];
   const toolName = process.argv[3];
-  const resultPattern = process.argv[4];
+  const resultPatterns = JSON.parse(process.argv[4]);
+  const expectedArguments = JSON.parse(process.argv[5] || "null");
+  const expectedCatalog = JSON.parse(process.argv[6] || "null");
+  const codeModeCall = JSON.parse(process.argv[7] || "null");
   const databasePath = "/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite";
   const db = new DatabaseSync(databasePath, { readOnly: true });
   function contains(value, needle) {
@@ -507,16 +512,26 @@ const sessionEvidenceScript = String.raw`
       process.exit(0);
     }
     const entry = JSON.parse(session.entry_json);
+    const hasSnapshots = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_entry_snapshots'").get();
+    const snapshot = hasSnapshots ? db.prepare("SELECT value_json FROM session_entry_snapshots WHERE session_key = ? AND field = 'systemPromptReport'").get(sessionKey) : undefined;
+    const promptReport = snapshot ? JSON.parse(snapshot.value_json) : entry?.systemPromptReport;
     const promptTools =
-      entry?.systemPromptReport?.source === "run" &&
-      Array.isArray(entry.systemPromptReport.tools?.entries)
-        ? entry.systemPromptReport.tools.entries
+      promptReport?.source === "run" &&
+      Array.isArray(promptReport.tools?.entries)
+        ? promptReport.tools.entries
             .map((tool) => tool?.name)
             .filter((name) => typeof name === "string")
         : undefined;
     const allRows = db
-      .prepare("SELECT seq, event_json FROM transcript_events WHERE session_id = ? ORDER BY seq")
-      .all(session.current_session_id);
+      .prepare("SELECT seq, event_json, event_zstd, event_utf8_bytes FROM transcript_events WHERE session_id = ? ORDER BY seq")
+      .all(session.current_session_id)
+      .map((row) => {
+        const eventText = row.event_json ?? zstdDecompressSync(row.event_zstd).toString("utf8");
+        if (row.event_utf8_bytes !== null && Buffer.byteLength(eventText) !== row.event_utf8_bytes) {
+          throw new Error("transcript event length mismatch");
+        }
+        return { ...row, event_json: eventText };
+      });
     // Repeated calls share a session; an earlier allowed result cannot prove this turn.
     const start = allRows.findLastIndex((row) => {
       const event = parseEvent(row.event_json);
@@ -608,10 +623,27 @@ const sessionEvidenceScript = String.raw`
           const blockType = block?.type ?? "unknown";
           contentBlockTypeCounts[blockType] = (contentBlockTypeCounts[blockType] ?? 0) + 1;
           if (typeof block?.name === "string") observedToolNames.add(block.name);
-          if (block?.type === "toolCall" && matchesToolName(block.name)) {
+          // Preserve the actual dispatcher call; do not invent an inner transcript event.
+          const id = block?.arguments?.id;
+          const selectedId = typeof id === "string" ? id.trim() : undefined;
+          const targetId = block?.name === "dispatch_action" && toolName &&
+            (selectedId === toolName || selectedId === "openclaw:core:" + toolName)
+              ? selectedId : undefined;
+          if (block?.type === "toolCall" && (matchesToolName(block.name) || targetId)) {
+            const input = targetId ? block.arguments.args : block.arguments;
             const toolPrefix = prefixForToolMirrorIdentity(mirrorIdentity, ":call");
             if (toolPrefix !== undefined) turn(toolPrefix).toolCallMirrorSeen = true;
-            calls.push({ seq: row.seq, id: block.id, name: block.name, mirrorIdentity });
+            calls.push({ seq: row.seq, id: block.id, name: block.name, mirrorIdentity,
+              ...(targetId ? { targetId, targetName: toolName } : {}),
+              matchesArguments: expectedArguments === null || Object.entries(expectedArguments)
+                .every(([key, value]) => isDeepStrictEqual(input?.[key], value)),
+              ...(expectedCatalog ? {
+                matchesSearchArguments: block.name === "tool_search" && Array.isArray(input?.queries) &&
+                  input.queries.length === expectedCatalog.present.length + expectedCatalog.absent.length &&
+                  [...expectedCatalog.present, ...expectedCatalog.absent].every((name) =>
+                    input.queries.filter((query) => query.query === name && query.limit === 1).length === 1),
+              } : {}),
+            });
           }
         }
         if (hasMarker) {
@@ -625,16 +657,92 @@ const sessionEvidenceScript = String.raw`
       if (message.role === "toolResult" && calls.some((call) => call.id === message.toolCallId)) {
         const resultPrefix = prefixForToolMirrorIdentity(mirrorIdentity, ":result");
         if (resultPrefix !== undefined) turn(resultPrefix).toolResultMirrorSeen = true;
+        const call = calls.find((call) => call.id === message.toolCallId);
+        const envelope = call.targetId ? message.details : undefined;
+        // Thrown errors name the dispatcher as a string; canonical results carry tool metadata.
+        const hasEnvelope = (envelope?.tool !== null && typeof envelope?.tool === "object") ||
+          envelope?.result !== undefined;
+        const matchesDispatcherTarget = !call.targetId || (message.toolName === call.name && (hasEnvelope
+          ? envelope.tool?.name === toolName && envelope.tool?.source === "openclaw" &&
+            envelope.tool?.id === (call.targetId === toolName ? "openclaw:core:" + toolName : call.targetId) &&
+            Array.isArray(envelope.result?.content)
+          : message.isError === true));
+        // Code Mode returns guest values, so inspect them only after matching the
+        // complete fixture-authored program, title and synchronous execution request.
+        // Keep the real outer exec identity; this does not invent an inner transcript call.
+        const exactCodeMode = codeModeCall !== null && call.matchesArguments && message.toolName === "exec";
+        const cell = exactCodeMode ? message.details : undefined;
+        const value = cell?.value;
+        const returnedFailure = cell?.status === "completed" && value?.status === "error" && typeof value.error === "string";
+        const thrownFailure = cell?.status === "failed" && cell.bridgeDispatchStarted === true;
+        const matchesTarget = matchesDispatcherTarget && (codeModeCall === null ||
+          (exactCodeMode && (cell?.status === "completed" || thrownFailure)));
+        const targetResult = exactCodeMode
+          ? { content: message.content, details: cell?.status === "completed" ? value : cell }
+          : call.targetId && hasEnvelope ? envelope.result : message;
+        // Dedicated Gateway proxies return an error value; input validation can throw.
+        const isError = message.isError === true || returnedFailure || thrownFailure ||
+          (call.targetId && typeof envelope?.status === "string");
+        const groups = expectedCatalog && Array.isArray(message.details?.results)
+          ? message.details.results : undefined;
+        const codeModeCatalog = exactCodeMode ? cell?.value?.catalog : undefined;
+        const matchesCodeModeCatalog = Array.isArray(codeModeCatalog) &&
+          codeModeCatalog.every((candidate) => typeof candidate?.name === "string" &&
+            candidate.source === "openclaw" && typeof candidate.callableName === "string") &&
+          [...(expectedCatalog?.present ?? []), ...(expectedCatalog?.absent ?? [])].every((name) => {
+            const exact = codeModeCatalog.filter((candidate) => candidate.name === name);
+            return expectedCatalog.present.includes(name)
+              ? exact.length === 1 && exact[0].callableName === name : exact.length === 0;
+          });
+        const matchesCatalog = expectedCatalog === null || (codeModeCall !== null
+          ? exactCodeMode && cell?.status === "completed" && matchesCodeModeCatalog
+          : (call.matchesSearchArguments === true && message.details?.truncated !== true &&
+          groups?.length === expectedCatalog.present.length + expectedCatalog.absent.length &&
+          [...expectedCatalog.present, ...expectedCatalog.absent].every((name) => {
+            const matched = groups.filter((group) => group.query === name);
+            if (matched.length !== 1 || matched[0].truncated === true ||
+                !Array.isArray(matched[0].candidates) || matched[0].candidates.length > 1) return false;
+            const candidates = matched[0].candidates;
+            if (candidates.some((candidate) => typeof candidate?.name !== "string" ||
+                typeof candidate.id !== "string" || typeof candidate.source !== "string")) return false;
+            const exact = candidates.filter((candidate) => candidate.name?.toLowerCase() === name.toLowerCase());
+            return expectedCatalog.present.includes(name)
+              ? exact.length === 1 && exact[0].source === "openclaw" && exact[0].id === "openclaw:core:" + name
+              : exact.length === 0;
+          }))
+        );
+        const matchedResultPattern = resultPatterns.find((pattern) =>
+          contains(targetResult, pattern) || textOf(targetResult?.content).includes(pattern));
         results.push({
           seq: row.seq,
           toolCallId: message.toolCallId,
           toolName: message.toolName,
-          isError: message.isError === true,
+          isError: Boolean(isError),
+          matchesTarget,
+          exitCode: Number.isInteger(targetResult?.details?.exitCode) &&
+            (codeModeCall === null || (cell?.status === "completed" && targetResult.details.status === "completed"))
+              ? targetResult.details.exitCode : undefined,
+          resultDetails: {
+            type: targetResult?.details === null ? "null" : typeof targetResult?.details,
+            keys: targetResult?.details && typeof targetResult.details === "object"
+              ? Object.keys(targetResult.details).slice(0, 16).map((key) => key.slice(0, 64)) : [],
+            status: ["running", "completed", "failed", "approval-pending", "pending", "deferred", "blocked", "error"]
+              .includes(targetResult?.details?.status) ? targetResult.details.status : undefined,
+          },
+          errorText: isError || (exactCodeMode && cell?.status === "failed")
+            ? textOf(targetResult?.content) : undefined,
+          ...(exactCodeMode ? { codeModeProgramVerified: true } : {}),
           // Native Codex emits this terminal reason when MCP approval is denied.
           deniedByUser: textOf(message.content).includes("user rejected MCP tool call"),
-          matchesResult: resultPattern
-            ? contains(message, resultPattern) || textOf(message.content).includes(resultPattern)
-            : hasStructuredResult(message.content),
+          matchesResult: matchesTarget && matchesCatalog && (resultPatterns.length
+            ? matchedResultPattern !== undefined
+            : hasStructuredResult(targetResult?.content)),
+          matchedResultPattern,
+          ...(expectedCatalog ? { matchesCatalog, catalog: exactCodeMode ? codeModeCatalog : groups?.map((group) => ({
+            query: group.query,
+            names: group.candidates?.map((candidate) => candidate.name),
+            truncated: group.truncated === true,
+          })), catalogTruncated: message.details?.truncated === true } : {}),
           mirrorIdentity,
           // Codex records risk and authorization only with a completed judgement; a
           // reviewer that failed closed or timed out leaves them out (finding 1980).
@@ -660,7 +768,18 @@ const sessionEvidenceScript = String.raw`
       sessionKey,
       sessionId: session.current_session_id,
       exists: true,
-      promptReportSource: entry?.systemPromptReport?.source,
+      promptReportSource: promptReport?.source,
+      promptReportShape: {
+        present: promptReport !== undefined,
+        valueType: promptReport === null ? "null" : typeof promptReport,
+        source: promptReport?.source,
+        entriesType: Array.isArray(promptReport?.tools?.entries)
+          ? "array"
+          : promptReport?.tools?.entries === null ? "null" : typeof promptReport?.tools?.entries,
+        entriesCount: Array.isArray(promptReport?.tools?.entries)
+          ? promptReport.tools.entries.length
+          : null,
+      },
       promptToolNames: promptTools,
       messageCount: messages.length,
       userMarkerSeen: messages.some((message) => message.role === "user" && message.hasMarker),
@@ -987,6 +1106,219 @@ function assertDiagnosticText(value, secrets) {
   return text;
 }
 
+// The native catalog is SessionMeta, not the legacy thread_dynamic_tools table.
+export function parseCodexPolicyMetadata(line, expectedThreadId) {
+  const entry = JSON.parse(line);
+  assert.equal(entry.type, "session_meta", "the rollout head must be native SessionMeta");
+  const metadata = entry.payload;
+  assert.equal(metadata?.id, expectedThreadId, "SessionMeta must identify the requested thread");
+  const specs = metadata.dynamic_tools ?? [];
+  assert.ok(Array.isArray(specs), "SessionMeta dynamic_tools must be an array");
+  const tools = specs.flatMap((spec) => {
+    assert.ok(spec.type === "namespace" || spec.type === "function", "unknown native tool spec");
+    const entries = spec.type === "namespace" ? spec.tools : [spec];
+    assert.ok(Array.isArray(entries), "native namespace must contain tools");
+    return entries.map((tool) => {
+      assert.equal(tool.type, "function");
+      assert.ok(typeof tool.name === "string" && tool.name.length > 0);
+      return { namespace: spec.type === "namespace" ? spec.name : null, name: tool.name };
+    });
+  });
+  return {
+    threadId: metadata.id,
+    parentThreadId: metadata.parent_thread_id ?? null,
+    forkedFromId: metadata.forked_from_id ?? null,
+    tools,
+  };
+}
+
+export async function readCodexPolicyRolloutHead(path) {
+  const { access } = await import("node:fs/promises");
+  const { createReadStream } = await import("node:fs");
+  const { createZstdDecompress } = await import("node:zlib");
+  assert.ok(typeof path === "string" && /\.jsonl(?:\.zst)?$/.test(path));
+  // Codex's reader prefers the plain counterpart if compression left both present.
+  const plain = path.replace(/\.zst$/, "");
+  let selected = plain;
+  try {
+    await access(plain);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+    selected = `${plain}.zst`;
+  }
+  const input = createReadStream(selected);
+  const stream = selected.endsWith(".zst") ? input.pipe(createZstdDecompress()) : input;
+  if (stream !== input) {
+    input.on("error", (error) => stream.destroy(error));
+  }
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  try {
+    for await (const chunk of stream) {
+      bytes += chunk.length;
+      assert.ok(bytes <= 4 * 1024 * 1024, "native rollout metadata exceeds the fixture read limit");
+      text += decoder.decode(chunk, { stream: true });
+      const end = text.indexOf("\n");
+      if (end !== -1) {
+        return text.slice(0, end);
+      }
+    }
+    throw new Error("native rollout has no complete SessionMeta record");
+  } finally {
+    stream.destroy();
+    input.destroy();
+  }
+}
+
+export function findCodexPolicyChild(parent, childMarker) {
+  const completedTurns = parent.turns.filter(
+    (turn) => turn.status === "completed" && turn.error === null,
+  );
+  const completedItems = completedTurns.flatMap((turn) => turn.items);
+  const collabSpawns = completedItems.filter(
+    (item) => item.type === "collabAgentToolCall" && item.tool === "spawnAgent",
+  );
+  const completedSpawns = collabSpawns.filter((item) => item.status === "completed");
+  const senderBoundSpawns = completedSpawns.filter((item) => item.senderThreadId === parent.id);
+  const spawns = senderBoundSpawns.filter((item) => item.prompt?.includes(childMarker));
+  // V2 records the started child rather than a collaboration call with its prompt.
+  // Bind that native identity to the turn carrying this test's unique child task.
+  const activities = completedTurns.flatMap((turn) =>
+    turn.items.filter((item) => item.type === "subAgentActivity").map((item) => ({ turn, item })),
+  );
+  const startedActivities = activities.filter(({ item }) => item.kind === "started");
+  const taskActivities = startedActivities.filter(({ turn }) =>
+    turn.items.some(
+      (item) =>
+        item.type === "userMessage" &&
+        item.content.some((part) => part.type === "text" && part.text.includes(childMarker)),
+    ),
+  );
+  assert.equal(
+    spawns.length + taskActivities.length,
+    1,
+    `one completed native spawn must match the child task: ${JSON.stringify({
+      counts: {
+        turns: parent.turns.length,
+        completedErrorNullTurns: completedTurns.length,
+        collabSpawns: collabSpawns.length,
+        completedSpawns: completedSpawns.length,
+        senderBoundSpawns: senderBoundSpawns.length,
+        markerBoundSpawns: spawns.length,
+        subAgentActivities: activities.length,
+        startedSubAgents: startedActivities.length,
+        taskBoundSubAgents: taskActivities.length,
+      },
+      itemTypes: [...new Set(completedItems.map((item) => item.type))].slice(0, 20),
+      activities: activities.slice(-10).map(({ turn, item }) => ({
+        parentTurnId: turn.id,
+        childThreadId: item.agentThreadId,
+        kind: ["started", "interacted", "interrupted", "completed"].includes(item.kind)
+          ? item.kind
+          : "unknown",
+      })),
+      recentTurns: parent.turns.slice(-10).map((turn) => ({
+        status: ["completed", "inProgress", "failed", "interrupted"].includes(turn.status)
+          ? turn.status
+          : "unknown",
+        hasError: turn.error !== null && turn.error !== undefined,
+        errorIsNull: turn.error === null,
+      })),
+    })}`,
+  );
+  if (spawns.length === 1) {
+    assert.equal(
+      spawns[0].receiverThreadIds.length,
+      1,
+      "the spawn must identify exactly one child",
+    );
+    return spawns[0].receiverThreadIds[0];
+  }
+  const childId = taskActivities[0].item.agentThreadId;
+  assert.ok(
+    typeof childId === "string" && childId.length > 0,
+    "the activity must identify its child",
+  );
+  return childId;
+}
+
+export function assertCodexPolicyChild({
+  parent,
+  child,
+  parentMetadata,
+  childMetadata,
+  childMarker,
+  childResult,
+}) {
+  assert.equal(child.id, findCodexPolicyChild(parent, childMarker));
+  assert.notEqual(child.id, parent.id);
+  assert.equal(child.parentThreadId, parent.id);
+  assert.equal(child.forkedFromId, null, "this proof requires a fresh child, not forked history");
+  assert.equal(parentMetadata.threadId, parent.id);
+  assert.equal(childMetadata.threadId, child.id);
+  assert.equal(childMetadata.parentThreadId, parent.id);
+  assert.equal(childMetadata.forkedFromId, null);
+  assert.ok(
+    parentMetadata.tools.some((tool) => tool.name === "agents_list"),
+    "the parent Gateway catalog is the positive control",
+  );
+  assert.deepEqual(
+    childMetadata.tools,
+    [],
+    "the fresh child must not inherit Gateway dynamic tools",
+  );
+  const completed = child.turns.find(
+    (turn) =>
+      turn.status === "completed" &&
+      turn.error === null &&
+      turn.items.some((item) => item.type === "agentMessage" && item.text.includes(childMarker)) &&
+      turn.items.some(
+        (item) =>
+          item.type === "commandExecution" &&
+          item.status === "completed" &&
+          item.exitCode === 0 &&
+          item.aggregatedOutput?.includes(`42 ${childResult}`),
+      ),
+  );
+  assert.ok(
+    completed,
+    "the child's own completed turn must contain the successful native command and reply",
+  );
+  return {
+    parentThreadId: parent.id,
+    childThreadId: child.id,
+    childTurnId: completed.id,
+    nativeCommandSucceeded: true,
+    parentGatewayTools: parentMetadata.tools,
+    childGatewayTools: [],
+  };
+}
+
+export async function assertNativeCronRunSucceeded({ request, waitFor, jobId }) {
+  const accepted = await request("cron.run", { id: jobId, mode: "force", waitTimeoutMs: 5_000 });
+  assert.equal(accepted.ok, true, "human command request must succeed");
+  assert.equal(accepted.enqueued, true, "human command request must enqueue a run");
+  assert.equal(typeof accepted.runId, "string", "human command request must identify its run");
+  assert.ok(accepted.runId.length > 0, "human command run ID must not be empty");
+  const run = await waitFor(
+    "human command run completion",
+    async () => {
+      const page = await request("cron.runs", { id: jobId, runId: accepted.runId, limit: 1 });
+      const entry = page.entries?.[0];
+      return entry?.action === "finished" ? entry : undefined;
+    },
+    60_000,
+  );
+  assert.equal(run?.action, "finished", "human command run must finish");
+  assert.equal(run.jobId, jobId, "human command result must belong to its control job");
+  assert.equal(run.runId, accepted.runId, "human command result must belong to its enqueued run");
+  assert.equal(run.status, "ok", "human command run must succeed");
+  return { jobId, runId: accepted.runId, status: run.status };
+}
+
 export function createNativePluginAssertions({
   gatewayUrl,
   execGateway,
@@ -1256,7 +1588,26 @@ export function createNativePluginAssertions({
     }
   }
 
-  async function sessionEvidence(agent, { sessionKey, turnMarker, toolName, resultPattern }) {
+  async function sessionEvidence(
+    agent,
+    {
+      sessionKey,
+      turnMarker,
+      toolName,
+      resultPattern,
+      expectedArguments,
+      expectedCatalog,
+      codeModeCall,
+    },
+  ) {
+    if (codeModeCall !== undefined) {
+      assert.equal(proofMode, "openclaw");
+      assert.equal(toolName, "exec");
+      assert.ok(typeof codeModeCall.code === "string" && codeModeCall.code.length > 0);
+      assert.ok(typeof codeModeCall.title === "string" && codeModeCall.title.length > 0);
+      assert.equal(codeModeCall.awaitResults, true);
+      assert.equal(expectedArguments, undefined);
+    }
     const execution = await execGateway(agent, [
       "node",
       "-e",
@@ -1264,9 +1615,77 @@ export function createNativePluginAssertions({
       sessionKey,
       turnMarker,
       toolName ?? "",
-      resultPattern ?? "",
+      JSON.stringify(
+        Array.isArray(resultPattern) ? resultPattern : resultPattern ? [resultPattern] : [],
+      ),
+      JSON.stringify(codeModeCall ?? expectedArguments ?? null),
+      JSON.stringify(expectedCatalog ?? null),
+      JSON.stringify(codeModeCall ?? null),
     ]);
-    return { runtime: execution.label, ...JSON.parse(execution.stdout) };
+    const evidence = JSON.parse(execution.stdout);
+    for (const result of evidence.results ?? []) {
+      if (typeof result.errorText === "string") {
+        result.errorLines = redactedQaTail(result.errorText, process.env, {
+          lines: 3,
+          lineChars: 900,
+        });
+        delete result.errorText;
+      }
+    }
+    return { runtime: execution.label, ...evidence };
+  }
+
+  async function readCodexSessionBinding(agent, { sessionKey }) {
+    assert.equal(proofMode, "codex");
+    const execution = await execGateway(agent, [
+      "node",
+      "-e",
+      String.raw`
+      const assert = require("node:assert/strict");
+      const { createHash } = require("node:crypto");
+      const { DatabaseSync } = require("node:sqlite");
+      const sessionKey = process.argv[1];
+      const sessions = new DatabaseSync("/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite", { readOnly: true });
+      const state = new DatabaseSync("/home/node/.openclaw/state/openclaw.sqlite", { readOnly: true });
+      try {
+        const session = sessions.prepare("SELECT current_session_id FROM session_nodes WHERE session_key = ?").get(sessionKey);
+        assert.ok(session, "the original OC session must exist");
+        const key = "session-key:main:" + createHash("sha256").update(sessionKey.trim()).digest("base64url");
+        const row = state.prepare("SELECT value_json FROM plugin_state_entries WHERE plugin_id = 'codex' AND namespace = 'app-server-thread-bindings' AND entry_key = ? AND (expires_at IS NULL OR expires_at > ?)").get(key, Date.now());
+        assert.ok(row, "the OC session must have an active Codex binding");
+        const stored = JSON.parse(row.value_json);
+        assert.equal(stored.version, 1);
+        assert.equal(stored.state, "active");
+        assert.equal(stored.sessionId, session.current_session_id);
+        assert.ok(typeof stored.binding.threadId === "string" && stored.binding.threadId.length > 0);
+        process.stdout.write(JSON.stringify({ sessionId: session.current_session_id, threadId: stored.binding.threadId }));
+      } finally { sessions.close(); state.close(); }
+    `,
+      sessionKey,
+    ]);
+    return JSON.parse(execution.stdout);
+  }
+
+  async function readCodexThreadMetadata(agent, thread) {
+    assert.equal(proofMode, "codex");
+    assert.ok(typeof thread.id === "string" && thread.id.length > 0);
+    assert.ok(typeof thread.path === "string", "native thread/read must return its rollout path");
+    const execution = await execCodex(agent, [
+      "node",
+      "-e",
+      `
+      const assert = require("node:assert/strict");
+      ${parseCodexPolicyMetadata.toString()}
+      ${readCodexPolicyRolloutHead.toString()}
+      (async () => {
+        const line = await readCodexPolicyRolloutHead(process.argv[1]);
+        process.stdout.write(JSON.stringify(parseCodexPolicyMetadata(line, process.argv[2])));
+      })().catch(() => { process.stderr.write("Native SessionMeta evidence read failed."); process.exitCode = 1; });
+    `,
+      thread.path,
+      thread.id,
+    ]);
+    return JSON.parse(execution.stdout);
   }
 
   async function assertSessionToolCallEvidence(agent, options) {
@@ -1287,28 +1706,16 @@ export function createNativePluginAssertions({
       false,
       `${options.sessionKey} assistant turn must succeed.`,
     );
-    if (proofMode === "openclaw") {
-      assert.ok(
-        Array.isArray(evidence.promptToolNames),
-        `${options.sessionKey} must have a run-sourced systemPromptReport.tools.entries snapshot.`,
-      );
-      assert.ok(
-        evidence.promptToolNames.includes(options.toolName),
-        `${options.sessionKey} prompt tools must advertise ${options.toolName}: ${JSON.stringify({
-          runtime: evidence.runtime,
-          sessionId: evidence.sessionId,
-          promptReportSource: evidence.promptReportSource,
-          promptToolNames: evidence.promptToolNames,
-        })}`,
-      );
-    }
-    const matched = evidence.calls.find((call) =>
-      evidence.results.some(
-        (result) =>
-          result.toolCallId === call.id &&
-          result.isError === false &&
-          result.matchesResult === true,
-      ),
+    const matched = evidence.calls.find(
+      (call) =>
+        ((options.expectedArguments === undefined && options.codeModeCall === undefined) ||
+          call.matchesArguments === true) &&
+        evidence.results.some(
+          (result) =>
+            result.toolCallId === call.id &&
+            result.isError === false &&
+            result.matchesResult === true,
+        ),
     );
     if (!matched) {
       // Lead with the review outcome so the first line says whether a reviewer judged
@@ -1318,6 +1725,8 @@ export function createNativePluginAssertions({
           {
             runtime: evidence.runtime,
             sessionId: evidence.sessionId,
+            promptReportSource: evidence.promptReportSource,
+            promptToolNames: evidence.promptToolNames,
             calls: evidence.calls,
             results: evidence.results,
             diagnostics: evidence.diagnostics,
@@ -1331,12 +1740,40 @@ export function createNativePluginAssertions({
       error.approvalReviewSummary = describeApprovalReviews(evidence.results);
       throw error;
     }
+    if (proofMode === "openclaw") {
+      assert.ok(
+        Array.isArray(evidence.promptToolNames),
+        `${options.sessionKey} must have a run-sourced systemPromptReport.tools.entries snapshot: ${JSON.stringify(
+          {
+            runtime: evidence.runtime,
+            sessionId: evidence.sessionId,
+            promptReport: evidence.promptReportShape,
+          },
+        )}`,
+      );
+      assert.ok(
+        evidence.promptToolNames.includes(matched.name),
+        `${options.sessionKey} prompt tools must advertise ${matched.name}: ${JSON.stringify({
+          runtime: evidence.runtime,
+          sessionId: evidence.sessionId,
+          promptReportSource: evidence.promptReportSource,
+          promptToolNames: evidence.promptToolNames,
+        })}`,
+      );
+    }
     const result = evidence.results.find(
       (candidate) =>
         candidate.toolCallId === matched.id &&
         candidate.isError === false &&
         candidate.matchesResult === true,
     );
+    if (options.expectedExitCode !== undefined) {
+      assert.equal(
+        result.exitCode,
+        options.expectedExitCode,
+        `native tool ${matched.name} must exit with code ${options.expectedExitCode}: ${JSON.stringify(result.resultDetails)}`,
+      );
+    }
     if (proofMode === "codex") {
       const callPrefix = codexToolTurnPrefix(matched.mirrorIdentity, ":call");
       const resultPrefix = codexToolTurnPrefix(result?.mirrorIdentity, ":result");
@@ -1378,24 +1815,42 @@ export function createNativePluginAssertions({
       sessionId: evidence.sessionId,
       toolName: matched.name,
       toolCallId: matched.id,
+      ...(matched.targetId ? { targetId: matched.targetId, targetName: matched.targetName } : {}),
+      ...(options.expectedCatalog ? { catalog: result.catalog } : {}),
       promptAdvertised: proofMode === "openclaw",
+      ...(proofMode === "openclaw"
+        ? { promptReport: { ...evidence.promptReportShape, toolNames: evidence.promptToolNames } }
+        : {}),
       ...(proofMode === "codex" ? { codexMirrorTurnVerified: true } : {}),
       resultMatched: true,
+      ...(options.codeModeCall ? { codeModeProgramVerified: result.codeModeProgramVerified } : {}),
+      ...(options.expectedExitCode === undefined ? {} : { exitCode: result.exitCode }),
       approvedReviewIds: approvedReviews.map((review) => review.id),
     };
   }
 
-  async function assertSessionToolDeniedEvidence(agent, options) {
+  async function assertSessionToolFailureEvidence(agent, options) {
     const evidence = await sessionEvidence(agent, options);
     assert.equal(evidence.userMarkerSeen, true);
     assert.equal(evidence.assistantMarkerSeen, true);
     assert.equal(
       evidence.calls.length,
       1,
-      "the denied turn must attempt exactly the requested read",
+      `the denied turn must attempt exactly the requested tool: ${JSON.stringify(evidence.diagnostics)}`,
     );
     assert.equal(evidence.results.length, 1, "the denied call must have a terminal result");
     assert.equal(evidence.results[0].toolCallId, evidence.calls[0].id);
+    assert.equal(
+      evidence.results[0].matchesTarget,
+      true,
+      "the refusal must belong to the attempted target",
+    );
+    if (proofMode === "openclaw") {
+      assert.ok(
+        evidence.promptToolNames?.includes(evidence.calls[0].name),
+        "the run must advertise the actual attempted tool or dispatcher",
+      );
+    }
     if (proofMode === "codex") {
       const prefix = codexToolTurnPrefix(evidence.calls[0].mirrorIdentity, ":call");
       assert.ok(
@@ -1419,7 +1874,12 @@ export function createNativePluginAssertions({
         )}`,
       );
     }
-    assert.equal(evidence.results[0].isError, true, "denial must prevent a successful native read");
+    assert.equal(evidence.results[0].isError, true, "denial must prevent a successful tool result");
+    return evidence;
+  }
+
+  async function assertSessionToolDeniedEvidence(agent, options) {
+    const evidence = await assertSessionToolFailureEvidence(agent, options);
     assert.equal(
       evidence.results[0].deniedByUser,
       true,
@@ -1430,6 +1890,47 @@ export function createNativePluginAssertions({
       false,
       "denial must not expose the provider result",
     );
+  }
+
+  async function assertSessionToolPolicyDeniedEvidence(agent, options) {
+    const patterns = [options.resultPattern].flat();
+    assert.ok(
+      patterns.length > 0 &&
+        patterns.every((pattern) => typeof pattern === "string" && pattern.length),
+      "policy proof requires the expected native refusal",
+    );
+    assert.ok(
+      options.expectedArguments || options.codeModeCall,
+      "policy proof requires the intended invocation target",
+    );
+    const evidence = await assertSessionToolFailureEvidence(agent, options);
+    assert.equal(
+      evidence.calls[0].matchesArguments,
+      true,
+      "the model must attempt the exact requested action and target",
+    );
+    assert.equal(
+      evidence.results[0].matchesResult,
+      true,
+      `the attempted tool must return the policy refusal: ${JSON.stringify({ resultDetails: evidence.results[0].resultDetails, errorLines: evidence.results[0].errorLines })}`,
+    );
+    return {
+      sessionId: evidence.sessionId,
+      toolCallId: evidence.calls[0].id,
+      toolName: evidence.calls[0].name,
+      ...(options.codeModeCall
+        ? { codeModeProgramVerified: evidence.results[0].codeModeProgramVerified }
+        : {}),
+      ...(Array.isArray(options.resultPattern)
+        ? { matchedRefusal: evidence.results[0].matchedResultPattern }
+        : {}),
+      ...(evidence.calls[0].targetId
+        ? {
+            targetId: evidence.calls[0].targetId,
+            targetName: evidence.calls[0].targetName,
+          }
+        : {}),
+    };
   }
 
   async function assertNoSessionToolCallEvidence(agent, options) {
@@ -1458,12 +1959,14 @@ export function createNativePluginAssertions({
       assert.equal(
         evidence.promptToolNames.includes(options.toolName),
         false,
-        `${options.sessionKey} prompt tools still advertised ${options.toolName}: ${JSON.stringify({
-          runtime: evidence.runtime,
-          sessionId: evidence.sessionId,
-          promptReportSource: evidence.promptReportSource,
-          promptToolNames: evidence.promptToolNames,
-        })}`,
+        `${options.sessionKey} direct prompt schemas still advertised ${options.toolName}: ${JSON.stringify(
+          {
+            runtime: evidence.runtime,
+            sessionId: evidence.sessionId,
+            promptReportSource: evidence.promptReportSource,
+            promptToolNames: evidence.promptToolNames,
+          },
+        )}`,
       );
     } else {
       // The gateway prompt report does not include native Codex tools. Require
@@ -1608,8 +2111,11 @@ export function createNativePluginAssertions({
 
   return {
     normalGatewayTurn,
+    readCodexSessionBinding,
+    readCodexThreadMetadata,
     assertSessionToolCallEvidence,
     assertSessionToolDeniedEvidence,
+    assertSessionToolPolicyDeniedEvidence,
     assertNoSessionToolCallEvidence,
     readOpenClawPluginPolicy,
     listCodexNativeCatalog,

@@ -16,6 +16,10 @@ export const CreateSecretCreateNotPermitted = {
   ...story("createSecretCreateNotPermitted"),
   name: "Secret creation not permitted",
 };
+export const CreateSecretOperateDenied = {
+  ...story("createSecretOperateDenied"),
+  name: "Secret operate not permitted",
+};
 export const CreateRepositoryNotConfigured = {
   ...story("createRepositoryNotConfigured"),
   name: "Repository access not set up",
@@ -88,6 +92,10 @@ export const CreatePending = story("createPending");
 export const CreateDeploymentNamedWait = story("createDeploymentNamedWait");
 export const CreateDeploymentPodQuotaFull = story("createDeploymentPodQuotaFull");
 export const CreateDeploymentImagePullFailed = story("createDeploymentImagePullFailed");
+export const CreateDeploymentSuperseded = {
+  ...story("createDeploymentSuperseded"),
+  name: "A newer deployment took over",
+};
 export const CreateDeploymentFailed = story("createDeploymentFailed");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
@@ -268,6 +276,10 @@ export const CreateUnknown = { ...story("createUnknown"), name: "Provisioning ou
 export const CreatePasswordPreset = {
   ...story("createPasswordPreset"),
   name: "Standard Codex password variable",
+};
+export const CreatePasswordPresetOperateSome = {
+  ...story("createPasswordPresetOperateSome"),
+  name: "Standard Codex, Secret operate on some Secrets",
 };
 export const CreatePasswordPresetMissingModel = {
   ...story("createPasswordPresetMissingModel"),

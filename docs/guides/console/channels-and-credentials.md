@@ -22,14 +22,14 @@ unavailable.
 | **Enable Slack**                                                        | Enables Slack in the draft when saved.                                                                                                                                                                                                                                                        |
 | **Slack bot token** / **Slack app token**                               | Search readable Secrets by name or ID, then select with arrow keys and Enter, or choose **Create new Secret...**. The bot token Secret also enables name search below. Both are required while Slack is enabled. A Secret you may read but not `operate` is listed disabled, with the reason. |
 | **Create new Secret...**                                                | Opens a modal with an editable Name (the Agent name and token by default), the fixed binding key, and a masked Value. Without Secret `create` in the Namespace, it is disabled and says why.                                                                                                  |
-| **View bot token Secret metadata** / **View app token Secret metadata** | Opens the selected Secret's metadata in a new tab, keeping unsaved drawer inputs.                                                                                                                                                                                                             |
+| **View bot token Secret metadata** / **View app token Secret metadata** | Opens the selected Secret on the **Secrets** page in a new tab, keeping unsaved drawer inputs. Shown only for a Secret you can read.                                                                                                                                                          |
 | **Channels**                                                            | Search channels by name with the bot token Secret, or paste exact channel IDs. Existing properties of retained channels are preserved.                                                                                                                                                        |
 | **Who can use the agent in these channels?**                            | **Specific people** limits mentions to **Allowed people in these channels**; **Everyone in these channels** allows any Slack user there. Direct-message access is separate.                                                                                                                   |
 | **Allowed people in these channels**                                    | Slack users, by name search or exact user ID, who may mention the Agent in the selected channels.                                                                                                                                                                                             |
 | **Require a mention**                                                   | Applies the mention requirement to the listed channels.                                                                                                                                                                                                                                       |
 | **Direct-message policy**                                               | **Pairing** (approve new senders), **Allowlist** (selected users only, the default for a new setup), **Open** (anyone) or **Disabled**. An existing setup without a policy shows **Runtime default (pairing)**.                                                                               |
 | **Allowed people in direct messages**                                   | Users allowed to send direct messages under Allowlist, or preapproved under Pairing. Allowlist needs at least one.                                                                                                                                                                            |
-| **Save configuration**                                                  | Saves channel settings and selected Secret bindings to the shared draft.                                                                                                                                                                                                                      |
+| **Save configuration**                                                  | Saves channel settings and selected Secret bindings to the shared draft. It stays disabled until you change a setting or a Secret binding.                                                                                                                                                    |
 | **Cancel** / **Close**                                                  | Discards the drawer's unsaved inputs.                                                                                                                                                                                                                                                         |
 
 Name search needs a reachable Slack directory; when it is unavailable, the drawer says so and
@@ -42,9 +42,12 @@ needs Secret `operate` on that Secret, as described in [Channel Secrets](#channe
 
 A Configuration save refuses an enabled channel whose token reference has no
 Secret binding. The refusal names the setting and the binding, for example
-`channels.slack.botToken` and `SLACK_BOT_TOKEN`, under the Configuration JSON
-when you edit it there. Select the token Secrets in the Slack editor, or remove
-the reference.
+`channels.slack.botToken` and `SLACK_BOT_TOKEN`, once, under the Configuration JSON
+when you edit it there or on Create Agent. Select the token Secrets in the Slack
+editor or on the Credentials tab, or remove the reference. A token must be
+exactly one `${NAME}`: `$NAME`, a fallback, or other text, spaces or references
+with `${NAME}` are refused, and the message names the form. The Slack editor opens tokens saved as `${SLACK_APP_TOKEN}` and
+`${SLACK_BOT_TOKEN}` and keeps that form.
 See [Slack setup](../integrations/slack.md) for credentials and policy details.
 
 In any Secret picker, typing a Secret's exact name selects it when you press
@@ -84,17 +87,22 @@ that the Agent and its Configuration bind, and `read` on a ChatGPT service accou
 without them, the source is read-only and a note names what is missing.
 For API keys and Service Accounts tokens, it also grants the Agent access to
 that exact Secret. Granting needs Installation `administer`. When a member saves
-the source, the binding saves, but the member's session sends no grant, so it
-does not verify the Agent's access. The console asks an Installation administrator
-to open the Agent's Credentials and select **Save authentication source**, which
-grants it. When an administrator opens Credentials, the tab reads Namespace IAM, says
+the source, the binding saves, but the member's session sends no grant. The form
+stays editable and says that deploying checks the Agent's access: if the Agent
+cannot use the Secret, ask an Installation administrator to give the Agent
+`operate` on it, for example by opening the Agent's Credentials and selecting
+**Save authentication source**. **Deploy new version** stays available. When an administrator opens Credentials, the tab reads Namespace IAM, says
 when that grant is missing and holds **Deploy new version** until it is granted.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says
 so and offers **Retry credential access**.
 The retry checks the saved binding and does not resave it. If the
 binding changed, or the save outcome is unknown, use **Reload authentication source** first.
-Deployment authorization failures remain visible beside **Deploy new version**;
+Deploying needs Secret `operate` on each Secret the draft binds. When your access
+does not include it, **Deploy new version** is disabled and names those Secrets.
+A bound Secret you cannot read is not named: the button is disabled and asks for
+Secret `read` and `operate` on it. The Secret field says its name is unavailable.
+Other deployment authorization failures remain visible beside **Deploy new version**;
 check both your deployment permission and the Agent's credential access.
 Changing between **API key** and **Service Accounts** clears the selected Secret
 so a token is not silently reused for another authentication method. The account
@@ -127,8 +135,9 @@ failure can leave partial progress. Granting the Agent a Secret needs Installati
 `administer`: when a member saves a token, the Configuration saves, but the member's session
 sends no grant, so it does not verify the Agent's access. The console asks an Installation
 administrator to open the Agent's Credentials and select **Retry Secret access**, and offers
-no retry itself. Deploy waits only until **Reload draft** or a browser reload: the member's
-console cannot read the grant, so the API refuses a deployment it does not cover. **Outcome unknown** means refresh and inspect
+no retry itself. **Deploy new version** stays available, and **Reload draft** clears the
+warning: the member's console cannot read the grant, so the API refuses a deployment it does
+not cover. **Outcome unknown** means refresh and inspect
 saved state before retrying. Save requires at least one changed selection and a
 bound Secret for each token. Changing the picker switches the referenced Secret;
 it does not overwrite an existing shared Secret value. Existing values are never

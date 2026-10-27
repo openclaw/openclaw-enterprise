@@ -2,6 +2,8 @@ import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/con
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
+  codexProxiesRepositoryBroker,
+  codexRepositoryBrokerNetworkProxy,
   type PreparedTokenService,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -203,6 +205,7 @@ import {
   requireWorkspaceNodePlugins,
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
+import { managedGatewayConfiguration } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
@@ -240,11 +243,14 @@ import {
   PUBLIC_GITHUB_READ_SKILL,
 } from "../../repo/github/public-read/codex.ts";
 import {
+  EMBEDDED_GATEWAY_OWNER_STARTUP,
+  INITIALIZE_EMBEDDED_GATEWAY_OWNER,
+} from "../embedded-gateway-owner.ts";
+import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
@@ -252,6 +258,7 @@ import {
   RUNTIME_READINESS_PATH,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
+  gatewayRuntimeEntrypoint,
 } from "./runtime-entrypoints.ts";
 
 import {
@@ -551,6 +558,7 @@ interface GatewayConfigurationSnapshot {
   readonly name: string;
   readonly revision: number;
   readonly revisionId: string;
+  readonly gatewayManagedMode: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -1655,18 +1663,6 @@ function normalizedNetworkHost(value: string, description: string): string {
     throw new ConfigurationFailure(`${description} must be nonempty.`);
   }
   return host;
-}
-
-function mergeDomainDecision(
-  domains: Record<string, "allow" | "deny">,
-  host: string,
-  decision: "allow" | "deny",
-): void {
-  if (domains[host] === "deny" || decision === "deny") {
-    domains[host] = "deny";
-    return;
-  }
-  domains[host] = "allow";
 }
 
 function validateResources(value: V1ResourceRequirements, description: string, path: string): void {
@@ -3324,6 +3320,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return revision.harness.mode === "dedicated";
   }
 
+  private validateGatewayManagedMode(revision: Readonly<AgentRevision>): void {
+    if (revision.gatewayManagedMode === true && this.options.runtime === undefined) {
+      throw new ConfigurationHarnessError(
+        "Agent setting gatewayManagedMode requires a supported Gateway runtime on Kubernetes Compute.",
+      );
+    }
+  }
+
   static readonly configurationSchema = Object.freeze({
     type: "object",
     required: ["authentication", "images", "resources", "network", "servicePrincipalCredentials"],
@@ -3528,6 +3532,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly id: string;
   readonly capability = "compute" as const;
   readonly implementation: string;
+  readonly supportsGatewayManagedMode = true as const;
   readonly supportsWorkspaceSetup = true as const;
   readonly requiresAgentRuntimeCredentials?: true;
   readonly agentProvisioning = Object.freeze({
@@ -4655,6 +4660,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
+    }
+    if (native || codex) {
+      managedGatewayConfiguration(configuration, configuration, codex, callerSettingError);
     }
     // Preparation and the Gateway entrypoint would refuse these only after a dedicated
     // deployment stopped its predecessors. The caller owns them, so admission names the setting.
@@ -6234,6 +6242,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
+    this.validateGatewayManagedMode(revision);
     if (execution === "withdraw-public-reader") {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
       const observed = await this.getNamespace(namespace);
@@ -7513,6 +7522,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Compute ownership is invalid.");
     }
+    this.validateGatewayManagedMode(revision);
     if (execution === "withdraw-public-reader") {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
       const observed = await this.getNamespace(namespace);
@@ -12907,6 +12917,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
+      gatewayManagedMode: revision.gatewayManagedMode,
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -13914,16 +13925,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryConsumer: { readonly role: "gateway" | "agent" } | undefined,
     repositoryMaterial: ResolvedRepositoryMaterialSpec | undefined,
   ): CodexRepositoryBrokerNetworkPolicy | undefined {
-    const dedicatedCodex =
-      revision.harness.id === "codex" &&
-      revision.harness.mode === "dedicated" &&
-      repositoryConsumer?.role === "agent";
-    const embeddedCodex =
-      revision.harness.id === "openclaw" &&
-      revision.harness.mode === "embedded" &&
-      repositoryConsumer?.role === "gateway" &&
-      revision.plugins?.driver.implementation === "occ/codex-plugin";
-    if (!dedicatedCodex && !embeddedCodex) {
+    // OCC applies the same rule at Agent save, provisioning and deployment, without the broker
+    // host, which only the prepared material names. This check stays as the backstop for a deny
+    // of that host and for revisions admitted before OCC checked.
+    if (
+      repositoryConsumer === undefined ||
+      !codexProxiesRepositoryBroker(revision.harness, revision.plugins?.driver.implementation)
+    ) {
       return undefined;
     }
     if (this.options.network.repositoryCredentials === undefined) {
@@ -13937,54 +13945,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       );
     }
     const origin = repositoryCredentialBrokerOriginFromMaterial(repositoryMaterial);
-    const brokerHost = normalizedNetworkHost(origin.hostname, "Repository credential broker host");
-    const networkProxy = asRecord(
-      asRecord(asRecord(asRecord(revision.configuration.plugins)?.entries)?.codex)?.config,
-    )?.appServer;
-    const policy = asRecord(asRecord(networkProxy)?.networkProxy);
-    if (policy?.enabled === false) {
-      throw new ConfigurationFailure(
-        "Repository credential broker host is blocked by an explicitly disabled Codex network proxy.",
-      );
+    const host = normalizedNetworkHost(origin.hostname, "Repository credential broker host");
+    const proxy = codexRepositoryBrokerNetworkProxy(revision.configuration, host);
+    if ("refusal" in proxy) {
+      throw new ConfigurationFailure(proxy.refusal);
     }
-    if (policy?.mode !== undefined && policy.mode !== "limited" && policy.mode !== "full") {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy has an unsupported Codex network mode.",
-      );
-    }
-    if (policy?.allowLocalBinding !== undefined && typeof policy.allowLocalBinding !== "boolean") {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy has an unsupported local binding policy.",
-      );
-    }
-    const domainsInput = policy?.domains === undefined ? undefined : asRecord(policy.domains);
-    if (policy?.domains !== undefined && domainsInput === undefined) {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy domains must be an object.",
-      );
-    }
-    const domains: Record<string, "allow" | "deny"> = {};
-    for (const [host, decision] of Object.entries(domainsInput ?? {})) {
-      if (decision !== "allow" && decision !== "deny") {
-        throw new ConfigurationFailure(
-          "Repository credential broker network policy has an unsupported domain decision.",
-        );
-      }
-      mergeDomainDecision(
-        domains,
-        normalizedNetworkHost(host, "Repository credential broker network domain"),
-        decision,
-      );
-    }
-    if (domains[brokerHost] === "deny") {
-      throw new ConfigurationFailure(
-        "Repository credential broker host is explicitly denied by Codex network proxy policy.",
-      );
-    }
-    return {
-      host: brokerHost,
-      domains,
-    };
+    return { host, domains: proxy.domains };
   }
 
   private publicGithubReadCandidate(revision: AgentRevision) {
@@ -14044,6 +14010,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
+    this.validateGatewayManagedMode(revision);
     // A launch fact, not an authorization grant. Never infer it for stored revisions:
     // older workers must refuse the new command and older Sandboxes keep their exact command.
     if (this.protectedCodexInference(revision)) {
@@ -15776,13 +15743,24 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         : undefined;
     const runtime = this.options.runtime;
     const dedicated = !embedded;
-    const privateHome = runtime !== undefined || dedicated;
+    // The first process to see the signing key must be the packaged launcher.
+    // Custom environment and repository tooling can alter how it is loaded.
+    const recordEmbeddedGatewayOwner =
+      embedded &&
+      role === "gateway" &&
+      runtime !== undefined &&
+      configuration !== undefined &&
+      Object.keys(environment).length === 0 &&
+      secretEnvironment.length === 0 &&
+      repositoryMaterial === undefined;
     const writableConfiguration =
       role === "gateway" &&
       configuration !== undefined &&
-      runtime !== undefined &&
-      this.options.gatewayRouting !== undefined &&
-      configuration.usesWritableNativeAdminConfig;
+      (configuration.gatewayManagedMode === false ||
+        (runtime !== undefined &&
+          this.options.gatewayRouting !== undefined &&
+          configuration.usesWritableNativeAdminConfig));
+    const privateHome = runtime !== undefined || dedicated || writableConfiguration;
     const volumes: V1Volume[] = [];
     const volumeMounts: V1VolumeMount[] = [];
     const variables: V1EnvVar[] = [];
@@ -16292,6 +16270,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         },
       });
     }
+    if (recordEmbeddedGatewayOwner) {
+      const publicKey = { name: "gateway-owner-key", mountPath: "/run/oce-gateway-owner-key" };
+      const startup = { name: "gateway-owner-start", mountPath: "/run/oce-gateway-owner-start" };
+      for (const { name } of [publicKey, startup]) {
+        volumes.push({ name, emptyDir: { medium: "Memory", sizeLimit: "64Ki" } });
+      }
+      // Only this init can change the public key. It has no mount of Agent-controlled state.
+      initContainers.push({
+        name: "prepare-embedded-gateway-owner",
+        image,
+        imagePullPolicy: "IfNotPresent",
+        command: [...SETUP_WRAPPER_COMMAND],
+        args: [INITIALIZE_EMBEDDED_GATEWAY_OWNER],
+        volumeMounts: [publicKey, startup],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: { drop: ["ALL"] },
+        },
+      });
+      volumeMounts.push({ ...publicKey, readOnly: true }, startup);
+      variables.push({ name: "OPENCLAW_EMBEDDED_GATEWAY_OWNER", value: "1" });
+    }
     if (dedicated && this.options.executionCluster !== undefined) {
       if (role === "gateway") {
         variables.push({
@@ -16304,7 +16305,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ) {
           variables.push({
             name: "NODE_EXTRA_CA_CERTS",
-            value: `${configuration?.usesWritableNativeAdminConfig ? MANAGED_CONFIGURATION_DIRECTORY : CONFIGURATION_DIRECTORY}/execution-ca.pem`,
+            value: `${writableConfiguration ? MANAGED_CONFIGURATION_DIRECTORY : CONFIGURATION_DIRECTORY}/execution-ca.pem`,
           });
         }
       } else {
@@ -16344,6 +16345,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             },
           }
         : {};
+    let runtimeEntrypoint: string | undefined;
+    if (runtime !== undefined) {
+      if (role === "gateway") {
+        if (typeof configuration?.gatewayManagedMode !== "boolean") {
+          throw new ConfigurationFailure(
+            "Gateway runtime requires the Agent revision's managed mode.",
+          );
+        }
+        runtimeEntrypoint = gatewayRuntimeEntrypoint(configuration.gatewayManagedMode);
+      } else {
+        runtimeEntrypoint =
+          nativeRuntime === undefined
+            ? (pluginRuntime?.entrypoint ?? AGENT_RUNTIME_ENTRYPOINT)
+            : NATIVE_WORKER_ENTRYPOINT;
+      }
+    }
     return {
       ...deployment,
       metadata: {
@@ -16445,25 +16462,25 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   ...codexSeccompProfile,
                 },
                 ...(volumeMounts.length === 0 ? {} : { volumeMounts }),
-                ...(runtime === undefined
+                ...(runtimeEntrypoint === undefined
                   ? {}
                   : {
                       // Under tini, SIGTERM stops the wrapper in every startup phase.
                       command: [...RUNTIME_WRAPPER_COMMAND],
                       args: nodeProgramArguments(
-                        (workspaceSetup === undefined || (!embedded && role === "gateway")
-                          ? ""
-                          : workspaceSetupVerifier(
-                              workspaceSetup,
-                              role === "gateway"
-                                ? required(configuration?.workspace, "Initial workspace directory")
-                                : harnessSetupWorkspace,
-                            )) +
-                          (role === "gateway"
-                            ? GATEWAY_RUNTIME_ENTRYPOINT
-                            : nativeRuntime === undefined
-                              ? (pluginRuntime?.entrypoint ?? AGENT_RUNTIME_ENTRYPOINT)
-                              : NATIVE_WORKER_ENTRYPOINT),
+                        (recordEmbeddedGatewayOwner ? EMBEDDED_GATEWAY_OWNER_STARTUP : "") +
+                          (workspaceSetup === undefined || (!embedded && role === "gateway")
+                            ? ""
+                            : workspaceSetupVerifier(
+                                workspaceSetup,
+                                role === "gateway"
+                                  ? required(
+                                      configuration?.workspace,
+                                      "Initial workspace directory",
+                                    )
+                                  : harnessSetupWorkspace,
+                              )) +
+                          runtimeEntrypoint,
                       ),
                     }),
               },

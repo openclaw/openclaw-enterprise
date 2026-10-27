@@ -3,8 +3,10 @@ import { cp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { UNTRUSTED_ORIGIN_MESSAGE } from "../../apps/controller/src/admission/admission-verifier.ts";
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   describePendingBrowserRequests,
   noteBrowserEvent,
@@ -14,6 +16,7 @@ import {
   fileConsoleApp,
 } from "../helpers/console-app.mjs";
 import {
+  accessibleDescription,
   apiRequests,
   expectNoText,
   expireSessions,
@@ -31,7 +34,11 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { WORKSPACE_FILES_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import {
+  NO_READABLE_NAMESPACES,
+  WORKSPACE_FILES_UNAVAILABLE,
+  SIGN_IN_UNAVAILABLE,
+} from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -453,6 +460,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
       "GET /console/agents/deployment-diagnostics.mjs",
       "GET /console/agents/deployment-evidence.mjs",
       "GET /console/agents/deployment-recovery.mjs",
+      "GET /console/deployment-failure-steps.mjs",
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/permissions`,
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/revisions`,
       `GET /namespaces/${beta.id}/agents/${betaAgent.id}/permissions`,
@@ -517,21 +525,19 @@ test("console shows the external observability link only to Installation adminis
   // then opens the Console again instead of the login form.
   await page.waitForURL(/\/console\/login$/);
   // Restore the administrator's answer as an expiry would leave it: it belongs to another
-  // session owner, so the next sign-in must probe (a reused answer sends no probe below).
+  // session owner, so the next sign-in must not reuse it (a reused answer shows the link below).
   await page.evaluate((answer) => {
     globalThis.sessionStorage.setItem("occ.console.installationAccess", answer);
   }, adminAnswer);
-  // The shell renders before the probe is answered, so wait for the denial itself.
-  const limitedProbe = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/observability",
-  );
   await login(page, fixture, "/console/", limited.credentials);
-  assert.equal((await limitedProbe).status(), 403);
   // The limited user reads no Agents. The empty list renders only after the page applied the
-  // denied probe, so the link checks below see the settled shell, not the loading one.
-  await page.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
+  // Installation-access answer, so the link checks below see the settled shell, not the loading
+  // one. The Namespace permission answer says she does not administer the Installation, so she is
+  // not probed: the API would audit the probe's 403 as a denial (finding D45).
+  await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
-  // A denied read is audited, so navigation must not repeat it.
+  assert.equal(probes, 1);
+  // Navigation does not probe either.
   await page.getByRole("link", { name: "Namespaces" }).click();
   await page.getByRole("list", { name: "Namespaces" }).getByText("Observability access").waitFor();
   const namespacesRead = page.waitForResponse(
@@ -539,18 +545,20 @@ test("console shows the external observability link only to Installation adminis
   );
   await page.getByRole("link", { name: "Agents" }).click();
   await namespacesRead;
-  await page.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
-  assert.equal(probes, 2);
-  // A reload in the same tab reuses the settled answer for this session owner.
+  assert.equal(probes, 1);
+  // Nor does a reload in the same tab.
   await page.reload();
-  await page.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
-  assert.equal(probes, 2);
+  assert.equal(probes, 1);
 });
 
-test("a navigation while the Installation-access probe is answered does not ask again", async (t) => {
-  // The API audits every denied probe, so the Console must not repeat one it already sent.
+// The API audits every denied probe, so the Console must not repeat one it already sent. A
+// navigation's page load first asks the permission answer, then probes: the earlier probe can
+// still be pending at that point, or settle while the permission answer is read.
+async function navigateDuringInstallationAccessProbe(t, { settleFirst }) {
   let answered = 0;
   const fixture = await createConsoleAppFixture(t, {
     observabilityUrl: "https://metrics.example.test/d/operations",
@@ -578,6 +586,19 @@ test("a navigation while the Installation-access probe is answered does not ask 
     });
   });
   const { page } = await newPage(t, fixture);
+  // The permission answer that would rule out administration fails, so the Console probes. With
+  // settleFirst, the navigation's answer is held until the first probe has settled.
+  let permissionReads = 0;
+  const navigationAsked = deferred();
+  const probeSettled = deferred();
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/permissions`, async (route) => {
+    permissionReads += 1;
+    if (settleFirst && permissionReads === 2) {
+      navigationAsked.resolve();
+      await probeSettled.promise;
+    }
+    await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
+  });
   // The API has answered (and audited) the probe; its response reaches the page only later.
   const probe = await holdRoute(t, page, "**/observability", (route, response) =>
     route.fulfill({ response }),
@@ -586,11 +607,25 @@ test("a navigation while the Installation-access probe is answered does not ask 
   await probe.waitForRelease();
   await page.getByRole("link", { name: "Namespaces" }).click();
   await page.waitForURL(/\/console\/namespaces/);
-  probe.release();
+  if (settleFirst) {
+    await navigationAsked.promise;
+    probe.release();
+    // The Console keeps a settled answer for the tab in session storage.
+    await page.waitForFunction(() => sessionStorage.getItem("occ.console.installationAccess"));
+    probeSettled.resolve();
+  } else {
+    probe.release();
+  }
   await page.getByRole("list", { name: "Namespaces" }).getByText("Probe access").waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(answered, 1);
-});
+}
+
+test("a navigation while the Installation-access probe is answered does not ask again", (t) =>
+  navigateDuringInstallationAccessProbe(t, { settleFirst: false }));
+
+test("a probe that settles while the next page reads its permission answer is not sent again", (t) =>
+  navigateDuringInstallationAccessProbe(t, { settleFirst: true }));
 
 test("console ignores stale collection successes and errors while switching Namespaces", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -651,7 +686,9 @@ test("console ignores stale collection successes and errors while switching Name
 // a Refresh in both the header and the panel, and "Namespaces remain available in navigation"
 // (finding 2371). The panel now says it once and leaves Refresh to the header. A bookmarked link
 // that names a Namespace (a member whose only grant was revoked) said "Choose another Namespace."
-// beside a disabled selector; it now points at the same Refresh (finding 2393).
+// beside a disabled selector; it now points at the same Refresh (finding 2393). This sign-in
+// never listed the bookmarked Namespace, so the panel does not say access was lost (finding
+// 2550).
 test("Agents with no readable Namespace names it once and keeps one Refresh", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -666,14 +703,14 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
   for (const [path, title, text, selected] of [
     [
       "/console/agents",
-      "No readable Namespaces",
-      "Ask an administrator to create a Namespace or grant you access to one, then Refresh.",
+      NO_READABLE_NAMESPACES,
+      "Ask an Installation administrator to create a Namespace or to give you access to one, then Refresh.",
       "None",
     ],
     [
       `/console/agents?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
       "Unavailable",
     ],
     // An Agent bookmark in that Namespace kept the Agent page's header above the panel: the
@@ -682,7 +719,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     [
       `/console/agents/${agent.id}?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
       "Unavailable",
     ],
   ]) {
@@ -701,6 +738,8 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     }
     const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
     assert.equal(await selector.isDisabled(), true);
+    // A screen reader hears the panel's sentence as the disabled selector's reason (finding D749).
+    assert.equal(await accessibleDescription(selector), text, path);
     assert.equal(await selector.locator("option:checked").textContent(), selected);
     // The compact selector shows its whole selection, not "Namespace una…" (finding 2423).
     assert.ok(
@@ -1278,9 +1317,17 @@ test("console retained views clear after session expiry and exact Agent denial",
   // Someone else's Agent link says what the reader can do, not that a collection is unreadable.
   await page
     .getByText(
-      "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you.",
+      "You do not have access to this Agent or its settings, or it was deleted. Ask an Installation administrator for Agent read on it.",
     )
     .waitFor();
+  // Retry would repeat the refusal; the header's Refresh checks access again (finding 2549).
+  assert.equal(await page.locator(".state-panel").getByRole("button").count(), 0);
+  // The request ID is kept for whoever traces the denial, behind a disclosure, so it is not read
+  // as part of the reason (finding D770).
+  const deniedPanel = page.locator(".state-panel");
+  assert.doesNotMatch(await deniedPanel.innerText(), /Request ID/);
+  await deniedPanel.getByText("Request details", { exact: true }).click();
+  assert.match(await deniedPanel.locator("details .request-id").innerText(), /^Request ID: \S+$/);
   await expectNoText(page, /Configuration draft|Selected revision/, () => waitForIdleFetches(page));
 });
 
@@ -1433,7 +1480,7 @@ test("an abandoned GitHub attempt does not turn password sign-in into a GitHub f
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\/agents/);
   assert.equal(requests.includes("/api/auth/providers/github/result"), false);
-  await expectNoText(page, /Could not sign in with GitHub/, async () => {
+  await expectNoText(page, /Could not (?:finish signing|sign) in with GitHub/, async () => {
     await page.locator(settledView).waitFor();
     await waitForIdleFetches(page);
   });
@@ -1477,13 +1524,134 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
   await google.click();
   const refused = await result;
   assert.equal(refused.request().postDataJSON().attemptId, attemptId);
-  // The unconfigured controller refuses the result, so this tab adopts no session.
+  // The unconfigured controller refuses the result, so this tab adopts no session. The
+  // callback already settled the identity, so the refusal does not read as an identity failure.
+  // It is the answer for a provider removed after the start: starting again cannot help, so
+  // the text does not offer it (finding 2555).
   assert.equal(refused.status(), 403);
-  await page.getByText("Could not sign in with Google. Try again or use your password.").waitFor();
+  await page.getByText(GOOGLE_PROVIDER_GONE, { exact: true }).waitFor();
   assert.equal(requests.includes("/api/auth/providers/github/result"), false);
 
   await page.goto(`${fixture.origin}/console/?authError=google`);
   await page.getByText("Could not sign in with Google. Try again or use your password.").waitFor();
+});
+
+const GOOGLE_EXCHANGE_REFUSED =
+  "Could not finish signing in with Google. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with Google to start again.";
+const GOOGLE_PROVIDER_GONE =
+  "Could not finish signing in with Google. Google sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.";
+const UNTRUSTED_ORIGIN_SIGN_IN =
+  "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
+
+// Each failure says what happened and what to do; a rate limit, an outage or the origin
+// check never reads as a wrong password or a refused identity (finding 2535).
+test("sign-in failures name a rate limit, an outage and the origin check", async (t) => {
+  const fixture = await signInApp(t);
+  const { page } = await newPage(t, fixture);
+  const failure = (status, code, message, headers = {}) => ({
+    status,
+    headers,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { code, message }, meta: { requestId: "browser-sign-in" } }),
+  });
+  const limited = (seconds) =>
+    failure(429, "RATE_LIMITED", "Too many attempts.", { "retry-after": String(seconds) });
+  const outage = failure(503, "DEPENDENCY_UNAVAILABLE", SIGN_IN_UNAVAILABLE);
+  const signIn = async (expected) => {
+    await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+    // A wrong password: no step may sign in, whatever the API answers.
+    await page.getByLabel("Password").fill("not-the-password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByText(expected, { exact: true }).waitFor();
+  };
+  await page.goto(`${fixture.origin}/console/login`);
+
+  // The real API refuses a sign-in sent from another Origin before it reads the password.
+  // The browser keeps its own Origin, so the request is resent from the test with another.
+  await page.route("**/api/auth/sign-in/email", async (route) =>
+    route.fulfill({
+      response: await route.fetch({
+        headers: { ...route.request().headers(), origin: "https://elsewhere.example.test" },
+      }),
+    }),
+  );
+  const refused = page.waitForResponse((response) =>
+    response.url().endsWith("/api/auth/sign-in/email"),
+  );
+  const signingIn = signIn(UNTRUSTED_ORIGIN_SIGN_IN);
+  const answer = await refused;
+  assert.equal(answer.status(), 403, await answer.text());
+  await signingIn;
+  await page.unroute("**/api/auth/sign-in/email");
+
+  for (const [response, expected] of [
+    [limited(37), "Too many sign-in attempts. Wait 37 seconds, then try again."],
+    [
+      failure(429, "RATE_LIMITED", "Too many attempts."),
+      "Too many sign-in attempts. Wait a minute, then try again.",
+    ],
+    [
+      outage,
+      "Sign-in is temporarily unavailable because a service it depends on did not answer. Try again shortly. If it continues, ask an operator.",
+    ],
+    [null, "Could not reach the sign-in service. Check your connection, then try again."],
+  ]) {
+    await page.route("**/api/auth/sign-in/email", (route) =>
+      response === null ? route.abort("connectionrefused") : route.fulfill(response),
+    );
+    await signIn(expected);
+    await page.unroute("**/api/auth/sign-in/email");
+  }
+
+  // Provider start: a limit waits, and the origin check is not a provider outage.
+  const envelope = (data) => ({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data, meta: { requestId: "browser-sign-in" } }),
+  });
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill(envelope({ github: false, google: true, sessionBinding: true })),
+  );
+  const starts = [limited(1), failure(403, "FORBIDDEN", UNTRUSTED_ORIGIN_MESSAGE)];
+  await page.route("**/api/auth/providers/google/start", (route) => {
+    const next = starts.shift();
+    return next === undefined
+      ? route.fulfill(
+          envelope({
+            url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture",
+            attemptId: "c".repeat(43),
+          }),
+        )
+      : route.fulfill(next);
+  });
+  await page.route("https://accounts.google.com/**", (route) =>
+    route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } }),
+  );
+  await page.goto(`${fixture.origin}/console/login`);
+  const google = page.getByRole("button", { name: "Continue with Google" });
+  await google.click();
+  await page.getByText("Too many sign-in attempts. Wait 1 second, then try again.").waitFor();
+  await google.click();
+  await page.getByText(UNTRUSTED_ORIGIN_SIGN_IN, { exact: true }).waitFor();
+
+  // The exchange after the provider's callback: the identity is already settled.
+  for (const [response, expected] of [
+    [limited(12), "Too many sign-in attempts. Wait 12 seconds, then try again."],
+    [
+      outage,
+      "Could not finish signing in with Google. Sign-in is unavailable right now; try again later.",
+    ],
+    [failure(403, "FORBIDDEN", UNTRUSTED_ORIGIN_MESSAGE), UNTRUSTED_ORIGIN_SIGN_IN],
+    [
+      failure(401, "UNAUTHENTICATED", "Google sign-in could not be confirmed."),
+      GOOGLE_EXCHANGE_REFUSED,
+    ],
+  ]) {
+    await page.route("**/api/auth/providers/google/result", (route) => route.fulfill(response));
+    await google.click();
+    await page.getByText(expected, { exact: true }).waitFor();
+    await page.unroute("**/api/auth/providers/google/result");
+  }
 });
 
 test("OIDC sign-in uses the discovered label and accepts only the discovered endpoint", async (t) => {
@@ -1535,7 +1703,10 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   assert.equal(refused.request().postDataJSON().attemptId, attemptId);
   assert.equal(refused.status(), 403);
   await page
-    .getByText("Could not sign in with Acme SSO. Try again or use your password.")
+    .getByText(
+      "Could not finish signing in with Acme SSO. Acme SSO sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.",
+      { exact: true },
+    )
     .waitFor();
   assert.equal(requests.includes("/api/auth/providers/google/result"), false);
 
@@ -1568,18 +1739,18 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
   const cases = [
     [
       "membership",
-      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access or use your password.",
-      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access.",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access or use your password.",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access.",
     ],
     [
       "membership-unavailable",
       "Could not check your GitHub organization membership. Try again later or use your password.",
-      "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+      "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an Installation administrator.",
     ],
     [
       "toString",
       "Could not sign in with GitHub. Try again or use your password.",
-      "Could not sign in with GitHub. Try again, or ask an administrator to attach your GitHub identity to your account.",
+      "Could not sign in with GitHub. Try again, or ask an Installation administrator to attach your GitHub identity to your account.",
     ],
   ];
   for (const [reason, withPassword, recoveryOnly] of cases) {
@@ -1627,7 +1798,7 @@ test("a disabled account's provider sign-in says the account is disabled", async
       );
       await page
         .getByText(
-          `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`,
+          `Your account is disabled, so you cannot sign in with ${label}. Ask an Installation administrator to enable it.`,
           { exact: true },
         )
         .waitFor();
@@ -1678,7 +1849,7 @@ test("a provider outage says sign-in is unavailable, not to get attached", async
       [true, `${label} sign-in is unavailable right now. Try again later or use your password.`],
       [
         false,
-        `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`,
+        `${label} sign-in is unavailable right now. Try again later. If you are an Installation administrator, use Recovery sign-in.`,
       ],
     ]) {
       password = available;
@@ -1731,7 +1902,7 @@ test("recovery-only password sign-in keeps the form behind Recovery sign-in", as
   // Without a password to fall back on, the provider error points to an administrator.
   await page
     .getByText(
-      "Could not sign in with GitHub. Try again, or ask an administrator to attach your GitHub identity to your account.",
+      "Could not sign in with GitHub. Try again, or ask an Installation administrator to attach your GitHub identity to your account.",
     )
     .waitFor();
   assert.equal(await page.getByLabel("Password").isVisible(), false);
@@ -1922,9 +2093,11 @@ test("a Backends denial names the Installation-wide page and hides the Namespace
     )
     .waitFor();
   assert.equal(await page.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);
-  // Retry rebuilds the page with the selector still hidden.
+  // A permission refusal offers no Retry that would repeat it (finding 2549); the header's
+  // Refresh rebuilds the page with the selector still hidden.
+  assert.equal(await denial.getByRole("button").count(), 0);
   const oldPanel = await denial.elementHandle();
-  await denial.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.waitForFunction((panel) => !panel.isConnected, oldPanel);
   await page.locator(".state-panel").getByRole("heading", { name: "Access denied" }).waitFor();
   assert.equal(await page.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);
@@ -2232,13 +2405,8 @@ test("Namespaces recovers stale selection inline and handles losing all readable
     effect: "deny",
   });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
-  await page
-    .getByText(
-      "Create a Namespace to get started, or ask an administrator for access to an existing one.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
+  await page.getByText("Create a Namespace to get started.", { exact: true }).waitFor();
   await waitForEnabled(page.getByRole("button", { name: "Create Namespace", exact: true }));
   assert.equal(await page.getByRole("combobox").count(), 0);
   assert.equal(
@@ -2625,16 +2793,21 @@ test("a refused provider exchange discards its pending login destination", async
   await page.route("https://github.com/**", (route) =>
     route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } }),
   );
+  // The answer for an attempt that expired or that another sign-in replaced.
   await page.route("**/api/auth/providers/github/result", (route) =>
     route.fulfill({
-      status: 403,
+      status: 401,
       contentType: "application/json",
-      body: JSON.stringify({ error: { code: "FORBIDDEN" } }),
+      body: JSON.stringify({ error: { code: "UNAUTHENTICATED" } }),
     }),
   );
   await page.goto(`${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Continue with GitHub" }).click();
-  await page.getByText("Could not sign in with GitHub. Try again or use your password.").waitFor();
+  await page
+    .getByText(
+      "Could not finish signing in with GitHub. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with GitHub to start again.",
+    )
+    .waitFor();
   assert.equal(await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")), null);
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);

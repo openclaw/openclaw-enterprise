@@ -1783,7 +1783,7 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Create an administrator-controlled local auth account",
+        "summary": "Create a local auth account as an Installation administrator",
         "tags": ["Authentication"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -9435,7 +9435,7 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Move the recovery designation to another administrator",
+        "summary": "Move the recovery designation to another Installation administrator",
         "tags": ["Authentication"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -12977,6 +12977,10 @@
                                   { "const": "dedicated", "type": "string" }
                                 ]
                               },
+                              "gatewayManagedMode": {
+                                "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                                "type": "boolean"
+                              },
                               "harnessAuth": {
                                 "anyOf": [
                                   {
@@ -13181,6 +13185,7 @@
                               "backendId",
                               "harnessAuth",
                               "executionMode",
+                              "gatewayManagedMode",
                               "desiredRuntimeState",
                               "status",
                               "createdAt"
@@ -13250,6 +13255,10 @@
                                   { "const": "dedicated", "type": "string" }
                                 ]
                               },
+                              "gatewayManagedMode": {
+                                "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                                "type": "boolean"
+                              },
                               "id": {
                                 "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
@@ -13285,6 +13294,7 @@
                               "configurationId",
                               "backendId",
                               "executionMode",
+                              "gatewayManagedMode",
                               "desiredRuntimeState",
                               "status",
                               "createdAt",
@@ -13417,6 +13427,10 @@
                       { "const": "embedded", "type": "string" },
                       { "const": "dedicated", "type": "string" }
                     ]
+                  },
+                  "gatewayManagedMode": {
+                    "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                    "type": "boolean"
                   },
                   "harnessAuth": {
                     "anyOf": [
@@ -13682,6 +13696,10 @@
                             { "const": "dedicated", "type": "string" }
                           ]
                         },
+                        "gatewayManagedMode": {
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "type": "boolean"
+                        },
                         "harnessAuth": {
                           "anyOf": [
                             {
@@ -13883,6 +13901,7 @@
                         "backendId",
                         "harnessAuth",
                         "executionMode",
+                        "gatewayManagedMode",
                         "desiredRuntimeState",
                         "status",
                         "createdAt"
@@ -15238,6 +15257,10 @@
                       { "const": "dedicated", "type": "string" }
                     ]
                   },
+                  "gatewayManagedMode": {
+                    "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                    "type": "boolean"
+                  },
                   "harnessAuth": {
                     "anyOf": [
                       {
@@ -16337,6 +16360,10 @@
                       { "const": "dedicated", "type": "string" }
                     ]
                   },
+                  "gatewayManagedMode": {
+                    "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                    "type": "boolean"
+                  },
                   "harnessAuth": {
                     "anyOf": [
                       {
@@ -16642,6 +16669,10 @@
                             { "const": "dedicated", "type": "string" }
                           ]
                         },
+                        "gatewayManagedMode": {
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "type": "boolean"
+                        },
                         "harnessAuth": {
                           "anyOf": [
                             {
@@ -16843,6 +16874,7 @@
                         "backendId",
                         "harnessAuth",
                         "executionMode",
+                        "gatewayManagedMode",
                         "desiredRuntimeState",
                         "status",
                         "createdAt"
@@ -17004,6 +17036,10 @@
                                 { "const": "embedded", "type": "string" },
                                 { "const": "dedicated", "type": "string" }
                               ]
+                            },
+                            "gatewayManagedMode": {
+                              "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                              "type": "boolean"
                             },
                             "harnessAuth": {
                               "anyOf": [
@@ -17209,6 +17245,7 @@
                             "backendId",
                             "harnessAuth",
                             "executionMode",
+                            "gatewayManagedMode",
                             "desiredRuntimeState",
                             "status",
                             "createdAt"
@@ -17278,6 +17315,10 @@
                                 { "const": "dedicated", "type": "string" }
                               ]
                             },
+                            "gatewayManagedMode": {
+                              "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                              "type": "boolean"
+                            },
                             "id": {
                               "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -17313,6 +17354,7 @@
                             "configurationId",
                             "backendId",
                             "executionMode",
+                            "gatewayManagedMode",
                             "desiredRuntimeState",
                             "status",
                             "createdAt",
@@ -17413,6 +17455,10 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
+                "anyOf": [
+                  { "required": ["configurationId"] },
+                  { "required": ["gatewayManagedMode"] }
+                ],
                 "properties": {
                   "backendId": {
                     "anyOf": [
@@ -17451,6 +17497,10 @@
                       { "const": "embedded", "type": "string" },
                       { "const": "dedicated", "type": "string" }
                     ]
+                  },
+                  "gatewayManagedMode": {
+                    "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                    "type": "boolean"
                   },
                   "harnessAuth": {
                     "anyOf": [
@@ -17672,7 +17722,6 @@
                     ]
                   }
                 },
-                "required": ["configurationId"],
                 "type": "object"
               }
             }
@@ -17741,6 +17790,10 @@
                             { "const": "embedded", "type": "string" },
                             { "const": "dedicated", "type": "string" }
                           ]
+                        },
+                        "gatewayManagedMode": {
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "type": "boolean"
                         },
                         "harnessAuth": {
                           "anyOf": [
@@ -17943,6 +17996,7 @@
                         "backendId",
                         "harnessAuth",
                         "executionMode",
+                        "gatewayManagedMode",
                         "desiredRuntimeState",
                         "status",
                         "createdAt"
@@ -18473,6 +18527,10 @@
                           "type": "array",
                           "uniqueItems": true
                         },
+                        "gatewayManagedMode": {
+                          "description": "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
+                          "type": "boolean"
+                        },
                         "harness": {
                           "additionalProperties": false,
                           "properties": {
@@ -18644,6 +18702,11 @@
                           "type": "object"
                         },
                         "revision": { "minimum": 1, "type": "integer" },
+                        "sandboxDriverId": {
+                          "description": "The Sandbox Driver that provisions this version. Absent when the version runs without a Sandbox, so it has no Sandbox log source and records no policy denials.",
+                          "minLength": 1,
+                          "type": "string"
+                        },
                         "secretBindings": {
                           "additionalProperties": {
                             "additionalProperties": false,
@@ -18693,6 +18756,7 @@
                         "configurationKind",
                         "configurationGeneration",
                         "configuration",
+                        "gatewayManagedMode",
                         "harness",
                         "compute",
                         "harnessAuth",
@@ -21625,6 +21689,10 @@
                           "description": "Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "type": "boolean"
                         },
+                        "readLogs": {
+                          "description": "Whether the selected IAM Driver allows reading the Agent's runtime log text now: Agent `read_logs`, or Agent `administer` when no Restriction denies `read_logs`. Advisory only: other required permissions, Compute Driver support, or a later authorization decision can still prevent the read.",
+                          "type": "boolean"
+                        },
                         "sandboxPolicyRead": {
                           "description": "Whether the selected IAM Driver allows read now on the Agent's sandbox policy, which reading its network policy and policy suggestions needs. Advisory only: other required permissions, Sandbox Driver support, or a later authorization decision can still prevent the read.",
                           "type": "boolean"
@@ -21645,7 +21713,8 @@
                         "configurationSecretsOperate",
                         "configurationSecretsOperateDeniedBindings",
                         "agentSourcesOperate",
-                        "sandboxPolicyRead"
+                        "sandboxPolicyRead",
+                        "readLogs"
                       ],
                       "type": "object"
                     },
@@ -21747,12 +21816,17 @@
                       "additionalProperties": false,
                       "properties": {
                         "operateDenied": {
-                          "description": "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Binding a Secret to this Agent's Configuration or as its Harness authentication source needs Secret operate on it. Empty when it is not reported: reported only to a caller with read on the Namespace and on the Agent's Configuration, and update on the Agent or its Configuration. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "description": "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Binding a Secret to this Agent's Configuration or as its Harness authentication source needs Secret operate on it, and so does deploying a draft that binds it. Empty when it is not reported: reported only to a caller with read on the Namespace and on the Agent's Configuration, and update on the Agent or its Configuration or deploy on the Agent. A caller with deploy but neither update gets only the Secrets the draft binds: its Configuration's Secret bindings and a Secret Harness authentication source. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
                           "items": { "minLength": 1, "type": "string" },
                           "type": "array"
+                        },
+                        "unreadableOperateDenied": {
+                          "description": "How many of the Secrets the draft binds the caller may neither read nor Secret operate now: its Configuration's Secret bindings and a Secret Harness authentication source. Deploying the draft needs Secret operate on each. A count only: the caller may not read them, so their IDs are never reported. 0 when it is not reported, under the same conditions as `operateDenied`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "minimum": 0,
+                          "type": "integer"
                         }
                       },
-                      "required": ["operateDenied"],
+                      "required": ["operateDenied", "unreadableOperateDenied"],
                       "type": "object"
                     },
                     "meta": {
@@ -22549,6 +22623,12 @@
             },
             "description": "Default Response"
           },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
           "500": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -23253,6 +23333,10 @@
                               "type": "array",
                               "uniqueItems": true
                             },
+                            "gatewayManagedMode": {
+                              "description": "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
+                              "type": "boolean"
+                            },
                             "harness": {
                               "additionalProperties": false,
                               "properties": {
@@ -23429,6 +23513,11 @@
                               "type": "object"
                             },
                             "revision": { "minimum": 1, "type": "integer" },
+                            "sandboxDriverId": {
+                              "description": "The Sandbox Driver that provisions this version. Absent when the version runs without a Sandbox, so it has no Sandbox log source and records no policy denials.",
+                              "minLength": 1,
+                              "type": "string"
+                            },
                             "secretBindings": {
                               "additionalProperties": {
                                 "additionalProperties": false,
@@ -23478,6 +23567,7 @@
                             "configurationKind",
                             "configurationGeneration",
                             "configuration",
+                            "gatewayManagedMode",
                             "harness",
                             "compute",
                             "harnessAuth",
@@ -24443,6 +24533,12 @@
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
+                        "deployedPolicyVersion": {
+                          "description": "The saved policy version the active revision (defaultsRevisionId) was deployed with. Its Sandbox enforces that version without a live application.",
+                          "maximum": 2147483647,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
                         "editingEnabled": { "type": "boolean" },
                         "policy": {
                           "additionalProperties": false,
@@ -24580,6 +24676,10 @@
                         "protectedExecution": {
                           "description": "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
                           "type": "boolean"
+                        },
+                        "unavailableReason": {
+                          "description": "Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give.",
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -25380,6 +25480,10 @@
                             { "const": "dedicated", "type": "string" }
                           ]
                         },
+                        "gatewayManagedMode": {
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "type": "boolean"
+                        },
                         "harnessAuth": {
                           "anyOf": [
                             {
@@ -25581,6 +25685,7 @@
                         "backendId",
                         "harnessAuth",
                         "executionMode",
+                        "gatewayManagedMode",
                         "desiredRuntimeState",
                         "status",
                         "createdAt"
@@ -25955,6 +26060,10 @@
                             { "const": "dedicated", "type": "string" }
                           ]
                         },
+                        "gatewayManagedMode": {
+                          "description": "Whether OCE restricts Gateway-local administration. Defaults on. Changing the setting requires Installation administer permission and takes effect on deployment.",
+                          "type": "boolean"
+                        },
                         "harnessAuth": {
                           "anyOf": [
                             {
@@ -26156,6 +26265,7 @@
                         "backendId",
                         "harnessAuth",
                         "executionMode",
+                        "gatewayManagedMode",
                         "desiredRuntimeState",
                         "status",
                         "createdAt"
@@ -26323,6 +26433,12 @@
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },
             "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Conflict. The Agent has no running version: deploy it, or wait until its deployment finishes."
           },
           "500": {
             "content": {
@@ -29932,6 +30048,17 @@
                           "required": ["create"],
                           "type": "object"
                         },
+                        "installation": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "administer": {
+                              "description": "Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": ["administer"],
+                          "type": "object"
+                        },
                         "secrets": {
                           "additionalProperties": false,
                           "properties": {
@@ -29944,7 +30071,7 @@
                           "type": "object"
                         }
                       },
-                      "required": ["agents", "secrets"],
+                      "required": ["agents", "secrets", "installation"],
                       "type": "object"
                     },
                     "meta": {
@@ -30004,6 +30131,103 @@
           }
         },
         "summary": "Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation",
+        "tags": ["Namespaces"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/permissions/secrets": {
+      "get": {
+        "description": "Requires read permission on the requested Namespace.",
+        "operationId": "getNamespaceSecretPermissions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "operateDenied": {
+                          "description": "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Agent creation needs Secret operate on each Secret it binds or uses: its Harness authentication source, its Configuration's Secret bindings, and a directory search Secret. Empty when it is not reported: reported only to a caller who may create an Agent in this Namespace. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+                          "items": { "minLength": 1, "type": "string" },
+                          "type": "array"
+                        }
+                      },
+                      "required": ["operateDenied"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation",
         "tags": ["Namespaces"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "namespace", "scope": "requested" }
@@ -31426,6 +31650,22 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "callerPermissions": {
+                          "additionalProperties": false,
+                          "description": "What the selected IAM Driver allows you to do to this Secret now. Checking it records no authorization denial. Returned by the exact Secret read only.",
+                          "properties": {
+                            "delete": {
+                              "description": "Whether the selected IAM Driver allows you to delete this Secret now (Secret delete). Advisory only: current references, lifecycle state or a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            },
+                            "update": {
+                              "description": "Whether the selected IAM Driver allows you to replace this Secret's value now (Secret update). Advisory only: lifecycle state or a later authorization decision can still prevent the operation.",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": ["update", "delete"],
+                          "type": "object"
+                        },
                         "consumers": {
                           "additionalProperties": false,
                           "description": "Current references that block deletion of the Secret. Returned by the exact Secret read only.",
@@ -31521,7 +31761,14 @@
                           "type": "object"
                         }
                       },
-                      "required": ["id", "namespaceId", "name", "ref", "consumers"],
+                      "required": [
+                        "id",
+                        "namespaceId",
+                        "name",
+                        "ref",
+                        "consumers",
+                        "callerPermissions"
+                      ],
                       "type": "object"
                     },
                     "meta": {
@@ -31985,7 +32232,7 @@
         "operationId": "deleteServiceAccount",
         "parameters": [
           {
-            "description": "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+            "description": "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for a ChatGPT workspace administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
             "in": "query",
             "name": "force",
             "required": false,

@@ -15,6 +15,7 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -23,7 +24,16 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import {
+  referenceFormRefusal,
+  unboundReferenceRefusal,
+  unreadableSlackTokenRefusal,
+  unsubstitutedFallbackRefusal,
+  unsubstitutedReferenceRefusal,
+  codexApiKeyRefusal,
+} from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function createConfigurationBackend() {
@@ -373,11 +383,8 @@ async function writePastOcc(configurationDriver, configurationId, values) {
 
 // The refusal texts the save rules name a field or setting with.
 const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
-const unboundChannelReference = (path, name) =>
-  setting(
-    path,
-    `references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference`,
-  );
+// A Slack token SecretRef the Slack Channel Driver cannot read (finding 2514).
+const unreadableSlackReference = (path) => unreadableSlackTokenRefusal(path, "secretRef");
 const absoluteUrl = (field) =>
   `Configuration field ${field} must be an absolute http or https URL.`;
 const modelApi = (field) =>
@@ -1462,8 +1469,8 @@ test("Configuration create, update and Agent create's check refuse a channel cre
     },
   });
   const slack = slackWith({});
-  const botRefusal = unboundChannelReference("channels.slack.botToken", "SLACK_BOT_TOKEN");
-  const appRefusal = unboundChannelReference("channels.slack.appToken", "SLACK_APP_TOKEN");
+  const botRefusal = unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN");
+  const appRefusal = unboundReferenceRefusal("channels.slack.appToken", "SLACK_APP_TOKEN");
   const unchanged = async (label) =>
     assert.deepEqual((await request(context.app, "GET", item)).body.data, created.body.data, label);
 
@@ -1522,16 +1529,28 @@ test("Configuration create, update and Agent create's check refuse a channel cre
         secretBindings: bothBindings,
       },
     }),
-    unboundChannelReference("channels.slack.accounts.work.botToken", "WORK_BOT_TOKEN"),
+    unboundReferenceRefusal("channels.slack.accounts.work.botToken", "WORK_BOT_TOKEN"),
     { label: "named account" },
   );
   // A binding is an own key: an inherited name such as `constructor` binds nothing.
   assertRefused(
     await request(context.app, "PATCH", item, {
+      body: {
+        values: slackWith({ botToken: { source: "env", provider: "default", id: "constructor" } }),
+        secretBindings: bothBindings,
+      },
+    }),
+    unboundReferenceRefusal("channels.slack.botToken", "constructor"),
+    { label: "inherited name" },
+  );
+  // The runtime does not substitute a lowercase name, so it would send `${constructor}` itself as
+  // the token: a secret-input field refuses it, whatever the bindings hold (finding 2477).
+  assertRefused(
+    await request(context.app, "PATCH", item, {
       body: { values: slackWith({ botToken: "${constructor}" }), secretBindings: bothBindings },
     }),
-    unboundChannelReference("channels.slack.botToken", "constructor"),
-    { label: "inherited name" },
+    unsubstitutedReferenceRefusal("channels.slack.botToken", "${constructor}"),
+    { label: "lowercase name" },
   );
   const disabled = await request(context.app, "PATCH", item, {
     body: { values: slackWith({ enabled: false }), secretBindings: {} },
@@ -1581,6 +1600,94 @@ test("Configuration create, update and Agent create's check refuse a channel cre
   }
 });
 
+// The Slack Channel Driver reads a token only from an env SecretRef with the default provider or
+// one whole `${NAME}`, and refuses any other SecretRef with binding_required at provisioning and
+// deployment. Save refuses those where the binding rule runs, for exactly the tokens the Driver
+// checks, naming the setting and never the value (finding 2514).
+test("Configuration save and Agent create's check refuse a Slack token SecretRef the Slack Channel Driver cannot read", async (t) => {
+  // The real Filesystem Configuration Driver, whose credential slot rule runs after OCC's.
+  const root = await temporaryDirectory(t, "occ-slack-token-refs-");
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver: new FilesystemConfigurationDriver(root),
+    computeDriver: kubernetesRules("compute-slack-token-refs", ...configurationRules),
+    computeImplementation: "kubernetes-local",
+  });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const binding = async (name) => {
+    const secret = await context.controller.createSecret(context.principal.id, {
+      namespaceId: namespace.id,
+      name,
+      value: `synthetic-${name}`,
+    });
+    return { source: secret.ref, delivery: { type: "env" } };
+  };
+  const secretBindings = {
+    SLACK_APP_TOKEN: await binding("slack-app"),
+    SLACK_BOT_TOKEN: await binding("slack-bot"),
+  };
+  const appToken = { source: "env", provider: "default", id: "SLACK_APP_TOKEN" };
+  const fileRef = { source: "file", provider: "default", id: "/run/slack/bot" };
+  const slackWith = (slack) => ({
+    ...runtimeSelected,
+    channels: {
+      slack: { enabled: true, mode: "socket", appToken, botToken: "${SLACK_BOT_TOKEN}", ...slack },
+    },
+  });
+  const save = (values) =>
+    request(context.app, "POST", collection, { body: { kind: "agent", values, secretBindings } });
+  const validate = (values) =>
+    request(context.app, "POST", `/namespaces/${namespace.id}/agents/validate`, {
+      body: {
+        configuration: { kind: "agent", values, secretBindings },
+        executionMode: "dedicated",
+      },
+    });
+
+  for (const [slack, path] of [
+    [{ botToken: fileRef }, "channels.slack.botToken"],
+    [{ appToken: { source: "exec", provider: "default", id: "slack" } }, "channels.slack.appToken"],
+    [
+      { botToken: { source: "env", provider: "vault", id: "SLACK_BOT_TOKEN" } },
+      "channels.slack.botToken",
+    ],
+    [{ accounts: { work: { botToken: fileRef } } }, "channels.slack.accounts.work.botToken"],
+    // An account named "default" replaces the implicit one, and inherits the channel's token.
+    [{ botToken: fileRef, accounts: { default: { appToken } } }, "channels.slack.botToken"],
+  ]) {
+    const values = slackWith(slack);
+    const label = JSON.stringify(slack);
+    assertRefused(await save(values), unreadableSlackReference(path), {
+      label,
+      sentinel: "/run/slack/bot",
+    });
+    assertRefused(await validate(values), unreadableSlackReference(path), { label });
+  }
+  // The Driver reads no other object either, and the Configuration Driver accepts one there, so
+  // it is refused without being called a SecretRef, never echoing the value (finding 2518).
+  for (const botToken of [{ value: "xoxb-not-a-reference" }, {}]) {
+    assertRefused(
+      await save(slackWith({ botToken })),
+      unreadableSlackTokenRefusal("channels.slack.botToken", "object"),
+      { label: JSON.stringify(botToken), sentinel: "xoxb-not-a-reference" },
+    );
+  }
+  // The Driver skips the app token in HTTP mode, a disabled account and fields it does not read,
+  // and the channel's token when an account called "default" sets its own (finding 2519).
+  for (const slack of [
+    { mode: "http", appToken: fileRef },
+    { accounts: { work: { enabled: false, botToken: fileRef } } },
+    { signingSecret: fileRef },
+    { botToken: fileRef, accounts: { default: { appToken, botToken: "${SLACK_BOT_TOKEN}" } } },
+    // The Driver reads an env SecretRef without a provider as the default one.
+    { botToken: { source: "env", id: "SLACK_BOT_TOKEN" } },
+  ]) {
+    const saved = await save(slackWith(slack));
+    assert.equal(saved.status, 201, `${JSON.stringify(slack)}: ${JSON.stringify(saved.body)}`);
+  }
+});
+
 // Another Compute may resolve channel credentials without OCC Secret bindings (SSH Compute reads
 // the host's operator-owned environment file), so OCC applies the binding rule only on the
 // bundled Kubernetes Compute (finding 2319).
@@ -1604,6 +1711,183 @@ test("Configuration save keeps an unbound channel credential reference on a Comp
   });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
 });
+
+// The bundled Kubernetes Compute has two implementations: the Installation default
+// (`occ/kubernetes`) and the Driver's own default (`kubernetes-local`). Under either, OCC checks
+// every enabled channel, not only the first, and Agent provisioning checks the bindings it
+// creates the Configuration with, none when the request sends none (finding 2319).
+for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
+  test(`Configuration create and Agent provisioning check every channel's credential references on ${computeImplementation}`, async () => {
+    const backend = createConfigurationBackend();
+    const { namespace, collection, ...context } = await fixture({
+      // Agent provisioning requires exact create and inspect; the refusal comes first.
+      configurationDriver: {
+        ...backend,
+        createExact: (configuration) => backend.create(configuration),
+        inspectExact: async () => undefined,
+      },
+      computeDriver: Object.assign(
+        kubernetesRules(`compute-channels-${computeImplementation}`, ...configurationRules),
+        {
+          agentProvisioning: { executionModes: ["dedicated"] },
+          validateAgentProvisioning() {},
+          async provisionAgentRuntimeCredentials() {
+            return { transportConfigured: true };
+          },
+          async getAgentRuntimeCredentialStatus() {
+            return { transportConfigured: false };
+          },
+        },
+      ),
+      computeImplementation,
+    });
+    await context.controller.transact((state) =>
+      state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+    );
+    const binding = async (name) => {
+      const secret = await context.controller.createSecret(context.principal.id, {
+        namespaceId: namespace.id,
+        name,
+        value: `synthetic-${name}`,
+      });
+      return { source: secret.ref, delivery: { type: "env" } };
+    };
+    const slackBindings = {
+      SLACK_APP_TOKEN: await binding("slack-app"),
+      SLACK_BOT_TOKEN: await binding("slack-bot"),
+    };
+    const values = {
+      ...runtimeSelected,
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: "${SLACK_BOT_TOKEN}",
+        },
+        msteams: { enabled: true, appPassword: "${MSTEAMS_APP_PASSWORD}" },
+      },
+    };
+    const create = (secretBindings) =>
+      request(context.app, "POST", collection, { body: { kind: "agent", values, secretBindings } });
+
+    // The first channel's references are bound; the second channel's is not.
+    assertRefused(
+      await create(slackBindings),
+      unboundReferenceRefusal("channels.msteams.appPassword", "MSTEAMS_APP_PASSWORD"),
+    );
+    const allBindings = {
+      ...slackBindings,
+      MSTEAMS_APP_PASSWORD: await binding("msteams-password"),
+    };
+    const saved = await create(allBindings);
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    // The runtime substitutes a reference anywhere in a value, and with a `:-fallback` too: an
+    // unbound name is never set, so the fallback (here empty) would replace it. Each needs a
+    // binding, and the first unbound one is named (finding 2475). `$${NAME}` is the runtime's
+    // escape for literal text, not a reference.
+    const withAppPassword = (appPassword) => ({
+      ...values,
+      channels: { ...values.channels, msteams: { enabled: true, appPassword } },
+    });
+    // In this secret-input field the runtime also reads a whole `$NAME` as an environment
+    // SecretRef (finding 2476).
+    for (const appPassword of [
+      "secret-${MSTEAMS_TENANT_SECRET}",
+      "${MSTEAMS_TENANT_SECRET:-}",
+      "${MSTEAMS_APP_PASSWORD}-${MSTEAMS_TENANT_SECRET:-fallback}",
+      "$MSTEAMS_TENANT_SECRET",
+    ]) {
+      assertRefused(
+        await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
+          body: { values: withAppPassword(appPassword), secretBindings: allBindings },
+        }),
+        unboundReferenceRefusal("channels.msteams.appPassword", "MSTEAMS_TENANT_SECRET"),
+        { label: appPassword },
+      );
+    }
+    // A `${` the runtime does not substitute (a lowercase name, `-` without `:`) would reach
+    // Teams as written, so it is refused even with every binding (finding 2477). That text may be
+    // the password itself: the message shows only a lowercase `${name}` or the name before `-`,
+    // and never the rest of the value.
+    const secretText = "9f3c2a7b1d8e4f60a5b6c7d8e9f01234";
+    for (const [appPassword, message] of [
+      [
+        "${msteams_password}",
+        unsubstitutedReferenceRefusal("channels.msteams.appPassword", "${msteams_password}"),
+      ],
+      [`\${${secretText}}`, unsubstitutedReferenceRefusal("channels.msteams.appPassword")],
+      [
+        `${secretText}\${MSTEAMS_APP_PASSWORD-${secretText}}`,
+        unsubstitutedFallbackRefusal("channels.msteams.appPassword", "MSTEAMS_APP_PASSWORD"),
+      ],
+    ]) {
+      assertRefused(
+        await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
+          body: { values: withAppPassword(appPassword), secretBindings: allBindings },
+        }),
+        message,
+        { label: appPassword, sentinel: secretText },
+      );
+    }
+    // A token shaped like a name is shown only when it is lowercase, as a mistyped name is: a
+    // mixed-case one may be the password (finding 2485).
+    const identifierToken = "Zr9kq2LmP4xT7vB1nW3c";
+    assertRefused(
+      await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
+        body: { values: withAppPassword(`\${${identifierToken}}`), secretBindings: allBindings },
+      }),
+      unsubstitutedReferenceRefusal("channels.msteams.appPassword"),
+      { label: identifierToken, sentinel: identifierToken },
+    );
+    for (const appPassword of [
+      "${MSTEAMS_APP_PASSWORD}$${MSTEAMS_TENANT_SECRET}",
+      "$MSTEAMS_APP_PASSWORD",
+    ]) {
+      const accepted = await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
+        body: { values: withAppPassword(appPassword), secretBindings: allBindings },
+      });
+      assert.equal(accepted.status, 200, `${appPassword}: ${JSON.stringify(accepted.body)}`);
+    }
+    // A Preset carries no Secret bindings, so its defaults are not checked against any: the
+    // Configuration created from it is checked with its own bindings.
+    const preset = await savePreset(context, { configuration: { values } }, "Channels");
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+
+    // Provisioning without bindings is checked against none: the first reference is refused
+    // before the Configuration is created.
+    const harnessSecret = await context.controller.createSecret(context.principal.id, {
+      namespaceId: namespace.id,
+      name: "channels-agent-key",
+      value: "synthetic-configuration-key",
+    });
+    await assert.rejects(
+      context.controller.provisionAgent(context.principal.id, {
+        namespaceId: namespace.id,
+        requestId: "channels-agent",
+        name: "Channels",
+        executionMode: "dedicated",
+        // Channels need a dedicated OpenClaw, which lists its native model catalog.
+        configuration: {
+          kind: "agent",
+          values: {
+            ...createHarnessConfiguration("openclaw", "gpt-4.1"),
+            channels: values.channels,
+          },
+        },
+        harnessAuth: { method: "api_key", source: harnessSecret.ref },
+      }),
+      {
+        name: "ConfigurationHarnessError",
+        message: unboundReferenceRefusal("channels.slack.appToken", "SLACK_APP_TOKEN"),
+      },
+    );
+    assert.deepEqual(
+      backend.storedConfigurations().map(({ id }) => id),
+      [saved.body.data.id],
+    );
+  });
+}
 
 test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async (t) => {
   // Findings 1298 and 1299: these saved and failed only at deployment, which named no setting
@@ -1765,10 +2049,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
         agents: { defaults: codexDefaults },
         models: { providers: { codex: { apiKey } } },
       };
-      const message = setting(
-        "models.providers.codex.apiKey",
-        "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
-      );
+      const message = codexApiKeyRefusal("models.providers.codex.apiKey");
       await refusedOnSave(context, values, message, { item: codex });
     }
   });
@@ -1819,31 +2100,28 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     });
     assert.equal(unused.status, 201, JSON.stringify(unused.body));
     const role = context.roles.find(({ id }) => id === "role-configuration-integration");
-    const answers = async (values) => {
-      const responses = [];
-      for (const path of [item, `${collection}/${unused.body.data.id}`]) {
-        const { status, body } = await request(context.app, "PATCH", path, { body: { values } });
-        responses.push({ status, error: body.error });
-      }
-      assert.deepEqual(responses[0], responses[1], JSON.stringify(values));
-      return responses[0];
-    };
+    // The same PATCH to the used and the unused Configuration; a denial may name only the ID
+    // its request sent.
+    const answers = (values, status) =>
+      assertSameAnswer(
+        (id) => request(context.app, "PATCH", `${collection}/${id}`, { body: { values } }),
+        [item.split("/").at(-1), unused.body.data.id],
+        { status, label: JSON.stringify(values) },
+      );
     role.permissions = [
       { action: "read", resourceKind: "configuration" },
       { action: "update", resourceKind: "configuration" },
     ];
     const memberAgentRead = await request(context.app, "GET", agentPath);
     assert.equal(memberAgentRead.status, 403, JSON.stringify(memberAgentRead.body));
-    const refused = await answers(offProvider[1][0]);
-    assert.equal(refused.status, 400);
-    assert.equal(refused.error.message, offProvider[1][1]);
-    assert.equal((await answers(valid)).status, 200);
+    const refused = await answers(offProvider[1][0], 400);
+    assert.equal(refused.message, offProvider[1][1]);
+    await answers(valid, 200);
     // A zero-grant member gets the uniform 403, whatever the values.
     role.permissions = [];
     for (const values of [valid, offProvider[1][0]]) {
       const denied = await answers(values);
-      assert.equal(denied.status, 403);
-      assert.equal(denied.error.code, "FORBIDDEN");
+      assert.equal(denied.code, "FORBIDDEN");
     }
   });
 });
@@ -1993,10 +2271,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
         },
         models: { providers: { codex: { apiKey: "${OPENAI_API_KEY}" } } },
       },
-      setting(
-        "models.providers.codex.apiKey",
-        "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
-      ),
+      codexApiKeyRefusal("models.providers.codex.apiKey"),
     ],
   ];
   const launch = (template) =>
@@ -3929,6 +4204,10 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     at(field, value),
     message(field),
   ];
+  // A channel setting is named as the channel rules name it, `channels.telegram.botToken`
+  // (finding 2517).
+  const channelLiteral = (field) =>
+    referenceFormRefusal(field.slice(1).replaceAll("/", "."), "inline");
   const tokenUrl = `https://chat.example.test/?token=${sentinel}`;
   const refused = [
     // Slots the pinned OpenClaw schema registers sensitive.
@@ -3945,22 +4224,22 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     slot("/agents/defaults/sandbox/ssh/knownHostsData"),
     slot("/storage/locations/backup/encryption/passphrase"),
     // Channel settings: a token, an account's password and an inline service account.
-    slot("/channels/telegram/botToken"),
-    slot("/channels/matrix/accounts/work/password"),
-    slot("/channels/googlechat/serviceAccount", literalKey, { private_key: sentinel }),
+    slot("/channels/telegram/botToken", channelLiteral),
+    slot("/channels/matrix/accounts/work/password", channelLiteral),
+    slot("/channels/googlechat/serviceAccount", channelLiteral, { private_key: sentinel }),
     // A field only the channel's manifest marks sensitive: a URL that carries a token.
-    slot("/channels/synology-chat/incomingUrl", literalKey, tokenUrl),
-    slot("/channels/synology-chat/accounts/ops/webhookUrl", literalKey, tokenUrl),
-    slot("/channels/synology-chat/webhookUrl", literalKey, tokenUrl),
-    slot("/channels/synology-chat/accounts/ops/incomingUrl", literalKey, tokenUrl),
+    slot("/channels/synology-chat/incomingUrl", channelLiteral, tokenUrl),
+    slot("/channels/synology-chat/accounts/ops/webhookUrl", channelLiteral, tokenUrl),
+    slot("/channels/synology-chat/webhookUrl", channelLiteral, tokenUrl),
+    slot("/channels/synology-chat/accounts/ops/incomingUrl", channelLiteral, tokenUrl),
     // Each word of the rule: a secret, an encryption key, a service account reference.
-    slot("/channels/line/channelSecret"),
-    slot("/channels/feishu/encryptKey"),
-    slot("/channels/googlechat/serviceAccountRef"),
+    slot("/channels/line/channelSecret", channelLiteral),
+    slot("/channels/feishu/encryptKey", channelLiteral),
+    slot("/channels/googlechat/serviceAccountRef", channelLiteral),
     // Two literals in one channel: the first in the document is named.
     [
       { channels: { telegram: { botToken: sentinel, webhookSecret: sentinel } } },
-      literalKey("/channels/telegram/botToken"),
+      channelLiteral("/channels/telegram/botToken"),
     ],
     // Plugin settings: a key, an account's password, a list entry, a field only the manifest
     // marks sensitive and a headers map.
@@ -3998,7 +4277,7 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     variables: { token: { type: "string" } },
     configuration: { values: { channels: { telegram: { botToken: "{{ vars.token }}" } } } },
   });
-  assertRefused(variable, literalKey("/channels/telegram/botToken"));
+  assertRefused(variable, channelLiteral("/channels/telegram/botToken"));
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
 
   // `${NAME}` and SecretRef references still save, and so do settings the rule leaves alone:
@@ -4063,6 +4342,53 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
       },
     },
   });
+});
+
+test("a credential reference that is not the whole value is refused with a message naming its form", async (t) => {
+  // Finding 2493: a bound Slack token written as `$NAME`, with a fallback or inside other text
+  // passed the channel binding rule and fell to the inline-credential message, which reads as if
+  // the reference were a credential. The refusal stays; its message names the form and what to
+  // write, and never the text around the reference or the fallback, which may hold the token.
+  const context = await saveFixture(t);
+  const created = await request(context.app, "POST", context.collection, {
+    body: { kind: "agent", values: {} },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const item = `${context.collection}/${created.body.data.id}`;
+  const sentinel = `synthetic-${randomUUID()}`;
+  // The message names the setting as the channel binding rules do (finding 2503).
+  const shorthand = (path) => referenceFormRefusal(path, "shorthand");
+  const fallback = (path) => referenceFormRefusal(path, "fallback");
+  const otherText = (path) => referenceFormRefusal(path, "otherText");
+  const slack = (botToken) => ({ channels: { slack: { enabled: true, botToken } } });
+  const bot = "channels.slack.botToken";
+  for (const [values, message] of [
+    [slack("$SLACK_BOT_TOKEN"), shorthand(bot)],
+    [slack("${SLACK_BOT_TOKEN:-}"), fallback(bot)],
+    [slack(`\${SLACK_BOT_TOKEN:-${sentinel}}`), fallback(bot)],
+    [slack(`${sentinel}-\${SLACK_BOT_TOKEN}`), otherText(bot)],
+    [slack("xoxb-${SLACK_BOT_TOKEN}"), otherText(bot)],
+    // A line break or a second reference is not text, but still not the whole value (finding 2503).
+    [slack("${SLACK_BOT_TOKEN}\n"), otherText(bot)],
+    [slack("${SLACK_BOT_TOKEN}${SLACK_APP_TOKEN}"), otherText(bot)],
+    // Any key slot: a plugin's API key and the Gateway's remote token.
+    [
+      {
+        plugins: {
+          entries: { brave: { config: { webSearch: { apiKey: "Bearer ${BRAVE_KEY}" } } } },
+        },
+      },
+      otherText("plugins.entries.brave.config.webSearch.apiKey"),
+    ],
+    [{ gateway: { remote: { token: "$REMOTE_TOKEN" } } }, shorthand("gateway.remote.token")],
+    // An escape renders literal text, so it is a literal credential, with that message. So is a
+    // `$` before a name the runtime does not read as one (finding 2517).
+    [slack("$${SLACK_BOT_TOKEN}"), referenceFormRefusal(bot, "inline")],
+    [slack(`$xoxb${sentinel}`), referenceFormRefusal(bot, "inline")],
+  ]) {
+    await refusedOnSave(context, values, message, { item, sentinel });
+  }
+  await assertNothingStored(context, [`${created.body.data.id}.json`]);
 });
 
 test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {

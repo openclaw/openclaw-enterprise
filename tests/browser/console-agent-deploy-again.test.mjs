@@ -9,6 +9,8 @@ import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
+  authorizationDenials,
+  denyRevisionRead,
   detailUrl,
   fileBrowser,
   holdRequests,
@@ -26,7 +28,11 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
-import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import {
+  GENERIC_DENIAL,
+  OVERVIEW_REFRESH_FAILED,
+  READ_OUTAGE_REASON,
+} from "../helpers/refusal-text.mjs";
 
 // Failed-version recovery's Deploy again: the API's DEPENDENCY_UNAVAILABLE message says to deploy
 // again, and the link opens the draft at its Deploy new version. That button is built only from a
@@ -144,13 +150,7 @@ for (const tab of ["configuration", "logs", "channels"]) {
     assert.equal(await logs.getAttribute("class"), "button button--primary");
     assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
     assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
-    const configurationDenials = auditSink
-      .list()
-      .filter(
-        (event) =>
-          event.kind === "authorization_denial" && event.action === "openclaw.configurations.read",
-      );
-    assert.equal(configurationDenials.length, 1);
+    assert.equal(authorizationDenials(auditSink, "openclaw.configurations.read").length, 1);
   });
 }
 
@@ -387,13 +387,7 @@ test("A deployer who cannot read the Configuration gets no Open version draft", 
   assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Open version draft" }).count(), 0);
   assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
-  const configurationDenials = auditSink
-    .list()
-    .filter(
-      (event) =>
-        event.kind === "authorization_denial" && event.action === "openclaw.configurations.read",
-    );
-  assert.equal(configurationDenials.length, 1);
+  assert.equal(authorizationDenials(auditSink, "openclaw.configurations.read").length, 1);
 });
 
 // A deployer who can read it gets the link once the read succeeds, not before.
@@ -594,11 +588,7 @@ test("A completed deployment whose Agent reread fails is labelled Deployed, not 
   record.status = "succeeded";
   record.agentFail = true;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await page
-    .getByText(
-      "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
-    )
-    .waitFor();
+  await page.getByText(`${OVERVIEW_REFRESH_FAILED} ${READ_OUTAGE_REASON}`).waitFor();
   await summary.getByText("v2 · Completed", { exact: true }).waitFor();
   await page
     .getByText(
@@ -702,14 +692,7 @@ test("A failed reread leaves the newest readable version Historical under a hidd
   const next = await fixture.deployAgent(namespace.id, agent.id);
   const hidden = await fixture.deployAgent(namespace.id, agent.id);
   await fixture.activateRevision(namespace.id, agent.id, hidden.id, first.id);
-  fixture.policy.restrictions.push({
-    id: `deny-read-${hidden.id}`,
-    namespaceId: namespace.id,
-    resourceKind: "agent_revision",
-    resourceId: hidden.id,
-    action: "read",
-    effect: "deny",
-  });
+  denyRevisionRead(fixture, namespace, hidden);
   const { page } = await newPage(t, fixture, { browser });
   let agentFail = false;
   await page.route(
@@ -743,11 +726,7 @@ test("A failed reread leaves the newest readable version Historical under a hidd
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   agentFail = true;
   await page.getByRole("button", { name: "Refresh deployment" }).click();
-  await page
-    .getByText(
-      "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
-    )
-    .waitFor();
+  await page.getByText(`${OVERVIEW_REFRESH_FAILED} ${READ_OUTAGE_REASON}`).waitFor();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deployed version/).count(), 0);
 });
@@ -762,9 +741,7 @@ test("A failure read by a refresh that cannot reread the Agent keeps its warning
   await page.getByRole("button", { name: "Refresh deployment" }).click();
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.waitFor();
-  const warning = page.getByText(
-    "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
-  );
+  const warning = page.getByText(`${OVERVIEW_REFRESH_FAILED} ${READ_OUTAGE_REASON}`);
   // The panel renders the warning and the card folds the details in one task, so once the
   // warning is in the page the details' state is settled.
   await warning.waitFor({ state: "attached" });

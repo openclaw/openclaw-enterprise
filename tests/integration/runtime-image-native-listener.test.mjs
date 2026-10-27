@@ -106,24 +106,34 @@ test(
           "OPENCLAW_POD_UID=owned-native-tls",
         ],
       });
-      // The TLS request reads the certificate the Gateway generates at startup.
-      const nativeRequest = enabled
-        ? `() => new Promise((resolve, reject) => require("https").get({hostname:"127.0.0.1",port:8080,path:"/readyz",servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem"),timeout:5000},r=>{r.resume();resolve(r.statusCode)}).on("error",reject).on("timeout",function(){this.destroy(new Error("timeout"))}))`
-        : `() => fetch("http://127.0.0.1:8080/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)`;
-      await waitForListenerReady(containerName, nativeRequest);
-      const readiness = () =>
-        runDocker([
+      const computeReady = `async () => {
+        const response = await fetch("http://127.0.0.1:18791/readyz", {signal: AbortSignal.timeout(5000)});
+        if (await response.text() !== "") throw new Error("Compute readiness returned a body");
+        return response.status;
+      }`;
+      if (enabled) {
+        // Both native endpoints must serve HTTPS before a Compute 503 can be attributed to TLS.
+        const nativeReady = `async () => {
+          const options = {hostname: "127.0.0.1", port: 8080, servername: "openclaw-gateway",
+            ca: require("node:fs").readFileSync("/home/node/tls/cert.pem"), timeout: 5000};
+          const statuses = await Promise.all(["/startupz", "/readyz"].map(path => new Promise((resolve, reject) => {
+            const request = require("node:https").get({...options, path}, response => {
+              response.resume();
+              resolve(response.statusCode);
+            });
+            request.on("error", reject).on("timeout", () => request.destroy(new Error("timeout")));
+          })));
+          return statuses.every(status => status === 200) ? 200 : 503;
+        }`;
+        await waitForListenerReady(containerName, nativeReady);
+        const { stdout } = await runDocker([
           "exec",
           containerName,
           "node",
           "-e",
-          'fetch("http://127.0.0.1:18791/readyz").then(async r=>{if(await r.text()!=="")process.exit(2);console.log(r.status);process.exit(r.status===200?0:1)}).catch(()=>process.exit(2));',
+          `(${computeReady})().then(status => console.log(status));`,
         ]);
-      if (enabled) {
-        await assert.rejects(
-          readiness,
-          (error) => error.code === 1 && error.stdout.trim() === "503",
-        );
+        assert.equal(stdout.trim(), "503");
         for (const [kind, driver] of drivers) {
           assert.throws(
             () => driver.validateGatewaySettings?.(configuration),
@@ -132,7 +142,11 @@ test(
           );
         }
       } else {
-        await readiness();
+        await waitForListenerReady(
+          containerName,
+          '() => fetch("http://127.0.0.1:8080/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)',
+        );
+        await waitForListenerReady(containerName, computeReady);
         for (const [, driver] of drivers) {
           assert.doesNotThrow(() => driver.validateGatewaySettings(configuration));
         }
@@ -227,7 +241,7 @@ test(
           "node",
           image,
           "-e",
-          `const deadline=Date.now()+Number(process.argv[1]);const probe=async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}};(async()=>{for(;;){const v=await Promise.all([8080,18791].map(probe));if((v[1].status===200&&(v[0].status===200||v[0].error==="ECONNREFUSED"))||Date.now()>=deadline){console.log(JSON.stringify(v));return;}await new Promise(r=>setTimeout(r,500));}})();`,
+          `const deadline=Date.now()+Number(process.argv[1]);const probe=async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}};(async()=>{for(;;){const v=await Promise.all([8080,18791].map(probe));if((v[1].status===200&&(${reachable}?v[0].status===200:v[0].error==="ECONNREFUSED"))||Date.now()>=deadline){console.log(JSON.stringify(v));return;}await new Promise(r=>setTimeout(r,500));}})();`,
           String(remoteBudgetMs),
         ],
         { timeout: remoteBudgetMs + 60_000 * imageSmokeTimeoutMultiplier },

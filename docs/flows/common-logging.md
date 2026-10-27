@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-23
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+updated: 2026-10-26
+last_updated_session: wf-land-1707
 ---
 
 # Common Operational Logging Flow
@@ -238,8 +238,11 @@ Compute Driver refused a provisioning plan for a reason the caller cannot fix) k
 of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps only
 `request.id`; its route, error class, message and causes stay in the API's local log.
 `native_admin.websocket_audit_failed`
-keeps the Namespace, Agent and Agent revision IDs, and `native_admin.websocket_denial_audit_failed`
-carries none. `native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
+keeps the Namespace, Agent and Agent revision IDs. `native_admin.http_denial_audit_failed`
+and `native_admin.websocket_denial_audit_failed` carry no request, user, error or payload
+fields. `native_admin.pending_work_unresolved` keeps only its nonnegative safe-integer
+count as `occ.native_admin.pending`; invalid counts are omitted.
+`native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the Namespace, Agent and Agent revision IDs; the Driver IDs and
 implementations stay local. `authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
 messages stay local.
@@ -314,6 +317,8 @@ for panels, correlation, and authorization limits.
 
 ## Changelog
 
+- 2026-10-26 22:00: Export `native_admin.http_denial_audit_failed` and `native_admin.pending_work_unresolved` (bounded count only); both denial-audit failure events drop caller context. (wf-land-1707 - #1707)
+
 - 2026-10-23 21:00: Log `worker.repository-delivery-pending` when delivery starts failing, then at most once a minute, not on every one-second retry. (fix-2251)
 
 - 2026-10-23 20:00: Preserve current logging documentation and both histories while retaining demo repository-casing validation. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - e1788c775)
@@ -337,19 +342,5 @@ for panels, correlation, and authorization limits.
 - 2026-10-10 05:47: Retain admitted Agent provisioning work IDs in Collector correlation metadata. (authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f - cd30d20a297fdb0f2b712122b705aa4c168564ff)
 
 - 2026-10-10 00:44: Refuse noncanonical Collector exporter ports before Kubernetes YAML can change their meaning. (authoring-run/e72ad138-e0b2-498e-885b-f8fa56caaeb0 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
-
-- 2026-10-09 23:11: Document renamed Loki exporter addresses and Collector refresh after demo upgrades. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 6668e2fc8477ca780b15e25a7320589a7612284f)
-
-- 2026-10-09 21:42: Bound demo Service names and keep Grafana datasource URLs aligned. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 49d1562335120b125d3f149a5a6a64a5c51577a9)
-
-- 2026-10-09 14:00: Export `http.dependency_unavailable`, the API warning that names the cause of a `503 DEPENDENCY_UNAVAILABLE` by request ID; the cause stays local. (fix-529-938)
-- 2026-10-08 10:17: Document Collector quantity syntax checks in the accompanying chart change. (authoring-run/95ed7983-818c-4af2-8875-1330333f5e41 - 1fce0eef361dd584212cc3f2ac4d75ab92eb8ff7)
-
-- 2026-10-06 13:30: Export `agent_provisioning.compute_refused`, the API warning that names a Compute provisioning refusal by request ID.
-- 2026-10-06 06:30: Export the API shutdown, idle database connection, device login, cluster credential denial, native admin audit failure and authentication startup warnings that other pages tell operators to look for.
-- 2026-10-05 05:30: Note that the Preset startup warnings come only from the API.
-- 2026-10-05 03:30: Export `presets.bundled-default-shadowed` as WARN with only its event name.
-- 2026-10-05 02:30: Export `presets.default-create-skipped` as WARN with only the Namespace ID.
-- 2026-10-04 23:10: Export `presets.default-refresh-skipped` as WARN with only the Namespace and Preset IDs. (bh13-fu2-collector - e54a08048)
 
 [Common logging documentation history](common-logging/history.md) preserves the earlier dated entries.

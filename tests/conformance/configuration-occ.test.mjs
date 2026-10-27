@@ -28,6 +28,8 @@ import {
   registerAndSelectDrivers,
 } from "../helpers/development.mjs";
 import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
 const administrator = "principal-configuration-administrator";
 const deployOnly = "principal-configuration-deploy-only";
@@ -165,6 +167,88 @@ async function fixture(options = {}) {
     state,
   };
 }
+
+test("partial Agent updates keep completed workspace topology unless its Configuration or mode changes", async () => {
+  const { controller, iamState, namespace, state } = await fixture();
+  grantRole(iamState, administrator, {
+    id: "managed-mode-administrator",
+    permissions: { installation: ["administer"] },
+    resource: { kind: "installation", id: installation.id },
+  });
+  // Use the production Driver's workspace admission rules without a cluster client.
+  const compute = createTestKubernetesComputeDriver("partial-update-compute", {
+    gatewayRuntime: true,
+  });
+  registerAndSelectDrivers(controller, [compute]);
+  const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+  values.agents.defaults.workspace = "/home/node/workspace";
+  const configuration = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values,
+  });
+  const agent = await controller.createAgent(
+    administrator,
+    {
+      namespaceId: namespace.id,
+      name: "Partial update workspace",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      initialWorkspaceFiles: { "USER.md": "Synthetic workspace owner" },
+    },
+    resolveApprovedDevelopmentHarness,
+  );
+  // Retain the metadata a successful initial deployment leaves, with no staged bytes.
+  const setup = await state.read((view) => view.workspaceSetups.find(namespace.id, agent.id));
+  await state.transact((unit) => unit.workspaceSetups.complete(namespace.id, agent.id, setup.id));
+  const identity = { namespaceId: namespace.id, agentId: agent.id };
+  const update = (body) =>
+    controller.updateAgent(
+      administrator,
+      {
+        ...identity,
+        ...body,
+      },
+      resolveApprovedDevelopmentHarness,
+    );
+  const workspaceError = {
+    name: "ConfigurationHarnessError",
+    message: /^Configuration setting agents\.defaults\.workspace must be /u,
+  };
+  // The same Configuration's workspace is valid only for dedicated execution.
+  await assert.rejects(
+    update({ gatewayManagedMode: false, executionMode: "embedded" }),
+    workspaceError,
+  );
+  const edited = structuredClone(values);
+  edited.agents.defaults.workspace = "/srv/experiment";
+  await controller.updateConfiguration(administrator, {
+    namespaceId: namespace.id,
+    configurationId: configuration.id,
+    values: edited,
+  });
+  // A later Configuration edit may break deployment without locking unrelated Agent edits.
+  for (const body of [
+    { configurationId: configuration.id, gatewayManagedMode: false },
+    { gatewayManagedMode: true },
+    { gatewayManagedMode: false, executionMode: agent.executionMode },
+  ]) {
+    const saved = await update(body);
+    assert.equal(saved.gatewayManagedMode, body.gatewayManagedMode);
+    assert.equal(saved.configurationId, configuration.id);
+    assert.equal(saved.executionMode, agent.executionMode);
+  }
+  const other = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values: edited,
+  });
+  await assert.rejects(update({ configurationId: other.id }), workspaceError);
+  const saved = await controller.getAgent(administrator, namespace.id, agent.id);
+  assert.equal(saved.configurationId, configuration.id);
+  assert.equal(saved.executionMode, agent.executionMode);
+  assert.equal(saved.gatewayManagedMode, false);
+});
 
 test("concurrent Configuration updates serialize into distinct server-managed generations", async () => {
   const { configuration, controller, namespace } = await fixture();

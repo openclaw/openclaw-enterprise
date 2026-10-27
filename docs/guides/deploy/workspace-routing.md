@@ -48,10 +48,9 @@ ClusterIP EnvoyProxy and API-key SecurityPolicy; cert-manager generates certific
 There is no public listener. Chart operators need infrastructure permissions;
 the OCC API does not.
 
-The chart gives Envoy a stable Service name and derives its `.svc` hostname.
-Normal Linux Pod DNS search resolves that name without a separate DNS record
-or a fixed cluster DNS suffix. The certificate and Compute routes use the same
-hostname. TLS verification remains enabled.
+The chart gives Envoy a stable Service name; Pod DNS search resolves its `.svc`
+hostname, which the certificate and Compute routes share
+([endpoint and route](../../reference/gateway-routing.md#endpoint-and-route)).
 
 ### Configure private routing
 
@@ -135,8 +134,7 @@ issuer; it does not change CA ownership.
 The chart's `tenantGatewayPort` must match Compute's `network.gatewayPort`.
 Remove `network.gatewayClients` when enabling routing. Compute derives the
 Envoy peer from `gatewayRouting` and rejects explicit gateway clients in this mode.
-Retain the Installation's other Compute settings. Restart the API and worker
-when changing their Installation startup configuration. The worker requires tenant-local
+Retain the Installation's other Compute settings. The worker requires tenant-local
 HTTPRoute permissions from the chart's worker role; the API needs no route
 writes or gateway Pod/exec access.
 
@@ -200,10 +198,8 @@ operators and the scoped worker. Untrusted tenants must not be able to replace
 route authentication or attach their own routes.
 
 The chart mounts the service key into the API and worker and sets
-`OCC_GATEWAY_API_KEY_PATH`. Automatic CA mode projects only the root Secret's
-public `tls.crt` as `ca.crt` and sets `NODE_EXTRA_CA_CERTS`; the signing key is
-never mounted into OCC. The Pod waits for that Secret before starting. With an
-explicit issuer, both use the optional configured CA bundle instead.
+`OCC_GATEWAY_API_KEY_PATH`; CA trust follows the
+[TLS lifecycle](../../reference/gateway-routing.md#tls-and-certificate-lifecycle).
 The Harness receives only its node setup code and the public CA bundle.
 The service key is an Installation-wide native administrative
 credential; do not reuse a Better Auth signing key or model-provider token.

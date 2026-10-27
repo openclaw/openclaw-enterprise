@@ -77,6 +77,8 @@ export const DeploymentModelProbeFailedConfigurationEditor = story(
 );
 export const DeploymentFailedDeployAgain = story("deploymentFailedDeployAgain");
 export const DeploymentFailedDeployAgainUnreadable = story("deploymentFailedDeployAgainUnreadable");
+export const DeploymentFailedAdmissionUnavailable = story("deploymentFailedAdmissionUnavailable");
+export const DeploymentFailedStoredInconsistent = story("deploymentFailedStoredInconsistent");
 export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
   "deploymentModelProbeFailedDeployOnlyUnreadable",
 );
@@ -87,6 +89,7 @@ export const DeploymentSucceeded = story("deploymentSucceeded");
 export const DeploymentUnavailable = story("deploymentUnavailable");
 export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsFast = story("diagnosticsFast");
+export const DiagnosticsNoSlack = story("diagnosticsNoSlack");
 export const DiagnosticsReader = story("diagnosticsReader");
 export const DangerZoneReader = story("dangerZoneReader");
 export const DiagnosticsRefused = story("diagnosticsRefused");
@@ -106,6 +109,7 @@ export const RuntimeLogAccessLost = story("runtimeLogAccessLost");
 export const RuntimeLogDownloadRefused = story("runtimeLogDownloadRefused");
 export const RuntimeStatusAccessLost = story("runtimeStatusAccessLost");
 export const RuntimeStatusAccessRestored = story("runtimeStatusAccessRestored");
+export const RuntimeLogTextDenied = story("runtimeLogTextDenied");
 export const RuntimeLogsReaderDownload = story("runtimeLogsReaderDownload");
 export const RuntimeLogsReaderNoPodDownload = story("runtimeLogsReaderNoPodDownload");
 export const RuntimeLogsClusterRbac = story("runtimeLogsClusterRbac");
@@ -118,6 +122,14 @@ export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration"
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
+export const TabLinkUnavailable = {
+  ...story("tabLinkUnavailable"),
+  name: "Link to an unavailable tab",
+};
+export const DeploySecretOperateDenied = {
+  ...story("deploySecretOperateDenied"),
+  name: "Deployment needs Secret operate",
+};
 export const DeployInProgress = { ...story("deployInProgress"), name: "Deployment in progress" };
 export const DeployHoldsNavigation = {
   ...story("deployHoldsNavigation"),
@@ -147,6 +159,7 @@ export const DeployAgentPrincipalDenied = {
 export const RepositoryEditor = story("repositoryEditor");
 export const RepositoryEditorUpdateDenied = story("repositoryEditorUpdateDenied");
 export const RepositoryEditorNotConfigured = story("repositoryEditorNotConfigured");
+export const RepositoryEditorNotConfiguredMember = story("repositoryEditorNotConfiguredMember");
 export const RepositoryEditorLoading = story("repositoryEditorLoading");
 export const RepositoryEditorSaveRefused = story("repositoryEditorSaveRefused");
 export const ConfigurationNavigation = story("configurationNavigation");
@@ -177,12 +190,16 @@ export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers
 
 export const PolicyDenials = story("policyDenials");
 export const PolicyUnicodeExecutable = story("policyUnicodeExecutable");
+export const PolicyDenialsMany = story("policyDenialsMany");
+export const PolicyRulesPopulated = story("policyRulesPopulated");
 export const PolicyDenialsEmpty = story("policyDenialsEmpty");
 export const PolicyDenialsDisabled = story("policyDenialsDisabled");
 export const PolicyDenialsUnsupported = story("policyDenialsUnsupported");
+export const PolicyDenialsNoSandboxDriver = story("policyDenialsNoSandboxDriver");
 export const PolicyDenialsGap = story("policyDenialsGap");
 export const PolicyDenialsMissingMetadata = story("policyDenialsMissingMetadata");
 export const PolicyDenialsFailed = story("policyDenialsFailed");
+export const PolicyApplicationCeilingChanged = story("policyApplicationCeilingChanged");
 export const PolicyDenialsApplyRejected = story("policyDenialsApplyRejected");
 export const PolicyIncompletePreview = story("policyIncompletePreview");
 export const PolicyUnconfirmedSave = story("policyUnconfirmedSave");
@@ -205,3 +222,11 @@ export const ConfigurationRefreshRace = story("policyConfigurationRefresh");
 export const ConfigurationJsonFallback = story("policyConfigurationJson");
 
 export const ConfigurationOwnerDenied = story("policyConfigurationHidden");
+
+export const PolicySuggestionsExpanded = story("policySuggestionsExpanded");
+export const PolicySavedForLater = story("policySavedForLater");
+export const PolicyApplying = story("policyApplying");
+export const PolicyApplied = story("policyApplied");
+export const PolicyRetryApplication = story("policyRetryApplication");
+export const PolicyEditingAdminDenied = story("policyEditingAdminDenied");
+export const PolicyNoNetworkLimits = story("policyNoNetworkLimits");

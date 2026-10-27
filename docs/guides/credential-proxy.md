@@ -5,7 +5,8 @@ transport without putting provider material in the Agent's configuration. OCC
 controls access to the execution; the selected Driver enforces the request and
 credential delivery. For prepared GitHub access, Token Service also maintains
 the short-lived credential. The setup and verification depend on the selected
-delivery profile.
+delivery profile. The [architecture walkthrough](../design/credential-proxy.md)
+shows what a child process can request and what it can read in the response.
 
 **There is no qualified stock OpenShell deployment for protected access in this
 release.** Stock OpenShell 0.1.5 is not qualified. A successful fixture, Helm

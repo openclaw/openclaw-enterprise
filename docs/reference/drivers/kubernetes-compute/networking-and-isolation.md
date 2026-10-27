@@ -221,16 +221,15 @@ route-specific SecurityPolicy for native device authentication. The
 [routing reference](../../gateway-routing.md#native-node-endpoint) owns its
 credential boundary and the remaining Harness lifecycle requirements.
 
-The Service and route stay stable across version changes and are repaired only
-during deployment reconciliation; see
+The Service and route stay stable across versions; see
 [endpoint and route](../../gateway-routing.md#endpoint-and-route). Missing CRDs
 or denied worker permissions fail reconciliation rather than disabling routing
 silently.
 
-Envoy authenticates the service key and rewrites identity headers
-([native identity](../../gateway-routing.md#service-key-and-native-identity)).
-`allowRealIpFallback` accepts Envoy's nonloopback downstream address when it shares
-OCC's Pod CIDR. Loopback port-forwarding alone cannot supply native attribution.
+Envoy authenticates the OCC service key and the route rewrites identity headers
+([service key and native identity](../../gateway-routing.md#service-key-and-native-identity)).
+Native `allowRealIpFallback` accepts Envoy's direct downstream address when OCC
+and Envoy share a Pod CIDR. Loopback port-forwarding alone cannot supply native attribution.
 
 ## Namespaces and isolation
 

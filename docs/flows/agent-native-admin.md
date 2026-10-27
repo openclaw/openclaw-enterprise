@@ -1,6 +1,6 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-25"
+updated: "2026-10-27"
 last_updated_session: authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937
 ---
 
@@ -145,6 +145,10 @@ Agent origin cannot expose console or controller routes. OCC authenticates the
 shared session, resolves the IAM identity and exact Agent, requires `administer`,
 then checks the selected version and native configuration. An attributable IAM
 denial records the human and Agent in the denial audit.
+Admission owns one audit attempt per such denial, also when it arrives after the
+five-second admission wait, a client disconnect or the shutdown wait. A timely HTTP
+denial waits for its append before returning `403`; a failed append or admission
+timeout returns `503`.
 
 Without a valid session, a user-activated, top-level HTML GET to `/`,
 `/chat/main`, or `/chat/main/<32 hex digits>` gets a `302` to the configured
@@ -155,7 +159,8 @@ open native tab after expiry.
 
 A signed-in `administer` denial on that navigation stays HTTP 403. The page does
 not name the Agent and links **Go to your Agents** to `/console/agents` on the
-configured public origin. JSON and WebSocket refusals stay unchanged.
+configured public origin. A JSON refusal names the `administer` grant but not
+the Agent, the same for an unknown host; WebSocket refusals stay unchanged.
 
 Status and proxy checks reuse one Better Auth lookup for identity, expiry and
 attribution. Each WebSocket lease checks the current session again. After handling
@@ -172,11 +177,16 @@ The HTTP proxy validates and normalizes the request URL, which must not exceed 4
 
 `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
-The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts and tracks active sockets so `preClose` destroys them during shutdown. Before awaiting shared-session and exact-Agent admission, it handles client socket errors; a TCP reset during admission therefore does not raise an uncaught socket error. An exact-Agent authorization denial still records its attributable audit after a reset. An allowed admission checks whether the client socket was destroyed before and after resolving the private transport context, so a disconnected client does not open a gateway connection. A connected client proceeds with the selected version.
+The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts and tracks active sockets so `preClose` destroys them during shutdown. Before awaiting shared-session and exact-Agent admission, it handles client socket errors; a TCP reset during admission therefore does not raise an uncaught socket error. A refused socket closes without waiting for its denial audit, which still runs after a reset. An allowed admission checks for client destruction and shutdown before and after resolving the private transport context, so late success cannot open a gateway connection. A connected client proceeds with the selected version.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
-The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitized upgrade request to the private `https:` gateway base, and only connects the browser after the upstream returns `101`. `onConnect` appends `openclaw.agents.native_admin.websocket.connect`; `onClose` appends `openclaw.agents.native_admin.websocket.close`. The `websocket.connect` audit record includes `connectionId`; the matching `websocket.close` audit record reuses that `connectionId` and includes `closeReason`, whose value distinguishes lifecycle, revocation, dependency, client, upstream, and shutdown paths. A timer rechecks the shared-session admission path every 25 seconds, with each check subject to a five-second timeout. Failed, denied, timed-out, or version-changed lease checks close both sockets and preserve the IAM denial audit when authorization is the reason. An authorized reconnect uses the selected version. Native chat does not renew the OCE session.
+The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitized upgrade request to the private `https:` gateway base, and only connects the browser after the upstream returns `101`. `onConnect` appends `openclaw.agents.native_admin.websocket.connect`; `onClose` appends `openclaw.agents.native_admin.websocket.close`. The `websocket.connect` audit record includes `connectionId`; the matching `websocket.close` audit record reuses that `connectionId` and includes `closeReason`, whose value distinguishes lifecycle, revocation, dependency, client, upstream, and shutdown paths. A timer rechecks the shared-session admission path every 25 seconds, with each check subject to a five-second timeout. Failed, denied, timed-out, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. An authorized reconnect uses the selected version. Native chat does not renew the OCE session.
+
+Admission and close audits share one five-second shutdown drain. Work still pending
+afterwards logs `native_admin.pending_work_unresolved` with its count and keeps its
+audit attempt while the process lives. The drain neither cancels producers nor
+guarantees durable delivery; process exit can prevent or interrupt an audit attempt.
 
 ### 8. Runtime renders HTML on a separate origin
 
@@ -236,6 +246,9 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-10-27 01:52: Preserve current socket-admission behavior while integrating human Gateway grants. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - d56aaf212)
+- 2026-10-26 22:00: Close refused sockets and denied leases before their denial audit settles; track admission through its audit attempt and bound the shutdown drain. (wf-land-1707 - #1707)
+- 2026-10-26 01:00: A JSON `administer` denial names the grant, not the Agent.
 - 2026-10-25 16:40: Preserve current native-admin flow and identity-grant eligibility while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
 
 - 2026-10-15 21:41: Allowed narrow device enrollment with machine admin grants. (authoring-run/4a439216-a1ba-4628-b96e-660a9db92d59 - e03429ce3d889b0ac07fedad801aacacc3498a6a)
