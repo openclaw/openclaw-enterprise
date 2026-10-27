@@ -1,5 +1,6 @@
 ---
 kind: reference/driver
+human_verified: true
 ---
 
 # SandboxDriver contract
