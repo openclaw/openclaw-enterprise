@@ -35,7 +35,10 @@ import {
   pluginRuntimeEnvironment,
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  ConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 
@@ -494,8 +497,9 @@ test("compute renders saved Codex permission profiles with quoted names and no d
     { unrecognized: {} },
     { permissionProfiles: { custom: { extends: "missing", network: { enabled: true } } } },
   ]) {
-    assert.throws(() =>
-      pluginRuntimeSpecForRevision(revision({ plugins: { ...state, runtimeConfiguration } })),
+    assert.throws(
+      () => pluginRuntimeSpecForRevision(revision({ plugins: { ...state, runtimeConfiguration } })),
+      ConfigurationValidationError,
     );
   }
 });

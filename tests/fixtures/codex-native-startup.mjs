@@ -293,9 +293,9 @@ export function createCodexStartup(
                 clock += step.elapsed ?? 0;
               } else {
                 assert.ok(args.includes("exec"));
+                assert.equal(args.includes("--ignore-user-config"), false);
                 if (protectedInference) {
                   for (const argument of [
-                    "--ignore-user-config",
                     "model_providers.openai-compatible.request_max_retries=0",
                     "model_providers.openai-compatible.stream_max_retries=0",
                   ]) {

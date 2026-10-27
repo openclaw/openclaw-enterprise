@@ -3847,9 +3847,15 @@ test("Agent deployment snapshots Codex permission profiles without plugin select
     plugins: {},
     runtimeConfiguration: { permissionProfiles },
   });
-  const originalConfig = pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(deployed.data))[
-    "config.toml"
-  ];
+  // Compute consumes the stored revision; the public DTO intentionally omits execution admission.
+  const renderStoredRevision = async (revisionId) => {
+    const stored = await controller.fixture.platformState.read((view) =>
+      view.revisions.findRevision(namespace.id, created.data.id, revisionId),
+    );
+    assert.ok(stored);
+    return pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(stored))["config.toml"];
+  };
+  const originalConfig = await renderStoredRevision(deployed.data.id);
   assert.match(originalConfig, /\[permissions\."custom-investigation"\.network\]\nenabled = true/);
 
   // Reconfiguration is a new Driver selection; old revisions must remain renderable from storage.
@@ -3864,17 +3870,15 @@ test("Agent deployment snapshots Codex permission profiles without plugin select
   controller.fixture.controller.selectDriver("plugin", replacement.id);
   const historical = await controller.request("GET", `${path}/revisions/${deployed.data.id}`);
   assert.equal(historical.status, 200, JSON.stringify(historical.body));
-  assert.equal(
-    pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(historical.data))["config.toml"],
-    originalConfig,
-  );
+  assert.deepEqual(historical.data.plugins, deployed.data.plugins);
+  assert.equal(await renderStoredRevision(deployed.data.id), originalConfig);
   const next = await controller.request("POST", `${path}/deploy`);
   assert.equal(next.status, 202, JSON.stringify(next.body));
   assert.deepEqual(next.data.plugins.runtimeConfiguration, {
     permissionProfiles: replacementProfiles,
   });
   assert.match(
-    pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(next.data))["config.toml"],
+    await renderStoredRevision(next.data.id),
     /\[permissions\."custom-investigation"\.network\]\nenabled = false/,
   );
 

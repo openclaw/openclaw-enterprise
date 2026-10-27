@@ -64,7 +64,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       native: [],
     },
     {
-      name: "protected probe retains zero retry settings despite ignoring user config",
+      name: "protected probe retains zero retry settings with generated configuration",
       protectedInference: "signed",
       events: completedTurn(),
       expect: ready,

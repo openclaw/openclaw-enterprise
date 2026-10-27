@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-27"
-last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
+last_updated_session: authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5
 ---
 
 # Protected credential request flow
@@ -271,8 +271,9 @@ exact attempt without retrying; returning bytes does not prove delivery.
 Before credential access, the provider normalizes the nonsecret endpoint and classifies
 the actual request. `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools and ordinary Harness components,
 disables provider tools, and uses HTTP Responses without WebSockets or automatic retries.
-The runtime manifest preserves this profile. Its `--ignore-user-config` probe sets request
-and stream retries to zero and never repeats a timed-out protected probe.
+The runtime manifest preserves this profile. The probe loads generated native
+configuration, sets request and stream retries to zero through explicit CLI
+overrides, and never repeats a timed-out protected probe.
 
 ### 6. Reduce the live credential policy
 
@@ -333,6 +334,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-27 16:55: Preserve explicit protected-probe retry limits while loading generated configuration. (authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5 - 560269bd3f)
 
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 

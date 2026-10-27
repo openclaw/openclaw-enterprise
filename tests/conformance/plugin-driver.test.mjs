@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
@@ -118,7 +119,7 @@ test("Codex permission profiles reject unsupported shapes and invalid inheritanc
     { custom: { ...profile, extends: "custom" } },
     { first: { ...profile, extends: "second" }, second: { ...profile, extends: "first" } },
   ]) {
-    assert.throws(() => new CodexPluginDriver({ permissionProfiles }));
+    assert.throws(() => new CodexPluginDriver({ permissionProfiles }), ConfigurationValidationError);
     assert.notDeepEqual(CodexPluginDriver.validateConfiguration({ permissionProfiles }), []);
   }
 });
