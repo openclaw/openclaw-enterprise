@@ -230,10 +230,12 @@ and stops for operator reconciliation. The helper does not infer rejection from
 an unchanged selected version or replay an unknown request. An operator can
 record a verified accepted response and resume. OCC admits a deployment in one
 transaction, so an `occ` error with a 4xx status and an OCC error code, other
-than 408, saved no version (`deploy_refusal`). The script names each refused
-Agent with OCC's message, saves it as `dispatch/*.rejected`, removes the intent,
-and stops; after the operator corrects the cause, `--resume` sends that request
-again.
+than 408, saved no version (`deploy_refusal`). Only `occ`'s single `Error:` line
+is read; a second such line makes the outcome unknown. The script names each
+refused Agent with OCC's message, saves it as `dispatch/*.rejected`, removes the
+intent, and stops; after the operator corrects the cause, `--resume` sends that
+request again. A refused service key is reported as the helper's credential
+failure, not as an Agent refusal, and is resumed the same way.
 
 The script polls each returned deployment through its authorized status
 operation, confirms the selected version, and waits for all version Pods
@@ -246,12 +248,14 @@ step on its workspace node state before native setup, and a native worker before
 it connects (`openClawStateMigrationHelper` in `runtime-startup.ts`). Embedded execution
 requires one runtime container; dedicated execution requires both gateway and
 Agent containers. Each replacement gateway then runs read-only
-`openclaw doctor --lint --json --severity-min error` with a 384 MiB heap cap.
-Doctor shares the gateway container's memory limit, and an out-of-memory kill
-there also stops the gateway. The script reads the container's cgroup v2 memory
-first (`gateway_free_memory`, saved as `status/*.doctor.memory`) and starts
-Doctor after one read with 1 GiB free or two reads in a row with 512 MiB free.
-Without the cgroup files it warns and runs Doctor. Exit 137 is reported as an
+`openclaw doctor --lint --json --severity-min error` with a heap cap
+(`--doctor-heap-mib`, 384 MiB by default). Doctor shares the gateway container's
+memory limit, and an out-of-memory kill there also stops the gateway. The script
+reads the container's cgroup v2 memory first (`gateway_free_memory`, saved as
+`status/*.doctor.memory`) and starts Doctor after one read with the cap plus
+640 MiB free (1 GiB by default) or two reads in a row with the cap plus 256 MiB
+(off-heap memory and a margin). It retries a read that failed on a network or
+API timeout twice; without the cgroup files it warns and runs Doctor. Exit 137 is reported as an
 OOM kill with the gateway container's restart count and last stop reason.
 Failures retain dispatch, status, Pod, and Doctor evidence for inspection.
 

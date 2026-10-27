@@ -113,16 +113,25 @@ refused Agent with OCC's message, keeps the message in `dispatch/*.rejected`,
 and stops. Correct the cause, for example with `occ configuration update`, and
 repeat the command with `--resume`. The resume deploys each refused Agent once,
 so do not deploy it yourself. A 408 or 5xx answer stays an unknown dispatch.
+When OCC rejects the command's own service key, the command says so and lists
+the Agents it did not deploy; get a new key, point `OCC_SERVICE_KEY_FILE` at it,
+and resume.
 
 ## Correct a Doctor failure
 
 Doctor shares the gateway container's memory limit. The command starts it only
-when the container has 512 MiB free and stops at the upgrade timeout if it
+when the container has 640 MiB free and stops at the upgrade timeout if it
 never does. Wait for the gateway's memory use to settle, then resume. A gateway
-that never keeps 512 MiB free runs close to its limit; plan a larger gateway
+that never keeps 640 MiB free runs close to its limit; plan a larger gateway
 memory limit. `OpenClaw Doctor was OOM-killed (exit 137)` names the
 gateway's restart count and last stop reason. Wait until the gateway is `Ready`
 again, then resume; the resume runs Doctor again without new deployments.
+
+`OpenClaw Doctor ran out of its 384 MiB heap` means the Agent's state needs a
+larger heap; the gateway keeps running. Repeat the command with `--resume` and
+`--doctor-heap-mib 768`, doubling again if needed. Each extra MiB of heap needs
+the same free gateway memory before Doctor starts, so raise the gateway memory
+limit first if the command then waits for memory.
 
 ## Correct an invalid Installation name
 
