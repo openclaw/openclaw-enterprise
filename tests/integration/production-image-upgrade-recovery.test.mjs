@@ -267,7 +267,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         {
           name: "gateway",
           restartCount: state.gatewayRestarts ?? 0,
-          lastState: state.gatewayRestarts ? { terminated: { reason: "OOMKilled" } } : {},
+          lastState: state.gatewayRestarts
+            ? { terminated: { reason: state.gatewayLastReason ?? "OOMKilled" } }
+            : {},
         },
       ],
     },
@@ -741,10 +743,28 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
     } else if (args.includes("exec") && args.includes("doctor")) {
       log(`doctor ${args.slice(args.indexOf("--") + 1).join(" ")}`);
       // The container reached its memory limit while Doctor ran: Kubernetes killed both.
-      if (take("doctor-oom")) {
-        state.gatewayRestarts = (state.gatewayRestarts ?? 0) + 1;
-        save();
-        return fail(137, "command terminated with exit code 137");
+      // "doctor-killed" is another kill of both, such as a failed liveness probe.
+      for (const [fault, reason] of [
+        ["doctor-oom", "OOMKilled"],
+        ["doctor-killed", "Error"],
+      ]) {
+        if (take(fault)) {
+          state.gatewayRestarts = (state.gatewayRestarts ?? 0) + 1;
+          state.gatewayLastReason = reason;
+          save();
+          return fail(137, "command terminated with exit code 137");
+        }
+      }
+      // A slow Doctor: it reports whether the upgrade still held its evidence lock when it
+      // ended, then fails with an error that quotes an earlier exit code 137.
+      if (take("doctor-hold")) {
+        await new Promise((resolve) => setTimeout(resolve, state.doctorHoldMs));
+        const lock = existsSync(join(root, "evidence", ".upgrade-lock")) ? "held" : "released";
+        log(`doctor-ended lock ${lock}`);
+        return fail(
+          1,
+          "doctor found an error: gateway log: command terminated with exit code 137\ncommand terminated with exit code 1",
+        );
       }
       // Doctor reached its own heap cap: V8 aborts it and the gateway keeps running.
       if (take("doctor-heap")) {
@@ -1599,13 +1619,15 @@ const scriptGatewayMemory = async (f, reads) => {
   await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
 };
 
-test("OpenClaw Doctor waits for free gateway memory and names an OOM kill", async (t) => {
+// Exit 137 is a kill. Only the gateway container's status, with a restart after the
+// gateway became Ready, shows that the container hit its memory limit.
+test("OpenClaw Doctor waits for free gateway memory and names an OOM kill only from the container status", async (t) => {
   const f = await fixture(t, { agent: true });
   // Free MiB per read: a low read resets the count of good reads.
   await scriptGatewayMemory(f, ["transient", 700, 300, 700, 640]);
   await f.failNext("doctor-oom");
-  const failure = await f.run().then(
-    () => assert.fail("the upgrade must stop when Doctor is killed"),
+  const oom = await f.run().then(
+    () => assert.fail("the upgrade must stop when the gateway is OOM-killed"),
     (stopped) => stopped,
   );
   assert.deepEqual(await doctorEvents(f), [
@@ -1616,21 +1638,88 @@ test("OpenClaw Doctor waits for free gateway memory and names an OOM kill", asyn
     "gateway-memory 640",
     doctorCommand(384),
   ]);
-  assert.doesNotMatch(failure.stderr, /without checking its free memory/);
+  assert.doesNotMatch(oom.stderr, /without checking its free memory/);
   assert.match(
-    failure.stderr,
-    /OpenClaw Doctor was OOM-killed \(exit 137\) in Agent agt_test's gateway; gateway container restarted 1 time\(s\), last stopped: OOMKilled\./,
+    oom.stderr,
+    /OpenClaw Doctor was killed \(exit 137\) in Agent agt_test's gateway\.\n.*Agent agt_test's gateway container was OOM-killed and restarted 1 time\(s\) after it became Ready/,
   );
-  assert.match(failure.stderr, /OpenClaw Doctor failed for at least one replacement gateway/);
-  // Resume runs Doctor again; a gateway without a memory limit (memory.max reads "max")
-  // has room. The deploy is not repeated.
+  assert.match(oom.stderr, /OpenClaw Doctor failed for at least one replacement gateway/);
+  // Resume runs Doctor again without a new deploy. Kubernetes kills the container for
+  // another reason now: exit 137 again, but no OOM kill. Only the restart after this
+  // run's Ready gateway counts; the earlier OOM restart predates it.
+  await f.failNext("doctor-killed");
+  const killed = await f.run("--resume").then(
+    () => assert.fail("the upgrade must stop when Doctor is killed"),
+    (stopped) => stopped,
+  );
+  assert.match(
+    killed.stderr,
+    /OpenClaw Doctor was killed \(exit 137\) in Agent agt_test's gateway\.\n.*Agent agt_test's gateway container restarted 1 time\(s\) after it became Ready \(last termination: Error\)\./,
+  );
+  assert.doesNotMatch(killed.stderr, /OOM-killed and restarted/);
+  // A gateway without a memory limit (memory.max reads "max") has room.
   await scriptGatewayMemory(f, ["unlimited"]);
   await f.run("--resume");
   assert.equal((await f.state()).dispatches, 1);
   assert.deepEqual((await doctorEvents(f)).slice(6), [
+    "gateway-memory 2048",
+    doctorCommand(384),
     "gateway-memory unlimited",
     doctorCommand(384),
   ]);
+});
+
+// A memory timeout at one gateway starts no further Doctor but waits for the ones
+// already running: the evidence lock must outlast them, or a second upgrade could
+// start while a Doctor still runs in a serving gateway. Doctor's own exit status, not
+// an exit code quoted on its stderr, classifies its failure.
+test("a Doctor memory timeout keeps the evidence lock until every started Doctor ends", async (t) => {
+  const agent = (id) => ({
+    id,
+    status: "active",
+    desiredRuntimeState: "running",
+    executionMode: "embedded",
+    activeRevisionId: "rev_old",
+    deploymentInProgress: false,
+  });
+  const f = await fixture(t, {
+    inventoryNamespaces: [
+      { id: "ns_test", status: "ready", agents: [agent("agt_a"), agent("agt_b")] },
+    ],
+  });
+  // Gateway A has room at once; gateway B never does before the 3 s timeout. A's Doctor
+  // runs past the timeout.
+  await scriptGatewayMemory(f, [2048, ...Array(20).fill(0)]);
+  const state = await f.state();
+  state.doctorHoldMs = 6000;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await f.failNext("doctor-hold");
+  const failure = await f.run("--timeout-seconds", "3").then(
+    () => assert.fail("the upgrade must stop at the memory timeout"),
+    (stopped) => stopped,
+  );
+  // Bounded wait: without the join, A ends after the command has exited.
+  for (let tries = 0; tries < 100; tries += 1) {
+    if ((await f.events()).some((event) => event.startsWith("doctor-ended "))) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const events = await f.events();
+  assert.deepEqual(
+    events.filter((event) => event.startsWith("doctor")),
+    [doctorCommand(384), "doctor-ended lock held"],
+  );
+  assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
+  const lines = failure.stderr.trimEnd().split("\n");
+  assert.deepEqual(lines.slice(-3, -1), [
+    "upgrade-production-images: OpenClaw Doctor failed (exit 1) in Agent agt_a's gateway.",
+    "upgrade-production-images: Agent agt_a's gateway container did not restart after it became Ready.",
+  ]);
+  assert.match(
+    lines.at(-1),
+    /Agent agt_b's gateway did not keep 640 MiB free below its memory limit before the upgrade timeout \(last read: 0 MiB free\), so OpenClaw Doctor did not run/,
+  );
 });
 
 test("OpenClaw Doctor does not run while the gateway lacks free memory", async (t) => {

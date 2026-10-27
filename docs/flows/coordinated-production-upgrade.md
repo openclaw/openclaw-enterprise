@@ -252,7 +252,9 @@ memory limit, and an out-of-memory kill there also stops the gateway. The script
 reads the container's cgroup v2 memory (`gateway_free_memory`) and starts Doctor
 after one read with the cap plus 640 MiB free or two reads with the cap plus
 256 MiB. It retries a read that timed out; without cgroup files it warns and
-runs Doctor. Exit 137 is reported as an OOM kill with the gateway's restarts.
+runs Doctor. A failure reports Doctor's exit status and the gateway's restarts
+since Ready; only an `OOMKilled` status names an OOM kill. A memory timeout
+waits for started Doctors before it releases the evidence lock.
 Failures retain dispatch, status, Pod, and Doctor evidence for inspection.
 
 ### 6. Hand off application verification

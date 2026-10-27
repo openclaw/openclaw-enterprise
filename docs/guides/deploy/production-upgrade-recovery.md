@@ -123,9 +123,10 @@ Doctor shares the gateway container's memory limit. The command starts it only
 when the container has 640 MiB free and stops at the upgrade timeout if it
 never does. Wait for the gateway's memory use to settle, then resume. A gateway
 that never keeps 640 MiB free runs close to its limit; plan a larger gateway
-memory limit. `OpenClaw Doctor was OOM-killed (exit 137)` names the
-gateway's restart count and last stop reason. Wait until the gateway is `Ready`
-again, then resume; the resume runs Doctor again without new deployments.
+memory limit. A Doctor failure also reports whether the gateway container
+restarted. `gateway container was OOM-killed` means the container reached its
+memory limit while Doctor ran. Wait until the gateway is `Ready` again, then
+resume; the resume runs Doctor again without new deployments.
 
 `OpenClaw Doctor ran out of its 384 MiB heap` means the Agent's state needs a
 larger heap; the gateway keeps running. Repeat the command with `--resume` and
