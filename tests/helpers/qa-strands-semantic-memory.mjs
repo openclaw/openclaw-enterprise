@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 export const localMemoryModelPath =
   "/opt/oce/local-memory/models/embeddinggemma-300m-qat-Q8_0.gguf";
@@ -65,13 +66,29 @@ export function configureNativeLocalMemory(original) {
 
 /** Use the real native local provider; preserve Gateway default-deny egress. */
 export async function verifyStrandsSemanticMemory(f) {
-  const { fixture, api, gateway, wait, turn, check, result, nonce, base, sessionKey, deploy } = f;
+  const {
+    fixture,
+    api,
+    gateway,
+    wait,
+    turn,
+    check,
+    result,
+    nonce,
+    base,
+    sessionKey,
+    deploy,
+    stop,
+  } = f;
   const agent = await api("GET", base);
   const configurationPath = `/namespaces/${fixture.namespaceId}/configurations/${agent.configurationId}`;
   const original = await api("GET", configurationPath);
-  const path = `memory/semantic-${nonce}.md`;
-  const content = "The expedition botanist stored a cobalt compass beneath the canvas hammock.\n";
-  const query = "plant researcher blue navigation instrument under a hanging bed";
+  // One reusable file prevents previous test runs from competing for top-k hits.
+  const path = "memory/oce-qa-semantic.md";
+  const absolutePath = `/home/node/workspace/${path}`;
+  const content = "The orchard keeper concealed an amber lantern below the wooden staircase.\n";
+  const query = "fruit grower hid a golden lamp underneath timber steps";
+  const sha = (value) => createHash("sha256").update(value).digest("hex");
   const invoke = (name, args) =>
     gateway("tools.invoke", {
       name,
@@ -81,24 +98,51 @@ export async function verifyStrandsSemanticMemory(f) {
       confirm: true,
       conversationReadOrigin: "direct-operator",
     });
-  let changed = false;
+  let previousFile;
+  let fileWriteAttempted = false;
+  let semanticConfiguration;
+  let bindingWriteAttempted = false;
+  const failures = [];
   try {
     await check("semantic fixture has no keyword-only match", async () => {
       const node = (await gateway("node.list")).nodes.find(
         (item) => item.connected && item.commands.includes("file.write"),
       );
       assert.ok(node);
+      let pageToken;
+      do {
+        const listing = await invoke("dir_list", {
+          node: node.nodeId,
+          path: "/home/node/workspace/memory",
+          ...(pageToken ? { pageToken } : {}),
+        });
+        assert.equal(listing.ok, true, JSON.stringify(listing));
+        if (listing.output.details.entries.some((entry) => entry.name === "oce-qa-semantic.md")) {
+          const fetched = await invoke("file_fetch", { node: node.nodeId, path: absolutePath });
+          assert.equal(fetched.ok, true, JSON.stringify(fetched));
+          previousFile = fetched.output.details;
+          assert.equal(typeof previousFile.mediaId, "string");
+          break;
+        }
+        pageToken = listing.output.details.nextPageToken;
+        assert.ok(
+          !listing.output.details.truncated || pageToken,
+          "memory listing must be complete",
+        );
+      } while (pageToken);
+      fileWriteAttempted = true;
       const write = await invoke("file_write", {
         node: node.nodeId,
-        path: `/home/node/workspace/${path}`,
+        path: absolutePath,
         contentBase64: Buffer.from(content).toString("base64"),
         createParents: true,
+        ...(previousFile ? { overwrite: true } : {}),
       });
       assert.equal(write.ok, true, JSON.stringify(write));
       // Observe the ordinary asynchronous index; never inject index rows.
       await wait("keyword index contains semantic fixture", async () => {
         const search = await invoke("memory_search", {
-          query: "expedition botanist cobalt compass canvas hammock",
+          query: "orchard keeper amber lantern wooden staircase",
           corpus: "memory",
           minScore: 0,
           maxResults: 20,
@@ -122,13 +166,29 @@ export async function verifyStrandsSemanticMemory(f) {
     await check(
       "native local memory provider deploys without an embedding credential",
       async () => {
-        const values = configureNativeLocalMemory(original.values);
-        await api("PATCH", configurationPath, {
-          values,
-          secretBindings: original.secretBindings ?? {},
-        });
-        changed = true;
-        const revision = await deploy();
+        result.semanticMemory.configurationCreation = "pending";
+        semanticConfiguration = await api(
+          "POST",
+          `/namespaces/${fixture.namespaceId}/configurations`,
+          {
+            kind: original.kind,
+            values: configureNativeLocalMemory(original.values),
+            secretBindings: original.secretBindings ?? {},
+          },
+        );
+        result.semanticMemory.configurationCreation = "created";
+        result.semanticMemory.configurationId = semanticConfiguration.id;
+        await stop(original.id);
+        const stopped = await api("GET", base);
+        assert.equal(stopped.desiredRuntimeState, "stopped");
+        assert.equal(
+          stopped.configurationId,
+          original.id,
+          "the fixture binding changed before semantic setup",
+        );
+        bindingWriteAttempted = true;
+        await api("PATCH", base, { configurationId: semanticConfiguration.id });
+        const revision = await deploy(semanticConfiguration.id);
         result.semanticMemory.revision = revision.id;
       },
     );
@@ -209,7 +269,7 @@ export async function verifyStrandsSemanticMemory(f) {
           !output.includes('"disabled":true') && !output.includes('"unavailable":true'),
           output,
         );
-        return output.includes(path) && output.includes("cobalt compass") ? search : undefined;
+        return output.includes(path) && output.includes("amber lantern") ? search : undefined;
       });
       const search = await gateway("memory.search", {
         agentId: "main",
@@ -220,13 +280,13 @@ export async function verifyStrandsSemanticMemory(f) {
       assert.equal(search.provider, "local");
       assert.equal(search.searchMode, "hybrid");
       assert.ok(
-        search.results.some((hit) => hit.path === path && hit.snippet.includes("cobalt compass")),
+        search.results.some((hit) => hit.path === path && hit.snippet.includes("amber lantern")),
       );
       result.semanticMemory.search = search;
       const code = `text(await tools.memory_search(${JSON.stringify({ query, corpus: "memory", minScore: 0, maxResults: 5 })}));`;
       const recall = await turn(
         `Use the native exec JavaScript tool to call the declared memory_search tool with this code: ${code} Report the item found and cite its memory file. Do not delegate, spawn an agent, use shell or direct file tools, or retry an error. End your answer with ${nonce}.`,
-        ["cobalt compass", path],
+        ["amber lantern", path],
         `agent:main:semantic-${nonce.toLowerCase()}`,
       );
       assert.ok(
@@ -308,21 +368,131 @@ console.log(JSON.stringify(evidence));`,
         }
       },
     );
+  } catch (error) {
+    failures.push(error);
   } finally {
-    if (changed) {
-      await check("restore original keyword memory configuration and index", async () => {
-        await api("PATCH", configurationPath, {
-          values: original.values,
-          secretBindings: original.secretBindings ?? {},
+    const cleanup = async (name, action) => {
+      try {
+        await check(name, action);
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    const restoreFixture = async (deferIfUnavailable) => {
+      const currentAgent = await api("GET", base);
+      assert.ok(
+        [original.id, semanticConfiguration?.id].includes(currentAgent.configurationId),
+        "the fixture binding changed; preserve its workspace for inspection",
+      );
+      if (deferIfUnavailable && currentAgent.desiredRuntimeState === "stopped") {
+        return false;
+      }
+      const node = (await gateway("node.list")).nodes.find(
+        (item) => item.connected && item.commands.includes("file.write"),
+      );
+      if (deferIfUnavailable && !node) {
+        return false;
+      }
+      assert.ok(node, "semantic fixture restoration requires its live workspace node");
+      const current = await invoke("file_fetch", { node: node.nodeId, path: absolutePath });
+      assert.equal(current.ok, true, JSON.stringify(current));
+      const hash = current.output.details.sha256;
+      if (hash !== previousFile?.sha256) {
+        assert.equal(
+          hash,
+          sha(content),
+          "semantic fixture changed; preserve concurrent file edits",
+        );
+        const restored = await invoke("file_write", {
+          node: node.nodeId,
+          path: absolutePath,
+          overwrite: true,
+          ...(previousFile ? { sourceMediaId: previousFile.mediaId } : { contentBase64: "" }),
         });
-        result.semanticMemory.configurationRestored = true;
-        // Provider changes require explicit maintenance. Restore the derived
-        // index too so a later ordinary deployment opens a matching index.
-        await deploy();
-        result.semanticMemory.restoredIndex = await gateway("memory.index", { agentId: "main" });
-        assert.equal(result.semanticMemory.restoredIndex.status.provider, "none");
-        // The enclosing scenario stops the current revision and withdraws its key.
+        assert.equal(restored.ok, true, JSON.stringify(restored));
+      }
+      result.semanticMemory ??= { path, query };
+      result.semanticMemory.fixtureRestored = previousFile
+        ? "previous bytes"
+        : "empty reusable file";
+      return true;
+    };
+    // Preserve file bytes through the live owned binding before an intentional
+    // stop. A failed setup with no live node defers this until original startup.
+    let fixtureRestoreDeferred = fileWriteAttempted;
+    if (fileWriteAttempted) {
+      await cleanup("restore the bounded semantic workspace fixture", async () => {
+        fixtureRestoreDeferred = !(await restoreFixture(true));
       });
     }
+    if (bindingWriteAttempted) {
+      await cleanup("restore original keyword memory binding and index", async () => {
+        const current = await api("GET", base);
+        if (current.configurationId === semanticConfiguration.id) {
+          await stop(semanticConfiguration.id);
+          assert.equal(
+            (await api("GET", base)).configurationId,
+            semanticConfiguration.id,
+            "the fixture binding changed during stop; refuse restoration",
+          );
+          try {
+            await api("PATCH", base, { configurationId: original.id });
+          } catch (error) {
+            // Resolve an uncertain write through the exact public resource;
+            // never repeat the binding mutation or overwrite a third binding.
+            if ((await api("GET", base)).configurationId !== original.id) {
+              throw error;
+            }
+            result.semanticMemory.bindingRestoreResponseLost = true;
+          }
+        } else {
+          assert.equal(
+            current.configurationId,
+            original.id,
+            "the fixture binding changed; refuse to overwrite another Configuration",
+          );
+        }
+        // The original Configuration was never modified. Rebuild only after
+        // returning the test Agent to that original binding and provider.
+        assert.equal(
+          (await api("GET", configurationPath)).generation,
+          original.generation,
+          "the original Configuration changed; preserve its generation without redeploying",
+        );
+        await deploy(original.id);
+        result.semanticMemory.configurationRestored = true;
+      });
+    }
+    if (fixtureRestoreDeferred) {
+      await cleanup("restore the bounded semantic workspace fixture", async () => {
+        await restoreFixture(false);
+      });
+    }
+    if (bindingWriteAttempted && result.semanticMemory?.configurationRestored) {
+      await cleanup("restore the original provider's derived memory index", async () => {
+        result.semanticMemory.restoredIndex = await gateway("memory.index", { agentId: "main" });
+        assert.equal(result.semanticMemory.restoredIndex.status.provider, "none");
+      });
+    }
+    if (semanticConfiguration) {
+      await cleanup("remove the test-owned semantic Configuration", async () => {
+        assert.ok(
+          !bindingWriteAttempted || result.semanticMemory?.configurationRestored,
+          "semantic binding restoration is incomplete; retain its Configuration for inspection",
+        );
+        const target = `/namespaces/${fixture.namespaceId}/configurations/${semanticConfiguration.id}`;
+        const current = await api("GET", target);
+        assert.equal(
+          current.generation,
+          semanticConfiguration.generation,
+          "the semantic Configuration changed; retain it for inspection",
+        );
+        await api("DELETE", target);
+        result.semanticMemory.configurationRemoved = true;
+      });
+    }
+  }
+  if (failures.length) {
+    throw new AggregateError(failures, "Semantic memory qualification failed");
   }
 }

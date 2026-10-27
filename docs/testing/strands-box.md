@@ -1,5 +1,9 @@
 # Verify the local Strands Box integration
 
+The selected Strands adapter explicitly enables Box's experimental Linux runtime
+with `EXPERIMENTAL_LINUX_SUPPORT=TRUE` in the trusted Box supervisor. This selects
+the qualified platform; it does not change Box or Pod security policy.
+
 Select `strands-sandbox` explicitly with the Kubernetes installation and Codex
 preset. It is excluded from `all` and the hosted advisory jobs: the Linux ARM64
 runtime, local Box container-backend patches and a node-installed setup seccomp
@@ -8,6 +12,11 @@ masks and separate container PID namespaces. This scenario does not
 qualify production distribution, other architectures or multi-Agent capacity.
 
 The fixture selects an existing, stopped, test-owned Agent and its model Secret.
+Before any mutation, its exact `api_key` binding must match `modelSecretId` in
+the same Namespace. The Secret's consumer inventory must be complete, readable
+and limited to that Agent, with no Configuration, Credential Source or pending
+provisioning consumers. A mistyped or shared Secret is refused before key
+replacement or lifecycle cleanup.
 The test replaces that Secret, deploys the Agent, runs a model tool that writes
 and reads its workspace, checks file/network refusals and Harness authentication,
 deletes the exact Sandbox Deployment to verify loss observation, then stops and
@@ -44,6 +53,13 @@ code mode and rejects tool errors. A process session ID is not a code-mode
 The [OCE code-mode entrypoint](../guides/deploy/strands-code-mode.md) keeps native code
 mode enabled under Box's existing W^X restriction. A separate real model call
 must compute JavaScript inside that host, with no Node globals.
+The second Agent uses a fresh QA-owned Configuration. Its temporary sharing of
+the model Secret is explicit. Cleanup permits only the retained Agent and this
+run's recorded second Agent as consumers, and removes the second Configuration.
+Immediately before installing the key, QA rechecks the stopped Agent's binding,
+Configuration generation and complete exclusive consumer inventory, including
+that Agent. Withdrawal can scrub an installed key after detachment if no foreign
+consumer has appeared.
 
 Semantic memory uses OpenClaw's native `local` provider and vector storage.
 The optional [offline memory image](../guides/deploy/local-memory.md) packages
@@ -51,13 +67,24 @@ the unchanged llama.cpp plugin and its pinned default embedding model. Native
 `localService` configuration manages a loopback-only server; no embedding
 credential, runtime download or Gateway public egress is required.
 The test compares keyword-only and synonym retrieval over a synthetic remote file,
-then requires a real model `memory_search` result. It restores the saved
-Configuration and derived index. The separate chat model credential uses the
+then requires a real model `memory_search` result. This phase clones the native
+Configuration and rebinds only the stopped test Agent. It never edits the
+original Configuration, even when another Agent shares it. Cleanup restores
+the original binding and derived index, then removes the unchanged QA clone.
+Concurrent binding or generation changes fail cleanup and retain the conflicting
+resource for inspection rather than overwriting it. The separate chat credential uses the
 documented Harness Secret delivery path, never plaintext Configuration values.
 Twelve waves of four distinct concurrent semantic queries, five seconds apart,
 exercise the actual local embedding service. Record cgroup usage, reclaimable file cache, limits,
 OOM counters and Pod restarts; all limits and identities must remain unchanged.
 This bounded workload is not a production capacity benchmark.
+The synonym-only fixture uses one fixed `memory/oce-qa-semantic.md` pathname and
+a distinct sentence from older qualification runs. Native `file_fetch` preserves
+prior bytes through its media snapshot. Cleanup checks the fixture hash before
+restoring those bytes; a newly created path becomes one empty reusable QA file.
+It restores through the owned live binding before intentionally stopping it;
+failed setup without a live node defers restoration until original startup.
+Reruns do not accumulate same-content files. Observed concurrent edits are preserved.
 
 Before model turns, the scenario connects to the real contained Codex server
 using the existing supervisor probe identity. It verifies nonzero exit status,
@@ -77,12 +104,16 @@ Build optional Box artifacts with the pinned source's Rust toolchain using
 patch beside its source; this candidate is not stock Box. Prepare an artifact
 directory with `strands-box`, `strands-box-sock-alias`,
 `strands-box-contain-trampoline` and `bridge/*.mjs` from
-`deploy/runtime/strands-box/`. Package with:
+`deploy/runtime/strands-box/`. Set `STRANDS_BOX_SOURCE_REVISION` to the reviewed
+Box source commit used to build those binaries, and record any local patch
+separately. The recipe requires this value and records it in the image label.
+Package with:
 
 ```sh
 docker buildx build --load --platform linux/arm64 \
   -f deploy/runtime/strands-box/Dockerfile \
   --build-arg OCE_RUNTIME_IMAGE="$OCE_RUNTIME_IMAGE" \
+  --build-arg STRANDS_BOX_SOURCE_REVISION="$STRANDS_BOX_SOURCE_REVISION" \
   -t oce-runtime:strands-box "$BOX_ARTIFACTS"
 ```
 
@@ -108,7 +139,7 @@ method after each provider switch. This requires `operator.admin` and uses the
 Gateway's registered remote workspace access. A separate `operator.read` call
 must be denied before maintenance; no index rows are injected and the standalone
 local-only memory CLI is not used. The runtime patch has its own source hash in
-runtime provenance. Cleanup restores both the original provider Configuration
+runtime provenance. Cleanup restores both the original Configuration binding
 and its matching derived index before stopping the retained Agent.
 
 Final cleanup stops the retained Agent and replaces the model Secret with an

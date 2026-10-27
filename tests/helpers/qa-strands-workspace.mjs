@@ -188,22 +188,55 @@ export async function verifyStrandsWorkspaceWorkflows(f) {
   });
 
   let second;
+  let secondConfiguration;
   let role;
   let binding;
+  const failures = [];
   try {
     await check("second Agent initial workspace and independent storage", async () => {
       const first = await api("GET", base);
-      second = await api("POST", `${namespace}/agents`, {
-        name: `strands-isolation-${randomUUID().slice(0, 8)}`,
-        configurationId: first.configurationId,
+      await f.assertModelSecretConsumers();
+      const source = await api("GET", `${namespace}/configurations/${first.configurationId}`);
+      result.secondAgent = { configurationCreation: "pending" };
+      secondConfiguration = await api("POST", `${namespace}/configurations`, {
+        kind: source.kind,
+        values: source.values,
+        secretBindings: source.secretBindings ?? {},
+      });
+      result.secondAgent.configurationCreation = "created";
+      result.secondAgent.configurationId = secondConfiguration.id;
+      const name = `strands-isolation-${randomUUID()}`;
+      result.secondAgent.name = name;
+      const definition = {
+        name,
+        configurationId: secondConfiguration.id,
         executionMode: "dedicated",
         harnessAuth: first.harnessAuth,
         initialWorkspaceFiles: {
           "AGENTS.md": `Synthetic test Agent ${nonce}. Follow the user's test instructions.\n`,
           "USER.md": `SECOND_${nonce}\n`,
         },
-      });
-      result.secondAgent = { id: second.id };
+      };
+      try {
+        second = await api("POST", `${namespace}/agents`, definition);
+      } catch (error) {
+        // A lost create reply can leave an intentional second Secret consumer.
+        // Recover only the exact name and fresh Configuration this run owns.
+        const matches = (await api("GET", `${namespace}/agents`)).filter(
+          (agent) => agent.name === name && agent.configurationId === secondConfiguration.id,
+        );
+        assert.ok(
+          matches.length <= 1,
+          "second Agent creation is ambiguous; retain its Configuration",
+        );
+        second = matches[0];
+        if (second) {
+          result.secondAgent.id = second.id;
+        }
+        throw error;
+      }
+      result.secondAgent.id = second.id;
+      await f.assertModelSecretConsumers([fixture.agentId, second.id]);
       role = await api("POST", `${namespace}/iam/roles`, {
         name: `strands-test-${randomUUID()}`,
         permissions: [{ action: "operate", resourceKind: "secret" }],
@@ -402,42 +435,67 @@ export async function verifyStrandsWorkspaceWorkflows(f) {
         unchangedPods: true,
       };
     });
+  } catch (error) {
+    failures.push(error);
   } finally {
     if (second) {
-      await check(
-        "deleting second Agent removes its resources and preserves first Agent",
-        async () => {
-          await api("DELETE", `${namespace}/agents/${second.id}`);
-          await wait(
-            "second Agent deletion",
-            async () =>
-              !(await api("GET", `${namespace}/agents`)).some((agent) => agent.id === second.id),
-            420000,
-          );
-          assert.equal(
-            owned(
-              await objects("pods,deployments,services,configmaps,networkpolicies,pvc"),
-              second.id,
-            ).length,
-            0,
-          );
-          assert.equal((await api("GET", base)).desiredRuntimeState, "running");
-          assert.ok((await memory()).results.some((hit) => hit.snippet.includes(memoryFact)));
-          // Agent deletion owns removal of its exact IAM grants. Keep these
-          // assertions inside the recorded check; do not delete grants twice.
-          if (binding) {
-            const bindings = await api("GET", `${namespace}/iam/access-bindings`);
-            result.secondAgent.iam.remainingBinding = bindings.find(
-              (item) => item.id === binding.id,
+      try {
+        await check(
+          "deleting second Agent removes its resources and preserves first Agent",
+          async () => {
+            await api("DELETE", `${namespace}/agents/${second.id}`);
+            await wait(
+              "second Agent deletion",
+              async () =>
+                !(await api("GET", `${namespace}/agents`)).some((agent) => agent.id === second.id),
+              420000,
             );
-            assert.equal(result.secondAgent.iam.remainingBinding, undefined);
-          }
-          if (role) {
-            await api("DELETE", `${namespace}/iam/roles/${role.id}`);
-            result.secondAgent.iam.roleRemoved = true;
-          }
-        },
-      );
+            assert.equal(
+              owned(
+                await objects("pods,deployments,services,configmaps,networkpolicies,pvc"),
+                second.id,
+              ).length,
+              0,
+            );
+            assert.equal((await api("GET", base)).desiredRuntimeState, "running");
+            assert.ok((await memory()).results.some((hit) => hit.snippet.includes(memoryFact)));
+            // Agent deletion owns removal of its exact IAM grants. Keep these
+            // assertions inside the recorded check; do not delete grants twice.
+            if (binding) {
+              const bindings = await api("GET", `${namespace}/iam/access-bindings`);
+              result.secondAgent.iam.remainingBinding = bindings.find(
+                (item) => item.id === binding.id,
+              );
+              assert.equal(result.secondAgent.iam.remainingBinding, undefined);
+            }
+            if (role) {
+              await api("DELETE", `${namespace}/iam/roles/${role.id}`);
+              result.secondAgent.iam.roleRemoved = true;
+            }
+          },
+        );
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    if (secondConfiguration) {
+      try {
+        await check("remove the second Agent's test-owned Configuration", async () => {
+          const path = `${namespace}/configurations/${secondConfiguration.id}`;
+          assert.equal(
+            (await api("GET", path)).generation,
+            secondConfiguration.generation,
+            "the second Agent Configuration changed; retain it for inspection",
+          );
+          await api("DELETE", path);
+          result.secondAgent.configurationRemoved = true;
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  }
+  if (failures.length) {
+    throw new AggregateError(failures, "Second Agent qualification failed");
   }
 }

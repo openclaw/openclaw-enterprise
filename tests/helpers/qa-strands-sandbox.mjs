@@ -32,6 +32,8 @@ export async function verifyQaStrandsSandbox(artifacts) {
   const modelKey = await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model API key");
   const base = `/namespaces/${fixture.namespaceId}/agents/${fixture.agentId}`;
   const secretPath = `/namespaces/${fixture.namespaceId}/secrets/${fixture.modelSecretId}`;
+  let fixtureConfigurationId;
+  let fixtureConfigurationGeneration;
   const result = { startedAt: new Date().toISOString(), checks: [], revisions: [] };
   const evidence = join(artifacts, "strands-sandbox.json");
   async function save() {
@@ -66,6 +68,55 @@ export async function verifyQaStrandsSandbox(artifacts) {
       );
     }
     return response.status === 204 ? undefined : (await response.json()).data;
+  }
+  async function assertStoppedFixtureAgent(expectedConfigurationId) {
+    const agent = await api("GET", base);
+    assert.equal(agent.id, fixture.agentId);
+    assert.equal(agent.namespaceId, fixture.namespaceId);
+    assert.equal(agent.desiredRuntimeState, "stopped");
+    assert.deepEqual(
+      agent.harnessAuth,
+      {
+        method: "api_key",
+        source: { kind: "secret", namespaceId: fixture.namespaceId, id: fixture.modelSecretId },
+      },
+      "the fixture model Secret must be the Agent's exact API-key binding",
+    );
+    if (expectedConfigurationId !== undefined) {
+      assert.equal(
+        agent.configurationId,
+        expectedConfigurationId,
+        "the test Agent Configuration changed before model key installation",
+      );
+    }
+    return agent;
+  }
+  async function assertModelSecretConsumers(
+    agentIds = [fixture.agentId],
+    { requireFixtureAgent = true } = {},
+  ) {
+    const secret = await api("GET", secretPath);
+    assert.equal(secret.id, fixture.modelSecretId, "the model Secret must match the fixture");
+    assert.equal(secret.namespaceId, fixture.namespaceId);
+    assert.deepEqual(secret.ref, {
+      kind: "secret",
+      namespaceId: fixture.namespaceId,
+      id: fixture.modelSecretId,
+    });
+    const consumers = secret.consumers;
+    assert.equal(consumers.unreadable, 0, "model Secret consumers must all be readable");
+    assert.equal(consumers.truncated, false, "model Secret consumer inventory must be complete");
+    if (requireFixtureAgent) {
+      assert.ok(consumers.agents.includes(fixture.agentId), "the Secret must name this Agent");
+    }
+    assert.ok(
+      consumers.agents.every((id) => agentIds.includes(id)),
+      "the model Secret must have no non-test Agent consumers",
+    );
+    for (const kind of ["configurations", "credentialSources", "provisioningRequests"]) {
+      assert.deepEqual(consumers[kind], [], `the model Secret must have no ${kind} consumers`);
+    }
+    return consumers;
   }
   async function kube(...args) {
     try {
@@ -160,7 +211,12 @@ export async function verifyQaStrandsSandbox(artifacts) {
       ),
     );
   }
-  async function deploy() {
+  async function deploy(expectedConfigurationId = fixtureConfigurationId) {
+    assert.equal(
+      (await api("GET", base)).configurationId,
+      expectedConfigurationId,
+      "the test Agent Configuration changed; refuse deployment",
+    );
     const revision = await api("POST", `${base}/deploy`);
     result.revisions.push(revision.id);
     // A revision replacement includes the native Gateway's 330-second stop
@@ -210,7 +266,12 @@ export async function verifyQaStrandsSandbox(artifacts) {
     (await objects("pvc"))
       .map((pvc) => ({ name: pvc.metadata.name, uid: pvc.metadata.uid }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  async function stop() {
+  async function stop(expectedConfigurationId = fixtureConfigurationId) {
+    assert.equal(
+      (await api("GET", base)).configurationId,
+      expectedConfigurationId,
+      "the test Agent Configuration changed; refuse to stop another binding",
+    );
     await api("POST", `${base}/stop`);
     await wait(
       "Agent workload teardown",
@@ -318,10 +379,8 @@ export async function verifyQaStrandsSandbox(artifacts) {
       await kube("get", "namespace", fixture.namespaceName, "-o", "json"),
     );
     assert.equal(namespace.metadata.labels["openclaw.dev/namespace"], fixture.namespaceId);
-    const agent = await api("GET", base);
-    assert.equal(agent.id, fixture.agentId);
-    assert.equal(agent.namespaceId, fixture.namespaceId);
-    assert.equal(agent.desiredRuntimeState, "stopped");
+    const agent = await assertStoppedFixtureAgent();
+    await assertModelSecretConsumers();
     assert.equal(owned(await objects("pods,deployments")).length, 0);
     const configuration = await api(
       "GET",
@@ -337,11 +396,26 @@ export async function verifyQaStrandsSandbox(artifacts) {
       "none",
       "The scenario starts with keyword memory, then qualifies native local embeddings",
     );
+    fixtureConfigurationId = agent.configurationId;
+    fixtureConfigurationGeneration = configuration.generation;
   });
   const pvcs = await pvcIdentities();
   const failures = [];
+  let modelKeyWriteAttempted = false;
   try {
     // The normal OCE Secret API and deployment project the key into the owned Harness.
+    await assertStoppedFixtureAgent(fixtureConfigurationId);
+    const configuration = await api(
+      "GET",
+      `/namespaces/${fixture.namespaceId}/configurations/${fixtureConfigurationId}`,
+    );
+    assert.equal(
+      configuration.generation,
+      fixtureConfigurationGeneration,
+      "the test Configuration changed before model key installation",
+    );
+    await assertModelSecretConsumers();
+    modelKeyWriteAttempted = true;
     await api("PATCH", secretPath, { value: modelKey });
     await check("normal deployment and native readiness", deploy);
     const { verifyStrandsTransport } = await import("./qa-strands-transport.mjs");
@@ -640,6 +714,7 @@ export async function verifyQaStrandsSandbox(artifacts) {
       memoryPath,
       memoryFact,
       deploy,
+      assertModelSecretConsumers,
     });
     const { verifyStrandsSemanticMemory } = await import("./qa-strands-semantic-memory.mjs");
     await verifyStrandsSemanticMemory({
@@ -658,49 +733,56 @@ export async function verifyQaStrandsSandbox(artifacts) {
       base,
       sessionKey,
       deploy,
+      stop,
     });
   } catch (error) {
     failures.push(redactQaError(error));
   } finally {
     // Withdrawal is attempted even if stop fails; cleanup failures fail the run.
-    for (const [name, action] of [
-      ["final Agent stop", stop],
-      [
-        "model key withdrawal",
-        async () => {
-          // This exact replacement is idempotent. A failed transport must not
-          // leave the personal key installed after the Agent has been stopped.
-          for (let attempt = 1; ; attempt++) {
-            result.keyWithdrawalAttempts = attempt;
-            try {
-              await api("PATCH", secretPath, {
-                value: "synthetic-invalid-key-for-credential-free-startup",
-              });
-              return;
-            } catch (error) {
-              if (attempt === 3) {
-                throw error;
+    for (const [name, action] of modelKeyWriteAttempted
+      ? [
+          ["final Agent stop", stop],
+          [
+            "model key withdrawal",
+            async () => {
+              // This exact replacement is idempotent. A failed transport must not
+              // leave the personal key installed after the Agent has been stopped.
+              for (let attempt = 1; ; attempt++) {
+                result.keyWithdrawalAttempts = attempt;
+                try {
+                  await assertModelSecretConsumers(
+                    [fixture.agentId, ...(result.secondAgent?.id ? [result.secondAgent.id] : [])],
+                    { requireFixtureAgent: false },
+                  );
+                  await api("PATCH", secretPath, {
+                    value: "synthetic-invalid-key-for-credential-free-startup",
+                  });
+                  return;
+                } catch (error) {
+                  if (attempt === 3) {
+                    throw error;
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, 1000));
+                }
               }
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-            }
-          }
-        },
-      ],
-      [
-        "no model key remains in tenant Secrets",
-        async () => {
-          const secrets = await objects("secrets");
-          assert.ok(
-            secrets.every((secret) =>
-              Object.values(secret.data ?? {}).every(
-                (value) => !Buffer.from(value, "base64").toString().includes(modelKey),
-              ),
-            ),
-          );
-          assert.deepEqual(await pvcIdentities(), pvcs);
-        },
-      ],
-    ]) {
+            },
+          ],
+          [
+            "no model key remains in tenant Secrets",
+            async () => {
+              const secrets = await objects("secrets");
+              assert.ok(
+                secrets.every((secret) =>
+                  Object.values(secret.data ?? {}).every(
+                    (value) => !Buffer.from(value, "base64").toString().includes(modelKey),
+                  ),
+                ),
+              );
+              assert.deepEqual(await pvcIdentities(), pvcs);
+            },
+          ],
+        ]
+      : []) {
       try {
         await check(name, action);
       } catch (error) {
