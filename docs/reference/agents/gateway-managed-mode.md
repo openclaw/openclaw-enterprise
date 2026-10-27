@@ -3,7 +3,10 @@
 OCE enables managed mode by default for each Agent. It applies to Gateway
 administration through native clients, including the Console’s native admin UI.
 An Installation administrator can turn it off to try local configuration changes.
-Harness Gateway policies apply in both modes.
+Dedicated Gateways start with the model tool policy saved in OCE. With managed
+mode off, an authorized Gateway admin can explicitly widen the local allowlist.
+After a native Gateway restart, later Agent turns can use those tools if their
+other permissions allow it.
 
 In the Console, open the version draft’s **Configuration** tab. Creating an Agent
 with `gatewayManagedMode=false` or changing the saved setting requires Installation
@@ -27,7 +30,7 @@ See the [Docker deployment limits](../drivers/docker-compute.md).
 After a hard crash in either mode, an embedded Gateway can require
 [operator recovery](../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 
-Deploying with managed mode back on restores OCE’s configuration and can discard
-Gateway-local edits. Replacing the Gateway can interrupt service. If a deployment
-must also prevent direct filesystem writes under the Gateway’s identity, it needs
-filesystem protection or separation of write authority.
+Deploying with managed mode back on restores OCE’s saved configuration. Tools
+excluded by that revision become unavailable again. Replacement can interrupt
+service. Protecting files against direct writes under the Gateway’s identity
+requires filesystem protection or separate write authority.
