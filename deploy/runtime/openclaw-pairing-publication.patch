@@ -1,0 +1,62 @@
+diff --git a/src/infra/device-pairing-publication.ts b/src/infra/device-pairing-publication.ts
+--- a/src/infra/device-pairing-publication.ts
++++ b/src/infra/device-pairing-publication.ts
+@@ -22,7 +22,7 @@
+   epoch: number;
+   revision?: string;
+   blocked: boolean;
+-  mutation?: { invalidatesAuthority: boolean; receipt?: DevicePairingCommitReceipt };
++  mutation?: { receipt?: DevicePairingCommitReceipt };
+   complete: boolean;
+   rows: Map<string, DevicePairingBindingFact>;
+   nodes?: DevicePairingNodeSnapshot;
+@@ -174,9 +174,9 @@
+       }
+       return captured.nodes;
+     },
+-    beginMutation(invalidatesAuthority: boolean) {
++    beginMutation() {
+       captured.epoch++;
+-      const mutation: NonNullable<Publication["mutation"]> = { invalidatesAuthority };
++      const mutation: NonNullable<Publication["mutation"]> = {};
+       captured.mutation = mutation;
+       return {
+         prepare(receipt: DevicePairingCommitReceipt) {
+@@ -228,7 +228,11 @@
+   };
+ }
+ 
+-/** Unknown facts suppress use without declaring an otherwise live node revoked. */
++/**
++ * Unknown facts suppress use without declaring an otherwise live node revoked.
++ * An in-flight write does not revoke committed rows. Service its committed
++ * receipt before reading, so actual revocation takes effect at COMMIT.
++ */
+ export function getPublishedPairedDeviceBinding(
+   deviceId: string,
+   baseDir?: string,
+@@ -243,7 +247,6 @@
+   if (
+     !publication ||
+     publication.blocked ||
+-    publication.mutation?.invalidatesAuthority ||
+     (!publication.complete && !publication.rows.has(deviceId))
+   ) {
+     throw new Error("Device pairing authority requires a current worker publication");
+diff --git a/src/infra/device-pairing-worker.ts b/src/infra/device-pairing-worker.ts
+--- a/src/infra/device-pairing-worker.ts
++++ b/src/infra/device-pairing-worker.ts
+@@ -162,12 +162,7 @@
+       captured.type === "bootstrap.prune"
+         ? undefined
+         : captureDevicePairingPublication(context.admission);
+-    // Runtime facts preserve pairing identity; publishing them must not interrupt live node work.
+-    const mutation = publication?.beginMutation(
+-      captured.type !== "node.updateSessionHost" &&
+-        captured.type !== "node.recordHostStats" &&
+-        captured.type !== "node.updateBins",
+-    );
++    const mutation = publication?.beginMutation();
+     let admission: SqliteWorkerOperationAdmission | undefined;
+     let published = false;
+     let publishEnvironment: ReturnType<typeof reserveWorkerEnvironmentNativePublication>;
