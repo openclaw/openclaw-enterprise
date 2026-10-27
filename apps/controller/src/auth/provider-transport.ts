@@ -53,7 +53,9 @@ export class ProviderUnavailableError extends Error {
 
 export type ProviderDenial = "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABLE";
 
-// A code exchange yields a subject or a bounded reason for refusal.
+// A code exchange yields a subject or a bounded reason for refusal. `trusted` is set only
+// by a provider whose verified token carried the operator-configured trust claim (OIDC),
+// and admits an otherwise unknown identity to just-in-time enrolment.
 export type ProviderExchange =
   | {
       readonly subject: string;
@@ -63,6 +65,7 @@ export type ProviderExchange =
       > & {
         readonly profile: { readonly email: string; readonly name: string } | undefined;
       };
+      readonly trusted?: true;
     }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }
   | { readonly denial: "PROVIDER_UNAVAILABLE"; readonly failure?: ProviderFailure };

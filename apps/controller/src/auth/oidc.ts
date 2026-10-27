@@ -21,6 +21,16 @@ import {
 
 export type OidcTokenAuth = "client_secret_post" | "client_secret_basic";
 
+/**
+ * The operator-configured claim that vouches for realm members: a verified ID token whose
+ * `name` claim equals `value` authenticates an otherwise unknown subject, which is then
+ * enrolled just-in-time with no grant. Both parts are required together.
+ */
+export interface OidcTrustClaim {
+  readonly name: string;
+  readonly value: string;
+}
+
 export interface OidcLoginConfiguration {
   readonly enrollment?: OidcEnrollmentPolicy | undefined;
   // The exact `iss` value, compared byte for byte.
@@ -33,6 +43,7 @@ export interface OidcLoginConfiguration {
   readonly tokenAuth: OidcTokenAuth;
   // The Console button label: "Continue with <displayName>".
   readonly displayName: string;
+  readonly trustClaim?: OidcTrustClaim;
 }
 
 // OIDC sign-in's configuration as the controller receives it: the guarded profile's
@@ -59,12 +70,17 @@ const optionalVariables = [
   "OCC_AUTH_OIDC_TOKEN_AUTH",
   "OCC_AUTH_OIDC_DISPLAY_NAME",
   "OCC_AUTH_OIDC_ENROLLMENT",
+  "OCC_AUTH_OIDC_TRUST_CLAIM",
+  "OCC_AUTH_OIDC_TRUST_VALUE",
 ] as const;
 
 const dnsName =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 // Printable text: no control, format, separator-other or unassigned characters.
 const displayNamePattern = /^[^\p{C}\p{Zl}\p{Zp}]{1,40}$/u;
+// A JWT claim name (letters, digits, `_`, `-`, `:`), and a printable ASCII claim value.
+const trustClaimNamePattern = /^[A-Za-z][A-Za-z0-9_:-]{0,63}$/;
+const trustClaimValuePattern = /^[\x21-\x7E]{1,256}$/;
 
 // An `https:` URL on the default port with a DNS host and no userinfo, query or fragment.
 // Returns the parsed URL, or undefined.
@@ -138,6 +154,28 @@ export function oidcLoginConfiguration(
   if (!displayNamePattern.test(displayName)) {
     throw new Error("OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters.");
   }
+  const trustClaimName = environment.OCC_AUTH_OIDC_TRUST_CLAIM?.trim();
+  const trustClaimValue = environment.OCC_AUTH_OIDC_TRUST_VALUE?.trim();
+  if (
+    (trustClaimName === undefined || trustClaimName.length === 0) !==
+    (trustClaimValue === undefined || trustClaimValue.length === 0)
+  ) {
+    throw new Error(
+      "OCC_AUTH_OIDC_TRUST_CLAIM and OCC_AUTH_OIDC_TRUST_VALUE must be configured together.",
+    );
+  }
+  let trustClaim: OidcTrustClaim | undefined;
+  if (trustClaimName !== undefined && trustClaimName.length > 0 && trustClaimValue !== undefined) {
+    if (!trustClaimNamePattern.test(trustClaimName)) {
+      throw new Error(
+        "OCC_AUTH_OIDC_TRUST_CLAIM must be a claim name of 1 to 64 letters, digits, underscore, hyphen or colon.",
+      );
+    }
+    if (!trustClaimValuePattern.test(trustClaimValue)) {
+      throw new Error("OCC_AUTH_OIDC_TRUST_VALUE must be 1 to 256 printable characters.");
+    }
+    trustClaim = { name: trustClaimName, value: trustClaimValue };
+  }
   return {
     ...(environment.OCC_AUTH_OIDC_ENROLLMENT === undefined
       ? {}
@@ -155,6 +193,7 @@ export function oidcLoginConfiguration(
     clientSecret: values.OCC_AUTH_OIDC_CLIENT_SECRET,
     tokenAuth,
     displayName,
+    ...(trustClaim === undefined ? {} : { trustClaim }),
   };
 }
 
@@ -179,7 +218,8 @@ export async function oidcAuthorizationURL(
     id: "oidc",
     options: { clientId: config.clientId, clientSecret: config.clientSecret },
     authorizationEndpoint: config.authorizationUrl,
-    // Profile claims are requested only for the opt-in enrollment policy.
+    // Profile claims are requested only for the opt-in enrollment policy; the
+    // trust-claim path reads only the ID token, so it needs no additional scope.
     scopes:
       config.enrollment === undefined
         ? ["openid"]
@@ -258,6 +298,9 @@ export async function exchangeOidcSubject(
           profile: oidcEnrollmentProfile(claims),
         },
       };
+    }
+    if (config.trustClaim !== undefined && claims[config.trustClaim.name] === config.trustClaim.value) {
+      return { subject: claims.sub as string, trusted: true };
     }
     return { subject: claims.sub as string };
   } catch (error) {

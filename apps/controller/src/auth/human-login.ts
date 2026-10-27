@@ -602,6 +602,15 @@ export function createHumanLogin(
                   throw error;
                 }
               }
+              if (snapshot !== undefined && "missing" in snapshot && exchange.trusted === true) {
+                // The operator configured this provider's verified tokens to vouch for realm
+                // members (a trusted OIDC claim): enrol the unknown identity with no grant
+                // instead of refusing it. Only an OIDC exchange sets `trusted`.
+                snapshot = await state.provisionTrustedExternalAccount(
+                  provider.providerId,
+                  exchange.subject,
+                );
+              }
               if (snapshot === undefined || "missing" in snapshot) {
                 return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
                   subject: exchange.subject,

@@ -12,6 +12,7 @@ for setup.
 | `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET`     | `auth.oidc` Secret keys                             | Read from the dedicated `auth.oidc.secretName` Secret. All required values or none.         |
 | `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
 | `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
+| `OCC_AUTH_OIDC_TRUST_CLAIM`, `OCC_AUTH_OIDC_TRUST_VALUE`     | Not rendered by the chart.                          | Experimental trust claim; see below.                                                        |
 
 `OCC_AUTH_OIDC_ENROLLMENT` (Helm `auth.oidc.enrollment`) accepts the JSON
 [OIDC enrollment policy](../authentication/team-enrollment.md). The installation
@@ -25,6 +26,15 @@ port; an IdP inside the cluster on another target port needs
 [its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering rejects invalid endpoint settings,
 a Secret shared with Google or another chart credential Secret, or an HTTP base URL.
 OIDC supports native Agent access.
+
+Experimental trust-claim enrolment (env-var only; the Helm chart does not render these
+yet): `OCC_AUTH_OIDC_TRUST_CLAIM` and `OCC_AUTH_OIDC_TRUST_VALUE` are both-or-neither, or
+startup fails. When set, a verified ID token whose named claim equals the exact value
+vouches for its subject: an unknown identity is authenticated and enrolled just-in-time as
+a human account with no grants and a placeholder email. Only `openid` is requested, so the
+IdP must issue the claim into the ID token itself. Without the claim, or with a different
+value, unknown identities are refused as before; see
+[trust-claim enrolment](../../guides/deploy/oidc-sign-in.md#trust-claim-enrolment-experimental).
 
 `auth.oidc.caSecretName` and `auth.oidc.caSecretKey` optionally select a public PEM
 CA bundle from a Secret in the release namespace. Both default to empty; set both
