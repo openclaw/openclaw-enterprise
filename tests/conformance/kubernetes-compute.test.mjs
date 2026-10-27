@@ -6465,6 +6465,26 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
   }
 });
 
+test("fixed provider Harness configuration accepts explicit and implicit discriminators", () => {
+  const provider = {
+    namespace: "openshell-system",
+    podLabels: { app: "openshell-gateway" },
+    address: "10.43.0.50",
+    port: 8080,
+  };
+  for (const providerHarness of [provider, { ...provider, mode: "fixed" }]) {
+    const configured = options();
+    configured.network.providerHarness = providerHarness;
+    assert.doesNotThrow(() => createKubernetesComputeDriver(configured));
+  }
+  const configured = options();
+  configured.network.providerHarness = { ...provider, mode: "namespace" };
+  assert.throws(
+    () => createKubernetesComputeDriver(configured),
+    SharedConfigurationValidationError,
+  );
+});
+
 test("every NetworkPolicy peer namespace must be a Kubernetes namespace name", () => {
   const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
   const base = options({ runtime });
