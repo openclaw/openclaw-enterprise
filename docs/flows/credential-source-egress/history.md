@@ -8,6 +8,34 @@ This record preserves the dated changes to the protected credential request page
 
 ## Changelog
 
+- 2026-10-25 03:08: Distinguish Git-only refusal from joint model/Git admission. (authoring-run/14e1a79b-96d6-4e9a-ab22-44a783a1ad50 - 66b50c98b72bd23eeba9e007e8c3d2cdaec81446)
+
+- 2026-10-24 19:46: Trace bundled workspace registration and per-request custody. (authoring-run/1303a689-0f82-440b-a43f-1b2869851779 - 96dfb6a485b6632a1feeffc2bd53f10c74152cd1)
+
+- 2026-10-24 12:54: Document large registered delivery policies' exact target matching. (authoring-run/ded21924-0d2a-4f83-9299-1926d35ceb01 - 692c5e6e8afeebf831a1c9feb1917f0f2aafc3b9)
+
+- 2026-10-24 11:09: Preserve signed catalog queries. (authoring-run/adac7683-9281-441d-a539-a422c7b66bce - b9ff83995cc1b2dc03a6de4c8172cc20167c51c9)
+
+- 2026-10-24 07:10: Bind workspace credentials to admitted sender; retain Git access after confirmed model withdrawal. (authoring-run/f0f87daa-3c51-4559-b105-23c8c3d6084b - 5ad11ff5e27b16d83e0560d8ca35f1233d48d2af)
+
+- 2026-10-23 20:14: Preserve exact Proxy ownership through Harness admission, persistence and dispatch. (authoring-run/e93bd191-284b-4701-929c-85a5d446c694 - ef61a85efa8f9a819986a072efb50ca91deca607)
+
+- 2026-10-23 19:40: Record workspace PAT policy and remaining qualification gates. (authoring-run/46d0701b-da16-43b1-8c7e-2510a4dd1475 - c250d521a59cb7d1e8be85bf02a112062e5ab259)
+
+- 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
+
+- 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
+
+- 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
+
+- 2026-10-22 05:35: Pin peer identity and original authentication expiry throughout the exchange. (authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a - d87db85f74052e9ff819920acd820880e7a6a8af)
+
+- 2026-10-22 05:21: Preserve the metadata grant digest for equivalent Driver output. (authoring-run/aabacbf5-998a-479d-8903-9f891cd69066 - 1435acf226b887a2cd85b7515b302914605beaef)
+
+- 2026-10-22 05:16: Bind exchange identity independently of Git delivery evidence. (authoring-run/601b0e1c-ade5-431c-aa48-1c6775df430a - d5c0a95fc970e8a63f40746ad2e55ac5216580e0)
+
+- 2026-10-22: Streamline flow; preserve authority and recovery boundaries.
+
 - 2026-10-22 04:16: Enforce delivery settlement policy, operation fences and retained detach confirmation in the accompanying changes. (authoring-run/bcd1284f-0d04-4fc7-92e1-b4d5ac1eeb7f - 1544403a30a747898deaf3cf0935094b7812390d)
 
 - 2026-10-22 01:51: Describe final withdrawal and delivery custody in the accompanying schema consolidation. (authoring-run/c692ffd7-9ade-4cb3-80b7-cd02340e0537 - fe6b0002a5bf41e6e418df9848337b285ce53199)

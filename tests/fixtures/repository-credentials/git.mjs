@@ -84,6 +84,12 @@ async function copyRepositoryTemplate(repository, bare, seed) {
 
 // git-http-backend owns the protocol and repository mutation; the fixture only
 // supplies CGI framing and a controlled provider authentication check.
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {{authorize?: (authorization: string | undefined, boundary: "git") => boolean,
+ *   repository?: string, tls?: Awaited<ReturnType<typeof createTlsMaterial>>,
+ *   observeRequest?: (method: string, url: string) => void}} options
+ */
 export async function startGitSmartHttpFixture(
   t,
   { authorize = () => true, repository = "fixture/repository", tls, observeRequest } = {},

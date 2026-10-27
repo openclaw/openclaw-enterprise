@@ -386,6 +386,8 @@ export async function createConsoleAppFixture(t, options = {}) {
     },
     { id: "console-native-iam" },
   );
+  /** @type {((native: NativeIAMDriver) => NonNullable<import("../../packages/occ/src/index.ts").ControllerOptions["authorize"]>) | undefined} */
+  const authorizeWith = options.authorizeWith;
   const backends = options.backends ?? backendFixtures;
   const publicOrigin = options.publicOrigin === true ? origin : options.publicOrigin;
   const backendSummaries = Object.hasOwn(options, "backendSummaries")
@@ -445,6 +447,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
         driverConfigurations: options.driverConfigurations,

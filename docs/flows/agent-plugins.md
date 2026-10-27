@@ -281,6 +281,8 @@ revoke access to a still-running old Harness or an established connection. For a
 changed peer, the supervisor publishes non-ready, restarts only OpenClaw and
 rechecks peer startup, Pod, successes and failures after it serves. Changed or
 unavailable peers trigger container restart.
+The supervisor repeats a stop signal that OpenClaw ignored during its own in-place
+restart, seen as readiness returning after its server closed.
 For writable native-admin configuration, recovery reads the bridge baseline from
 the read-only managed snapshot. A Pod-local record binds the last and pending
 generated bridges to the version and snapshot hash before configuration writes.
@@ -360,6 +362,8 @@ establish starvation.
 
 ## Changelog
 
+- 2026-10-27 15:00: Repeat a stop signal that OpenClaw ignored during an in-place restart (finding 2711). (fix-2711-gateway-stop)
+
 - 2026-10-27 03:30: Check the Gateway tool policy at Configuration save and for embedded Agents on every Compute, not on maintenance passes (findings 2688, 2689, 2694, 2695). (fix-2688-policy)
 
 - 2026-10-26 20:21: Stop hosted reads on disconnect and clarify credential checks and catalog results. (authoring-run/dc13892f-22e2-4838-b5d7-a716768e7243 - cbad284a4d3d5f567e96e6c3dbb3fc5e7b86b14e)
@@ -367,11 +371,5 @@ establish starvation.
 - 2026-10-18 03:00: Check the primary model's `tools.byProvider` deny lists and a sole entry's `alsoAllow` under a profile (findings 1855, 1857). (lows-1018c)
 
 - 2026-10-18 02:20: Check roster entries' `tools.deny` in the OpenClaw Driver's selection check (finding 1848). (lows-1018b - 628ee9fbf)
-
-- 2026-10-17 06:05: Preserve OAuth discovery changes while integrating the native reader fix. (authoring-run/629826fb-b521-49bb-865a-dbc1b5c975a5 - 23965d64cc2824f0c5a2b5d704f767fead13f11b)
-
-- 2026-10-17 00:10: Contain non-object native catalog envelopes in the discovery error path. (authoring-run/3d8efdc8-6da6-4cf9-99f7-adebd5e5649d - 42fb0a90337209e28318765c1b537bc4f3623506)
-
-- 2026-10-16 19:14: Apply the Gateway tool policy after plugin grants, before startup or peer respawn. (01a13683-3916-7880-b1a6-27175b853600 - b768af1b24c6d9130e46eb0bb470fa761ade2bfb)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

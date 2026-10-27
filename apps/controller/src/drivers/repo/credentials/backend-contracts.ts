@@ -199,7 +199,7 @@ export interface PreparedRepositoryBackend {
 }
 
 export interface PreparedRepositoryBackendFactory extends Omit<RepositoryBackendFactory, "create"> {
-  createPrepared(authority: AuthorityIdentity): PreparedRepositoryBackend;
+  createPrepared(authority: AuthorityIdentity, selection: ResolvedGrant): PreparedRepositoryBackend;
 }
 
 export type RepositoryServiceFactory = RepositoryBackendFactory | PreparedRepositoryBackendFactory;

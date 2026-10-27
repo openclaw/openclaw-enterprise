@@ -1,4 +1,9 @@
-import type { CredentialService, SessionStatus } from "./service-contracts.ts";
+import type {
+  CredentialService,
+  RepositoryCredentialBoundSessionInput,
+  RepositoryCredentialSessionResult,
+  SessionStatus,
+} from "./service-contracts.ts";
 import type {
   Bounds,
   Denied,
@@ -53,5 +58,12 @@ export interface ExchangeService {
 }
 /** One runtime owner supplies both views; no separate lifecycle is introduced. */
 export interface CredentialServiceOwner extends CredentialService, ExchangeService {
+  /** Hold local capacity and the resolved grant without constructing a backend. */
+  prepareOpen(input: RepositoryCredentialBoundSessionInput): {
+    open(
+      authorizeStanding?: (sessionId: string) => Promise<void>,
+    ): RepositoryCredentialSessionResult;
+    cancel(): void;
+  };
   observeDisposal(observer: (status: SessionStatus) => void): () => void;
 }

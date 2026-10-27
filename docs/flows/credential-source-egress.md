@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-27"
-last_updated_session: authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de
+last_updated_session: authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad
 ---
 
 # Protected credential request flow
@@ -225,10 +225,18 @@ bound to store-qualified material and deadline. Duplicate, failed or unknown com
 including after restart.
 
 Sender and OCC bind Sandbox, instance, configuration, peer key, policy hash, authority and
-plan; Git has separate recipient evidence. After fresh identity/policy/material/rejection
-checks, `EgressSendReceipts.authorize` commits execution, installation fence, exchange,
-custody, request/injection digests, authorization time and send deadline: at most one second,
-capped by request/material/identity expiry.
+plan; Git has separate recipient evidence.
+
+After reservation, OCC’s `authorizeSend` port verifies the current runtime before opening
+the send transaction. The selected `IAMDriver.authorize` method makes the fresh decision for
+the exact service principal, `operate` action and Credential Source. For native IAM, the
+Namespace lock orders that decision and receipt commit against supported Namespace binding
+changes. An external IAM decision occurs before the transaction and cannot share that ordering.
+OCC rechecks the selected route, installation, material and rejection fence, then mints the
+permit and calls `EgressSendReceipts.authorizeIn` in the same transaction. The receipt binds
+the execution, installation fence, exchange, response custody, request and injection digests,
+authorization time and send-start deadline. The deadline is at most one second away and cannot
+outlive the request, material or identity.
 
 Before permission, the registry rechecks cancellation, ownership and persisted
 deadline. Lost acknowledgment, handle or deadline yields no permit; restart cannot
@@ -339,36 +347,10 @@ None.
 
 ## Changelog
 
-- 2026-10-27 13:15: Document Compute readiness capability boundary. (authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de - f6396abd5698efacabfeb150ef6cd38cdef6e814)
+- 2026-10-27 14:03: Document the accompanying send authorization transaction. (authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad - 61c38c4c5a008bbdd8ad8eb2d70aa68492b7fdcc)
+
+- 2026-10-27 13:15: Document the accompanying Compute readiness capability boundary. (authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de - f6396abd5698efacabfeb150ef6cd38cdef6e814)
 
 - 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
-
-- 2026-10-26 21:57: Trace protected repository metadata access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
-
-- 2026-10-25 03:08: Distinguish Git-only refusal from joint model/Git admission. (authoring-run/14e1a79b-96d6-4e9a-ab22-44a783a1ad50 - 66b50c98b72bd23eeba9e007e8c3d2cdaec81446)
-
-- 2026-10-24 19:46: Trace bundled workspace registration and per-request custody. (authoring-run/1303a689-0f82-440b-a43f-1b2869851779 - 96dfb6a485b6632a1feeffc2bd53f10c74152cd1)
-
-- 2026-10-24 12:54: Document large registered delivery policies' exact target matching. (authoring-run/ded21924-0d2a-4f83-9299-1926d35ceb01 - 692c5e6e8afeebf831a1c9feb1917f0f2aafc3b9)
-
-- 2026-10-24 11:09: Preserve signed catalog queries. (authoring-run/adac7683-9281-441d-a539-a422c7b66bce - b9ff83995cc1b2dc03a6de4c8172cc20167c51c9)
-
-- 2026-10-24 07:10: Bind workspace credentials to admitted sender; retain Git access after confirmed model withdrawal. (authoring-run/f0f87daa-3c51-4559-b105-23c8c3d6084b - 5ad11ff5e27b16d83e0560d8ca35f1233d48d2af)
-
-- 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
-
-- 2026-10-23 20:14: Preserve exact Proxy ownership through Harness admission, persistence and dispatch. (authoring-run/e93bd191-284b-4701-929c-85a5d446c694 - ef61a85efa8f9a819986a072efb50ca91deca607)
-
-- 2026-10-23 19:40: Record workspace PAT policy and remaining qualification gates. (authoring-run/46d0701b-da16-43b1-8c7e-2510a4dd1475 - c250d521a59cb7d1e8be85bf02a112062e5ab259)
-
-- 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
-
-- 2026-10-22 05:35: Pin peer identity and original authentication expiry throughout exchanges. (authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a - d87db85f74052e9ff819920acd820880e7a6a8af)
-
-- 2026-10-22 05:21: Preserve metadata grant digest for equivalent Driver output. (authoring-run/aabacbf5-998a-479d-8903-9f891cd69066 - 1435acf226b887a2cd85b7515b302914605beaef)
-
-- 2026-10-22 05:16: Bind exchange identity independently of Git delivery evidence. (authoring-run/601b0e1c-ade5-431c-aa48-1c6775df430a - d5c0a95fc970e8a63f40746ad2e55ac5216580e0)
-
-- 2026-10-22: Streamline flow; preserve authority and recovery boundaries.
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

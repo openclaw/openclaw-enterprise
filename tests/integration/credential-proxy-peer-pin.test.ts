@@ -62,19 +62,16 @@ async function exchange(t: TestContext, key: string | undefined) {
   };
   let captured: CapturedEgressUse | undefined;
   let check = ports.check;
+  const begin = receipts.begin.bind(receipts);
+  receipts.begin = async (sender, attempt) => {
+    const begun = await begin(sender, attempt);
+    afterBegin?.();
+    return begun;
+  };
   const proxy = new CredentialProxy({
     ...ports,
     installation: async () => installation,
-    receipts: {
-      begin: async (sender, attempt) => {
-        const begun = await receipts.begin(sender, attempt);
-        afterBegin?.();
-        return begun;
-      },
-      authorize: (...args) => receipts.authorize(...args),
-      record: (...args) => receipts.record(...args),
-      observe: (...args) => receipts.observe(...args),
-    },
+    receipts,
     check: (...args) => {
       checks += 1;
       return check(...args);
