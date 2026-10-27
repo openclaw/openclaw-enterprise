@@ -190,6 +190,17 @@ RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
       src/gateway/server.node-pairing-publication.test.ts src/gateway/node-registry-pairing.test.ts \
       src/infra/device-pairing-publication.test.ts src/infra/device-pairing-worker.test.ts
+# Explicit admin maintenance must use the Gateway remote workspace binding.
+COPY deploy/runtime/openclaw-remote-memory-index.patch /tmp/openclaw-remote-memory-index.patch
+RUN echo '1fff6f56035446c1e8d6850fe35f13fade80aa0f37721aba750d251a1c90a65c  /tmp/openclaw-remote-memory-index.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-remote-memory-index.patch
+COPY deploy/runtime/openclaw-remote-memory-index-regression.patch /tmp/openclaw-remote-memory-index-regression.patch
+RUN echo '677350786496edd3c87b9940fe3c00a1dca12e6c6680fbcd2ed49a66c293b31b  /tmp/openclaw-remote-memory-index-regression.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-remote-memory-index-regression.patch
+RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts \
+      extensions/memory-core/src/memory/manager-workspace-files.test.ts \
+      packages/memory-host-sdk/src/host/types.test.ts
 # The native node supervisor needs message delivery, not descriptor transfer.
 COPY deploy/runtime/openclaw-node-message-pipe.patch /tmp/openclaw-node-message-pipe.patch
 RUN echo '7f6048f3e8d1144dba7468458bde932c1c4abf9ab5daae11070bbddedb041ff6  /tmp/openclaw-node-message-pipe.patch' | sha256sum --check --strict \

@@ -193,6 +193,21 @@ writes private capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPA
 
 Embedded OpenClaw combines identity and model credentials. Scoped worker permissions deliver Secrets and enrollment; Gateways receive no controller or Harness Kubernetes credentials.
 
+Memory source files stay on the Harness workspace; the native Memory Core manager
+owns the Gateway's derived index. The runtime patch
+`deploy/runtime/openclaw-remote-memory-index.patch` registers `memory.index` with
+`operator.admin`, opens the native manager with the live remote workspace binding,
+and fences SQLite publication with the caller's current configuration and
+authority. A local-only CLI view cannot substitute for that remote binding.
+
+The optional `deploy/runtime/local-memory/Dockerfile` packages the unchanged
+native llama.cpp provider and immutable model assets. Its documented
+`models.providers.llama-cpp.localService` runs on Gateway loopback under native
+process lifecycle; `memory.search.provider: local` uses that provider without
+embedding credentials or public Gateway egress. This changes packaging and native
+Configuration, not workspace ownership or Driver interfaces. See
+[offline memory setup](../guides/deploy/local-memory.md).
+
 Sandbox receives projections and login mode through `HarnessWorkloadRequirements`; unsupported delivery fails.
 
 Every Compute Pod template, ordinary allow policy and Gateway/Harness peer requires

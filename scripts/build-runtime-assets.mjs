@@ -302,6 +302,8 @@ if (command === "inputs") {
           "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8",
         openclawPairingPublicationPatchSha256:
           "e8c5a8ba98bd28eb45fe0203da2839e31f6f8fde796c329079d164fb0348a9d6",
+        openclawRemoteMemoryIndexPatchSha256:
+          "1fff6f56035446c1e8d6850fe35f13fade80aa0f37721aba750d251a1c90a65c",
         openclawNodeMessagePipePatchSha256:
           "7f6048f3e8d1144dba7468458bde932c1c4abf9ab5daae11070bbddedb041ff6",
         artifactKind: "assembled-runtime-root",
