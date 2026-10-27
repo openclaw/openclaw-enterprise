@@ -1342,11 +1342,12 @@ doctor_memory_mib=512
 # or "unlimited". Inactive file cache counts as free, as in the kubelet's
 # working set. Fails when the container's cgroup files cannot be read.
 gateway_free_memory() {
-  local gateway_namespace=$1 gateway_name=$2 output=$3
+  local gateway_namespace=$1 gateway_name=$2 output=$3 free
+  local LC_ALL=C
   "${kube[@]}" --request-timeout=15s --namespace "$gateway_namespace" exec "$gateway_name" \
     --container gateway -- cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current \
-    /sys/fs/cgroup/memory.stat >"$output" 2>/dev/null || return 1
-  python3 - "$output" <<'PYTHON'
+    /sys/fs/cgroup/memory.stat </dev/null >"$output" 2>/dev/null || return 1
+  free=$(python3 - "$output" <<'PYTHON'
 import sys
 lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
 limit = lines[0].strip()
@@ -1355,6 +1356,10 @@ stat = dict(line.split(" ", 1) for line in lines[2:] if " " in line)
 working = current - int(stat.get("inactive_file", "0"))
 print("unlimited" if limit == "max" else max(0, (int(limit) - working) // 1048576))
 PYTHON
+  ) || return 1
+  # The value reaches shell arithmetic; accept only what the parser prints.
+  [[ "$free" =~ ^(0|[1-9][0-9]*|unlimited)$ ]] || return 1
+  printf '%s\n' "$free"
 }
 
 doctor_failed=0

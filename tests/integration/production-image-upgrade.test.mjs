@@ -397,6 +397,8 @@ esac
     completed.stdout,
     /runtime image; controller image remained unchanged and 1 running Agents selected new revisions/u,
   );
+  // This stand-in kubectl serves no cgroup files, so Doctor runs without the free-memory gate.
+  assert.match(completed.stderr, /running OpenClaw Doctor without checking its free memory/u);
   assert.equal((await readFile(readinessCounter, "utf8")).trim(), "2");
   assert.equal((await readFile(runtimeCountCounter, "utf8")).trim(), "3");
   assert.match(
