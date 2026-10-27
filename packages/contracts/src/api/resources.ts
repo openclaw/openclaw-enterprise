@@ -16,6 +16,7 @@ import {
   CredentialSourceReference,
   CredentialSourceSecrets,
   CredentialSourceType,
+  GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
@@ -391,6 +392,7 @@ export const AgentSchema = Type.Object(
     harnessAuth: Type.Union([HarnessAuthBindingSchema, Type.Null()]),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
+    gatewayManagedMode: GatewayManagedModeSchema,
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingSelectionsSchema),
@@ -1308,6 +1310,10 @@ export const AgentRevisionSchema = Type.Object(
     configurationKind: ConfigurationKindSchema,
     configurationGeneration: ConfigurationGeneration,
     configuration: ConfigurationValues,
+    gatewayManagedMode: Type.Boolean({
+      description:
+        "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
+    }),
     harness: Type.Object(
       {
         id: Type.String({ minLength: 1 }),

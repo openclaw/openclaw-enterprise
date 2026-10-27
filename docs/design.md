@@ -263,6 +263,7 @@ supported capabilities:
 - [Agent gateways and deployment](design/workloads.md)
 - [Drivers and Backends](design/drivers.md)
 - [Platform safeguards](design/safeguards.md)
+- [Credential Proxy](design/credential-proxy.md)
 
 ## Related Documentation
 

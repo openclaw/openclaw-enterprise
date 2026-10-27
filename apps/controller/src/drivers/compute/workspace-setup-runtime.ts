@@ -89,10 +89,12 @@ export function requireWorkspaceSetupConfiguration(
 }
 
 /**
- * The setup runner's exit status for a refusal no retry can change; any other failure exits 1.
+ * A refusal no retry can change. Other statuses remain retryable diagnostics.
  * Kubernetes Compute reports it as WORKSPACE_SETUP_REFUSED (finding 1677).
  */
 export const WORKSPACE_SETUP_REFUSED_EXIT_STATUS = 2;
+export const WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS = 3;
+export const WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS = 4;
 
 /** Shared, non-executing setup entrypoint. Drivers own private delivery and exclusive startup. */
 export const WORKSPACE_SETUP_RUNTIME = String.raw`
@@ -107,6 +109,7 @@ const markerName = ".oce-workspace-setup.json";
 // A refusal: the delivery, the image's defaults or the workspace's own state disagree, so no
 // retry can change the outcome. Any other error (native setup, I/O) may pass on a retry.
 class Refusal extends Error {}
+let failureExitStatus = 1;
 function fail() { throw new Refusal("WORKSPACE_SETUP_FAILED"); }
 function inspect(file) {
   try { return fs.lstatSync(file); }
@@ -220,7 +223,12 @@ function main() {
           env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
           stdio: ["ignore", "pipe", "pipe"], timeout: 120000, maxBuffer: 1048576,
         });
-        if (result.error || result.status !== 0) throw new Error("WORKSPACE_SETUP_FAILED");
+        if (result.error || result.status !== 0) {
+          failureExitStatus = result.error?.code === "ETIMEDOUT"
+            ? ${WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS}
+            : ${WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS};
+          throw new Error("WORKSPACE_SETUP_FAILED");
+        }
       };
       nativeSetup();
       for (const [name, value] of Object.entries(files)) {
@@ -248,7 +256,7 @@ function main() {
 try { main(); }
 catch (error) {
   process.stderr.write("WORKSPACE_SETUP_FAILED\n");
-  process.exitCode = error instanceof Refusal ? ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS} : 1;
+  process.exitCode = error instanceof Refusal ? ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS} : failureExitStatus;
 }
 `;
 

@@ -100,3 +100,24 @@ func TestAgentLogsHelpNamesTheOutputFormatsItAccepts(t *testing.T) {
 		t.Fatalf("agent list help = %q, %v", out, err)
 	}
 }
+
+// An update may name gatewayManagedMode instead of configurationId, and changing it needs a grant
+// the other fields do not (finding 2691).
+func TestAgentUpdateHelpNamesGatewayManagedModeAndItsGrant(t *testing.T) {
+	out, _, err := runHelp(t, "agent", "update", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := strings.Join(strings.Fields(out), " ")
+	for _, want := range []string{
+		"Each update names configurationId or gatewayManagedMode (or both)",
+		"Changing gatewayManagedMode needs Installation administer.",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("agent update help does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(flat, "required in every update") {
+		t.Fatalf("agent update help still requires configurationId in every update:\n%s", out)
+	}
+}

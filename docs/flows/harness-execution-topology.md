@@ -1,14 +1,14 @@
 ---
 created: 2026-08-21
-updated: 2026-10-23
-last_updated_session: agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68
+updated: 2026-10-26
+last_updated_session: authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba
 ---
 
 # Harness Execution Topology Flow
 
 ## Overview
 
-Deployment freezes Harness policy, placement and authentication. Compute prepares
+Deployment freezes Gateway settings, Harness policy, placement and authentication. Compute prepares
 workloads, publishes guarded routes and retires predecessors before activation audit.
 
 ## Entry Points
@@ -26,7 +26,7 @@ workloads, publishes guarded routes and retires predecessors before activation a
 ```mermaid
 graph TD
   A["Authorize Agent and Configuration"] --> B["Resolve runtime, placement and native HTTP transport"]
-  B --> C["Freeze configuration, harness identity, and harness authentication binding"]
+  B --> C["Freeze configuration, Gateway managed mode, Harness identity and authentication"]
   C --> D["Claim and reauthorize version work"]
   D --> E{"Approved topology"}
   E -->|embedded OpenClaw| F["Create gateway or stage replacement"]
@@ -52,7 +52,7 @@ graph TD
 
 ## Execution Trace
 
-### 1. Resolve and freeze the native harness
+### 1. Freeze Gateway and Harness settings
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
@@ -64,7 +64,7 @@ modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
 rejects `gateway.tls.enabled: true` before version creation and preparation:
 Docker, SSH and Kubernetes require native HTTP.
-The saved version keeps native configuration, approved Harness identity/version, mode,
+The saved version keeps [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode), native configuration, approved Harness identity/version, mode,
 Compute selection, and Agent ServicePrincipal unchanged. Production admits approved
 `openclaw`/`embedded` and `codex`/`dedicated`, and `openclaw`/`dedicated` only when
 the selected SandboxDriver provisions Harnesses with networking, filesystem, and
@@ -79,7 +79,9 @@ contains only its OCC identity, credential kind, and opaque Secret reference.
 `apps/controller/src/worker.ts:ControllerWorker`
 
 The worker claims version work, rechecks actor/ownership and the frozen Harness,
-then calls `ComputeDriver.prepareRevision`.
+then calls `ComputeDriver.prepareRevision`. `apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
+supplies native administration controls to the Gateway child after OCE setup.
+Dedicated Gateway launchers apply the model tool policy in both administration modes.
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
@@ -91,7 +93,7 @@ The [Docker gateway authentication reference](../reference/drivers/docker-comput
 owns mode and password rules.
 
 Kubernetes supports managed bindings.
-SSH supports `{ "method": "runtime" }` only for embedded OpenClaw: operator
+SSH supports `{ "method": "runtime" }` only for unmanaged embedded OpenClaw: operator
 credentials remain on the host and OCC checks gateway readiness without model
 validation. See the [SSH flow](pr-24-ssh-compute.md).
 
@@ -230,24 +232,28 @@ to report its assigned workspace node: a 20-second budget per version and node a
 activation retries, then one status read per retry. That wait and the pairing wait end
 early when other Work is claimable.
 
-On version stop, the Driver stops the Gateway within the pinned runtime's 330-second
-budget and waits for Pod disappearance before stopping the Harness, which remains
-available for active work. Idle or pre-OpenClaw shutdown (wrappers run under `tini`)
-completes promptly. Forced termination can delay the successor until the persistent
-owner lease expires.
+On version stop, the Driver gives the Gateway up to 330 seconds to drain. It
+waits for the Gateway Pod to disappear before stopping the Harness, which can
+finish active work. Idle Gateways and wrappers that have yet to start OpenClaw
+exit promptly. After forced termination, the next Gateway needs proof that the
+previous owner stopped before it can take over retained state.
+[Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
+describes when an operator must confirm termination.
 
-Both Gateway modes persist SQLite, media, linked worktrees and common Git metadata
+Both Gateway modes persist SQLite, client credentials, media, linked worktrees and common Git metadata
 on their private claim, preserving session paths across replacement. Embedded Gateways
 retain their default workspace; dedicated Harness claims retain node identity. Claims
 precede Pods for `WaitForFirstConsumer`; [Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 defines initialization and mounts.
 
-Workspace-file access uses the enrolled Harness node; Gateway and Harness share
-no workspace, session, skill or image mounts. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+Workspace-file access uses the enrolled Harness node. The Gateway and Harness
+share no workspace, session, skill or image mounts. Codex gets its Harness path
+before startup. Pairing enables file transfer.
+The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 covers per-image assets and generated-image return. The node host stores bundles
 in its state and workspaces below `/home/node/workspace`, separate from gateway state,
-`CODEX_HOME` and credentials. Restart republishes image-owned assets and reconnects
-with the paired identity; readiness checks node identity. Compile cache and model-probe
+`CODEX_HOME` and credentials. Restart republishes image-owned assets and reconnects;
+readiness checks the paired identity. Compile cache and model-probe
 state remain in node state and `TMPDIR`, which a Sandbox Driver can grant.
 
 On stop or retirement, the selected Sandbox Driver cleans up after Compute stops an
@@ -304,6 +310,10 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
+
+- 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
 
 - 2026-10-23 15:51: Rebase the native endpoint trace onto current lifecycle behavior; preserve older entries in linked history. (agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68 - 0b326680a7a388de9331c2ae9f0a7cadf2788fe7)
 

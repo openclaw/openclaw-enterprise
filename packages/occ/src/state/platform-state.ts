@@ -206,7 +206,9 @@ export interface AgentReadRepository {
 }
 
 export interface AgentRepository extends AgentReadRepository {
-  createAgent(agent: Agent): Promise<Readonly<Agent>>;
+  createAgent(
+    agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
+  ): Promise<Readonly<Agent>>;
   setSandboxPolicyEditing(
     namespaceId: string,
     agentId: string,
@@ -225,6 +227,7 @@ export interface AgentRepository extends AgentReadRepository {
     pluginApprovers?: PluginApprovers | null,
     repositoryAccess?: RepositoryAccess | null,
     credentialSources?: readonly AgentCredentialSourceBinding[],
+    gatewayManagedMode?: boolean,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -2780,6 +2783,7 @@ function repositories(
       } = agent;
       const saved = immutableCopy({
         ...withoutPlugins,
+        gatewayManagedMode: agent.gatewayManagedMode ?? true,
         ...(plugins === undefined ? {} : { plugins }),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -2861,6 +2865,7 @@ function repositories(
       nextPluginApprovers,
       nextRepositoryAccess,
       nextCredentialSources,
+      gatewayManagedMode,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -2930,6 +2935,7 @@ function repositories(
         configurationId,
         backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
+        gatewayManagedMode: gatewayManagedMode ?? current.gatewayManagedMode,
         harnessAuth: association,
         ...(agentCredentialSources === undefined || agentCredentialSources.length === 0
           ? {}
@@ -3077,6 +3083,7 @@ function repositories(
         owner === undefined ||
         owner.servicePrincipalId !== revision.servicePrincipalId ||
         owner.backendId !== revision.backendId ||
+        revision.gatewayManagedMode !== owner.gatewayManagedMode ||
         !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
         !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
       ) {

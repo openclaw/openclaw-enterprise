@@ -24,11 +24,9 @@ concurrency:
 
 env:
   CI: "1"
-  NODE_VERSION: "24.16.0"
-  # CI Impact and CI Required only run the impact and aggregation scripts, so
-  # they take the runner's cached Node 24 instead of downloading NODE_VERSION
-  # (about 5 s each, on the critical path at both ends of the run).
-  GATE_NODE_VERSION: "24"
+  NODE_VERSION: "24.22.1"
+  # Metadata gates use the same patched runtime as the other CI lanes.
+  GATE_NODE_VERSION: "24.22.1"
 
 jobs:
   impact:

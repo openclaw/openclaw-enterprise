@@ -21,12 +21,89 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from 
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { productionGatewayMemoryLimitGi } from "./kubernetes-real.mjs";
 import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 
 export const execute = promisify(execFile);
 export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 export const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 export const runtimeImageModel = defaultAgentModel;
+// The production Gateway memory limit (productionGatewayMemoryLimitGi), with
+// swap capped at the same value. Docker's `--memory` alone allows as much again
+// in swap, so a Gateway that outgrew its limit passed on CI runners, which swap,
+// and was OOM-killed on a host without swap, as on a typical Kubernetes node
+// (finding 2700).
+const gatewayMemoryLimitBytes = productionGatewayMemoryLimitGi * 1024 ** 3;
+export const gatewayMemoryArguments = [
+  "--memory",
+  String(gatewayMemoryLimitBytes),
+  "--memory-swap",
+  String(gatewayMemoryLimitBytes),
+];
+// The most an embedded Gateway's cgroup may have held (memory.peak) through its
+// first chat turn: the limit above less about 20% headroom. At the OpenClaw pin
+// of #2982 the stand-in provider's first turn peaked at 2.53 to 2.78 GiB
+// (finding 2700). A failure means the Gateway grew toward its production limit:
+// re-measure the first turn and update the documented Gateway sizing (the
+// production example, the profile renderer, installation-profiles.md and this
+// limit) before raising the budget.
+export const gatewayFirstTurnMemoryBudgetBytes = Math.round(3.2 * 1024 ** 3);
+
+const gibibytes = (bytes) => `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+
+// Reads a running Gateway container's cgroup v2 memory.peak (Linux 5.19 and
+// later): the most the container held since it started, including the page
+// cache and tmpfs it is charged for. Returns `{ unavailable }` with the reason
+// when the host cannot report it.
+export async function gatewayMemoryPeak(containerName) {
+  let stdout;
+  try {
+    ({ stdout } = await runDocker([
+      "exec",
+      containerName,
+      "cat",
+      "/sys/fs/cgroup/memory.max",
+      "/sys/fs/cgroup/memory.peak",
+    ]));
+  } catch (error) {
+    return {
+      unavailable: `the container's cgroup v2 memory.max and memory.peak are unreadable: ${error.message.slice(0, 300)}`,
+    };
+  }
+  const [max, peak] = stdout.trim().split("\n");
+  // In the host's cgroup namespace /sys/fs/cgroup is another cgroup; only the
+  // container's own cgroup carries the limit this file sets.
+  if (Number(max) !== gatewayMemoryLimitBytes) {
+    return {
+      unavailable: `/sys/fs/cgroup is not the Gateway container's cgroup: memory.max is ${max}, not ${gatewayMemoryLimitBytes}`,
+    };
+  }
+  return { peakBytes: Number(peak) };
+}
+
+// Checks a peak from gatewayMemoryPeak against the first-turn budget in its own
+// subtest, which reports a host without memory.peak as skipped, not passed.
+export async function assertGatewayFirstTurnMemory(t, measurement) {
+  await t.test("the Gateway's first turn stays within its memory budget", (subtest) => {
+    if (measurement.unavailable !== undefined) {
+      subtest.skip(
+        `memory.peak is unavailable, so the budget is unchecked: ${measurement.unavailable}`,
+      );
+      return;
+    }
+    const { peakBytes } = measurement;
+    assert.ok(
+      peakBytes <= gatewayFirstTurnMemoryBudgetBytes,
+      `the Gateway's memory.peak through its first turn is ${gibibytes(peakBytes)}, above its ` +
+        `${gibibytes(gatewayFirstTurnMemoryBudgetBytes)} budget under a ${gibibytes(gatewayMemoryLimitBytes)} limit. ` +
+        "If the OpenClaw pin moved, re-measure the first turn without swap (finding 2700) and update the " +
+        "documented Gateway sizing (deploy/examples/production/installation.yaml, " +
+        "scripts/render-installation-profile.mjs, docs/guides/deploy/installation-profiles.md) and this " +
+        "test's limit before raising gatewayFirstTurnMemoryBudgetBytes.",
+    );
+    subtest.diagnostic(`Gateway memory.peak through the first turn: ${gibibytes(peakBytes)}`);
+  });
+}
 export const imageTestOptions =
   image === undefined
     ? {
@@ -314,6 +391,52 @@ export async function waitForGatewayReady(containerName, readinessAttempts = 60)
   });
 }
 
+// The source of a request (see readinessProbe) that answers 200 while a matching
+// OpenClaw process runs in the container, else 503. Launchers start
+// `/app/openclaw.mjs gateway`; OpenClaw then retitles itself "openclaw" (which its
+// other commands share) and, once its run loop starts, "openclaw-gateway". An
+// idle respawn parent keeps the original argv.
+function openClawProcessRequest(match) {
+  return `async () => {
+  const fs = require("node:fs");
+  const launched = ["/app/openclaw.mjs", "gateway", ""].join(String.fromCharCode(0));
+  const match = ${match};
+  for (const pid of fs.readdirSync("/proc")) {
+    if (!/^[0-9]+$/.test(pid)) continue;
+    let cmdline;
+    try {
+      cmdline = fs.readFileSync("/proc/" + pid + "/cmdline", "utf8");
+    } catch {
+      continue;
+    }
+    if (match(cmdline, launched)) return 200;
+  }
+  return 503;
+}`;
+}
+
+// 200 once a launcher has spawned the OpenClaw Gateway. Both launchers spawn it
+// only after their pre-launch steps (state migration decision, approver and tool
+// policy checks), so a case that asserts only those steps can stop there instead
+// of paying for the full start: about 21 of a start's 24 CPU-seconds to /readyz
+// are OpenClaw's own (4 CPUs, 2026-10-27).
+export const openClawGatewaySpawnedRequest = openClawProcessRequest(
+  '(cmdline, launched) => cmdline.includes(launched) || cmdline.startsWith("openclaw-gateway")',
+);
+
+// 200 while any OpenClaw Gateway process, or an OpenClaw command, still runs.
+export const openClawProcessRunningRequest = openClawProcessRequest(
+  '(cmdline, launched) => cmdline.includes(launched) || cmdline.startsWith("openclaw")',
+);
+
+export async function waitForGatewaySpawn(containerName) {
+  return waitForContainerReady(containerName, {
+    label: "OpenClaw Gateway spawn",
+    request: openClawGatewaySpawnedRequest,
+    timeoutMs: cpuScaledImageTimeoutMs(60_000),
+  });
+}
+
 // Waits until `request` (see readinessProbe) answers 2xx inside the running
 // container, failing early when the container stops.
 export async function waitForContainerReady(containerName, { label, request, timeoutMs }) {
@@ -347,6 +470,10 @@ export async function waitForContainerReady(containerName, { label, request, tim
   }
 }
 
+// `openclaw plugins list --json` builds its own plugin registry snapshot: about 3 CPU-seconds
+// and 2.4-9.1 s beside a just-ready Gateway on 1, 2 or 4 shared CPUs (measured 2026-10). On a
+// CI runner busy with four image files it still once passed runDocker's 60 s default, so only
+// cases that assert on the list run it (runGatewaySmoke's collectPlugins).
 export async function listGatewayPlugins(containerName) {
   const { stdout } = await runDocker([
     "exec",
@@ -388,7 +515,19 @@ export function jsonLogEntries(output) {
 export async function gatewayStateVolume(t, mountPath, { seed, seedVolumes = [] } = {}) {
   const volume = `oce-runtime-image-state-${randomBytes(6).toString("hex")}`;
   await runDocker(["volume", "create", volume]);
-  t.after(() => runDocker(["volume", "rm", "-f", volume]).catch(() => {}));
+  // node:test runs `after` hooks in registration order, so this one runs before
+  // the hooks that remove the containers started on the volume later, and Docker
+  // refuses to remove a volume in use. Remove those containers first.
+  t.after(async () => {
+    const users = await runDocker(["ps", "-aq", "--filter", `volume=${volume}`]).catch(
+      () => undefined,
+    );
+    const ids = users?.stdout.split(/\s+/).filter(Boolean) ?? [];
+    if (ids.length > 0) {
+      await runDocker(["rm", "-f", ...ids]).catch(() => {});
+    }
+    await runDocker(["volume", "rm", "-f", volume]).catch(() => {});
+  });
   // As root, like the Docker Driver's workspace setup: a new volume mounted
   // below the image's home can be root-owned.
   await runDocker([
@@ -412,7 +551,7 @@ export async function gatewayStateVolume(t, mountPath, { seed, seedVolumes = [] 
 
 export async function runGatewaySmoke(t, harnessId, options = {}) {
   const {
-    collectPlugins = harnessId === "codex",
+    collectPlugins = false,
     configuration = createAdmittedRuntimeImageConfiguration(harnessId, {
       enableSlack: harnessId === "openclaw",
     }),
@@ -423,6 +562,8 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
     tmpfs = ["/home/node:size=1024m,uid=1000,gid=1000,mode=700"],
     volumes = [],
     network = "none",
+    // "ready" waits for /readyz; "spawned" only until OpenClaw starts (waitForGatewaySpawn).
+    until = "ready",
     waitUntilReady = true,
     withAppServer = true,
   } = options;
@@ -478,7 +619,11 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
   }
 
   try {
-    await waitForGatewayReady(containerName, readinessAttempts);
+    if (until === "spawned") {
+      await waitForGatewaySpawn(containerName);
+    } else {
+      await waitForGatewayReady(containerName, readinessAttempts);
+    }
     const pluginList = collectPlugins ? await listGatewayPlugins(containerName) : undefined;
     const logs = await runDocker(["logs", containerName]);
     return {

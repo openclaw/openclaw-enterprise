@@ -1,15 +1,17 @@
 ARG OPENCLAW_COMMIT
 ARG OPENCLAW_SOURCE_SHA256
 ARG OPENCLAW_BUILD_TIMESTAMP
-ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
-ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+ARG NODE_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a
+ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 
 # Refresh installed Debian packages; the pinned upstream images can predate
 # security updates. Keep the full toolchain out of the final runtime.
 FROM ${NODE_BASE_IMAGE} AS node-build-base
+RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
+RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # The credential builds need only Node and pnpm. The slim runtime base is
@@ -35,7 +37,7 @@ RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
 # the controller's compiler options and turns off only project build outputs
 # (declarations, build info) and the type check; Static Checks and the service
 # build below check types. The emitted files match the full build's
-# (tests/integration/repository-credentials-package.test.mjs).
+# (tests/integration/repository-credentials-package.test.ts).
 FROM repository-credentials-deps AS repository-client-build
 COPY tsconfig.base.json ./
 COPY apps/controller/tsconfig.json apps/controller/tsconfig.json
@@ -109,30 +111,16 @@ RUN --mount=type=secret,id=build-ca,required=false \
 # which writes provenance; runtime-assets.test.mjs compares the two.
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
-RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
+RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-read-only-paths.patch
-# TODO: Remove when OpenClaw preserves on-request for plugins that use MCP elicitation.
-COPY deploy/runtime/openclaw-codex-preserve-on-request.patch /tmp/openclaw-codex-preserve-on-request.patch
-RUN echo 'ef50d1e635be0a9afd970ee1ea95c3468c307759fedd3783180ac2a676fa015b  /tmp/openclaw-codex-preserve-on-request.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-codex-preserve-on-request.patch
-# TODO: Remove this bridge patch when OpenClaw `connect --ephemeral` accepts an expired
-# replayed setup code for a node whose saved device token can reconnect.
-COPY deploy/runtime/openclaw-connect-ephemeral-expired-setup.patch /tmp/openclaw-connect-ephemeral-expired-setup.patch
-RUN echo '906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2  /tmp/openclaw-connect-ephemeral-expired-setup.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-connect-ephemeral-expired-setup.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
-RUN echo 'bf0e9cd6d1d2420f42a33af130d534e1de6d1fe17701517c676824f5e80ec931  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+RUN echo '7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 # TODO: Remove this dependency pin when the selected OpenClaw source supports plugin defaults.
 COPY deploy/runtime/stock-codex-0.163.0-alpha.2-dependency-pin.patch /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
-RUN echo '7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9  /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch' | sha256sum --check --strict \
+RUN echo 'd7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119  /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch' | sha256sum --check --strict \
     && git apply --unidiff-zero /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
-# TODO: Remove this bridge when upstream retains the original session-create
-# authority through detached required-worker placement setup.
-COPY deploy/runtime/openclaw-required-worker-authority.patch /tmp/openclaw-required-worker-authority.patch
-RUN echo 'd07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8  /tmp/openclaw-required-worker-authority.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-required-worker-authority.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
@@ -163,7 +151,7 @@ ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./
 
-FROM openclaw-dependency-inputs AS openclaw-build
+FROM openclaw-dependency-inputs AS openclaw-patched-source
 # Keep package-store downloads out of retained layers; installed files remain.
 # install-attempts.sh bounds each attempt, so one slow download cannot hold the
 # build (pnpm's own timeout ignores a download that still trickles).
@@ -183,16 +171,25 @@ RUN --mount=type=secret,id=build-ca,required=false \
     rm -rf /tmp/pnpm-store
 COPY --from=openclaw-source /source/ ./
 # Exercise the original caller through the public RPC before and after the
-# placement acknowledgment, including revocation, against this exact bridge.
+# placement acknowledgment, including revocation, against this exact source.
 COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo '1998cdd2321a68f97afb96470dcfb989a1460484c831b113b3af22dcabbf6189  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
+RUN echo '4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
-RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo '964c500f981f343d8c131a213aad65ea47e2de4a9a5d11dbb57c3f30bead7065  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+RUN echo '48dbcb32c453861b8d8facf9d1fd62003a994c234289270727eb41763b8b8d9c  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
+# The runtime needs supervised recovery across private PID namespaces. Native
+# lock reinspection and custody still guard every destructive operation.
+COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
+RUN echo '570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-terminated-gateway-namespace.patch
+
+# Run the bridge tests alongside the build using the same patched source.
+# Packaging mounts this stage so a failed test still blocks the runtime image.
+FROM openclaw-patched-source AS openclaw-bridge-tests
+RUN --network=none OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts
 # Type-check the two UI test graphs touched by the bridge. The upstream runner
 # generates its database types and compiler cache under .artifacts.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
@@ -201,7 +198,14 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
 # Vite server on localhost, which Buildah's network-less RUN cannot resolve.
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
-    src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts
+    src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts
+# The test runner restores its cache by renaming directories. A fresh mount
+# keeps those renames off the previous test layer.
+RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+    OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/infra/gateway-lock-recovery.test.ts
+
+FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
 # separate when a plugin and core require different versions.
 RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \
@@ -210,6 +214,8 @@ RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \
     && pnpm_config_verify_deps_before_run=false pnpm ui:build
 
 FROM openclaw-dependency-inputs AS openclaw-production-deps
+# Build asset hooks need all plugin dependencies; the shipped runtime keeps only
+# the selected plugins and the upstream required bundled dependencies.
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
@@ -218,8 +224,12 @@ RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
     corepack enable; \
+    set -- --filter . --filter ./ui --filter './packages/*'; \
+    while IFS= read -r plugin; do \
+      set -- "$@" --filter "./extensions/$plugin"; \
+    done < openclaw-workspace-plugin-dirs; \
     sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
-    pnpm install --frozen-lockfile --prod --store-dir=/tmp/pnpm-store \
+    pnpm install --frozen-lockfile --prod "$@" --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
       --config.supportedArchitectures.libc=glibc; \
@@ -244,6 +254,8 @@ RUN node scripts/postinstall-bundled-plugins.mjs \
       rmdir "$temporary"; \
     fi \
     && rm -rf node_modules/openclaw node_modules/.bin/openclaw node_modules/.pnpm/openclaw@*/node_modules/openclaw \
+    # The sealed recovery entries inline fs-safe's relative helper lookup.
+    && cp node_modules/@openclaw/fs-safe/dist/windows-security-helper.exe dist/windows-security-helper.exe \
     && node scripts/check-package-dist-imports.mjs /source \
     && node scripts/docker/verify-fs-safe-native.mjs --package-root /source --mode require
 # Bundled plugin chunks also live directly under dist and resolve dependencies
@@ -268,7 +280,11 @@ COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
 COPY --from=openclaw-source /tmp/openclaw-source.json /tmp/openclaw-source.json
 RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
     --mount=type=bind,from=openclaw-build,source=/source/node_modules,target=/verification/node_modules \
-    node /tmp/build-runtime-assets.mjs package /source /out /tmp/openclaw-source.json \
+    --mount=type=bind,from=openclaw-bridge-tests,target=/verification/bridge-tests \
+    node scripts/docker/copy-bootstrap-scripts.mjs /tmp/openclaw-runtime-bootstrap \
+    && rm -rf scripts \
+    && mv /tmp/openclaw-runtime-bootstrap/scripts scripts \
+    && node /tmp/build-runtime-assets.mjs package /source /out /tmp/openclaw-source.json \
     && node /verification/scripts/check-package-dist-imports.mjs /source
 
 FROM node-runtime-base AS runtime
@@ -283,7 +299,7 @@ ENV PATH=/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bi
 
 WORKDIR /app
 
-RUN node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 16) throw new Error(`OpenClaw Enterprise runtime images require Node.js 24.16+; found ${process.version}.`);'
+RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 
 RUN apt-get update && apt-get install -y --no-install-recommends tini git ca-certificates curl openssh-client libstdc++6 libgomp1 python3 procps && rm -rf /var/lib/apt/lists/*
 # Version checks use throwaway state directories: gh writes a random device ID
@@ -296,15 +312,16 @@ RUN --mount=type=secret,id=build-ca,required=false \
     architecture="${TARGETARCH:-amd64}"; \
     case "$architecture" in amd64|arm64) ;; *) exit 1 ;; esac; \
     cd /tmp; \
-    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_${architecture}.tar.gz"; \
-    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_checksums.txt"; \
-    grep " gh_2.100.0_linux_${architecture}.tar.gz$" gh_2.100.0_checksums.txt | sha256sum --check --strict; \
-    tar -xzf "gh_2.100.0_linux_${architecture}.tar.gz"; \
-    install -m 0755 "gh_2.100.0_linux_${architecture}/bin/gh" /usr/local/bin/gh; \
-    rm -rf /tmp/gh_2.100.0*; \
+    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_linux_${architecture}.tar.gz"; \
+    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_checksums.txt"; \
+    echo '414d6009dc7f9f936d70831af818d1a32aa0ff07a77646861efd207356a36b2d  gh_2.103.2_checksums.txt' | sha256sum --check --strict; \
+    grep " gh_2.103.2_linux_${architecture}.tar.gz$" gh_2.103.2_checksums.txt | sha256sum --check --strict; \
+    tar -xzf "gh_2.103.2_linux_${architecture}.tar.gz"; \
+    install -m 0755 "gh_2.103.2_linux_${architecture}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh_2.103.2*; \
     /usr/bin/git --version; \
     gh_state="$(mktemp -d)"; \
-    XDG_STATE_HOME="$gh_state" /usr/local/bin/gh --version | grep '^gh version 2.100.0 '; \
+    XDG_STATE_HOME="$gh_state" /usr/local/bin/gh --version | grep '^gh version 2.103.2 '; \
     rm -rf "$gh_state"
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
@@ -337,6 +354,8 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && test "$(stat -c '%U:%G:%a' /home/node/.codex/generated_images)" = "node:node:700" \
   && node /app/openclaw.mjs --version \
   && node -e 'if (typeof require("ws") !== "function") throw new Error("Runtime WebSocket dependency unavailable")' \
+  && (cd /app/node_modules/openclaw && node --input-type=module -e \
+    'import { isSupported } from "@openclaw/proc-safe/reaper"; if (!isSupported()) throw new Error("Runtime native child reaping unavailable; install the locked proc-safe platform package");') \
   && codex_home="$(mktemp -d)" \
   && test "$(CODEX_HOME="$codex_home" codex --version)" = "codex-cli ${OPENAI_CODEX_VERSION}" \
   && rm -rf "$codex_home" \

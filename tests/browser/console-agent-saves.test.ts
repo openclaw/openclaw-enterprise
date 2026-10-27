@@ -2380,7 +2380,9 @@ test("Edit current Configuration opens the draft's Configuration editor in view 
   // Unsaved edits keep the draft in its editor: going to v1 and back through Edit current
   // Configuration brings that editor, with the edits, into view and focus.
   await editor.fill(`${await editor.inputValue()}\n`);
-  await page.locator('.revision-selector [aria-label$=", current version"]').click();
+  await page
+    .getByRole("combobox", { name: "Viewing version", exact: true })
+    .selectOption(revision.id);
   await page.waitForURL((next) => next.searchParams.get("revision") === revision.id);
   await start.scrollIntoViewIfNeeded();
   await start.click();

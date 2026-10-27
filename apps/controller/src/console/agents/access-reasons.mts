@@ -145,7 +145,20 @@ export const LOG_TEXT_GRANT = "Agent read_logs (or Agent administer)";
 export const LOG_TEXT_DENIED = `Log text requires ${LOG_TEXT_GRANT} on this Agent. ${askAdministratorTo("grant it")}`;
 // Runtime status authorizes Agent operate and read plus AgentRevision read on the version. The
 // log pane says what log text needs in its own words, so this names only status (finding D763).
-export const RUNTIME_STATUS_DENIED = `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. ${askAdministratorTo("grant them")}`;
+// It names only the grant the caller's answers show missing: a reader who can read the version
+// is not asked for AgentRevision read (finding D753). An unknown answer names both.
+export function runtimeStatusDenied(grants: {
+  operate?: boolean | undefined;
+  versionRead?: boolean | undefined;
+}) {
+  if (grants.operate === false && grants.versionRead === true) {
+    return `Runtime status requires Agent operate on this Agent. ${askAdministratorTo("grant it")}`;
+  }
+  if (grants.operate === true && grants.versionRead === false) {
+    return `Runtime status requires AgentRevision read on this version. ${askAdministratorTo("grant it")}`;
+  }
+  return `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. ${askAdministratorTo("grant them")}`;
+}
 
 // Reading a workspace file authorizes Agent read; saving one and running diagnostics, Agent
 // operate.

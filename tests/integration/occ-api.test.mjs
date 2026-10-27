@@ -55,6 +55,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
@@ -3357,6 +3358,56 @@ test("Installation deployment inventory fails closed on incomplete authorization
   const incomplete = await controller.request("GET", inventoryPath);
   assert.equal(incomplete.status, 503);
   assert.equal(incomplete.body.error.code, "DEPENDENCY_UNAVAILABLE");
+});
+
+test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
+  const controller = await configuredController({ secretDriver: createTestSecretDriver() });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "slack-terminal-cursor");
+  const { fixture } = controller;
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "directory-bot", value: "xoxb-directory-fixture" },
+  });
+  assert.equal(secret.status, 201);
+  let terminalCursor = null;
+  const driver = new SlackChannelDriver(async (url) => {
+    const request = new URL(url);
+    if (request.pathname === "/api/auth.test") {
+      return Response.json({ ok: true, bot_id: "BFIXTURE", team_id: "TWORKSPACE" });
+    }
+    assert.equal(request.pathname, "/api/conversations.list");
+    const secondPage = request.searchParams.has("cursor");
+    if (secondPage) {
+      assert.equal(request.searchParams.get("cursor"), "page-two");
+    }
+    return Response.json({
+      ok: true,
+      channels: [
+        secondPage ? { id: "CSECOND", name: "ann-second" } : { id: "CFIRST", name: "ann-first" },
+      ],
+      response_metadata: { next_cursor: secondPage ? terminalCursor : "page-two" },
+    });
+  });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("channel", driver.id);
+  const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
+  const body = { secretId: secret.data.id, kind: "channels", query: "ann" };
+  const found = await controller.request("POST", path, { body });
+  assert.equal(found.status, 200, JSON.stringify(found.body));
+  assert.deepEqual(found.data, {
+    workspaceId: "TWORKSPACE",
+    candidates: [
+      { id: "CFIRST", name: "ann-first" },
+      { id: "CSECOND", name: "ann-second" },
+    ],
+    complete: true,
+  });
+  // Accepting the documented null sentinel must not accept arbitrary cursor types.
+  terminalCursor = 7;
+  const invalid = await controller.request("POST", path, { body });
+  assert.equal(invalid.status, 503);
+  assert.equal(invalid.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
 });
 
 test("Channel directory lookup checks the exact edit target and Secret before and after reading", async () => {
@@ -7054,6 +7105,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
     "configurationId",
     "configurationKind",
     "createdAt",
+    "gatewayManagedMode",
     "harness",
     "harnessAuth",
     "id",
@@ -7065,7 +7117,10 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.equal(readyDeployment.data.configurationGeneration, 1);
   assert.deepEqual(
     readyDeployment.data.configuration,
-    admitLoggingConfiguration({ model: "first", temperature: "0" }, "info"),
+    admitLoggingConfiguration(
+      servedAs({ model: "first", temperature: "0" }, agentA.data.name),
+      "info",
+    ),
   );
   assert.deepEqual(readyDeployment.data.harness, {
     id: "openclaw",
@@ -7107,7 +7162,10 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.equal(nextDeployment.data.revision, 2);
   assert.deepEqual(
     nextDeployment.data.configuration,
-    admitLoggingConfiguration({ model: "second", temperature: "1" }, "info"),
+    admitLoggingConfiguration(
+      servedAs({ model: "second", temperature: "1" }, agentA.data.name),
+      "info",
+    ),
   );
   const admittedRevisions = await injectedRequest(
     fixture.app,
@@ -7870,7 +7928,7 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
   assertOnlyDefaultNamespace(stillUnchanged);
 });
 
-test("runtime auth admits SSH revisions without source permissions but retains deployment authorization and exact grammar", async () => {
+test("SSH Compute refuses managed mode at save and deploy and validates runtime authentication and deployment authorization", async () => {
   const computeDriver = new SshComputeDriver({
     ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
     hosts: { runtime: { address: "127.0.0.1", user: "root" } },
@@ -7931,7 +7989,46 @@ test("runtime auth admits SSH revisions without source permissions but retains d
   });
   assert.equal(created.status, 201);
   assert.deepEqual(created.data.harnessAuth, { method: "runtime" });
+  // SSH Compute cannot enforce managed mode, so a new Agent defaults to off (finding 2676).
+  assert.equal(created.data.gatewayManagedMode, false);
   const path = `${collection}/${created.data.id}`;
+  const unsupported =
+    "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
+  // Asking for managed mode fails at save and in the create preflight, not at the next deploy.
+  for (const [method, target, body] of [
+    [
+      "POST",
+      collection,
+      { name: "Managed SSH Agent", configurationId: configuration.id, gatewayManagedMode: true },
+    ],
+    [
+      "POST",
+      `${collection}/validate`,
+      { configuration: { kind: "agent", values: configuration.values }, gatewayManagedMode: true },
+    ],
+    ["PATCH", path, { gatewayManagedMode: true }],
+  ]) {
+    const refused = await controller.request(method, target, { body });
+    assert.equal(refused.status, 400, `${method} ${target}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.message, unsupported);
+  }
+  // An Agent saved before managed mode existed was migrated to on; deploy still refuses it
+  // until an Installation administrator turns it off.
+  await controller.fixture.platformState.transact((unit) =>
+    unit.agents.updateConfiguration(
+      namespace.id,
+      created.data.id,
+      configuration.id,
+      ...Array(8).fill(undefined),
+      true,
+    ),
+  );
+  const rejected = await controller.request("POST", `${path}/deploy`);
+  assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+  assert.equal(rejected.body.error.message, unsupported);
+  assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
+  const updated = await controller.request("PATCH", path, { body: { gatewayManagedMode: false } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
   const deployed = await controller.request("POST", `${path}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.deepEqual(deployed.data.harnessAuth, { method: "runtime" });
@@ -8026,7 +8123,12 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
   const collection = `/namespaces/${namespace.id}/agents`;
   const createAgentFor = async (name, configuration) => {
     const created = await controller.request("POST", collection, {
-      body: { name, configurationId: configuration.id, harnessAuth: { method: "runtime" } },
+      body: {
+        name,
+        configurationId: configuration.id,
+        harnessAuth: { method: "runtime" },
+        gatewayManagedMode: false,
+      },
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     return created.data;
@@ -8164,7 +8266,13 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   const files = { "USER.md": "ssh-workspace-roster" };
   const create = (name, configurationId, extra = {}) =>
     controller.request("POST", collection, {
-      body: { name, configurationId, harnessAuth: { method: "runtime" }, ...extra },
+      body: {
+        name,
+        configurationId,
+        harnessAuth: { method: "runtime" },
+        gatewayManagedMode: false,
+        ...extra,
+      },
     });
   const roster =
     "Configuration setting agents.entries must hold only main, or be omitted, for initial workspace files: only the main Agent reads them.";

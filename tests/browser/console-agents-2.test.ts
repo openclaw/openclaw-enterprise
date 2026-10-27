@@ -2084,8 +2084,8 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
   assert.equal(response.status(), 201);
   const { data } = await response.json();
   assert.equal(data.values.agents.defaults.models[model].params.temperature, 0);
-  const details = page.getByRole("button", {
-    name: "View new version, editable Configuration",
+  const details = page.getByRole("combobox", {
+    name: "Viewing version",
     exact: true,
   });
   await details.or(page.getByRole("alert").filter({ hasText: "Outcome unknown" })).waitFor();
@@ -2095,7 +2095,9 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
     1,
     "the matching saved Configuration was recognized",
   );
-  await details.waitFor();
+  await details
+    .getByRole("option", { name: "Draft · Editable Configuration", exact: true, selected: true })
+    .waitFor({ state: "attached" });
 });
 
 test("Agent creation names the Configuration field that holds an inline model credential without showing it", async (t) => {
@@ -2665,9 +2667,7 @@ for (const swapped of ["Agent", "service principal"]) {
     });
     // If creation incorrectly continues to Agent details, inspect the actual grant before failing.
     await warning
-      .or(
-        page.getByRole("button", { name: "View new version, editable Configuration", exact: true }),
-      )
+      .or(page.getByRole("combobox", { name: "Viewing version", exact: true }))
       .waitFor();
     const saved = await fixture.request("GET", bindings);
     assert.equal(saved.status, 200);

@@ -55,6 +55,18 @@ const PLACEHOLDER_DESTINATION =
   "OpenShell logged only a placeholder address for this connection, and the record that names its hostname is not in the loaded log, so this denial proposes no rule. Add a rule for the hostname in Manage rules.";
 type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
 
+// The tab's version was deployed with the saved policy version, so its Sandbox enforces those
+// rules, and no live application was requested for it (D773). A pending or failed application
+// to this revision, even of the same version, keeps its own status.
+function deployedWithSavedPolicy(view: SandboxPolicyViewWire | undefined, revisionId: string) {
+  return (
+    view !== undefined &&
+    view.defaultsRevisionId === revisionId &&
+    view.deployedPolicyVersion === view.policy.version &&
+    view.policy.application?.revisionId !== revisionId
+  );
+}
+
 // A 403 names what the refused request does, the grant it checks and who gives it (findings 2539,
 // D753).
 function errorText(cause: unknown, task: string, grant: string) {
@@ -628,7 +640,9 @@ export function renderAgentSandboxPolicy(
         element(
           "p",
           { role: "status" },
-          "This Sandbox Driver does not support per-Agent network policy. Policy denials, suggestions and Agent network rules are not available for this Agent.",
+          // The API names the cause, such as an Installation with no Sandbox Driver (D774).
+          view.unavailableReason ??
+            "This Sandbox Driver does not support per-Agent network policy. Policy denials, suggestions and Agent network rules are not available for this Agent.",
         ),
       );
       return false;
@@ -1385,8 +1399,9 @@ export function renderAgentSandboxPolicy(
         changes = Math.max(1, addedOrChanged + removed);
       }
       const unapplied =
-        policy.applied?.revisionId !== revisionId ||
-        policy.applied?.policyVersion !== policy.version;
+        (policy.applied?.revisionId !== revisionId ||
+          policy.applied?.policyVersion !== policy.version) &&
+        !deployedWithSavedPolicy(view, revisionId);
       const failed = application?.state === "failed";
       footerStatus.textContent = "No unsaved changes";
       if (dirty) {
@@ -2036,6 +2051,9 @@ export function renderAgentSandboxPolicy(
         if (applied?.policyVersion === policy.version) {
           return { label: "Applied", tone: "success" };
         }
+        if (deployedWithSavedPolicy(view, revisionId)) {
+          return { label: "Deployed", tone: "success" };
+        }
         return {
           label: applied || policy.version > 1 ? "Saved for later" : "Application unconfirmed",
           tone: "warning",
@@ -2107,7 +2125,9 @@ export function renderAgentSandboxPolicy(
               { className: "hint" },
               applied
                 ? `Last confirmed live version: v${applied.policyVersion}`
-                : "Live version unconfirmed",
+                : deployedWithSavedPolicy(view, revisionId)
+                  ? `Deployed with policy v${policy.version}; no live change requested.`
+                  : "Live version unconfirmed",
             ),
           ),
         ),
@@ -2153,6 +2173,7 @@ export function renderAgentSandboxPolicy(
     } else if (
       currentPolicy &&
       !confirmed &&
+      !deployedWithSavedPolicy(view, revisionId) &&
       (currentPolicy.applied?.revisionId === revisionId ||
         currentPolicy.version > 1 ||
         outcomeRequested)

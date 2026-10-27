@@ -50,7 +50,7 @@
       "path": "tests/integration/runtime-image-managed-files.test.mjs",
       "expectedTests": [
         "runtime image initializes the Harness workspace without replacing owner edits",
-        "runtime image tells OpenClaw that a read-only Kubernetes configuration is externally managed"
+        "runtime image starts the Kubernetes Gateway with its externally managed marker and Node options"
       ]
     },
     {

@@ -26,7 +26,9 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -1980,6 +1982,73 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   );
   assert.deepEqual(calls, [["getSandbox", name, calls[0][2]]]);
 
+  // Sandboxes created before #3872 carry the workspace-node program with a bare
+  // mkdirSync(state). Each admission adopts only its own pinned program from then; the
+  // hashes identify those bytes independently of the matcher. When the program changes
+  // these hashes stop matching: remove this case with the shim in openshell.ts.
+  const previousParts = (program) =>
+    nodeProgramArguments(
+      program.replace(
+        /mkdirSync\(state, \{ recursive: true, mode: 0o700 \}\);[\s\S]*?chmodSync\(state, 0o700\);/,
+        "mkdirSync(state, { recursive: true });",
+      ),
+    ).slice(1);
+  const sha256 = (parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+  const admissions = {
+    ordinary: {
+      program: AGENT_WITH_NODE_ENTRYPOINT,
+      compute: { driverId: "kubernetes" },
+      hash: "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
+    },
+    protected: {
+      program: PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+      compute: { driverId: "kubernetes", admission: "protected-codex-no-connection-retry:v1" },
+      hash: "58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",
+    },
+  };
+  const saved = sandboxes.get(name);
+  const prefix = saved.spec.command.slice(0, RUNTIME_WRAPPER_COMMAND.length + 1);
+  const storeProgram = (parts) => {
+    const stored = { ...saved, spec: { ...saved.spec, command: [...prefix, ...parts] } };
+    sandboxes.set(name, stored);
+    return stored;
+  };
+  const requestProgram = (admission, program = admission.program) =>
+    driver.provisionHarness({
+      ...context,
+      revision: { ...revision, compute: admission.compute },
+      requirements: { ...codexRequirements(revision), command: harnessRuntimeCommand(program) },
+    });
+  calls.length = 0;
+  for (const [own, other] of [
+    [admissions.ordinary, admissions.protected],
+    [admissions.protected, admissions.ordinary],
+  ]) {
+    const parts = previousParts(own.program);
+    assert.equal(sha256(parts), own.hash);
+    const stored = storeProgram(parts);
+    assert.deepEqual(await requestProgram(own), first);
+    // Adoption leaves the stored Sandbox as it is.
+    assert.equal(sandboxes.get(name), stored);
+    await assert.rejects(
+      requestProgram(own, own.program + "\n0;"),
+      /exact AgentRevision ownership and content/,
+    );
+    // A revision never adopts the other admission's program, even though its hash is pinned:
+    // an ordinary revision must not run inside a protected Sandbox, nor the reverse.
+    await assert.rejects(requestProgram(other), /exact AgentRevision ownership and content/);
+  }
+  // A stored payload matching neither pinned hash is refused.
+  const unknown = previousParts(AGENT_WITH_NODE_ENTRYPOINT + "\n0;");
+  assert.ok(![admissions.ordinary.hash, admissions.protected.hash].includes(sha256(unknown)));
+  storeProgram(unknown);
+  await assert.rejects(
+    requestProgram(admissions.ordinary),
+    /exact AgentRevision ownership and content/,
+  );
+  assert.ok(calls.every(([method]) => method !== "createSandbox"));
+  sandboxes.set(name, saved);
+
   // ALREADY_EXISTS (a create that outlived its 24 h replay record) adopts this revision's Sandbox.
   sandboxes.clear();
   services.clear();
@@ -2930,8 +2999,12 @@ for (const harnessId of ["codex", "openclaw"]) {
     });
     const executions = [];
     let exitCode = 0;
+    let executionError;
     gatewayClient.execSandbox = async (request) => {
       executions.push(request);
+      if (executionError !== undefined) {
+        throw executionError;
+      }
       return exitCode;
     };
     const provision = () => driver.provisionHarness({ ...context, revision, requirements });
@@ -2953,7 +3026,28 @@ for (const harnessId of ["codex", "openclaw"]) {
 
     // Failed initialization and foreign Secret ownership must never report successful delivery.
     exitCode = 1;
-    await assert.rejects(provision(), /workspace initialization failed/);
+    await assert.rejects(provision(), {
+      message: "OpenShell workspace initialization failed (initializer exit 1).",
+    });
+    for (const [status, stage] of [
+      [3, "native setup failed"],
+      [4, "native setup timed out"],
+    ]) {
+      exitCode = status;
+      await assert.rejects(provision(), {
+        message: `OpenShell workspace initialization failed (${stage}; initializer exit ${status}).`,
+      });
+    }
+    // Only the protocol's numeric status is public; error text can contain private files.
+    executionError = Object.assign(new Error("private native output"), { grpcStatus: 14 });
+    await assert.rejects(provision(), {
+      message: "OpenShell workspace initialization failed (gRPC status 14).",
+    });
+    executionError.grpcStatus = "private native output";
+    await assert.rejects(provision(), {
+      message: "OpenShell workspace initialization failed.",
+    });
+    executionError = undefined;
     // A refusal (the runner's exit status 2) repeats on every retry, so Compute fails the
     // deployment at once with WORKSPACE_SETUP_REFUSED (finding 1708).
     exitCode = 2;
@@ -2968,12 +3062,24 @@ for (const harnessId of ["codex", "openclaw"]) {
     await assert.rejects(provision(), /workspace initialization failed/);
     assert.equal(executions.length, before);
 
-    await t.test("the setup wrapper passes the runner's refusal status through", async (t) => {
+    await t.test("setup wrapper preserves initializer diagnostics", async (t) => {
       const root = await temporaryDirectory(t, "openshell-workspace-wrapper-");
       const workspace = join(root, "workspace");
       await mkdir(workspace);
-      const wrapped = (payload, environment = {}) =>
-        spawnSync(process.execPath, ["-e", execution.command[2]], {
+      const wrapped = (payload, environment = {}, runnerExit) => {
+        let program = execution.command[2];
+        if (runnerExit !== undefined) {
+          // Only the nested initializer's result is synthetic; the wrapper and flock run.
+          program =
+            `
+          const childProcess = require("node:child_process");
+          const originalSpawnSync = childProcess.spawnSync;
+          childProcess.spawnSync = (command, ...args) => command === process.execPath
+            ? { status: ${runnerExit}, stdout: "private native output", stderr: "private native output" }
+            : originalSpawnSync(command, ...args);
+        ` + program;
+        }
+        return spawnSync(process.execPath, ["-e", program], {
           input: JSON.stringify(payload),
           encoding: "utf8",
           timeout: 60_000,
@@ -2985,13 +3091,20 @@ for (const harnessId of ["codex", "openclaw"]) {
             OPENCLAW_EXECUTABLE: join(root, "absent-runtime.mjs"),
             ...environment,
           },
-        }).status;
+        });
+      };
       // A completed setup whose workspace has no record refuses on every retry.
       const { files: _files, ...record } = setup;
-      assert.equal(wrapped({ ...record, completed: true }), 2);
+      assert.equal(wrapped({ ...record, completed: true }).status, 2);
       // A missing runtime may be back on a retry; a workspace path the wrapper rejects exits 1.
-      assert.equal(wrapped(setup), 1);
-      assert.equal(wrapped(setup, { OPENCLAW_WORKSPACE_DIR: "relative" }), 1);
+      assert.equal(wrapped(setup).status, 1);
+      assert.equal(wrapped(setup, { OPENCLAW_WORKSPACE_DIR: "relative" }).status, 1);
+      for (const status of [3, 4]) {
+        const result = wrapped(setup, {}, status);
+        assert.equal(result.status, status);
+        assert.equal(result.stdout, "");
+        assert.equal(result.stderr, "");
+      }
     });
 
     if (harnessId === "codex") {

@@ -31,7 +31,7 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
   const { page } = await newPage(t, fixture);
 
   // The current version: diagnostics need Agent operate, which a reader lacks.
-  const current = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+  const current = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "deployment");
   await login(page, fixture, current, reader.credentials);
   await page.getByText(DIAGNOSTICS_DENIED, { exact: true }).waitFor();
   const run = page.getByRole("button", { name: "Run diagnostics for this version" });

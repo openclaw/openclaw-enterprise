@@ -1518,12 +1518,26 @@ select:not([multiple])[size="1"] {
   color: var(--muted);
 }
 .native-admin-access {
-  padding: clamp(var(--space-4), 2vw, var(--space-6));
-  margin-bottom: var(--space-4);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0 var(--space-8) 0 0;
+  margin-bottom: var(--space-5);
   overflow-wrap: anywhere;
+}
+.native-admin-access p {
+  font-size: var(--text-sm);
+}
+.native-admin-access .native-admin-target {
+  color: var(--text-strong);
+  font-weight: var(--weight-semibold);
+}
+.native-admin-access > .overview-text-button {
+  align-self: flex-start;
+}
+.native-admin-recovery:empty {
+  display: none;
 }
 /* The overview: the stat card (facts + the page's one disclosure), then the deployment card. */
 .agent-overview-status {
@@ -1781,33 +1795,12 @@ select:not([multiple])[size="1"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.native-admin-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-2) var(--space-4);
-  margin-bottom: var(--space-2);
-}
-.native-admin-heading h2 {
-  margin: 0;
-  color: var(--text-strong);
-  letter-spacing: var(--tracking-tight);
-}
 .native-admin-access .overview-text-button {
   margin-top: var(--space-1);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-/* One primary action: a failed version's recovery outranks native administration and, when it
-   offers an action, the draft's own Deploy new version; the draft's Deploy outranks native
-   administration. Wherever the recovery card sits. */
-[aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
-  > .native-admin-access
-  :is(.overview-primary, .button--primary),
-[aria-live="polite"]:has(.agent-draft-actions)
-  > .native-admin-access
-  :is(.overview-primary, .button--primary),
+/* Recovery takes precedence over the draft's deployment action. */
 [aria-live="polite"]:has(
     > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
   )
@@ -1817,12 +1810,6 @@ select:not([multiple])[size="1"] {
   background: var(--color-surface);
   border-color: var(--color-border-strong);
 }
-[aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
-  > .native-admin-access
-  :is(.overview-primary, .button--primary):not(:disabled):hover,
-[aria-live="polite"]:has(.agent-draft-actions)
-  > .native-admin-access
-  :is(.overview-primary, .button--primary):not(:disabled):hover,
 [aria-live="polite"]:has(
     > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
   )
@@ -1957,135 +1944,140 @@ select:not([multiple])[size="1"] {
     min-height: 2lh;
   }
 }
-/* The Versions rail beside the selected version's summary (heading, record, a draft's next
-   step); the tabs and open tab run full width below both (UX spec 3.7). */
 .agent-version-layout {
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  grid-template-areas:
-    "rail summary"
-    "detail detail";
-  align-items: start;
-  gap: var(--space-6) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
 }
-.agent-version-layout > .revision-selector {
-  grid-area: rail;
-  /* The card padding, so its title lines up with the next-step card's. */
-  padding: var(--space-6);
+.agent-version-layout > * {
+  min-width: 0;
 }
 .agent-version-summary {
-  grid-area: summary;
   display: grid;
   gap: var(--space-5);
-  min-width: 0;
 }
 .agent-version-summary > * {
   margin: 0;
 }
-/* A draft's next step leads its column; an Agent-wide tab's heading follows it. */
 .agent-version-summary > .agent-draft-actions {
   order: -1;
-}
-.version-evidence:empty {
-  display: none;
 }
 .version-evidence {
   display: grid;
   gap: var(--space-5);
 }
-.agent-version-summary > .version-evidence > *,
-.agent-version-layout > .revision-selector {
-  margin: 0;
+.version-evidence:empty,
+.agent-version-summary:empty {
+  display: none;
 }
-/* With only a heading beside the rail (Logs, Workspace files and Access on a version), the open
-   tab sits beside the rail under it, as a version's detail always did. */
-@media (min-width: 1101px) {
-  .agent-version-layout[data-summary="heading"] {
-    grid-template-rows: auto 1fr;
-    grid-template-areas:
-      "rail summary"
-      "rail detail";
-    row-gap: 0;
-  }
-}
-.agent-version-detail {
-  grid-area: detail;
-  min-width: 0;
+.agent-version-summary .agent-version-heading .eyebrow,
+.agent-version-summary .agent-version-heading h2 {
+  display: none;
 }
 .agent-version-heading {
-  padding: var(--space-2) 0 0;
+  padding: 0;
 }
-.agent-version-heading .resource-id {
-  margin: var(--space-2) 0 var(--space-1);
+.agent-version-metadata {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.agent-version-metadata summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.agent-version-metadata p {
+  margin: var(--space-2) 0;
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
-.version-list {
-  display: grid;
-  gap: var(--space-2);
-  max-height: 480px;
-  overflow-y: auto;
-  margin: var(--space-4) 0 var(--space-6);
+.agent-version-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
 }
-@media (max-width: 1100px) {
-  /* Stacked: the rail, then the version's summary and tabs. A draft's next step leads the rail,
-     so its Deploy comes before the Versions list on a phone. */
-  .agent-version-layout {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "rail"
-      "summary"
-      "detail";
-  }
-  .agent-version-layout[data-draft] {
-    grid-template-areas:
-      "summary"
-      "rail"
-      "detail";
-  }
-  .version-list {
-    max-height: 250px;
-  }
+.agent-version-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
 }
-.version-item,
-.revision-create {
-  display: grid;
-  gap: var(--space-1);
-  width: 100%;
-  padding: var(--space-3);
-  text-align: left;
-  border-color: var(--line);
+.agent-version-control label {
+  margin: 0;
+  white-space: nowrap;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
 }
-.version-item small,
-.revision-create small {
-  color: var(--muted);
+.agent-version-control select {
+  width: 290px;
+  max-width: 100%;
+}
+.agent-version-date,
+.agent-version-context {
   font-size: var(--text-sm);
-}
-.version-older {
   color: var(--muted);
-  text-align: center;
 }
-/* Show older versions follows the scrolling list (finding 2115): the list's gap above it, its
-   bottom margin below. */
-.version-list:has(+ .version-older) {
-  margin-bottom: var(--space-2);
+.agent-version-context {
+  margin: var(--space-3) 0 0;
 }
-.version-list + .version-older {
-  margin-bottom: var(--space-6);
-}
-/* Loading older versions keeps focus, so the button is aria-disabled rather than disabled; it
-   looks disabled, and aria-busy gives it the busy cursor. */
 .version-older[aria-disabled="true"] {
   opacity: 0.6;
 }
-.version-item[aria-current="page"],
-.revision-create[aria-current="page"] {
-  background: var(--accent-subtle);
-  border-color: var(--accent);
+.agent-deployment-panels {
+  display: grid;
+  gap: var(--space-5);
 }
-.version-item .badge {
-  /* On the version number's line without making it taller. */
-  margin-block: calc(-1 * var(--space-1));
-  margin-left: var(--space-1);
+.agent-deployment-panels > * {
+  margin: 0;
+}
+.agent-deployment-panels > .deployment-evidence {
+  padding: var(--space-3) var(--space-6);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.agent-deployment-panels > .deployment-evidence > button {
+  top: 18px;
+  right: 24px;
+}
+.agent-deployment-attention {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin: 0 0 var(--space-5);
+}
+.agent-deployment-attention p {
+  margin: 0;
+}
+.agent-current-summary .stat-value a {
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.agent-stat-card {
+  padding: var(--space-4) var(--space-5);
+}
+.agent-stat-card .stats {
+  margin: 0;
+}
+.agent-stat-card .stat-value {
+  font-size: var(--text-lg);
+}
+@media (max-width: 760px) {
+  .agent-version-control {
+    width: 100%;
+  }
+  .agent-version-control select {
+    min-width: 0;
+    flex: 1;
+  }
+  .agent-deployment-attention {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 /* A draft's next step (UX spec 3.7): a checklist whose steps are done (success check) or open
    (strong ring), then Deploy right-aligned with its status beside it. */
@@ -2175,6 +2167,9 @@ select:not([multiple])[size="1"] {
     order: 0;
     text-align: left;
   }
+}
+.version-selection-notice {
+  border-left: 1px solid var(--color-border);
 }
 .agent-card {
   background: var(--surface);
@@ -3049,30 +3044,6 @@ select:not([multiple])[size="1"] {
   .agent-table .agent-row-actions-cell::before {
     grid-row: auto;
   }
-}
-
-.revision-selector {
-  padding: var(--space-5) var(--space-6);
-}
-/* On a phone the Versions card pads like the cards above it (finding 2423). */
-@media (max-width: 520px) {
-  .revision-selector,
-  .agent-version-layout > .revision-selector {
-    padding: var(--space-4);
-  }
-}
-.revision-selector > p {
-  margin-bottom: var(--space-2);
-  font-size: var(--text-md);
-}
-.revision-selector h2 {
-  margin-bottom: var(--space-3);
-}
-.revision-selector .form-actions {
-  margin: var(--space-3) 0;
-}
-.revision-selector label {
-  font-size: var(--text-md);
 }
 
 .configuration-editor {
@@ -5444,5 +5415,122 @@ html:has(#create-agent-form) {
 @media (max-width: 520px) {
   .sandbox-dialog-change-status {
     flex-basis: 100%;
+  }
+}
+
+.workspace-picker-surface {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+  margin: var(--space-5) 0;
+}
+.workspace-file-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+  background: var(--color-surface-2);
+}
+.workspace-file-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-height: 82px;
+  padding: var(--space-4);
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+.workspace-file-tab:last-child {
+  border-right: 0;
+}
+.workspace-file-tab[aria-selected="true"] {
+  background: var(--surface);
+  box-shadow: inset 0 -3px var(--color-accent);
+}
+.workspace-file-tab[aria-selected="true"] .workspace-file-role {
+  color: var(--color-accent);
+}
+.workspace-file-role {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+}
+.workspace-file-name {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  font-weight: var(--weight-regular);
+}
+.workspace-file-badge {
+  font-size: var(--text-xs);
+  margin-top: var(--space-1);
+}
+.workspace-file-tab:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -4px;
+}
+.workspace-file-intro {
+  padding: var(--space-5) var(--space-6) 0;
+}
+.workspace-file-intro h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+}
+.workspace-file-intro p {
+  font-size: var(--text-md);
+  line-height: 1.6;
+  margin: 0;
+  color: var(--muted);
+  max-width: 85ch;
+}
+.workspace-file-intro .workspace-file-switch-note {
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+}
+.workspace-file-panel .agent-form {
+  max-width: none;
+  margin: 0;
+  padding: var(--space-5) var(--space-6) var(--space-6);
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+}
+.workspace-file-panel .configuration-editor {
+  min-height: 260px;
+}
+.workspace-file-mobile {
+  display: none;
+}
+@media (max-width: 760px) {
+  .workspace-file-tabs {
+    display: none;
+  }
+  .workspace-file-mobile {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--line);
+  }
+  .workspace-file-mobile label {
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
+    margin: 0;
+  }
+  .workspace-file-mobile select {
+    width: 100%;
+    min-height: var(--touch-min);
+  }
+  .workspace-file-intro {
+    padding: var(--space-4) var(--space-4) 0;
+  }
+  .workspace-file-panel .agent-form {
+    padding: var(--space-4);
+  }
+  .workspace-file-panel .configuration-editor {
+    min-height: 300px;
   }
 }

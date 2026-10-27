@@ -185,9 +185,11 @@ packages:
   // The per-patch fields recorded before `patches` keep their names and values.
   for (const [field, file] of [
     ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
-    ["openclawConnectPatchSha256", "openclaw-connect-ephemeral-expired-setup.patch"],
     ["codexDependencyPinPatchSha256", "stock-codex-0.163.0-alpha.2-dependency-pin.patch"],
-    ["openclawRequiredWorkerAuthorityPatchSha256", "openclaw-required-worker-authority.patch"],
+    [
+      "openclawRequiredWorkerAuthorityRegressionPatchSha256",
+      "openclaw-required-worker-authority-regression.patch",
+    ],
   ]) {
     assert.equal(provenance[field], provenance.patches[file], field);
   }

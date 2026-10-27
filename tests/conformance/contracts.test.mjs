@@ -9,6 +9,7 @@ import vm from "node:vm";
 
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
@@ -492,6 +493,7 @@ test("only a codex_pat Harness binding names a ServiceAccount source, and only e
 // evidence from inside its Sandbox, where Agent code can answer in its place.
 
 const runtimeSources = [
+  "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts",
   "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
   "../../apps/controller/src/drivers/compute/runtime-startup.ts",
 ];
@@ -572,6 +574,7 @@ test("every check and code a runtime entrypoint publishes is recorded as publish
   for (const program of [
     GATEWAY_RUNTIME_ENTRYPOINT,
     AGENT_RUNTIME_ENTRYPOINT,
+    AGENT_WITH_NODE_ENTRYPOINT,
     NATIVE_WORKER_ENTRYPOINT,
   ]) {
     assert.deepEqual(injectedRuntimeList(program, "RUNTIME_DIAGNOSTIC_CODES"), [
@@ -589,7 +592,7 @@ test("every check and code a runtime entrypoint publishes is recorded as publish
   const text = await runtimeSourceText();
   const held = [
     ...text.matchAll(
-      /(?:publishRuntimeFailure|holdFailedAuthentication|serveHeldRuntimeFailureToTransportPeer)\(\s*"([^"]+)"(?:,\s*"([^"]+)")?/gu,
+      /(?:publishRuntimeFailure|holdFailedAuthentication|holdStartupFailure|serveHeldRuntimeFailureToTransportPeer)\(\s*"([^"]+)"(?:,\s*"([^"]+)")?/gu,
     ),
     ...text.matchAll(/function holdFailedAuthentication\(check = "([^"]+)", code = "([^"]+)"/gu),
   ];

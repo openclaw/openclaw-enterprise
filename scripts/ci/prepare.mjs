@@ -798,17 +798,20 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  // Native-only file preparation and the k3d helper bootstrap need no Codex token.
-  // Other OpenShell files and full-lane preparation still include a Codex Agent.
-  const nativeOnly =
+  const openShellGatewayFile =
+    file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+  const openShellApiKey =
     name === "openshell" &&
-    effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
-    (file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs" ||
-      (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"));
-  const requiredInputs = nativeOnly
-    ? ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]
-    : (prepare.requireEnv ?? []);
-  requireEnv(requiredInputs, effectiveEnv);
+    ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
+      (openShellGatewayFile ||
+        (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
+      (openShellGatewayFile && Boolean(effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
+  requireEnv(
+    (prepare.requireEnv ?? []).map((input) =>
+      openShellApiKey && input === "CODEX_ACCESS_TOKEN" ? "OPENAI_API_KEY" : input,
+    ),
+    effectiveEnv,
+  );
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }
@@ -922,15 +925,9 @@ function imageCache(role) {
   return `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
 }
 
-// Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
-// image input change and on a schedule from main's newest commit, in order and
-// never cancelled, so the newest commit's export lands last. CI lanes only
-// restore: a lane export on main could land after a newer commit's warm export
-// and replace it, and on a pull request it cost about 40 s and filled only the
-// merge ref's scope. The warm job exports in a second build after the image is
-// built and loaded: the same arguments without --load or the tag, so BuildKit
-// reuses the steps it just ran and only uploads the cache.
-function imageCacheExportArgs(role, buildArgs) {
+// The hosted cache build's arguments without --load or the tag, writing only
+// to BuildKit's cache, with the given options first.
+function imageCacheOnlyArgs(buildArgs, ...options) {
   if (buildArgs.slice(0, 3).join(" ") !== "buildx build --load") {
     throw new Error("Only a hosted cache build can export the image cache.");
   }
@@ -942,16 +939,28 @@ function imageCacheExportArgs(role, buildArgs) {
       rest.push(buildArgs[index]);
     }
   }
-  return [
-    "buildx",
-    "build",
-    "--output",
-    "type=cacheonly",
-    "--cache-to",
-    `${imageCache(role)},mode=max,timeout=10m`,
-    ...rest,
-  ];
+  return ["buildx", "build", "--output", "type=cacheonly", ...options, ...rest];
 }
+
+// Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
+// image input change and on a schedule from main's newest commit, in order and
+// never cancelled, so the newest commit's export lands last. CI lanes only
+// restore: a lane export on main could land after a newer commit's warm export
+// and replace it, and on a pull request it cost about 40 s and filled only the
+// merge ref's scope. The warm job exports in a second build after the image is
+// built and loaded: the same arguments without --load or the tag, so BuildKit
+// reuses the steps it just ran and only uploads the cache.
+function imageCacheExportArgs(role, buildArgs) {
+  return imageCacheOnlyArgs(buildArgs, "--cache-to", `${imageCache(role)},mode=max,timeout=10m`);
+}
+
+// The runtime Dockerfile builds OpenClaw beside its bridge tests (openclaw-build
+// and openclaw-bridge-tests). OpenClaw's build refuses to start unless about 5 GiB
+// is available, and the warm runner has 7.65 GiB: with the tests beside it, it
+// found 2.2-3.9 GiB. The warm job builds that stage alone first, so the image
+// build after it reuses the result and runs the tests then. Image lanes run on
+// larger runners and keep both stages in parallel.
+const warmRuntimeFirstStage = "openclaw-build";
 
 // The warm job's limit for one image's cache export. Exports that reuse the
 // OpenClaw layers took 25-65 s. A change to those layers (an OpenClaw pin, patch
@@ -1033,6 +1042,8 @@ function imageBuildOutOfTime(role, limitMs) {
   return Object.assign(new Error(message), { imageBuildOutOfTime: true });
 }
 
+const imageBuildTailLines = 40;
+
 // Runs a lane image build command within the lane's budget (unbounded without one).
 async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
   if (budgetMs !== undefined && budgetMs < 1_000) {
@@ -1042,6 +1053,14 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
     return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs: budgetMs });
   } catch (error) {
     if (budgetMs !== undefined && error.timedOut) {
+      // The build's progress names the step that was running (finding 2710: a cold
+      // build stopped after 1305 s with no clue which step stalled).
+      const tail = (error.stderr ?? "").trimEnd().split("\n").slice(-imageBuildTailLines);
+      if (tail.join("").trim()) {
+        process.stderr.write(
+          `[image-build] the ${role} image build's last output:\n${tail.join("\n")}\n`,
+        );
+      }
       throw imageBuildOutOfTime(role, budgetMs);
     }
     throw error;
@@ -1181,8 +1200,17 @@ async function buildRuntimeImages(
       return laneImageCommand(role, args);
     }
     const exportArgs = imageCacheExportArgs(role, args);
-    // A failed or overrunning build fails the job and keeps nothing.
-    await warmCommand(`${role} build`, args, 20 * 60_000);
+    // A failed or overrunning build fails the job and keeps nothing. The first
+    // stage and the image build share one 20-minute limit.
+    const deadline = performance.now() + 20 * 60_000;
+    if (role === "runtime") {
+      await warmCommand(
+        `runtime ${warmRuntimeFirstStage} build`,
+        imageCacheOnlyArgs(args, "--target", warmRuntimeFirstStage),
+        20 * 60_000,
+      );
+    }
+    await warmCommand(`${role} build`, args, Math.max(1, Math.round(deadline - performance.now())));
     // The export is best effort with its own limit. Without it, image lanes restore
     // the previous cache: content-addressed steps that still match are reused and
     // the rest rebuild, so a missed export makes builds slower, never wrong.
@@ -2610,9 +2638,10 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
   await markResourceReady(statePath, state, logging.resource);
 }
 
-async function prepareLane({ lane, statePath }) {
+async function prepareLane({ lane, statePath, file }) {
   const name = assertLane(lane);
-  await validateLaneInputsBeforeSideEffects(name);
+  const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {

@@ -539,6 +539,7 @@ revisionTest(
           agentId: malformedAdmission.id,
           revision: 1,
           backendId: null,
+          gatewayManagedMode: malformedAdmission.gatewayManagedMode,
           configuration: {},
           executionAdmission: first.executionAdmission,
           servicePrincipalId: malformedAdmission.servicePrincipalId,

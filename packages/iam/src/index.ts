@@ -1093,6 +1093,19 @@ export class NativeIAMDriver implements IAMDriver {
   readonly namespacePolicyTransaction = "platform-unit-of-work" as const;
   private readonly state: NativeIAMStateStore;
 
+  /** Identifies the original native decision method bound to this exact state store. */
+  static usesStateForAuthorization(
+    driver: IAMDriver,
+    authorize: IAMDriver["authorize"],
+    state: unknown,
+  ): boolean {
+    return (
+      authorize === nativeAuthorize &&
+      nativeAuthorityStates.has(driver) &&
+      nativeAuthorityStates.get(driver) === state
+    );
+  }
+
   constructor(state: NativeIAMStateStore, options: NativeIAMDriverOptions = {}) {
     this.id = options.id ?? "occ-native-iam";
     this.implementation = options.implementation ?? "native";
@@ -1106,6 +1119,10 @@ export class NativeIAMDriver implements IAMDriver {
       throw new TypeError("Native IAM Driver requires a platform state store.");
     }
     this.state = state;
+    if (new.target === NativeIAMDriver) {
+      Object.defineProperty(this, "state", { writable: false, configurable: false });
+      nativeAuthorityStates.set(this, state);
+    }
   }
 
   async lookupIdentity(input: IdentityLookup): Promise<Identity | undefined> {
@@ -1324,6 +1341,9 @@ export class NativeIAMDriver implements IAMDriver {
     }
   }
 }
+
+const nativeAuthorityStates = new WeakMap<IAMDriver, NativeIAMStateStore>();
+const nativeAuthorize = NativeIAMDriver.prototype.authorize;
 
 export { NativeIAMDriver as OCCIAMDriver };
 

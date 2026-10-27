@@ -36,8 +36,9 @@ import {
   REPOSITORY_EDITS_PENDING,
 } from "../helpers/refusal-text.mjs";
 
-// Errors, warnings and notices share one status block (UX plan C1): a stripe and wash in the
-// tone's design-token colours, with the text in the body colour. A refusal after a request takes
+// Errors, warnings and notices share one status block (UX plan C1): a wash in the tone's
+// design-token colour, with the text in the body colour. Errors and warnings retain a stripe;
+// the version-selection notice has a quieter border. A refusal after a request takes
 // focus and comes into view; Share Agent left its refusal unfocused above the form, so a reader
 // at phone width heard nothing (findings 1862, 1864).
 //
@@ -119,10 +120,11 @@ function assertPaint(
   paint: Awaited<ReturnType<typeof statusPaint>>,
   tone: "info" | "warning" | "danger",
   label: string,
+  stripe = true,
 ) {
   assert.deepEqual(
     { ...paint, contrast: paint.contrast >= 4.5 },
-    { status: true, tone, stripe: true, wash: true, bodyText: true, contrast: true },
+    { status: true, tone, stripe, wash: true, bodyText: true, contrast: true },
     `${label}: ${JSON.stringify(paint)}`,
   );
 }
@@ -358,7 +360,7 @@ test("Notices and the sign-in alert", async (t) => {
         "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged.",
       );
       assert.equal(await info.getAttribute("role"), "status");
-      assertPaint(await statusPaint(info), "info", "version notice");
+      assertPaint(await statusPaint(info), "info", "version notice", false);
     },
   );
 
@@ -963,7 +965,7 @@ test("Run diagnostics access and outcomes", async (t) => {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+      detailUrl(fixture, namespace.id, agent.id, revision.id, "deployment"),
       credentials,
     );
     const observations = page.locator(".version-diagnostics");

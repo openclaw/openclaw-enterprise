@@ -108,7 +108,10 @@ import {
   toProtobufStruct,
 } from "./openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
-import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
+import {
+  matchesWorkspaceNodeStateUpgrade,
+  RUNTIME_WRAPPER_COMMAND,
+} from "../compute/kubernetes/runtime-entrypoints.ts";
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
 import {
   compareResourceQuantities,
@@ -117,6 +120,8 @@ import {
 import { nodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
+  WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS,
+  WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS,
   WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
   WORKSPACE_SETUP_RUNTIME,
 } from "../compute/workspace-setup-runtime.ts";
@@ -1332,13 +1337,13 @@ const WORKSPACE_SETUP_WAIT = String.raw`{
 // Remote execution can outlive a lost RPC response. Keep the lock across the
 // initializer process so a retry cannot race its writes; kernel locks also release
 // after a crash. Private document bytes travel only through stdin, never argv.
-// The runner's refusal status passes through; any other failure exits 1 (finding 1708).
+// Preserve bounded initializer statuses without confusing native setup with lock/runner failures.
 const WORKSPACE_SETUP_EXEC = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 let lock;
-let refused = false;
+let failureExitStatus = 1;
 try {
   const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
   if (!workspace || !path.isAbsolute(workspace)) throw new Error();
@@ -1354,10 +1359,13 @@ try {
     env: { ...process.env, OPENCLAW_WORKSPACE_SETUP_PATH: undefined },
     stdio: ["pipe", "ignore", "ignore", lock], timeout: 250000,
   });
-  refused = !result.error && result.status === ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS};
+  if (!result.error && [${WORKSPACE_SETUP_REFUSED_EXIT_STATUS},
+      ${WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS}, ${WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS}].includes(result.status)) {
+    failureExitStatus = result.status;
+  }
   if (result.error || result.status !== 0) throw new Error();
 } catch {
-  process.exitCode = refused ? ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS} : 1;
+  process.exitCode = failureExitStatus;
 } finally {
   if (lock !== undefined) fs.closeSync(lock);
 }
@@ -2795,9 +2803,56 @@ function runtimeProviderSetupUpdate(
   });
 }
 
+// These are the two workspace-node payloads actually produced before private state
+// initialization (b64bb6b8). Never accept a different program based on its name or owner.
+// TODO: this shim only adopts Sandboxes created before #3872. Remove it, these pins and
+// matchesWorkspaceNodeStateUpgrade at the next change to the workspace-node program: the
+// matcher rebuilds the old program from the current one, so then nothing can match a pin.
+const beforePrivateNodeState = {
+  ordinary: "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
+  protected: "58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",
+};
+
+function matchesOwnedSandboxSpec(
+  existing: OpenShellSandboxResponse,
+  request: OpenShellSandboxCreateRequest,
+  revision: Readonly<AgentRevision>,
+): boolean {
+  const wanted = canonicalSandboxSpec(request.spec);
+  if (isDeepStrictEqual(canonicalSandboxSpec(existing.spec), wanted)) {
+    return true;
+  }
+  const observed = existing.spec?.command;
+  const expected = request.spec.command;
+  const first = RUNTIME_WRAPPER_COMMAND.length + 1;
+  const admission = revision.compute?.admission;
+  const protectedCodex = admission === "protected-codex-no-connection-retry:v1";
+  if (
+    revision.harness.id !== "codex" ||
+    revision.harness.mode !== "dedicated" ||
+    !revision.compute ||
+    (admission !== undefined && !protectedCodex) ||
+    !Array.isArray(expected) ||
+    !Array.isArray(observed) ||
+    observed.length !== expected.length ||
+    !isDeepStrictEqual(observed.slice(0, first), expected.slice(0, first))
+  ) {
+    return false;
+  }
+  const payload = observed.slice(first);
+  return (
+    payload.every((part) => typeof part === "string" && part.length <= 32768) &&
+    sha256Hex(JSON.stringify(payload)) ===
+      beforePrivateNodeState[protectedCodex ? "protected" : "ordinary"] &&
+    matchesWorkspaceNodeStateUpgrade(expected.slice(first), payload, protectedCodex) &&
+    isDeepStrictEqual(canonicalSandboxSpec({ ...existing.spec, command: expected }), wanted)
+  );
+}
+
 function verifyExistingSandbox(
   existing: OpenShellSandboxResponse,
   request: OpenShellSandboxCreateRequest,
+  revision: Readonly<AgentRevision>,
 ): void {
   if (
     existing.name !== request.name ||
@@ -2808,7 +2863,7 @@ function verifyExistingSandbox(
       request.annotations,
       "internal.openshell.ai/",
     ) ||
-    !isDeepStrictEqual(canonicalSandboxSpec(existing.spec), canonicalSandboxSpec(request.spec))
+    !matchesOwnedSandboxSpec(existing, request, revision)
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,
@@ -3314,7 +3369,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       await this.openShellGit!.bind(
         context.revision.id,
-        (observed) => verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
+        (observed) =>
+          verifyExistingSandbox(
+            observed,
+            { ...create, requestId: requestIds[0]! },
+            context.revision,
+          ),
         originalModel ? continuity : undefined,
       );
     }
@@ -3421,7 +3481,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
     }
     // Adopt only this revision's own live Sandbox, with its Harness service in place.
-    verifyExistingSandbox(existing, { ...create, requestId: requestIds[0]! });
+    verifyExistingSandbox(existing, { ...create, requestId: requestIds[0]! }, context.revision);
     if (existing.phase === "SANDBOX_PHASE_DELETING" || existing.phase === 4) {
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell Sandbox ${sandbox.resourceName} is being deleted; it can be created again once deletion finishes.`,
@@ -3826,10 +3886,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         },
         context.signal,
       );
-    } catch {
+    } catch (error) {
       context.signal.throwIfAborted();
       // Neither API/parser diagnostics nor remote output may disclose initial files.
-      throw new OpenShellSandboxConfigurationFailure("OpenShell workspace initialization failed.");
+      const grpcStatus = asRecord(error)?.grpcStatus;
+      const detail =
+        typeof grpcStatus === "number" &&
+        Number.isInteger(grpcStatus) &&
+        grpcStatus >= 0 &&
+        grpcStatus <= 16
+          ? ` (gRPC status ${grpcStatus})`
+          : "";
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell workspace initialization failed${detail}.`,
+      );
     }
     if (exit === WORKSPACE_SETUP_REFUSED_EXIT_STATUS) {
       // Every retry would refuse the same way: fail the deployment now, as Kubernetes Compute
@@ -3837,7 +3907,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new SandboxWorkspaceSetupRefusedError("OpenShell workspace initialization refused.");
     }
     if (exit !== 0) {
-      throw new OpenShellSandboxConfigurationFailure("OpenShell workspace initialization failed.");
+      let detail = `initializer exit ${exit}`;
+      if (exit === WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS) {
+        detail = `native setup failed; ${detail}`;
+      } else if (exit === WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS) {
+        detail = `native setup timed out; ${detail}`;
+      }
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell workspace initialization failed (${detail}).`,
+      );
     }
   }
 

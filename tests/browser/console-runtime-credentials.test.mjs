@@ -314,12 +314,16 @@ test("active Agent can deploy the current saved draft as a new version", async (
     fixture,
     `/console/agents/${agent.id}?namespace=${encodeURIComponent(namespace.id)}`,
   );
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1/ })
+    .waitFor({ state: "attached" });
 
   await page.screenshot({ path: join(artifacts, "revision-deploy.png"), fullPage: true });
 
   // The viewed version stays immutable; create a draft before deploying v2.
-  await page.getByRole("button", { name: "Create new version" }).first().click();
+  await page.getByRole("button", { name: "Open draft" }).first().click();
   await page
     .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
@@ -448,7 +452,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
     },
   );
   await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Create new version" }).first().click();
+  await page.getByRole("button", { name: "Open draft" }).first().click();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).first().waitFor();
   assert.equal(deploymentRequests, 0);

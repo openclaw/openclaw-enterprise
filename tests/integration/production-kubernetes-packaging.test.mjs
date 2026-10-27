@@ -2539,6 +2539,9 @@ esac
       await chmod(join(bin, name), 0o755);
     }
     const realHelm = (await execute("sh", ["-c", 'command -v "$1"', "sh", helm])).stdout.trim();
+    const { stdout: sourceRevision } = await execute("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+    });
     for (const [name, hostname, configuredHostname, failure] of [
       ["short", "broker.openclaw-system.svc"],
       ["full", "broker.openclaw-system.svc.cluster.local"],
@@ -2610,7 +2613,7 @@ esac
             "--broker-image",
             brokerImage,
             "--source-revision",
-            "d".repeat(40),
+            sourceRevision.trim(),
             "--evidence-dir",
             evidence,
             "--occ",
