@@ -319,7 +319,7 @@
     "tests/integration/repository-credentials-github-prepared.test.mjs": 500,
     "tests/integration/repository-credentials-github-token.test.mjs": 7800,
     "tests/integration/repository-credentials-http.test.mjs": 500,
-    "tests/integration/repository-credentials-package.test.mjs": 2100,
+    "tests/integration/repository-credentials-package.test.ts": 2100,
     "tests/integration/repository-credentials-projected-inputs.test.mjs": 400,
     "tests/integration/repository-credentials-restart.test.mjs": 800,
     "tests/integration/repository-credentials-router.test.mjs": 3500,
