@@ -16,6 +16,7 @@ import {
   reuseRequestDispatcher,
 } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { StrandsBoxSandboxDriver } from "../../apps/controller/src/drivers/sandbox/strands-box.ts";
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
@@ -365,6 +366,67 @@ async function writeTokenKubeconfig(directory, server) {
 
 const STATUS_PROXY_PATH =
   "/api/v1/namespaces/tenant/pods/agent-pod%3A18791/proxy/openclaw%2Fruntime%2Fstatus";
+
+test(
+  "Strands observation cancels the in-flight Kubernetes list before listing Pods",
+  { timeout: 10_000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "occ-strands-observe-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const cancel = new AbortController();
+    const closed = Promise.withResolvers();
+    const api = await recordingApiServer(directory, (request, response) => {
+      if (request.url === "/apis/apps/v1") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            apiVersion: "v1",
+            kind: "APIResourceList",
+            groupVersion: "apps/v1",
+            resources: [
+              { name: "deployments", kind: "Deployment", namespaced: true, verbs: ["list"] },
+            ],
+          }),
+        );
+        return;
+      }
+      response.once("close", closed.resolve);
+      cancel.abort();
+      // Kubernetes never completes the Deployment list. Closing this socket requires
+      // passing the observation signal all the way through the SDK to the HTTP client.
+    });
+    t.after(() => api.close());
+    const driver = new StrandsBoxSandboxDriver(
+      {
+        kubernetes: {
+          seccompProfile: "qualified/box.json",
+          nodeSelector: { "kubernetes.io/arch": "arm64" },
+          controlPlanePeer: { namespace: "control", podLabels: { app: "worker" } },
+        },
+        policy: { network: { endpoints: [] } },
+      },
+      { id: "strands", authentication: await writeTokenKubeconfig(directory, api) },
+    );
+    await assert.rejects(
+      driver.observeHarness({
+        namespace: { id: "ns-test", name: "tenant" },
+        revision: {
+          id: "rev-test",
+          agentId: "agent-test",
+          namespaceId: "ns-test",
+          sandboxDriverId: driver.id,
+        },
+        signal: cancel.signal,
+      }),
+      { name: "AbortError" },
+    );
+    await closed.promise;
+    assert.deepEqual(
+      api.requests.map(({ path }) => path.split("?")[0]),
+      ["/apis/apps/v1", "/apis/apps/v1/namespaces/tenant/deployments"],
+    );
+  },
+);
 
 /** The production Driver's runtime status readback through clients built from `authentication`. */
 function statusReadback(authentication) {

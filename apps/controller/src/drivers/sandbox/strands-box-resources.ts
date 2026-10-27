@@ -45,6 +45,36 @@ function grantRoots(paths: readonly string[]): string[] {
   );
 }
 
+export function strandsBoxService(
+  context: SandboxHarnessContext,
+  name: string,
+  labels: Readonly<Record<string, string>>,
+  hash: string,
+  diagnostic: boolean,
+) {
+  const entry = context.requirements.environment.find(({ name }) => name === "APP_SERVER_PORT");
+  const port = entry && "value" in entry ? Number(entry.value) : NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    refuse();
+  }
+  return {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: {
+      namespace: context.namespace.name,
+      name: diagnostic ? `${name}-status` : name,
+      labels: { ...context.requirements.labels, ...labels },
+      annotations: { "openclaw.dev/strands-box-input-sha256": hash },
+    },
+    spec: {
+      selector: labels,
+      ports: [{ name: "harness", port, targetPort: port }],
+      // Only the controller's held-failure read uses the unready route.
+      ...(diagnostic ? { publishNotReadyAddresses: true } : {}),
+    },
+  };
+}
+
 /** Prepared revision inputs drive projections; Box config contains no Secret values. */
 export function strandsBoxResources(
   context: SandboxHarnessContext,
@@ -72,12 +102,9 @@ export function strandsBoxResources(
   ) {
     refuse();
   }
-  const metadata = {
-    namespace: context.namespace.name,
-    name,
-    labels: { ...r.labels, ...labels },
-    annotations: { "openclaw.dev/strands-box-input-sha256": hash },
-  };
+  const service = strandsBoxService(context, name, labels, hash, false);
+  const diagnosticService = strandsBoxService(context, name, labels, hash, true);
+  const { metadata } = service;
   const token = context.transportToken;
   if (
     typeof token !== "string" ||
@@ -147,13 +174,8 @@ export function strandsBoxResources(
   if (environment.HOME !== undefined && environment.HOME !== "/home/node") {
     refuse();
   }
-  const port = Number(environment.APP_SERVER_PORT);
-  if (
-    !Number.isInteger(port) ||
-    port < 1 ||
-    port > 65535 ||
-    !/^[a-f0-9]{64}$/u.test(transportHash ?? "")
-  ) {
+  const port = service.spec.ports[0]!.port;
+  if (!/^[a-f0-9]{64}$/u.test(transportHash ?? "")) {
     refuse();
   }
   const claims = new Map<string, { name: string; paths: string[] }>();
@@ -314,12 +336,6 @@ export function strandsBoxResources(
     });
   }
   const configMap = { apiVersion: "v1", kind: "ConfigMap", metadata, immutable: true, data };
-  const service = {
-    apiVersion: "v1",
-    kind: "Service",
-    metadata,
-    spec: { selector: labels, ports: [{ name: "harness", port, targetPort: port }] },
-  };
   const network = {
     apiVersion: "networking.k8s.io/v1",
     kind: "NetworkPolicy",
@@ -468,5 +484,5 @@ export function strandsBoxResources(
       },
     },
   };
-  return [configMap, probeSecret, service, network, deployment];
+  return [configMap, probeSecret, service, diagnosticService, network, deployment];
 }

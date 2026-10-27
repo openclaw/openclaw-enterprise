@@ -6,8 +6,10 @@ import { Agent, WebSocket } from "undici";
 import { createKubernetesClientConfiguration } from "../kubernetes/client.ts";
 import type { KubernetesAuthentication } from "../kubernetes/authentication.ts";
 import { requireWorkspaceSetupConfiguration } from "../compute/workspace-setup-runtime.ts";
-import { strandsBoxResources } from "./strands-box-resources.ts";
-import { KubernetesObjectApi, type KubernetesObject } from "@kubernetes/client-node";
+import { withComputeAbortSignal } from "../compute/operation-context.ts";
+import { strandsBoxResources, strandsBoxService } from "./strands-box-resources.ts";
+import { KubernetesObjectApi, PatchStrategy, type KubernetesObject } from "@kubernetes/client-node";
+import { isIP } from "node:net";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   AgentRevision,
@@ -25,6 +27,7 @@ import type {
   SandboxResourceRef,
 } from "@openclaw-enterprise/contracts";
 import {
+  DependencyUnavailableError,
   SandboxRevisionUnsupportedError,
   SandboxWorkspaceSetupRefusedError,
 } from "@openclaw-enterprise/occ";
@@ -192,8 +195,14 @@ function owned(resource: KubernetesObject, namespaceId: string, driverId: string
     labels?.[MANAGED] !== sha256Hex(driverId, 20) ||
     labels?.[OWNER] !== namespaceId ||
     !labels?.[AGENT] ||
-    !labels?.[REVISION] ||
-    resource.metadata?.name !== name(namespaceId, labels[AGENT], labels[REVISION])
+    !labels?.[REVISION]
+  ) {
+    throw new Error("Strands Box resource ownership does not match the requested scope.");
+  }
+  const expected = name(namespaceId, labels[AGENT], labels[REVISION]);
+  if (
+    resource.metadata?.name !== expected &&
+    !(resource.kind === "Service" && resource.metadata?.name === `${expected}-status`)
   ) {
     throw new Error("Strands Box resource ownership does not match the requested scope.");
   }
@@ -205,6 +214,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
   readonly capability = "sandbox" as const;
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
   readonly implementation = "strands-box";
+  readonly maintenanceIntervalMs = 60_000;
   readonly harnessHome = "/home/node";
   readonly id: string;
   private readonly options: StrandsBoxOptions;
@@ -307,16 +317,21 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     const selector = Object.entries(this.labels(context))
       .map(([key, value]) => `${key}=${value}`)
       .join(",");
-    const deployments = await client.list(
-      "apps/v1",
-      "Deployment",
-      context.namespace.name,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      selector,
-    );
+    const list = (version: string, kind: string) =>
+      withComputeAbortSignal(context.signal, () =>
+        client.list(
+          version,
+          kind,
+          context.namespace.name,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          selector,
+        ),
+      );
+    const deployments = await list("apps/v1", "Deployment");
+    context.signal.throwIfAborted();
     if (deployments.items.length === 0) {
       return { state: "lost", code: "SANDBOX_MISSING" };
     }
@@ -327,16 +342,8 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     if (deployments.items[0]!.metadata?.deletionTimestamp) {
       return { state: "lost", code: "SANDBOX_DELETING" };
     }
-    const pods = await client.list(
-      "v1",
-      "Pod",
-      context.namespace.name,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      selector,
-    );
+    const pods = await list("v1", "Pod");
+    context.signal.throwIfAborted();
     if (pods.items.length !== 1) {
       return { state: "starting" };
     }
@@ -419,19 +426,18 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       if (existing.metadata?.annotations?.[HASH] !== hash || existing.metadata.deletionTimestamp) {
         throw new Error("Strands Box revision Pod is not adoptable.");
       }
+      await this.refreshEndpointPolicy(context, ref, hash);
+      await this.ensureDiagnosticService(context, ref, hash);
       return ref;
+    }
+    if (context.existingHarnessOnly) {
+      throw new DependencyUnavailableError(
+        "Strands Box maintenance cannot recreate a missing revision workload.",
+      );
     }
     const transportHash = await this.transportVerifier(context);
     const gateway = await this.gatewayRoute(context);
-    const cidrs = [];
-    for (const endpoint of this.options.policy.network.endpoints) {
-      const addresses = await lookup(endpoint.host, { all: true });
-      for (const address of addresses) {
-        for (const port of endpoint.ports) {
-          cidrs.push({ cidr: `${address.address}/${address.family === 4 ? 32 : 128}`, port });
-        }
-      }
-    }
+    const cidrs = await this.endpointAddresses(context.signal);
     const resources = strandsBoxResources(
       context,
       this.options,
@@ -471,6 +477,124 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       }
     }
     return ref;
+  }
+
+  private async endpointAddresses(signal: AbortSignal): Promise<{ cidr: string; port: number }[]> {
+    const addresses = new Map<string, { cidr: string; port: number }>();
+    for (const endpoint of this.options.policy.network.endpoints) {
+      signal.throwIfAborted();
+      const resolved = await lookup(endpoint.host, { all: true });
+      signal.throwIfAborted();
+      if (resolved.length === 0) {
+        throw new Error("Strands Box endpoint has no resolved addresses.");
+      }
+      for (const address of resolved) {
+        if (!isIP(address.address) || ![4, 6].includes(address.family)) {
+          throw new Error("Strands Box endpoint returned an invalid address.");
+        }
+        for (const port of endpoint.ports) {
+          const cidr = `${address.address}/${address.family === 4 ? 32 : 128}`;
+          addresses.set(`${cidr}:${port}`, { cidr, port });
+        }
+      }
+    }
+    return [...addresses.values()].sort((a, b) => a.cidr.localeCompare(b.cidr) || a.port - b.port);
+  }
+
+  private async refreshEndpointPolicy(
+    context: SandboxHarnessContext,
+    ref: SandboxResourceRef,
+    hash: string,
+  ): Promise<void> {
+    const policy = await read(context, {
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: { namespace: ref.namespaceName, name: ref.resourceName },
+    });
+    if (!policy) {
+      throw new Error("Strands Box revision NetworkPolicy is missing.");
+    }
+    owned(policy, context.namespace.id, this.id);
+    const metadata = policy.metadata!;
+    // SDK models carry prototypes and absent fields; compare their JSON wire shape.
+    const spec = asRecord(JSON.parse(JSON.stringify(asRecord(policy)?.spec)));
+    if (
+      metadata.annotations?.[HASH] !== hash ||
+      !metadata.uid ||
+      !metadata.resourceVersion ||
+      metadata.deletionTimestamp ||
+      !Array.isArray(spec?.egress) ||
+      !isDeepStrictEqual(spec.podSelector, { matchLabels: this.labels(context) }) ||
+      !isDeepStrictEqual(spec.policyTypes, ["Ingress", "Egress"])
+    ) {
+      throw new Error("Strands Box revision NetworkPolicy is not adoptable.");
+    }
+    const retained = [];
+    for (const rule of spec.egress) {
+      const entry = asRecord(rule);
+      const peers = Array.isArray(entry?.to) ? entry.to : [];
+      if (!peers.some((peer) => asRecord(peer)?.ipBlock !== undefined)) {
+        retained.push(rule);
+        continue;
+      }
+      // Only the adapter's exact host/port rules can be refreshed. Never carry
+      // a widened range or mixed peer onto a newly resolved destination.
+      const block = asRecord(asRecord(peers[0])?.ipBlock);
+      const parts = typeof block?.cidr === "string" ? block.cidr.split("/") : [];
+      const family = isIP(parts[0] ?? "");
+      const ports = Array.isArray(entry?.ports) ? entry.ports : [];
+      const port = asRecord(ports[0]);
+      if (
+        !entry ||
+        Object.keys(entry).length !== 2 ||
+        peers.length !== 1 ||
+        Object.keys(asRecord(peers[0]) ?? {}).length !== 1 ||
+        !block ||
+        Object.keys(block).length !== 1 ||
+        !family ||
+        parts.length !== 2 ||
+        parts[1] !== (family === 4 ? "32" : "128") ||
+        ports.length !== 1 ||
+        !port ||
+        Object.keys(port).length !== 2 ||
+        port.protocol !== "TCP" ||
+        !this.options.policy.network.endpoints.some((endpoint) =>
+          endpoint.ports.includes(port.port as number),
+        )
+      ) {
+        throw new Error("Strands Box endpoint rule differs from an exact approved destination.");
+      }
+    }
+    const addresses = await this.endpointAddresses(context.signal);
+    const egress = [
+      ...retained,
+      ...addresses.map(({ cidr, port }) => ({
+        to: [{ ipBlock: { cidr } }],
+        ports: [{ protocol: "TCP", port }],
+      })),
+    ];
+    if (isDeepStrictEqual(spec.egress, egress)) {
+      return;
+    }
+    const patch = {
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: {
+        name: ref.resourceName,
+        namespace: ref.namespaceName,
+        uid: metadata.uid,
+        resourceVersion: metadata.resourceVersion,
+      },
+      spec: { egress },
+    };
+    await api(context).patch(
+      patch,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      PatchStrategy.MergePatch,
+    );
   }
 
   private async transportVerifier(context: SandboxHarnessContext): Promise<string> {
@@ -649,12 +773,42 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     };
   }
 
-  async harnessEndpoint(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint> {
+  // An existing revision may predate the diagnostic Service. Its immutable setup
+  // credential may have been consumed; this Service needs only the prepared port and labels.
+  private async ensureDiagnosticService(
+    context: SandboxHarnessContext,
+    ref: SandboxResourceRef,
+    hash: string,
+  ): Promise<void> {
+    const desired = strandsBoxService(context, ref.resourceName, this.labels(context), hash, true);
+    let current = await read(context, desired);
+    if (!current) {
+      try {
+        await api(context).create(desired);
+        return;
+      } catch (error) {
+        current = await read(context, desired);
+        if (!current) {
+          throw error;
+        }
+      }
+    }
+    owned(current, context.namespace.id, this.id);
+    if (current.metadata?.annotations?.[HASH] !== hash || current.metadata.deletionTimestamp) {
+      throw new Error("Strands Box diagnostic Service is not adoptable.");
+    }
+  }
+
+  private async harnessServiceAddress(
+    context: SandboxHarnessContext,
+    diagnostic: boolean,
+  ): Promise<string> {
     const ref = this.harnessResource(context);
+    const serviceName = diagnostic ? `${ref.resourceName}-status` : ref.resourceName;
     const service = await read(context, {
       apiVersion: "v1",
       kind: "Service",
-      metadata: { namespace: ref.namespaceName, name: ref.resourceName },
+      metadata: { namespace: ref.namespaceName, name: serviceName },
     });
     if (!service) {
       throw new Error("Strands Box Harness Service is unavailable.");
@@ -668,15 +822,23 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     const ports = Array.isArray(spec?.ports) ? spec.ports : [];
     if (
       !Number.isInteger(port) ||
+      service.metadata?.deletionTimestamp ||
+      (spec?.type !== undefined && spec.type !== "ClusterIP") ||
+      (spec?.publishNotReadyAddresses ?? false) !== diagnostic ||
       ports.length !== 1 ||
       asRecord(ports[0])?.port !== port ||
       asRecord(ports[0])?.targetPort !== port ||
+      (asRecord(ports[0])?.protocol ?? "TCP") !== "TCP" ||
       !isDeepStrictEqual(spec?.selector, this.labels(context))
     ) {
       throw new Error("Strands Box Harness Service differs from the revision.");
     }
+    return `${serviceName}.${ref.namespaceName}.svc:${port}`;
+  }
+
+  async harnessEndpoint(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint> {
     return {
-      url: `ws://${ref.resourceName}.${ref.namespaceName}.svc:${port}`,
+      url: `ws://${await this.harnessServiceAddress(context, false)}`,
       workspaceRoot: "/home/node/workspace",
       codexPermissionProfile: ":danger-full-access",
     };
@@ -684,7 +846,6 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
 
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
     const { url } = await this.harnessEndpoint(context);
-    const endpoint = new URL(url.replace(/^ws:/u, "http:"));
     context.signal.throwIfAborted();
     const signal = AbortSignal.any([context.signal, AbortSignal.timeout(5000)]);
     const lifetime = new AbortController();
@@ -748,10 +909,10 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     if (serving) {
       return { state: "serving" };
     }
+    const diagnosticAddress = await this.harnessServiceAddress(context, true);
     return new Promise<SandboxHarnessStatus>((resolve) => {
-      endpoint.pathname = "/openclaw/runtime/status";
       const request = httpRequest(
-        endpoint,
+        new URL(`http://${diagnosticAddress}/openclaw/runtime/status`),
         {
           headers: { authorization: `Bearer ${context.transportToken}` },
           signal: AbortSignal.any([context.signal, AbortSignal.timeout(5000)]),
@@ -794,9 +955,10 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         : this.harnessResource({ namespace: context.namespace, revision: context.revision });
     // Stop the workload before deleting its immutable inputs or exposure. A
     // retry resumes at the same ownership-fenced objects; PVCs are never listed.
-    for (const [apiVersion, kind] of [
+    for (const [apiVersion, kind, suffix = ""] of [
       ["apps/v1", "Deployment"],
       ["v1", "Service"],
+      ...(exact ? [["v1", "Service", "-status"] as const] : []),
       ["networking.k8s.io/v1", "NetworkPolicy"],
       ["v1", "Secret"],
       ["v1", "ConfigMap"],
@@ -806,7 +968,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
             await read(context, {
               apiVersion,
               kind,
-              metadata: { namespace: exact.namespaceName, name: exact.resourceName },
+              metadata: { namespace: exact.namespaceName, name: `${exact.resourceName}${suffix}` },
             }),
           ].filter((resource): resource is KubernetesObject => resource !== undefined)
         : (
@@ -825,7 +987,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         const resource =
           !exact && kind === "Secret"
             ? await read(context, { apiVersion, kind, metadata: candidate.metadata! })
-            : candidate;
+            : { ...candidate, apiVersion, kind };
         if (!resource) {
           continue;
         }
