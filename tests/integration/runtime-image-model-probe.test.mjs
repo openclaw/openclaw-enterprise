@@ -76,6 +76,13 @@ test(
     const probe = jsonLines(output, { lenient: true }).find(
       ({ event }) => event === "openclaw.model_probe",
     );
+    // The wrapper's stage log times the probe CLI from spawn to return. The cap kills the
+    // CLI only after capMs; a return before that is the CLI's own result.
+    const stageMs = (name) =>
+      jsonLines(output, { lenient: true }).find(
+        ({ event, stage }) => event === "openclaw.model_probe_stage" && stage === name,
+      )?.elapsedMs;
+    const cliMs = stageMs("returned") - stageMs("spawn");
     recordModelProbeMeasurement(t, "gateway-500m-contended", run);
     try {
       assert.equal(stress.started, 8, "all eight owned CPU hogs reached their loops");
@@ -83,6 +90,7 @@ test(
       assert.equal(probe.capMs, 110_000, `cap from the 500m cgroup limit${detail}`);
       assert.notEqual(probe.cpuWaitMs, null, `the cgroup reported CPU waiting${detail}`);
       assert.ok(probe.cpuWaitMs > 0, `the hogs made the probe wait for CPU${detail}`);
+      assert.ok(Number.isFinite(cliMs), `the wrapper logged spawn and return${detail}`);
       if (probe.code === "READY") {
         assert.equal(runtimeFailure(events), undefined, detail);
         assert.ok(
@@ -93,7 +101,7 @@ test(
         assert.equal(phaseAt(phases, "native-spawn")?.outcome, "ok", detail);
         assert.ok(events.some(observed("ready", true)), detail);
         assert.ok(events.some(observed("plugin", "ready")), detail);
-      } else {
+      } else if (cliMs >= probe.capMs) {
         // A probe that reaches its cap is classified by the wrapper's own CPU-wait reading: over
         // a quarter of the time waiting is CPU_STARVED, otherwise TIMEOUT (the rule itself is in
         // runtime-probe-cpu-counter.test.mjs). The reading here is normally about twice the
@@ -103,9 +111,20 @@ test(
         const starved = probe.cpuWaitMs > probe.elapsedMs / 4;
         const capCode = starved ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
         assert.equal(probe.code, capCode, detail);
-        assert.ok(probe.elapsedMs >= probe.capMs, `the probe reached its cap${detail}`);
         assert.ok(starved || !events.some(isModelTurn), `starved before its turn${detail}`);
         assert.equal(runtimeFailure(events), capCode, detail);
+        assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed", detail);
+        assert.equal(phaseAt(phases, "native-spawn"), undefined, detail);
+      } else {
+        // OpenClaw's own 15 s --probe-timeout covers the whole isolated run, local work
+        // included. When the hogs hold that work back long enough, it fires before the
+        // cap and the wrapper reports the CLI's timeout status as MODEL_PROBE_TIMEOUT
+        // without reading CPU wait (main run 40419787603: returned at 105.4 s of a
+        // 110 s cap with 66 s of CPU wait; finding 2673). The cap rule above does not
+        // apply to this path, so require exactly that code.
+        assert.equal(probe.code, "MODEL_PROBE_TIMEOUT", `turn timeout before the cap${detail}`);
+        assert.ok(cliMs >= 15_000, `the CLI ran its 15 s timeout${detail}`);
+        assert.equal(runtimeFailure(events), "MODEL_PROBE_TIMEOUT", detail);
         assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed", detail);
         assert.equal(phaseAt(phases, "native-spawn"), undefined, detail);
       }
