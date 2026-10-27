@@ -665,6 +665,7 @@
               "guides/deploy/service-keys",
               "guides/deploy/local-operations",
               "guides/deploy/local-memory",
+              "guides/deploy/strands-code-mode",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
               "guides/deploy/production-tui",
