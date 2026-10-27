@@ -238,6 +238,8 @@ No correlation recovers a bearer.
 
 The session bearer works while its process and upstream authorization survive.
 A replacement token must cover the remaining exchange budget plus the safety margin.
+An exchange retains its credential through replacement; standing is rechecked
+before its first upstream write.
 
 Authentication eligibility and terminal cleanup expiry are separate deadlines,
 both in elapsed monotonic time from the original capture; delayed acquisition

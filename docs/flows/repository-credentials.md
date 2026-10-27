@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
 updated: 2026-10-27
-last_updated_session: authoring-run/51557b14-ec25-4b33-98f2-b5a16d00d6ea
+last_updated_session: authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37
 ---
 
 # Repository credential service flow
@@ -39,7 +39,7 @@ graph TD
   Route -->|Denied| Denial["Local failure without private details"]
   Route -->|Admitted| Credential["Reuse valid credential<br/>or acquire and capture"]
   Credential -->|Uncertain issue| Blocked["Block minting<br/>retain cleanup obligation"]
-  Credential -->|Usable| Gate["Synchronous dispatch<br/>rechecks lease and deadline"]
+  Credential -->|Usable| Gate["Authorize first write<br/>recheck lease and deadline"]
   Gate --> Upstream["Upstream exchange with size limits and deadlines"]
   Upstream --> Result["Response or uncertainty<br/>without write replay"]
   Operator -->|Close| Closed["Deny local use<br/>cancel exchanges"]
@@ -215,38 +215,36 @@ buffers the body within the input bounds before credential use and refuses
 invalid JSON or any decoded string naming `tempCloneToken` with 400.
 
 `apps/controller/src/drivers/repo/credentials/service.ts:createCredentialService`
-reserves the exchange. Its
+reserves the exchange.
 `apps/controller/src/drivers/repo/credentials/lifecycle/exchange.ts:executeExchange`
-reuses sufficient credential validity or acquires replacement under common custody.
-Concurrent misses share acquisition in
+reuses a valid credential or acquires one through
 `apps/controller/src/drivers/repo/credentials/lifecycle.ts:createLifecycle`.
-The last departing waiter cancels it. Until settlement, acquisition-dependent
-requests return `not-dispatched` without new waiters or acquisitions. The original
-owner retains capture, settlement and cleanup obligations.
-Custody records the original monotonic timestamp and declared cleanup lifetime.
-After settlement, the use lifetime starts at that timestamp, capped by cleanup's
-deadline. Acceptance, reuse, dispatch and authentication honor the earlier deadline;
-cleanup retains separate expiry and callback drainage. Wall-clock changes cannot
-shorten custody or restart use lifetime.
-
+Concurrent misses share acquisition; the last departing waiter cancels it. Until
+settlement, dependent requests return `not-dispatched` without new acquisition.
+The original owner retains capture, settlement and cleanup obligations. Use
+lifetime starts at capture and cannot exceed cleanup expiry; wall-clock changes
+cannot shorten custody or restart use lifetime. An exchange retains its selected
+credential through replacement. The lifecycle supplies a temporary copy to its
+selected authenticator and clears it after use; a reference alone cannot retrieve
+authentication bytes.
 Production native requests use
 `apps/controller/src/drivers/repo/github/credentials/warm-use.ts:authorizePreparedGitSend`.
 The worker validates the live grant and lends prepared material for that exchange.
 Missing or uncertain material does not cause request-time issuance. The explicit
 development token factory instead borrows its process-owned static token.
 
-The handler and sender independently capture their allowed upstream origins.
+The handler and sender independently capture allowed upstream origins.
 `apps/controller/src/drivers/repo/credentials/transport/request-headers.ts:createUpstreamHeaders`
 validates adapter fields, rejects case-insensitive duplicates and reconstructs
-transport headers within the configured byte and field-count limits before dispatch. Credential bytes stay
-inside private adapter/sender callbacks. The sender's final-response-header wait
-starts after the input pipeline finishes within its size and time limits, unless headers have already
-arrived. Connection, upload, stall and total deadlines remain active in their
-respective phases. Upload-pack plans carry separate response byte, first-header,
-stall and total budgets; discovery, receive-pack and API requests retain their
-ordinary limits. The service caps every plan by `maxExchangeMs` and the session
-deadline. Static-token plans also cap upload-pack to the available lease. The
-streaming byte counter applies backpressure without buffering the pack.
+headers within byte and field-count limits. Credential bytes stay inside private
+callbacks. For owned credentials, the gate rechecks standing at the first upstream
+write after verified TLS; denial sends no request. Possibly dispatched requests
+are not replayed. The final-response-header timer starts after input completes
+unless headers already arrived. Connection, upload, stall and total deadlines
+remain active in their phases. Upload-pack has separate response-byte, first-header,
+stall and total budgets; other requests retain ordinary limits. Every plan is capped
+by `maxExchangeMs` and the session deadline; static-token upload-pack is also capped
+by its lease. The byte counter applies backpressure without buffering the pack.
 
 ### 5. Deliver an outcome and release ownership
 
@@ -356,6 +354,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 13:13: Preserve the selected exchange credential through rotation and authorize the first write. (authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37 - 852146b8faea0fd083abd2255190eed5c0e5f43d)
 
 - 2026-10-27 11:09: Separate prepared startup from development authority and defer listener admission until socket setup completes. (authoring-run/51557b14-ec25-4b33-98f2-b5a16d00d6ea - 0418ef3a2c116b73f025281395d92477daf665d2)
 

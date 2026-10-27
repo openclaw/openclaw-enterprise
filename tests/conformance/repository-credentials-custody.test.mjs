@@ -61,7 +61,7 @@ test("custody rejects copied attempts and handles and wipes callback-scoped byte
   record.useDeadlineMonoMs = 90000;
   record.uses++;
   let retained;
-  await custody.driver.withAccess(ref, "authenticate", async (bytes) => {
+  await custody.withUseBytes(record, async (bytes) => {
     retained = bytes;
     assert.equal(Buffer.from(bytes).toString(), "owned-material");
   });
@@ -72,8 +72,8 @@ test("custody rejects copied attempts and handles and wipes callback-scoped byte
   custody.settle(reservation);
   custody.release(record);
   await assert.rejects(
-    custody.driver.withAccess(ref, "retire", async () => {}),
-    /FOREIGN_CREDENTIAL/,
+    custody.withUseBytes(record, async () => {}),
+    /CREDENTIAL_CLOSED/,
   );
 });
 
@@ -161,13 +161,16 @@ test("custody limits admit exactly their maximum and refuse one more", async (t)
   assert.throws(() => retain(1), /RENEWAL_LIMIT/);
   const held = Promise.withResolvers();
   t.after(() => held.resolve());
+  const record = custody.lookup(ref);
+  record.useDeadlineMonoMs = 90000;
+  record.uses++;
   const pending = [];
   for (let index = 0; index < maximumCallbacks; index++) {
-    pending.push(custody.driver.withAccess(ref, "retire", () => held.promise));
+    pending.push(custody.withUseBytes(record, () => held.promise));
     pending.push(custody.driver.withRenewal(renewals[0], () => held.promise));
   }
   await assert.rejects(
-    custody.driver.withAccess(ref, "retire", async () => {}),
+    custody.withUseBytes(record, async () => {}),
     /CALLBACK_CAPACITY/,
   );
   await assert.rejects(
@@ -191,7 +194,7 @@ test("custody checks the attempt action, signals capture and closes access with 
   record.uses++;
   close();
   await assert.rejects(
-    custody.driver.withAccess(ref, "authenticate", async () => {}),
+    custody.withUseBytes(record, async () => {}),
     /CREDENTIAL_CLOSED/,
   );
 });

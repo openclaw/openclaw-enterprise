@@ -47,6 +47,7 @@
     "tests/integration/repository-credentials-server-timeout.test.mjs",
     "tests/integration/protected-repository-metadata-read.test.mjs",
     "tests/integration/repository-credentials-http.test.mjs",
+    "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
@@ -383,6 +384,12 @@
     },
     {
       "path": "tests/integration/repository-credentials-http.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-original-lease.test.ts",
+      "expectedTests": [
+        "an approved exchange keeps its original lease through replacement and withdrawal fences the first write"
+      ]
     },
     {
       "path": "tests/integration/public-github-read-http.test.mjs"

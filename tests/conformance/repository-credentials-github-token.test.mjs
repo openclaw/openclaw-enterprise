@@ -359,10 +359,6 @@ test("static acquisition checks every bound before borrowing and never dispatche
   assert.equal(acquired.kind, "acquired");
   assert.equal(acquired.expiresAtWallMs - acquired.observedWallMs, 3600000);
   assert.equal(session.custody.records.size, 1);
-  const [record] = session.custody.records;
-  await session.custody.driver.withAccess(record.ref, "retire", async (bytes) => {
-    assert.equal(Buffer.from(bytes).toString(), oauthToken);
-  });
   fixture.owner.close();
   const closed = await outcome({});
   assert.deepEqual(

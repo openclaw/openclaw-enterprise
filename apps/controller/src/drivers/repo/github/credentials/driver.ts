@@ -39,6 +39,6 @@ export function createGitHubDriver(options: GitHubDriverOptions): RepositoryBack
     finalize: state.finalize,
     settle: state.settle,
     plan: state.plan,
-    withAuthentication: createCredentialAuthentication({ state, custody, clock }),
+    prepareAuthentication: createCredentialAuthentication({ state, clock }),
   });
 }

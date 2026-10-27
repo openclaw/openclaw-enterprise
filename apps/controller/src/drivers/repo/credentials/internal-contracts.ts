@@ -12,7 +12,7 @@ import type {
 declare const exchangeIdentity: unique symbol;
 export type ExchangeRef = Readonly<{ [exchangeIdentity]: true }>;
 export interface DispatchGate {
-  dispatch<T>(cancel: () => void, open: () => T): T;
+  dispatch<T>(cancel: () => void, open: () => T): T | Promise<T>;
   track(io: Promise<void>): void;
 }
 export type ExchangeOutcome =
