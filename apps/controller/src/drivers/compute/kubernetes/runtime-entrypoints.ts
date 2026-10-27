@@ -128,8 +128,8 @@ const RUNTIME_FAILURE_CHECKS = new Set(${JSON.stringify(RUNTIME_FAILURE_CHECKS)}
 const RUNTIME_DIAGNOSTIC_CHECKS = new Set(${JSON.stringify(RUNTIME_DIAGNOSTIC_CHECKS)});
 `;
 
-// A provider-owned Harness (a Codex app-server or a dedicated OpenClaw worker) gets
-// only the transport token's verifier and no Compute status port, and Compute cannot
+// A provider-owned Harness gets a prepared transport token or its verifier and no
+// Compute status port, and Compute cannot
 // reach it through a Pod proxy. While a startup failure is held nothing else listens
 // on the Harness port, so the failure is served there, through the provider's
 // bearer-passthrough exposure, to a caller presenting the token the verifier names.
@@ -153,7 +153,13 @@ function runtimeStatusPort() {
 }
 
 function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
-  const verifier = process.env.APP_TOKEN_SHA;
+  const { createHash: heldFailureHash, timingSafeEqual: heldFailureEqual } = require("node:crypto");
+  let verifier = process.env.APP_TOKEN_SHA;
+  const token = process.env.APP_SERVER_TOKEN;
+  if (verifier !== undefined && token !== undefined) return;
+  if (verifier === undefined && typeof token === "string" && token.length > 0) {
+    verifier = heldFailureHash("sha256").update(token).digest("hex");
+  }
   const port = Number(process.env.APP_SERVER_PORT);
   if (
     runtimeStatusPort() !== undefined ||
@@ -169,7 +175,6 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
   if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
     throw new Error("Runtime failure code is invalid.");
   }
-  const { createHash: heldFailureHash, timingSafeEqual: heldFailureEqual } = require("node:crypto");
   const expected = Buffer.from(verifier, "hex");
   const body = JSON.stringify({
     runtimeFailure: {

@@ -1,3 +1,4 @@
+import * as StrandsBox from "../drivers/sandbox/strands-box.ts";
 import { assertConfigurationSchema, requireConfiguration } from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
@@ -681,8 +682,9 @@ export async function loadInstallationConfiguration(options: {
           packageRoot,
           options.packageRoot !== undefined,
         );
+  const strandsBox = sandboxSelection?.id === "strands-box-sandbox" && sandboxPackage === undefined;
   const bundledSandboxPackage =
-    sandboxSelection !== undefined && sandboxPackage === undefined
+    sandboxSelection !== undefined && sandboxPackage === undefined && !strandsBox
       ? await loadBundledOpenShellSandboxDriver()
       : undefined;
 
@@ -724,13 +726,18 @@ export async function loadInstallationConfiguration(options: {
       : selected(
           sandboxSelection,
           "sandbox",
-          sandboxPackage?.implementation ?? "openshell",
-          sandboxPackage?.module ?? bundledSandboxPackage!,
+          sandboxPackage?.implementation ?? (strandsBox ? "strands-box" : "openshell"),
+          sandboxPackage?.module ?? (strandsBox ? StrandsBox : bundledSandboxPackage!),
         );
   if (sandbox !== undefined && computePackage !== undefined) {
     throw new Error("drivers.sandbox requires the bundled Kubernetes Compute Driver.");
   }
-  if (sandbox !== undefined && sandboxPackage === undefined && openShellBackend === undefined) {
+  if (
+    sandbox !== undefined &&
+    sandboxPackage === undefined &&
+    !strandsBox &&
+    openShellBackend === undefined
+  ) {
     throw new Error(
       "The bundled OpenShell drivers.sandbox requires a backend entry with type openshell.",
     );
@@ -797,18 +804,34 @@ export async function loadInstallationConfiguration(options: {
       ? undefined
       : (options.createOpenShellBackend?.(openShellBackend) ??
         createOpenShellBackend(openShellBackend));
+  if (
+    strandsBox &&
+    (compute.configuration as unknown as KubernetesComputeDriverOptions).executionCluster !==
+      undefined
+  ) {
+    throw new Error("Strands Box currently requires same-cluster Compute and Gateway routing.");
+  }
   const sandboxDriver =
     sandbox === undefined
       ? undefined
       : options.createSandboxDriver !== undefined
         ? validateCreatedSandboxDriver(options.createSandboxDriver(sandbox, openShell), sandbox)
-        : sandboxPackage === undefined
-          ? new bundledSandboxPackage!.OpenShellSandboxDriver(sandbox.configuration, {
-              id: sandbox.id,
-              implementation: sandbox.implementation,
-              backend: openShell!,
-            })
-          : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
+        : strandsBox
+          ? new StrandsBox.StrandsBoxSandboxDriver(
+              sandbox.configuration as unknown as StrandsBox.StrandsBoxOptions,
+              {
+                id: sandbox.id,
+                authentication: (compute.configuration as unknown as KubernetesComputeDriverOptions)
+                  .authentication,
+              },
+            )
+          : sandboxPackage === undefined
+            ? new bundledSandboxPackage!.OpenShellSandboxDriver(sandbox.configuration, {
+                id: sandbox.id,
+                implementation: sandbox.implementation,
+                backend: openShell!,
+              })
+            : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
   const credentialGatewayDriver =
     credentialGateway === undefined
       ? undefined

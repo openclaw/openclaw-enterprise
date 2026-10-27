@@ -173,6 +173,14 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
       { check: "model-probe", code: "AUTHENTICATION_FAILED" },
     ],
     [
+      "rejected model key with the prepared base transport token",
+      {
+        env: { APP_SERVER_TOKEN: TOKEN },
+        probe: failedProbe("unexpected status 401 Unauthorized: invalid api key"),
+      },
+      { check: "model-probe", code: "AUTHENTICATION_FAILED" },
+    ],
+    [
       "failed login",
       { login: { status: 1, stderr: "login failed" } },
       { check: "login", code: "LOGIN_FAILED" },
@@ -258,6 +266,26 @@ test("a Compute-owned Codex Harness keeps its held failure on the private status
     [{ port: 18791, host: "0.0.0.0" }],
     "nothing but the Compute status server listens",
   );
+});
+
+test("a provider-owned Codex Harness refuses missing or ambiguous held-failure credentials", () => {
+  for (const env of [
+    {},
+    { APP_SERVER_TOKEN: "" },
+    { APP_TOKEN_SHA: "invalid" },
+    { ...providerEnv, APP_SERVER_TOKEN: TOKEN },
+    { APP_TOKEN_SHA: "invalid", APP_SERVER_TOKEN: TOKEN },
+  ]) {
+    const { servers, appServerStarts } = runCodexEntrypoint({
+      env,
+      probe: failedProbe("unexpected status 401 Unauthorized: invalid api key"),
+    });
+    assert.equal(appServerStarts, 0);
+    assert.deepEqual(
+      servers.filter((server) => server.listening !== undefined),
+      [],
+    );
+  }
 });
 
 test("a provider-owned Codex Harness with a working model starts the app-server and serves no status", () => {
