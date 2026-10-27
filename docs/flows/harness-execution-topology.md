@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-26
-last_updated_session: Codex/01a16571-f230-73d0-b786-f83300124449
+updated: 2026-10-27
+last_updated_session: authoring-run/7ca0283f-b9a4-473d-8e9f-8cf27536aaa1
 ---
 
 # Harness Execution Topology Flow
@@ -75,7 +75,10 @@ See [deployment modes](../reference/agents/deployment.md#execution-mode).
 `apps/controller/src/worker.ts:ControllerWorker`
 
 The worker claims version work, rechecks actor/ownership and the frozen Harness,
-then calls `ComputeDriver.prepareRevision`.
+then calls `ComputeDriver.prepareRevision`. Maintenance uses the shortest
+Compute, selected Sandbox `maintenanceIntervalMs`, or repository interval.
+Sandbox maintenance carries `existingHarnessOnly: true`; lost Sandboxes require
+redeployment. See [Sandbox lifecycle](../reference/drivers/sandbox.md#admission-and-lifecycle).
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
@@ -115,31 +118,30 @@ After Harness readiness, preparation starts a candidate Gateway if its predecess
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:harnessRequirementsFromDeployment`
 
-For a provider-owned Harness, Compute preserves the full prepared command and
-also supplies `supervisedCommand` when it owns the generic init wrapper. A
-provider with private process supervision may use that explicit entrypoint;
-other providers retain the full command. Compute passes the revision transport
-token separately for trusted provider readiness. The Strands candidate mounts
-that readiness Secret only in its supervisor and requires authenticated native
-initialization before Pod readiness. Its workload runs in a separate container
-PID namespace in the same revision Pod. Box's argument-scoped compatibility
-permits apply only to that explicit container backend; the ordinary namespace
-backend retains its prior refusals. See
+Compute preserves the prepared command and supplies `supervisedCommand` when
+it owns the generic init wrapper. Providers with private process supervision
+may use that entrypoint; others retain the full command. Compute passes the Agent
+transport token for trusted provider readiness. Strands mounts its revision-owned
+readiness Secret only in the supervisor; the credential remains Agent-scoped.
+The [credential reference](../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
+owns its lifetime. Authenticated native initialization gates Pod readiness.
+The workload has a separate container PID namespace in the same Pod. Box's
+argument-scoped compatibility permits apply to its explicit container backend;
+the ordinary namespace backend keeps its refusals. See
 [RFC-0024](../../specs/rfcs/0024-strands-box-sandbox.md#containment-and-supervision)
 for the candidate's qualification limits; readiness alone is not E2E proof.
 
-`scripts/generate-strands-box-seccomp.mjs` preserves the captured RuntimeDefault
-profile and adds exact setup operations for Box's original remount arguments.
-The node administrator installs that profile before deployment. The provider
-selects its Localhost path; tenants cannot install profiles. Box applies its
-separate workload filter after setup, which still rejects mount creation.
+`scripts/generate-strands-box-seccomp.mjs` adds exact setup operations for Box's
+remount arguments to captured RuntimeDefault. The node administrator installs
+this Localhost profile before deployment; tenants cannot. Box's separate workload
+filter still rejects mount creation.
 
 `deploy/runtime/strands-box/transport.mjs` bounds shared framing and channel
 buffers. IPC backpressure pauses the originating TCP stream until drain; it
 does not truncate accepted data. A disconnected or persistently slow client
-closes only its channel. Malformed framing or loss of the shared IPC stream
-stops the revision fail-closed. These paths do not add destinations, credentials,
-retries or sandbox permissions.
+closes only its channel. A simultaneous open at channel capacity rejects the
+new channel and preserves live channels. Malformed framing or loss of the shared
+IPC stream stops the revision fail-closed.
 
 `deploy/runtime/openclaw-node-message-pipe.patch` changes the native node
 launcher's message transport. A package that declares `byte-pipe-v1` uses a
@@ -157,15 +159,13 @@ upstream `run_main`. The app-server discovers it at the packaged host pathname;
 native code-mode tools remain enabled and Box's W^X restriction stays enforced.
 See [code-mode packaging and verification](../guides/deploy/strands-code-mode.md).
 
-`deploy/runtime/Dockerfile:openclaw-build` applies the pinned-runtime pairing
-publication repair before compilation. A pending write for another device does
-not invalidate a node's committed pairing. Binding reads install committed
-receipts before use; token revocation, rotation, removal and changed approvals
-still reject stale dispatch. Unknown publication state and foreign-revision
-invalidation remain fail-closed. This is an OpenClaw Gateway repair shared by
-all Sandbox Drivers; it adds no transport retry or provider-specific auth rule.
-`scripts/build-runtime-assets.mjs:289` records the patch hash
-in the image provenance. Real Gateway and SQLite regressions run during assembly.
+`deploy/runtime/Dockerfile:openclaw-build` repairs pairing publication before
+compilation. Binding reads install committed receipts; another device's pending
+write preserves the node's pairing. Revocation, rotation, removal, changed
+approvals, unknown publication state and foreign-revision invalidation reject
+stale dispatch. The repair applies across Sandbox Drivers.
+`scripts/build-runtime-assets.mjs` records its patch hash in image provenance;
+Gateway and SQLite regressions run during assembly.
 
 Compute owns the Gateway; SandboxDriver owns the separate Harness and ServiceAccount.
 The Harness retains node identity, workspace and model credentials. OpenShell delivers
@@ -201,8 +201,11 @@ Sandbox receives projections and login mode through `HarnessWorkloadRequirements
 Every Compute Pod template, ordinary allow policy and Gateway/Harness peer requires
 the [network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
 
-`providerHarnessReady` requires one nonterminating Ready Pod with exact Agent,
-revision and role labels. Activation rechecks before routing; malformed observations
+`providerHarnessReady` first requires one nonterminating Pod with exact ownership
+and profile labels. Strands can then report authenticated held startup failure
+through its private diagnostic Service, which publishes unready endpoints.
+The native Service remains readiness-gated. Preparation and activation require
+Pod Ready and authenticated serving status before routing; malformed observations
 trigger cleanup. See the [readiness contract](../reference/drivers/kubernetes-compute.md#requirements).
 
 ### 3. Publish safely and complete activation once
@@ -307,6 +310,8 @@ ingress and reached the administrative route. Check
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 15:13: Align accompanying Sandbox routing, credential, readiness, transport and maintenance changes. (authoring-run/7ca0283f-b9a4-473d-8e9f-8cf27536aaa1 - 76aa7cc18797ae195261f92200f90e22e48eae38)
 
 - 2026-10-16 17:02: Persist worktrees and Git sources. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - 68b95a2514f183b194a478e72d734b719bf4c2e8)
 

@@ -1,13 +1,12 @@
 # Kubernetes networking and isolation
 
-Configure tenant network boundaries, private Agent routes, and existing
-namespace ownership for the [Kubernetes Compute Driver](../kubernetes-compute.md).
+Network, private Agent route and namespace settings for
+[Kubernetes Compute](../kubernetes-compute.md).
 
 ## Networking
 
-Configure the cluster DNS namespace and Pod labels and the gateway port.
-Peer namespaces must be DNS labels of at most 63 characters; startup
-refuses others.
+Configure cluster DNS namespace/Pod labels and the gateway port.
+Peer namespaces must be DNS labels of at most 63 characters.
 Set `network.gatewayTrustedProxyCidrs` to nonempty, valid CIDRs for the proxy
 socket sources. This trusted Installation setting has no production default and
 rejects all-source ranges, including IPv4-mapped equivalents. Without private
@@ -15,8 +14,8 @@ routing, also configure the namespace and Pod selectors in
 `network.gatewayClients` for your authenticated proxy.
 
 `podLabels` use [Kubernetes label syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set), checked before provisioning.
-For every peer selector, values may be empty; key names and values allow 63
-characters, DNS prefixes 253.
+Peer selector values may be empty; names and values allow 63 characters, DNS
+prefixes 253.
 
 Each tenant starts with default-deny ingress and egress. Explicit policies allow
 DNS (UDP/TCP ports `53` and `5353` through `allow-dns`), approved gateway clients,
@@ -25,24 +24,28 @@ Cross-tenant traffic, traffic between different Agents, Kubernetes API access,
 and cloud metadata access remain denied where those addresses fall inside the
 model egress exclusions below.
 
-A provisioning Sandbox Driver may own the dedicated Harness endpoint. Configure
-`network.providerHarness` with its namespace, Pod labels, Service ClusterIP in
-`address`, and `port`. Compute maps the hostname to that address,
-limits Gateway egress to the peer, and disables its direct Harness route.
-This ClusterIP bridge supports only owned k3d profiles advertising
-`*.openshell.localhost`; production cannot use it. Drivers without
-the endpoint capability retain ordinary Service or private routing.
+For a Sandbox-owned dedicated Harness endpoint, configure `network.providerHarness` with:
 
-For Compute-owned startup failure evidence, plugin reporting, and on-demand
-deployment diagnostics, set `network.pluginStatusProxySourceCidrs` to the
-Kubernetes API server's source addresses for Pod proxy requests, as `/32` or
-`/128` addresses: wider ranges warn and all-address ranges fail. On overlay
-networks, the source may be the control-plane node's overlay address rather than
-its node IP; verify it across
-nodes with enforced policies. The policy allows those sources only to the private
-status port, TCP/18791, even when an Agent has no enabled plugins. Worker and API
-ServiceAccounts each need namespace-local `get` on `pods/proxy`. Omitting the list
-adds no API-proxy ingress rule; blocked status traffic stays unavailable.
+- `mode: namespace` and `port`: cluster DNS must name a Service in the prepared
+  tenant Namespace on that port; Gateway and Harness must share a cluster.
+  The Sandbox's `harnessPeerLabels` must select the exact Namespace, Agent,
+  revision and `agent` workload role. Missing labels grant no peer. Preparation
+  retains the serving predecessor's peer until activation pins the policy.
+- `mode: fixed` (or omit `mode`), namespace, Pod labels, Service ClusterIP in
+  `address`, and `port`: Compute maps the hostname to that address and limits
+  Gateway egress to the configured peer. This bridge supports only owned k3d
+  profiles advertising `*.openshell.localhost`; production cannot use it.
+
+Both disable Compute's direct Harness route; other Drivers retain ordinary routing.
+[Harness ingress and workspace-node enrollment selectors](../sandbox.md#driver-interface) are separate.
+
+For Compute-owned startup failure evidence, plugin reporting and deployment
+diagnostics, set `network.pluginStatusProxySourceCidrs` to the API server's Pod
+proxy source addresses as `/32` or `/128`: wider ranges warn, all-address ranges
+fail. Overlay sources may differ from node IPs; verify across nodes with enforced
+policies. This permits only private TCP/18791, even without enabled plugins.
+Worker and API ServiceAccounts each need namespace-local `get` on `pods/proxy`.
+Omitting the list adds no API-proxy ingress; blocked status stays unavailable.
 It also restarts the Gateway once on each
 dedicated Codex first deploy. This setting does not expose the native
 gateway or grant workloads Kubernetes API access.
@@ -186,11 +189,10 @@ Existing OpenShell Sandboxes are not relabeled because Sandbox names use the
 Agent revision ID: redeploy the Agent. For development, follow the
 [development recovery procedure](../../../guides/deploy/local-operations.md#build-images-for-local-kubernetes).
 
-The separately installed OpenShell gateway needs separate scoped DNS/API and
-callback policies. Its caller, the OpenShell supervisor Pod
-(`openshell.ai/boundary-role=supervisor`), carries no `openclaw.dev` labels, so
-supervisor-labelled peers admit it; an Agent Gateway admits only its Sandbox's.
-Platform services keep their Helm policy selectors.
+The installed OpenShell gateway needs scoped DNS/API and callback policies.
+Its supervisor Pod (`openshell.ai/boundary-role=supervisor`) lacks `openclaw.dev`
+labels; supervisor-labelled peers admit it. An Agent Gateway admits only its
+Sandbox's supervisor. Platform services keep Helm selectors.
 
 Profile assignment is a trusted controller decision. The label qualifies a Pod
 for network grants but supplies no workload identity or authorization to
