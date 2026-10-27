@@ -74,7 +74,10 @@ export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 31;
 // and the wrapper must not start OpenClaw; `retry` completes the log line's
 // remedy. The wrapper provides `spawn`, `logStartupPhase` and
 // `publishRuntimeFailure`.
-export function openClawStateMigrationHelper(owner: "Gateway" | "Harness", retry: string): string {
+export function openClawStateMigrationHelper(
+  owner: "Gateway" | "Harness" | "Native worker",
+  retry: string,
+): string {
   return String.raw`
 function outdatedOpenClawDatabases(stateDirectory) {
   const { join } = require("node:path");

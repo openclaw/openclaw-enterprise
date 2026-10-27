@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
+import { writeSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -27,6 +29,73 @@ const helper = openClawStateMigrationHelper("Gateway", "restart the Pod");
 const nodeRequire = createRequire(import.meta.url);
 const CURRENT = OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION;
 const STATE_CURRENT = OPENCLAW_STATE_DATABASE_SCHEMA_VERSION;
+const TRANSPORT_TOKEN = "fixture-transport-token";
+// The Compute status port's identity, and a Sandbox provider's transport exposure (the
+// token's verifier, never the token): where a held startup failure is read.
+const COMPUTE_STATUS_ENV = {
+  OPENCLAW_RUNTIME_STATUS_PORT: "18791",
+  OPENCLAW_AGENT_REVISION_ID: "rev_fixture",
+  OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent",
+  OPENCLAW_POD_UID: "pod-fixture",
+};
+const PROVIDER_TRANSPORT_ENV = {
+  APP_TOKEN_SHA: createHash("sha256").update(TRANSPORT_TOKEN).digest("hex"),
+  APP_SERVER_PORT: "18790",
+};
+
+// Answers one request to a captured server handler.
+async function call(handler, { url = "/openclaw/runtime/status", authorization } = {}) {
+  let status;
+  let body = "";
+  await new Promise((resolve) => {
+    handler(
+      { method: "GET", url, headers: authorization === undefined ? {} : { authorization } },
+      {
+        writeHead(code) {
+          status = code;
+        },
+        end(chunk) {
+          body += chunk ?? "";
+          resolve();
+        },
+      },
+    );
+  });
+  return { status, body: body === "" ? undefined : JSON.parse(body) };
+}
+
+// What a held startup failure serves: on the Compute status port, the status Compute
+// validates (exact revision, container and Pod) with readiness held at 503; on the
+// provider's transport, the failure to the token holder only. Never any log text.
+async function assertHeldFailureServed(servers, env, check) {
+  const listening = servers.filter((server) => server.port !== undefined);
+  assert.equal(listening.length, 1, JSON.stringify(listening));
+  const [{ port, handler }] = listening;
+  const compute = env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined;
+  assert.equal(String(port), compute ? env.OPENCLAW_RUNTIME_STATUS_PORT : env.APP_SERVER_PORT);
+  const authorization = compute ? undefined : `Bearer ${TRANSPORT_TOKEN}`;
+  const answer = await call(handler, { authorization });
+  assert.equal(answer.status, 200);
+  const { checkedAt, ...held } = answer.body.runtimeFailure;
+  assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+  assert.deepEqual(held, { component: "agent", check, code: "UNAVAILABLE" });
+  if (compute) {
+    assert.deepEqual(Object.keys(answer.body), [
+      "revisionId",
+      "container",
+      "podUid",
+      "runtimeFailure",
+    ]);
+    assert.deepEqual(
+      [answer.body.revisionId, answer.body.container, answer.body.podUid],
+      ["rev_fixture", "agent", "pod-fixture"],
+    );
+    assert.equal((await call(handler, { url: "/readyz" })).status, 503);
+  } else {
+    assert.deepEqual(Object.keys(answer.body), ["runtimeFailure"]);
+    assert.equal((await call(handler, {})).status, 401);
+  }
+}
 
 // Agent databases by agent id at their schema versions, and optionally the
 // shared state database (`shared`) with its content marker (`marker`).
@@ -464,11 +533,17 @@ test("Docker development Gateway exits without starting OpenClaw on an unexpecte
 
 // Runs the Harness program, with its node state in `directory`/node-state, until it
 // starts both children or holds. Real files, under `directory` as HOME; replaced:
-// runtime asset publication, and every child process. Native setup succeeds; Doctor
-// runs `doctor(child)`. Records the children in start order with their environments.
-async function runHarness(directory, doctor = () => assert.fail("Doctor must not run")) {
+// runtime asset publication, every child process and HTTP listener. Native setup
+// runs `setup(options)` (it succeeds by default); Doctor runs `doctor(child)`. Records
+// the children in start order with their environments, and the servers it listens with.
+async function runHarness(
+  directory,
+  doctor = () => assert.fail("Doctor must not run"),
+  { env = {}, setup = () => ({ status: 0 }) } = {},
+) {
   const spawned = [];
   const errors = [];
+  const servers = [];
   let holds = 0;
   const context = {
     Buffer,
@@ -476,6 +551,7 @@ async function runHarness(directory, doctor = () => assert.fail("Doctor must not
     JSON,
     Math,
     Promise,
+    URL,
     clearTimeout,
     setTimeout,
     console: { error: (line) => errors.push(String(line)), log() {} },
@@ -488,6 +564,7 @@ async function runHarness(directory, doctor = () => assert.fail("Doctor must not
         OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
         // A model credential the Codex child needs and Doctor must not receive.
         OPENAI_API_KEY: "sk-fixture-harness-model-credential",
+        ...env,
       },
       execPath: "/usr/local/bin/node",
       on() {},
@@ -498,6 +575,9 @@ async function runHarness(directory, doctor = () => assert.fail("Doctor must not
       holds += 1;
     },
     require(specifier) {
+      if (specifier === "node:http") {
+        return { createServer: (handler) => listener(servers, handler) };
+      }
       if (specifier !== "node:child_process") {
         return nodeRequire(specifier);
       }
@@ -515,7 +595,7 @@ async function runHarness(directory, doctor = () => assert.fail("Doctor must not
       };
       return {
         execFile() {},
-        spawnSync: (command, args, options) => (record(args, options), { status: 0 }),
+        spawnSync: (command, args, options) => (record(args, options), setup(options)),
         spawn(command, args, options) {
           const child = new EventEmitter();
           child.kill = () => {};
@@ -538,7 +618,19 @@ async function runHarness(directory, doctor = () => assert.fail("Doctor must not
   for (let turn = 0; turn < 100 && holds === 0 && spawned.length < 3; turn += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
-  return { spawned, synchronous, errors, holds };
+  return { spawned, synchronous, errors, holds, servers };
+}
+
+// A stand-in for node:http's server that records its handler and the port it listens on.
+function listener(servers, handler) {
+  const server = { handler, port: undefined };
+  servers.push(server);
+  return {
+    on() {},
+    listen(port) {
+      server.port = port;
+    },
+  };
 }
 
 // A Harness's workspace node keeps a shared state database, and no agent database,
@@ -584,20 +676,103 @@ test("Harness migrates older workspace node state with the node's environment be
 });
 
 test("Harness holds without native setup or children when Doctor leaves older workspace node state", async (t) => {
-  const directory = await harnessDirectory(t, STATE_CURRENT - 1);
-  const outcome = await runHarness(directory, (child) => child.emit("exit", 1, null));
-  assert.deepEqual(
-    outcome.spawned.map(({ name }) => name),
-    ["doctor"],
-  );
-  assert.equal(outcome.holds, 1);
-  const message = outcome.errors.at(-1);
-  assert.match(message, /^Harness state migration failed: openclaw doctor --fix \(exit-1\) left /);
-  assert.ok(
-    message.includes(`${sharedPath(join(directory, "node-state"))} at schema ${STATE_CURRENT - 1}`),
-  );
-  assert.match(message, /then deploy the Agent again\.$/);
-  assert.equal(readVersion(sharedPath(join(directory, "node-state"))), STATE_CURRENT - 1);
+  // Codex, which serves this container's runtime status, never starts, so the supervisor
+  // serves the held check itself: to Compute on the status port, or to a Sandbox
+  // provider's token holder on the Harness port (finding 2686).
+  for (const env of [COMPUTE_STATUS_ENV, PROVIDER_TRANSPORT_ENV]) {
+    const directory = await harnessDirectory(t, STATE_CURRENT - 1);
+    const outcome = await runHarness(directory, (child) => child.emit("exit", 1, null), { env });
+    assert.deepEqual(
+      outcome.spawned.map(({ name }) => name),
+      ["doctor"],
+    );
+    assert.equal(outcome.holds, 1);
+    const message = outcome.errors.at(-1);
+    assert.match(
+      message,
+      /^Harness state migration failed: openclaw doctor --fix \(exit-1\) left /,
+    );
+    assert.ok(
+      message.includes(
+        `${sharedPath(join(directory, "node-state"))} at schema ${STATE_CURRENT - 1}`,
+      ),
+    );
+    assert.match(message, /then deploy the Agent again\.$/);
+    assert.equal(readVersion(sharedPath(join(directory, "node-state"))), STATE_CURRENT - 1);
+    await assertHeldFailureServed(outcome.servers, env, "state-migration");
+  }
+});
+
+test("Harness holds on a failed native setup with one bounded line and serves the held check", async (t) => {
+  // Setup reports a long multi-line message with control characters, and setting paths
+  // of which only plain key paths are kept (finding 2696 and review-3817).
+  const message = `first line\n\u001b[31mred\u001b[0m\r\t${"x".repeat(1000)}.`;
+  const issues = [
+    { path: "agents.defaults.skipBootstrap", message: "expected boolean", allowedValues: ["true"] },
+    { path: "agents.defaults.skipBootstrap" },
+    { path: "agents.list.0.id" },
+    { path: "models.providers.sk-\u001b[0m" },
+    { path: `a.${"b".repeat(80)}` },
+    { path: { value: "secret" } },
+    { path: "one" },
+    { path: "two" },
+    { path: "three" },
+    { path: "four" },
+  ];
+  for (const env of [COMPUTE_STATUS_ENV, PROVIDER_TRANSPORT_ENV]) {
+    const directory = await harnessDirectory(t);
+    const outcome = await runHarness(directory, undefined, {
+      env,
+      setup(options) {
+        writeSync(
+          options.stdio[1],
+          JSON.stringify({ ok: false, error: { type: "cli_error", message }, issues }, null, 2),
+        );
+        return { status: 1, signal: null };
+      },
+    });
+    assert.deepEqual(
+      outcome.spawned.map(({ name }) => name),
+      ["setup"],
+      "neither child starts on an uninitialized workspace",
+    );
+    assert.equal(outcome.holds, 1);
+    const failures = outcome.errors.filter((line) => line.includes("Workspace initialization"));
+    assert.equal(failures.length, 1);
+    const [line] = failures;
+    // eslint-disable-next-line no-control-regex -- matching control characters is the point
+    assert.doesNotMatch(line, /[\u0000-\u001f\u007f-\u009f]/u);
+    const reported =
+      /^Workspace initialization failed: openclaw setup --baseline \(exit-1\) reported: (.*) \(invalid settings: (.*)\)\. Codex was not started\. Fix the cause, then deploy the Agent again\.$/u.exec(
+        line,
+      );
+    assert.ok(reported, line);
+    assert.equal(reported[1], `first line [31mred [0m ${"x".repeat(1000)}`.slice(0, 400));
+    assert.equal(reported[2], "agents.defaults.skipBootstrap, agents.list.0.id, one, two, three");
+    assert.ok(
+      outcome.errors.some((entry) => /"phase":"workspace-baseline","outcome":"failed"/.test(entry)),
+    );
+    await assertHeldFailureServed(outcome.servers, env, "workspace-baseline");
+  }
+});
+
+test("Harness names a failed native setup that reported no message", async (t) => {
+  for (const [result, outcome] of [
+    [{ status: null, signal: "SIGKILL" }, "SIGKILL"],
+    [
+      { status: null, error: Object.assign(new Error("spawn"), { code: "EACCES" }) },
+      "error-EACCES",
+    ],
+    [{ status: 2, signal: null }, "exit-2"],
+  ]) {
+    const directory = await harnessDirectory(t);
+    const run = await runHarness(directory, undefined, { setup: () => result });
+    assert.equal(run.holds, 1);
+    assert.equal(
+      run.errors.at(-1),
+      `Workspace initialization failed: openclaw setup --baseline (${outcome}) reported no error message. Codex was not started. Fix the cause, then deploy the Agent again.`,
+    );
+  }
 });
 
 // Runs the dedicated OpenClaw worker program, with its node state in
@@ -605,20 +780,25 @@ test("Harness holds without native setup or children when Doctor leaves older wo
 // replaced: runtime asset publication, the model probe (it answers "ok"), the
 // readiness listener (`ready()` asks it) and every child process. Doctor runs
 // `doctor(child, { ready })`; `node identity` answers with a fixed device id.
-async function runNativeWorker(directory, doctor = () => assert.fail("Doctor must not run")) {
+async function runNativeWorker(
+  directory,
+  doctor = () => assert.fail("Doctor must not run"),
+  { env = COMPUTE_STATUS_ENV } = {},
+) {
   const spawned = [];
   const identities = [];
   const errors = [];
-  let readiness;
+  const servers = [];
   let holds = 0;
   // The kubelet's readiness request on the Compute status port.
-  const ready = () =>
-    new Promise((resolve) => {
-      readiness(
-        { method: "GET", url: "/readyz" },
-        { writeHead: (status) => resolve(status), end() {} },
-      );
-    });
+  const ready = async () =>
+    (
+      await call(
+        servers.find(({ port }) => port === Number(COMPUTE_STATUS_ENV.OPENCLAW_RUNTIME_STATUS_PORT))
+          .handler,
+        { url: "/readyz" },
+      )
+    ).status;
   const probe = JSON.stringify({
     auth: {
       probes: {
@@ -648,7 +828,7 @@ async function runNativeWorker(directory, doctor = () => assert.fail("Doctor mus
         OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
         OPENCLAW_NATIVE_WORKER_CAPACITY: "8",
         OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify(inference),
-        OPENCLAW_RUNTIME_STATUS_PORT: "18791",
+        ...env,
         OPENCLAW_HARNESS_MODEL: "openai/fixture",
         OPENCLAW_HARNESS_PROVIDER: "openai",
         OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
@@ -669,13 +849,7 @@ async function runNativeWorker(directory, doctor = () => assert.fail("Doctor mus
     },
     require(specifier) {
       if (specifier === "node:http") {
-        return {
-          createServer: (handler) => ({
-            listen() {
-              readiness = handler;
-            },
-          }),
-        };
+        return { createServer: (handler) => listener(servers, handler) };
       }
       if (specifier !== "node:child_process") {
         return nodeRequire(specifier);
@@ -708,7 +882,7 @@ async function runNativeWorker(directory, doctor = () => assert.fail("Doctor mus
   for (let turn = 0; turn < 100 && holds === 0 && !connected(); turn += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
-  return { spawned, synchronous, identities, errors, holds, ready };
+  return { spawned, synchronous, identities, errors, holds, ready, servers };
 }
 
 test("Native worker connects current and fresh node state without Doctor", async (t) => {
@@ -750,18 +924,30 @@ test("Native worker migrates older node state without the model credential befor
 });
 
 test("Native worker holds unready without connecting when Doctor leaves older node state", async (t) => {
-  const directory = await harnessDirectory(t, STATE_CURRENT - 1);
-  const outcome = await runNativeWorker(directory, (child) => child.emit("exit", 1, null));
-  assert.deepEqual(
-    outcome.spawned.map(({ name }) => name),
-    ["doctor"],
-  );
-  assert.equal(outcome.holds, 1);
-  // A held worker never reports ready and never opens the older node state.
-  assert.equal(await outcome.ready(), 503);
-  assert.deepEqual(outcome.identities, []);
-  const message = outcome.errors.at(-1);
-  assert.match(message, /^Harness state migration failed: openclaw doctor --fix \(exit-1\) left /);
-  assert.match(message, /then deploy the Agent again\.$/);
-  assert.equal(readVersion(sharedPath(join(directory, "node-state"))), STATE_CURRENT - 1);
+  // The held check is served beside readiness on the Compute status port, or on the
+  // Harness port to a Sandbox provider's token holder (finding 2686).
+  for (const env of [COMPUTE_STATUS_ENV, PROVIDER_TRANSPORT_ENV]) {
+    const directory = await harnessDirectory(t, STATE_CURRENT - 1);
+    const outcome = await runNativeWorker(directory, (child) => child.emit("exit", 1, null), {
+      env,
+    });
+    assert.deepEqual(
+      outcome.spawned.map(({ name }) => name),
+      ["doctor"],
+    );
+    assert.equal(outcome.holds, 1);
+    // A held worker never reports ready and never opens the older node state.
+    if (env === COMPUTE_STATUS_ENV) {
+      assert.equal(await outcome.ready(), 503);
+    }
+    assert.deepEqual(outcome.identities, []);
+    const message = outcome.errors.at(-1);
+    assert.match(
+      message,
+      /^Native worker state migration failed: openclaw doctor --fix \(exit-1\) left /,
+    );
+    assert.match(message, /then deploy the Agent again\.$/);
+    assert.equal(readVersion(sharedPath(join(directory, "node-state"))), STATE_CURRENT - 1);
+    await assertHeldFailureServed(outcome.servers, env, "state-migration");
+  }
 });

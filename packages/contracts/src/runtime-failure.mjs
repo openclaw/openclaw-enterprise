@@ -38,6 +38,8 @@ export const RUNTIME_FAILURE_CHECKS = Object.freeze([
   "egress-enrollment",
   // The worker's prepared Git route for an OpenShell Sandbox is blocked (finding 2136).
   "repository-git-route",
+  // A dedicated Harness's native workspace setup (`openclaw setup --baseline`) failed (finding 2686).
+  "workspace-baseline",
 ]);
 
 /**

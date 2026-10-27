@@ -7253,6 +7253,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 return held;
               }
             }
+          } else if (providerEndpoint !== undefined && sandboxDriver.harnessStatus !== undefined) {
+            // A Codex Harness supervisor holding a failure found before Codex and its node
+            // start (state migration, workspace setup) never connects its node either:
+            // read the hold here too (finding 2686).
+            const held = heldProviderHarnessFailure(await observeProviderHarness());
+            if (held !== undefined) {
+              return held;
+            }
           }
           // The provider's Harness Pod and the Gateway are ready, so only the node's
           // connection is outstanding: say so, as the Compute-owned Harness path does

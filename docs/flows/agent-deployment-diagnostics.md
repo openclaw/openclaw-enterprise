@@ -130,6 +130,10 @@ and Agent state stay unchanged.
   means the runtime is holding that failure. Its Logs tab shows the remedy.
   `egress-enrollment` with code `UNAVAILABLE` is a protected execution whose
   Harness could not enroll with its egress proxy before the model check.
+  An `agent` `state-migration` or `workspace-baseline` check with code
+  `UNAVAILABLE` is a dedicated Harness or native worker held before Codex or its
+  node started: Doctor left its node state older, or `openclaw setup --baseline`
+  failed. The log line names the cause; fix it, then deploy again.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout, a
   transient failure or a network or 5xx exit, and the second attempt failed that
@@ -171,6 +175,8 @@ and Agent state stay unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 09:00: Name the `state-migration` and `workspace-baseline` holds of a dedicated Harness or native worker. (fix-2686-status, finding 2686)
 
 - 2026-10-17 03:40: Say that an unreachable model provider covers permanent connection mistakes, and pass a check whose network wait recovered. (lows-1017d, findings 1621 and 1622)
 

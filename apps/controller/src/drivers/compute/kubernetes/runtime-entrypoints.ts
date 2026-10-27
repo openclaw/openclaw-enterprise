@@ -99,16 +99,27 @@ function runtimeRequestPathname(request, response) {
 }
 `;
 
+// A supervisor's readiness server on the Compute status port. It also serves a
+// startup failure the supervisor holds (heldRuntimeStatus, set by
+// SUPERVISOR_HELD_FAILURE_HELPER) on the status path, in the Codex status shape.
 const RUNTIME_READINESS_SERVER_HELPER = String.raw`
 ${RUNTIME_READINESS_RESPONSE_HELPER}
+let heldRuntimeStatus;
+let runtimeReadinessServing = false;
 function startRuntimeReadinessServer(readiness) {
   const port = Number(process.env.OPENCLAW_RUNTIME_STATUS_PORT);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
     throw new Error("Runtime status port is invalid.");
   }
+  runtimeReadinessServing = true;
   const server = readinessCreateServer((request, response) => {
     const pathname = runtimeRequestPathname(request, response);
     if (pathname === undefined) return;
+    if (request.method === "GET" && pathname === RUNTIME_STATUS_PATH && heldRuntimeStatus !== undefined) {
+      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(heldRuntimeStatus);
+      return;
+    }
     if (request.method !== "GET" || pathname !== ${JSON.stringify(RUNTIME_READINESS_PATH)}) {
       response.writeHead(404, { "cache-control": "no-store" });
       response.end();
@@ -213,6 +224,50 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
     console.error("Held runtime failure server failed: " + (error?.code ?? "unknown"));
   });
   server.listen(port, "0.0.0.0");
+}
+`;
+
+// The Harness supervisor (Codex with its workspace node) and the dedicated OpenClaw worker
+// can hold a startup failure before the child that would report it starts: a failed state
+// migration, a failed native workspace setup, or the worker's model check. Compute reads
+// the hold on its private status port; a Sandbox provider's caller reads it on the Harness
+// port. Both carry the check and code only; the cause stays in the container log
+// (finding 2686).
+const SUPERVISOR_HELD_FAILURE_HELPER = String.raw`
+${RUNTIME_READINESS_SERVER_HELPER}
+${RUNTIME_STATUS_CONSTANTS_HELPER}
+${HELD_RUNTIME_FAILURE_TRANSPORT_HELPER}
+function publishRuntimeFailure(check, code, cause) {
+  if (runtimeStatusPort() === undefined) return;
+  if (!RUNTIME_FAILURE_CHECKS.has(check)) {
+    throw new Error("Runtime failure check is invalid.");
+  }
+  if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
+    throw new Error("Runtime failure code is invalid.");
+  }
+  const { OPENCLAW_AGENT_REVISION_ID: revisionId, OPENCLAW_RUNTIME_STATUS_CONTAINER: container, OPENCLAW_POD_UID: podUid } = process.env;
+  // Compute accepts only a status naming its exact revision, container and Pod.
+  if (!revisionId || !container || !podUid) return;
+  heldRuntimeStatus = JSON.stringify({
+    revisionId,
+    container,
+    podUid,
+    runtimeFailure: {
+      component: container,
+      check,
+      checkedAt: new Date().toISOString(),
+      code,
+      ...(cause === undefined ? {} : { cause }),
+    },
+  });
+}
+function holdStartupFailure(check, code) {
+  publishRuntimeFailure(check, code);
+  if (runtimeStatusPort() !== undefined && !runtimeReadinessServing) {
+    startRuntimeReadinessServer(() => false);
+  }
+  serveHeldRuntimeFailureToTransportPeer(check, code);
+  setInterval(() => {}, 3600000);
 }
 `;
 
@@ -4139,16 +4194,17 @@ export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 function agentWithNodeEntrypoint(entrypoint: string): string {
   return String.raw`
-const { chmodSync, mkdirSync, readFileSync, writeFileSync, rmSync } = require("node:fs");
+const { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { execFile, spawn, spawnSync } = require("node:child_process");
+const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
-// The Codex child serves this container's runtime status and starts only after
-// the node state is current, so a failed migration holds the Harness unready
-// with the named step in its log.
-function publishRuntimeFailure() {}
+// The Codex child serves this container's runtime status, and it starts only after the
+// node state is current and the workspace is initialized. A failure before then is held
+// here with the named step in the log and its check served in Codex's place.
+${SUPERVISOR_HELD_FAILURE_HELPER}
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupEnvironment = process.env.OPENCLAW_NODE_SETUP_CODE;
 const setupPath = process.env.OPENCLAW_NODE_SETUP_PATH;
@@ -4195,6 +4251,30 @@ if (process.env.OPENCLAW_NODE_CA_PEM) {
 } else if (process.env.OPENCLAW_NODE_CA_PATH) {
   nodeEnv.NODE_EXTRA_CA_CERTS = process.env.OPENCLAW_NODE_CA_PATH;
 }
+// What a failed native setup reported: its message on one line of at most 400
+// characters, and up to five invalid setting paths (names, never values).
+function workspaceBaselineReport(path) {
+  let reported;
+  try {
+    const buffer = Buffer.alloc(65536);
+    const descriptor = openSync(path, "r");
+    let length;
+    try {
+      length = readSync(descriptor, buffer, 0, buffer.length, 0);
+    } finally {
+      closeSync(descriptor);
+    }
+    reported = JSON.parse(buffer.toString("utf8", 0, length));
+  } catch {}
+  const message = reported?.error?.message;
+  if (typeof message !== "string") return "reported no error message.";
+  const settings = [...new Set((Array.isArray(reported.issues) ? reported.issues : [])
+    .map((issue) => issue?.path)
+    .filter((setting) => typeof setting === "string" && setting.length <= 64 && /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(setting)))].slice(0, 5);
+  return "reported: " +
+    message.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 400).replace(/\.$/, "") +
+    (settings.length > 0 ? " (invalid settings: " + settings.join(", ") + ")." : ".");
+}
 // The node state on the Agent's workspace claim outlives runtime image upgrades.
 // Native setup and both children open it, so Doctor migrates it first, with the
 // node's environment only: no model credential reaches Doctor. A failure holds
@@ -4202,32 +4282,41 @@ if (process.env.OPENCLAW_NODE_CA_PEM) {
 (async () => {
 const outdatedDatabases = outdatedOpenClawDatabases(state);
 if (outdatedDatabases.length > 0 && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
-  setInterval(() => {}, 3600000);
+  holdStartupFailure("state-migration", "UNAVAILABLE");
   return;
 }
 // The workspace belongs to the Harness. Native setup creates missing defaults
 // without replacing owner edits; neither child may serve an uninitialized workspace.
-// Its JSON result is a multi-line document that runtime logs withhold as a possible
-// payload, so a failure names only the result's message, on one bounded line.
+// Its JSON result goes to a file: spawnSync kills a child whose output outgrows a
+// pipe's buffer, which would fail a setup that succeeded. The result is a multi-line
+// document that runtime logs withhold as a possible payload, so a failure names only
+// its message and invalid setting paths, on one bounded line. A failure holds the
+// Harness: a restart would run the same setup on the same configuration.
 const baselineStartedAt = Date.now();
-const baseline = spawnSync(process.execPath, [
-  "/app/openclaw.mjs", "setup", "--baseline", "--workspace", workspaceDirectory, "--json",
-], { env: nodeEnv, stdio: ["inherit", "pipe", "inherit"], encoding: "utf8" });
-logStartupPhase("workspace-baseline", baselineStartedAt, baseline.error || baseline.status !== 0 ? "failed" : "ok");
-if (baseline.error) throw baseline.error;
-if (baseline.status !== 0) {
-  let reported;
-  try {
-    reported = JSON.parse(baseline.stdout).error.message;
-  } catch {}
-  throw new Error(
-    "Workspace initialization failed: openclaw setup --baseline (" +
-      (baseline.signal ?? "exit-" + baseline.status) + ") " +
-      (typeof reported === "string"
-        ? "reported: " + reported.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 400)
-        : "reported no error message."),
-  );
+const baselineResultPath = join(state, "workspace-baseline.json");
+const baselineResult = openSync(baselineResultPath, "w", 0o600);
+let baseline;
+try {
+  baseline = spawnSync(process.execPath, [
+    "/app/openclaw.mjs", "setup", "--baseline", "--workspace", workspaceDirectory, "--json",
+  ], { env: nodeEnv, stdio: ["inherit", baselineResult, "inherit"] });
+} finally {
+  closeSync(baselineResult);
 }
+if (baseline.error || baseline.status !== 0) {
+  logStartupPhase("workspace-baseline", baselineStartedAt, "failed");
+  console.error(
+    "Workspace initialization failed: openclaw setup --baseline (" +
+      (baseline.error
+        ? "error-" + (/^E[A-Z0-9]{1,15}$/.test(baseline.error.code) ? baseline.error.code : "spawn")
+        : baseline.signal ?? "exit-" + baseline.status) +
+      ") " + workspaceBaselineReport(baselineResultPath) +
+      " Codex was not started. Fix the cause, then deploy the Agent again.",
+  );
+  holdStartupFailure("workspace-baseline", "UNAVAILABLE");
+  return;
+}
+logStartupPhase("workspace-baseline", baselineStartedAt);
 const codexEnv = { ...process.env, PATH: harnessPath };
 // Per-run hook capabilities are delivered by the authenticated app-server connection.
 // Keep them outside the model workspace and the file-transfer plugin's roots.
@@ -4462,17 +4551,15 @@ const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("n
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
-${RUNTIME_READINESS_SERVER_HELPER}
-${RUNTIME_STATUS_CONSTANTS_HELPER}
-${HELD_RUNTIME_FAILURE_TRANSPORT_HELPER}
 ${startupPhaseHelper("agent")}
-${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
+${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
 
-// The Compute-owned worker publishes readiness only; a provider-owned worker
-// (APP_TOKEN_SHA and APP_SERVER_PORT, no status port) serves a held model-check
-// failure on the Harness port, as the provider-owned Codex Harness does, so the
-// revision fails with that code instead of waiting for a node that never connects.
-function publishRuntimeFailure() {}
+// A held failure (the model check, or the node state migration) is served on the
+// Compute status port beside readiness, or, for a provider-owned worker (APP_TOKEN_SHA
+// and APP_SERVER_PORT, no status port), on the Harness port as the provider-owned
+// Codex Harness does, so the revision fails with that code instead of waiting for a
+// node that never connects.
+${SUPERVISOR_HELD_FAILURE_HELPER}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
@@ -4602,7 +4689,7 @@ const doctorEnv = {
 };
 (async () => {
 if (!nodeStateCurrent && !(await migrateOpenClawState(state, outdatedNodeDatabases, doctorEnv))) {
-  setInterval(() => {}, 3600000);
+  holdStartupFailure("state-migration", "UNAVAILABLE");
   return;
 }
 nodeStateCurrent = true;

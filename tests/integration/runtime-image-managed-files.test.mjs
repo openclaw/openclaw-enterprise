@@ -44,28 +44,22 @@ const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const entrypoint = process.argv[1];
 const sentinel = "Owner edit that must survive a Harness restart.\n";
-for (let attempt = 0; attempt < 4; attempt++) {
-  const bootstrap = attempt === 0 ? { skipBootstrap: true } : attempt === 3 ? { skipBootstrap: "invalid" } : {};
-  const substitute = [
-    'const cp = require("node:child_process");',
-    'cp.spawn = () => {',
-    'if (!JSON.parse(process.env.OPENCLAW_WORKSPACE_BOOTSTRAP).skipBootstrap) require("node:assert/strict").ok(require("node:fs").readFileSync("/home/node/workspace/AGENTS.md", "utf8").length > 0);',
-    'console.log("WORKSPACE_CHILD_STARTED");',
-    'return new (require("node:events").EventEmitter)();',
-    '};',
-    entrypoint,
-  ].join("\n");
+const substitute = [
+  'const cp = require("node:child_process");',
+  'cp.spawn = () => {',
+  'if (!JSON.parse(process.env.OPENCLAW_WORKSPACE_BOOTSTRAP).skipBootstrap) require("node:assert/strict").ok(require("node:fs").readFileSync("/home/node/workspace/AGENTS.md", "utf8").length > 0);',
+  'console.log("WORKSPACE_CHILD_STARTED");',
+  'return new (require("node:events").EventEmitter)();',
+  '};',
+  entrypoint,
+].join("\n");
+const harnessEnv = (bootstrap) => ({ PATH: process.env.PATH, HOME: "/home/node", OPENCLAW_NODE_STATE_DIR: "/tmp/node-state", OPENCLAW_NODE_SETUP_CODE: "synthetic-setup", OPENCLAW_WORKSPACE_DIR: "/home/node/workspace", OPENCLAW_WORKSPACE_BOOTSTRAP: JSON.stringify(bootstrap) });
+for (let attempt = 0; attempt < 3; attempt++) {
+  const bootstrap = attempt === 0 ? { skipBootstrap: true } : {};
   const result = spawnSync(process.execPath, ["-e", substitute], {
-    env: { PATH: process.env.PATH, HOME: "/home/node", OPENCLAW_NODE_STATE_DIR: "/tmp/node-state", OPENCLAW_NODE_SETUP_CODE: "synthetic-setup", OPENCLAW_WORKSPACE_DIR: "/home/node/workspace", OPENCLAW_WORKSPACE_BOOTSTRAP: JSON.stringify(bootstrap) },
+    env: harnessEnv(bootstrap),
     encoding: "utf8",
   });
-  if (attempt === 3) {
-    assert.notEqual(result.status, 0);
-    assert.doesNotMatch(result.stdout, /WORKSPACE_CHILD_STARTED/);
-    assert.match(result.stderr, /Workspace initialization failed/);
-    console.log("SETUP_FAILURE " + JSON.stringify({ stdout: result.stdout, stderr: result.stderr }));
-    continue;
-  }
   assert.equal(result.status, 0, result.stderr + result.stdout);
   assert.ok(require("node:fs").readdirSync("/home/node/openclaw-runtime-assets/bundled-skills").length > 0);
   assert.ok(require("node:fs").statSync("/home/node/openclaw-runtime-assets/plugin-skills").isDirectory());
@@ -96,7 +90,40 @@ for (let attempt = 0; attempt < 4; attempt++) {
   if (attempt === 2) assert.equal(readFileSync("/home/node/workspace/AGENTS.md", "utf8"), sentinel);
   writeFileSync("/home/node/workspace/AGENTS.md", sentinel);
 }
-console.log("WORKSPACE_INITIALIZATION_PASSED");
+// An invalid bootstrap setting fails native setup. The Harness holds instead of
+// exiting and serves the held check on its Compute status port (finding 2686).
+(async () => {
+  const http = require("node:http");
+  const child = require("node:child_process").spawn(process.execPath, ["-e", substitute], {
+    env: { ...harnessEnv({ skipBootstrap: "invalid" }), OPENCLAW_RUNTIME_STATUS_PORT: "18791", OPENCLAW_AGENT_REVISION_ID: "rev_fixture", OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent", OPENCLAW_POD_UID: "pod-fixture" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => (stdout += chunk));
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const read = (path) => new Promise((resolve) => {
+    const request = http.get({ host: "127.0.0.1", port: 18791, path, timeout: 1000 }, (response) => {
+      let body = "";
+      response.on("data", (chunk) => (body += chunk));
+      response.on("end", () => resolve({ status: response.statusCode, body }));
+    });
+    request.on("timeout", () => request.destroy());
+    request.on("error", () => resolve(undefined));
+  });
+  let status;
+  for (let poll = 0; poll < 900 && child.exitCode === null && status?.status !== 200; poll++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    status = await read("/openclaw/runtime/status");
+  }
+  const ready = await read("/readyz");
+  const held = child.exitCode === null;
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGKILL");
+  await exited;
+  console.log("SETUP_FAILURE " + JSON.stringify({ stdout, stderr, status, ready: ready?.status, held }));
+  console.log("WORKSPACE_INITIALIZATION_PASSED");
+})();
 `;
     const { stdout } = await runDocker(
       [
@@ -134,10 +161,21 @@ console.log("WORKSPACE_INITIALIZATION_PASSED");
     // which runtime logs withhold line by line (finding 2686). The Harness logs its
     // message on one line that `occ agent logs` shows, and keeps the document out.
     const failure = JSON.parse(/^SETUP_FAILURE (.*)$/m.exec(stdout)[1]);
-    assert.doesNotMatch(failure.stdout, /cli_error/);
+    assert.equal(failure.held, true, failure.stderr);
+    assert.doesNotMatch(failure.stdout, /cli_error|WORKSPACE_CHILD_STARTED/);
     const summary =
-      /^Error: Workspace initialization failed: openclaw setup --baseline \(exit-1\) reported: OpenClaw config is invalid: \S+$/m;
+      /^Workspace initialization failed: openclaw setup --baseline \(exit-1\) reported: OpenClaw config is invalid: \S+ \(invalid settings: agents\.defaults\.skipBootstrap\)\. Codex was not started\. Fix the cause, then deploy the Agent again\.$/m;
     assert.match(failure.stderr, summary, failure.stderr);
+    // Compute reads the held check, never the setup's text, on the status port.
+    assert.equal(failure.status?.status, 200, failure.stderr);
+    const { checkedAt, ...held } = JSON.parse(failure.status.body).runtimeFailure;
+    assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+    assert.deepEqual(held, {
+      component: "agent",
+      check: "workspace-baseline",
+      code: "UNAVAILABLE",
+    });
+    assert.equal(failure.ready, 503);
     const { records } = sanitizeRuntimeLogChunk({
       stream: { source: "agent", pod: "agent-0", container: "agent" },
       truncated: false,
