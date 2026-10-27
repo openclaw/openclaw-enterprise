@@ -2481,7 +2481,6 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
           "image-fallback",
           "pdf",
           "utility",
-          "flush",
           "summary",
           "gmail",
           "hook",
