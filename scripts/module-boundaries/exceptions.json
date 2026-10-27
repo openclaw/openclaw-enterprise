@@ -264,7 +264,7 @@
       "owner": "API route compilers",
       "reason": "Precompiled validator and serializer code requires only the runtime helpers of ajv, ajv-formats and fast-json-stringify, resolved from the compiler package that uses them on the run-time path; any other specifier throws.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or they are generated as statically resolvable modules.",
-      "loaderIdentity": "loader:sha256:e66a1d139501f5fbc3ee701d492870484cd5d94761eff34583554125b912e70d"
+      "loaderIdentity": "loader:sha256:01a4418d07bf1b49352d6daaa36f0870e11b95909b4a7bdf63bd095337a3aaa3"
     },
     {
       "rule": "unresolved-dynamic-import",
@@ -277,7 +277,7 @@
       "owner": "API route compilers",
       "reason": "The precompiled route compilers file is loaded only from the fixed build-output path, and only when its fingerprint matches this Node version, lockfile, compiler packages and route-compilers.ts.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or build-output resolution is represented in the analyzer.",
-      "loaderIdentity": "loader:sha256:ea2eacc248a1dc5efa90971249b51dfa5342caa3e16693bd45c4883fd873a1af"
+      "loaderIdentity": "loader:sha256:94107cd2981116074fd1fb7d04cad03adbee3ae72b12c1307cf48b00ac0ca5a6"
     },
     {
       "rule": "domain-to-implementation",

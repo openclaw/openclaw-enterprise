@@ -31,14 +31,6 @@ import {
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
-
 test("an owned exchange keeps its original lease through replacement and an injected standing callback fences the first write", async (t) => {
   const resources = createTestResourceScope(t);
   const clock = createControlledClock();
@@ -47,8 +39,8 @@ test("an owned exchange keeps its original lease through replacement and an inje
   const tokens = [`github_pat_${"a".repeat(36)}`, `github_pat_${"b".repeat(36)}`];
   const expected = tokens.map((token) => digest(`Bearer ${token}`));
   const observed: string[] = [];
-  const replacementEntered = deferred<void>();
-  const releaseReplacement = deferred<void>();
+  const replacementEntered = Promise.withResolvers<void>();
+  const releaseReplacement = Promise.withResolvers<void>();
   resources.after(() => releaseReplacement.resolve());
   const origin = await listen(
     resources,
@@ -127,8 +119,8 @@ test("an owned exchange keeps its original lease through replacement and an inje
     providerQueue: undefined,
     log: undefined,
   });
-  const originalPaused = deferred<void>();
-  const resumeOriginal = deferred<void>();
+  const originalPaused = Promise.withResolvers<void>();
+  const resumeOriginal = Promise.withResolvers<void>();
   resources.after(() => resumeOriginal.resolve());
   let pauseNextStanding = false;
   const opened = service.open({ durationSeconds: 3600, profile: "git-read" }, async () => {
@@ -197,11 +189,11 @@ for (const { name, mode } of firstWriteCases) {
     const clock = createControlledClock();
     const config = await createLoopbackServiceConfiguration(resources);
     const tls = await createTlsMaterial(resources);
-    const connected = deferred<TLSSocket>();
-    const received = deferred<ServerResponse>();
-    const paused = deferred<void>();
-    const resume = deferred<void>();
-    const rejected = deferred<void>();
+    const connected = Promise.withResolvers<TLSSocket>();
+    const received = Promise.withResolvers<ServerResponse>();
+    const paused = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const rejected = Promise.withResolvers<void>();
     const requests: string[] = [];
     const onRequest = (request: IncomingMessage, response: ServerResponse) => {
       requests.push(request.headers.expect ?? "");

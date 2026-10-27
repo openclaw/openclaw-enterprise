@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createServer, request, type Server } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { join } from "node:path";
+import { buffer } from "node:stream/consumers";
 import test from "node:test";
 import { createSecureContext } from "node:tls";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -25,14 +26,6 @@ import {
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
-
-async function body(stream: AsyncIterable<Buffer>): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
-}
 
 async function listen(server: Server, path: string) {
   server.listen(path);
@@ -78,7 +71,7 @@ for (const [delivery, settle] of [
     const wire: string[] = [];
     const disposals: unknown[] = [];
     const relay = createServer(async (incoming, response) => {
-      const bytes = await body(incoming);
+      const bytes = await buffer(incoming);
       const command = JSON.parse(bytes.toString()) as { kind: string; status?: unknown };
       wire.push(command.kind);
       if (command.kind === "dispose") {
@@ -99,7 +92,7 @@ for (const [delivery, settle] of [
       const connected = once(outgoing, "response");
       outgoing.end(bytes);
       const [reply] = await connected;
-      const result = await body(reply);
+      const result = await buffer(reply);
       // The journal commits the first disposal, but its acknowledgement is lost.
       if (lost && delivery === "after") {
         response.destroy();
@@ -469,7 +462,7 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
       released.resolve();
     }
     const [response] = await responseReady;
-    const responseBody = JSON.parse((await body(response)).toString()) as unknown;
+    const responseBody = JSON.parse((await buffer(response)).toString()) as unknown;
     assert.equal(authorizations, stage === "reserved" ? 0 : 1);
     assert.equal(originRequests, 0, "expired sessions must not write an origin request");
     if (stage === "reserved") {

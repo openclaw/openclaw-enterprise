@@ -1029,18 +1029,19 @@ test(
     ]) {
       await assert.rejects(render(override), /scraperNamespaceLabels/);
     }
-    for (const port of ["0", "010", "65536", "8080", "9.5"]) {
+    // The API and worker run as UID 1000 without capabilities: a port below 1024 cannot bind.
+    for (const port of ["0", "010", "1023", "65536", "8080", "9.5"]) {
       await assert.rejects(render({ "metrics.port": port }), /metrics.port/);
     }
-    const shortPort = await resources((await render({ "metrics.port": "8" })).stdout);
+    const lowestPort = await resources((await render({ "metrics.port": "1024" })).stdout);
     for (const component of ["api", "worker"]) {
-      const container = shortPort.find(
+      const container = lowestPort.find(
         (item) =>
           item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
       ).spec.template.spec.containers[0];
-      assert.equal(container.env.find((item) => item.name === "OCC_METRICS_PORT").value, "8");
+      assert.equal(container.env.find((item) => item.name === "OCC_METRICS_PORT").value, "1024");
       assert.ok(
-        container.ports.some((port) => port.name === "metrics" && port.containerPort === 8),
+        container.ports.some((port) => port.name === "metrics" && port.containerPort === 1024),
       );
     }
     const selected = {
@@ -1083,7 +1084,8 @@ test(
 );
 
 test("the chart refuses an API port the server does not bind", tooling, async () => {
-  for (const port of ["0", "010", "65536", "9.5"]) {
+  // The API runs as UID 1000 without capabilities: a port below 1024 cannot bind.
+  for (const port of ["0", "010", "80", "1023", "65536", "9.5"]) {
     await assert.rejects(render({ "api.port": port }), /api\.port must be an integer TCP port/);
   }
   // --set parses this as a float. --set-string keeps the digits, which used to pass Sprig int overflow.
@@ -3501,6 +3503,8 @@ test(
     for (const override of [
       { "slackProxy.serviceName": "1proxy" },
       { "slackProxy.port": "65536" },
+      // The proxy runs as UID 1000 without capabilities: a port below 1024 cannot bind.
+      { "slackProxy.port": "1023" },
     ]) {
       await assert.rejects(render({ ...slackProxyValues, ...override }), /slackProxy/);
     }
@@ -3790,6 +3794,33 @@ test("NetworkPolicy peers from values are refused before install", tooling, asyn
     );
   }
   await render(git);
+
+  // egressAuthority.clients go through the same peer check: --set reads tier=1 as a number.
+  const authority = {
+    "egressAuthority.enabled": "true",
+    "egressAuthority.tlsSecretName": "authority-server-tls",
+    "egressAuthority.issuerSecretName": "gateway-jwt-keys",
+    "egressAuthority.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+      "openshell-system",
+    "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
+  };
+  for (const [values, message] of [
+    [
+      { "egressAuthority.clients[0].podSelector.matchLabels.tier": "1" },
+      "egressAuthority.clients[0].podSelector.matchLabels label values must be strings",
+    ],
+    [
+      { "egressAuthority.clients[0].namespaceSelector.matchLabels.openshell": "true" },
+      "egressAuthority.clients[0].namespaceSelector.matchLabels label values must be strings",
+    ],
+  ]) {
+    await assert.rejects(
+      render({ ...protectedRepositoryValues, ...authority, ...values }),
+      ({ stderr }) => stderr.includes(message),
+      message,
+    );
+  }
+  await render({ ...protectedRepositoryValues, ...authority });
 });
 
 test("database CA mounts stay distinct from active production volume mounts", tooling, async () => {
@@ -6495,6 +6526,8 @@ test(
       [{ "egressAuthority.clients[0].podSelector": "null" }, /podSelector.matchLabels/],
       [{ "egressAuthority.port": "8080" }, /distinct TCP port/],
       [{ "egressAuthority.port": "65536" }, /distinct TCP port/],
+      // The API runs as UID 1000 without capabilities: a port below 1024 cannot bind.
+      [{ "egressAuthority.port": "1023" }, /distinct TCP port from 1024/],
       // Sprig int read "09444" as 0 and startup refused the text, after the install.
       [
         { "egressAuthority.port": "09444" },

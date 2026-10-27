@@ -1,7 +1,8 @@
 # Earlier breaking-change notices from 2026-10-24
 
 These [breaking-change notices](breaking-changes.md) from 2026-10-24 predate
-that page and the
+that page, the
+[notices before 2026-10-26](breaking-changes-before-2026-10-26.md) and the
 [later notices from 2026-10-24](breaking-changes-later-2026-10-24.md); older
 ones are in the [notices before 2026-10-24](breaking-changes-before-2026-10-24.md).
 They still apply when you upgrade from a source commit older than their date.

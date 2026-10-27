@@ -21,7 +21,12 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
-import { ConfigurationHarnessError, configurationSettingMessage } from "@openclaw-enterprise/occ";
+import {
+  ComputeGatewaySettingError,
+  ConfigurationHarnessError,
+  configurationSettingMessage,
+  keyedSettingPath,
+} from "@openclaw-enterprise/occ";
 import {
   HARNESS_WORKSPACE,
   MANAGED_WORKSPACE,
@@ -168,7 +173,12 @@ const CONFIGURATION_DOCUMENT = "/home/node/.openclaw/openclaw.json";
 const GATEWAY_PASSWORD_ENV = "OPENCLAW_GATEWAY_PASSWORD";
 const GATEWAY_PASSWORD_REFERENCE = `\${${GATEWAY_PASSWORD_ENV}}`;
 
-function dockerGatewayConfigurationDocument(configuration: OpenClawConfigurationDocument): {
+// Deployment admission (validateGatewaySettings) and preparation apply the same rules, so a
+// deploy that preparation would refuse never stops the running revision first (finding 2352).
+function dockerGatewayConfigurationDocument(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError = preparationSettingError,
+): {
   readonly configuration: OpenClawConfigurationDocument;
   readonly requiresManagedPassword: boolean;
 } {
@@ -177,27 +187,24 @@ function dockerGatewayConfigurationDocument(configuration: OpenClawConfiguration
     validateRoutableNativeListener,
     validateCodexApprovalPolicySetting,
   ]) {
-    validate(
-      configuration,
-      (setting, requirement) =>
-        new ConfigurationFailure(`Configuration setting ${setting} ${requirement}.`),
-    );
+    validate(configuration, createError);
   }
   const gatewayRecord = asRecord(configuration.gateway);
   if (configuration.gateway !== undefined && gatewayRecord === undefined) {
-    throw new ConfigurationFailure("Docker native gateway configuration must be an object.");
+    throw createError("gateway", "must be an object");
   }
   const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
   const authRecord = asRecord(gateway.auth);
   if (gateway.auth !== undefined && authRecord === undefined) {
-    throw new ConfigurationFailure("Docker native gateway auth must be an object.");
+    throw createError("gateway.auth", "must be an object");
   }
   const auth = (authRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
 
   const unsupported = unsupportedNativeGatewayAuthFields(auth);
   if (unsupported.length > 0) {
-    throw new ConfigurationFailure(
-      `Docker native gateway authentication contains unsupported field ${unsupported[0]}.`,
+    throw createError(
+      keyedSettingPath("gateway.auth", unsupported[0]!),
+      "is not a supported native gateway authentication field",
     );
   }
   const passwordReference =
@@ -209,8 +216,9 @@ function dockerGatewayConfigurationDocument(configuration: OpenClawConfiguration
     };
   }
   if (auth.mode !== undefined && auth.mode !== "password") {
-    throw new ConfigurationFailure(
-      "Docker Compute supports only native password or trusted-proxy gateway authentication.",
+    throw createError(
+      "gateway.auth.mode",
+      "must be password or trusted-proxy: Docker Compute supports only native password or trusted-proxy gateway authentication",
     );
   }
 
@@ -573,9 +581,10 @@ export class DockerComputeDriver implements ComputeDriver {
   }
 
   validateGatewaySettings(configuration: Readonly<OpenClawConfigurationDocument>): void {
-    validatePlaintextNativeGateway(configuration);
-    validateRoutableNativeListener(configuration);
-    validateCodexApprovalPolicySetting(configuration);
+    dockerGatewayConfigurationDocument(
+      configuration,
+      (setting, requirement) => new ComputeGatewaySettingError(setting, requirement),
+    );
   }
 
   // An embedded Gateway applies tools.gatewayPolicy natively, so Configuration save, Preset save
