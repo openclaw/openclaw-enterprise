@@ -199,8 +199,9 @@ credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source 
 4. **Provisioning.** Compute calls `attachForRevision` with the Harness source
    first and the other sources after it, and passes the result in
    `HarnessWorkloadRequirements.credentialAttachments` to `provisionHarness`.
-   The paired Sandbox must consume every attachment and reject any it did not
-   issue.
+   The Credential Gateway issues one reference per bound source. Its paired
+   Sandbox must consume every attachment and reject references from any other
+   provider.
 5. **Activation.** After the Harness is ready, Compute calls
    `attachmentStatus`. `pending` or a missing status retries reconciliation;
    `failed`, `withheld`, `revoked`, or `absent` fails it. Only `ready` for every
