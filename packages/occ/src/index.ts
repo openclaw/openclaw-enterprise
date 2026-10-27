@@ -19,6 +19,7 @@ export {
   preparedGitHubLive,
   readPreparedGitHubMetadata,
 } from "./state/prepared-github-state.ts";
+export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
