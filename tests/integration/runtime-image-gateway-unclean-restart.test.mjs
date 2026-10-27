@@ -375,13 +375,17 @@ test(
       "the Gateway started after Stop must take over the released state",
     );
 
-    // Redeploy with no Stop: the Driver removes the running Gateway itself.
+    // Redeploy with no Stop, again from a restarted controller: a fresh Driver
+    // never observed the running Gateway, so it stops and removes it (SIGTERM),
+    // not the observed SIGKILL handoff that `restarted` would take.
+    const redeployed = new DockerComputeDriver({ images: { gateway: image, agent: image } });
+    await redeployed.preflight();
     const third = revisionAt(3);
     assert.equal(
-      (await restarted.prepareRevision(third, { workspaceSetup: completed })).ready,
+      (await redeployed.prepareRevision(third, { workspaceSetup: completed })).ready,
       true,
       "the Gateway that replaces a running one must take over its state",
     );
-    await restarted.stopRevision(third);
+    await redeployed.stopRevision(third);
   },
 );

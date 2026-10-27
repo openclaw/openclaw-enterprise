@@ -158,9 +158,10 @@ Driver lost its observation or the holders do not match, follow
 
 The Driver kills an observed embedded Gateway to record its exit. It stops
 every other container before removal: Docker sends SIGTERM and sends SIGKILL
-after 10 seconds. A gateway that exits on SIGTERM releases its OpenClaw state
-lock, so its replacement needs no recovery, also after a controller restart
-lost the observation.
+after 10 seconds. A Gateway that exits on SIGTERM releases its OpenClaw state
+lock, so its replacement needs no recovery. This includes a Gateway that the
+Driver did not observe, for example after a controller restart. If the stop
+fails, the Driver still removes the container and reports the stop failure.
 
 State on that volume outlives runtime image upgrades. Before OpenClaw starts,
 the gateway runs the same agent database migration as a

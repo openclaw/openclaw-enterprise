@@ -1547,20 +1547,32 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   // releases its OpenClaw state lock. A force-removed (SIGKILL) Gateway that this
   // Driver did not observe (removeGateway) leaves the lock on the Agent's state
   // volume, and its replacement, in another PID namespace, refuses the state.
+  // A failed stop (not a cancelled operation) still force-removes the container,
+  // so no caller leaves it behind, and then reports the stop failure. A Gateway
+  // killed that way can leave its lock: the replacement refuses it (fails closed).
   private async removeContainer(name: string): Promise<void> {
-    await this.request(
-      "POST",
-      `/containers/${encodeURIComponent(name)}/stop?t=${CONTAINER_STOP_TIMEOUT_SECONDS}`,
-      undefined,
-      [204, 304, 404],
-      CONTAINER_STOP_TIMEOUT_SECONDS * 1000 + REQUEST_TIMEOUT_MS,
-    );
+    let stopFailure: unknown;
+    try {
+      await this.request(
+        "POST",
+        `/containers/${encodeURIComponent(name)}/stop?t=${CONTAINER_STOP_TIMEOUT_SECONDS}`,
+        undefined,
+        [204, 304, 404],
+        CONTAINER_STOP_TIMEOUT_SECONDS * 1000 + REQUEST_TIMEOUT_MS,
+      );
+    } catch (error) {
+      currentComputeAbortSignal()?.throwIfAborted();
+      stopFailure = error;
+    }
     await this.request(
       "DELETE",
       `/containers/${encodeURIComponent(name)}?force=true&v=true`,
       undefined,
       [204, 404],
     );
+    if (stopFailure !== undefined) {
+      throw stopFailure;
+    }
   }
 
   private async waitForHealthyContainer(name: string): Promise<DockerContainerInspect> {
