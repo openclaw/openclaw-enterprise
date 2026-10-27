@@ -426,16 +426,19 @@ test(
           auxiliaryPending: false,
         },
       };
-      // The original service recovers the committed disposal without reopening or repeating cleanup.
+      // The original service sends its captured disposal once more without reopening or
+      // repeating cleanup. PostgreSQL accepts the identical repeat without recording again,
+      // and later reads answer from the acknowledged outcome.
       const readsBefore = read.mock.callCount();
       const recoveryStart = kinds.length;
       assert.deepEqual(await status(), expected);
       assert.deepEqual(await status(), expected);
-      assert.deepEqual(kinds.slice(recoveryStart), ["status", "status"]);
-      assert.equal(kinds.filter((k) => k === "dispose").length, 1);
-      assert.equal(dispose.mock.callCount(), 1);
-      assert.deepEqual(dispose.mock.calls[0]!.arguments.slice(2), [original.generation, expected]);
-      assert.equal(read.mock.callCount() - readsBefore, 2);
+      assert.deepEqual(kinds.slice(recoveryStart), ["dispose"]);
+      assert.equal(dispose.mock.callCount(), 2);
+      for (const call of dispose.mock.calls) {
+        assert.deepEqual(call.arguments.slice(2), [original.generation, expected]);
+      }
+      assert.equal(read.mock.callCount() - readsBefore, 0);
       assert.deepEqual(await row(), terminal);
       // Each fresh authority and database pool must recover the original receipt independently.
       // The session service remains running; this does not test restoration of its local map.
@@ -448,7 +451,7 @@ test(
           randomUUID(),
         );
         assert.deepEqual(await restartedReader.status(sessionId), expected);
-        assert.equal(dispose.mock.callCount(), 1);
+        assert.equal(dispose.mock.callCount(), 2);
         assert.deepEqual(
           await restartedState.read((v) => v.repositorySessions.findBrokerReceipt(admissionId)),
           terminal,

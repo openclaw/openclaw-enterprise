@@ -121,10 +121,10 @@ retries it and forgets it once committed, so it stops counting toward capacity.
 Known nondelivery closes the session.
 Reconciliation cannot recover a bearer, change its binding or replay provider work.
 Keep the original admission ID and inspect its owner and any known session after an
-uncertain response. Status observes expiry without closing the session or publishing
-disposal; clock rollback cannot restore use. After a lost disposal acknowledgement,
-the broker checks the original receipt against the session, binding, deadline and
-cleanup counts. An unconfirmed disposal remains unknown.
+uncertain response. Status observes expiry without closing the session or starting
+disposal; clock rollback cannot restore use. If a disposal acknowledgement is lost,
+status, close and shutdown resend the same status; the journal records it once and
+refuses a different one.
 
 The receipt and operator control clients reject private-socket replies over
 16,384 bytes and destroy the response without waiting for its end.
@@ -361,6 +361,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 
 ## Changelog
 
+- 2026-10-27 17:25: Resend a disposal whose acknowledgement was lost with its original status. (fix-3873-dispose)
+
 - 2026-10-27 16:36: Preserve original receipt recovery and observed expiry with prepared route admission. (authoring-run/2af9e346-e424-4bb7-8b0e-a6e1126f9832 - 759e6312f4e5939c17837132ef51d26c84146517)
 
 - 2026-10-27 16:17: Reconcile selected route admission and disposal observation. (authoring-run/09fabde1-4f6f-46b0-9d37-943815810d11 - cf476a1b8303c5c24a2ec0c6fd7bc82df501115f)
@@ -376,7 +378,5 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 - 2026-10-27 13:43: Reserve the original attempt before constructing the selected prepared route. (authoring-run/c791ff25-9d48-4b6a-b400-315fa09ba049 - af7b0b904719bc1e1b238985d3db7cda8a3f7515)
 
 - 2026-10-27 13:32: Retain observed session expiry through wall-clock correction. (authoring-run/190e7ec1-f80f-46f3-8a1c-06a9976abbc4 - bc4d77fb896d89b02b561a7e5f213e713ee40d13)
-
-- 2026-10-27 13:13: Preserve the selected exchange credential through rotation and authorize the first write. (authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37 - 852146b8faea0fd083abd2255190eed5c0e5f43d)
 
 - [Earlier entries](repository-credentials/history.md) are preserved in the documentation history.

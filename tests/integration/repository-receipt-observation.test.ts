@@ -14,7 +14,6 @@ import {
   handleControl,
 } from "../../apps/controller/src/drivers/repo/credentials/control.ts";
 import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
-import type { SessionStatus } from "../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
 import { createAgentHandler } from "../../apps/controller/src/drivers/repo/credentials/transport/agent.ts";
 import { createGatewayAuthentication } from "../../apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts";
 import { planDraftPull } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-draft-pull.ts";
@@ -40,15 +39,17 @@ async function listen(server: Server, path: string) {
   await once(server, "listening");
 }
 
-for (const delivery of [
-  "before",
-  "after",
-  "wrong-session",
-  "stale-state",
-  "expiry-identify",
-  "expiry-reserve",
+for (const [delivery, settle] of [
+  ["before", "status"],
+  ["before", "shutdown"],
+  ["after", "status"],
+  ["expiry-identify", "shutdown"],
+  ["expiry-reserve", "shutdown"],
 ] as const) {
-  test(`status observes the original receipt without mutation: ${delivery}`, async (t) => {
+  const name = delivery.startsWith("expiry")
+    ? `status observes expiry without cleanup: ${delivery}`
+    : `a lost disposal settles once on the original receipt: ${delivery}, ${settle}`;
+  test(name, async (t) => {
     const resources = createTestResourceScope(t);
     const broker = await socketDirectory(resources, "receipt-broker-");
     const owner = await socketDirectory(resources, "receipt-owner-");
@@ -75,19 +76,17 @@ for (const delivery of [
     );
     await receipt.prepare(admissionId, "project", 60);
     const wire: string[] = [];
-    let receiptUnavailable = false;
+    const disposals: unknown[] = [];
     const relay = createServer(async (incoming, response) => {
       const bytes = await body(incoming);
-      const { kind, sessionId } = JSON.parse(bytes.toString()) as {
-        kind: string;
-        sessionId?: string;
-      };
-      wire.push(kind);
-      if (kind === "status" && receiptUnavailable) {
-        response.destroy();
-        return;
+      const command = JSON.parse(bytes.toString()) as { kind: string; status?: unknown };
+      wire.push(command.kind);
+      if (command.kind === "dispose") {
+        disposals.push(command.status);
       }
-      if (kind === "dispose" && delivery === "before") {
+      const lost = command.kind === "dispose" && disposals.length === 1;
+      // The first disposal request never reaches the journal.
+      if (lost && delivery === "before") {
         response.destroy();
         return;
       }
@@ -101,28 +100,9 @@ for (const delivery of [
       outgoing.end(bytes);
       const [reply] = await connected;
       const result = await body(reply);
-      if (
-        kind === "dispose" &&
-        (delivery === "after" || delivery === "wrong-session" || delivery === "stale-state")
-      ) {
+      // The journal commits the first disposal, but its acknowledgement is lost.
+      if (lost && delivery === "after") {
         response.destroy();
-        return;
-      }
-      if (kind === "status" && (delivery === "wrong-session" || delivery === "stale-state")) {
-        assert.equal(reply.statusCode, 200);
-        const captured = JSON.parse(result.toString()) as { kind: string; status: SessionStatus };
-        assert.equal(captured.kind, "disposed");
-        assert.equal(captured.status.sessionId, sessionId);
-        assert.equal(captured.status.state, "DISPOSED");
-        const status = {
-          ...captured.status,
-          ...(delivery === "wrong-session"
-            ? { sessionId: `wrong-${captured.status.sessionId}` }
-            : { state: "OPEN" }),
-        };
-        response
-          .writeHead(200, { "content-type": "application/json" })
-          .end(JSON.stringify({ ...captured, status }));
         return;
       }
       response.writeHead(reply.statusCode, reply.headers).end(result);
@@ -188,25 +168,23 @@ for (const delivery of [
     resources.after(() => server[Symbol.asyncDispose]());
     await listen(server, controlSocket);
     const client = new UnixRepositoryCredentialControlClient({ controlSocket });
-    const opened = await client.open(
-      {
-        expectedBinding: binding,
-        namespaceId,
-        repositoryRef: "project",
-        profile: "read",
-        durationSeconds: 60,
-        deadlineWallMs,
-        preparedOnly: true,
-        durableAdmission: true,
-      },
-      admissionId,
-      AbortSignal.timeout(5_000),
-    );
+    const input = {
+      expectedBinding: binding,
+      namespaceId,
+      repositoryRef: "project",
+      profile: "read",
+      durationSeconds: 60,
+      deadlineWallMs,
+      preparedOnly: true,
+      durableAdmission: true,
+    } as const;
+    const opened = await client.open(input, admissionId, AbortSignal.timeout(5_000));
     assert.equal(opened.kind, "created");
     if (opened.kind !== "created") {
       throw new Error("session was not created");
     }
     const session = opened.result.session;
+    const disposed = { ...session, state: "DISPOSED" };
     const stored = () =>
       receipt.state.read((view) => view.repositorySessions.findBrokerReceipt(admissionId));
     if (delivery === "expiry-identify" || delivery === "expiry-reserve") {
@@ -265,56 +243,56 @@ for (const delivery of [
         "disposed",
         "expiry enforcement retains cleanup ownership",
       );
-      assert.equal(wire.filter((kind) => kind === "dispose").length, 1);
+      assert.equal(disposals.length, 1);
       return;
     }
     await assert.rejects(client.close(session.sessionId, AbortSignal.timeout(5_000)), {
       name: "RepositoryCredentialControlError",
       retryable: true,
     });
-    assert.equal((await stored())?.state, delivery === "before" ? "active" : "disposed");
+    // A lost request leaves the receipt active; a lost acknowledgement does not.
+    const committed = await stored();
+    assert.equal(committed?.state, delivery === "before" ? "active" : "disposed");
     const split = wire.length;
-    for (let index = 0; index < 2; index++) {
-      if (delivery === "after") {
-        assert.deepEqual(await client.status(session.sessionId, AbortSignal.timeout(5_000)), {
-          ...session,
-          state: "DISPOSED",
-        });
-      } else {
-        await assert.rejects(client.status(session.sessionId, AbortSignal.timeout(5_000)), {
-          name: "RepositoryCredentialControlError",
-          retryable: true,
-        });
-      }
-    }
-    assert.deepEqual(wire.slice(split), ["status", "status"]);
-    if (delivery === "after") {
-      // Once the correlation window ends, repeated close must still consult the
-      // original receipt while the service retains the disposed session.
-      monotonicElapsed = 61_000;
-      const closeStart = wire.length;
+    if (settle === "status") {
+      // The next status read sends the captured disposal again, and later reads
+      // answer from the recorded outcome without another journal request.
       for (let index = 0; index < 2; index++) {
-        assert.deepEqual(await client.close(session.sessionId, AbortSignal.timeout(5_000)), {
-          ...session,
-          state: "DISPOSED",
-        });
+        assert.deepEqual(
+          await client.status(session.sessionId, AbortSignal.timeout(5_000)),
+          disposed,
+        );
       }
-      assert.deepEqual(wire.slice(closeStart), ["status", "status"]);
-      receiptUnavailable = true;
-      await assert.rejects(client.close(session.sessionId, AbortSignal.timeout(5_000)), {
-        name: "RepositoryCredentialControlError",
-        retryable: true,
-      });
-      assert.deepEqual(wire.slice(closeStart), ["status", "status", "status"]);
     } else {
-      await assert.rejects(client.close(session.sessionId, AbortSignal.timeout(5_000)), {
-        name: "RepositoryCredentialControlError",
-        retryable: true,
-      });
-      assert.deepEqual(wire.slice(split), ["status", "status", "status"]);
+      // Shutdown joins the durable write instead of rejecting before cleanup.
+      await admissions.flush();
+      assert.deepEqual(
+        await client.status(session.sessionId, AbortSignal.timeout(5_000)),
+        disposed,
+      );
     }
-    assert.equal(wire.filter((kind) => kind === "dispose").length, 1);
-    assert.equal((await stored())?.state, delivery === "before" ? "active" : "disposed");
+    assert.deepEqual(wire.slice(split), ["dispose"]);
+    // The retry is the exact original disposal, so the journal records it once.
+    assert.equal(disposals.length, 2);
+    assert.deepEqual(disposals[1], disposals[0]);
+    const recorded = await stored();
+    assert.equal(recorded?.state, "disposed");
+    if (delivery === "after") {
+      assert.deepEqual(recorded, committed, "an identical repeat must not record again");
+    }
+    // Once the correlation window ends, the recorded disposal releases the admission
+    // from the capacity registry: a repeated open consults the journal.
+    monotonicElapsed = 61_000;
+    const closeStart = wire.length;
+    assert.deepEqual(await client.close(session.sessionId, AbortSignal.timeout(5_000)), disposed);
+    assert.deepEqual(wire.slice(closeStart), []);
+    assert.deepEqual(await client.open(input, admissionId, AbortSignal.timeout(5_000)), {
+      kind: "recovered",
+      status: disposed,
+    });
+    assert.deepEqual(wire.slice(closeStart), ["recover"]);
+    assert.equal(disposals.length, 2);
+    assert.deepEqual(await stored(), recorded);
   });
 }
 

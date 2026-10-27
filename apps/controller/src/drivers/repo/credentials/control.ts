@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Clock } from "./backend-contracts.ts";
 import type { CredentialServiceOwner } from "./internal-contracts.ts";
 import type { SessionInput } from "./sessions.ts";
-import { snapshotSessionInput, sameSessionInput, isBoundInput, sameBinding } from "./sessions.ts";
+import { snapshotSessionInput, sameSessionInput, isBoundInput } from "./sessions.ts";
 import type {
   SessionControl,
   ServiceConfig,
@@ -38,7 +38,8 @@ interface AdmissionRecord {
   unbound: boolean;
   saved: boolean;
   writing: Promise<void> | undefined;
-  publication?: { readonly status: SessionStatus; observed: boolean };
+  // The disposal status first sent to the journal. A retry sends exactly this status.
+  publication?: SessionStatus;
   cancel(): void;
 }
 
@@ -51,8 +52,6 @@ export function createControlAdmission(
 ) {
   const records = new Map<string, AdmissionRecord>();
   const sessions = new Map<string, string>();
-  // Retain the original publication while its session remains in the service cache.
-  const retained = new Map<string, AdmissionRecord>();
   const operations = new Map<
     string,
     Promise<{ result: unknown; sessionId: string; created: boolean }>
@@ -76,11 +75,6 @@ export function createControlAdmission(
   };
   // `skip` is the admission the calling open handles itself.
   const sweep = (skip?: string) => {
-    for (const sessionId of retained.keys()) {
-      if (service.status(sessionId) === undefined) {
-        retained.delete(sessionId);
-      }
-    }
     for (const [id, record] of records) {
       // A reservation whose fence did not commit (a refused open, or a failed bind
       // whose session is gone) is never saved: a refusal has no session, and the
@@ -118,15 +112,12 @@ export function createControlAdmission(
       const status = record.sessionId === undefined ? undefined : service.status(record.sessionId);
       if (
         (status === undefined || status.state === "DISPOSED") &&
-        (!record.durable || record.saved || record.publication?.observed) &&
+        (!record.durable || record.saved) &&
         clock.monotonicNow() >= record.forgetAt
       ) {
         record.cancel();
         records.delete(id);
         if (record.sessionId !== undefined) {
-          if (status !== undefined && record.publication?.observed && !record.saved) {
-            retained.set(record.sessionId, record);
-          }
           sessions.delete(record.sessionId);
         }
       }
@@ -147,26 +138,6 @@ export function createControlAdmission(
     }
     return true;
   };
-  const observePublication = async (record: AdmissionRecord) => {
-    const publication = record.publication;
-    if (!journal || !publication || !isBoundInput(record.input)) {
-      throw new Error("RECEIPT_UNAVAILABLE");
-    }
-    const original = publication.status;
-    const found = await journal.status(original.sessionId);
-    if (
-      !found ||
-      !sameBinding(found.binding, record.input.expectedBinding) ||
-      found.deadlineWallMs !== original.deadlineWallMs ||
-      found.cleanup.revoked !== original.cleanup.revoked ||
-      found.cleanup.expired !== original.cleanup.expired
-    ) {
-      throw new Error("RECEIPT_UNAVAILABLE");
-    }
-    publication.observed = true;
-    record.unbound = false;
-    return found;
-  };
   const persist = async (id: string, record: AdmissionRecord, status: SessionStatus) => {
     if (!record.durable || record.saved) {
       return;
@@ -174,19 +145,19 @@ export function createControlAdmission(
     if (!journal || !isBoundInput(record.input)) {
       throw new Error("RECEIPT_UNAVAILABLE");
     }
-    if (record.writing) {
-      return record.writing;
-    }
-    if (record.publication) {
-      await observePublication(record);
-      return;
-    }
-    record.writing = (async () => {
+    record.writing ??= (async () => {
       await record.ready;
       // Binding failure is known to precede this write. Once invoked, publication
-      // belongs to this original attempt even when its acknowledgement is lost.
-      record.publication = { status, observed: false };
-      await journal.dispose(id, record.input as RepositoryCredentialBoundSessionInput, status);
+      // belongs to this original status even when its acknowledgement is lost.
+      // The request may never have reached the journal, so a retry sends the same
+      // status again: the journal accepts an identical disposal once and refuses
+      // any other, so the disposal is recorded exactly once.
+      record.publication ??= status;
+      await journal.dispose(
+        id,
+        record.input as RepositoryCredentialBoundSessionInput,
+        record.publication,
+      );
       record.saved = true;
     })().finally(() => {
       record.writing = undefined;
@@ -214,12 +185,16 @@ export function createControlAdmission(
     return id === undefined ? undefined : records.get(id)?.terminal;
   };
   const readStatus = async (sessionId: string) => {
-    const found = localStatus(sessionId);
     const id = sessions.get(sessionId);
-    const record = (id === undefined ? undefined : records.get(id)) ?? retained.get(sessionId);
-    if (record?.publication && !record.saved) {
-      return observePublication(record);
+    const record = id === undefined ? undefined : records.get(id);
+    // Join a pending disposal write, or send a disposal whose acknowledgement was
+    // lost again. A status read never publishes a first disposal.
+    if (id !== undefined && record?.publication !== undefined && !record.saved) {
+      await persist(id, record, record.publication);
+    } else if (record?.writing) {
+      await record.writing;
     }
+    const found = localStatus(sessionId);
     if (record?.durable && found?.state === "DISPOSED" && !record.saved) {
       throw new Error("RECEIPT_UNAVAILABLE");
     }
@@ -477,7 +452,7 @@ export function createControlAdmission(
     status: readStatus,
     async close(sessionId: string) {
       const found = service.status(sessionId);
-      if (!found || retained.has(sessionId)) {
+      if (!found) {
         return readStatus(sessionId);
       }
       const result = service.close(sessionId);
@@ -511,7 +486,6 @@ export function createControlAdmission(
       }
       records.clear();
       sessions.clear();
-      retained.clear();
       refencing.clear();
     },
   };
