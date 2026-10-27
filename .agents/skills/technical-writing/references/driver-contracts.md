@@ -21,9 +21,11 @@ implemented behavior from target design.
 
 Link the exported types. Group members under **Properties** and then **Methods**.
 In each table, put required members before optional members. Use the exported
-type to determine the requirement. For an optional member, describe the default
-or fallback and any mode that requires it. For each method, explain the caller,
-inputs, result, side effects, and failures that affect the caller.
+type to determine whether the requirement is `Required` or `Optional`. For an
+optional member, describe the default or fallback and which features are
+unavailable when it is absent. Do not describe an optional member as required
+for a feature. For each method, explain the caller, inputs, result, side effects,
+and failures that affect the caller.
 
 Do not duplicate an entire source interface merely to list fields. Include a
 small shared-contract example when it clarifies a boundary; keep backend setup

@@ -12,8 +12,9 @@ State which configurations support it and which responsibilities belong to an ad
 ## Interface
 
 [Link the exported interface and its callers. In each table, list required
-members first, then optional members. If a mode needs an optional member,
-name the mode and explain what happens when the member is absent.]
+members first, then optional members. Use only `Required` or `Optional` in the Requirement
+column, as declared by the exported type. For optional members, describe the
+default, fallback, or unavailable feature in the value or behavior column.]
 
 ### Properties
 
