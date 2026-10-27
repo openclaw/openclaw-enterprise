@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-16
-last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
+updated: 2026-10-26
+last_updated_session: Codex/01a16571-f230-73d0-b786-f83300124449
 ---
 
 # Harness Execution Topology Flow
@@ -132,6 +132,16 @@ include version and network profile; Gateway selectors omit version for stabilit
 independently places the Gateway Pod and private-state initializer on trusted nodes.
 After Harness readiness, preparation starts a candidate Gateway if its predecessor is stopped or unready. Activation waits for workspace node enrollment. Dedicated Codex keeps `agent-<agent digest>-workspace` across versions.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds its callbacks to the Agent route; `AGENT_WITH_NODE_ENTRYPOINT` prepares private capability storage and TLS trust, and OpenClaw authorizes callbacks. See [native hook routing](../reference/gateway-routing.md#native-node-endpoint).
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:harnessRequirementsFromDeployment`
+
+Compute preserves the full prepared command and supplies an optional
+`supervisedCommand` without its generic init wrapper. A provider may select
+that entrypoint only when it owns process supervision and descendant cleanup.
+Compute separately passes the revision transport token for trusted readiness.
+Namespace provider routing validates exact revision ingress labels and retains
+the predecessor peer until activation. No labels means no network grant.
+See [RFC-0024](../../specs/rfcs/0024-strands-box-sandbox.md#driver-contract-supplements).
 
 Dedicated Harnesses use ServiceAccounts separate from their Gateway. Compute owns the Gateway; SandboxDriver owns the native Harness. Its node retains identity, workspace and model credentials. OpenShell's version provider delivers setup and the Gateway CA; startup combines inherited trust, writes a private one-use target and reconnects with the persisted device token. Renewal and cleanup retain exact provider ownership.
 

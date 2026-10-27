@@ -2460,7 +2460,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   // then call the Gateway route on the host and port the node rule above admits.
   const relay = compute.gatewayNativeHookRelayConfiguration(revision, {}).plugins.entries.codex
     .config.appServer.nativeHookRelay;
-  assert.equal(relay.credentialDirectory, `${environment.HOME}/.oce-native-hooks`);
+  assert.equal(relay.credentialDirectory, `${environment.HOME}/.codex/.oce-native-hooks`);
   const callback = new URL(relay.url);
   const [nodeEndpoint] = spec.policy.network_policies["workspace-node-enrollment"].endpoints;
   assert.equal(callback.protocol, "https:");
