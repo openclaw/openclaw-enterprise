@@ -22,6 +22,29 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-27: an OpenClaw Gateway needs a 4Gi memory limit
+
+**What breaks.** Since the OpenClaw update of 2026-10-26, an embedded Gateway
+holds 1.5 to 1.6 GiB when ready and peaks at about 2.8 GiB on its first turn,
+when OpenClaw starts most of its worker threads. A `3Gi` limit leaves about 10%
+headroom, so on a node without swap a larger first turn, or a command run in
+the Gateway container, can get the Gateway OOM-killed. The production example,
+the profile renderer and the local Kubernetes stack now set the Gateway to
+`requests.memory: 2560Mi` and `limits.memory: 4Gi` (were `1792Mi` and `3Gi`).
+
+**Who is affected.** Kubernetes Installations whose
+`resources.gateway.limits.memory` is below `4Gi`, including copies of the
+earlier example.
+
+**How to tell.** `kubectl describe pod` for a Gateway Pod shows last state
+`OOMKilled`, or the first chat turn after a deploy fails with a closed
+connection.
+
+**Steps.** _Untested._ Set `resources.gateway.requests.memory` to `2560Mi` and
+`limits.memory` to `4Gi` in the Installation, then deploy a new version of
+each Agent. Plan `2560Mi` of node memory per embedded Agent and `3328Mi` per
+dedicated Codex Agent ([sizing](installation-profiles.md)).
+
 ## 2026-10-26: OpenShell Proxy and Gateway refusals name their fix
 
 **What breaks.** More refusals name the fix instead of a generic answer:

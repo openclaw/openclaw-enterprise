@@ -18500,10 +18500,10 @@ test("the production example sizes dedicated Gateway and Harness containers from
     assert.ok(deployment, `${prefix} Deployment rendered`);
     return deployment.spec.template.spec.containers[0];
   };
-  // A dedicated Codex Gateway held 1.2-1.6 GiB between turns and peaked at 2.2 GiB.
+  // A Gateway holds 2.3-2.4 GiB between turns and peaks at 2.8 GiB on its first turn.
   assert.deepEqual(container("gateway-").resources, {
-    requests: { cpu: "100m", memory: "1792Mi" },
-    limits: { cpu: "4", memory: "3Gi" },
+    requests: { cpu: "100m", memory: "2560Mi" },
+    limits: { cpu: "4", memory: "4Gi" },
   });
   // The Codex Harness held 0.45-0.57 GiB idle; lint, tsc and tests together were
   // OOM-killed at 2Gi and reached a 4Gi limit.

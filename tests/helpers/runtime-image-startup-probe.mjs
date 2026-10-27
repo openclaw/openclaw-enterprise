@@ -33,6 +33,7 @@ import {
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
   failureTail,
+  gatewayMemoryArguments,
 } from "./runtime-image-startup.mjs";
 
 // Startup model probes on Kubernetes. These tests run the real Codex Harness
@@ -44,10 +45,10 @@ import {
 // The production example lets both roles burst to four cores; these cases run
 // tighter, the Codex wrapper at 500m and the embedded Gateway at one core (its
 // probe cap counts at most one core); the runtime image model probe tests cover
-// the Gateway at 500m.
+// the Gateway at 500m. Both roles get the Gateway's memory limit, without swap
+// (the Harness's own production limit is higher).
 const startupProbeCpuLimit = "0.5";
 const gatewayStartupProbeCpuLimit = "1";
-const startupProbeMemoryLimit = "2g";
 const startupProbeModel = runtimeImageModel;
 export const startupProbeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
@@ -398,8 +399,7 @@ export async function runStartupProbeScenario(
     `container:${sidecar}`,
     "--cpus",
     wrapper.cpus,
-    "--memory",
-    startupProbeMemoryLimit,
+    ...gatewayMemoryArguments,
     "--user",
     "1000:1000",
     "--read-only",

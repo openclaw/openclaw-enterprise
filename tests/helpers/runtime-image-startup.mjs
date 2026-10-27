@@ -27,6 +27,18 @@ export const execute = promisify(execFile);
 export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 export const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 export const runtimeImageModel = defaultAgentModel;
+// The production example's Gateway memory limit
+// (deploy/examples/production/installation.yaml), with swap capped at the same
+// value. Docker's `--memory` alone allows as much again in swap, so a Gateway
+// that outgrew its limit passed on CI runners, which swap, and was OOM-killed
+// on a host without swap, as on a typical Kubernetes node (finding 2700).
+const gatewayMemoryLimit = "4g";
+export const gatewayMemoryArguments = [
+  "--memory",
+  gatewayMemoryLimit,
+  "--memory-swap",
+  gatewayMemoryLimit,
+];
 export const imageTestOptions =
   image === undefined
     ? {

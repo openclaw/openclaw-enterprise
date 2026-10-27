@@ -42,14 +42,14 @@ neighbors, and a `limits.cpu` namespace quota counts the whole limit.
 Memory requests cover the use measured between turns, so the scheduler reserves
 what each Agent actually holds; limits cover measured peaks:
 
-| Pod                             | Request  | Limit | Measured                                                                                                                                                             |
-| ------------------------------- | -------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gateway (embedded or dedicated) | `1792Mi` | `3Gi` | 1.2 to 1.6 GiB between turns, peaks of 1.8 to 2.2 GiB; a dedicated Codex Gateway serving native admin chat was OOM-killed at `2Gi`                                   |
-| Codex Harness                   | `768Mi`  | `6Gi` | 0.45 to 0.57 GiB between turns, 1 GiB running a test suite, 1.9 GiB running `tsc`; lint, `tsc` and tests together were OOM-killed at `2Gi` and reached a `4Gi` limit |
-| Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                     |
+| Pod                             | Request  | Limit | Measured                                                                                                                                                                                          |
+| ------------------------------- | -------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gateway (embedded or dedicated) | `2560Mi` | `4Gi` | embedded: 1.5 to 1.6 GiB at ready, 2.3 to 2.4 GiB between turns, peaks of 2.5 to 2.8 GiB on the first turn (no swap); a dedicated Codex Gateway serving native admin chat was OOM-killed at `2Gi` |
+| Codex Harness                   | `768Mi`  | `6Gi` | 0.45 to 0.57 GiB between turns, 1 GiB running a test suite, 1.9 GiB running `tsc`; lint, `tsc` and tests together were OOM-killed at `2Gi` and reached a `4Gi` limit                              |
+| Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                                                  |
 
-Plan node memory per Agent: an embedded OpenClaw Agent reserves `1792Mi`, and a
-dedicated Codex Agent reserves `2560Mi`: `1792Mi` for its Gateway on the
+Plan node memory per Agent: an embedded OpenClaw Agent reserves `2560Mi`, and a
+dedicated Codex Agent reserves `3328Mi`: `2560Mi` for its Gateway on the
 `runtime.gatewayNodeSelector` pool and `768Mi` for its Harness on the
 `runtime.nodeSelector` pool. A Harness runs
 the Agent's shell commands, so builds and test suites in large repositories can

@@ -292,7 +292,7 @@ Configuration, and Secret Drivers with native IAM; without OpenShell,
 it adds both bundled Presets and the Codex Plugin Driver after the shared Codex
 sandbox check. Its runtime section sets the transport Secret prefix, gateway
 storage class, and memory limits
-of 3 GiB per gateway and 6 GiB per Harness.
+of 4 GiB per gateway and 6 GiB per Harness.
 
 With Compose and OpenShell, startup installs the pinned Agent Sandbox controller
 and OpenShell Gateway in k3d and selects operator workspace mode. The

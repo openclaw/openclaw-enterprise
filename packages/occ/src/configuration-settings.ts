@@ -97,6 +97,81 @@ export function codexApprovalPolicy(
   return value as string;
 }
 
+/**
+ * The optional workspace files agents.defaults.skipOptionalBootstrapFiles may name. The pinned
+ * OpenClaw (openclaw/openclaw `src/config/zod-schema.agent-defaults-base.ts` at the commit in
+ * `deploy/runtime/openclaw-source.json`) refuses any other name, and Compute copies the setting
+ * into native workspace setup. tests/integration/runtime-image-managed-files.test.mjs compares
+ * this list with the runtime image's config schema; update it when that pin changes.
+ */
+export const OPTIONAL_BOOTSTRAP_FILES: readonly string[] = [
+  "SOUL.md",
+  "USER.md",
+  "HEARTBEAT.md",
+  "IDENTITY.md",
+];
+const SKIP_BOOTSTRAP_PATH = ["agents", "defaults", "skipBootstrap"] as const;
+const SKIP_OPTIONAL_BOOTSTRAP_FILES_PATH = [
+  "agents",
+  "defaults",
+  "skipOptionalBootstrapFiles",
+] as const;
+
+/**
+ * The workspace bootstrap settings Compute copies into native workspace setup, which refuses
+ * an invalid one about a minute after deployment (finding 2699): agents.defaults.skipBootstrap
+ * must be a boolean, and agents.defaults.skipOptionalBootstrapFiles a list of
+ * OPTIONAL_BOOTSTRAP_FILES. Configuration save runs it with the other content rules; Agent save
+ * and deploy admission run it on the stored Configuration, so one that predates the rule still
+ * reads and gets this message. Compute preparation does not: an active revision keeps its
+ * maintenance passes until a redeploy. On a Preset save (`options`), a value that waits on an
+ * unfilled variable is checked once filled.
+ */
+export function validateWorkspaceBootstrapSettings(
+  values: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): void {
+  const defaults = asRecord(asRecord(values.agents)?.defaults);
+  if (defaults === undefined) {
+    return;
+  }
+  const refuse = (path: readonly string[], requirement: string) =>
+    new ConfigurationHarnessError(`Configuration setting ${path.join(".")} ${requirement}.`);
+  // A boolean variable fills the whole value with a boolean.
+  if (
+    Object.hasOwn(defaults, "skipBootstrap") &&
+    typeof defaults.skipBootstrap !== "boolean" &&
+    options?.unresolvedType?.(SKIP_BOOTSTRAP_PATH) !== "boolean"
+  ) {
+    throw refuse(SKIP_BOOTSTRAP_PATH, "must be true or false");
+  }
+  if (!Object.hasOwn(defaults, "skipOptionalBootstrapFiles")) {
+    return;
+  }
+  const files = defaults.skipOptionalBootstrapFiles;
+  const accepted = (file: unknown, index: number): boolean => {
+    const path = [...SKIP_OPTIONAL_BOOTSTRAP_FILES_PATH, index];
+    const literals = options?.unresolved?.(path);
+    if (literals === undefined) {
+      return OPTIONAL_BOOTSTRAP_FILES.includes(file as string);
+    }
+    // A text variable whose written text can still spell an accepted name.
+    const type = options?.unresolvedType?.(path);
+    return (
+      (type === undefined || type === "string") &&
+      OPTIONAL_BOOTSTRAP_FILES.some((name) => canSpell(literals, name))
+    );
+  };
+  if (!Array.isArray(files) || !files.every(accepted)) {
+    throw refuse(
+      SKIP_OPTIONAL_BOOTSTRAP_FILES_PATH,
+      `must be a list of ${OPTIONAL_BOOTSTRAP_FILES.slice(0, -1)
+        .map((name) => JSON.stringify(name))
+        .join(", ")} or ${JSON.stringify(OPTIONAL_BOOTSTRAP_FILES.at(-1))}`,
+    );
+  }
+}
+
 // `${NAME}`, or an object naming a source and an id (OpenClaw's SecretRef).
 function isCredentialReference(value: unknown): boolean {
   if (typeof value === "string") {
@@ -114,6 +189,7 @@ function isCredentialReference(value: unknown): boolean {
  * - The Codex session approval policy (codexApprovalPolicy).
  * - A literal gateway.auth.password would be stored in plain text, as a model credential
  *   would; every Compute Driver accepts only an environment reference there.
+ * - The workspace bootstrap settings (validateWorkspaceBootstrapSettings).
  */
 export function validateConfigurationSettings(
   values: OpenClawConfigurationDocument,
@@ -126,6 +202,7 @@ export function validateConfigurationSettings(
     options,
   );
   refuseLiteralGatewayPassword(values);
+  validateWorkspaceBootstrapSettings(values, options);
 }
 
 /**

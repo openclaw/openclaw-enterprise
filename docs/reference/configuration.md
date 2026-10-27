@@ -187,15 +187,17 @@ too; an Agent ID or `agents.ownership` that waits on a variable is checked as
 far as its written text goes, and in full once filled. A Configuration saved before
 this check still reads, and Kubernetes deployment still refuses it; only a write
 that keeps the roster is refused. SSH Compute deployment does not check rosters.
-Rules that depend on the topology stay at deployment, because a Configuration
-does not fix one: dedicated execution's `main` Agent rules, for example.
+Topology rules, such as dedicated execution's `main` Agent rules, stay at
+deployment: a Configuration does not fix a topology.
 Every write and Preset save also refuses, with the `400` every deployment gives,
 an `agents.defaults.model` or `agents.entries.<id>.model` primary or fallback
-that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included), and
-fallbacks that are not a list, naming the setting. A Preset model that waits on
-a variable is checked as far as its written text goes, and in full once filled.
-A Configuration saved before this check still reads; deployment refuses it, and
-only a write that keeps the model is refused. Agent
+that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included),
+fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
+and `agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
+optional file list, naming the setting. A Preset value that waits on a variable
+is checked as far as its written text goes, and in full once filled. A
+Configuration saved before these checks still reads; deployment refuses it, and
+only a write that keeps the value is refused. Agent
 deployment separately validates supported
 runtime selection, topology, and Secret binding ownership before admission.
 Creation requires `create` permission for Configurations in the
