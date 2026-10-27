@@ -13,6 +13,7 @@ import type { RepositoryGitDeliveryResolver } from "../repo/credentials/delivery
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
 import { openShellGitRecipientEvidence } from "../repo/credentials/protected-repository-git-installation.ts";
 import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
+import { PostgresOpenShellGitRouteStore } from "./openshell-git-route-store.ts";
 import {
   OpenShellGitRuntime,
   type OpenShellGitRuntimeConfiguration,
@@ -113,8 +114,13 @@ export function createOpenShellCapabilities(input: {
       if (proxy?.bindRepositoryGit !== registeredBind) {
         throw new Error("The selected Credential Proxy transport changed before worker binding.");
       }
+      if (!pool) {
+        throw new Error("OpenShell protected repository Git requires its selected route store.");
+      }
       // Invoke the captured registration synchronously so another caller cannot claim this binding.
-      selectedBindings.set(selected, () => git.bindRepositoryGit(() => selected, pool, emit));
+      selectedBindings.set(selected, () =>
+        git.bindRepositoryGit(() => selected, new PostgresOpenShellGitRouteStore(pool), emit),
+      );
       return registeredBind(selected);
     },
   };

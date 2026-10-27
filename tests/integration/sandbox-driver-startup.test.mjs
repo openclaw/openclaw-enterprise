@@ -6495,13 +6495,15 @@ test(
           );
         }
         try {
-          git.routes = routeStore();
-          await git.bindRepositoryGit({
-            online: {
-              readMaterial: async () => undefined,
-              authorize: async () => ({ kind: "denied", reason: "unavailable" }),
-            },
-          });
+          await git.bindRepositoryGit(
+            () => ({
+              online: {
+                readMaterial: async () => undefined,
+                authorize: async () => ({ kind: "denied", reason: "unavailable" }),
+              },
+            }),
+            routeStore(),
+          );
           // v4 promised a send cutoff. The online sender must refuse that revision before creation.
           const exactRevision = structuredClone(rev);
           exactRevision.executionAdmission.version = 4;

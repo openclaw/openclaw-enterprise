@@ -13,7 +13,6 @@ import type {
   RepositoryGitInstallationFence,
   SandboxRepositoryAccess,
 } from "@openclaw-enterprise/contracts";
-import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { RepositoryGitMaterialAbsence } from "../repo/github/credentials/prepared-repository-git.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
@@ -37,7 +36,6 @@ import {
   type OpenShellGitRouteSnapshot,
   type OpenShellGitRouteStore,
   type OpenShellGitRouteWithdrawal,
-  PostgresOpenShellGitRouteStore,
 } from "./openshell-git-route-store.ts";
 import {
   deleteOpenShellPreparedGitProvider,
@@ -2162,19 +2160,17 @@ export class OpenShellGitRuntime {
   /** The protected sender gets committed material and one request decision, never the issuer. */
   async bindRepositoryGit(
     authority: () => ProtectedRepositoryGitAuthority,
-    pool: PostgresPool,
+    routes: OpenShellGitRouteStore,
     emit?: OpenShellGitRuntimeEmit,
   ) {
-    if (typeof authority !== "function" || !pool) {
+    if (typeof authority !== "function" || !routes) {
       throw new Error("OpenShell protected repository Git requires its selected route store.");
     }
     if (this.starting || this.owner || this.stopped.signal.aborted) {
       throw new Error("OpenShell Git worker already started or stopped.");
     }
     // Reserve the worker before an authority accessor or asynchronous startup can reenter.
-    this.starting = Promise.resolve().then(() =>
-      this.#start(authority, emit, new PostgresOpenShellGitRouteStore(pool)),
-    );
+    this.starting = Promise.resolve().then(() => this.#start(authority, emit, routes));
     await this.starting;
     return { close: () => this.close() };
   }
