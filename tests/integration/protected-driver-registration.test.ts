@@ -16,17 +16,22 @@ import {
   type OpenShellSandboxDriverOptions,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
+import { constants } from "node:fs";
+import { open, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test, { afterEach } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import type {
   AgentRevision,
   ComputeDriver,
   Driver,
   EgressInstallation,
   Namespace,
+  ProtectedRepositoryGitAuthority,
   SandboxHarnessStatusContext,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver, OpenClawController } from "../../packages/occ/src/index.ts";
@@ -488,7 +493,13 @@ test("Repo normalizes exact repository and installation delivery without grantin
 });
 
 test("OpenShell registration pairs its capabilities using only a Repo delivery resolver", async (t) => {
-  const { registry } = repositoryDeliveryFixture();
+  const { registry, revision } = repositoryDeliveryFixture();
+  const tls = await createTlsMaterial(t);
+  const publicKeyPath = join(dirname(tls.certFile), "issuer-public.pem");
+  await writeFile(
+    publicKeyPath,
+    generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }),
+  );
   const configuration: OpenShellSandboxDriverOptions = {
     gateway: { workspaceMode: "operator" },
     kubernetes: {
@@ -543,7 +554,16 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
       resolveDelivery: createGitHubRepositoryDeliveryResolver(registry),
       configuration: {
         registrationName: "oce-prepared-git",
-        authority: {} as OpenShellGitRuntime["configuration"]["authority"],
+        authority: {
+          host: "127.0.0.1",
+          port: 0,
+          certificatePath: tls.certFile,
+          privateKeyPath: tls.keyFile,
+          issuerPublicKeyPath: publicKeyPath,
+          issuer: "https://gateway.example.test",
+          audience: "online-authorizer",
+          keyId: "gateway-key",
+        },
       },
     },
   };
@@ -560,6 +580,153 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.ok(capabilities.sandbox.repositoryAccess);
   assert.ok(capabilities.proxy?.bindRepositoryGit);
   assert.ok(capabilities.repositoryTransport);
+  const online = {
+    readMaterial: async () => undefined,
+    authorize: async () => ({ kind: "denied", reason: "unavailable" }) as const,
+  };
+  const authority: ProtectedRepositoryGitAuthority = {
+    ...online,
+    online,
+    recipients: {
+      observe: async () => undefined,
+      beginInstall: async () => undefined,
+      confirmInstall: async () => undefined,
+    },
+  };
+  const pool = (name: string) => ({
+    connect: async () => {
+      throw new Error(name);
+    },
+    end: async () => {},
+  });
+  const acceptedEvents: Readonly<Record<string, unknown>>[] = [];
+  const rejectedEvents: Readonly<Record<string, unknown>>[] = [];
+  await assert.rejects(capabilities.proxy.bindRepositoryGit(authority), /selected route store/);
+  const binding = await capabilities.repositoryTransport.bind(
+    () => authority,
+    pool("accepted pool"),
+    (event) => acceptedEvents.push(event),
+  );
+  // The registered method recognizes the selected authority, but cannot start a second worker.
+  await assert.rejects(
+    capabilities.proxy.bindRepositoryGit(authority),
+    /already started or stopped/,
+  );
+  await assert.rejects(
+    capabilities.repositoryTransport.bind(
+      () => authority,
+      pool("rejected pool"),
+      (event) => rejectedEvents.push(event),
+    ),
+    /already started or stopped/,
+  );
+  // A cold fence read and an unattributed denial must still use the accepted worker's dependencies.
+  await assert.rejects(
+    runtime.verifyExecution(
+      {
+        ...revision,
+        repositoryCredentials: {
+          ...revision.repositoryCredentials!,
+          standingApprovalId: "approval-one",
+        },
+      },
+      t.signal,
+      async () => undefined,
+    ),
+    /accepted pool/,
+  );
+  await runtime.lookup(
+    { sandboxId: "unknown", bindingId: "unknown", workspace: "unknown", requestId: "request" },
+    t.signal,
+  );
+  assert.equal(acceptedEvents.length, 1);
+  assert.equal(rejectedEvents.length, 0);
+  await binding.close();
+
+  const replaced = createOpenShellCapabilities(input);
+  t.after(() => replaced.close());
+  replaced.proxy!.bindRepositoryGit = async () => {
+    throw new Error("replacement invoked");
+  };
+  await assert.rejects(
+    replaced.repositoryTransport!.bind(() => authority, pool("replaced pool")),
+    /transport changed before worker binding/,
+  );
+
+  const failedKey = join(dirname(tls.certFile), "unread-key.pipe");
+  execFileSync("mkfifo", [failedKey]);
+  const failed = createOpenShellCapabilities({
+    ...input,
+    repository: {
+      ...input.repository!,
+      configuration: {
+        ...input.repository!.configuration!,
+        authority: {
+          ...input.repository!.configuration!.authority,
+          certificatePath: join(dirname(tls.certFile), "missing.pem"),
+          privateKeyPath: failedKey,
+        },
+      },
+    },
+  });
+  t.after(() => failed.close());
+  let nested: Promise<void> | undefined;
+  const reentrant = {
+    get protectedGit() {
+      nested = assert.rejects(
+        failed.repositoryTransport!.bind(() => authority, pool("nested pool")),
+        /already started or stopped/,
+      );
+      return authority;
+    },
+  };
+  await assert.rejects(
+    failed.repositoryTransport!.bind(() => reentrant.protectedGit, pool("first pool")),
+    /ENOENT/,
+  );
+  assert.ok(nested);
+  await nested;
+  let keyReader = false;
+  try {
+    const writer = await open(failedKey, constants.O_WRONLY | constants.O_NONBLOCK);
+    keyReader = true;
+    await writer.close();
+  } catch (error) {
+    assert.equal((error as NodeJS.ErrnoException).code, "ENXIO");
+  }
+  assert.equal(keyReader, false, "failed public input must not start a private-key read");
+
+  const certificate = join(dirname(tls.certFile), "pending-certificate.pipe");
+  execFileSync("mkfifo", [certificate]);
+  const closing = createOpenShellCapabilities({
+    ...input,
+    repository: {
+      ...input.repository!,
+      configuration: {
+        ...input.repository!.configuration!,
+        authority: { ...input.repository!.configuration!.authority, certificatePath: certificate },
+      },
+    },
+  });
+  const start = assert.rejects(
+    closing.repositoryTransport!.bind(() => authority, pool("closing pool")),
+    { name: "AbortError" },
+  );
+  const writer = await open(certificate, "w");
+  let closeFinished = false;
+  try {
+    await delay(20);
+    const close = closing.close().then(() => {
+      closeFinished = true;
+    });
+    await delay(30);
+    assert.equal(closeFinished, false, "close must join a pending startup read");
+    await writer.close();
+    await Promise.all([start, close]);
+  } finally {
+    await writer.close();
+    await closing.close();
+  }
 });
 
 function scopeDriftFixture() {

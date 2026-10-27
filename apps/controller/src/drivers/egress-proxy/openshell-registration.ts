@@ -13,6 +13,7 @@ import type { RepositoryGitDeliveryResolver } from "../repo/credentials/delivery
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
 import { openShellGitRecipientEvidence } from "../repo/credentials/protected-repository-git-installation.ts";
 import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
+import { PostgresOpenShellGitRouteStore } from "./openshell-git-route-store.ts";
 import {
   OpenShellGitRuntime,
   type OpenShellGitRuntimeConfiguration,
@@ -21,7 +22,7 @@ import {
 export interface OpenShellRepositoryTransport {
   readonly evidence: typeof openShellGitRecipientEvidence;
   bind(
-    authority: ProtectedRepositoryGitAuthority,
+    authority: () => ProtectedRepositoryGitAuthority,
     pool: PostgresPool,
     emit?: (event: Readonly<Record<string, unknown>>) => void,
   ): Promise<CredentialProxyBinding>;
@@ -72,6 +73,11 @@ export function createOpenShellCapabilities(input: {
       ...(git && { openShellGit: git }),
     },
   );
+  const selectedBindings = new WeakMap<
+    ProtectedRepositoryGitAuthority,
+    () => Promise<CredentialProxyBinding>
+  >();
+  let workerReserved = false;
   const proxy: CredentialProxyDriver | undefined =
     input.proxy &&
     new OpenShellCredentialProxyDriver(input.proxy.configuration, {
@@ -81,18 +87,41 @@ export function createOpenShellCapabilities(input: {
       preparedProviders: input.proxy.preparedProviders,
       ...(input.proxy.exchangeAuthority && { exchangeAuthority: input.proxy.exchangeAuthority }),
       ...(git && {
-        bindRepositoryGit: git.bindRepositoryGit.bind(git),
+        bindRepositoryGit: async (authority) => {
+          const bind = selectedBindings.get(authority);
+          if (!bind) {
+            throw new Error(
+              "OpenShell protected repository Git requires its selected route store.",
+            );
+          }
+          return bind();
+        },
         previewEnforcement: git.previewEnforcement.bind(git),
       }),
     });
+  const registeredBind = proxy?.bindRepositoryGit;
   const repositoryTransport: OpenShellRepositoryTransport | undefined = git && {
     evidence: openShellGitRecipientEvidence,
     async bind(authority, pool, emit) {
-      if (!authority || !proxy?.bindRepositoryGit) {
+      if (!authority || !registeredBind) {
         throw new Error("Missing the selected Driver's protected repository Git authority.");
       }
-      git.connectRouteStore(pool, emit);
-      return proxy.bindRepositoryGit(authority);
+      if (workerReserved) {
+        throw new Error("OpenShell Git worker already started or stopped.");
+      }
+      workerReserved = true;
+      const selected = authority();
+      if (proxy?.bindRepositoryGit !== registeredBind) {
+        throw new Error("The selected Credential Proxy transport changed before worker binding.");
+      }
+      if (!pool) {
+        throw new Error("OpenShell protected repository Git requires its selected route store.");
+      }
+      // Invoke the captured registration synchronously so another caller cannot claim this binding.
+      selectedBindings.set(selected, () =>
+        git.bindRepositoryGit(() => selected, new PostgresOpenShellGitRouteStore(pool), emit),
+      );
+      return registeredBind(selected);
     },
   };
   return {
