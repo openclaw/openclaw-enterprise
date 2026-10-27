@@ -844,7 +844,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
                 return {
                   createServer(value) {
                     handler = value;
-                    return { listen() {} };
+                    return { on() {}, listen() {} };
                   },
                 };
               }
