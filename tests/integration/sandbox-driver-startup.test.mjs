@@ -28,6 +28,7 @@ import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -1981,31 +1982,68 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   );
   assert.deepEqual(calls, [["getSandbox", name, calls[0][2]]]);
 
-  // The stored program is independently identified by the pre-upgrade producer.
-  const previous = AGENT_WITH_NODE_ENTRYPOINT.replace(
-    /mkdirSync\(state, \{ recursive: true, mode: 0o700 \}\);[\s\S]*?chmodSync\(state, 0o700\);/,
-    "mkdirSync(state, { recursive: true });",
-  );
-  const previousParts = nodeProgramArguments(previous).slice(1);
-  assert.equal(
-    createHash("sha256").update(JSON.stringify(previousParts)).digest("hex"),
-    "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
-  );
+  // Sandboxes created before #3872 carry the workspace-node program with a bare
+  // mkdirSync(state). Each admission adopts only its own pinned program from then; the
+  // hashes identify those bytes independently of the matcher. When the program changes
+  // these hashes stop matching: remove this case with the shim in openshell.ts.
+  const previousParts = (program) =>
+    nodeProgramArguments(
+      program.replace(
+        /mkdirSync\(state, \{ recursive: true, mode: 0o700 \}\);[\s\S]*?chmodSync\(state, 0o700\);/,
+        "mkdirSync(state, { recursive: true });",
+      ),
+    ).slice(1);
+  const sha256 = (parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+  const admissions = {
+    ordinary: {
+      program: AGENT_WITH_NODE_ENTRYPOINT,
+      compute: { driverId: "kubernetes" },
+      hash: "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
+    },
+    protected: {
+      program: PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+      compute: { driverId: "kubernetes", admission: "protected-codex-no-connection-retry:v1" },
+      hash: "58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",
+    },
+  };
   const saved = sandboxes.get(name);
   const prefix = saved.spec.command.slice(0, RUNTIME_WRAPPER_COMMAND.length + 1);
-  const stored = { ...saved, spec: { ...saved.spec, command: [...prefix, ...previousParts] } };
-  sandboxes.set(name, stored);
-  const requestProgram = (program, target = { ...revision, compute: { driverId: "kubernetes" } }) =>
+  const storeProgram = (parts) => {
+    const stored = { ...saved, spec: { ...saved.spec, command: [...prefix, ...parts] } };
+    sandboxes.set(name, stored);
+    return stored;
+  };
+  const requestProgram = (admission, program = admission.program) =>
     driver.provisionHarness({
       ...context,
-      revision: target,
+      revision: { ...revision, compute: admission.compute },
       requirements: { ...codexRequirements(revision), command: harnessRuntimeCommand(program) },
     });
   calls.length = 0;
-  assert.deepEqual(await requestProgram(AGENT_WITH_NODE_ENTRYPOINT), first);
-  assert.equal(sandboxes.get(name), stored);
+  for (const [own, other] of [
+    [admissions.ordinary, admissions.protected],
+    [admissions.protected, admissions.ordinary],
+  ]) {
+    const parts = previousParts(own.program);
+    assert.equal(sha256(parts), own.hash);
+    const stored = storeProgram(parts);
+    assert.deepEqual(await requestProgram(own), first);
+    // Adoption leaves the stored Sandbox as it is.
+    assert.equal(sandboxes.get(name), stored);
+    await assert.rejects(
+      requestProgram(own, own.program + "\n0;"),
+      /exact AgentRevision ownership and content/,
+    );
+    // A revision never adopts the other admission's program, even though its hash is pinned:
+    // an ordinary revision must not run inside a protected Sandbox, nor the reverse.
+    await assert.rejects(requestProgram(other), /exact AgentRevision ownership and content/);
+  }
+  // A stored payload matching neither pinned hash is refused.
+  const unknown = previousParts(AGENT_WITH_NODE_ENTRYPOINT + "\n0;");
+  assert.ok(![admissions.ordinary.hash, admissions.protected.hash].includes(sha256(unknown)));
+  storeProgram(unknown);
   await assert.rejects(
-    requestProgram(AGENT_WITH_NODE_ENTRYPOINT + "\n0;"),
+    requestProgram(admissions.ordinary),
     /exact AgentRevision ownership and content/,
   );
   assert.ok(calls.every(([method]) => method !== "createSandbox"));
