@@ -339,6 +339,23 @@ for (const persistence of databaseUrl ? ["memory", "postgres"] : ["memory"]) {
       });
       assert.equal(access.status, 201);
     };
+    await t.test(
+      "deployment requires the Agent source grant before reading the workspace Secret",
+      async (t) => {
+        const driver = f.controller.selectedDriver("secret");
+        const reads = t.mock.method(driver, "readCredentialInput", { getter: false });
+        const beforeRead = f.secretReads;
+        const response = await f.request(
+          "POST",
+          `/namespaces/${f.namespace.id}/agents/${agent.id}/deploy`,
+        );
+        assert.equal(response.status, 403);
+        assert.equal(response.body.error.code, "FORBIDDEN");
+        assert.match(response.body.error.message, /the Agent itself needs .* operate on it/);
+        assert.equal(reads.mock.callCount(), 0);
+        assert.equal(f.secretReads, beforeRead);
+      },
+    );
     await grantAccess(source.id);
     const deploy = async () => {
       sandboxId = randomUUID();

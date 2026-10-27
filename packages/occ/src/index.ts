@@ -9341,7 +9341,7 @@ export class OpenClawController {
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       rejectCrossNamespaceSecretSources(namespace.id, undefined, harnessAuth);
       const savedConfiguration = this.savedConfigurationReader(configuration);
-      await this.authorizeHarnessAuthSource(
+      await this.authorizeSavedHarnessAuthSource(
         state,
         principalId,
         namespace.id,
@@ -9750,7 +9750,7 @@ export class OpenClawController {
       const savedConfiguration = this.savedConfigurationReader(configuration);
       if (requestedAuth !== undefined) {
         rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
-        await this.authorizeHarnessAuthSource(
+        await this.authorizeSavedHarnessAuthSource(
           state,
           principalId,
           namespace.id,
@@ -11652,14 +11652,14 @@ export class OpenClawController {
     }
   }
 
-  /** Namespace lock serializes binding, source deletion, and admission. */
+  /** Under the Namespace lock, check the caller and owner without opening a live Secret. */
   private async authorizeHarnessAuthSource(
     state: PlatformUnitOfWork,
     principalId: string,
     namespaceId: string,
     binding: HarnessAuthBinding | null,
     readSavedConfiguration?: () => Promise<Readonly<Configuration>>,
-  ): Promise<void> {
+  ): Promise<StaticEgressSource | undefined> {
     if (binding === null || binding.method === "runtime") {
       return;
     }
@@ -11690,14 +11690,12 @@ export class OpenClawController {
         );
       }
       if (source.ownerCapability === "credential_proxy") {
-        // A live source's snapshot can read protected material during this authorization.
         if (readSavedConfiguration) {
           validateWorkspaceBootstrapSettings((await readSavedConfiguration()).values);
         }
-        await this.credentialSourceHarnessAuthSnapshot(state, namespaceId, binding);
-      } else {
-        this.ownedCredentialGatewayDriver(source);
+        return (await this.harnessAuthMetadataForSource(source)).sourceToVerify;
       }
+      this.ownedCredentialGatewayDriver(source);
     } else {
       if (binding.source.namespaceId !== namespaceId) {
         throw new SecretBindingValidationError(SERVICE_ACCOUNT_CROSS_NAMESPACE);
@@ -11708,6 +11706,27 @@ export class OpenClawController {
         id: binding.source.id,
       });
       await this.exactServiceAccount(state, namespaceId, binding.source.id);
+    }
+    return undefined;
+  }
+
+  /** Saving a binding requires a current source under the caller's grant. */
+  private async authorizeSavedHarnessAuthSource(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    namespaceId: string,
+    binding: HarnessAuthBinding | null,
+    readSavedConfiguration: () => Promise<Readonly<Configuration>>,
+  ): Promise<void> {
+    const sourceToVerify = await this.authorizeHarnessAuthSource(
+      state,
+      principalId,
+      namespaceId,
+      binding,
+      readSavedConfiguration,
+    );
+    if (sourceToVerify) {
+      await this.requireCurrentHarnessAuthSource(state, sourceToVerify);
     }
   }
 
@@ -13298,6 +13317,32 @@ export class OpenClawController {
     state: PlatformReadView,
     source: Readonly<CredentialSource>,
   ): Promise<Extract<HarnessAuthSnapshot, { readonly method: "credential_source" }>> {
+    const { snapshot, sourceToVerify } = await this.harnessAuthMetadataForSource(source);
+    if (sourceToVerify) {
+      await this.requireCurrentHarnessAuthSource(state, sourceToVerify);
+    }
+    return snapshot;
+  }
+
+  private async requireCurrentHarnessAuthSource(
+    state: PlatformReadView,
+    source: StaticEgressSource,
+  ): Promise<void> {
+    if (
+      !(await this.verifiedSourceCurrent(state, source, {
+        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        deadlineAt: new Date(Date.now() + CREDENTIAL_GATEWAY_TIMEOUT_MS).toISOString(),
+      }))
+    ) {
+      throw new DependencyUnavailableError("The source identity evidence is no longer current.");
+    }
+  }
+
+  /** The selected provider determines whether admission must check a live proof. */
+  private async harnessAuthMetadataForSource(source: Readonly<CredentialSource>): Promise<{
+    readonly snapshot: Extract<HarnessAuthSnapshot, { readonly method: "credential_source" }>;
+    readonly sourceToVerify: StaticEgressSource | undefined;
+  }> {
     let owner: ReturnType<OpenClawController["credentialSourceOwner"]>;
     try {
       owner = this.credentialSourceOwner(source);
@@ -13316,21 +13361,6 @@ export class OpenClawController {
       if (!source.egress || !loginMode) {
         throw new DependencyUnavailableError("The admitted Harness provider is unavailable.");
       }
-      if (
-        source.egress.adoption === "live" &&
-        (provider?.verifySource || source.egress.verifiedIdentity)
-      ) {
-        if (
-          !(await this.verifiedSourceCurrent(state, source.egress, {
-            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-            deadlineAt: new Date(Date.now() + CREDENTIAL_GATEWAY_TIMEOUT_MS).toISOString(),
-          }))
-        ) {
-          throw new DependencyUnavailableError(
-            "The source identity evidence is no longer current.",
-          );
-        }
-      }
       const snapshot = immutableCopy({
         method: "credential_source" as const,
         sourceId: source.id,
@@ -13347,7 +13377,12 @@ export class OpenClawController {
       ) {
         throw new DependencyUnavailableError("The admitted Harness provider is unavailable.");
       }
-      return snapshot;
+      const sourceToVerify =
+        source.egress.adoption === "live" &&
+        (provider?.verifySource || source.egress.verifiedIdentity)
+          ? source.egress
+          : undefined;
+      return { snapshot, sourceToVerify };
     }
     const gateway = owner.driver;
     const type = await this.credentialSourceType(gateway, source.type);
@@ -13356,13 +13391,16 @@ export class OpenClawController {
         "The credential source type cannot authenticate a Harness.",
       );
     }
-    return immutableCopy({
-      method: "credential_source" as const,
-      sourceId: source.id,
-      credentialGatewayId: gateway.id,
-      sourceType: source.type,
-      loginMode: type.harnessAuth.loginMode,
-    });
+    return {
+      snapshot: immutableCopy({
+        method: "credential_source" as const,
+        sourceId: source.id,
+        credentialGatewayId: gateway.id,
+        sourceType: source.type,
+        loginMode: type.harnessAuth.loginMode,
+      }),
+      sourceToVerify: undefined,
+    };
   }
 
   /** A selected Credential Gateway replaces Secret-backed model delivery; no env fallback. */
