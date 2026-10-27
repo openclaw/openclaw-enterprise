@@ -22,30 +22,30 @@ import { readOpenclawSource } from "./lib/openclaw-source.mjs";
 const appliedPatches = [
   {
     file: "openclaw-codex-read-only-paths.patch",
-    sha256: "2e529593cb72c69be86cf7bb927aa555de50bc7ef923e80b37ba67df9bc1a624",
+    sha256: "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc",
     field: "openclawBridgePatchSha256",
   },
   {
     file: "openclaw-codex-full-access-profile.patch",
-    sha256: "ce301e59ba9266f7897c472cd54d51f487a4f9ed75034824f48c6839b35e922f",
+    sha256: "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
   },
   {
     file: "stock-codex-0.163.0-alpha.2-dependency-pin.patch",
-    sha256: "686dcb3fcdd384150845f7af5b5f3bf46b2dc6ee24ab8f5b629b10566e18afd4",
+    sha256: "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
     field: "codexDependencyPinPatchSha256",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
-    sha256: "ac7d081a26c23b7e02d7b2c51abb77a7d5d36135eb49a077b5c65bdcae68dd40",
+    sha256: "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804",
     field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",
   },
   {
     file: "openclaw-control-ui-browser-reconnect.patch",
-    sha256: "bbd27ee1384129ca00d113b6f2a30477502cce38588054d22d50e53f668eee59",
+    sha256: "48dbcb32c453861b8d8facf9d1fd62003a994c234289270727eb41763b8b8d9c",
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
-    sha256: "af52f6ec87e80f35f141c82cfd0e34a73b7ba90bf593fb4889a48b22dea76a11",
+    sha256: "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
   },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);
@@ -60,6 +60,10 @@ const runtimePaths = [
   "scripts",
   "node-version.mjs",
   "node-sqlite.mjs",
+  "node-sqlite-capabilities.mjs",
+  "runtime-process-bootstrap.generated.mjs",
+  "runtime-process-scripts.generated.mjs",
+  "standalone-runtime-profile.mjs",
   "node-runtime-update.mjs",
   "node-runtime-recovery.mjs",
   "node-runtime-env.mjs",

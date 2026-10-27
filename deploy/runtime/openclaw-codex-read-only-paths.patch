@@ -160,12 +160,10 @@ diff --git a/extensions/codex/src/app-server/config-security.ts b/extensions/cod
        ":project_roots": {
          ".": fileSystemMode,
        },
-@@ -95,6 +97,72 @@
-     .map(([key, permission]) => [key.trim(), permission === "none" ? "deny" : permission] as const)
-     .filter(([key]) => key.length > 0);
+@@ -97,6 +99,72 @@
    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
-+}
-+
+ }
+
 +function resolveNetworkProxyReadOnlyPaths(
 +  config: CodexAppServerNetworkProxyConfig,
 +): Record<string, "read"> | undefined {
@@ -230,13 +228,23 @@ diff --git a/extensions/codex/src/app-server/config-security.ts b/extensions/cod
 +  return new Error(
 +    'Invalid plugins.entries.codex.config.appServer.networkProxy.readOnlyPaths; fix this field before starting Codex with network restrictions. Run "openclaw doctor --fix" for supported repairs.',
 +  );
- }
-
++}
++
  function removeUndefinedJsonFields(value: Record<string, JsonValue | undefined>): JsonObject {
+   return Object.fromEntries(
+     Object.entries(value).filter((entry): entry is [string, JsonValue] => entry[1] !== undefined),
 diff --git a/extensions/codex/src/app-server/config.test.ts b/extensions/codex/src/app-server/config.test.ts
 --- a/extensions/codex/src/app-server/config.test.ts
 +++ b/extensions/codex/src/app-server/config.test.ts
-@@ -336,15 +336,25 @@
+@@ -367,16 +367,26 @@
+       ["enableSocks5", "enable_socks5", true],
+       ["enableSocks5Udp", "enable_socks5_udp", false],
+       ["allowUpstreamProxy", "allow_upstream_proxy", true],
+-      ["allowLocalBinding", "allow_local_binding", false],
++      ["allowLocalBinding", "allow_local_binding", true],
+     ] as const;
+     const runtime = resolveAppServer({
+       sandbox: "workspace-write",
        networkProxy: {
          enabled: true,
          profileName: "mock-proxy",
@@ -255,17 +263,10 @@ diff --git a/extensions/codex/src/app-server/config.test.ts b/extensions/codex/s
 +          "/app/node_modules/openclaw",
 +          "/app/node_modules/openclaw/",
 +        ],
-         proxyUrl: "http://127.0.0.1:3128",
-         socksUrl: "socks5h://127.0.0.1:8081",
-         enableSocks5: true,
-         enableSocks5Udp: false,
-         allowUpstreamProxy: true,
--        allowLocalBinding: false,
-+        allowLocalBinding: true,
+         ...Object.fromEntries(mappings.map(([input, , value]) => [input, value])),
        },
      });
-
-@@ -356,18 +366,28 @@
+@@ -389,18 +399,28 @@
          default_permissions: "mock-proxy",
          permissions: {
            "mock-proxy": {
