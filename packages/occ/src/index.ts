@@ -8196,7 +8196,7 @@ export class OpenClawController {
       if (!reader) {
         throw new NotImplementedError(
           "agent_plugins.discovery",
-          "The Token Service does not support plugin discovery.",
+          "The Credential Gateway does not support plugin discovery.",
         );
       }
       outcome = await this.credentialGatewayOperation(() =>
