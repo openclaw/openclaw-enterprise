@@ -898,11 +898,20 @@ export function createHumanLogin(
                 }
                 return rejectExternal(name, exchange.denial, attemptId);
               }
-              const snapshot = await state.snapshotExternal(
+              let snapshot = await state.snapshotExternal(
                 provider.providerId,
                 exchange.subject,
                 attempt.createdAt,
               );
+              if (snapshot === undefined && exchange.trusted === true) {
+                // The operator configured this provider's verified tokens to vouch for realm
+                // members (a trusted OIDC claim): enrol the unknown identity with no grant
+                // instead of refusing it. Only an OIDC exchange sets `trusted`.
+                snapshot = await state.provisionTrustedExternalAccount(
+                  provider.providerId,
+                  exchange.subject,
+                );
+              }
               if (!snapshot) {
                 return rejectExternal(
                   name,

@@ -16,6 +16,16 @@ import { verifyIdToken } from "./id-token.ts";
 
 export type OidcTokenAuth = "client_secret_post" | "client_secret_basic";
 
+/**
+ * The operator-configured claim that vouches for realm members: a verified ID token whose
+ * `name` claim equals `value` authenticates an otherwise unknown subject, which is then
+ * enrolled just-in-time with no grant. Both parts are required together.
+ */
+export interface OidcTrustClaim {
+  readonly name: string;
+  readonly value: string;
+}
+
 export interface OidcLoginConfiguration {
   // The exact `iss` value, compared byte for byte.
   readonly issuer: string;
@@ -27,6 +37,7 @@ export interface OidcLoginConfiguration {
   readonly tokenAuth: OidcTokenAuth;
   // The Console button label: "Continue with <displayName>".
   readonly displayName: string;
+  readonly trustClaim?: OidcTrustClaim;
 }
 
 // OIDC sign-in's configuration as the controller receives it: the guarded profile's
@@ -45,12 +56,20 @@ const requiredVariables = [
   "OCC_AUTH_OIDC_CLIENT_ID",
   "OCC_AUTH_OIDC_CLIENT_SECRET",
 ] as const;
-const optionalVariables = ["OCC_AUTH_OIDC_TOKEN_AUTH", "OCC_AUTH_OIDC_DISPLAY_NAME"] as const;
+const optionalVariables = [
+  "OCC_AUTH_OIDC_TOKEN_AUTH",
+  "OCC_AUTH_OIDC_DISPLAY_NAME",
+  "OCC_AUTH_OIDC_TRUST_CLAIM",
+  "OCC_AUTH_OIDC_TRUST_VALUE",
+] as const;
 
 const dnsName =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 // Printable text: no control, format, separator-other or unassigned characters.
 const displayNamePattern = /^[^\p{C}\p{Zl}\p{Zp}]{1,40}$/u;
+// A JWT claim name (letters, digits, `_`, `-`, `:`), and a printable ASCII claim value.
+const trustClaimNamePattern = /^[A-Za-z][A-Za-z0-9_:-]{0,63}$/;
+const trustClaimValuePattern = /^[\x21-\x7E]{1,256}$/;
 
 // An `https:` URL on the default port with a DNS host and no userinfo, query or fragment.
 // Returns the parsed URL, or undefined.
@@ -124,6 +143,28 @@ export function oidcLoginConfiguration(
   if (!displayNamePattern.test(displayName)) {
     throw new Error("OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters.");
   }
+  const trustClaimName = environment.OCC_AUTH_OIDC_TRUST_CLAIM?.trim();
+  const trustClaimValue = environment.OCC_AUTH_OIDC_TRUST_VALUE?.trim();
+  if (
+    (trustClaimName === undefined || trustClaimName.length === 0) !==
+    (trustClaimValue === undefined || trustClaimValue.length === 0)
+  ) {
+    throw new Error(
+      "OCC_AUTH_OIDC_TRUST_CLAIM and OCC_AUTH_OIDC_TRUST_VALUE must be configured together.",
+    );
+  }
+  let trustClaim: OidcTrustClaim | undefined;
+  if (trustClaimName !== undefined && trustClaimName.length > 0 && trustClaimValue !== undefined) {
+    if (!trustClaimNamePattern.test(trustClaimName)) {
+      throw new Error(
+        "OCC_AUTH_OIDC_TRUST_CLAIM must be a claim name of 1 to 64 letters, digits, underscore, hyphen or colon.",
+      );
+    }
+    if (!trustClaimValuePattern.test(trustClaimValue)) {
+      throw new Error("OCC_AUTH_OIDC_TRUST_VALUE must be 1 to 256 printable characters.");
+    }
+    trustClaim = { name: trustClaimName, value: trustClaimValue };
+  }
   return {
     // The configured string itself: `iss` must match it exactly, trailing slash included.
     issuer: values.OCC_AUTH_OIDC_ISSUER,
@@ -136,6 +177,7 @@ export function oidcLoginConfiguration(
     clientSecret: values.OCC_AUTH_OIDC_CLIENT_SECRET,
     tokenAuth,
     displayName,
+    ...(trustClaim === undefined ? {} : { trustClaim }),
   };
 }
 
@@ -160,7 +202,9 @@ export async function oidcAuthorizationURL(
     id: "oidc",
     options: { clientId: config.clientId, clientSecret: config.clientSecret },
     authorizationEndpoint: config.authorizationUrl,
-    // Only the subject is used; email and profile are never requested or read.
+    // The subject and, when configured, the trust claim are used; email and profile are
+    // never requested or read. The trust claim must therefore be issued into the ID token
+    // without any additional scope.
     scopes: ["openid"],
     state,
     codeVerifier,
@@ -216,7 +260,10 @@ export async function exchangeOidcSubject(
     });
     return claims === undefined
       ? { denial: "EXTERNAL_IDENTITY_REJECTED" }
-      : { subject: claims.sub as string };
+      : config.trustClaim !== undefined &&
+          claims[config.trustClaim.name] === config.trustClaim.value
+        ? { subject: claims.sub as string, trusted: true }
+        : { subject: claims.sub as string };
   } catch (error) {
     // Never expose provider response bodies, token values or request credentials.
     return providerExchangeFailure(error, controller.signal);
