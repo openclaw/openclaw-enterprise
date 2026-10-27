@@ -205,14 +205,50 @@ for (const [recovery, title] of [
       gatewayManagedMode,
       until: ({ events }) => events.some(observedValue("ready", true)),
       act: async ({ containerName }) => {
-        firstTurn = await sendFirstTurn(containerName);
-        if (compute) {
-          await compute.rememberEmbeddedGateway(
-            containerName,
-            await compute.container(containerName),
-            volume,
-          );
+        // DIAG-2692 (temporary probe): record the Gateway container's memory and
+        // CPU throttling around the first turn, then fail with a short summary.
+        const read = async (script) =>
+          (
+            await runDocker(["exec", containerName, "sh", "-c", script]).catch((e) => ({
+              stdout: `ERR ${String(e.message).slice(0, 80)}`,
+            }))
+          ).stdout.trim();
+        const facts = await read(
+          "cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max | tr '\\n' ' '; p=$(pgrep -of '^openclaw-gateway'); tr '\\0' ' ' < /proc/$p/cmdline | cut -c1-120; echo; tr '\\0' '\\n' < /proc/$p/environ | grep -E '^NODE_OPTIONS=' | cut -c1-160; node -p 'require(\"v8\").getHeapStatistics().heap_size_limit>>20'",
+        );
+        const samples = [];
+        const turnStartedAt = Date.now();
+        let sampling = true;
+        const sampler = (async () => {
+          while (sampling) {
+            const line = await read(
+              "echo $(( $(cat /sys/fs/cgroup/memory.current) >> 20 )) $(grep -E '^throttled_usec' /sys/fs/cgroup/cpu.stat | cut -d' ' -f2)",
+            );
+            samples.push(`${Math.round((Date.now() - turnStartedAt) / 1000)}s:${line.replace(" ", "/")}`);
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+          }
+        })();
+        let turnError;
+        try {
+          firstTurn = await sendFirstTurn(containerName);
+        } catch (error) {
+          turnError = error;
         }
+        const turnMs = Date.now() - turnStartedAt;
+        sampling = false;
+        await sampler;
+        const after = await runDocker([
+          "inspect",
+          "--format",
+          "{{.State.Status}} oom={{.State.OOMKilled}}",
+          containerName,
+        ]).catch(() => ({ stdout: "?" }));
+        const events = await read("grep -E '^(oom|oom_kill|max) ' /sys/fs/cgroup/memory.events | tr '\\n' ' '; cat /sys/fs/cgroup/memory.peak 2>/dev/null");
+        throw new Error(
+          `DIAG2692 ${recovery} turnMs=${turnMs} turn=${turnError ? "error" : firstTurn?.status} ` +
+            `state=${after.stdout.trim()} events=[${events}] facts=[${facts.replaceAll("\n", " ; ")}] ` +
+            `mem(MiB)/throttledUs=${samples.join(",")}`,
+        );
       },
     });
     await withStartupProbeEvidence(first, async () => {
