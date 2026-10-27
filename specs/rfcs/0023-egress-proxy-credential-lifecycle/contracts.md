@@ -74,6 +74,13 @@ establish that provenance. Exercise installation and admission with a differentl
 Reject a missing interface, views from different owners, or an installed policy that differs from
 the plan. Qualify the actual transport and [protection level](online-authorization.md) separately.
 
+A revision that uses ordinary OpenShell provider attachments keeps that delivery mode.
+Compute verifies the Sandbox against the revision and asks the paired Sandbox Driver to
+observe or detach a provider. For a new withdrawal, the Driver waits for OpenShell to
+report the provider revoked or confirms that the Sandbox is gone. When rechecking a
+recorded withdrawal, it detaches again if the Sandbox lists the provider. This path uses
+the existing OpenShell attachment guarantees.
+
 ## Request authorization and forwarding
 
 | Interface | Responsibility |
