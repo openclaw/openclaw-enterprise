@@ -19,6 +19,13 @@ CLI artifacts independently. The bundled Plugin Driver registers this version as
 `occ-plugin:google@1.0.0`. Publish changed release bytes under a new package version
 so existing Agent selections continue to identify the reviewed release.
 
+The release also declares the `account` credential slot for a future binding. It names
+`gog`’s environment variable and lists the exact HTTPS requests that may use the
+account. The public discovery request takes no credential. The installer reads the
+package without binding this slot. A binding implementation must give the Harness
+an opaque placeholder and check its request against the release before substituting
+a bearer at egress. An absent binding grants no credentialed route.
+
 The package follows the Agent Plugins JSON schema and keeps skills beside the manifest.
 For the packaging conventions, see the [OpenAI plugin structure](https://developers.openai.com/plugins/build/plugins#plugin-structure)
 and [Anthropic plugin layout](https://code.claude.com/docs/en/plugins-reference#standard-layout).

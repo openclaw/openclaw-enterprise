@@ -6,6 +6,24 @@
     "computeImplementations": ["occ/kubernetes", "kubernetes-local"]
   },
   "capabilities": { "gateway": ["skill"], "harness": ["cli"] },
+  "credentials": {
+    "account": {
+      "label": "Google account",
+      "issuer": "https://accounts.google.com",
+      "requiredScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+      "delivery": { "role": "harness", "env": "GOG_ACCESS_TOKEN", "presentation": "bearer" },
+      "requests": [
+        {
+          "method": "GET",
+          "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+          "query": { "maxResults": "1" }
+        }
+      ]
+    }
+  },
+  "publicRequests": [
+    { "method": "GET", "url": "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest" }
+  ],
   "clawhub": {
     "skill": "@steipete/gog",
     "version": "1.0.0",
