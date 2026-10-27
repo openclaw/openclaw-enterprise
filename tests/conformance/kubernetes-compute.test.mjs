@@ -2384,7 +2384,7 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
       pdfModel: ref("pdf"),
       utilityModel: ref("utility"),
       heartbeat: { model: ref("small") },
-      compaction: { model: ref("small"), memoryFlush: { model: ref("flush") } },
+      compaction: { model: ref("small") },
       tts: { summaryModel: ref("summary") },
       // Finding 1306: the /model allowlist, which OpenClaw honors over the models keys.
       modelPolicy: { allow: [ref("gpt-5"), ref("small"), ref("allow-only")] },
@@ -2446,10 +2446,7 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
     assert.equal(defaults.pdfModel, qualified("pdf"));
     assert.equal(defaults.utilityModel, qualified("utility"));
     assert.deepEqual(defaults.heartbeat, { model: qualified("small") });
-    assert.deepEqual(defaults.compaction, {
-      model: qualified("small"),
-      memoryFlush: { model: qualified("flush") },
-    });
+    assert.deepEqual(defaults.compaction, { model: qualified("small") });
     assert.deepEqual(defaults.tts, { summaryModel: qualified("summary") });
     // An allowlist entry is qualified like a policy key, so /model back to the projected
     // primary is allowed; one with no catalog row adds none.
@@ -12099,14 +12096,6 @@ test("every model selection uses the Harness binding's provider (finding 1291)",
     [{ agents: { defaults: { utilityModel: "x/m" } } }, "agents.defaults.utilityModel"],
     [{ agents: { defaults: { decisionModel: "x/m" } } }, "agents.defaults.decisionModel"],
     [{ agents: { defaults: { heartbeat: { model: "x/m" } } } }, "agents.defaults.heartbeat.model"],
-    [
-      { agents: { defaults: { compaction: { memoryFlush: { model: "x/m" } } } } },
-      "agents.defaults.compaction.memoryFlush.model",
-    ],
-    [
-      { agents: { defaults: { embeddedAgent: { cyberFailover: { model: "x/m" } } } } },
-      "agents.defaults.embeddedAgent.cyberFailover.model",
-    ],
     [
       { agents: { entries: { main: { tools: { exec: { reviewer: { model: "x/m" } } } } } } },
       "agents.entries.main.tools.exec.reviewer.model",
