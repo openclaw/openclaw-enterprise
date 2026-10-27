@@ -3732,8 +3732,8 @@ async function startCodexGatewaySupervisor(
         fixture.exits.push(code);
       },
     },
-    setInterval(callback) {
-      fixture.intervals.push(callback);
+    setInterval(callback, delay) {
+      fixture.intervals.push({ callback, delay });
       return { unref() {} };
     },
     clearInterval() {},
@@ -3838,7 +3838,8 @@ async function startCodexGatewaySupervisor(
   fixture.token = (startupId) =>
     pluginAppServerToken("base-app-server-token", revisionId, startupId);
   // The peer poll is the last interval the wrapper registers.
-  fixture.pollPeer = () => fixture.intervals.at(-1)();
+  // The peer status poll runs every two seconds; a Gateway stop adds its own recheck.
+  fixture.pollPeer = () => fixture.intervals.findLast(({ delay }) => delay === 2_000).callback();
   vm.runInNewContext(gatewayRuntimeEntrypoint(managedMode), sandbox);
   if (expectStart) {
     await waitForCondition("gateway supervisor start", () => fixture.children.length === 1);

@@ -1,18 +1,17 @@
 ---
 created: "2026-09-17"
 updated: 2026-10-27
-last_updated_session: authoring-run/53fbc611-31df-40b6-b106-b4035812ccb6
+last_updated_session: authoring-run/0a7454c1-6227-4251-b631-3bcfc0621c5a
 ---
 
 # Repository credential service flow
 
 ## Overview
 
-Operators or workers admit sessions over a private Unix control socket.
-Each session has a maximum duration, and the service limits the number of sessions.
-Clients send Git or selected API requests over HTTPS with a gateway bearer. This trace
-covers forwarding, closure and cleanup in the separate credential process. The
-[Agent flow](agent-repository-credentials.md) owns admission and material delivery.
+Operators or workers admit sessions over a private Unix control socket. Clients
+send Git or selected API requests over HTTPS with a gateway bearer. This trace
+covers forwarding, closure and cleanup; the [Agent flow](agent-repository-credentials.md)
+owns admission and material delivery.
 
 ## Entry Points
 
@@ -21,8 +20,8 @@ covers forwarding, closure and cleanup in the separate credential process. The
 - `apps/controller/src/drivers/repo/credentials/server.ts:startListeners` accepts HTTPS client traffic after protected startup succeeds.
 
 Standalone configuration selects one repository; the registry supports several
-under one App installation. Sessions bind exactly one repository. Operators own
-protected files and control; clients receive session files and public connection/trust settings.
+under one App installation. Each session binds one repository. Operators own
+protected files and control; clients receive session files and connection/trust settings.
 
 ## Flow
 
@@ -109,12 +108,13 @@ correlation registry from
 The registry holds at most twice the configured `sessions` count.
 Admission IDs bind the complete request: platform Namespace, repository reference,
 normalized profile, expected grant and absolute deadline. Registry mode requires
-this binding and independently resolves its fingerprint. A worker-owned private
-journal reserves the exact attempt before bearer delivery; recovery durably fences
-a missing admission. The broker opens the session before reserving, so a capacity
-or shutdown refusal leaves no receipt and the same admission can retry or be
-fenced. When the broker refuses a reserved admission as invalid, or cannot record
-its session, it fences its own reservation. A fence that does not commit stays
+this binding and independently resolves its fingerprint. The broker holds one
+local session slot and freezes the selected route before the worker-owned private
+journal reserves the original attempt. It constructs that route only after the
+reservation succeeds, using the original deadline. A capacity or shutdown refusal
+before reservation leaves no receipt. A missing or uncertain reservation creates no
+session. Recovery durably fences a missing admission. If the broker cannot open or
+bind after reservation, it fences its own reservation. A fence that does not commit stays
 with that admission, and the next open or recovery fences it; past the admission
 window a sweep retries it and forgets it once the fence commits, so it stops
 counting toward capacity. Known nondelivery closes the session.
@@ -318,28 +318,23 @@ the controller's emitted tree into separate service/client artifacts.
 | `.build/repository-credentials/service` | `repository-credentials.js`, `composition/repository-credentials/check-config.js`          |
 | `.build/repository-credentials/client`  | `drivers/repo/github/credentials/client/{launch,operator,git-helper,native-git,router}.js` |
 
-The Dockerfiles under `deploy/runtime/repository-credentials/` consume these
-contexts. `deploy/examples/repository-credentials/compose.yaml` separates service
-inputs/control from client session/workspace mounts. The
-[operator guide](../guides/repository-credentials/standalone-service.md#container-images) covers image
-builds and entrypoints. The
-[test guide](../testing/repository-credentials.md#record-each-evidence-boundary)
-distinguishes packaging, container, live-provider and platform proof.
+Dockerfiles under `deploy/runtime/repository-credentials/` consume these contexts.
+`deploy/examples/repository-credentials/compose.yaml` separates service inputs/control
+from client session/workspace mounts. See the [operator guide](../guides/repository-credentials/standalone-service.md#container-images)
+for builds and entrypoints and the [test guide](../testing/repository-credentials.md#record-each-evidence-boundary)
+for packaging, container, live-provider and platform proof boundaries.
 
 ## Debugging and Verification
 
 Run `pnpm credentials:build` and `pnpm credentials:check-config CONFIG_FILE` for
-the separate emitted startup path. Run the client configuration and package
-integration tests for private files, actual Git helper behavior and detached
-runtime loading. Inspect session status after close: a closed session can still
-have pending or uncertain cleanup.
+emitted startup. Client configuration and package integration tests check private
+files, Git helper behavior and detached runtime loading. After close, inspect
+session status for pending or uncertain cleanup.
 
-A helper failure reports a fixed category without credentials. Diagnose the
-configured HTTPS host/path and private file ownership first. API failures also
-require checking that the session uses `git-full`, then the pinned CLI, canonical
-host, gateway DNS/SAN and port 443.
-For a local gh launch refusal, inspect the selected private session files and
-their ownership without exposing credential contents.
+A helper failure reports a fixed category without credentials. Check the configured
+HTTPS host/path and private file ownership. For API failures, check `git-full`, the
+pinned CLI, canonical host, gateway DNS/SAN and port 443. For local gh launch
+refusals, inspect selected session files and ownership without exposing credentials.
 The [test guide](../testing/repository-credentials.md) covers controlled upstream,
 client and alternate-adapter checks; live-provider behavior requires separate qualification.
 
@@ -356,7 +351,11 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 
 ## Changelog
 
+- 2026-10-27 16:03: Preserve the original attempt and selected prepared route during integration. (authoring-run/0a7454c1-6227-4251-b631-3bcfc0621c5a - 00e9ac0c0a6c4cbdf6a4bb7eb4b600e0d3d27322)
+
 - 2026-10-27 14:02: Classify failed authentication after sender drainage. (authoring-run/53fbc611-31df-40b6-b106-b4035812ccb6 - 9d53c40b47afc7915d22a011ba721a880101b5ba)
+
+- 2026-10-27 13:43: Reserve the original attempt before constructing the selected prepared route. (authoring-run/c791ff25-9d48-4b6a-b400-315fa09ba049 - af7b0b904719bc1e1b238985d3db7cda8a3f7515)
 
 - 2026-10-27 13:13: Preserve the selected exchange credential through rotation and authorize the first write. (authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37 - 852146b8faea0fd083abd2255190eed5c0e5f43d)
 

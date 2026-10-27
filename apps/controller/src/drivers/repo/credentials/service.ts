@@ -84,6 +84,7 @@ export function createCredentialService(
   const shutdownWaiters = new Set<() => void>();
   const disposalObservers = new Set<(status: SessionStatus) => void>();
   let exchangeCount = 0;
+  let pendingOpens = 0;
   let shuttingDown = false;
 
   function notifyShutdown() {
@@ -199,163 +200,205 @@ export function createCredentialService(
     return exchange;
   }
 
+  function prepareOpen(
+    input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput,
+  ) {
+    if (shuttingDown) {
+      throw new Error("SERVICE_CLOSED");
+    }
+    if (
+      !Number.isSafeInteger(input.durationSeconds) ||
+      input.durationSeconds <= 0 ||
+      input.durationSeconds > policy.maximumDurationSeconds
+    ) {
+      throw new Error("INVALID_DURATION");
+    }
+    if ("recoverOnly" in input && input.recoverOnly !== undefined) {
+      throw new Error("INVALID_ADMISSION");
+    }
+    const admittedInput = snapshotSessionInput(input);
+    if (isBoundInput(admittedInput) !== (factory.resolveBound !== undefined)) {
+      throw new Error("INVALID_BINDING");
+    }
+    if (
+      isBoundInput(admittedInput) &&
+      (admittedInput.preparedOnly !== true || !("createPrepared" in factory))
+    ) {
+      throw new Error("INVALID_ADMISSION");
+    }
+    const profile = admittedInput.profile ?? policy.defaultProfile;
+    if (!policy.allowedProfiles.includes(profile)) {
+      throw new Error("INVALID_PROFILE");
+    }
+    for (const [id, existing] of sessions) {
+      // A bound admission cannot trigger another session's cleanup while its
+      // receipt is undecided. Each session retains its own deadline callback.
+      if (!isBoundInput(admittedInput)) {
+        isOpen(existing);
+      }
+      if (existing.state === "DISPOSED") {
+        sessions.delete(id);
+      }
+    }
+    if (sessions.size + failedConstructions.size + pendingOpens >= limits.sessions) {
+      throw new Error("SESSION_CAPACITY");
+    }
+    const resolved = isBoundInput(admittedInput)
+      ? factory.resolveBound!(admittedInput)
+      : factory.resolve(profile);
+    const binding = snapshotBinding(resolved.binding);
+    const client = Object.freeze({ ...resolved.client });
+    if (isBoundInput(admittedInput) && !sameBinding(binding, admittedInput.expectedBinding)) {
+      throw new Error("INVALID_BINDING");
+    }
+    const checkedWallMs = clock.wallNow();
+    const durationDeadline = checkedWallMs + admittedInput.durationSeconds * 1000;
+    const deadlineWallMs = isBoundInput(admittedInput)
+      ? Math.min(durationDeadline, admittedInput.deadlineWallMs)
+      : durationDeadline;
+    if (!Number.isSafeInteger(deadlineWallMs) || deadlineWallMs <= checkedWallMs) {
+      throw new Error("INVALID_DEADLINE");
+    }
+    const deadlineMonoMs = clock.monotonicNow() + deadlineWallMs - checkedWallMs;
+    pendingOpens++;
+    let pending = true;
+    const cancel = () => {
+      if (pending) {
+        pending = false;
+        pendingOpens--;
+      }
+    };
+    return {
+      cancel,
+      open(authorizeStanding?: (sessionId: string) => Promise<void>) {
+        if (!pending) {
+          throw new Error("INVALID_ADMISSION");
+        }
+        cancel();
+        if (shuttingDown) {
+          throw new Error("SERVICE_CLOSED");
+        }
+        if (clock.monotonicNow() >= deadlineMonoMs) {
+          throw new Error("INVALID_DEADLINE");
+        }
+        const { bearer, ...created } = admitSession(binding, deadlineWallMs, clock);
+        const admission = {
+          ...created,
+          deadlineMonoMs: Math.min(created.deadlineMonoMs, deadlineMonoMs),
+        };
+        let session: Session | undefined = undefined;
+        let owned: Session["owned"];
+        let prepared: Session["prepared"];
+        if ("createPrepared" in factory) {
+          prepared = factory.createPrepared(admission.authority, resolved);
+          if (!sameBinding(prepared.binding, admission.binding)) {
+            throw new Error("DRIVER_BINDING_MISMATCH");
+          }
+        } else {
+          let constructing = true;
+          const custody = createCustody({
+            clock,
+            maximumSlots: limits.credentialSlotsPerSession,
+            maximumAccessBytes: limits.accessTokenBytes,
+            maximumRenewalBytes: limits.renewalBytesPerSession,
+            maximumCallbacks: limits.exchangesPerSession + 1,
+            admitted: () => constructing || (!!session && isOpen(session)),
+            changed: () => {
+              if (session) {
+                session.owned?.lifecycle.maintain();
+                changed(session);
+              }
+            },
+          });
+          let driver: RepositoryBackend;
+          try {
+            driver = factory.create({
+              authority: admission.authority,
+              custody: custody.driver,
+              clock,
+            });
+            const binding = snapshotBinding(driver.binding);
+            if (
+              binding.providerInstanceId !== admission.binding.providerInstanceId ||
+              binding.repositoryId !== admission.binding.repositoryId ||
+              binding.grantId !== admission.binding.grantId
+            ) {
+              throw new Error("DRIVER_BINDING_MISMATCH");
+            }
+          } catch (error) {
+            constructing = false;
+            // No valid driver exists to finalize this custody. Retain its capacity
+            // and shutdown obligation until every admitted renewal callback drains.
+            failedConstructions.add(custody);
+            void custody.disposeAllRenewal().then(() => {
+              failedConstructions.delete(custody);
+              notifyShutdown();
+            });
+            throw error;
+          }
+          constructing = false;
+          const authority = authorizeStanding
+            ? { authorizeStanding: () => authorizeStanding(admission.authority.sessionId) }
+            : {};
+          const lifecycle = createLifecycle({
+            ...authority,
+            clock,
+            authority: admission.authority,
+            deadlineMonoMs: admission.deadlineMonoMs,
+            custody,
+            driver,
+            queue,
+            providerActionMs: limits.providerActionMs,
+            safetyMarginMs: limits.credentialMarginMs,
+            admitted: () => !!session && isOpen(session),
+            changed: () => {
+              if (session) {
+                changed(session);
+              }
+            },
+          });
+          owned = { custody, driver, lifecycle, ...authority };
+        }
+        const openedSession: Session = {
+          admission,
+          logIdentity: Object.freeze({
+            sessionId: admission.authority.sessionId,
+            ...(isBoundInput(admittedInput)
+              ? {
+                  namespaceId: admittedInput.namespaceId,
+                  repositoryRef: admittedInput.repositoryRef,
+                }
+              : {}),
+          }),
+          ...(prepared === undefined ? {} : { prepared }),
+          ...(owned === undefined ? {} : { owned }),
+          state: "OPEN",
+          exchanges: new Set(),
+          cancelDeadline: () => {},
+        };
+        session = openedSession;
+        session.cancelDeadline = clock.schedule(
+          Math.max(0, admission.deadlineMonoMs - clock.monotonicNow()),
+          () => close(openedSession),
+        );
+        sessions.set(admission.authority.sessionId, session);
+        bearers.set(admission.digest, session);
+        return Object.freeze({
+          session: snapshot(session),
+          bearer,
+          client,
+        });
+      },
+    };
+  }
+
   return Object.freeze({
+    prepareOpen,
     open(
       input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput,
       authorizeStanding?: (sessionId: string) => Promise<void>,
     ) {
-      if (shuttingDown) {
-        throw new Error("SERVICE_CLOSED");
-      }
-      if (
-        !Number.isSafeInteger(input.durationSeconds) ||
-        input.durationSeconds <= 0 ||
-        input.durationSeconds > policy.maximumDurationSeconds
-      ) {
-        throw new Error("INVALID_DURATION");
-      }
-      if ("recoverOnly" in input && input.recoverOnly !== undefined) {
-        throw new Error("INVALID_ADMISSION");
-      }
-      const admittedInput = snapshotSessionInput(input);
-      if (isBoundInput(admittedInput) !== (factory.resolveBound !== undefined)) {
-        throw new Error("INVALID_BINDING");
-      }
-      if (
-        isBoundInput(admittedInput) &&
-        (admittedInput.preparedOnly !== true || !("createPrepared" in factory))
-      ) {
-        throw new Error("INVALID_ADMISSION");
-      }
-      const profile = admittedInput.profile ?? policy.defaultProfile;
-      if (!policy.allowedProfiles.includes(profile)) {
-        throw new Error("INVALID_PROFILE");
-      }
-      for (const [id, existing] of sessions) {
-        isOpen(existing);
-        if (existing.state === "DISPOSED") {
-          sessions.delete(id);
-        }
-      }
-      if (sessions.size + failedConstructions.size >= limits.sessions) {
-        throw new Error("SESSION_CAPACITY");
-      }
-      const resolved = isBoundInput(admittedInput)
-        ? factory.resolveBound!(admittedInput)
-        : factory.resolve(profile);
-      if (
-        isBoundInput(admittedInput) &&
-        !sameBinding(resolved.binding, admittedInput.expectedBinding)
-      ) {
-        throw new Error("INVALID_BINDING");
-      }
-      const durationDeadline = clock.wallNow() + admittedInput.durationSeconds * 1000;
-      const deadlineWallMs = isBoundInput(admittedInput)
-        ? Math.min(durationDeadline, admittedInput.deadlineWallMs)
-        : durationDeadline;
-      const { bearer, ...admission } = admitSession(resolved.binding, deadlineWallMs, clock);
-      let session: Session | undefined = undefined;
-      let owned: Session["owned"];
-      let prepared: Session["prepared"];
-      if ("createPrepared" in factory) {
-        prepared = factory.createPrepared(admission.authority);
-        if (!sameBinding(prepared.binding, admission.binding)) {
-          throw new Error("DRIVER_BINDING_MISMATCH");
-        }
-      } else {
-        let constructing = true;
-        const custody = createCustody({
-          clock,
-          maximumSlots: limits.credentialSlotsPerSession,
-          maximumAccessBytes: limits.accessTokenBytes,
-          maximumRenewalBytes: limits.renewalBytesPerSession,
-          maximumCallbacks: limits.exchangesPerSession + 1,
-          admitted: () => constructing || (!!session && isOpen(session)),
-          changed: () => {
-            if (session) {
-              session.owned?.lifecycle.maintain();
-              changed(session);
-            }
-          },
-        });
-        let driver: RepositoryBackend;
-        try {
-          driver = factory.create({
-            authority: admission.authority,
-            custody: custody.driver,
-            clock,
-          });
-          const binding = snapshotBinding(driver.binding);
-          if (
-            binding.providerInstanceId !== admission.binding.providerInstanceId ||
-            binding.repositoryId !== admission.binding.repositoryId ||
-            binding.grantId !== admission.binding.grantId
-          ) {
-            throw new Error("DRIVER_BINDING_MISMATCH");
-          }
-        } catch (error) {
-          constructing = false;
-          // No valid driver exists to finalize this custody. Retain its capacity
-          // and shutdown obligation until every admitted renewal callback drains.
-          failedConstructions.add(custody);
-          void custody.disposeAllRenewal().then(() => {
-            failedConstructions.delete(custody);
-            notifyShutdown();
-          });
-          throw error;
-        }
-        constructing = false;
-        const authority = authorizeStanding
-          ? { authorizeStanding: () => authorizeStanding(admission.authority.sessionId) }
-          : {};
-        const lifecycle = createLifecycle({
-          ...authority,
-          clock,
-          authority: admission.authority,
-          deadlineMonoMs: admission.deadlineMonoMs,
-          custody,
-          driver,
-          queue,
-          providerActionMs: limits.providerActionMs,
-          safetyMarginMs: limits.credentialMarginMs,
-          admitted: () => !!session && isOpen(session),
-          changed: () => {
-            if (session) {
-              changed(session);
-            }
-          },
-        });
-        owned = { custody, driver, lifecycle, ...authority };
-      }
-      const openedSession: Session = {
-        admission,
-        logIdentity: Object.freeze({
-          sessionId: admission.authority.sessionId,
-          ...(isBoundInput(admittedInput)
-            ? {
-                namespaceId: admittedInput.namespaceId,
-                repositoryRef: admittedInput.repositoryRef,
-              }
-            : {}),
-        }),
-        ...(prepared === undefined ? {} : { prepared }),
-        ...(owned === undefined ? {} : { owned }),
-        state: "OPEN",
-        exchanges: new Set(),
-        cancelDeadline: () => {},
-      };
-      session = openedSession;
-      session.cancelDeadline = clock.schedule(
-        Math.max(0, admission.deadlineMonoMs - clock.monotonicNow()),
-        () => close(openedSession),
-      );
-      sessions.set(admission.authority.sessionId, session);
-      bearers.set(admission.digest, session);
-      return Object.freeze({
-        session: snapshot(session),
-        bearer,
-        client: Object.freeze({ ...resolved.client }),
-      });
+      return prepareOpen(input).open(authorizeStanding);
     },
     observeDisposal(observer: (status: SessionStatus) => void) {
       disposalObservers.add(observer);

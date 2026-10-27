@@ -3,6 +3,7 @@ import type {
   RequestPlan,
   PreparedRepositoryBackend,
   PreparedRepositoryBackendFactory,
+  ResolvedGrant,
 } from "../../credentials/backend-contracts.ts";
 import { sameBinding } from "../../credentials/sessions.ts";
 import { githubProviderOrigin } from "./origin.ts";
@@ -83,6 +84,7 @@ export function createPreparedGitHubRegistryFactory(
       return { grant, route, client, namespaceId, repositoryRef, pushRef, profile, pull };
     }),
   );
+  const selections = new WeakMap<ResolvedGrant, (typeof entries)[number]>();
   return Object.freeze<
     PreparedRepositoryBackendFactory & { trustedUpstreamOrigins: ReadonlySet<string> }
   >({
@@ -97,26 +99,30 @@ export function createPreparedGitHubRegistryFactory(
       throw new Error("BOUND_SESSION_REQUIRED");
     },
     resolveBound(input) {
-      const entry = entries.find(
+      const matches = entries.filter(
         ({ grant, namespaceId, repositoryRef, profile }) =>
           sameBinding(grant, input.expectedBinding) &&
           input.namespaceId === namespaceId &&
           input.repositoryRef === repositoryRef &&
           input.profile === profile,
       );
-      if (!entry) {
+      if (matches.length !== 1) {
         throw new Error("INVALID_BINDING");
       }
       if (input.durationSeconds > registry.maximumDurationSeconds) {
         throw new Error("INVALID_DURATION");
       }
-      return { binding: entry.grant, client: entry.client };
+      const entry = matches[0]!;
+      const selection = Object.freeze({ binding: entry.grant, client: entry.client });
+      selections.set(selection, entry);
+      return selection;
     },
-    createPrepared(authority) {
-      const entry = entries.find(({ grant }) => sameBinding(grant, authority));
-      if (!entry || !authority.sessionId) {
+    createPrepared(authority, selection) {
+      const entry = selections.get(selection);
+      if (!entry || !sameBinding(entry.grant, authority) || !authority.sessionId) {
         throw new Error("INVALID_BINDING");
       }
+      selections.delete(selection);
       const { grant: binding, pushRef, route } = entry;
       const pulls = new WeakMap<RequestPlan, PreparedGitHubPullScope>();
       return Object.freeze<PreparedRepositoryBackend>({

@@ -259,6 +259,7 @@ export async function fixture(
       return other;
     },
     pool,
+    socketPath,
     broker,
     permissions,
     admitReplacement: (sessionId) => admit(sessionId, "admission-" + randomUUID()),

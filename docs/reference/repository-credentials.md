@@ -206,9 +206,8 @@ The trusted worker or local operator uses HTTP over a private mode-0600 Unix soc
 | `GET /v1/sessions/{id}`                                           | Private session and cleanup status                          |
 | `POST /v1/sessions/{id}/close`                                    | Immediate local closure status; cleanup reported separately |
 
-The socket's parent is private to the service/operator and never mounted into
-the client. Control bodies are limited to 16 KiB. The HTTPS client listener has
-no admission or close endpoint.
+The socket's parent is private to the service/operator and never client-mounted.
+Control bodies are limited to 16 KiB. The HTTPS listener has no admission or close endpoint.
 
 `X-Admission-Id` combines a 13-digit Unix-millisecond timestamp, hyphen and
 lowercase UUIDv4; the CLI prints this nonsecret ID before dispatch. HTTP 201
@@ -224,7 +223,8 @@ disposal; recovery, closure and runtime retirement do not depend on it.
 
 Platform admission binds `namespaceId`, `repositoryRef`, normalized `profile`,
 `expectedBinding` and `deadlineWallMs` to the persisted attempt. The worker's
-private receipt socket commits a reservation before the broker releases a bearer.
+private receipt socket commits a reservation before the broker constructs the
+selected prepared route and releases a bearer.
 A recovery-only lookup can durably fence a missing admission; a reservation or
 active session without a confirmed terminal receipt remains unknown. Only the
 original broker can record its exact `DISPOSED` result. Receipts contain no
