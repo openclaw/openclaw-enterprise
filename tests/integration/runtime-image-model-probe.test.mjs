@@ -26,6 +26,20 @@ import { isModelTurn } from "../helpers/runtime-image-startup-probe.mjs";
 // outcomes run in the model probe outcomes file, in another lane, because this
 // case alone takes 110-230 s.
 
+// Ends the CPU hogs inside the Gateway container. The marker is split so this
+// program's own command line does not match it.
+function stopProbeCpuHogs(containerName) {
+  const program = String.raw`
+const fs = require("node:fs");
+const marker = "openclaw-cpu-" + "hog-started";
+for (const pid of fs.readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
+  try {
+    if (Number(pid) !== process.pid && fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").includes(marker)) process.kill(Number(pid), "SIGKILL");
+  } catch {}
+}`;
+  return execute(docker, ["exec", containerName, "node", "-e", program], { timeout: 60_000 });
+}
+
 // CPU contention may delay the probe past its cap, but faster hosts can still
 // complete the real turn. Require correct settlement in either case. The
 // generated-wrapper conformance tests exercise cap classification deterministically.
@@ -34,6 +48,7 @@ test(
   { ...imageTestOptions, timeout: 900_000 },
   async (t) => {
     let hogs;
+    let released;
     const stress = { requested: 0, started: 0, settled: 0, rejected: 0 };
     const run = await runEmbeddedGatewayProbe(t, {
       mode: "answer",
@@ -43,6 +58,7 @@ test(
       limitMs: 400_000,
       stress,
       afterStop: async () => {
+        await released;
         await hogs;
       },
       until: (snapshot, containerName) => {
@@ -67,6 +83,13 @@ test(
             ),
           ),
         );
+        // A probe that answers just inside its cap leaves the Gateway to start beside the
+        // eight hogs, on about a ninth of its 500m limit. On a remote test VM at 2 CPUs that
+        // start outlasted the 400 s guard in 4 of 20 runs (finding 2673). This case proves
+        // how the probe settles, so stop the hogs once the wrapper has logged READY.
+        if (snapshot.probe?.code === "READY") {
+          released ??= stopProbeCpuHogs(containerName);
+        }
         return modelProbeSettled(snapshot);
       },
     });
@@ -121,7 +144,8 @@ test(
         // cap and the wrapper reports the CLI's timeout status as MODEL_PROBE_TIMEOUT
         // without reading CPU wait (main run 40419787603: returned at 105.4 s of a
         // 110 s cap with 66 s of CPU wait; finding 2673). The cap rule above does not
-        // apply to this path, so require exactly that code.
+        // apply to this path, so require exactly that code. Whether a starved probe should
+        // report CPU_STARVED here too is a product question (finding 2675).
         assert.equal(probe.code, "MODEL_PROBE_TIMEOUT", `turn timeout before the cap${detail}`);
         assert.ok(cliMs >= 15_000, `the CLI ran its 15 s timeout${detail}`);
         assert.equal(runtimeFailure(events), "MODEL_PROBE_TIMEOUT", detail);
