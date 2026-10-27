@@ -12,7 +12,7 @@ import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
   gatewayManagedModeEnvironment,
-  gatewayStateMigrationHelper,
+  openClawStateMigrationHelper,
   startupPhaseHelper,
 } from "../runtime-startup.ts";
 
@@ -2312,7 +2312,7 @@ ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
-${gatewayStateMigrationHelper("restart the Pod")}
+${openClawStateMigrationHelper("Gateway", "restart the Pod")}
 
 function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
@@ -2948,8 +2948,12 @@ const started = configureGateway(peerStatus);
 // no await before the spawn.
 // A failure holds the Gateway unready with the step named, rather than
 // restarting into the same refusal and another Doctor backup.
-const outdatedDatabases = outdatedAgentDatabases();
-if (outdatedDatabases.length > 0 && !(await migrateGatewayState(outdatedDatabases))) {
+const gatewayStateDirectory = process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw";
+const outdatedDatabases = outdatedOpenClawDatabases(gatewayStateDirectory);
+if (
+  outdatedDatabases.length > 0 &&
+  !(await migrateOpenClawState(gatewayStateDirectory, outdatedDatabases, process.env))
+) {
   setInterval(() => {}, 3600000);
   return;
 }
@@ -4140,6 +4144,11 @@ const { join } = require("node:path");
 const { execFile, spawn, spawnSync } = require("node:child_process");
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
+${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
+// The Codex child serves this container's runtime status and starts only after
+// the node state is current, so a failed migration holds the Harness unready
+// with the named step in its log.
+function publishRuntimeFailure() {}
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupEnvironment = process.env.OPENCLAW_NODE_SETUP_CODE;
 const setupPath = process.env.OPENCLAW_NODE_SETUP_PATH;
@@ -4185,6 +4194,16 @@ if (process.env.OPENCLAW_NODE_CA_PEM) {
   nodeEnv.NODE_EXTRA_CA_CERTS = caPath;
 } else if (process.env.OPENCLAW_NODE_CA_PATH) {
   nodeEnv.NODE_EXTRA_CA_CERTS = process.env.OPENCLAW_NODE_CA_PATH;
+}
+// The node state on the Agent's workspace claim outlives runtime image upgrades.
+// Native setup and both children open it, so Doctor migrates it first, with the
+// node's environment only: no model credential reaches Doctor. A failure holds
+// the Harness unready rather than restarting into another Doctor backup.
+(async () => {
+const outdatedDatabases = outdatedOpenClawDatabases(state);
+if (outdatedDatabases.length > 0 && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
+  setInterval(() => {}, 3600000);
+  return;
 }
 // The workspace belongs to the Harness. Native setup creates missing defaults
 // without replacing owner edits; neither child may serve an uninitialized workspace.
@@ -4411,6 +4430,10 @@ logStartupPhase("supervisor-spawn", startupPhaseOrigin);
 nodeSetupWait = Date.now();
 // Codex first: it does not wait for the node setup.
 for (const slot of [...processes].reverse()) start(slot);
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
 `;
 }
 

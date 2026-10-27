@@ -49,7 +49,7 @@ import {
 import { embeddedGatewayRecoveryPreamble } from "../embedded-gateway-owner.ts";
 import {
   gatewayManagedModeEnvironment,
-  gatewayStateMigrationHelper,
+  openClawStateMigrationHelper,
   startupPhaseHelper,
 } from "../runtime-startup.ts";
 import {
@@ -251,7 +251,7 @@ const { spawn } = require("node:child_process");
 ${PLUGIN_RUNTIME_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${startupPhaseHelper("gateway")}
-${gatewayStateMigrationHelper("deploy the Agent again")}
+${openClawStateMigrationHelper("Gateway", "deploy the Agent again")}
 
 function forwardTermination(child) {
   let terminating = false;
@@ -293,11 +293,12 @@ if (gatewayToolPolicyInput !== undefined) configureManagedGatewayTools(gatewayTo
 // reads the configuration written above; current state adds no await before
 // the spawn. A failure exits: the Driver reports the container that stopped
 // before readiness and nothing restarts it.
-const outdatedDatabases = outdatedAgentDatabases();
+const gatewayStateDirectory = process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw";
+const outdatedDatabases = outdatedOpenClawDatabases(gatewayStateDirectory);
 if (outdatedDatabases.length === 0) {
   startGateway();
 } else {
-  migrateGatewayState(outdatedDatabases).then(
+  migrateOpenClawState(gatewayStateDirectory, outdatedDatabases, process.env).then(
     (migrated) => {
       if (migrated) startGateway();
       else process.exit(1);

@@ -10,8 +10,15 @@ import {
   GATEWAY_NAMESPACE_PROBE,
   INITIALIZE_EMBEDDED_GATEWAY_OWNER,
 } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
-import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
+import {
+  AGENT_WITH_NODE_ENTRYPOINT,
+  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION,
+  OPENCLAW_STATE_DATABASE_SCHEMA_VERSION,
+} from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
   image,
   imageTestOptions,
@@ -195,7 +202,8 @@ async function assertReleasedGatewayMigratesOnce(startGateway) {
     ["ok"],
     released.logs,
   );
-  assert.match(released.logs, /from schema 23 to \d+ with openclaw doctor --fix/);
+  // The shared state database (schema 19) and the main agent database (schema 23).
+  assert.match(released.logs, /from schema 19 to \d+, 23 to \d+ with openclaw doctor --fix/);
   assert.doesNotMatch(released.logs, /uses schema version 23/);
   const migrated = await agentDatabaseFacts(released.containerName);
   assert.equal(
@@ -214,9 +222,117 @@ async function assertReleasedGatewayMigratesOnce(startGateway) {
   assert.deepEqual(await agentDatabaseFacts(current.containerName), migrated);
 }
 
-// Each case seeds its own state volume and starts its own Gateway containers:
-// random volume and container names, no shared port. Both run at once.
-describe("runtime image released state migration", { concurrency: 2 }, () => {
+// A dedicated Codex Agent's workspace node state as a Harness on the OpenClaw
+// f8386bc7 runtime image (2026.9.9, shared state schema 20) left it: native setup
+// and one node start, which saved its device identity. Recorded for finding 2685,
+// where every such Harness failed workspace setup after an upgrade until Doctor
+// moved its client credentials. The archive holds the initialized workspace (Git
+// sample hooks left out) and the shared state database with that identity
+// deleted, then vacuumed; each run saves a fresh one in its place.
+const olderWorkspaceNodeState = fileURLToPath(
+  new URL(
+    "../fixtures/runtime-state/workspace-node-state-openclaw-f8386bc7.tar.gz",
+    import.meta.url,
+  ),
+);
+
+// Runs in the runtime image as the Harness user. Saves a device identity in the
+// older store's row format (key "primary", id = SHA-256 of the raw Ed25519 public
+// key), starts the real Harness program twice with only its long-lived children
+// replaced, and reports what the current OpenClaw then reads. Never prints a key.
+const WORKSPACE_NODE_UPGRADE = String.raw`
+const crypto = require("node:crypto");
+const { readdirSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const { DatabaseSync } = require("node:sqlite");
+const [entrypoint, timeoutMs] = [process.argv[1], Number(process.argv[2])];
+const state = "/home/node/.openclaw-node";
+const shared = state + "/state/openclaw.sqlite";
+const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+const savedDeviceId = crypto.createHash("sha256")
+  .update(Buffer.from(publicKey.export({ format: "jwk" }).x, "base64url")).digest("hex");
+const savedAt = Date.now();
+const older = new DatabaseSync(shared);
+older.prepare("INSERT INTO device_identities VALUES ('primary', ?, ?, ?, ?, ?)").run(
+  savedDeviceId,
+  publicKey.export({ type: "spki", format: "pem" }),
+  privateKey.export({ type: "pkcs8", format: "pem" }),
+  savedAt,
+  savedAt,
+);
+older.close();
+const harness = [
+  'const cp = require("node:child_process");',
+  "const realSpawn = cp.spawn;",
+  "cp.spawn = (command, args, options) => {",
+  '  if (args[1] === "doctor") return realSpawn(command, args, options);',
+  '  console.log("HARNESS_CHILD_STARTED " + (args[0] === "/app/openclaw.mjs" ? "node" : "codex"));',
+  '  return new (require("node:events").EventEmitter)();',
+  "};",
+  entrypoint,
+].join("\n");
+const start = () => {
+  const result = spawnSync(process.execPath, ["-e", harness], {
+    env: {
+      PATH: process.env.PATH,
+      HOME: "/home/node",
+      OPENCLAW_NODE_STATE_DIR: state,
+      OPENCLAW_NODE_SETUP_CODE: "synthetic-setup",
+      OPENCLAW_WORKSPACE_DIR: "/home/node/workspace",
+    },
+    encoding: "utf8",
+    timeout: timeoutMs,
+  });
+  return { status: result.status, signal: result.signal, output: result.stdout + result.stderr };
+};
+const upgraded = start();
+const identity = spawnSync(process.execPath, ["/app/openclaw.mjs", "node", "identity", "--json"], {
+  env: { PATH: process.env.PATH, HOME: "/home/node", OPENCLAW_STATE_DIR: state,
+    OPENCLAW_CONFIG_PATH: state + "/openclaw.json", OPENCLAW_NO_AUTO_UPDATE: "1" },
+  encoding: "utf8",
+  timeout: 60_000,
+});
+let deviceId;
+try { deviceId = JSON.parse(identity.stdout).deviceId; } catch {}
+function schema(path) {
+  const database = new DatabaseSync(path, { readOnly: true });
+  try {
+    const header = database.prepare("PRAGMA user_version").get().user_version;
+    let marker = 0;
+    try {
+      marker = Number(JSON.parse(database.prepare(
+        "SELECT value_json FROM config_machine_state WHERE state_key = 'state.schema.contentVersion'",
+      ).get()?.value_json ?? "0"));
+    } catch {}
+    // The current schema keeps client credentials elsewhere; only an older copy has this table.
+    let backedUpDeviceId;
+    try {
+      backedUpDeviceId = database.prepare(
+        "SELECT device_id FROM device_identities WHERE identity_key = 'primary'",
+      ).get()?.device_id;
+    } catch {}
+    return { version: Math.max(header, marker), deviceId: backedUpDeviceId };
+  } finally {
+    database.close();
+  }
+}
+const backups = readdirSync(state + "/state")
+  .filter((name) => name.startsWith("openclaw.sqlite.pre-startup-migration-") && name.endsWith(".bak"));
+const current = start();
+process.stdout.write(JSON.stringify({
+  savedDeviceId,
+  upgraded,
+  deviceId,
+  identityStatus: identity.status,
+  migrated: schema(shared).version,
+  backups: backups.map((name) => ({ name, ...schema(state + "/state/" + name) })),
+  current,
+}));
+`;
+
+// Each case seeds its own state volume and starts its own containers: random
+// volume and container names, no shared port. All run at once.
+describe("runtime image released state migration", { concurrency: 3 }, () => {
   test(
     "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
     imageTestOptions,
@@ -250,6 +366,88 @@ describe("runtime image released state migration", { concurrency: 2 }, () => {
           withAppServer: false,
         }),
       );
+    },
+  );
+
+  test(
+    "runtime image migrates an older workspace node's credentials before the dedicated Harness starts",
+    imageTestOptions,
+    async (t) => {
+      // Stands in for the Agent's workspace claim: its workspace and node state subpaths.
+      const volume = await gatewayStateVolume(t, "/home/node", {
+        seed: "tar -xzf /workspace-node-state.tar.gz -C /home/node",
+        seedVolumes: [`${olderWorkspaceNodeState}:/workspace-node-state.tar.gz:ro`],
+      });
+      // Doctor's full repair pass takes about 20 s, and over a minute on a busy runner.
+      const startMs = 240_000 * imageSmokeTimeoutMultiplier;
+      const { stdout } = await runDocker(
+        [
+          "run",
+          "--rm",
+          "--user",
+          "1000:1000",
+          "--read-only",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--network",
+          "none",
+          "--tmpfs",
+          "/tmp:size=64m,mode=1777",
+          "--volume",
+          `${volume}:/home/node`,
+          "--entrypoint",
+          "/usr/bin/tini",
+          image,
+          "-s",
+          "--",
+          "node",
+          "-e",
+          WORKSPACE_NODE_UPGRADE,
+          AGENT_WITH_NODE_ENTRYPOINT,
+          String(startMs),
+        ],
+        { timeout: 2 * startMs + 120_000 * imageSmokeTimeoutMultiplier },
+      );
+      const outcome = JSON.parse(stdout);
+      const { upgraded, current } = outcome;
+      // Without Doctor, native setup refuses the older client credentials
+      // ("backed-up migration custody") and the Harness never starts its children.
+      assert.equal(upgraded.status, 0, upgraded.output);
+      assert.match(upgraded.output, /from schema 20 to \d+ with openclaw doctor --fix/);
+      for (const phase of ["state-migration", "workspace-baseline"]) {
+        assert.deepEqual(
+          jsonLogEntries(upgraded.output)
+            .filter((entry) => entry.event === "runtime.startup_phase" && entry.phase === phase)
+            .map(({ outcome }) => outcome),
+          ["ok"],
+          upgraded.output,
+        );
+      }
+      assert.equal(upgraded.output.match(/HARNESS_CHILD_STARTED (node|codex)/g)?.length, 2);
+      assert.doesNotMatch(upgraded.output, /migration custody|PRIVATE KEY/);
+      assert.equal(
+        outcome.migrated,
+        OPENCLAW_STATE_DATABASE_SCHEMA_VERSION,
+        "Doctor migrated to another schema: update OPENCLAW_STATE_DATABASE_SCHEMA_VERSION with the OpenClaw pin.",
+      );
+      // The node keeps the identity its Gateway paired, and Doctor kept the older
+      // database, identity included, beside the migrated one. Doctor also keeps a
+      // table-scoped snapshot for the credential move (*.scoped.bak).
+      assert.equal(outcome.identityStatus, 0);
+      assert.equal(outcome.deviceId, outcome.savedDeviceId);
+      assert.deepEqual(
+        outcome.backups
+          .filter(({ name }) => !name.endsWith(".scoped.bak"))
+          .map(({ version, deviceId }) => ({ version, deviceId })),
+        [{ version: 20, deviceId: outcome.savedDeviceId }],
+        JSON.stringify(outcome.backups),
+      );
+      // Current state starts without Doctor.
+      assert.equal(current.status, 0, current.output);
+      assert.doesNotMatch(current.output, /openclaw doctor --fix|"phase":"state-migration"/);
+      assert.equal(current.output.match(/HARNESS_CHILD_STARTED (node|codex)/g)?.length, 2);
     },
   );
 });

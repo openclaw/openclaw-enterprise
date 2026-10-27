@@ -164,10 +164,10 @@ Driver did not observe, for example after a controller restart. If the stop
 fails, the Driver still removes the container and reports the stop failure.
 
 State on that volume outlives runtime image upgrades. Before OpenClaw starts,
-the gateway runs the same agent database migration as a
+the gateway runs the same state migration as a
 [Kubernetes Gateway](kubernetes-compute/storage-and-credentials.md#gateway-storage):
 `openclaw doctor --fix --non-interactive` once, with the configuration
-read-only, when an agent database uses an older schema. If a database is still
+read-only, when its shared state or an agent database uses an older schema. If a database is still
 older afterwards, the container logs `Gateway state migration failed` and exits
 without starting OpenClaw, and the deployment fails as an unready container.
 The Driver then removes the container, so Doctor's output survives only

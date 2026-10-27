@@ -49,47 +49,72 @@ async function timeStartupPhase(phase, run) {
 }
 
 /**
- * OpenClaw's agent database schema (`OPENCLAW_AGENT_SCHEMA_VERSION` in
- * src/state/openclaw-schema-versions.ts) at the runtime image's pinned
- * OPENCLAW_COMMIT. The runtime image test that migrates a released Gateway
- * fails when a pin moves it; update it with the pin.
+ * OpenClaw's agent and shared state database schemas (`OPENCLAW_AGENT_SCHEMA_VERSION`
+ * and `OPENCLAW_STATE_SCHEMA_VERSION` in src/state/openclaw-schema-versions.ts) at
+ * the runtime image's pinned OPENCLAW_COMMIT. The runtime image tests that migrate
+ * a released Gateway and a released workspace node fail when a pin moves either;
+ * update them with the pin.
  */
 export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 31;
+export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 31;
 
-// A Gateway keeps its agent databases across runtime image upgrades. OpenClaw
-// refuses one with an older schema (exit 78) until "openclaw doctor --fix"
-// migrates it, and its own image entrypoint runs that Doctor pass before every
-// Gateway start. The Kubernetes and Docker Gateway wrappers replace that
-// entrypoint, so they run the same pass, but only when a database needs it:
-// fresh and current state start without Doctor's ~15 s. Doctor must not
-// rewrite the controller-owned configuration (OPENCLAW_CONFIG_READONLY). The
+// A Gateway and a dedicated Harness's workspace node keep OpenClaw state across
+// runtime image upgrades. OpenClaw refuses an older agent database (exit 78) and
+// moves the client credentials of an older shared state database (schema 29)
+// only under Doctor's backed-up migration custody, so it needs
+// "openclaw doctor --fix" first. OpenClaw's own image entrypoint runs that Doctor
+// pass before every Gateway start. The Kubernetes and Docker wrappers replace
+// that entrypoint, so they run the same pass for each state directory they start
+// OpenClaw on, but only when a database needs it: fresh and current state start
+// without Doctor's ~15 s. Doctor must not rewrite the controller-owned
+// configuration (OPENCLAW_CONFIG_READONLY), and it never deletes state: it saves
+// a pre-migration copy beside each database and verifies integrity first. The
 // schema versions after Doctor, not its exit status, decide: Doctor also exits
 // non-zero for problems it can only report here. On failure the step is named
 // and the wrapper must not start OpenClaw; `retry` completes the log line's
 // remedy. The wrapper provides `spawn`, `logStartupPhase` and
 // `publishRuntimeFailure`.
-export function gatewayStateMigrationHelper(retry: string): string {
+export function openClawStateMigrationHelper(owner: "Gateway" | "Harness", retry: string): string {
   return String.raw`
-function outdatedAgentDatabases() {
-  const agentsDirectory = require("node:path").join(process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw", "agents");
-  let agentIds;
+function outdatedOpenClawDatabases(stateDirectory) {
+  const { join } = require("node:path");
+  const candidates = [
+    { path: join(stateDirectory, "state", "openclaw.sqlite"), current: ${OPENCLAW_STATE_DATABASE_SCHEMA_VERSION}, shared: true },
+  ];
+  let agentIds = [];
   try {
-    agentIds = require("node:fs").readdirSync(agentsDirectory);
+    agentIds = require("node:fs").readdirSync(join(stateDirectory, "agents"));
   } catch {
-    // Fresh state has no agents directory.
-    return [];
+    // Fresh state, and a workspace node's, has no agents directory.
+  }
+  for (const agentId of agentIds) {
+    candidates.push({
+      path: join(stateDirectory, "agents", agentId, "agent", "openclaw-agent.sqlite"),
+      current: ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION},
+    });
   }
   // Outside the per-database try: without the module, startup fails instead of skipping.
   const { DatabaseSync } = require("node:sqlite");
   const outdated = [];
-  for (const agentId of agentIds) {
-    const path = require("node:path").join(agentsDirectory, agentId, "agent", "openclaw-agent.sqlite");
+  for (const { path, current, shared } of candidates) {
     let version;
     try {
       // A read-only open of a missing database fails here.
       const database = new DatabaseSync(path, { readOnly: true });
       try {
         version = database.prepare("PRAGMA user_version").get().user_version;
+        if (shared) {
+          // OpenClaw can publish current shared content under an older header
+          // while an older updater runs; its content marker then names the schema.
+          try {
+            const marker = Number(JSON.parse(database.prepare(
+              "SELECT value_json FROM config_machine_state WHERE state_key = 'state.schema.contentVersion'",
+            ).get()?.value_json ?? "0"));
+            if (Number.isSafeInteger(marker) && marker > version) version = marker;
+          } catch {
+            // No marker table or row: the header names the schema.
+          }
+        }
       } finally {
         database.close();
       }
@@ -98,17 +123,17 @@ function outdatedAgentDatabases() {
       continue;
     }
     // 0 is a database OpenClaw has not initialized; a newer one needs its backup.
-    if (version > 0 && version < ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION}) outdated.push({ path, version });
+    if (version > 0 && version < current) outdated.push({ path, version, current });
   }
   return outdated;
 }
 
-function runStateMigrationDoctor() {
+function runStateMigrationDoctor(environment) {
   return new Promise((resolve) => {
     const doctor = spawn(
       process.execPath,
       ["/app/openclaw.mjs", "doctor", "--fix", "--non-interactive"],
-      { stdio: "inherit", env: { ...process.env, OPENCLAW_CONFIG_READONLY: "1" } },
+      { stdio: "inherit", env: { ...environment, OPENCLAW_CONFIG_READONLY: "1" } },
     );
     let terminating = false;
     // Doctor's maintenance lease owns termination: let it stop its transaction.
@@ -130,17 +155,19 @@ function runStateMigrationDoctor() {
   });
 }
 
-// Resolves true once Doctor brought every outdated database current, false
-// after naming the failure; exits when terminated during Doctor.
-async function migrateGatewayState(outdated) {
+// Runs Doctor with the environment OpenClaw itself starts with on stateDirectory.
+// Resolves true once Doctor brought every outdated database current, false after
+// naming the failure; exits when terminated during Doctor.
+async function migrateOpenClawState(stateDirectory, outdated, environment) {
   const startedAt = Date.now();
   console.error(
-    "Migrating " + outdated.length + " OpenClaw agent database(s) from schema " +
-      outdated.map(({ version }) => version).join(", ") + " to ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION} with openclaw doctor --fix.",
+    "Migrating " + outdated.length + " OpenClaw database(s) from schema " +
+      outdated.map(({ version, current }) => version + " to " + current).join(", ") +
+      " with openclaw doctor --fix.",
   );
-  const doctor = await runStateMigrationDoctor();
+  const doctor = await runStateMigrationDoctor(environment);
   if (doctor.terminating) process.exit(0);
-  const remaining = outdatedAgentDatabases();
+  const remaining = outdatedOpenClawDatabases(stateDirectory);
   if (remaining.length === 0) {
     logStartupPhase("state-migration", startedAt);
     return true;
@@ -148,7 +175,7 @@ async function migrateGatewayState(outdated) {
   logStartupPhase("state-migration", startedAt, "failed");
   publishRuntimeFailure("state-migration", "UNAVAILABLE");
   console.error(
-    "Gateway state migration failed: openclaw doctor --fix (" + doctor.outcome + ") left " +
+    "${owner} state migration failed: openclaw doctor --fix (" + doctor.outcome + ") left " +
       remaining.map(({ path, version }) => path + " at schema " + version).join(", ") +
       ". OpenClaw was not started. Read the Doctor output above, fix the cause, then ${retry}.",
   );
