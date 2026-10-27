@@ -74,16 +74,18 @@ test(
       implementation: "github",
       backendId: registry.backendId,
     });
-    const server = await startListeners({
-      service,
-      clock,
-      factory,
-      tls: gh.tls,
-      upstreamCa: gh.tls.ca,
-      trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
-      config: { ...config, gateway: { ...config.gateway, listen: "127.0.0.1:0" } },
-    });
+    let closeListener: (() => Promise<void>) | undefined;
     try {
+      const server = await startListeners({
+        service,
+        clock,
+        factory,
+        tls: gh.tls,
+        upstreamCa: gh.tls.ca,
+        trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
+        config: { ...config, gateway: { ...config.gateway, listen: "127.0.0.1:0" } },
+      });
+      closeListener = () => server.close();
       const client = new UnixRepositoryCredentialControlClient({ controlSocket });
       const wire = {
         namespaceId,
@@ -281,11 +283,14 @@ test(
       assert.equal((await receipt(second))?.sessionId, withdrawn.sessionId);
       assert.equal((await client.close(withdrawn.sessionId, t.signal))?.state, "DISPOSED");
     } finally {
-      await service.shutdown(1000);
       try {
-        await server.close();
+        await service.shutdown(1000);
       } finally {
-        await receipts.close();
+        try {
+          await closeListener?.();
+        } finally {
+          await receipts.close();
+        }
       }
     }
   },
