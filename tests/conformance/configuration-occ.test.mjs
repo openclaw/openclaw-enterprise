@@ -28,6 +28,8 @@ import {
   registerAndSelectDrivers,
 } from "../helpers/development.mjs";
 import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
+import { refusedAnswer } from "../helpers/refusal-answers.mjs";
+import { INSTALLATION_ADMINISTER_DENIED } from "../helpers/refusal-text.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
@@ -248,6 +250,73 @@ test("partial Agent updates keep completed workspace topology unless its Configu
   assert.equal(saved.configurationId, configuration.id);
   assert.equal(saved.executionMode, agent.executionMode);
   assert.equal(saved.gatewayManagedMode, false);
+});
+
+test("only an Installation administrator opts an Agent out of Gateway managed mode or changes it later", async () => {
+  const { configuration, controller, iamState, namespace } = await fixture();
+  // This fixture's administrator holds Agent create and update in the Namespace but not
+  // Installation administer: the managed-mode member persona.
+  const member = administrator;
+  const installationAdministrator = "principal-configuration-installation-administrator";
+  iamState.identities.push({
+    kind: "principal",
+    id: installationAdministrator,
+    issuer: "configuration-conformance",
+    subject: installationAdministrator,
+  });
+  grantRole(iamState, installationAdministrator, {
+    id: "managed-mode-installation-administrator",
+    permissions: {
+      installation: ["administer"],
+      agent: ["create", "read", "update"],
+      configuration: ["read"],
+    },
+  });
+  const denied = { status: 403, code: "FORBIDDEN", message: INSTALLATION_ADMINISTER_DENIED };
+  const refused = (work) => refusedAnswer(work, { actorId: member });
+  const create = (principalId, name, mode) =>
+    controller.createAgent(principalId, {
+      namespaceId: namespace.id,
+      name,
+      configurationId: configuration.id,
+      ...(mode === undefined ? {} : { gatewayManagedMode: mode }),
+    });
+  const validate = (mode) =>
+    controller.validateAgentCreate(member, {
+      namespaceId: namespace.id,
+      name: "Managed mode preflight",
+      configuration: { kind: "agent", values: configuration.values },
+      ...(mode === undefined ? {} : { gatewayManagedMode: mode }),
+    });
+
+  // Opting out at create, or in its preflight, is the Installation administrator's decision.
+  assert.deepEqual(await refused(() => create(member, "Member opt-out", false)), denied);
+  assert.deepEqual(await refused(() => validate(false)), denied);
+  // The default and an explicit on need only the Agent create grant.
+  await validate(undefined);
+  await validate(true);
+  assert.equal((await create(member, "Member default", undefined)).gatewayManagedMode, true);
+  assert.equal((await create(member, "Member explicit on", true)).gatewayManagedMode, true);
+
+  // Once an Installation administrator turns it off, turning it back on is a change too.
+  const optedOut = await create(installationAdministrator, "Administrator opt-out", false);
+  assert.equal(optedOut.gatewayManagedMode, false);
+  const identity = { namespaceId: namespace.id, agentId: optedOut.id };
+  assert.deepEqual(
+    await refused(() => controller.updateAgent(member, { ...identity, gatewayManagedMode: true })),
+    denied,
+  );
+  // Sending the saved value changes nothing, so the member's ordinary update grant suffices.
+  const unchanged = await controller.updateAgent(member, {
+    ...identity,
+    gatewayManagedMode: false,
+  });
+  assert.equal(unchanged.gatewayManagedMode, false);
+  const enabled = await controller.updateAgent(installationAdministrator, {
+    ...identity,
+    gatewayManagedMode: true,
+  });
+  assert.equal(enabled.gatewayManagedMode, true);
 });
 
 test("concurrent Configuration updates serialize into distinct server-managed generations", async () => {
