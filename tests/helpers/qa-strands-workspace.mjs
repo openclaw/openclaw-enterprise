@@ -172,7 +172,19 @@ export async function verifyStrandsWorkspaceWorkflows(f) {
         (hit) => hit.path === memoryPath && hit.snippet.includes(memoryFact),
       ),
     );
-    result.liveRevision = { old, next: revision.id, memoryRetained: true };
+    const policies = owned(await objects("networkpolicies"));
+    assert.ok(policies.length > 0);
+    assert.ok(
+      policies.every((policy) => !JSON.stringify(policy.spec).includes(old)),
+      "activation must remove predecessor peers from surviving policies",
+    );
+    result.liveRevision = {
+      old,
+      next: revision.id,
+      memoryRetained: true,
+      predecessorResourcesRemoved: true,
+      predecessorNetworkPeersRemoved: true,
+    };
   });
 
   let second;
@@ -258,6 +270,81 @@ export async function verifyStrandsWorkspaceWorkflows(f) {
         "Agent B cannot see Agent A's memory index",
       );
       result.secondAgent.foreignNodeRefusal = foreign;
+    });
+    await check("another Agent cannot reach the native Harness listener", async () => {
+      const pods = await objects("pods");
+      const gateways = (id) =>
+        owned(pods, id).filter(
+          (pod) => pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+        );
+      const target = owned(await objects("services")).find((service) =>
+        service.metadata.name.startsWith("strands-"),
+      );
+      assert.ok(target);
+      assert.equal(gateways(fixture.agentId).length, 1);
+      assert.equal(gateways(second.id).length, 1);
+      const url = `http://${target.metadata.name}:18790/`;
+      // A 401 from the intended Gateway proves a live listener before the
+      // foreign connection is tested. No transport credential leaves its Pod.
+      const allow = `fetch(${JSON.stringify(url)}, {signal: AbortSignal.timeout(5000)})
+        .then(r => console.log(r.status)).catch(() => { process.exitCode=1; });`;
+      const allowed = await kube(
+        "-n",
+        fixture.namespaceName,
+        "exec",
+        gateways(fixture.agentId)[0].metadata.name,
+        "-c",
+        "gateway",
+        "--",
+        "node",
+        "-e",
+        allow,
+      );
+      assert.equal(allowed.trim(), "401");
+      const deny = `const socket = require("node:net").connect({
+        host: ${JSON.stringify(target.metadata.name)}, port: 18790 });
+        socket.once("connect", () => { console.log("CONNECTED"); socket.destroy(); });
+        socket.setTimeout(4000, () => { console.log("TIMED_OUT"); socket.destroy(); });
+        socket.once("error", error => { console.log(error.code); socket.destroy(); });`;
+      const denied = await kube(
+        "-n",
+        fixture.namespaceName,
+        "exec",
+        gateways(second.id)[0].metadata.name,
+        "-c",
+        "gateway",
+        "--",
+        "node",
+        "-e",
+        deny,
+      );
+      assert.match(
+        denied.trim(),
+        // k3d's NetworkPolicy rejects with ICMP; other CNIs silently drop.
+        /^(?:ECONNREFUSED|TIMED_OUT|ETIMEDOUT)$/u,
+        `foreign Agent must be denied before TCP connection and Harness I/O: ${denied.trim()}`,
+      );
+      assert.equal(
+        (
+          await kube(
+            "-n",
+            fixture.namespaceName,
+            "exec",
+            gateways(fixture.agentId)[0].metadata.name,
+            "-c",
+            "gateway",
+            "--",
+            "node",
+            "-e",
+            allow,
+          )
+        ).trim(),
+        "401",
+      );
+      result.secondAgent.providerNetworkIsolation = {
+        intendedGatewayBeforeAndAfter: "HTTP 401 from live listener",
+        foreignGateway: denied.trim(),
+      };
     });
     await check("two Agents execute overlapping real model turns without restarts", async () => {
       const before = await podState();
