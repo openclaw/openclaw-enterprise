@@ -14,12 +14,12 @@ network requests still use the configured network policy.
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-The selected upstream source pins Codex `0.162.1`. A temporary
-`stock-codex-0.163.0-alpha.2-dependency-pin.patch` updates its managed version,
+The selected upstream source pins Codex `0.164.0`. A temporary
+`stock-codex-0.163.0-alpha.2-dependency-pin.patch` sets its managed version,
 package manifest, and frozen lockfile to the stock `0.163.0-alpha.2` npm release,
-which supports plugin default enablement. Both Codex entrypoints use that same
-installation; no Codex binary patch is applied. Remove the dependency patch
-when the selected OpenClaw source pins a compatible Codex release.
+the version OCE reviewed for the Codex sandbox seccomp profile. Both Codex
+entrypoints use that same installation; no Codex binary patch is applied. Remove
+the dependency patch when OCE qualifies the Codex release the source pins.
 Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
