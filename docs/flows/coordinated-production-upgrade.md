@@ -229,13 +229,11 @@ responses are reused; an intent without a response triggers an Agent readback
 and stops for operator reconciliation. The helper does not infer rejection from
 an unchanged selected version or replay an unknown request. An operator can
 record a verified accepted response and resume. OCC admits a deployment in one
-transaction, so an `occ` error with a 4xx status and an OCC error code, other
-than 408, saved no version (`deploy_refusal`). Only `occ`'s single `Error:` line
-is read; a second such line makes the outcome unknown. The script names each
-refused Agent with OCC's message, saves it as `dispatch/*.rejected`, removes the
-intent, and stops; after the operator corrects the cause, `--resume` sends that
-request again. A refused service key is reported as the helper's credential
-failure, not as an Agent refusal, and is resumed the same way.
+transaction, so `occ`'s one `Error:` line with a 4xx status and an OCC error
+code, other than 408, means no version was saved (`deploy_refusal`). The script
+names each refused Agent, or a refused service key, saves the message as
+`dispatch/*.rejected`, removes the intent, and stops; `--resume` sends that
+request again.
 
 The script polls each returned deployment through its authorized status
 operation, confirms the selected version, and waits for all version Pods
@@ -249,14 +247,12 @@ it connects (`openClawStateMigrationHelper` in `runtime-startup.ts`). Embedded e
 requires one runtime container; dedicated execution requires both gateway and
 Agent containers. Each replacement gateway then runs read-only
 `openclaw doctor --lint --json --severity-min error` with a heap cap
-(`--doctor-heap-mib`, 384 MiB by default). Doctor shares the gateway container's
+(`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway container's
 memory limit, and an out-of-memory kill there also stops the gateway. The script
-reads the container's cgroup v2 memory first (`gateway_free_memory`, saved as
-`status/*.doctor.memory`) and starts Doctor after one read with the cap plus
-640 MiB free (1 GiB by default) or two reads in a row with the cap plus 256 MiB
-(off-heap memory and a margin). It retries a read that failed on a network or
-API timeout twice; without the cgroup files it warns and runs Doctor. Exit 137 is reported as an
-OOM kill with the gateway container's restart count and last stop reason.
+reads the container's cgroup v2 memory (`gateway_free_memory`) and starts Doctor
+after one read with the cap plus 640 MiB free or two reads with the cap plus
+256 MiB. It retries a read that timed out; without cgroup files it warns and
+runs Doctor. Exit 137 is reported as an OOM kill with the gateway's restarts.
 Failures retain dispatch, status, Pod, and Doctor evidence for inspection.
 
 ### 6. Hand off application verification
