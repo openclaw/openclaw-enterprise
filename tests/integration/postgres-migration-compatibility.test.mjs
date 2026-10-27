@@ -2934,28 +2934,31 @@ test(
       });
     }
     for (const count of [1, 2, 3]) {
-      void context.test(`private feature suffix with ${count} receipts is refused`, async (child) => {
-        const db = await historyDatabase(child, fixture, "featuresuffix", { prefix: 63 });
-        // Only synthetic receipt rows are injected. Never replay or relabel a real
-        // feature database: its original 0064..0066 omit public gateway history.
-        const suffix = manifest.entries.slice(64, 64 + count);
-        for (const entry of suffix) {
-          await db.migrator.query(
-            "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES($1,$2)",
-            [entry.sha256, entry.when - 1],
+      void context.test(
+        `private feature suffix with ${count} receipts is refused`,
+        async (child) => {
+          const db = await historyDatabase(child, fixture, "featuresuffix", { prefix: 63 });
+          // Only synthetic receipt rows are injected. Never replay or relabel a real
+          // feature database: its original 0064..0066 omit public gateway history.
+          const suffix = manifest.entries.slice(64, 64 + count);
+          for (const entry of suffix) {
+            await db.migrator.query(
+              "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES($1,$2)",
+              [entry.sha256, entry.when - 1],
+            );
+          }
+          const receipts = await historyReceipts(db.migrator);
+          assert.equal(receipts.length, 63 + count);
+          assert.deepEqual(
+            receipts.slice(63).map(({ hash, created_at }) => [hash, Number(created_at)]),
+            suffix.map(({ sha256, when }) => [sha256, when - 1]),
           );
-        }
-        const receipts = await historyReceipts(db.migrator);
-        assert.equal(receipts.length, 63 + count);
-        assert.deepEqual(
-          receipts.slice(63).map(({ hash, created_at }) => [hash, Number(created_at)]),
-          suffix.map(({ sha256, when }) => [sha256, when - 1]),
-        );
-        await assertHistoryRefused(
-          db,
-          /applied receipts differ from canonical history; pre-merge preview histories are unsupported/,
-        );
-      });
+          await assertHistoryRefused(
+            db,
+            /applied receipts differ from canonical history; pre-merge preview histories are unsupported/,
+          );
+        },
+      );
     }
     void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");
