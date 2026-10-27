@@ -1692,6 +1692,8 @@ test("a Doctor memory timeout keeps the evidence lock until every started Doctor
   await scriptGatewayMemory(f, [2048, ...Array(20).fill(0)]);
   const state = await f.state();
   state.doctorHoldMs = 6000;
+  // The gateway was OOM-killed once before it became Ready; that restart is not Doctor's.
+  state.gatewayRestarts = 1;
   await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
   await f.failNext("doctor-hold");
   const failure = await f.run("--timeout-seconds", "3").then(
