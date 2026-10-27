@@ -32,15 +32,11 @@ required `facets` and `cleanup` members, an optional `harnessHome`, and optional
 | `workspaceNodePeerLabels(context)`               | Optional. Exact Pod labels of the provider Pods that open the Agent revision's workspace-node connection, or `undefined` before its Sandbox exists. Compute admits only these Pods to that Agent's Gateway port, plus those of the serving Agent revision while a successor prepares, so the labels must select that Sandbox alone. OpenShell returns the supervisor's `openshell.ai/sandbox-id`.                   |
 | `readSandboxLogs(context, request)`              | Optional read of the Agent revision's Sandbox log: at most `lines` raw lines at or after `sinceTime`, plus how many lines the source examined. It must use a read-only interface and derive the Sandbox from the Agent revision. OCC classifies and redacts every line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source).                                                                         |
 
-A Sandbox that supports ordinary provider attachments implements
-`credentialAttachments.prepare`, `status` and `withdraw`. Compute first
-passes the Namespace, immutable Agent revision and bound sources to `prepare`.
-The Sandbox checks ownership and returns one opaque attachment per source.
-For status and withdrawal, Compute also passes the provisioned Harness reference. Status reports readiness
-for each bound source. Withdrawal targets one source and settles on a revocation
-receipt or confirmed Sandbox absence. A recheck detaches the source again if the
-Sandbox lists it. These operations also work on an Installation that omits
-`credential_proxy`. [OpenShell provider attachments](openshell-credential-gateway.md#how-sources-map-to-openshell)
+For ordinary providers, Compute passes the Namespace, revision and sources to
+`credentialAttachments.prepare`. The Sandbox verifies ownership and returns one opaque
+attachment per source. For `status` and `withdraw`, Compute includes the Harness reference.
+Withdrawal settles on a revocation receipt or confirmed Sandbox absence. A recheck detaches
+any source still listed. These operations also work without `credential_proxy`. [OpenShell provider attachments](openshell-credential-gateway.md#how-sources-map-to-openshell)
 
 Two optional methods serve a provider-owned Harness transport.
 `harnessEndpoint(context)` returns the transport for the provisioned Harness, and
