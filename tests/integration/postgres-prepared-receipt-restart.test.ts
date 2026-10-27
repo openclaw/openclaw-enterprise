@@ -10,6 +10,7 @@ import {
 } from "node:http";
 import { connect, createServer as tcpServer, type AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
+import { buffer } from "node:stream/consumers";
 import test from "node:test";
 import type { TLSSocket } from "node:tls";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -32,14 +33,6 @@ import {
 import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 
-async function bytes(stream: IncomingMessage) {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
-
 type Resources = ReturnType<typeof createTestResourceScope>;
 
 type DisposalCommand = {
@@ -61,7 +54,7 @@ async function loseCommittedDisposal(
   let droppedCount = 0;
   const relay = httpServer(async (incoming, response) => {
     try {
-      const data = await bytes(incoming);
+      const data = await buffer(incoming);
       const command = JSON.parse(data.toString()) as DisposalCommand;
       kinds.push(command.kind);
       const outbound = request({
@@ -74,7 +67,7 @@ async function loseCommittedDisposal(
       const waiting = once(outbound, "response");
       outbound.end(data);
       const [reply] = await waiting;
-      const result = await bytes(reply);
+      const result = await buffer(reply);
       if (command.kind === "dispose" && droppedCount === 0) {
         assert.equal(reply.statusCode, 200);
         assert.deepEqual(JSON.parse(result.toString()), { kind: "acknowledged" });
