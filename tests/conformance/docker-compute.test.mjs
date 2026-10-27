@@ -714,6 +714,13 @@ function fakeDockerEngine(inspectCreated) {
       if (method === "POST" && action === "start") {
         return "";
       }
+      if (method === "POST" && action === "stop") {
+        const container = containers.get(name);
+        if (container !== undefined) {
+          container.State = { Running: false, ExitCode: 0 };
+        }
+        return "";
+      }
       if (method === "DELETE") {
         containers.delete(name);
         return "";
@@ -905,6 +912,41 @@ for (const mode of ["embedded", "dedicated"]) {
   });
 }
 
+// Removal stops a container (SIGTERM) before the force DELETE. When the stop itself fails (an
+// Engine error, or its request deadline on a container that ignores SIGTERM), the force DELETE
+// must still run, or callers such as a failed create's cleanup leave the container behind.
+test("Docker removal still force-removes a container whose stop failed, and reports the failure", async () => {
+  const { containers, createDriver } = fakeDockerEngine();
+  const driver = createDriver();
+  const revision = dockerAgentRevision(driver, {
+    id: "revision-docker-stop-failure",
+    agentId: "agent-stop-failure",
+    mode: "dedicated",
+  });
+  const roles = () =>
+    [...containers.values()].map(({ Config }) => Config.Labels["org.openclaw.enterprise.role"]);
+  await withModelKey(async () => {
+    assert.equal((await driver.prepareRevision(revision)).ready, true);
+    assert.deepEqual(roles().sort(), ["agent", "gateway"]);
+
+    const engine = driver.request;
+    const stopFailure = new Error("Docker stop request timed out");
+    driver.request = async (method, path, body) => {
+      if (method === "POST" && /^\/containers\/[^/]+\/stop\?/.test(path)) {
+        throw stopFailure;
+      }
+      return engine(method, path, body);
+    };
+    // The stop failure stays visible, but only after the agent container is removed.
+    await assert.rejects(driver.stopRevision(revision), (error) => error === stopFailure);
+    assert.deepEqual(roles(), ["gateway"]);
+
+    // The retry finds the agent gone and removes the gateway the same way.
+    await assert.rejects(driver.stopRevision(revision), (error) => error === stopFailure);
+    assert.deepEqual(roles(), []);
+  });
+});
+
 // These checks exercise the real Driver at Docker's API boundary. Container exit
 // status is an external observation; native file writes are covered separately by
 // the shared initializer and selected real-runtime Agent journey.
@@ -1012,6 +1054,13 @@ for (const mode of ["embedded", "dedicated"]) {
           assert.equal(setupFinished, true, "no runtime process can start before setup succeeds");
           runtimeStarts += 1;
           container.State = { Running: true, Health: { Status: "healthy" } };
+        }
+        return "";
+      }
+      if (method === "POST" && action === "stop") {
+        const container = containers.get(name);
+        if (container !== undefined) {
+          container.State = { Running: false, ExitCode: 0 };
         }
         return "";
       }
@@ -1379,6 +1428,10 @@ test("Docker dispatches embedded recovery only while Engine can verify the old s
       driver.request = async (method, path, data) => {
         if (previous) {
           const { name, live, volume, engine } = previous;
+          if (method === "POST" && path.startsWith("/containers/" + live.Id + "/stop?")) {
+            // The old Gateway has already exited (304 from Engine).
+            return "";
+          }
           if (method === "DELETE" && path.startsWith("/containers/" + live.Id + "?")) {
             removed = containers.delete(name);
             return "";

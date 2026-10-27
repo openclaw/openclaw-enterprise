@@ -36,7 +36,8 @@
       "expectedTests": [
         "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns",
         "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner",
-        "runtime image embedded Gateway serves its first turn after operator-confirmed recovery from an unclean stop"
+        "runtime image embedded Gateway serves its first turn after operator-confirmed recovery from an unclean stop",
+        "runtime image Docker Compute replaces a Gateway on retained state after a controller restart and on redeploy"
       ]
     },
     {

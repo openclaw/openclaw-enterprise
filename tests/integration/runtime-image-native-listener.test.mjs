@@ -241,8 +241,11 @@ test(
           "node",
           image,
           "-e",
-          `const deadline=Date.now()+Number(process.argv[1]);const probe=async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}};(async()=>{for(;;){const v=await Promise.all([8080,18791].map(probe));if((v[1].status===200&&(${reachable}?v[0].status===200:v[0].error==="ECONNREFUSED"))||Date.now()>=deadline){console.log(JSON.stringify(v));return;}await new Promise(r=>setTimeout(r,500));}})();`,
+          // A fixed program: the address and expectation are arguments, not code.
+          'const [budget,address,reachable]=process.argv.slice(1);const deadline=Date.now()+Number(budget);const probe=async port=>{try{const r=await fetch("http://"+address+":"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}};(async()=>{for(;;){const v=await Promise.all([8080,18791].map(probe));if((v[1].status===200&&(reachable==="true"?v[0].status===200:v[0].error==="ECONNREFUSED"))||Date.now()>=deadline){console.log(JSON.stringify(v));return;}await new Promise(r=>setTimeout(r,500));}})();',
           String(remoteBudgetMs),
+          address,
+          String(reachable),
         ],
         { timeout: remoteBudgetMs + 60_000 * imageSmokeTimeoutMultiplier },
       );
