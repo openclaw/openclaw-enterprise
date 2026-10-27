@@ -102,7 +102,7 @@ grant node or operator access. Compute derives the callback URL from this Agent'
 private endpoint and refuses a caller-selected override.
 
 The Gateway delivers each hook capability through its authenticated Codex
-app-server connection. The Harness stores it under `.oce-native-hooks` in its
+app-server connection. The Harness stores it under `.codex/.oce-native-hooks` in its
 HOME (a SandboxDriver's `harnessHome`, else `/home/node`), outside the workspace
 and file-transfer roots. This directory is Harness runtime state (on OpenShell, the
 version's runtime PVC subpath). Each Codex start replaces it with an empty private

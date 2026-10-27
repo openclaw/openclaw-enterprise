@@ -49,3 +49,35 @@ test("Compute Driver maintenance intervals must be positive safe integers", asyn
     await pool.end();
   }
 });
+
+test("Sandbox Driver maintenance intervals must be positive safe integers", async () => {
+  const [{ Pool }, { createControllerWorker }, { createDevelopmentComputeDriver }] =
+    await Promise.all([
+      import("pg"),
+      import("../../apps/controller/src/worker.ts"),
+      import("../helpers/development.mjs"),
+    ]);
+  const pool = new Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
+  try {
+    for (const maintenanceIntervalMs of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      assert.throws(
+        () =>
+          createControllerWorker({
+            pool,
+            computeDriver: createDevelopmentComputeDriver(),
+            sandboxDriver: {
+              id: "sandbox-fixture",
+              capability: "sandbox",
+              implementation: "fixture",
+              facets: ["process"],
+              cleanup: async () => {},
+              maintenanceIntervalMs,
+            },
+          }),
+        /Sandbox maintenance interval must be a positive safe integer/u,
+      );
+    }
+  } finally {
+    await pool.end();
+  }
+});

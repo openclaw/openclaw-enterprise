@@ -154,7 +154,8 @@
       "path": "tests/integration/compute-singleton-worker.test.mjs",
       "expectedTests": [
         "before-commit Compute Drivers must expose an activation operation",
-        "Compute Driver maintenance intervals must be positive safe integers"
+        "Compute Driver maintenance intervals must be positive safe integers",
+        "Sandbox Driver maintenance intervals must be positive safe integers"
       ]
     },
     {
