@@ -123,7 +123,12 @@ openclaw gateway call memory.index --params '{"agentId":"main"}' --timeout 18000
 ```
 
 This operation requires `operator.admin` and indexes through the live Gateway's
-remote workspace binding. The standalone local-filesystem memory CLI cannot
+remote workspace binding. The runtime rechecks the caller before provider requests,
+retries and index publication; disconnect cancels inline provider calls. A batch
+already submitted to an external provider cannot be recalled. Status reads run
+in the database worker, not on the Gateway event loop.
+
+The standalone local-filesystem memory CLI cannot
 rebuild an index whose source files live on the Harness. Check vector availability
 and actual `memory_search` results before considering the provider qualified.
 The [native QA scenario](../../testing/ci.md#qa-matrix) also checks a keyword

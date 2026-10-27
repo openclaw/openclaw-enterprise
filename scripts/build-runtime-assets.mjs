@@ -303,7 +303,7 @@ if (command === "inputs") {
         openclawPairingPublicationPatchSha256:
           "e8c5a8ba98bd28eb45fe0203da2839e31f6f8fde796c329079d164fb0348a9d6",
         openclawRemoteMemoryIndexPatchSha256:
-          "1fff6f56035446c1e8d6850fe35f13fade80aa0f37721aba750d251a1c90a65c",
+          "412a29bcdd83241cfd65f390fe29300c5de4f3ec09d9e29fb1f8d74f790b1d08",
         openclawNodeMessagePipePatchSha256:
           "7f6048f3e8d1144dba7468458bde932c1c4abf9ab5daae11070bbddedb041ff6",
         artifactKind: "assembled-runtime-root",

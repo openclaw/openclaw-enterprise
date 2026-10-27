@@ -2,7 +2,7 @@ diff --git a/docs/cli/memory.md b/docs/cli/memory.md
 --- a/docs/cli/memory.md
 +++ b/docs/cli/memory.md
 @@ -607,3 +607,23 @@
- 
+
  - [CLI reference](/cli)
  - [Memory overview](/concepts/memory)
 +
@@ -48,7 +48,7 @@ diff --git a/extensions/memory-core/src/index-gateway.runtime.ts b/extensions/me
 new file mode 100644
 --- /dev/null
 +++ b/extensions/memory-core/src/index-gateway.runtime.ts
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,49 @@
 +import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 +import type { MemoryCoreAcquireLocalService } from "./memory/embedding-local-service.js";
 +import { withMemoryMaintenanceAuthority } from "./memory/maintenance-authority.js";
@@ -59,39 +59,50 @@ new file mode 100644
 +  agentId: string;
 +  force: boolean;
 +  assertCurrent: () => void;
++  signal?: AbortSignal;
 +  acquireLocalService?: MemoryCoreAcquireLocalService;
 +}) {
-+  return withMemoryMaintenanceAuthority(params.assertCurrent, async () => {
-+    const { manager, error } = await getMemorySearchManager({
-+      cfg: params.cfg,
-+      agentId: params.agentId,
-+      purpose: "cli",
-+      inspectSources: true,
-+      acquireLocalService: params.acquireLocalService,
-+    });
-+    if (!manager) {
-+      throw new Error(error ?? "Memory search is disabled.");
-+    }
-+    try {
-+      params.assertCurrent();
-+      if (!manager.sync) {
-+        throw new Error("The memory manager does not support indexing.");
++  return withMemoryMaintenanceAuthority(
++    params.assertCurrent,
++    async () => {
++      const { manager, error } = await getMemorySearchManager({
++        cfg: params.cfg,
++        agentId: params.agentId,
++        purpose: "cli",
++        inspectSources: true,
++        acquireLocalService: params.acquireLocalService,
++      });
++      if (!manager) {
++        throw new Error(error ?? "Memory search is disabled.");
 +      }
-+      // The Gateway owns the remote workspace binding and the derived index.
-+      // Reuse the same explicit maintenance operation as the local CLI.
-+      await manager.sync({ reason: "cli", force: params.force });
-+      params.assertCurrent();
-+      return manager.status();
-+    } finally {
-+      await manager.close?.();
-+    }
-+  });
++      try {
++        params.assertCurrent();
++        if (!manager.sync) {
++          throw new Error("The memory manager does not support indexing.");
++        }
++        // The Gateway owns the remote workspace binding and the derived index.
++        // Reuse the same explicit maintenance operation as the local CLI.
++        await manager.sync({ reason: "cli", force: params.force });
++        params.assertCurrent();
++        if (!manager.statusAsync) {
++          throw new Error("Memory maintenance requires asynchronous status.");
++        }
++        const status = await manager.statusAsync();
++        params.signal?.throwIfAborted();
++        params.assertCurrent();
++        return status;
++      } finally {
++        await manager.close?.();
++      }
++    },
++    params.signal,
++  );
 +}
 diff --git a/extensions/memory-core/src/index-gateway.ts b/extensions/memory-core/src/index-gateway.ts
 new file mode 100644
 --- /dev/null
 +++ b/extensions/memory-core/src/index-gateway.ts
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,74 @@
 +import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 +import { ErrorCodes, errorShape } from "openclaw/plugin-sdk/gateway-runtime";
 +import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
@@ -150,6 +161,11 @@ new file mode 100644
 +          agentId,
 +          force: params.force === true,
 +          assertCurrent,
++          signal: AbortSignal.any(
++            [signal, client?.connectionSignal].filter(
++              (value): value is AbortSignal => value !== undefined,
++            ),
++          ),
 +          acquireLocalService: (...args) => api.runtime.llm.acquireLocalService(...args),
 +        });
 +        assertCurrent();
@@ -165,23 +181,63 @@ diff --git a/extensions/memory-core/src/memory/maintenance-authority.ts b/extens
 new file mode 100644
 --- /dev/null
 +++ b/extensions/memory-core/src/memory/maintenance-authority.ts
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,41 @@
 +import { AsyncLocalStorage } from "node:async_hooks";
 +
 +// Explicit remote maintenance carries the admitted operator authority to the
-+// existing SQLite publication owner, including its synchronous commit guard.
-+const maintenanceAuthority = new AsyncLocalStorage<() => void>();
++// provider effect and database publication owners, including the commit guard.
++const maintenanceAuthority = new AsyncLocalStorage<{
++  assertCurrent: () => void;
++  signal?: AbortSignal;
++}>();
 +
 +export function withMemoryMaintenanceAuthority<T>(
 +  assertCurrent: () => void,
 +  run: () => Promise<T>,
++  signal?: AbortSignal,
 +): Promise<T> {
++  signal?.throwIfAborted();
 +  assertCurrent();
-+  return maintenanceAuthority.run(assertCurrent, run);
++  return maintenanceAuthority.run({ assertCurrent, signal }, run);
 +}
 +
 +export function captureMemoryMaintenanceAuthority(): (() => void) | undefined {
-+  return maintenanceAuthority.getStore();
++  const authority = maintenanceAuthority.getStore();
++  return authority
++    ? () => {
++        authority.signal?.throwIfAborted();
++        authority.assertCurrent();
++      }
++    : undefined;
++}
++
++export function assertMemoryMaintenanceAuthority(): void {
++  const authority = maintenanceAuthority.getStore();
++  authority?.signal?.throwIfAborted();
++  authority?.assertCurrent();
++}
++
++export function withMemoryMaintenanceSignal(signal?: AbortSignal): AbortSignal | undefined {
++  const maintenanceSignal = maintenanceAuthority.getStore()?.signal;
++  return signal && maintenanceSignal
++    ? AbortSignal.any([signal, maintenanceSignal])
++    : (signal ?? maintenanceSignal);
++}
+diff --git a/extensions/memory-core/src/memory/manager-cpu-worker-runtime.ts b/extensions/memory-core/src/memory/manager-cpu-worker-runtime.ts
+--- a/extensions/memory-core/src/memory/manager-cpu-worker-runtime.ts
++++ b/extensions/memory-core/src/memory/manager-cpu-worker-runtime.ts
+@@ -257,3 +257,12 @@
+   }
+   return result.stats;
+ }
++
++export async function runMemoryStatus(
++  target: MemoryReadTarget,
++  query: Extract<MemorySearchWorkerInput, { kind: "status" }>["query"],
++  signal?: AbortSignal,
++) {
++  const result = await runRetrieval({ ...target, kind: "status", query }, { signal }, "status");
++  return result.snapshot;
 +}
 diff --git a/extensions/memory-core/src/memory/manager-database-context.ts b/extensions/memory-core/src/memory/manager-database-context.ts
 --- a/extensions/memory-core/src/memory/manager-database-context.ts
@@ -213,10 +269,457 @@ diff --git a/extensions/memory-core/src/memory/manager-database-context.ts b/ext
        } catch (error) {
          const [cleanup] = await Promise.allSettled([this.closePublicationWorker()]);
          if (cleanup.status === "rejected") {
+diff --git a/extensions/memory-core/src/memory/manager-embedding-ops.ts b/extensions/memory-core/src/memory/manager-embedding-ops.ts
+--- a/extensions/memory-core/src/memory/manager-embedding-ops.ts
++++ b/extensions/memory-core/src/memory/manager-embedding-ops.ts
+@@ -24,6 +24,10 @@
+ } from "../memory-workspace-lock.js";
+ import { readSessionResetRecallCutoffMetadata } from "../session-reset-recall-metadata.js";
+ import type { EmbeddingProvider } from "./embeddings.js";
++import {
++  assertMemoryMaintenanceAuthority,
++  withMemoryMaintenanceSignal,
++} from "./maintenance-authority.js";
+ import type { IndexedMemoryChunk } from "./manager-chunk-writer.js";
+ import { prepareMemoryIndexInWorker } from "./manager-cpu-worker-runtime.js";
+ import { readMemoryDatabaseRevision } from "./manager-db-kernel.js";
+@@ -103,12 +107,18 @@
+   deadlineControl?: MemorySearchDeadlineControl;
+   run: (signal: AbortSignal) => Promise<T>;
+ }): Promise<T> {
++  assertMemoryMaintenanceAuthority();
++  const callerSignal = withMemoryMaintenanceSignal(params.signal);
++  callerSignal?.throwIfAborted();
+   const controller = new AbortController();
+-  const signal = params.signal
+-    ? AbortSignal.any([params.signal, controller.signal])
++  const signal = callerSignal
++    ? AbortSignal.any([callerSignal, controller.signal])
+     : controller.signal;
+   if (!Number.isFinite(params.timeoutMs) || params.timeoutMs <= 0) {
+-    return await params.run(signal);
++    const result = await params.run(signal);
++    signal.throwIfAborted();
++    assertMemoryMaintenanceAuthority();
++    return result;
+   }
+   const timeoutMs = resolveTimerTimeoutMs(params.timeoutMs, 1);
+   const timeoutError = new Error(params.message);
+@@ -155,7 +165,8 @@
+   try {
+     const operation = params.run(signal);
+     const result = await Promise.race([operation, timeoutPromise]);
+-    params.signal?.throwIfAborted();
++    signal.throwIfAborted();
++    assertMemoryMaintenanceAuthority();
+     // An overdue watchdog can run after provider success following an event-loop stall.
+     if (!paused && Date.now() - segmentStartedAt >= remainingMs) {
+       controller.abort(timeoutError);
+@@ -458,8 +469,10 @@
+     action: string,
+     signal?: AbortSignal,
+   ): Promise<void> {
++    assertMemoryMaintenanceAuthority();
+     log.warn(`memory embeddings retryable error; ${action} in ${delayMs}ms`);
+-    await sleepWithAbort(delayMs, signal);
++    await sleepWithAbort(delayMs, withMemoryMaintenanceSignal(signal));
++    assertMemoryMaintenanceAuthority();
+   }
+
+   private resolveEmbeddingTimeout(
+@@ -550,16 +563,23 @@
+     run: () => Promise<number[][] | null>;
+   }): Promise<MemoryBatchRetryResult> {
+     try {
+-      return { kind: "success", value: await params.run() };
++      assertMemoryMaintenanceAuthority();
++      const value = await params.run();
++      assertMemoryMaintenanceAuthority();
++      return { kind: "success", value };
+     } catch (error) {
+       if (!/timed out|timeout/i.test(formatErrorMessage(error))) {
+         return { kind: "failure", error, attempts: 1 };
+       }
+     }
+
++    assertMemoryMaintenanceAuthority();
+     log.warn(`memory embeddings: ${params.provider} batch timed out; retrying once`);
+     try {
+-      return { kind: "success", value: await params.run() };
++      assertMemoryMaintenanceAuthority();
++      const value = await params.run();
++      assertMemoryMaintenanceAuthority();
++      return { kind: "success", value };
+     } catch (error) {
+       return { kind: "failure", error, attempts: 2 };
+     }
+diff --git a/extensions/memory-core/src/memory/manager-embedding-policy.ts b/extensions/memory-core/src/memory/manager-embedding-policy.ts
+--- a/extensions/memory-core/src/memory/manager-embedding-policy.ts
++++ b/extensions/memory-core/src/memory/manager-embedding-policy.ts
+@@ -9,6 +9,7 @@
+   asOptionalRecord,
+   normalizeOptionalString,
+ } from "openclaw/plugin-sdk/string-coerce-runtime";
++import { assertMemoryMaintenanceAuthority } from "./maintenance-authority.js";
+
+ type MemoryEmbeddingChunk = {
+   text: string;
+@@ -131,34 +132,44 @@
+ }): Promise<T> {
+   const profile = MEMORY_EMBEDDING_RETRY_PROFILES[params.profile];
+   let remainingWaitMs = profile.maxTotalWaitMs;
+-  return await retryAsync(params.run, {
+-    attempts: profile.rateLimit.attempts,
+-    minDelayMs: profile.transient.baseDelayMs,
+-    maxDelayMs: profile.rateLimit.maxDelayMs,
+-    retryAfterMaxDelayMs: profile.rateLimit.maxDelayMs,
+-    jitter: 0.2,
+-    // Caller cancellation wins even when its timeout resembles a retryable
+-    // provider error; otherwise abandoned searches start another request.
+-    shouldRetry: (err, attempt) => {
+-      if (params.signal?.aborted) {
+-        return false;
+-      }
+-      const retryBudget = resolveMemoryEmbeddingRetryBudget(profile, err);
+-      return retryBudget !== undefined && attempt < retryBudget.attempts;
++  return await retryAsync(
++    async () => {
++      assertMemoryMaintenanceAuthority();
++      const result = await params.run();
++      assertMemoryMaintenanceAuthority();
++      return result;
+     },
+-    delayMs: ({ attempt, err }) => {
+-      const retryBudget = resolveMemoryEmbeddingRetryBudget(profile, err);
+-      return retryBudget
+-        ? Math.min(retryBudget.maxDelayMs, retryBudget.baseDelayMs * 2 ** (attempt - 1))
+-        : 0;
++    {
++      attempts: profile.rateLimit.attempts,
++      minDelayMs: profile.transient.baseDelayMs,
++      maxDelayMs: profile.rateLimit.maxDelayMs,
++      retryAfterMaxDelayMs: profile.rateLimit.maxDelayMs,
++      jitter: 0.2,
++      // Caller cancellation wins even when its timeout resembles a retryable
++      // provider error; otherwise abandoned searches start another request.
++      shouldRetry: (err, attempt) => {
++        if (params.signal?.aborted) {
++          return false;
++        }
++        const retryBudget = resolveMemoryEmbeddingRetryBudget(profile, err);
++        return retryBudget !== undefined && attempt < retryBudget.attempts;
++      },
++      delayMs: ({ attempt, err }) => {
++        const retryBudget = resolveMemoryEmbeddingRetryBudget(profile, err);
++        return retryBudget
++          ? Math.min(retryBudget.maxDelayMs, retryBudget.baseDelayMs * 2 ** (attempt - 1))
++          : 0;
++      },
++      retryAfterMs: (err) => resolveMemoryEmbeddingRetryBudget(profile, err)?.retryAfterMs,
++      sleep: async (delayMs) => {
++        const boundedDelayMs = Math.min(delayMs, remainingWaitMs);
++        remainingWaitMs -= boundedDelayMs;
++        assertMemoryMaintenanceAuthority();
++        await params.waitForRetry(boundedDelayMs);
++        assertMemoryMaintenanceAuthority();
++      },
+     },
+-    retryAfterMs: (err) => resolveMemoryEmbeddingRetryBudget(profile, err)?.retryAfterMs,
+-    sleep: async (delayMs) => {
+-      const boundedDelayMs = Math.min(delayMs, remainingWaitMs);
+-      remainingWaitMs -= boundedDelayMs;
+-      await params.waitForRetry(boundedDelayMs);
+-    },
+-  });
++  );
+ }
+
+ export async function runMemoryEmbeddingBatchRetryWithSplit<TInput, TOutput>(params: {
+diff --git a/extensions/memory-core/src/memory/manager-index.test-support.ts b/extensions/memory-core/src/memory/manager-index.test-support.ts
+--- a/extensions/memory-core/src/memory/manager-index.test-support.ts
++++ b/extensions/memory-core/src/memory/manager-index.test-support.ts
+@@ -54,7 +54,7 @@
+ };
+
+ type ProviderControls = {
+-  beforeEmbedBatch: (() => Promise<void>) | null;
++  beforeEmbedBatch: ((options?: EmbeddingProviderCallOptions) => Promise<void>) | null;
+   beforeEmbedQuery: ((options?: EmbeddingProviderCallOptions) => Promise<void>) | null;
+   embedQueryCalls: number;
+   embeddedQueryTexts: string[];
+@@ -275,8 +275,11 @@
+             providerState.embeddedQueryTexts.push(text);
+             return embedText(text);
+           },
+-          embedBatch: async (inputs: EmbeddingInput[]) => {
+-            await providerState.beforeEmbedBatch?.();
++          embedBatch: async (
++            inputs: EmbeddingInput[],
++            callOptions?: EmbeddingProviderCallOptions,
++          ) => {
++            await providerState.beforeEmbedBatch?.(callOptions);
+             if (providerId === "gemini" || providerId === "fallback-provider") {
+               const structuredInputs = inputs.filter(
+                 (input): input is Exclude<EmbeddingInput, string> =>
+diff --git a/extensions/memory-core/src/memory/manager-search.worker.ts b/extensions/memory-core/src/memory/manager-search.worker.ts
+--- a/extensions/memory-core/src/memory/manager-search.worker.ts
++++ b/extensions/memory-core/src/memory/manager-search.worker.ts
+@@ -28,6 +28,7 @@
+ import { assertMemoryShadowIdentity, type MemoryShadowConnection } from "./manager-shadow-task.js";
+ import { loadMemorySourceFileState } from "./manager-source-state.js";
+ import { inspectMemoryIndexPresenceInWorker } from "./manager-status-presence.js";
++import { collectMemoryStatusSnapshot } from "./manager-status-state.js";
+
+ type KeywordParameters = Omit<Parameters<typeof searchKeyword>[0], "db">;
+ type PathParameters = Omit<Parameters<typeof searchPathKeyword>[0], "db">;
+@@ -49,6 +50,7 @@
+       | { kind: "keyword"; query: MemoryKeywordWorkerQuery; includeIndexState?: boolean }
+       | { kind: "vector"; query: MemoryVectorWorkerQuery }
+       | { kind: "index-state" }
++      | { kind: "status"; query: Parameters<typeof collectMemoryStatusSnapshot>[2] }
+       | {
+           kind: "source-state";
+           query: Omit<Parameters<typeof loadMemorySourceFileState>[0], "db">;
+@@ -69,6 +71,7 @@
+   | MemoryOriginReadOutput
+   | { kind: "prewarm" }
+   | { kind: "presence"; present: boolean }
++  | { kind: "status"; snapshot: ReturnType<typeof collectMemoryStatusSnapshot> }
+   | { kind: "index-state"; state: ReturnType<typeof readMemoryRetrievalIndexState> }
+   | { kind: "source-state"; rows: ReturnType<typeof loadMemorySourceFileState> }
+   | ({ kind: "recall-metadata" } & ReturnType<typeof readMemoryRecallData>)
+@@ -128,6 +131,12 @@
+     path: request.databasePath,
+   });
+   if (!opened.found) {
++    if (opened.reason === "database-missing" && request.kind === "status") {
++      return {
++        kind: "status",
++        snapshot: collectMemoryStatusSnapshot(undefined, request.databasePath, request.query),
++      };
++    }
+     if (
+       opened.reason === "database-missing" &&
+       (request.kind === "index-state" || (request.kind === "keyword" && request.includeIndexState))
+@@ -146,6 +155,12 @@
+   }
+   const { db } = opened.database;
+   try {
++    if (request.kind === "status") {
++      return {
++        kind: "status",
++        snapshot: collectMemoryStatusSnapshot(db, request.databasePath, request.query),
++      };
++    }
+     if (request.kind === "source-state") {
+       assertMemoryShadowIdentity(request.databasePath, request.fileIdentity);
+       return { kind: "source-state", rows: loadMemorySourceFileState({ db, ...request.query }) };
+diff --git a/extensions/memory-core/src/memory/manager-status-state.ts b/extensions/memory-core/src/memory/manager-status-state.ts
+--- a/extensions/memory-core/src/memory/manager-status-state.ts
++++ b/extensions/memory-core/src/memory/manager-status-state.ts
+@@ -5,6 +5,8 @@
+   MemorySource,
+ } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+ import { executeSqliteQuerySync, getNodeSqliteKysely } from "openclaw/plugin-sdk/sqlite-runtime";
++import { readMemoryRetrievalIndexState } from "./manager-retrieval-read.js";
++import { buildMemorySourceFilter } from "./source-filter.js";
+
+ type StatusProvider = {
+   id: string;
+@@ -120,3 +122,34 @@
+     ),
+   };
+ }
++
++export function collectMemoryStatusSnapshot(
++  db: DatabaseSync | undefined,
++  databasePath: string,
++  query: { sources: MemorySource[]; cacheEnabled: boolean; includeStorage: boolean },
++) {
++  const filter = buildMemorySourceFilter(undefined, query.sources);
++  const storage = query.includeStorage ? collectMemoryStorageStatus(db, databasePath) : undefined;
++  return {
++    aggregate: collectMemoryStatusAggregate({
++      db,
++      sources: query.sources,
++      sourceFilterSql: filter.sql,
++      sourceFilterParams: filter.params,
++      includeChunkBytes: query.includeStorage,
++    }),
++    storage,
++    cacheEntries: query.cacheEnabled
++      ? (storage?.embeddingCacheEntries ??
++        Number(db?.prepare("SELECT COUNT(*) as c FROM memory_embedding_cache").get()?.c ?? 0))
++      : undefined,
++    indexState: db
++      ? readMemoryRetrievalIndexState(db)
++      : {
++          meta: null,
++          hasIndexedChunks: false,
++          hasFtsContent: false,
++          vectorState: { state: "empty" as const },
++        },
++  };
++}
 diff --git a/extensions/memory-core/src/memory/manager.ts b/extensions/memory-core/src/memory/manager.ts
 --- a/extensions/memory-core/src/memory/manager.ts
 +++ b/extensions/memory-core/src/memory/manager.ts
-@@ -599,6 +599,7 @@
+@@ -7,13 +7,11 @@
+   type OpenClawConfig,
+   type ResolvedMemorySearchConfig,
+ } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
+-import {
+-  MEMORY_EMBEDDING_CACHE_TABLE,
+-  MEMORY_INDEX_VECTOR_TABLE,
+-  type MemoryProviderStatus,
+-  type MemorySearchManager,
+-  type MemorySyncParams,
+-  type MemoryWorkspaceFiles,
++import type {
++  MemoryProviderStatus,
++  MemorySearchManager,
++  MemorySyncParams,
++  MemoryWorkspaceFiles,
+ } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+ import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
+ import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+@@ -22,6 +20,7 @@
+ import type { MemoryCoreAcquireLocalService } from "./embedding-local-service.js";
+ import type { EmbeddingProvider } from "./embeddings.js";
+ import { getMemoryManagerLifecycle } from "./lifecycle.js";
++import { runMemoryStatus } from "./manager-cpu-worker-runtime.js";
+ import { MemoryIndexDatabase } from "./manager-database-context.js";
+ import { isMemoryEmbeddingOperationError } from "./manager-embedding-errors.js";
+ import {
+@@ -42,17 +41,12 @@
+ import type { MemoryIndexIdentityState } from "./manager-reindex-state.js";
+ import { runMemorySearchMaintenance } from "./manager-search-maintenance.js";
+ import { MemorySearchOrchestration } from "./manager-search-orchestration.js";
+-import {
+-  collectMemoryStatusAggregate,
+-  collectMemoryStorageStatus,
+-  resolveStatusProviderInfo,
+-} from "./manager-status-state.js";
++import { collectMemoryStatusSnapshot, resolveStatusProviderInfo } from "./manager-status-state.js";
+ import type { MemoryEmbeddingBatchConfig } from "./manager-sync-base.js";
+ import {
+   MemoryTargetedSessionSyncQueue,
+   hasTargetedSessionSyncParams,
+ } from "./manager-sync-control.js";
+-import { resolvePersistedMemoryVectorIndexState } from "./manager-vector-rebuild-state.js";
+
+ const log = createSubsystemLogger("memory");
+
+@@ -491,28 +485,48 @@
+     if (this.closing || this.closed) {
+       throw new Error("Memory index manager is closed");
+     }
+-    return this.withPublishedDatabase(() => this.publishedStatus());
+-  }
+-
+-  private publishedStatus(): MemoryProviderStatus {
++    return this.withPublishedDatabase(() =>
++      this.publishedStatus(
++        collectMemoryStatusSnapshot(
++          this.database.hasIndex ? this.db : undefined,
++          resolveUserPath(this.settings.store.databasePath),
++          this.statusQuery(),
++        ),
++      ),
++    );
++  }
++
++  async statusAsync(): Promise<MemoryProviderStatus> {
++    return this.withManagerOperation(async () => {
++      const { agentId, path: databasePath } = this.publishedDatabase.writeOptions ?? {};
++      if (!agentId || !databasePath) {
++        throw new Error("Memory status requires its captured database target");
++      }
++      const snapshot = await runMemoryStatus({ agentId, databasePath }, this.statusQuery());
++      return this.withPublishedDatabase(() => this.publishedStatus(snapshot));
++    });
++  }
++
++  private statusQuery() {
++    return {
++      sources: Array.from(this.sources),
++      cacheEnabled: this.cache.enabled,
++      includeStorage: this.sourceInspections.size > 0,
++    };
++  }
++
++  private publishedStatus(
++    snapshot: ReturnType<typeof collectMemoryStatusSnapshot>,
++  ): MemoryProviderStatus {
+     if (this.embeddingBootstrapFailure) {
+-      this.refreshKeywordFallbackIndexIdentity();
++      this.refreshKeywordFallbackIndexIdentity(snapshot.indexState);
+     } else {
+       this.refreshIndexIdentityDirty({
+         providerKeyKnown: this.providerInitialized,
++        indexState: snapshot.indexState,
+       });
+     }
+-    const sourceFilter = this.buildSourceFilter();
+-    const statusDb = this.database.hasIndex ? this.db : undefined;
+-    const aggregateState = collectMemoryStatusAggregate({
+-      db: statusDb,
+-      sources: this.sources,
+-      sourceFilterSql: sourceFilter.sql,
+-      sourceFilterParams: sourceFilter.params,
+-      // Source inspection is explicit; routine query status must stay count-only.
+-      includeChunkBytes: this.sourceInspections.size > 0,
+-    });
+-
++    const aggregateState = snapshot.aggregate;
+     // Status projects the effective keyword-only search mode while degraded.
+     // Sync generations still snapshot this.provider so recovery can rebuild vectors.
+     const providerInfo = resolveStatusProviderInfo({
+@@ -522,10 +536,7 @@
+       resolveConfiguredModel: () =>
+         this.resolveConfiguredIndexIdentity()?.provider.model || this.settings.model,
+     });
+-    const storage =
+-      this.sourceInspections.size > 0
+-        ? collectMemoryStorageStatus(statusDb, resolveUserPath(this.settings.store.databasePath))
+-        : undefined;
++    const storage = snapshot.storage;
+     return {
+       backend: "builtin",
+       files: aggregateState.files,
+@@ -551,14 +562,7 @@
+       cache: this.cache.enabled
+         ? {
+             enabled: true,
+-            entries:
+-              storage?.embeddingCacheEntries ??
+-              (
+-                statusDb
+-                  ?.prepare(`SELECT COUNT(*) as c FROM ${MEMORY_EMBEDDING_CACHE_TABLE}`)
+-                  .get() as { c: number } | undefined
+-              )?.c ??
+-              0,
++            entries: snapshot.cacheEntries,
+             maxEntries: this.cache.maxEntries,
+           }
+         : { enabled: false, maxEntries: this.cache.maxEntries },
+@@ -572,14 +576,7 @@
+         : undefined,
+       vector: {
+         enabled: this.vector.enabled,
+-        index: statusDb
+-          ? resolvePersistedMemoryVectorIndexState({
+-              db: this.db,
+-              vectorTable: MEMORY_INDEX_VECTOR_TABLE,
+-              metaVectorDims: this.vector.dims,
+-              hasSemanticChunks: this.hasSemanticChunks(),
+-            })
+-          : { state: "empty" },
++        index: snapshot.indexState.vectorState,
+         storeAvailable: this.vector.available ?? undefined,
+         semanticAvailable: this.vector.semanticAvailable,
+         available: this.vector.semanticAvailable,
+@@ -599,6 +596,7 @@
          lastProvider: this.batchFailure.lastProvider,
        },
        custom: {
@@ -229,7 +732,7 @@ diff --git a/packages/memory-host-sdk/src/host/types.ts b/packages/memory-host-s
 +++ b/packages/memory-host-sdk/src/host/types.ts
 @@ -287,10 +287,13 @@
  }
- 
+
  export function formatMemoryIndexRebuildGuidance(
 -  status: Partial<Pick<MemoryProviderStatus, "provider" | "requestedProvider">>,
 +  status: Partial<Pick<MemoryProviderStatus, "provider" | "requestedProvider" | "custom">>,
@@ -244,7 +747,7 @@ diff --git a/packages/memory-host-sdk/src/host/types.ts b/packages/memory-host-s
    const disclosure =
      configuredProvider === "none"
 @@ -350,7 +353,7 @@
- 
+
  export function resolveMemorySearchStaleness(
    status: Pick<MemoryProviderStatus, "custom" | "lastSyncError"> &
 -    Partial<Pick<MemoryProviderStatus, "provider" | "requestedProvider">>,
@@ -252,3 +755,11 @@ diff --git a/packages/memory-host-sdk/src/host/types.ts b/packages/memory-host-s
    agentId?: string,
  ): { stale: true; warning: string; action: string } | null {
    const diagnostic = resolveMemoryIndexIdentityDiagnostic(status);
+@@ -405,6 +408,7 @@
+   }): Promise<MemorySearchResult[]>;
+   readFile(params: { relPath: string; from?: number; lines?: number }): Promise<MemoryReadResult>;
+   status(): MemoryProviderStatus;
++  statusAsync?(): Promise<MemoryProviderStatus>;
+   sync?(params?: MemorySyncParams): Promise<void>;
+   getCachedEmbeddingAvailability?(): MemoryEmbeddingProbeResult | null;
+   probeEmbeddingAvailability(): Promise<MemoryEmbeddingProbeResult>;
