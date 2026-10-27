@@ -41,6 +41,25 @@ function recipientLabels(fingerprint: string) {
   };
 }
 
+/** Exact ownership shared by creation, observation and cleanup. */
+export function isJointGitProvider(
+  provider: NonNullable<Awaited<ReturnType<OpenShellGatewayClient["getProvider"]>>>,
+  workspace: string,
+  profile: OpenShellProviderProfile,
+): boolean {
+  const fingerprint = profile.annotations[owner];
+  return (
+    typeof fingerprint === "string" &&
+    /^[0-9a-f]{64}$/.test(fingerprint) &&
+    provider.name === profile.id &&
+    provider.type === profile.id &&
+    provider.workspace === workspace &&
+    provider.profileWorkspace === workspace &&
+    isDeepStrictEqual(provider.labels, recipientLabels(fingerprint)) &&
+    Object.keys(provider.config).length === 0
+  );
+}
+
 export function jointTokenEndpoint(value: unknown): string {
   if (typeof value !== "string") {
     return refuse();
@@ -279,13 +298,8 @@ export async function provisionJointGit(
     }
     if (
       !provider.id ||
-      provider.workspace !== workspace ||
-      provider.profileWorkspace !== workspace ||
-      provider.type !== name ||
-      provider.name !== name ||
       !positive.test(provider.resourceVersion) ||
-      !isDeepStrictEqual(provider.labels, labels) ||
-      Object.keys(provider.config).length
+      !isJointGitProvider(provider, workspace, profile)
     ) {
       return refuse();
     }
@@ -336,12 +350,7 @@ export async function observeJointGit(
       !provider ||
       provider.id !== r.providerId ||
       provider.resourceVersion !== r.resourceVersion ||
-      provider.name !== r.providerName ||
-      provider.type !== r.profile.id ||
-      provider.workspace !== entry.workspace ||
-      provider.profileWorkspace !== entry.workspace ||
-      !isDeepStrictEqual(provider.labels, recipientLabels(r.profile.annotations[owner]!)) ||
-      Object.keys(provider.config).length ||
+      !isJointGitProvider(provider, entry.workspace, r.profile) ||
       (await verifyJointProfile(entry.client, entry.workspace, r.profile, signal)) !==
         r.profileVersion
     ) {

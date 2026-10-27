@@ -7,6 +7,7 @@ import {
   JointGitRecipientChangedError,
   observeJointGit,
   verifyJointProfile,
+  isJointGitProvider,
   provisionJointGit,
   type PreparedJointGit,
 } from "./openshell-joint-git-provision.ts";
@@ -1831,10 +1832,7 @@ export class OpenShellGitRuntime {
           if (
             provider.id !== r.providerId ||
             provider.resourceVersion !== r.resourceVersion ||
-            provider.type !== r.profile.id ||
-            provider.workspace !== workspace ||
-            provider.profileWorkspace !== workspace ||
-            !isDeepStrictEqual(provider.labels, r.profile.annotations)
+            !isJointGitProvider(provider, workspace, r.profile)
           ) {
             throw new Error("Joint Git cleanup refused a changed provider.");
           }

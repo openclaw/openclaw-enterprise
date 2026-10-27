@@ -137,6 +137,89 @@ test("joint provisioning binds both uncached token grants and refuses replaced G
   assert.equal(captures.length, 2, "no second observation replaced the first");
 });
 
+test("joint cleanup removes only its provisioned recipients after Sandbox deletion", async (t) => {
+  const { runtime, peer, provision, revision } = await jointWorker(t);
+  const noMaterial = async (): Promise<never> =>
+    assert.fail("cleanup must never access credential material");
+  await runtime.start(
+    { readOpenShellMaterial: noMaterial, authorizeOnlineRequest: noMaterial },
+    undefined,
+    Object.assign(routeStore(), {
+      recordJoint: async () => true,
+    }) as unknown as OpenShellGitRouteStore,
+  );
+  await provision();
+  const box = peer.sandbox!;
+  const { name: sandbox, workspace } = box.metadata as { name: string; workspace: string };
+  const [runtimeName, ...names] = box.spec.providers;
+  assert.ok(runtimeName);
+  assert.equal(names.length, 2);
+  const runtimeProvider = structuredClone(peer.providers.get(runtimeName)!);
+  const runtimeProfile = structuredClone(peer.profiles.get(runtimeProvider.type)!);
+  const gateway = peer.client.clientForNamespace(workspace);
+  const originals = names.map((name) => structuredClone(peer.providers.get(name)!));
+  const providerDeletes: string[] = [];
+  const profileDeletes: string[] = [];
+  // The existing wire peer implements provisioning and reads. Model successful deletes
+  // against those same stores, so later Gateway reads observe the actual removal.
+  t.mock.method(gateway, "deleteProvider", async (scope: string, name: string) => {
+    assert.equal(scope, workspace);
+    providerDeletes.push(name);
+    assert.ok(peer.providers.delete(name));
+  });
+  t.mock.method(gateway, "deleteProviderProfile", async (scope: string, id: string) => {
+    assert.equal(scope, workspace);
+    profileDeletes.push(id);
+    assert.ok(peer.profiles.delete(id));
+  });
+  const cleanup = () =>
+    runtime.removeProvider(revision, gateway, workspace, sandbox, box.spec.providers, t.signal);
+  const unchanged = () => {
+    assert.deepEqual(providerDeletes, []);
+    assert.deepEqual(profileDeletes, []);
+    assert.equal(peer.providers.size, 3);
+    assert.equal(peer.profiles.size, 3);
+    assert.deepEqual(peer.providers.get(runtimeName), runtimeProvider);
+    assert.deepEqual(peer.profiles.get(runtimeProvider.type), runtimeProfile);
+  };
+  await assert.rejects(cleanup(), /original Sandbox to be absent/);
+  unchanged();
+  peer.removeSandbox();
+  assert.equal(await gateway.getSandbox({ workspace, name: sandbox }, t.signal), undefined);
+
+  const first = names[0]!;
+  const key = "openclaw.dev/joint-git-recipient";
+  const wrongLabel = structuredClone(originals[0]!);
+  wrongLabel.metadata.labels[key] = originals[1]!.metadata.labels[key]!;
+  peer.providers.set(first, wrongLabel);
+  await assert.rejects(cleanup(), /refused a changed provider/);
+  unchanged();
+  assert.deepEqual(peer.providers.get(first), wrongLabel);
+
+  const replacement = structuredClone(originals[0]!);
+  replacement.metadata.id = randomUUID();
+  peer.providers.set(first, replacement);
+  await assert.rejects(cleanup(), /refused a changed provider/);
+  unchanged();
+  assert.deepEqual(peer.providers.get(first), replacement, "same-name replacement survives");
+
+  peer.providers.set(first, originals[0]!);
+  await cleanup();
+  assert.deepEqual(providerDeletes, names);
+  assert.deepEqual(
+    profileDeletes,
+    originals.map((provider) => provider.type),
+  );
+  assert.deepEqual([...peer.providers.entries()], [[runtimeName, runtimeProvider]]);
+  assert.deepEqual([...peer.profiles.entries()], [[runtimeProvider.type, runtimeProfile]]);
+  await cleanup();
+  assert.deepEqual(providerDeletes, names, "already removed recipients are not deleted again");
+  assert.deepEqual(
+    profileDeletes,
+    originals.map((provider) => provider.type),
+  );
+});
+
 test("joint token issuer releases each approved destination once to its enrolled supervisor", async (t) => {
   const tls = await harnessTlsFixture(t);
   const port = await availablePort();
