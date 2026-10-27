@@ -85,17 +85,20 @@ export async function bindRepositoryGitTransport(
   if (!repositoryTransport && !repositoryGitDriver) {
     return undefined;
   }
-  if (
-    !owner.protectedGit ||
-    !repositoryGitDriver ||
-    repositoryGitDriver !== drivers.protectedDriver
-  ) {
+  if (!repositoryGitDriver || repositoryGitDriver !== drivers.protectedDriver) {
     throw new Error("Missing the selected Driver's protected repository Git authority.");
   }
+  const authority = () => {
+    const selected = owner.protectedGit;
+    if (!selected) {
+      throw new Error("Missing the selected Driver's protected repository Git authority.");
+    }
+    return selected;
+  };
   if (repositoryTransport) {
-    return repositoryTransport.bind(owner.protectedGit, pool, emit);
+    return repositoryTransport.bind(authority, pool, emit);
   }
-  const binding = await repositoryGitDriver.requireRepositoryGitTransport()(owner.protectedGit);
+  const binding = await repositoryGitDriver.requireRepositoryGitTransport()(authority());
   if (!binding.reconcile) {
     return binding;
   }

@@ -21,7 +21,7 @@ import {
 export interface OpenShellRepositoryTransport {
   readonly evidence: typeof openShellGitRecipientEvidence;
   bind(
-    authority: ProtectedRepositoryGitAuthority,
+    authority: () => ProtectedRepositoryGitAuthority,
     pool: PostgresPool,
     emit?: (event: Readonly<Record<string, unknown>>) => void,
   ): Promise<CredentialProxyBinding>;
@@ -81,7 +81,9 @@ export function createOpenShellCapabilities(input: {
       preparedProviders: input.proxy.preparedProviders,
       ...(input.proxy.exchangeAuthority && { exchangeAuthority: input.proxy.exchangeAuthority }),
       ...(git && {
-        bindRepositoryGit: git.bindRepositoryGit.bind(git),
+        bindRepositoryGit: async () => {
+          throw new Error("OpenShell protected repository Git requires its selected route store.");
+        },
         previewEnforcement: git.previewEnforcement.bind(git),
       }),
     });
@@ -91,8 +93,7 @@ export function createOpenShellCapabilities(input: {
       if (!authority || !proxy?.bindRepositoryGit) {
         throw new Error("Missing the selected Driver's protected repository Git authority.");
       }
-      git.connectRouteStore(pool, emit);
-      return proxy.bindRepositoryGit(authority);
+      return git.bindRepositoryGit(authority, pool, emit);
     },
   };
   return {

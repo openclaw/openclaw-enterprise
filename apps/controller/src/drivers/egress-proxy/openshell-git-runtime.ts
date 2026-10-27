@@ -425,6 +425,7 @@ export class OpenShellGitRuntime {
   /** This worker process, as the persisted routes name their holder. */
   private readonly instance = randomUUID();
   private stopped = new AbortController();
+  private starting?: Promise<void>;
   private running: Promise<void> = Promise.resolve();
   private timer?: ReturnType<typeof setTimeout>;
   private server?: ReturnType<typeof createOpenShellOnlineGitAuthority>;
@@ -2158,23 +2159,23 @@ export class OpenShellGitRuntime {
     return undefined;
   }
 
-  /** Composition supplies this Driver's store. Neither the pool nor this store is a sender port. */
-  connectRouteStore(pool: PostgresPool, emit?: OpenShellGitRuntimeEmit): OpenShellGitRouteStore {
-    this.routes = new PostgresOpenShellGitRouteStore(pool);
-    this.emit = emit;
-    return this.routes;
-  }
-
   /** The protected sender gets committed material and one request decision, never the issuer. */
-  async bindRepositoryGit(authority: ProtectedRepositoryGitAuthority) {
-    if (!authority || !this.routes) {
+  async bindRepositoryGit(
+    authority: () => ProtectedRepositoryGitAuthority,
+    pool: PostgresPool,
+    emit?: OpenShellGitRuntimeEmit,
+  ) {
+    if (typeof authority !== "function" || !pool) {
       throw new Error("OpenShell protected repository Git requires its selected route store.");
     }
-    await this.#start(
-      protectedOpenShellGitOwner(authority, !!this.configuration.observedHookPreviewWorkspace),
-      this.emit,
-      this.routes,
+    if (this.starting || this.owner || this.stopped.signal.aborted) {
+      throw new Error("OpenShell Git worker already started or stopped.");
+    }
+    // Reserve the worker before an authority accessor or asynchronous startup can reenter.
+    this.starting = Promise.resolve().then(() =>
+      this.#start(authority, emit, new PostgresOpenShellGitRouteStore(pool)),
     );
+    await this.starting;
     return { close: () => this.close() };
   }
 
@@ -2183,22 +2184,20 @@ export class OpenShellGitRuntime {
    * re-adopts it (finding 2128); without it a restart requires a new revision.
    */
   async #start(
-    owner: OnlineGitOwner,
+    getAuthority: () => ProtectedRepositoryGitAuthority,
     emit: OpenShellGitRuntimeEmit | undefined,
     routes: OpenShellGitRouteStore,
   ): Promise<void> {
-    if (this.owner || this.stopped.signal.aborted) {
-      throw new Error("OpenShell Git worker already started or stopped.");
-    }
+    this.stopped.signal.throwIfAborted();
+    const owner = protectedOpenShellGitOwner(
+      getAuthority(),
+      !!this.configuration.observedHookPreviewWorkspace,
+    );
     const config = this.configuration.authority;
-    const [certificate, privateKey, publicKey] = await Promise.all([
-      readFile(config.certificatePath),
-      readFile(config.privateKeyPath),
-      readFile(config.issuerPublicKeyPath),
-    ]);
-    this.owner = owner;
-    this.emit = emit;
-    this.routes = routes;
+    const options = { signal: this.stopped.signal };
+    const certificate = await readFile(config.certificatePath, options);
+    const publicKey = await readFile(config.issuerPublicKeyPath, options);
+    this.stopped.signal.throwIfAborted();
     this.server = createOpenShellOnlineGitAuthority({
       registrationName: this.configuration.registrationName,
       budgetMs: 3000,
@@ -2237,19 +2236,25 @@ export class OpenShellGitRuntime {
         this.emit?.({ event: "worker.openshell-git-denied", ...denial });
       },
     });
+    let privateKey: Buffer | undefined;
     try {
+      privateKey = await readFile(config.privateKeyPath, options);
+      this.stopped.signal.throwIfAborted();
       await bindOpenShellEgressAuthority(
         this.server,
         `${config.host.includes(":") ? `[${config.host}]` : config.host}:${config.port}`,
         certificate,
         privateKey,
       );
+      this.stopped.signal.throwIfAborted();
+      this.owner = owner;
+      this.emit = emit;
+      this.routes = routes;
     } catch (error) {
       this.server.forceShutdown();
-      this.owner = undefined;
       throw error;
     } finally {
-      privateKey.fill(0);
+      privateKey?.fill(0);
     }
     const tick = () => {
       this.running = (async () => {
@@ -2272,6 +2277,7 @@ export class OpenShellGitRuntime {
     this.stopped.abort();
     clearTimeout(this.timer);
     this.server?.forceShutdown();
+    await this.starting?.catch(() => {});
     await this.running;
     this.owner = undefined;
     this.entries.clear();

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-10-27"
-last_updated_session: authoring-run/81e4a5b2-912d-4ec7-87ff-ba4e4997b45e
+last_updated_session: authoring-run/c79e30aa-ec5f-4649-9ed3-22b08f717adc
 ---
 
 # Agent repository credential flow
@@ -141,28 +141,21 @@ grants and an absolute deadline unaffected by renewal or recovery.
 blocks the broker, as Agent save does.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
-constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
-member. Protected installations select `repository.preparedGitHub` and the installed
-Sandbox/Credential Proxy Driver. OCC creates finite sessions without a native sender,
-control socket, broker CA or session files.
+selects GitHub policy by the Backend's `repo` ID. Protected installations use
+`repository.preparedGitHub` and the installed Sandbox/Credential Proxy. OCC creates finite
+sessions without a native sender, control socket, broker CA or session files.
 
-Explicit `repository.nativeSender` selects `GitHubNativeRepositorySender` and requires
-prepared GitHub custody. It owns session operations and files, receives no App key, and
-cannot coexist with protected delivery. Controller startup rejects `drivers.repo` in
-every mode, before it constructs a worker or allocates an attempt. Operators must
-drain accepted work on the original owner before cutover.
-Cleanup matches recorded owner identity without resolving policy or restoring authority.
-The worker's prepared provider owns issuance and custody.
+`repository.nativeSender` selects the prepared GitHub native sender instead. It owns session
+operations and files, never the App key. Startup always rejects `drivers.repo` before creating
+workers or attempts. Drain work on its original owner before cutover. Cleanup matches that owner
+without restoring authority or resolving policy. The worker owns issuance and custody.
 
-`apps/controller/src/drivers/egress-proxy/openshell-registration.ts:createOpenShellCapabilities`
-requires the selected Credential Proxy to construct an OpenShell Git Sandbox.
-`apps/controller/src/composition/repository-credentials/transport.ts:bindRepositoryGitTransport`
-binds that authority to the protected transport.
-`apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:OpenShellGitRuntime`
-checks the original Repo authorization and recipient fence before reading release material.
-It rechecks authorization before releasing that material and after recipient observation before
-returning a mapping. Scope drift closes the route. The online authority binds decisions to installed
-material and reply deadlines. Protocol-1 work retains its original recovery and cleanup owner.
+`createOpenShellCapabilities` requires the selected Proxy before Sandbox construction. Worker
+binding reserves ownership before reading authority. Listener startup commits the store and event
+sink; competing binds cannot replace them. Shutdown aborts and joins startup. The runtime checks
+the original Repo scope and recipient fence before reading material, and rechecks scope before
+release and after observation. Scope drift closes the route. Online decisions bind installed
+material and reply deadlines. Protocol-1 operations keep their original recovery and cleanup owner.
 
 ### 3. Record ownership before opening a session
 
@@ -379,6 +372,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 13:14: Trace protected transport admission and shutdown with the accompanying runtime change. (authoring-run/c79e30aa-ec5f-4649-9ed3-22b08f717adc - 0121f8aa669e88a8a7bf093f13f764ac30676e8d)
 
 - 2026-10-27 13:18: Trace scope checks at protected Git material and mapping release. (authoring-run/81e4a5b2-912d-4ec7-87ff-ba4e4997b45e - 0121f8aa669e88a8a7bf093f13f764ac30676e8d)
 
