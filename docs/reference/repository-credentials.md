@@ -236,11 +236,11 @@ correlations stop at twice the session limit and can return `overloaded`;
 unresolved cleanup survives that window. Restart loses standalone correlations.
 No correlation recovers a bearer.
 
-A bearer requires a live process and upstream authorization. Replacement tokens must
-cover the remaining exchange budget and safety margin. An owned exchange keeps its
-credential through replacement; the service rechecks configured standing after
-verified TLS, before the first upstream write. Prepared sends check their original
-one-use permit, cancellation and send deadline there.
+A bearer needs a live process and upstream authorization. Replacement tokens must cover
+the remaining exchange budget and safety margin. After verified TLS, an owned exchange
+retains its credential through replacement and invokes any configured standing callback before
+first write. Prepared Git
+checks its original [one-use permit](repository-credentials/prepared-native-git.md#what-a-request-authorizes), cancellation and send deadline.
 
 Authentication and cleanup expire separately in elapsed monotonic time from capture;
 delayed acquisition settlement extends neither. The GitHub adapter allows 60 seconds

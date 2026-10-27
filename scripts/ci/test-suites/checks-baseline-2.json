@@ -388,7 +388,7 @@
     {
       "path": "tests/integration/repository-original-lease.test.ts",
       "expectedTests": [
-        "an approved exchange keeps its original lease through replacement and withdrawal fences the first write",
+        "an owned exchange keeps its original lease through replacement and an injected standing callback fences the first write",
         "standing denial prevents eager Expect headers",
         "authentication rejection closes a pending dispatch",
         "a confirmed TLS close before the first write is not dispatched",
