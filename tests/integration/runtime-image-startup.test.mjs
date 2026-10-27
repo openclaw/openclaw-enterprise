@@ -1800,6 +1800,7 @@ assert.deepEqual(provenance.patches, {
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
   "openclaw-control-ui-browser-reconnect.patch": "48dbcb32c453861b8d8facf9d1fd62003a994c234289270727eb41763b8b8d9c",
   "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+  "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
 });
 assert.equal(provenance.codex.version, "0.163.0-alpha.2");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
