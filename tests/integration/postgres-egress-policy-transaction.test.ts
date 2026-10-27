@@ -6,6 +6,7 @@ import {
   type PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { deferred } from "../helpers/deferred.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
@@ -105,6 +106,16 @@ function receiptProbe() {
       assert.ok(attempt, "the real sender began a receipt");
       const receipt = await controller.transact((unit) => unit.egressSendReceipts.find(attempt!));
       assert.ok(receipt);
+      return receipt;
+    },
+    async readRefused(
+      controller: { transact: PlatformStateStore["transact"] },
+      error: { kind: "denied" | "unavailable"; code: string },
+    ) {
+      const receipt = await this.read(controller);
+      assert.equal(receipt.authorization, null);
+      assert.equal(receipt.settled, true);
+      assert.deepEqual(receipt.outcome, { kind: "refused", dispatched: false, error });
       return receipt;
     },
   };
@@ -536,14 +547,7 @@ test(
     await withdrawal;
     assert.ok(send);
     assert.equal((await send).refused?.code, f.refusalCode("DENIED"));
-    const receipt = await receipts.read(f.controller);
-    assert.equal(receipt.authorization, null);
-    assert.equal(receipt.settled, true);
-    assert.deepEqual(receipt.outcome, {
-      kind: "refused",
-      dispatched: false,
-      error: { kind: "denied", code: "unauthorized" },
-    });
+    await receipts.readRefused(f.controller, { kind: "denied", code: "unauthorized" });
     assert.equal(f.providerRequests.length, 0);
   },
 );
@@ -669,17 +673,12 @@ for (const authority of ["directory", "callback"] as const) {
             result.refused?.code,
             f.refusalCode(final === "deny" ? "DENIED" : "UNAVAILABLE"),
           );
-          const receipt = await receipts.read(f.controller);
-          assert.equal(receipt.authorization, null);
-          assert.equal(receipt.settled, true);
-          assert.deepEqual(receipt.outcome, {
-            kind: "refused",
-            dispatched: false,
-            error:
-              final === "deny"
-                ? { kind: "denied", code: "unauthorized" }
-                : { kind: "unavailable", code: "authority" },
-          });
+          const receipt = await receipts.readRefused(
+            f.controller,
+            final === "deny"
+              ? { kind: "denied", code: "unauthorized" }
+              : { kind: "unavailable", code: "authority" },
+          );
           await assertDenialAudit(f, final === "deny" ? "unauthorized" : undefined);
           directory.set("allow");
           await f.restartAuthority();
@@ -694,14 +693,6 @@ for (const authority of ["directory", "callback"] as const) {
       },
     );
   }
-}
-
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
 }
 
 async function bounded<T>(work: Promise<T>, label: string, milliseconds = 3000): Promise<T> {
@@ -1001,17 +992,12 @@ for (const failure of ["false", "unavailable", "unknown"] as const) {
     );
     assert.equal(calls, 1);
     assert.equal(shadowCalls, 0);
-    const receipt = await receipts.read(f.controller);
-    assert.equal(receipt.authorization, null);
-    assert.equal(receipt.settled, true);
-    assert.deepEqual(receipt.outcome, {
-      kind: "refused",
-      dispatched: false,
-      error:
-        failure === "false"
-          ? { kind: "denied", code: "stale_configuration" }
-          : { kind: "unavailable", code: "authority" },
-    });
+    await receipts.readRefused(
+      f.controller,
+      failure === "false"
+        ? { kind: "denied", code: "stale_configuration" }
+        : { kind: "unavailable", code: "authority" },
+    );
     await assertDenialAudit(f, failure === "false" ? "stale_configuration" : undefined);
     assert.equal(f.secretReads, reads);
     assert.equal(f.providerRequests.length, 0);
@@ -1118,14 +1104,7 @@ for (const replacement of [
       0,
       "the in-flight logical route cannot use replacement placement",
     );
-    const receipt = await receipts.read(f.controller);
-    assert.equal(receipt.authorization, null);
-    assert.equal(receipt.settled, true);
-    assert.deepEqual(receipt.outcome, {
-      kind: "refused",
-      dispatched: false,
-      error: { kind: "denied", code: "stale_configuration" },
-    });
+    await receipts.readRefused(f.controller, { kind: "denied", code: "stale_configuration" });
     await assertDenialAudit(f, "stale_configuration");
     assert.equal(f.secretReads, reads);
     assert.equal(f.providerRequests.length, 0);
