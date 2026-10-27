@@ -21,6 +21,7 @@ import {
   image,
   imageTestOptions,
   openClawGatewaySpawnedRequest,
+  openClawProcessRunningRequest,
   runDocker,
   temporaryGatewayConfiguration,
   runGatewaySmoke,
@@ -176,6 +177,7 @@ const fs = require("node:fs");
 const cp = require("node:child_process");
 const { entrypoints, schemaMs, startupMs } = JSON.parse(fs.readFileSync(0, "utf8"));
 const gatewaySpawned = ${openClawGatewaySpawnedRequest};
+const openClawRunning = ${openClawProcessRunningRequest};
 const manifest = { kind: "openclaw", selections: {}, pluginApprovers: [] };
 const base = {
   gateway: { mode: "local", bind: "loopback", controlUi: { enabled: false },
@@ -242,8 +244,14 @@ async function scenario(entrypoint, channel, label) {
     await exited;
     fs.rmSync(directory, { recursive: true, force: true });
   }
-  // The launcher waits for OpenClaw, so the next scenario's port is free.
-  assert.equal(await gatewaySpawned(), 503, label + " left an OpenClaw Gateway running");
+  // The launcher forwards SIGTERM to OpenClaw and exits with it, but a respawned
+  // OpenClaw stopped early in its start can outlive it briefly. The next scenario
+  // reuses the port, so wait until no OpenClaw process runs.
+  const stopDeadline = Date.now() + 30_000;
+  while ((await openClawRunning()) === 200 && Date.now() < stopDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(await openClawRunning(), 503, label + " left an OpenClaw process running");
 }
 (async () => {
   for (const [label, entrypoint] of Object.entries(entrypoints)) {

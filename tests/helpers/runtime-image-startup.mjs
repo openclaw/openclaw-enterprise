@@ -391,23 +391,43 @@ export async function waitForGatewayReady(containerName, readinessAttempts = 60)
   });
 }
 
-// The source of a request (see readinessProbe) that answers 200 while an OpenClaw
-// Gateway process runs in the container, else 503. Both launchers spawn OpenClaw
-// only after their pre-launch steps (state migration decision, approver and tool
-// policy checks), so a case that asserts only those steps can stop there instead
-// of paying for the full start: about 21 of a start's 24 CPU-seconds to /readyz
-// are OpenClaw's own (4 CPUs, 2026-10-27). Each case still starts OpenClaw.
-export const openClawGatewaySpawnedRequest = `async () => {
+// The source of a request (see readinessProbe) that answers 200 while a matching
+// OpenClaw process runs in the container, else 503. Launchers start
+// `/app/openclaw.mjs gateway`; OpenClaw then retitles itself "openclaw" (which its
+// other commands share) and, once its run loop starts, "openclaw-gateway". An
+// idle respawn parent keeps the original argv.
+function openClawProcessRequest(match) {
+  return `async () => {
   const fs = require("node:fs");
-  const marker = ["/app/openclaw.mjs", "gateway", ""].join(String.fromCharCode(0));
+  const launched = ["/app/openclaw.mjs", "gateway", ""].join(String.fromCharCode(0));
+  const match = ${match};
   for (const pid of fs.readdirSync("/proc")) {
     if (!/^[0-9]+$/.test(pid)) continue;
+    let cmdline;
     try {
-      if (fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").includes(marker)) return 200;
-    } catch {}
+      cmdline = fs.readFileSync("/proc/" + pid + "/cmdline", "utf8");
+    } catch {
+      continue;
+    }
+    if (match(cmdline, launched)) return 200;
   }
   return 503;
 }`;
+}
+
+// 200 once a launcher has spawned the OpenClaw Gateway. Both launchers spawn it
+// only after their pre-launch steps (state migration decision, approver and tool
+// policy checks), so a case that asserts only those steps can stop there instead
+// of paying for the full start: about 21 of a start's 24 CPU-seconds to /readyz
+// are OpenClaw's own (4 CPUs, 2026-10-27).
+export const openClawGatewaySpawnedRequest = openClawProcessRequest(
+  '(cmdline, launched) => cmdline.includes(launched) || cmdline.startsWith("openclaw-gateway")',
+);
+
+// 200 while any OpenClaw Gateway process, or an OpenClaw command, still runs.
+export const openClawProcessRunningRequest = openClawProcessRequest(
+  '(cmdline, launched) => cmdline.includes(launched) || cmdline.startsWith("openclaw")',
+);
 
 export async function waitForGatewaySpawn(containerName) {
   return waitForContainerReady(containerName, {
