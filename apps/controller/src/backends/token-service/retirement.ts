@@ -33,10 +33,10 @@ export async function retireToken<A extends TokenAdmission>(
   try {
     await store.finishRetirement(candidate.id, revoked);
   } catch (error) {
-    if (revocationFailure) {
-      throw new Error("Token revocation and retirement settlement both failed.");
+    if (!revocationFailure) {
+      throw error;
     }
-    throw error;
+    revocationFailure.error = new Error("Token revocation and retirement settlement both failed.");
   }
   if (revocationFailure) {
     throw revocationFailure.error;
