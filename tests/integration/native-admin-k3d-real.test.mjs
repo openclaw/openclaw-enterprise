@@ -465,6 +465,24 @@ async function leaveNativeAccentDrift(page, nativeOrigin) {
 }
 
 async function assertManagedNativeConfigWriteRejected(page, nativeOrigin, topology) {
+  let saveRequestId;
+  let saveResponse;
+  // Observe the real raw-editor write and its matching Gateway response; a
+  // toast's placement or lifetime must not substitute for rejecting the write.
+  page.on("websocket", (socket) => {
+    socket.on("framesent", (frame) => {
+      const message = JSON.parse(textFromFrame(frame));
+      if (message.method === "config.set") {
+        saveRequestId = message.id;
+      }
+    });
+    socket.on("framereceived", (frame) => {
+      const message = JSON.parse(textFromFrame(frame));
+      if (saveRequestId !== undefined && message.id === saveRequestId) {
+        saveResponse = message;
+      }
+    });
+  });
   const { editor, parsed } = await readRawConfig(page, nativeOrigin);
   const originalAccent = configAccent(parsed);
   parsed.ui = {
@@ -483,6 +501,9 @@ async function assertManagedNativeConfigWriteRejected(page, nativeOrigin, topolo
     .first();
   await retryReadOnlySave.waitFor({ state: "hidden" });
   await page.locator(".config-raw-actions button.primary").first().click();
+  const rejected = await waitFor("managed raw-editor write response", () => saveResponse);
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error?.message ?? "", /Config is externally managed/);
   await retryReadOnlySave.waitFor();
   assert.equal(await readRuntimeAccent(topology), originalAccent);
 }
