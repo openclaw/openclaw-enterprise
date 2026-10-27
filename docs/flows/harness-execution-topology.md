@@ -115,13 +115,24 @@ After Harness readiness, preparation starts a candidate Gateway if its predecess
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:harnessRequirementsFromDeployment`
 
-Compute preserves the full prepared command and supplies an optional
-`supervisedCommand` without its generic init wrapper. A provider may select
-that entrypoint only when it owns process supervision and descendant cleanup.
-Compute separately passes the revision transport token for trusted readiness.
-Namespace provider routing validates exact revision ingress labels and retains
-the predecessor peer until activation. No labels means no network grant.
-See [RFC-0024](../../specs/rfcs/0024-strands-box-sandbox.md#driver-contract-supplements).
+For a provider-owned Harness, Compute preserves the full prepared command and
+also supplies `supervisedCommand` when it owns the generic init wrapper. A
+provider with private process supervision may use that explicit entrypoint;
+other providers retain the full command. Compute passes the revision transport
+token separately for trusted provider readiness. The Strands candidate mounts
+that readiness Secret only in its supervisor and requires authenticated native
+initialization before Pod readiness. Its workload runs in a separate container
+PID namespace in the same revision Pod. Box's argument-scoped compatibility
+permits apply only to that explicit container backend; the ordinary namespace
+backend retains its prior refusals. See
+[RFC-0024](../../specs/rfcs/0024-strands-box-sandbox.md#containment-and-supervision)
+for the candidate's qualification limits; readiness alone is not E2E proof.
+
+`scripts/generate-strands-box-seccomp.mjs` preserves the captured RuntimeDefault
+profile and adds exact setup operations for Box's original remount arguments.
+The node administrator installs that profile before deployment. The provider
+selects its Localhost path; tenants cannot install profiles. Box applies its
+separate workload filter after setup, which still rejects mount creation.
 
 `deploy/runtime/strands-box/transport.mjs` bounds shared framing and channel
 buffers. IPC backpressure pauses the originating TCP stream until drain; it
