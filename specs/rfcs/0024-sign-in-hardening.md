@@ -9,7 +9,7 @@ status_note: "Retroactive record of changes landed on main from 2026-09-28 throu
 
 - **ID:** RFC-0024
 - **Created:** 2026-10-01
-- **Last updated:** 2026-10-23
+- **Last updated:** 2026-10-28
 - **RFC PR:** [#856](https://github.com/openclaw/openclaw-enterprise/pull/856)
 
 <a id="problem-and-decision"></a>
@@ -33,14 +33,19 @@ password check for reserved accounts. This limits guessing at the cost of a rene
 Pacing and checking every password instead would allow roughly 25 guesses a minute per email,
 about 36,000 a day.
 
-An authentication maintainer should decide two cases before accepting the amendment:
+**Owner direction, October 28:** Accept the current admission gap for now. Repeatedly spending
+an ordinary account's budget or filling the recovery account's queue is a known targeted
+denial-of-service scenario, even with a correct password. Resetting the password does not
+reserve admission and invalidates existing browser recognition.
 
-1. **Ordinary account, repeated lockout.** If a stranger spends each new window and Emma has
-   neither a recognized browser nor another sign-in method, can the controller continue to
-   refuse her correct password? If that outcome is unacceptable, specify how she regains access.
-2. **Recovery account, full queue.** May the controller return `429` to the designated recovery
-   user on a new browser when that email's queue is full, or must the installation provide an
-   independent way to regain access under contention?
+Before an incident, configure a backup administrator login such as GitHub App OAuth or OIDC,
+attach its identity to an enabled, enrolled administrator account, and verify sign-in. GitHub
+App OAuth is not generic OIDC. External sign-in avoids the password email failure budget and
+slow lane, but shares external request limits and controller, database, audit and provider
+dependencies. It is not guaranteed recovery; see [backup administrator sign-in](../../docs/reference/authentication/external-sign-in.md#prepare-a-backup-administrator-login).
+
+This direction does not accept or merge the RFC. An authentication maintainer must still
+review the combined design, and a human must merge this proposal manually.
 
 This record replaces only [RFC-0007's sign-in admission section](0007-human-federated-sign-in/index.md#sign-in-admission).
 [RFC-0007](0007-human-federated-sign-in/index.md) still defines GitHub sign-in, browser receipts and session keys; [RFC-0001](0001-oidc-sign-in.md)
@@ -200,8 +205,9 @@ organization or team check can refuse before account lookup, with `MEMBERSHIP_RE
 
 ## What the authentication maintainer still needs to settle
 
-The two admission decisions above govern this amendment. The following choices remain open for
-separate review if a maintainer wants to change the surrounding policy:
+The owner accepts the admission gap for now; guaranteed recovery admission is not a requirement
+of this amendment. The combined design still needs human review. The following choices remain
+open for separate review if a maintainer wants to change the surrounding policy:
 
 - Which sign-in methods an installation permits by default when an external provider is configured,
   and whether reconfiguring that provider should invalidate sessions on use.
@@ -213,7 +219,9 @@ separate review if a maintainer wants to change the surrounding policy:
 Source baseline: `main` at `521549dff`, reviewed through `07590c64e`; relevant controller and
 State files compared with `00bbc7cd9` on October 15. The original record cites the implementation
 PRs' PostgreSQL integration tests and an OIDC sign-in and provider-removal exercise with Keycloak.
-It reports neither a live GitHub App test nor load tests of these lockout scenarios.
+It reports neither a live GitHub App test nor load tests of these lockout scenarios. The October 28
+backup-login recommendation is source-reviewed against `main` at `feb62576df`, not tested as
+recovery during an attack in a real installation.
 
 For the implementation and its tests, follow the change relevant to the decision:
 

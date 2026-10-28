@@ -1,9 +1,7 @@
 # External sign-in and account controls
 
-This page covers GitHub, Google and generic OIDC browser sign-in for existing OpenClaw Control
-Plane (OCC) accounts, and the session, recovery, and account controls that apply
-once an external provider is enabled. The [authentication reference](../authentication.md)
-covers bootstrap, password sessions, request origin, provisioning, and failures.
+GitHub, Google and OIDC serve existing OCC accounts. See
+[authentication](../authentication.md) for passwords, provisioning and failures.
 
 ## Console sign-in destinations
 
@@ -228,6 +226,16 @@ sessions, or run `purge-sessions` with
 New accounts need an identity too: create them with `github.subject`, or attach
 one straight after creation.
 
+## Prepare a backup administrator login
+
+Configure [GitHub App OAuth](#github-sign-in-for-existing-accounts) or
+[OIDC](../../guides/deploy/oidc-sign-in.md), attach the identity to an enabled,
+enrolled administrator, and verify sign-in **before an incident**. GitHub App OAuth
+is not OIDC. External sign-in bypasses password email budgets and queues, not shared
+external limits or controller, database, audit and provider dependencies. Recovery
+is not guaranteed. Resetting a password reserves no admission and invalidates
+known-device recognition.
+
 ## Session and recovery controls
 
 Password, GitHub, Google and OIDC sessions share admission rules: an eight-hour lifetime without refresh, current account and
@@ -240,10 +248,9 @@ next request, audited once as `authentication.session.end` with reason
 removing every provider fails startup, and the database refuses sessions from older
 binaries. Returning to password-only sign-in needs [stopped maintenance](../../guides/deploy/auth-maintenance.md#deactivate-external-sign-in).
 
-The recovery user needs one local password, its Installation Principal, and
-native IAM Installation `administer`; disabling it returns `409`. Keep its password
-in protected custody; out-of-band database or policy changes can remove
-it. Password login never depends on GitHub.
+The recovery user needs a local password, its Installation Principal, and
+native IAM Installation `administer`; disabling it returns `409`. Protect its password;
+out-of-band changes can remove it. Password login does not depend on GitHub.
 
 `POST /api/auth/recovery` (`userId`, `expectedCurrentUserId`, target
 `expectedVersion`) moves the designation (`GET` reads it) to another qualifying
@@ -288,8 +295,10 @@ revoke its sessions online. Enable an external provider to use these controls.
 Password sign-in has the password-only profile's
 [failure-counting limit](../authentication.md#session-lifecycle): only failed sign-ins
 spend it, and a spent email is slowed and answered with `429` and `Retry-After`. The
-recovery account and Installation administrators are slowed, never refused: their
-correct password still signs in. A browser with a valid
+recovery account and, when policy permits, Installation administrators
+receive paced checks when the slow lane has room. A full queue can
+return `429` before checking a correct password; see
+[backup administrator login](#prepare-a-backup-administrator-login). A browser with a valid
 [known-device cookie](../authentication.md#known-devices) for the email spends its own
 budget instead. GitHub, Google and OIDC start, callback, and result each allow 30
 requests/minute and four active per client address, eight active in all; a sign-in

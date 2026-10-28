@@ -135,8 +135,11 @@ returns `500 INTERNAL_ERROR`, not usable-session proof.
 In both profiles, after 10 failed sign-ins per minute per email, or 20
 per client address with [`api.trustedProxy`](settings/production.md#github-sign-in-and-trusted-proxies),
 attempts wait 1–8 s and return `429` with `Retry-After`, repeated in the message, whether
-or not the email exists; an Installation administrator's correct password still signs in, and so does
-the recovery account's with an external provider. Successful sign-ins spend nothing. Without
+or not the email exists. An Installation administrator, or the recovery account
+with an external provider, can receive a paced password check when policy permits
+and the slow lane has room. A full queue can return `429` without checking a
+correct password. Prepare a [backup administrator login](authentication/external-sign-in.md#prepare-a-backup-administrator-login)
+before an incident; it does not guarantee recovery. Successful sign-ins spend nothing. Without
 one, browsers share the ingress address and startup logs
 `authentication.sign-in-limit-warning`. A successful sign-in within the budget
 clears that email's failures, not the address's; an administrator's success in
@@ -177,7 +180,7 @@ refuse that verified browser. If finite proof capacity is exhausted or the reade
 is unavailable, the attempt instead uses shared email/address admission with
 signed-device constraints. A nonreserved account can then receive `429` from a
 spent shared lane despite its valid cookie. Administrator and recovery accounts
-retain their existing paced password checks.
+retain paced password checks only when the slow lane has room.
 
 The cookie never authenticates: a wrong password with it is `401` and spends the
 browser's lane, and the address lane and global caps still apply. Tampered,
