@@ -73,6 +73,7 @@ import {
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
+  availablePort,
   bindReservedPortInProcess,
   reservedPortArgs,
   reservePort,
