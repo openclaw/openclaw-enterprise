@@ -55,9 +55,6 @@ Secret Driver operations do not include Installation management. Installed
 Drivers remain trusted, unsandboxed controller code. Invalid production YAML,
 unsupported settings, and unavailable Drivers stop startup before requests run.
 
-Each selected Driver validates its own closed configuration schema; unknown
-fields fail startup.
-
 The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
 network additions. It grants no default access; an absent or empty array delegates
 none. API and worker must use the same trusted value. See
@@ -194,14 +191,11 @@ fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
 optional file list, an `agents.defaults.sandbox.mode` or
 `agents.entries.<id>.sandbox.mode` other than `off`, and a `tools.exec.host` or
 `agents.entries.<id>.tools.exec.host` other than `auto`, `gateway` or `node`,
-naming the setting. OpenClaw's sandbox cannot run in the OCE runtime, so
-`sandbox` fails every shell command; each Agent runs in OCE's own isolated runtime. A
+naming the setting. A
 Preset value that waits on a variable
 is checked as far as its written text goes, and in full once filled. A
 Configuration saved before these checks still reads; deployment refuses it, and
-only a write that keeps the value is refused. Agent
-deployment separately validates supported
-runtime selection, topology, and Secret binding ownership before admission.
+only a write that keeps the value is refused.
 Creation requires `create` permission for Configurations in the
 exact parent Namespace. Reads, updates, and deletes require the corresponding
 permission for the exact Configuration. Unauthenticated requests return `401`.
@@ -236,14 +230,11 @@ Configuration and its generation remain unchanged. The snapshot adds the
 [Agent display name](agents/deployment.md#versions-and-deployment) to that document;
 its metadata names the source generation. Where the document leaves them
 unset, admission also sets `tools.exec.applyPatch.workspaceOnly: true`, as
-before OpenClaw's `personal` security preset, and
-`agents.defaults.sandbox.mode: "off"`: OpenClaw's sandbox, which
-`security.preset: corporate` turns on, cannot run in the OCE runtime. Where
-`tools.exec` sets no `mode`, `security` or `ask`, admission sets
-`tools.exec.mode: "full"`, the `personal` preset value: the `corporate` value
-`ask` needs an approval client connected to the Gateway, and the OCE Console has
-none, so every shell command failed. An explicit `mode`, such as `ask` for an
-operator who connects an approval channel, is kept. Other
+before OpenClaw's `personal` security preset;
+`agents.defaults.sandbox.mode: "off"`, as OpenClaw's sandbox cannot run in the
+OCE runtime; and, unless `tools.exec` sets `security` or `ask`,
+`tools.exec.mode: "full"`, as `corporate`'s `ask` needs an approval client OCE
+lacks. Other
 unset settings keep the preset's defaults, such as
 `messages.queue.allowCollaborativeSteering: true`: a steered turn keeps its
 first requester's permissions.
