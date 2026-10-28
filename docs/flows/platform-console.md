@@ -183,8 +183,8 @@ unavailable; selection never becomes an API query selector.
 Namespace checks, naming a known selection; retained-view reads do not extend this.
 `shell.mts:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
-Load renders replace the shell; `createShell` activates a control whose mouse
-press a render replaced before release.
+Load renders replace the shell; `createShell` activates a primary navigation link
+whose mouse press a render replaced before release.
 Empty lists show access guidance. `navigation.mts:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
 

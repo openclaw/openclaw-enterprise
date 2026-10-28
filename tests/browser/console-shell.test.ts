@@ -554,21 +554,70 @@ test("a sidebar link pressed while a Namespace switch renders opens once", async
     .getByRole("navigation", { name: "Main navigation" })
     .getByRole("link", { name: "Namespaces", exact: true });
   const box = await visibleBox(link);
-  await link.evaluate((node: HTMLElement) => {
-    node.dataset.pressed = "";
+  const press = await page.evaluateHandle(() => {
+    const observed = { link: null as Element | null };
+    document.addEventListener(
+      "mousedown",
+      (event) => {
+        if (event.isTrusted && event.target instanceof Element) {
+          observed.link = event.target.closest("a[data-nav]");
+        }
+      },
+      { capture: true, once: true },
+    );
+    return observed;
   });
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
+  assert.equal(await press.evaluate(({ link }) => link?.getAttribute("data-nav")), "namespaces");
   agents.release();
   // The load's next render puts a new link under the held press.
   await waitFor(
     "a render to replace the pressed link",
-    async () =>
-      (await link.evaluate((node: HTMLElement) => !("pressed" in node.dataset))) || undefined,
+    async () => (await press.evaluate(({ link }) => link?.isConnected === false)) || undefined,
   );
   await page.mouse.up();
   await page.waitForURL(`**/console/namespaces?namespace=${other.id}`);
   await page.locator(settledView).getByRole("list", { name: "Namespaces" }).waitFor();
   // One history entry: the click navigated once.
   assert.equal(await position(), switched + 1);
+});
+
+test("a press on one Agent's copy control does not activate another Agent's control", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pressed", { ready: true });
+  await fixture.createAgent(namespace.id, "First Agent");
+  await fixture.createAgent(namespace.id, "Second Agent");
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const view = page.locator(settledView);
+  await view.getByText("First Agent", { exact: true }).click();
+  const copy = page.getByRole("button", { name: "Copy Agent ID", exact: true });
+  await copy.waitFor();
+  const firstId = await page.locator(".page-meta-id .resource-id").innerText();
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await view.getByText("Second Agent", { exact: true }).click();
+  const secondId = await page.locator(".page-meta-id .resource-id").innerText();
+  assert.notEqual(secondId, firstId);
+  await copy.hover();
+  const pressed = await copy.evaluateHandle((node) => node);
+  await page.mouse.down();
+  await page.goBack();
+  await view.getByText("First Agent", { exact: true }).waitFor();
+  await page.goBack();
+  await page.locator(".page-meta-id .resource-id").filter({ hasText: firstId }).waitFor();
+  assert.equal(await pressed.evaluate((node) => node.isConnected), false);
+  await copy.evaluate((node: HTMLElement) => {
+    node.addEventListener(
+      "click",
+      () => {
+        node.dataset.activated = "";
+      },
+      { once: true },
+    );
+  });
+  await copy.hover();
+  await page.mouse.up();
+  assert.equal(await copy.getAttribute("data-activated"), null);
 });
