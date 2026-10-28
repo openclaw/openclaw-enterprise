@@ -1,4 +1,4 @@
-// Rendered from OpenClaw b0961419e46b72a7b5e0b5f3fd509b58d1bbfbfc
+// Rendered from OpenClaw a3b12ef66cb923ff2bffe36ddf2a74ec397b00da
 // docs/reference/templates, matching src/agents/workspace.ts.
 // Keep the pin, content, and identity together when updating the runtime release.
 export const WORKSPACE_DEFAULTS_VERSION = "2026.10.8";

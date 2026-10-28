@@ -179,7 +179,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/b0961419e46b72a7b5e0b5f3fd509b58d1bbfbfc/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/a3b12ef66cb923ff2bffe36ddf2a74ec397b00da/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
