@@ -67,7 +67,11 @@ import {
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import {
+  bindReservedPortInProcess,
+  reservedPortArgs,
+  reservePort,
+} from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -1870,6 +1874,7 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
 
 test("OpenShell native startup creates private temporary state without changing the supervisor temporary directory", async () => {
   const directory = await mkdtemp(join(tmpdir(), "oce-native-temporary-"));
+  let statusPort;
   try {
     const supervisorTemporary = join(directory, "supervisor");
     await mkdir(supervisorTemporary);
@@ -1898,9 +1903,14 @@ test("OpenShell native startup creates private temporary state without changing 
       revision: fixture.revision,
       requirements: fixture.requirements,
     });
+    // The startup binds its status port: hold it until then, so no parallel test takes it.
+    statusPort = await reservePort({ host: "0.0.0.0" });
     const result = spawnSync(
       process.execPath,
-      request.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length - 1),
+      [
+        ...reservedPortArgs(statusPort),
+        ...request.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length - 1),
+      ],
       {
         encoding: "utf8",
         timeout: 5_000,
@@ -1913,7 +1923,7 @@ test("OpenShell native startup creates private temporary state without changing 
           OPENCLAW_NODE_SETUP_CODE: "controlled-filesystem-phase",
           OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
           OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
-          OPENCLAW_RUNTIME_STATUS_PORT: String(await availablePort({ host: "0.0.0.0" })),
+          OPENCLAW_RUNTIME_STATUS_PORT: String(statusPort.port),
         },
       },
     );
@@ -1923,6 +1933,7 @@ test("OpenShell native startup creates private temporary state without changing 
     assert.equal(temporary.mode & 0o7777, 0o700);
     assert.equal((await stat(supervisorTemporary)).mode & 0o7777, 0o777);
   } finally {
+    await statusPort?.release();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -2738,7 +2749,11 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
     },
   };
   const transportToken = "withdrawn-harness-transport";
-  const port = await availablePort({ host: "0.0.0.0" });
+  // The held Harness serves its failure on this port. Hold it until the Harness answers there,
+  // so a test running in parallel cannot take it first.
+  const reservation = await reservePort({ host: "0.0.0.0" });
+  t.after(() => reservation.release());
+  const { port } = reservation;
   requirements.loginMode = "chatgptAuthTokens";
   requirements.command = harnessRuntimeCommand(AGENT_RUNTIME_ENTRYPOINT);
   requirements.workspaceMounts = requirements.workspaceMounts.slice(0, 1);
@@ -2781,7 +2796,11 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
     CODEX_HOME: codexHome,
     OPENCLAW_WORKSPACE_DIR: join(root, "workspace"),
   };
-  const command = ["-e", ...sandbox.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length)];
+  const command = [
+    ...reservedPortArgs(reservation),
+    "-e",
+    ...sandbox.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length),
+  ];
   const child = spawn(process.execPath, command, {
     env: environment,
     stdio: ["ignore", "ignore", "pipe"],
@@ -2820,6 +2839,9 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
     }
   }
   assert.equal(unauthenticated.status, 401);
+  // The Harness answered, so it listens: free the reservation, which would reset a connection
+  // the kernel hands it.
+  await reservation.release();
   const response = await fetch(statusUrl, {
     headers: { Authorization: `Bearer ${transportToken}` },
   });
@@ -6272,7 +6294,12 @@ test(
       id: "repository-credentials",
       configuration: { sessionDurationSeconds: 600 },
     };
-    const port = await availablePort();
+    // The Git worker binds its authority on this port in-process, well after the configuration
+    // names it. Hold the port until then, so a test running in parallel cannot take it.
+    const authorityPort = await reservePort();
+    t.after(() => authorityPort.release());
+    await bindReservedPortInProcess(authorityPort);
+    const { port } = authorityPort;
     configuration.repository.openShell.authority = {
       ...fragment.repository.openShell.authority,
       host: "127.0.0.1",
@@ -6639,6 +6666,7 @@ test(
             undefined,
             routeStore(),
           );
+          await authorityPort.release();
           // v4 promised a send cutoff. The online sender must refuse that revision before creation.
           const exactRevision = structuredClone(rev);
           exactRevision.executionAdmission.version = 4;
