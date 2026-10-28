@@ -1277,7 +1277,8 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
   // Finding 2767. The pinned OpenClaw runs sandboxed tools in Docker, which the OCE runtime does
   // not have: a Configuration that turned the sandbox on saved and deployed, then failed every
   // turn. Every save path and deployment refuse a mode other than "off", for the defaults and for
-  // one Agent's entry, which overrides them.
+  // one Agent's entry, which overrides them. Finding 2773: exec host "sandbox" sends shell commands
+  // to that sandbox, so each one failed; the exec host must be "auto", "gateway" or "node".
   const configurationDriver = createConfigurationBackend();
   const context = await fixture({
     configurationDriver,
@@ -1291,17 +1292,33 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
     'must be "off" or unset: OCE runs each Agent in its own isolated runtime and does not support OpenClaw\'s sandbox';
   const defaultsMode = setting("agents.defaults.sandbox.mode", requirement);
   const entryMode = setting("agents.entries.main.sandbox.mode", requirement);
+  const hostRequirement = requirement.replace('"off"', '"auto", "gateway" or "node"');
+  const defaultsHost = setting("tools.exec.host", hostRequirement);
+  const entryHost = setting("agents.entries.main.tools.exec.host", hostRequirement);
   const withSandbox = (sandbox, entrySandbox) => ({
     agents: {
       defaults: { ...runtimeDefaults, ...(sandbox === undefined ? {} : { sandbox }) },
       ...(entrySandbox === undefined ? {} : { entries: { main: { sandbox: entrySandbox } } }),
     },
   });
+  // The exec host for every Agent (top-level tools), and for one Agent's entry.
+  const withHost = (host, agentHost) => ({
+    agents: {
+      defaults: runtimeDefaults,
+      ...(agentHost === undefined
+        ? {}
+        : { entries: { main: { tools: { exec: { host: agentHost } } } } }),
+    },
+    ...(host === undefined ? {} : { tools: { exec: { host } } }),
+  });
   for (const [values, message] of [
     [withSandbox({ mode: "all", scope: "session" }), defaultsMode],
     [withSandbox({ mode: "non-main" }), defaultsMode],
     [withSandbox({ mode: null }), defaultsMode],
     [withSandbox({ mode: "off" }, { mode: "all" }), entryMode],
+    [withHost("sandbox"), defaultsHost],
+    [withHost(null), defaultsHost],
+    [withHost("gateway", "sandbox"), entryHost],
   ]) {
     await refusedAtSaveAndDeploy(context, agent, values, message);
     await refusedOnSave(context, values, message);
@@ -1316,10 +1333,22 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
     { label: "Agent save" },
   );
   await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
+  await writePastOcc(configurationDriver, agent.configurationId, withHost(undefined, "sandbox"));
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    entryHost,
+    { label: "Agent save" },
+  );
+  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
   // "off" saves with the sandbox settings beside it, and so does a corporate security preset,
-  // which turns the sandbox on only where the Configuration leaves the mode unset.
+  // which turns the sandbox on only where the Configuration leaves the mode unset. Each exec
+  // host that runs in the Agent's own runtime, or on a paired node, saves.
   await acceptedOnSave(context, withSandbox({ mode: "off", scope: "session" }, { mode: "off" }));
   await acceptedOnSave(context, { ...runtimeSelected, security: { preset: "corporate" } });
+  await acceptedOnSave(context, withHost("auto", "node"));
+  await acceptedOnSave(context, withHost("gateway"));
   // A Preset value that waits on a string variable is checked once filled when its written text
   // can still spell "off"; a default fills it here, and a boolean variable never can.
   const waiting = withSandbox({ mode: "{{ vars.mode }}" });
@@ -1344,6 +1373,28 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
     ),
     defaultsMode,
   );
+  // The exec host follows the same rule, for every Agent and for one Agent's entry.
+  for (const [values, message] of [
+    [withHost("{{ vars.host }}"), defaultsHost],
+    [withHost(undefined, "{{ vars.host }}"), entryHost],
+  ]) {
+    assertRefused(
+      await savePreset(context, {
+        variables: { host: { type: "string", default: "sandbox" } },
+        configuration: { values },
+      }),
+      message,
+    );
+  }
+  const deferredHost = await savePreset(
+    context,
+    {
+      variables: { host: { type: "string" } },
+      configuration: { values: withHost("{{ vars.host }}") },
+    },
+    "Host-deferred",
+  );
+  assert.equal(deferredHost.status, 201, JSON.stringify(deferredHost.body));
 });
 
 test("SSH and Docker Compute refuse at save and deployment a Gateway tool policy their embedded Gateway refuses", async () => {

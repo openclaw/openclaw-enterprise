@@ -191,8 +191,11 @@ an `agents.defaults.model` or `agents.entries.<id>.model` primary or fallback
 that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included),
 fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
 `agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
-optional file list, and an `agents.defaults.sandbox.mode` or
-`agents.entries.<id>.sandbox.mode` other than `off`, naming the setting. A
+optional file list, an `agents.defaults.sandbox.mode` or
+`agents.entries.<id>.sandbox.mode` other than `off`, and a `tools.exec.host` or
+`agents.entries.<id>.tools.exec.host` other than `auto`, `gateway` or `node`,
+naming the setting. OpenClaw's sandbox cannot run in the OCE runtime, so
+`sandbox` fails every shell command; each Agent runs in OCE's own isolated runtime. A
 Preset value that waits on a variable
 is checked as far as its written text goes, and in full once filled. A
 Configuration saved before these checks still reads; deployment refuses it, and
@@ -235,7 +238,12 @@ its metadata names the source generation. Where the document leaves them
 unset, admission also sets `tools.exec.applyPatch.workspaceOnly: true`, as
 before OpenClaw's `personal` security preset, and
 `agents.defaults.sandbox.mode: "off"`: OpenClaw's sandbox, which
-`security.preset: corporate` turns on, cannot run in the OCE runtime. Other
+`security.preset: corporate` turns on, cannot run in the OCE runtime. Where
+`tools.exec` sets no `mode`, `security` or `ask`, admission sets
+`tools.exec.mode: "full"`, the `personal` preset value: the `corporate` value
+`ask` needs an approval client connected to the Gateway, and the OCE Console has
+none, so every shell command failed. An explicit `mode`, such as `ask` for an
+operator who connects an approval channel, is kept. Other
 unset settings keep the preset's defaults, such as
 `messages.queue.allowCollaborativeSteering: true`: a steered turn keeps its
 first requester's permissions.

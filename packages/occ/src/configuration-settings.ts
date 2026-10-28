@@ -222,53 +222,72 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
-const SANDBOX_OFF_REQUIREMENT =
-  'must be "off" or unset: OCE runs each Agent in its own isolated runtime and does not support OpenClaw\'s sandbox';
+const OPENCLAW_SANDBOX_UNSUPPORTED =
+  "OCE runs each Agent in its own isolated runtime and does not support OpenClaw's sandbox";
+
+// Each OpenClaw sandbox setting OCE refuses: its path for every Agent, which an Agent's entry
+// (`agents.entries.<id>.<setting>`) overrides, the setting, and the values OCE accepts.
+const OPENCLAW_SANDBOX_SETTINGS: readonly (readonly [
+  readonly string[],
+  readonly string[],
+  readonly string[],
+  string,
+])[] = [
+  [["agents", "defaults"], ["sandbox", "mode"], ["off"], '"off"'],
+  [[], ["tools", "exec", "host"], ["auto", "gateway", "node"], '"auto", "gateway" or "node"'],
+];
 
 /**
- * Refuses OpenClaw's own sandbox: an `agents.defaults.sandbox.mode`, or an
- * `agents.entries.<id>.sandbox.mode` (which overrides it for that Agent), other than "off". The
- * pinned OpenClaw runs sandboxed tools in Docker or another backend the OCE runtime does not have,
- * so the Gateway starts and then fails every turn (finding 2767). Deployment admission fills "off"
- * when unset (gateway-security-defaults.ts), so a `security.preset` that turns the sandbox on still
- * deploys a working Agent. Configuration save runs it with the other content rules; Agent save and
- * deploy admission run it on the stored Configuration. On a Preset save (`options`), a value that
- * waits on an unfilled variable is checked once filled if its written text can still spell "off".
+ * Refuses OpenClaw's own sandbox, which the pinned OpenClaw runs in Docker or another backend the
+ * OCE runtime does not have:
+ * - An `agents.defaults.sandbox.mode`, or an `agents.entries.<id>.sandbox.mode` (which overrides
+ *   it for that Agent), other than "off": the Gateway starts and then fails every turn (finding
+ *   2767). Deployment admission fills "off" when unset (gateway-security-defaults.ts), so a
+ *   `security.preset` that turns the sandbox on still deploys a working Agent.
+ * - A `tools.exec.host`, or an `agents.entries.<id>.tools.exec.host`, other than "auto",
+ *   "gateway" or "node": "sandbox" fails every shell command (finding 2773).
+ * Configuration save runs it with the other content rules; Agent save and deploy admission run it
+ * on the stored Configuration. On a Preset save (`options`), a value that waits on an unfilled
+ * variable is checked once filled if its written text can still spell an accepted value.
  */
 export function refuseOpenClawSandbox(
   values: Readonly<OpenClawConfigurationDocument>,
   options?: ConfigurationValidationOptions,
 ): void {
-  const agents = asRecord(values.agents);
-  // The defaults (no Agent ID), then each Agent's entry.
-  const scopes: (readonly [string | undefined, unknown])[] = [
-    [undefined, agents?.defaults],
-    ...Object.entries(asRecord(agents?.entries) ?? {}),
-  ];
-  for (const [id, scope] of scopes) {
-    const sandbox = asRecord(asRecord(scope)?.sandbox);
-    if (sandbox === undefined || !Object.hasOwn(sandbox, "mode")) {
-      continue;
-    }
-    const path =
-      id === undefined
-        ? ["agents", "defaults", "sandbox", "mode"]
-        : ["agents", "entries", id, "sandbox", "mode"];
-    const literals = options?.unresolved?.(path);
-    const type = options?.unresolvedType?.(path);
-    const off =
-      literals === undefined
-        ? sandbox.mode === "off"
-        : (type === undefined || type === "string") && canSpell(literals, "off");
-    if (!off) {
-      throw new ConfigurationHarnessError(
-        id === undefined
-          ? `Configuration setting ${path.join(".")} ${SANDBOX_OFF_REQUIREMENT}.`
-          : agentEntryMessage(
-              id,
-              (entry) => `Configuration setting ${entry}.sandbox.mode ${SANDBOX_OFF_REQUIREMENT}.`,
-            ),
-      );
+  const entries = Object.entries(asRecord(asRecord(values.agents)?.entries) ?? {});
+  for (const [defaults, setting, accepted, acceptedText] of OPENCLAW_SANDBOX_SETTINGS) {
+    const requirement = `must be ${acceptedText} or unset: ${OPENCLAW_SANDBOX_UNSUPPORTED}`;
+    // Every Agent's setting (no Agent ID), then each Agent's entry.
+    const scopes: (readonly [string | undefined, readonly string[]])[] = [
+      [undefined, [...defaults, ...setting]],
+      ...entries.map(([id]) => [id, ["agents", "entries", id, ...setting]] as const),
+    ];
+    for (const [id, path] of scopes) {
+      let parent: Record<string, unknown> | undefined = values;
+      for (const key of path.slice(0, -1)) {
+        parent = asRecord(parent?.[key]);
+      }
+      const name = path.at(-1)!;
+      if (parent === undefined || !Object.hasOwn(parent, name)) {
+        continue;
+      }
+      const literals = options?.unresolved?.(path);
+      const type = options?.unresolvedType?.(path);
+      const allowed =
+        literals === undefined
+          ? accepted.includes(parent[name] as string)
+          : (type === undefined || type === "string") &&
+            accepted.some((value) => canSpell(literals, value));
+      if (!allowed) {
+        throw new ConfigurationHarnessError(
+          id === undefined
+            ? `Configuration setting ${path.join(".")} ${requirement}.`
+            : agentEntryMessage(
+                id,
+                (entry) => `Configuration setting ${entry}.${setting.join(".")} ${requirement}.`,
+              ),
+        );
+      }
     }
   }
 }

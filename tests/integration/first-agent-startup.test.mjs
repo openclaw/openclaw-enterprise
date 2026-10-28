@@ -202,14 +202,14 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   });
   // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
   // the Gateway security defaults the Configuration leaves unset (apply_patch in the workspace,
-  // OpenClaw's sandbox off).
+  // OpenClaw's sandbox off, exec at the personal preset's mode).
   const values = (sandbox, approvalsReviewer) => ({
     ...settings(sandbox, approvalsReviewer),
     agents: {
       defaults: { sandbox: { mode: "off" } },
       entries: { main: { identity: { name: record.name } } },
     },
-    tools: { exec: { applyPatch: { workspaceOnly: true } } },
+    tools: { exec: { applyPatch: { workspaceOnly: true }, mode: "full" } },
   });
   const configured = settings("read-only");
   const matches = (snapshot, priorRevisionId) =>
@@ -246,9 +246,10 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   const current = values("danger-full-access");
   const entries = { entries: current.agents.entries };
   const lacking = {
-    "both defaults": { ...settings("danger-full-access"), agents: entries },
+    "every default": { ...settings("danger-full-access"), agents: entries },
     "the sandbox mode": { ...current, agents: entries },
-    "apply_patch in the workspace": { ...settings("danger-full-access"), agents: current.agents },
+    "the tools.exec defaults": { ...settings("danger-full-access"), agents: current.agents },
+    "the exec mode": { ...current, tools: { exec: { applyPatch: { workspaceOnly: true } } } },
   };
   for (const [missing, snapshot] of Object.entries(lacking)) {
     assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision without ${missing}`);
@@ -268,6 +269,11 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     ),
     false,
     "an explicit sandbox mode other than off",
+  );
+  assert.equal(
+    matches({ ...current, tools: { exec: { ...current.tools.exec, mode: "ask" } } }, "rev_saved"),
+    false,
+    "an explicit exec mode other than the default",
   );
   assert.equal(
     matches({
