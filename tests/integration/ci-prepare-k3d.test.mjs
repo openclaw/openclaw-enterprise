@@ -5,12 +5,11 @@ import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
-import { defaultK3sImage, timedPreparation } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage, prepareRuntimeImageSmoke } from "../../scripts/ci/prepare.mjs";
 import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
 import {
   assertStderrMatch,
   digest,
-  fixture,
   fixtureImageCommands,
   fixturePreparationMetrics,
   immutableImage,
@@ -21,63 +20,65 @@ import { eachSettled } from "../helpers/child-processes.mjs";
 import { bashString, startCommandServer } from "../helpers/fixture-command-server.mjs";
 
 test("native container preparation summaries", async (t) => {
-  const root = await fixture(t);
-  const summary = join(root, "summary.md");
-  const missing = join(root, "missing");
-  const names = ["OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY", "GITHUB_STEP_SUMMARY"];
-  const saved = names.map((name) => process.env[name]);
-  t.after(() => {
-    for (const [index, name] of names.entries()) {
-      if (saved[index] === undefined) {
-        delete process.env[name];
-      } else {
-        process.env[name] = saved[index];
+  const hostEnv = process.env;
+  for (const mode of ["normal", "opt-out", "unset", "directory"]) {
+    // Create each fresh fixture with the host PATH so it can resolve its shims.
+    const commands = await fixtureImageCommands(t, "success", "images-packaging");
+    const root = dirname(commands.statePath);
+    const bin = join(root, "bin");
+    const summary = join(root, "summary.md");
+    const image = `sha256:${digest}`;
+    try {
+      process.env = {
+        HOME: root,
+        PATH: bin,
+        TMPDIR: root,
+        RUNNER_TEMP: root,
+        CI_FIXTURE_SCENARIO: "success",
+        CI_FIXTURE_LANE: "images-packaging",
+        OCC_DOCKER_BIN: join(bin, "docker.mjs"),
+        OPENCLAW_CI_K3D_BIN: join(bin, "k3d.mjs"),
+        OCC_KUBECTL_BIN: join(bin, "kubectl.mjs"),
+        OCC_TEST_KUBERNETES_GATEWAY_IMAGE: image,
+        // nodeBaseImage stands in for Envoy; the synthetic non-reviewed version
+        // deliberately fails late, inside the third timed preparation phase.
+        OCC_TEST_WORKSPACE_ENVOY_IMAGE: nodeBaseImage,
+        OCC_TEST_KUBERNETES_CODEX_VERSION: "not-reviewed",
+        OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY: mode === "opt-out" ? "0" : "1",
+      };
+      if (mode !== "unset") {
+        process.env.GITHUB_STEP_SUMMARY = mode === "directory" ? root : summary;
       }
+      await writeFile(summary, "Existing summary\n");
+      await assert.rejects(prepareRuntimeImageSmoke({ image, statePath: commands.statePath }), {
+        code: "ERR_ASSERTION",
+        message:
+          "Codex seccomp profile verification is limited to reviewed Codex versions: " +
+          "0.152.1, 0.154.0, 0.156.0, 0.158.0, 0.160.0, 0.163.0-alpha.1, 0.163.0-alpha.2.",
+      });
+      await assert.rejects(stat(commands.statePath), { code: "ENOENT" });
+      const text = await readFile(summary, "utf8");
+      if (mode === "normal") {
+        const rows = text.split("\n");
+        assert.equal(rows.length, 5);
+        assert.equal(rows[0], "Existing summary");
+        assert.match(rows[1], /^- k3d-create: (0|[1-9]\d*) ms \(elapsed; see step outcome\)$/);
+        assert.match(
+          rows[2],
+          /^- runtime-image-import: (0|[1-9]\d*) ms \(elapsed; see step outcome\)$/,
+        );
+        assert.match(
+          rows[3],
+          /^- codex-seccomp-profile: (0|[1-9]\d*) ms \(elapsed; see step outcome\)$/,
+        );
+        assert.equal(rows[4], "");
+      } else {
+        assert.equal(text, "Existing summary\n");
+      }
+    } finally {
+      process.env = hostEnv;
     }
-  });
-  process.env.OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY = "1";
-  process.env.GITHUB_STEP_SUMMARY = summary;
-  await writeFile(summary, "Existing summary\n");
-  const read = () => readFile(summary, "utf8");
-  const phases = ["k3d-create", "runtime-image-import", "codex-seccomp-profile"];
-  for (const phase of phases) {
-    await timedPreparation("images-packaging", phase, read);
   }
-  await timedPreparation("images-runtime-startup", "k3d-create", read);
-  for (const phase of ["image-stream-import", "__proto__", "toString", "unknown\nrow"]) {
-    await timedPreparation("images-packaging", phase, read);
-  }
-  delete process.env.OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY;
-  await timedPreparation("images-packaging", "k3d-create", read);
-  process.env.OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY = "true";
-  await timedPreparation("images-packaging", "k3d-create", read);
-  process.env.OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY = "1";
-  await assert.rejects(
-    timedPreparation("images-packaging", "k3d-create", () => readFile(missing)),
-    { code: "ENOENT" },
-  );
-  const written = await read();
-  assert.equal(
-    written.replaceAll(/(\d+) ms/gu, (_, duration) => {
-      const elapsed = Number(duration);
-      assert.ok(Number.isSafeInteger(elapsed) && elapsed >= 0);
-      return "<duration> ms";
-    }),
-    "Existing summary\n" +
-      [...phases, "k3d-create"]
-        .map((phase) => `- ${phase}: <duration> ms (elapsed; see step outcome)\n`)
-        .join(""),
-  );
-  // A directory cannot accept a summary append, but must not mask the failed read.
-  process.env.GITHUB_STEP_SUMMARY = root;
-  await assert.rejects(
-    timedPreparation("images-packaging", "k3d-create", () => readFile(missing)),
-    { code: "ENOENT" },
-  );
-  assert.equal(await timedPreparation("images-packaging", "k3d-create", read), written);
-  delete process.env.GITHUB_STEP_SUMMARY;
-  assert.equal(await timedPreparation("images-packaging", "k3d-create", read), written);
-  assert.equal(await read(), written);
 });
 
 // Override selected external commands while the normal CLI and fixture handle the rest.

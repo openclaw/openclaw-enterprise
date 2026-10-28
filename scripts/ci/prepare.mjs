@@ -151,7 +151,7 @@ function progress(lane, message) {
   process.stderr.write(`[prepare:${laneName(lane)}] ${message}\n`);
 }
 
-export async function timedPreparation(lane, phase, operation) {
+async function timedPreparation(lane, phase, operation) {
   const started = performance.now();
   try {
     return await operation();
