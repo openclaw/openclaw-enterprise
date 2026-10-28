@@ -1713,7 +1713,7 @@ async function prepareNativeWorkspace(
       : `{
     const fs = require("node:fs");
     const path = ${JSON.stringify(`/workspace-preparation/${data.name}/${gitLauncher.sub_path}`)};
-    const content = ${JSON.stringify('#!/bin/sh\nexec /tmp/oce-native-git/git "$@"\n')};
+    const content = ${JSON.stringify('#!/bin/sh\n: "${TMPDIR:?Native Git temporary directory is missing}"\nexec "$TMPDIR/oce-native-git/git" "$@"\n')};
     const existing = fs.lstatSync(path, { throwIfNoEntry: false });
     if (existing) {
       if (!existing.isFile() || existing.uid !== process.getuid() ||
@@ -3809,20 +3809,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Harness enrollment must match the admitted egress plan.",
       );
     }
-    if (
-      context.revision.harness.id === "openclaw" &&
-      installation.plan.repositoryGitAuthorization === "request-hook-observed" &&
-      this.openShellGit?.previewReleased(context.revision.id)
-    ) {
-      // Its one-use release was acknowledged. The native exposure is withdrawn
-      // after node enrollment; never read it again or replay the release.
-      return;
-    }
-    const { client, service } = await this.exactHarnessService(
-      context,
-      "enroll a protected Harness",
-    );
     const ref = this.sandboxRef(context);
+    const client = this.gatewayClientForNamespace(ref.namespaceName);
     const sandbox = await client.getSandbox(
       { name: ref.resourceName, workspace: workspaceName(context.namespace) },
       context.signal,
@@ -3832,6 +3820,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Harness enrollment must match the installed Sandbox.",
       );
     }
+    if (
+      context.revision.harness.id === "openclaw" &&
+      installation.plan.repositoryGitAuthorization === "request-hook-observed" &&
+      this.openShellGit?.previewReleased(context.revision.id)
+    ) {
+      // Its one-use release was acknowledged. Still verify the Sandbox identity,
+      // but never read the withdrawn exposure or replay the release.
+      return;
+    }
+    const { service } = await this.exactHarnessService(context, "enroll a protected Harness");
     const document = await client.getServiceDocument(
       service.url,
       HARNESS_EGRESS_ENROLLMENT_PATH,

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-27"
-last_updated_session: authoring-run/d77dd1ef-fd4c-48d2-8152-ac22d5f72d18
+updated: "2026-10-28"
+last_updated_session: agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88
 ---
 
 # Protected credential request flow
@@ -128,15 +128,18 @@ neither resolves credentials nor retries requests. Reconciliation can repeat che
 [Harness-only restart recovery remains manual](../reference/credential-sources/protected-inference.md#installation-configuration).
 
 For the v6 GitHub installation preview, `NATIVE_WORKER_ENTRYPOINT`
-(`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`) also holds
-node connection. Sandbox validates `OPENCLAW_NATIVE_EGRESS_ENROLLMENT` against
-admission. A recorded ACK replaces Codex WebSocket observation;
-`ProtectedExecutionDriver.enroll` rechecks policy, recipient and Pod identity.
-Compute requires node enrollment and exposure withdrawal before readiness. Sandbox
-prepares a nonsecret launcher on the revision's PVC and mounts it read-only at
-`/usr/local/bin/git`, before system Git in native shell paths. It delegates to
-Pod-local Git configuration with public CA trust and an identity-bound OpenShell
-alias; the supervisor retains real credentials.
+(`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`) holds
+node connection until signed release. Sandbox checks
+`OPENCLAW_NATIVE_EGRESS_ENROLLMENT` against admission and still verifies the
+Sandbox ID after the ACK. `ProtectedExecutionDriver.enroll` rechecks policy,
+recipient and Pod identity; Compute requires node enrollment and exposure withdrawal.
+
+The PVC-mounted, read-only `/usr/local/bin/git` launcher delegates to a `TMPDIR`
+shim using Codex's scoped credential helper and the worker's `NODE_EXTRA_CA_CERTS`
+(Sandbox egress trust plus Gateway CA). The supervisor retains real credentials.
+The Agent can change both files; no other principal may execute them.
+Alias, trust-file and scope validation precedes release. Setup failures hold
+`repository-git-route` / `UNAVAILABLE`.
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -338,9 +341,10 @@ None.
 
 ## Changelog
 
+- 2026-10-28 02:29: Describe native Git preflight, scoped authentication and Agent-owned launcher limits. (agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88 - 16280371d6e87e2353866ca5070e3a4926616e1f)
+
 - 2026-10-27 18:09: Describe native OpenClaw startup release for the observed-hook Git preview in the accompanying source change. (authoring-run/d77dd1ef-fd4c-48d2-8152-ac22d5f72d18 - 2b40862ddb8c71dcb73034bbacec14966a62f4fb)
 
-- 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 
 - 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)

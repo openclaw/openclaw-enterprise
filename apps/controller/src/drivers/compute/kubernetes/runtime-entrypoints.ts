@@ -4882,7 +4882,46 @@ if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
-function startReleasedNativeWorker(enrollment) {
+function nativeGitConfiguration(enrollment) {
+  if (enrollment?.repositoryGitAuthorization !== "request-hook-observed") return;
+  const ca = process.env.NODE_EXTRA_CA_CERTS;
+  if (!ca?.startsWith("/") || readFileSync(ca).length === 0) {
+    throw new Error("Native Git trust is missing.");
+  }
+  const alias = process.env.GITHUB_TOKEN;
+  if (typeof alias !== "string" || !/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(alias)) {
+    throw new Error("Native Git requires its OpenShell stable credential alias.");
+  }
+  const key = process.env.GIT_CONFIG_KEY_1;
+  if (typeof key !== "string" ||
+      !/^credential\.https:\/\/github\.com(?:\/[a-z0-9_.-]+\/[a-z0-9_.-]+\.git)?\.helper$/.test(key)) {
+    throw new Error("Native Git requires its admitted credential scope.");
+  }
+  const helper = "!f() { printf '%s\\n' 'username=x-access-token' 'password=" + alias + "'; }; f";
+  const configuration = [
+    "credential.helper=",
+    key + "=" + helper,
+    "http.followRedirects=false",
+    "http.sslVerify=true",
+    "credential.useHttpPath=true",
+  ];
+  return { directory: join(temporary, "oce-native-git"), configuration };
+}
+
+function prepareNativeGit(git) {
+  // This directory belongs to this worker. A previous supervisor may have left
+  // it behind; replace it before starting any new Agent child.
+  rmSync(git.directory, { recursive: true, force: true });
+  mkdirSync(git.directory, { mode: 0o700 });
+  const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const configuration = git.configuration.map((value) => "-c " + quote(value)).join(" ");
+  writeFileSync(join(git.directory, "git"),
+    '#!/bin/sh\nexport GIT_TERMINAL_PROMPT=0\nexec /usr/bin/git ' + configuration +
+      ' -c http.sslCAInfo="$NODE_EXTRA_CA_CERTS" "$@"\n',
+    { mode: 0o700, flag: "wx" });
+}
+
+function startReleasedNativeWorker(git) {
 const authenticationFailure = probeOpenClawAuthenticationFailure();
 if (authenticationFailure !== undefined) {
   holdFailedAuthentication("model-probe", authenticationFailure.code, authenticationFailure.cause);
@@ -4929,28 +4968,6 @@ if (gatewayCa) {
     : "";
   writeFileSync(caPath, [inheritedCa, gatewayCa].filter(Boolean).join("\n"), { mode: 0o600 });
   nodeEnv.NODE_EXTRA_CA_CERTS = caPath;
-}
-// Native child workers retain PATH and NODE_EXTRA_CA_CERTS, but deliberately drop
-// Git's CA and credential-helper environment. Keep only the identity-bound
-// OpenShell alias in a private Pod-local Git shim; real credentials stay in the
-// supervisor. Do not widen the native worker's inherited environment.
-let gitTrustDirectory;
-if (enrollment?.repositoryGitAuthorization === "request-hook-observed") {
-  if (!nodeEnv.NODE_EXTRA_CA_CERTS) throw new Error("Native Git trust is missing.");
-  readFileSync(nodeEnv.NODE_EXTRA_CA_CERTS);
-  const alias = process.env.GITHUB_TOKEN;
-  if (typeof alias !== "string" || !/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(alias)) {
-    throw new Error("Native Git requires its OpenShell stable credential alias.");
-  }
-  const authorization = Buffer.from("x-access-token:" + alias).toString("base64");
-  gitTrustDirectory = "/tmp/oce-native-git";
-  mkdirSync(gitTrustDirectory, { mode: 0o700 });
-  writeFileSync(join(gitTrustDirectory, "git"),
-    '#!/bin/sh\nexec /usr/bin/git -c credential.helper= -c http.https://github.com/.extraHeader="Authorization: Basic ' +
-      authorization + '" -c http.sslVerify=true -c http.followRedirects=false -c http.sslCAInfo="$NODE_EXTRA_CA_CERTS" "$@"\n',
-    { mode: 0o700, flag: "wx" });
-  // Sandbox mounts its nonsecret launcher at /usr/local/bin/git. Native startup
-  // and login-shell PATH discovery otherwise put system Git ahead of this shim.
 }
 // Identity and connect open the node state, so Doctor migrates an older one first
 // with the node's own settings: never the model credential or setup code the
@@ -4999,10 +5016,14 @@ const stop = (signal) => {
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 child.on("exit", (code, signal) => {
-  if (gitTrustDirectory) rmSync(gitTrustDirectory, { recursive: true, force: true });
+  if (git) rmSync(git.directory, { recursive: true, force: true });
   process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
 });
 })().catch((error) => {
+  if (git) {
+    holdStartupFailure("repository-git-route", "UNAVAILABLE");
+    return;
+  }
   console.error(error);
   process.exit(1);
 });
@@ -5017,10 +5038,27 @@ if (!protectedStartup) {
 } else {
   let enrollment;
   try { enrollment = JSON.parse(nativeEnrollment); } catch {}
-  waitForHarnessEgressEnrollment(enrollment).then(() => {
-    delete process.env.OPENCLAW_NATIVE_EGRESS_ENROLLMENT;
-    startReleasedNativeWorker(enrollment);
-  }, () => holdFailedAuthentication("egress-enrollment", "UNAVAILABLE"));
+  let git;
+  let valid = false;
+  try {
+    git = nativeGitConfiguration(enrollment);
+    valid = true;
+  } catch {
+    holdStartupFailure("repository-git-route", "UNAVAILABLE");
+  }
+  if (valid) {
+    waitForHarnessEgressEnrollment(enrollment).then(() => {
+      delete process.env.OPENCLAW_NATIVE_EGRESS_ENROLLMENT;
+      try {
+        // Native drops Git environment settings in its child workers. Carry the
+        // same challenge-based helper and scope as Codex through this private shim.
+        if (git) prepareNativeGit(git);
+        startReleasedNativeWorker(git);
+      } catch {
+        holdStartupFailure("repository-git-route", "UNAVAILABLE");
+      }
+    }, () => holdFailedAuthentication("egress-enrollment", "UNAVAILABLE"));
+  }
 }
 `;
 
