@@ -23,6 +23,25 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-28: deploy dedicated Codex Agents on OpenShell again
+
+**What breaks.** The OpenClaw update of 2026-10-28 moves the agent database
+schema to 38, which changes the program in a dedicated Codex Agent's OpenShell
+Sandbox. The OpenShell Sandbox Driver adopts an existing Sandbox only when it
+matches the Agent version exactly. When OCC provisions a version deployed
+before the upgrade again, the Driver refuses its Sandbox, and retries do not
+help.
+
+**Who is affected.** Agents with a dedicated Codex Harness on the OpenShell
+Sandbox Driver, deployed before the upgrade and not deployed since, for example
+stopped Agents. The runtime upgrade deploys every running Agent again.
+
+**How to tell.** Provisioning fails with `Refusing OpenShell Sandbox <name>
+without exact AgentRevision ownership and content.`
+
+**Steps.** _Untested._ Deploy a new version of the Agent. The new version gets
+a new Sandbox.
+
 ## 2026-10-27: deploy Agents again to keep strict steering and apply_patch limits
 
 **What breaks.** The OpenClaw update of 2026-10-27 adds `security.preset`, with
