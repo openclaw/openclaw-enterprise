@@ -201,7 +201,7 @@ test("dedicated OpenClaw offers the pinned Google package and refuses credential
       driver.validatePolicies({
         [google.id]: { enabled: true, credentialSourceId: "src_personal" },
       }),
-    /install or remove only/,
+    /supports plugin enablement only/,
   );
 });
 

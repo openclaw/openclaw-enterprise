@@ -4199,14 +4199,23 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const path = `${agentsPath}/${created.data.id}`;
-  const policy = await controller.request("PATCH", path, {
-    body: {
-      configurationId: configuration.id,
-      plugins: { [packageId]: { enabled: true, toolDefaults: { enabled: false } } },
-    },
-  });
-  assertApiError(policy, 400, "INVALID_REQUEST");
-  assert.match(policy.body.error.message, /supports install or remove only/);
+  const capabilities = await controller.request("GET", `${path}/plugins/capabilities`);
+  assert.equal(capabilities.status, 200);
+  assert.equal(capabilities.data.policyScopeByPlugin[packageId], "enablement_only");
+  for (const unsupportedPolicy of [
+    { toolDefaults: { approval: "all_actions" } },
+    { tools: { "gmail.users.messages.list": { enabled: false } } },
+    { approvers: [] },
+  ]) {
+    const policy = await controller.request("PATCH", path, {
+      body: {
+        configurationId: configuration.id,
+        plugins: { [packageId]: { enabled: true, ...unsupportedPolicy } },
+      },
+    });
+    assertApiError(policy, 400, "INVALID_REQUEST");
+    assert.match(policy.body.error.message, /Google Workspace.*supports .*enablement/);
+  }
   const mode = await controller.request("PATCH", path, {
     body: { configurationId: configuration.id, executionMode: "embedded" },
   });

@@ -10,6 +10,7 @@
     "ai.openclaw.oce": {
       "id": "occ-plugin:google",
       "displayName": "Google Workspace",
+      "policyScope": "enablement_only",
       "release": "./ai.openclaw.oce/release.json"
     }
   }

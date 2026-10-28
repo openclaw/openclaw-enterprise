@@ -11505,6 +11505,13 @@
                                   "additionalProperties": {},
                                   "type": "object"
                                 },
+                                "policyScopeByPlugin": {
+                                  "additionalProperties": {
+                                    "const": "enablement_only",
+                                    "type": "string"
+                                  },
+                                  "type": "object"
+                                },
                                 "toolDefaults": {
                                   "additionalProperties": false,
                                   "properties": {
@@ -11862,6 +11869,13 @@
                                 "driver": { "$ref": "#/components/schemas/def-1" },
                                 "driverPolicySchema": {
                                   "additionalProperties": {},
+                                  "type": "object"
+                                },
+                                "policyScopeByPlugin": {
+                                  "additionalProperties": {
+                                    "const": "enablement_only",
+                                    "type": "string"
+                                  },
                                   "type": "object"
                                 },
                                 "toolDefaults": {
@@ -22188,6 +22202,10 @@
                         },
                         "driver": { "$ref": "#/components/schemas/def-1" },
                         "driverPolicySchema": { "additionalProperties": {}, "type": "object" },
+                        "policyScopeByPlugin": {
+                          "additionalProperties": { "const": "enablement_only", "type": "string" },
+                          "type": "object"
+                        },
                         "toolDefaults": {
                           "additionalProperties": false,
                           "properties": {

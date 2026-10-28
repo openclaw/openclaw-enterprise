@@ -774,6 +774,8 @@ export interface PluginToolCatalogEntry {
 }
 
 export interface PluginPolicyCapabilities {
+  /** An entry limits this plugin to its master switch. Unlisted plugins use the Driver defaults. */
+  readonly policyScopeByPlugin?: Readonly<Record<string, "enablement_only">>;
   readonly approvers?: {
     readonly agent: boolean;
     readonly plugin: boolean;

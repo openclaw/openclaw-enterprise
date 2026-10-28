@@ -359,6 +359,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   readonly discoveryCredential = "none" as const;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    policyScopeByPlugin: { [managedGoogleInstall.id]: managedGoogleInstall.policyScope },
     approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
@@ -376,9 +377,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       google &&
       (typeof google.enabled !== "boolean" || Object.keys(google).some((key) => key !== "enabled"))
     ) {
-      throw new ConfigurationHarnessError(
-        "The Google Workspace package supports install or remove only.",
-      );
+      throw new ConfigurationHarnessError("Google Workspace supports plugin enablement only.");
     }
     this.validate("openclaw", native, defaultApprovers);
   }
