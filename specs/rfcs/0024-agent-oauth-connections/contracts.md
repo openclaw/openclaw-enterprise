@@ -15,14 +15,12 @@ methods. A Driver that omits them offers no browser connections.
 
 ### Browser authorization
 
-For connections created from either template protocol, the OCE Token Service
-implements the browser operations behind `CredentialRefreshDriver`. It retains
-the refresh grant in encrypted custody and renews access tokens in the
-background. It serializes refresh per source and atomically commits each new
-access token with any replacement refresh token. At request time, OpenShell
-presents an eligible, prepared access token for the deployed binding. If none
-is available, egress refuses the request. A worker request never triggers a
-refresh. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
+OCC owns the connection session and calls the Driver's browser authorization
+methods for setup and code exchange. After exchange, the OCE Token Service
+keeps the grant in encrypted custody and refreshes access tokens in the
+background. It serializes refresh per source and atomically commits the access token
+with any replacement refresh token. OpenShell presents an eligible, prepared
+token for the deployed binding or refuses the request. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
 - `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri, selectedScopes? })`
   returns `{ authorizationUrl, privateState }`. MCP requires the owner's validated
@@ -30,18 +28,20 @@ refresh. [Credential access and lifecycle](../0023-egress-proxy-credential-lifec
   creates the PKCE verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
   `privateState` is opaque to OCC.
 - `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
-  `state`, exchanges the code with the verifier and the version's client
-  registration, and commits the grant and first usable access token in the Token
-  Service. It then returns `ready` with an optional verified
-  `accountEmail`. On failure it returns a code. It never returns a token.
+  `state` and exchanges the code using the verifier and pinned client registration.
+  The Driver hands the validated refresh grant and first usable access token to
+  the Token Service, bound to the source and its approved OAuth context. It returns
+  `ready` only after the Token Service durably accepts them. An uncertain handoff
+  leaves the source `registering` and never replays the code. OCC receives status
+  and an optional verified `accountEmail`.
 
 ### MCP authorization
 
-The administrator enters the MCP server URL. The OCE Token Service uses the
-official TypeScript MCP client to discover the protected resource and its
-authorization server under the Installation's management egress policy. The
-administrator can supply a preregistered client ID and any required secret, or
-allow the SDK to choose from the issuer's advertised methods.
+The administrator enters the MCP server URL. OCE uses the official TypeScript
+MCP client to discover the protected resource and its authorization server under
+the Installation's management egress policy. The administrator can supply a
+preregistered client ID and any required secret, or allow the SDK to choose
+from the issuer's advertised methods.
 
 - **Client ID Metadata Document (CIMD).** Prefer this when
   `client_id_metadata_document_supported` is true and the issuer can fetch
@@ -56,34 +56,35 @@ and resource metadata.
 
 At **Connect**, the owner chooses from the entire approved scope list.
 OCC validates the nonempty selection and required scopes before creating a
-source. The Token Service checks the callback issuer before exchange and uses
-the pinned client, resource, and endpoints throughout OAuth. It checks requested
-and granted scopes against the owner's selection, including on refresh.
+source. OCE checks the requested scopes, validates the callback issuer, and
+verifies the granted scopes at exchange. The Token Service refreshes with the
+same pinned client, resource, and token endpoint. It checks each renewed grant
+against the connection's selected scopes before use.
 Changed endpoints require a new version and consent. The deployed worker exposes
 every tool the server lists for that connection (`tools/list`). [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
 ### Client registrations
 
-The Token Service manages OAuth client registrations for the Installation.
-A client identifier is unique only within its authorization server
-([RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)), so the
-Token Service keys each registration by the trusted `issuer` and `clientId` pair.
+OCE manages client registrations through the Driver. It keys each registration
+by the trusted `issuer` and `clientId` pair because client IDs are unique only
+within an authorization server. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)
 
 - `registerClient({ issuer, clientId }, clientSecret?)` stores the resolved client
-  and any secret in Token Service custody. A public MCP client can omit the secret.
+  and any secret in the Driver's protected store. A public MCP client can omit the secret.
   Templates with the same pair share the returned `clientRegistrationId`. The
   same `clientId` at another issuer gets a separate registration.
 - For clients with a secret, `rotateClientSecret(clientRegistrationId, clientSecret)`
-  sets the version for new connections. The Token Service pins each connection
-  to the version used for its exchange. Existing connections continue refreshing
+  sets the version for new connections. Each connection pins the version used
+  for its exchange. Existing connections continue refreshing
   with that version until the provider disables it, then report `reauthorize`.
 - `removeClient(clientRegistrationId)` removes the stored registration and any
   secret it holds. OCC calls it only when no template version or source uses it.
 
 Each connection template version and credential source records its
-`clientRegistrationId`. The Token Service keeps the referenced client secret
-versions available across replicas and restarts. OCC stores only the
-registration reference. Client secrets and refresh grants stay out of the
+`clientRegistrationId`. The Driver keeps referenced client secret versions
+available across replicas and restarts. The Token Service can use the exact
+registration and secret version bound to the source for refresh. OCC stores
+the registration reference. Client secrets and refresh grants stay out of the
 worker's OpenShell attachment.
 
 ### OIDC account identity
