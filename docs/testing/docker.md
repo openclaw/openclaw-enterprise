@@ -71,8 +71,8 @@ contract change. The workspace setup cases call the Driver directly.
 `pnpm podman:test` selects Podman; unselected cases skip. The inputs are
 `OCC_TEST_DOCKER_COMPUTE_REAL` or `OCC_TEST_PODMAN_COMPUTE_REAL`,
 `OCC_DOCKER_GATEWAY_IMAGE`, `OCC_DOCKER_AGENT_IMAGE` (or shared
-`OCC_DOCKER_RUNTIME_IMAGE`), `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL` and
-optionally `PYTHON`. See the test source for defaults.
+`OCC_DOCKER_RUNTIME_IMAGE`) and `OCC_TEST_OPENAI_MODEL`. No model credential is
+needed. See the test source for defaults.
 
 See the [Docker Compute support boundary](../reference/drivers/docker-compute.md).
 

@@ -1,6 +1,5 @@
 {
   "requiredEnv": [
-    "OPENAI_API_KEY",
     "OCC_TEST_OPENAI_MODEL",
     "OCC_DOCKER_RUNTIME_IMAGE",
     "NODE_BASE_IMAGE",
@@ -12,7 +11,7 @@
   },
   "prepare": {
     "requiresPreparedStateForFile": true,
-    "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL", "NODE_BASE_IMAGE"],
+    "requireEnv": ["OCC_TEST_OPENAI_MODEL", "NODE_BASE_IMAGE"],
     "nodeBaseImage": true
   },
   "files": [
