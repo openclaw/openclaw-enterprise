@@ -502,8 +502,12 @@ test("deployment admission stamps immutable native logging after sandbox policy"
     diagnostics: { otel: { logs: false, traces: true } },
     // OpenClaw's earlier value for a setting its security preset would otherwise fill.
     tools: { exec: { applyPatch: { workspaceOnly: true } } },
-    // The omitted roster gains its served main entry, named after the OCC Agent.
-    agents: { ...originalValues.agents, entries: { main: { identity: { name: agent.name } } } },
+    // The omitted roster gains its served main entry, named after the OCC Agent, and OpenClaw's
+    // sandbox stays off, as admission fills it.
+    agents: {
+      defaults: { ...originalValues.agents.defaults, sandbox: { mode: "off" } },
+      entries: { main: { identity: { name: agent.name } } },
+    },
   });
 });
 

@@ -908,7 +908,7 @@ test("Agent configuration references stay mutable while deployment admits deeply
         },
       },
     },
-    agents: { defaults: { sandbox: { mode: "all" } } },
+    agents: { defaults: { sandbox: { mode: "off" } } },
   };
   const replacementConfiguration = await createConfiguration(
     controller,

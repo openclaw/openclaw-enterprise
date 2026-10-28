@@ -4,7 +4,11 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
-import { ConfigurationHarnessError, GatewayPasswordValueError } from "./errors.ts";
+import {
+  agentEntryMessage,
+  ConfigurationHarnessError,
+  GatewayPasswordValueError,
+} from "./errors.ts";
 
 /**
  * The Codex session approval policy setting. The pinned OpenClaw Gateway (openclaw/openclaw
@@ -218,6 +222,57 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
+const SANDBOX_OFF_REQUIREMENT =
+  'must be "off" or unset: OCE runs each Agent in its own isolated runtime and does not support OpenClaw\'s sandbox';
+
+/**
+ * Refuses OpenClaw's own sandbox: an `agents.defaults.sandbox.mode`, or an
+ * `agents.entries.<id>.sandbox.mode` (which overrides it for that Agent), other than "off". The
+ * pinned OpenClaw runs sandboxed tools in Docker or another backend the OCE runtime does not have,
+ * so the Gateway starts and then fails every turn (finding 2767). Deployment admission fills "off"
+ * when unset (gateway-security-defaults.ts), so a `security.preset` that turns the sandbox on still
+ * deploys a working Agent. Configuration save runs it with the other content rules; Agent save and
+ * deploy admission run it on the stored Configuration. On a Preset save (`options`), a value that
+ * waits on an unfilled variable is checked once filled if its written text can still spell "off".
+ */
+export function refuseOpenClawSandbox(
+  values: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): void {
+  const agents = asRecord(values.agents);
+  // The defaults (no Agent ID), then each Agent's entry.
+  const scopes: (readonly [string | undefined, unknown])[] = [
+    [undefined, agents?.defaults],
+    ...Object.entries(asRecord(agents?.entries) ?? {}),
+  ];
+  for (const [id, scope] of scopes) {
+    const sandbox = asRecord(asRecord(scope)?.sandbox);
+    if (sandbox === undefined || !Object.hasOwn(sandbox, "mode")) {
+      continue;
+    }
+    const path =
+      id === undefined
+        ? ["agents", "defaults", "sandbox", "mode"]
+        : ["agents", "entries", id, "sandbox", "mode"];
+    const literals = options?.unresolved?.(path);
+    const type = options?.unresolvedType?.(path);
+    const off =
+      literals === undefined
+        ? sandbox.mode === "off"
+        : (type === undefined || type === "string") && canSpell(literals, "off");
+    if (!off) {
+      throw new ConfigurationHarnessError(
+        id === undefined
+          ? `Configuration setting ${path.join(".")} ${SANDBOX_OFF_REQUIREMENT}.`
+          : agentEntryMessage(
+              id,
+              (entry) => `Configuration setting ${entry}.sandbox.mode ${SANDBOX_OFF_REQUIREMENT}.`,
+            ),
+      );
+    }
+  }
+}
+
 // `${NAME}`, or an object naming a source and an id (OpenClaw's SecretRef).
 function isCredentialReference(value: unknown): boolean {
   if (typeof value === "string") {
@@ -237,6 +292,7 @@ function isCredentialReference(value: unknown): boolean {
  *   would; every Compute Driver accepts only an environment reference there.
  * - The workspace bootstrap settings (validateWorkspaceBootstrapSettings).
  * - Settings the pinned OpenClaw retired (refuseRetiredOpenClawSettings).
+ * - OpenClaw's own sandbox (refuseOpenClawSandbox).
  */
 export function validateConfigurationSettings(
   values: OpenClawConfigurationDocument,
@@ -251,6 +307,7 @@ export function validateConfigurationSettings(
   refuseLiteralGatewayPassword(values);
   validateWorkspaceBootstrapSettings(values, options);
   refuseRetiredOpenClawSettings(values);
+  refuseOpenClawSandbox(values, options);
 }
 
 /**

@@ -129,16 +129,41 @@ function schemaReferences(schema: JSONSchema, stack: XStack) {
   return references;
 }
 
+const dialect = "https://json-schema.org/draft/2020-12/schema";
+
+// The meta-schema check is a pure function of the schema's JSON text and costs about
+// 20 ms for the largest bundled Driver schemas. Every controller, worker and registry
+// setup checks the same schemas again, so the texts that passed are kept per process.
+// The key is the full text, so a changed schema is always checked again.
+const metaSchemaPasses = new Set<string>();
+const metaSchemaPassLimit = 128;
+
+function satisfiesMetaSchema(text: string): boolean {
+  if (metaSchemaPasses.has(text)) {
+    return true;
+  }
+  if (!Check(Meta[dialect], JSON.parse(text))) {
+    return false;
+  }
+  if (metaSchemaPasses.size >= metaSchemaPassLimit) {
+    metaSchemaPasses.clear();
+  }
+  metaSchemaPasses.add(text);
+  return true;
+}
+
 /** Reject schemas the installed TypeBox evaluator would silently weaken or cannot resolve. */
 export function assertConfigurationSchema(schema: JSONSchema): void {
   try {
     if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
       throw new Error();
     }
-    const serialized = JSON.parse(JSON.stringify(schema));
-    const dialect = "https://json-schema.org/draft/2020-12/schema";
+    const text: unknown = JSON.stringify(schema);
+    if (typeof text !== "string") {
+      throw new Error();
+    }
     // TypeBox schemas carry nonenumerable metadata that JSON intentionally omits.
-    if (!isJsonInput(schema) || !Check(Meta[dialect], serialized)) {
+    if (!isJsonInput(schema) || !satisfiesMetaSchema(text)) {
       throw new Error();
     }
     const seen = new Set<object>();

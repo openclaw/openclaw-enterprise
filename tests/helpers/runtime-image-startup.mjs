@@ -18,6 +18,7 @@ import { promisify } from "node:util";
 import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { followContainer } from "./docker-follow.mjs";
+import { withTestOwnerLabel } from "./docker-test-owner.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
@@ -117,8 +118,12 @@ export async function runDocker(args, options = {}, input) {
   return runDockerCommand(docker, args, options, input);
 }
 
-// Runs a docker command. A failure rejects with dockerCommandFailure's error.
-export async function runDockerCommand(dockerBin, args, options = {}, input) {
+// Runs a docker command. A failure rejects with dockerCommandFailure's error. A command that
+// creates a container, volume or network labels it with this process as owner, so a signal
+// that stops the test still removes it (docker-test-owner.mjs). Failures name the caller's
+// arguments, without the label.
+export async function runDockerCommand(dockerBin, dockerArgs, options = {}, input) {
+  const args = withTestOwnerLabel(dockerBin, dockerArgs);
   const { redact = [], ...execOptions } = options;
   const timeout = execOptions.timeout ?? 60_000 * imageSmokeTimeoutMultiplier;
   const startedAt = Date.now();
@@ -140,7 +145,7 @@ export async function runDockerCommand(dockerBin, args, options = {}, input) {
   try {
     [result] = await Promise.all([command, inputComplete]);
   } catch (error) {
-    throw dockerCommandFailure(error, args, {
+    throw dockerCommandFailure(error, dockerArgs, {
       timeout,
       elapsedMs: Date.now() - startedAt,
       redact,

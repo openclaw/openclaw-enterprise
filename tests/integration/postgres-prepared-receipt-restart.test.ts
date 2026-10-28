@@ -32,6 +32,7 @@ import {
 } from "../fixtures/repository-credentials/service.mjs";
 import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 
 type Resources = ReturnType<typeof createTestResourceScope>;
 
@@ -101,12 +102,7 @@ async function gateApiHandshake(resources: Resources, upstreamOrigin: string) {
       paused.resolve();
     }
     void (holding ? resume.promise : Promise.resolve()).then(() => {
-      const upstream = connect(Number(new URL(upstreamOrigin).port), "127.0.0.1");
-      upstream.on("error", () => socket.destroy());
-      socket.on("error", () => upstream.destroy());
-      socket.once("close", () => upstream.destroy());
-      upstream.once("close", () => socket.destroy());
-      socket.pipe(upstream).pipe(socket);
+      relaySockets(socket, connect(Number(new URL(upstreamOrigin).port), "127.0.0.1"));
     });
   });
   gate.listen(0, "127.0.0.1");

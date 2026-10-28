@@ -7,7 +7,8 @@ type GatewaySafetySetting = {
   readonly id: string;
   readonly path: readonly string[];
   readonly label: string;
-  readonly help: string;
+  // The help text for a deployment of `values`.
+  readonly help: (values: ConfigurationDocument) => string;
   // The locked-down value Strict mode sets.
   readonly strict: boolean;
   // OpenClaw's `security.preset` value for an unset setting that deployment admission leaves
@@ -21,7 +22,8 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     id: "collaborative-steering",
     path: ["messages", "queue", "allowCollaborativeSteering"],
     label: "Other participants can steer a running turn",
-    help: "On: while a turn runs, another person in the conversation can add guidance to it. The turn keeps the identity and permissions of the person who started it, even when the person steering has fewer. Off: their message runs as a separate turn after it.",
+    help: (values) =>
+      `On: while a turn runs, another person in the conversation can add guidance to it. The turn keeps the identity and permissions of the person who started it, even when the person steering has fewer. ${steeringOffHelp(values)}`,
     strict: false,
     preset: { personal: true, corporate: false },
   },
@@ -29,7 +31,8 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     id: "apply-patch-workspace",
     path: ["tools", "exec", "applyPatch", "workspaceOnly"],
     label: "apply_patch changes files only in the workspace",
-    help: "On: the apply_patch tool can add and change files only in the Agent’s workspace. Off: it can also change files outside the workspace that the Agent’s runtime can write.",
+    help: () =>
+      "On: the apply_patch tool can add and change files only in the Agent’s workspace. Off: it can also change files outside the workspace that the Agent’s runtime can write.",
     strict: true,
     preset: { personal: false, corporate: true },
   },
@@ -42,6 +45,24 @@ export type GatewaySafetyValue =
 
 function isObject(value: unknown): value is ConfigurationDocument {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function corporatePreset(values: ConfigurationDocument) {
+  return isObject(values.security) && values.security.preset === "corporate";
+}
+
+/**
+ * What the Gateway does with another participant's message while steering is off:
+ * `messages.queue.collaborativeSteeringFallback`, else OpenClaw's preset default ("reject" for
+ * `corporate`, "queue" otherwise). The Gateway refuses any other value at startup.
+ */
+function steeringOffHelp(values: ConfigurationDocument) {
+  const queue = isObject(values.messages) ? values.messages.queue : undefined;
+  const fallback = isObject(queue) ? queue.collaborativeSteeringFallback : undefined;
+  const reject = fallback === undefined ? corporatePreset(values) : fallback === "reject";
+  return reject
+    ? "Off: the Gateway refuses their message and asks them to resend it with /followup, which runs it as a separate turn after it."
+    : "Off: their message runs as a separate turn after it.";
 }
 
 function configured(values: unknown, path: readonly string[]) {
@@ -76,11 +97,9 @@ export function gatewaySafetyValue(
   if (admitted.kind === "value") {
     return { kind: "value", value: admitted.value, explicit: false };
   }
-  const security = isObject(values.security) ? values.security : {};
-  const corporate = security.preset === "corporate";
   return {
     kind: "value",
-    value: corporate ? setting.preset.corporate : setting.preset.personal,
+    value: corporatePreset(values) ? setting.preset.corporate : setting.preset.personal,
     explicit: false,
   };
 }
@@ -188,13 +207,14 @@ export function gatewaySafetyControls({
   let current: ConfigurationDocument | undefined;
   let unavailableReason: string | null = null;
   const reason = element("p", { className: "hint", id: "gateway-safety-reason", hidden: true });
-  const toggle = (id: string, label: string, help: string, change: (on: boolean) => void) => {
+  const toggle = (id: string, label: string, helpText: string, change: (on: boolean) => void) => {
     const input = element("input", {
       type: "checkbox",
       id: `gateway-safety-${id}`,
       "aria-describedby": `gateway-safety-${id}-hint`,
     });
     const source = element("strong", { className: "gateway-safety-source" });
+    const help = element("span", { className: "gateway-safety-help" }, helpText);
     const hint = element(
       "p",
       { className: "hint field-help", id: `gateway-safety-${id}-hint` },
@@ -208,7 +228,7 @@ export function gatewaySafetyControls({
       element("label", { className: "gateway-safety-toggle" }, input, label),
       hint,
     );
-    return { input, source, node };
+    return { input, source, help, node };
   };
   const stage = (next: ConfigurationDocument) => {
     if (current !== undefined && next !== current) {
@@ -223,7 +243,7 @@ export function gatewaySafetyControls({
   });
   const rows = GATEWAY_SAFETY_SETTINGS.map((setting) => ({
     setting,
-    ...toggle(setting.id, setting.label, setting.help, (on) => {
+    ...toggle(setting.id, setting.label, setting.help({}), (on) => {
       stage(withGatewaySafetyValue(current ?? {}, setting, on));
     }),
   }));
@@ -243,7 +263,7 @@ export function gatewaySafetyControls({
     reason.hidden = !unavailable;
     reason.textContent = unavailable ?? "";
     let anyBlocked = false;
-    for (const { setting, input, source } of rows) {
+    for (const { setting, input, source, help } of rows) {
       const value = values === undefined ? undefined : gatewaySafetyValue(values, setting);
       const invalid = value?.kind === "invalid";
       // A non-object on the path: only the JSON editor can correct it.
@@ -254,6 +274,10 @@ export function gatewaySafetyControls({
       input.indeterminate = invalid;
       input.disabled = Boolean(unavailable) || values === undefined || blocked;
       source.textContent = value === undefined ? "" : `${sourceText(value)} `;
+      // Unreadable JSON keeps the last help shown.
+      if (values !== undefined) {
+        help.textContent = setting.help(values);
+      }
       describeDisabled(input, reason);
     }
     strict.input.checked = values !== undefined && gatewaySafetyStrict(values);

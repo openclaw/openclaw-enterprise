@@ -66,8 +66,9 @@ just used it. A running Agent with no selected version hides the row only when t
 deployment the page read failed (`setLatestDeployment`). A queued or in-progress one keeps Stop,
 and the confirmation says Stop cancels that deployment. An unreadable deployment or a failed read
 keeps Stop with a confirmation that names both outcomes; a succeeded one read before the Agent
-reread keeps the running-gateway text. The Agents list follows the same rule. The overview's
-**Runtime** row reports a requested stop.
+reread keeps the running-gateway text. A failed readable deployment alone does not hide Stop
+on the Agents list; a newer deployment may be unreadable. The overview's **Runtime** row reports
+a requested stop.
 
 Refresh reads desired state and selected version, not live health. Denial stays inline; changed
 state updates panels in place. If the read finds deletion in progress, Agent detail switches to

@@ -29,7 +29,10 @@ Configuration:
   (`messages.queue.allowCollaborativeSteering`, default on): another person in the
   conversation can add guidance to a running turn. The turn keeps the identity
   and permissions of the person who started it, even when the person steering
-  has fewer. When off, their message runs as a separate turn after it.
+  has fewer. When off, their message runs as a separate turn after it. With
+  `messages.queue.collaborativeSteeringFallback: reject` (the default of
+  `security.preset: corporate`), the Gateway refuses it instead and asks them to
+  resend it with `/followup`. The help text shows which applies.
 - **apply_patch changes files only in the workspace**
   (`tools.exec.applyPatch.workspaceOnly`, default on).
 

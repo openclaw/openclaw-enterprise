@@ -279,6 +279,15 @@ test("collaboration and safety toggles stage their settings in the Configuration
   );
   await page.locator("#gateway-safety-collaborative-steering:checked").waitFor();
   assert.equal(await strict.isChecked(), false);
+  // The steering help says what Off does for this document: under the corporate preset the
+  // Gateway refuses another participant's message instead of queuing it.
+  const steeringHint = page.locator("#gateway-safety-collaborative-steering-hint");
+  assert.match(
+    (await steeringHint.textContent()) ?? "",
+    /Off: their message runs as a separate turn after it\.$/,
+  );
+  await json.fill(JSON.stringify({ ...strictValues, security: { preset: "corporate" } }));
+  await steeringHint.filter({ hasText: "Off: the Gateway refuses their message" }).waitFor();
   await json.fill("{");
   await page
     .getByText("Correct the Configuration JSON to change these settings.", { exact: true })

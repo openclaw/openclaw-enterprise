@@ -1543,6 +1543,113 @@ const GOOGLE_PROVIDER_GONE =
 const UNTRUSTED_ORIGIN_SIGN_IN =
   "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
 
+const UNCONFIRMED_PASSWORD_SIGN_IN =
+  "Could not confirm whether sign-in completed. Reload the page to check your session before trying your password again.";
+
+for (const [lossPoint, afterHeaders] of [
+  ["before response headers", false],
+  ["after response headers", true],
+]) {
+  test(`an accepted password sign-in interrupted ${lossPoint} asks to check the session`, async (t) => {
+    const signInPath = "/api/auth/sign-in/email";
+    let observing = false;
+    let submissions = 0;
+    let acceptedStatus;
+    let cookieIssued = false;
+    let interruptedReply;
+    const fixture = await createConsoleAppFixture(t, {
+      async onSend(request, reply, payload) {
+        if (!observing || request.method !== "POST" || request.url !== signInPath) {
+          // Give the before-headers case a fresh connection for its password submission.
+          if (!afterHeaders) {
+            reply.header("connection", "close");
+          }
+          return payload;
+        }
+        submissions += 1;
+        if (submissions !== 1) {
+          return payload;
+        }
+        acceptedStatus = reply.statusCode;
+        if (acceptedStatus !== 200) {
+          return payload;
+        }
+        const headers = reply.getHeaders();
+        cookieIssued = headers["set-cookie"] !== undefined;
+        reply.hijack();
+        if (afterHeaders) {
+          // The Controller accepted the request. Deliver its real headers and a body
+          // prefix, then keep the socket open until the browser observes the 200.
+          assert.equal(typeof payload, "string");
+          reply.raw.writeHead(reply.statusCode, {
+            ...headers,
+            "content-length": Buffer.byteLength(payload),
+          });
+          reply.raw.write(payload.slice(0, 1));
+          interruptedReply = reply.raw;
+        } else {
+          reply.raw.destroy();
+        }
+        return payload;
+      },
+    });
+    t.after(() => interruptedReply?.destroy());
+    await fixture.bootstrap();
+    const { page } = await newPage(t, fixture);
+    let browserSubmissions = 0;
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === signInPath) {
+        browserSubmissions += 1;
+      }
+    });
+    await page.goto(`${fixture.origin}/console/login`);
+    await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+    await page.getByLabel("Password").fill(fixture.credentials.password);
+    const sessionsBefore = fixture.memoryDatabase.session.length;
+    const isSignIn = (event) => new URL(event.url()).pathname === signInPath;
+    const observed = afterHeaders
+      ? page.waitForResponse(isSignIn)
+      : page.waitForEvent("requestfailed", isSignIn);
+    observing = true;
+    await page.getByRole("button", { name: "Sign in" }).click();
+    const result = await observed;
+    assert.equal(acceptedStatus, 200, "the real Controller must accept the password");
+    assert.equal(cookieIssued, true, "the accepted sign-in must issue a cookie");
+    assert.equal(fixture.memoryDatabase.session.length, sessionsBefore + 1);
+    const createdSession = fixture.memoryDatabase.session.at(-1);
+    if (afterHeaders) {
+      assert.equal(result.status(), 200);
+      assert.ok(Number((await result.allHeaders())["content-length"]) > 1);
+      interruptedReply.destroy();
+    } else {
+      assert.equal(await result.response(), null);
+    }
+    const feedback = page.locator('form [role="alert"]');
+    await feedback.filter({ hasText: /\S/ }).waitFor();
+    assert.equal(await feedback.textContent(), UNCONFIRMED_PASSWORD_SIGN_IN);
+    assert.equal(browserSubmissions, 1);
+    assert.equal(submissions, 1);
+
+    const checkingSession = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/auth/session",
+    );
+    await page.reload();
+    const sessionResponse = await checkingSession;
+    assert.equal(sessionResponse.status(), 200);
+    const { data: session } = await sessionResponse.json();
+    if (afterHeaders) {
+      assert.equal(session?.authenticated, true);
+      assert.ok(session.user.id === createdSession.userId, "reload must find the accepted session");
+      await page.waitForURL(/\/console\/agents(?:[/?#]|$)/);
+    } else {
+      assert.equal(session, null, "the browser received no session cookie");
+      await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+    }
+    assert.equal(browserSubmissions, 1, "checking the session must not resubmit the password");
+    assert.equal(submissions, 1, "the Controller must receive only one password submission");
+  });
+}
+
 // Each failure says what happened and what to do; a rate limit, an outage or the origin
 // check never reads as a wrong password or a refused identity (finding 2535).
 test("sign-in failures name a rate limit, an outage and the origin check", async (t) => {
@@ -1565,6 +1672,13 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
     await page.getByText(expected, { exact: true }).waitFor();
   };
   await page.goto(`${fixture.origin}/console/login`);
+
+  const wrongPassword = page.waitForResponse((response) =>
+    response.url().endsWith("/api/auth/sign-in/email"),
+  );
+  const refusedPassword = signIn("Could not sign in. Check your email and password.");
+  assert.equal((await wrongPassword).status(), 401);
+  await refusedPassword;
 
   // The real API refuses a sign-in sent from another Origin before it reads the password.
   // The browser keeps its own Origin, so the request is resent from the test with another.
@@ -1594,7 +1708,7 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
       outage,
       "Sign-in is temporarily unavailable because a service it depends on did not answer. Try again shortly. If it continues, ask an operator.",
     ],
-    [null, "Could not reach the sign-in service. Check your connection, then try again."],
+    [null, UNCONFIRMED_PASSWORD_SIGN_IN],
   ]) {
     await page.route("**/api/auth/sign-in/email", (route) =>
       response === null ? route.abort("connectionrefused") : route.fulfill(response),

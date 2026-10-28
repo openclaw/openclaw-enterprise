@@ -15,6 +15,11 @@ const soulVersion = (version) =>
   ).join("");
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
+const submitPassword = [
+  { selector: "#username", value: "operator@example.com" },
+  { selector: "#password", value: "demo-only" },
+  click("Sign in"),
+];
 const runtimeLogsPage = {
   group: "Pages/Agent detail",
   path: `${candidateVersion}&tab=logs`,
@@ -896,12 +901,18 @@ export const scenarios = {
     path: "/console/login",
     signedOut: true,
     rules: [{ path: "/api/auth/sign-in/email", method: "POST", status: 401 }],
-    actions: [
-      { selector: "#username", value: "operator@example.com" },
-      { selector: "#password", value: "demo-only" },
-      click("Sign in"),
-    ],
+    actions: submitPassword,
     description: "A rejected sign-in leaves the form available for retry.",
+  },
+  passwordSignInUnconfirmed: {
+    group: "Pages/Sign in",
+    name: "Password sign-in unconfirmed",
+    path: "/console/login",
+    signedOut: true,
+    rules: [{ path: "/api/auth/sign-in/email", method: "POST", bodyError: true }],
+    actions: submitPassword,
+    description:
+      "An interrupted password response leaves the result unknown. Reload to check the session before entering the password again.",
   },
   expired: {
     group: "Pages/Sign in",
@@ -4476,6 +4487,16 @@ export const scenarios = {
       "Strict mode writes every locked-down value into the Configuration JSON; Save Configuration keeps them, and the next deployment applies them.",
     gap: "Simulated UI proof; does not show a deployed Gateway steering a turn.",
   },
+  gatewaySafetyCorporate: {
+    group: "Pages/Agent detail",
+    name: "Collaboration and safety, corporate preset",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    securityPreset: "corporate",
+    description:
+      "With OpenClaw's corporate security preset, steering is off by default, and the help text says the Gateway refuses another participant's message and asks them to resend it with /followup.",
+    gap: "Simulated UI proof; does not show a deployed Gateway refusing a message.",
+  },
   gatewaySafetyReader: {
     group: "Pages/Agent detail",
     name: "Collaboration and safety, viewer can only read",
@@ -4997,12 +5018,23 @@ export const scenarios = {
     deployed: true,
     candidateDeploymentStatus: "running",
     candidateActivates: true,
+    // Keep the automatic full reread visible long enough to inspect its quiet presentation.
+    rules: [
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        delayMs: 2500,
+        once: true,
+      },
+    ],
     description:
       "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
     steps: [
       'On arrival the notice begins "Deploying version" and Selected for service reads v6.',
       "Before the status poll lands, focus Viewing version without changing its v7 selection.",
-      'Within about 5 s the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
+      'After the next poll and its delayed overview reread, the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
+      "Reset. Open Deployment and hover Refresh deployment before the next poll. Keep the pointer still: completion and the delayed overview reread preserve the hover fill without marking the button busy.",
+      "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
     ],
   },
   deploymentCompletesRereadFails: {
@@ -5719,8 +5751,20 @@ export const scenarios = {
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        method: "GET",
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        delayMs: 1800,
+      },
+    ],
     description:
       "v7 is now selected and its original deployment recorded success. This remains historical evidence, not a live probe.",
+    steps: [
+      "Focus Refresh record and press Enter. While Refreshing… is shown, the button keeps focus and repeated Enter or Space does not start another read. Completion leaves focus on Refresh record.",
+      "Refresh again and press Tab before the response arrives. Completion leaves focus on the control you moved to.",
+    ],
   },
   deploymentActivityLoading: {
     group: "Pages/Agent detail",
@@ -5921,6 +5965,18 @@ export const scenarios = {
       "At 1440 the two cards sit side by side and together fill the panel; no blank column is left beside them.",
       "At 390 each card spans the panel, one under the other.",
     ],
+  },
+  runtimeLogsMissingAgentPod: {
+    ...runtimeLogsPage,
+    name: "Gateway logs with no current Agent Pod",
+    runtimePod: "missingAgent",
+    actions: [{ selector: "#runtime-log-source", value: "gateway" }],
+    description:
+      "A simulated dedicated Agent source remains listed when no current Agent Pod is reported. Gateway logs show the note without claiming the Agent never started.",
+    steps: [
+      "Keep Gateway selected and check the note: No current Agent (Harness) Pod was reported. Check Deployment activity for the latest status.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
   },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
@@ -8613,7 +8669,7 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row, as the Agents list has no Stop icon.",
+      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopFirstDeploymentQueued: {

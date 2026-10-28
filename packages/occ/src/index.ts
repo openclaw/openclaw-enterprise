@@ -331,6 +331,7 @@ import {
 } from "./errors.ts";
 import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 import {
+  refuseOpenClawSandbox,
   refuseRetiredOpenClawSettings,
   validateConfigurationSettings,
   validateWorkspaceBootstrapSettings,
@@ -10385,6 +10386,8 @@ export class OpenClawController {
       validateWorkspaceBootstrapSettings(configuration.values);
       // The Gateway refuses a setting the pinned OpenClaw retired and does not start (finding 2709).
       refuseRetiredOpenClawSettings(configuration.values);
+      // The Gateway starts, then fails every turn in OpenClaw's sandbox (finding 2767).
+      refuseOpenClawSandbox(configuration.values);
       this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
@@ -14587,9 +14590,11 @@ export class OpenClawController {
       return;
     }
     const configuration = await readConfiguration();
-    // Deploy admission's rules for a stored Configuration that predates them (findings 2699, 2709).
+    // Deploy admission's rules for a stored Configuration that predates them (findings 2699, 2709,
+    // 2767).
     validateWorkspaceBootstrapSettings(configuration.values);
     refuseRetiredOpenClawSettings(configuration.values);
+    refuseOpenClawSandbox(configuration.values);
     if (agent.credentialSourceId !== undefined) {
       const source = await state.credentialSources.findCredentialSource(
         configuration.namespaceId,

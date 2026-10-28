@@ -25,6 +25,8 @@ import { LIVE_SOURCE_MODEL_REQUIRED } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { egressAssociationInstallation } from "../../packages/contracts/src/index.ts";
 import type {
@@ -75,6 +77,7 @@ function nativeModel(slug = "fixture-model") {
 // This journey uses the real API, IAM, source store and Kubernetes Secret Driver.
 // The registered Driver is a controlled admission peer; it does not qualify a native sender.
 async function workspaceJourney(t: TestContext, persistence: "memory" | "postgres") {
+  const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
   const f = await staticEgressFixture(t, {
     admitRevision: false,
     ...(persistence === "postgres"
@@ -82,7 +85,10 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
           appFactory: (context: TestContext, options: object = {}) =>
             postgresApp(context, { ...options, recordOperations: true }),
         }
-      : {}),
+      : {
+          appFactory: (context: TestContext, options: object = {}) =>
+            createConsoleAppFixture(context, { ...options, configurationDriver }),
+        }),
     driverConfigurations: [
       {
         capability: "sandbox",
@@ -346,7 +352,43 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   }
   body.configurationId = f.agent.configurationId;
   admittedSource = undefined;
-  assert.equal((await patch()).status, 503);
+  if (persistence === "memory") {
+    const saved = await configurationDriver.read({
+      namespaceId: f.namespace.id,
+      id: body.configurationId,
+    });
+    // Model a document stored before sandbox validation at the passive storage boundary.
+    // Even without provider authority, the real PATCH must report the unsafe sandbox first.
+    await configurationDriver.update({
+      ...saved,
+      values: {
+        ...saved.values,
+        agents: {
+          ...saved.values.agents,
+          defaults: {
+            ...saved.values.agents?.defaults,
+            sandbox: { mode: "all" },
+          },
+        },
+      },
+    });
+    try {
+      const refused = await patch();
+      assert.equal(refused.status, 400, JSON.stringify(refused.body));
+      assert.equal(
+        refused.body.error.message,
+        'Configuration setting agents.defaults.sandbox.mode must be "off" or unset: OCE runs each Agent in its own isolated runtime and does not support OpenClaw\'s sandbox.',
+      );
+    } finally {
+      await configurationDriver.update(saved);
+    }
+  }
+  const missingAuthority = await patch();
+  assert.equal(missingAuthority.status, 503, JSON.stringify(missingAuthority.body));
+  assert.equal(
+    missingAuthority.body.error.message,
+    "A required platform dependency is unavailable.",
+  );
   admittedSource = source;
   const updated = await patch();
   assert.equal(updated.status, 200, JSON.stringify(updated.body));

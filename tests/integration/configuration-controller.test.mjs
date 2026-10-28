@@ -269,7 +269,7 @@ function createOpenClawConfiguration() {
       defaults: { store: "teamstore" },
       credential_proxy: { enabled: true },
     },
-    agents: { defaults: { sandbox: { mode: "all" } } },
+    agents: { defaults: { sandbox: { mode: "off", scope: "agent" } } },
     plugins: {
       entries: {
         knowledge: {
@@ -1271,6 +1271,79 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
       },
     },
   });
+});
+
+test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE runtime cannot run", async () => {
+  // Finding 2767. The pinned OpenClaw runs sandboxed tools in Docker, which the OCE runtime does
+  // not have: a Configuration that turned the sandbox on saved and deployed, then failed every
+  // turn. Every save path and deployment refuse a mode other than "off", for the defaults and for
+  // one Agent's entry, which overrides them.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-sandbox-integration", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Sandbox consumer",
+    secretName: "sandbox-key",
+  });
+  const requirement =
+    'must be "off" or unset: OCE runs each Agent in its own isolated runtime and does not support OpenClaw\'s sandbox';
+  const defaultsMode = setting("agents.defaults.sandbox.mode", requirement);
+  const entryMode = setting("agents.entries.main.sandbox.mode", requirement);
+  const withSandbox = (sandbox, entrySandbox) => ({
+    agents: {
+      defaults: { ...runtimeDefaults, ...(sandbox === undefined ? {} : { sandbox }) },
+      ...(entrySandbox === undefined ? {} : { entries: { main: { sandbox: entrySandbox } } }),
+    },
+  });
+  for (const [values, message] of [
+    [withSandbox({ mode: "all", scope: "session" }), defaultsMode],
+    [withSandbox({ mode: "non-main" }), defaultsMode],
+    [withSandbox({ mode: null }), defaultsMode],
+    [withSandbox({ mode: "off" }, { mode: "all" }), entryMode],
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+    await refusedOnSave(context, values, message);
+  }
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(configurationDriver, agent.configurationId, withSandbox({ mode: "all" }));
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    defaultsMode,
+    { label: "Agent save" },
+  );
+  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
+  // "off" saves with the sandbox settings beside it, and so does a corporate security preset,
+  // which turns the sandbox on only where the Configuration leaves the mode unset.
+  await acceptedOnSave(context, withSandbox({ mode: "off", scope: "session" }, { mode: "off" }));
+  await acceptedOnSave(context, { ...runtimeSelected, security: { preset: "corporate" } });
+  // A Preset value that waits on a string variable is checked once filled when its written text
+  // can still spell "off"; a default fills it here, and a boolean variable never can.
+  const waiting = withSandbox({ mode: "{{ vars.mode }}" });
+  assertRefused(
+    await savePreset(context, {
+      variables: { mode: { type: "string", default: "all" } },
+      configuration: { values: waiting },
+    }),
+    defaultsMode,
+  );
+  const deferred = await savePreset(
+    context,
+    { variables: { mode: { type: "string" } }, configuration: { values: waiting } },
+    "Mode-deferred",
+  );
+  assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
+  assertRefused(
+    await savePreset(
+      context,
+      { variables: { mode: { type: "boolean" } }, configuration: { values: waiting } },
+      "Mode-boolean",
+    ),
+    defaultsMode,
+  );
 });
 
 test("SSH and Docker Compute refuse at save and deployment a Gateway tool policy their embedded Gateway refuses", async () => {
