@@ -8965,7 +8965,7 @@ for (const [id, source, name, theme] of [
     name,
     theme,
     description:
-      "Deployment branding from the production theme loader. Resource, session, and runtime states are simulated.",
+      "Deployment branding from the production theme loader. Navigation logos fit within 48 × 48 px; sign-in logos use 40 × 40 px. Resource, session, and runtime states are simulated.",
   };
 }
 
