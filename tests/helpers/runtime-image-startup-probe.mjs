@@ -1,8 +1,8 @@
 // The startup model probe scenario shared by runtime-image-startup-probe.test.mjs,
-// runtime-image-startup-termination.test.mjs and
-// runtime-image-gateway-unclean-restart.test.mjs, which CI runs side by side in
-// Image Runtime Startup 2: one runtime wrapper started with the container command
-// the Compute driver renders, beside a stand-in model provider sidecar.
+// runtime-image-startup-termination.test.mjs and the Gateway restart cases
+// (runtime-image-gateway-restart.mjs), which CI runs side by side in Image Runtime
+// Startup 2 and 1: one runtime wrapper started with the container command the
+// Compute driver renders, beside a stand-in model provider sidecar.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
