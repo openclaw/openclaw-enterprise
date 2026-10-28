@@ -1,10 +1,14 @@
+---
+kind: reference/driver
+---
+
 # PluginDriver contract
 
 ## Overview
 
 `PluginDriver` supplies a curated catalog, policy capabilities, and policy
 validation for an Agent Harness. OpenClaw Control Plane (OCC) owns Agent
-selections, authorization, and immutable Agent revisions.
+selections, authorization, and Agent revisions.
 Compute owns native installation, runtime connections, readiness, activation,
 and retirement. Bundled startup code also translates selected policy into native
 configuration; those helpers are not methods on the exported Driver interface.
@@ -23,8 +27,8 @@ The [shared interface](../../../packages/contracts/src/index.ts) exposes:
 - `policyCapabilities`: supported default/tool enablement, approval modes, and
   reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.
   An empty reviewer array means explicit selection is unsupported at that scope.
-  For IDs marked `enablement_only` in `policyScopeByPlugin`, the only Agent
-  permission is `enabled`. Other plugins use the Driver’s advertised defaults.
+  For IDs marked `enablement_only` in `policyScopeByPlugin`, adding the plugin
+  sets `enabled: true`. The next deployment applies that selection.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
 - `validatePlacement(selections, harness, computeImplementation)` (optional): check

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-26
-last_updated_session: wf-land-1707
+updated: 2026-10-27
+last_updated_session: authoring-run/f3434faa-8624-4f34-83a2-521047f80329
 ---
 
 # Agent Native Admin UI Flow
@@ -84,13 +84,17 @@ An existing helper-owned name cannot change this selection.
 
 Agent detail reads `${path}/native-admin` only when the Agent permission answer
 allows `administer` or is unknown. Disabled or denied access stays hidden;
-other refusals explain why. Only `available` shows **Open admin console**, opening
+other refusals explain why. Only `available` enables the header **Open Agent UI** link, opening directly
 with `noopener noreferrer`. An audited `403` in the session owner’s tab
 `sessionStorage` suppresses reads until logout, sign-in, or a new tab. Changes to
 `activeRevisionId` or `desiredRuntimeState` refresh access, coalescing concurrent
-requests into one follow-up.
+requests into one follow-up. The target description names the version selected for
+service; browsing a historical version does not change the destination. Stopped and
+unsupported states offer **Open draft**. An unavailable deployment offers **View deployment**
+when a readable version exists. Other unavailable states keep Refresh access.
 
-The warning says native edits are outside OCE; durable configuration belongs in OCE.
+The warning describes Gateway managed mode and OCE overwriting changes made while
+it is off; durable configuration belongs in OCE.
 
 ### 2. OCC protects the availability route
 
@@ -244,6 +248,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 09:30: Document direct Open Agent UI navigation and availability recovery. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 
 - 2026-10-26 22:00: Close refused sockets and denied leases before their denial audit settles; track admission through its audit attempt and bound the shutdown drain. (wf-land-1707 - #1707)
 - 2026-10-26 01:00: A JSON `administer` denial names the grant, not the Agent.

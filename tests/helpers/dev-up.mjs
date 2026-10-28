@@ -19,6 +19,9 @@ const mismatchedInstallationId = "ins_9ce0e58a-415d-485e-90c2-20c3c5572505";
 const defaultRuntimeImage = "openclaw-enterprise-runtime:quickstart";
 const bashExecutable = "/bin/bash";
 
+// Callers isolate scenario environments in fixture.env and leave the parent PATH,
+// cwd and provider executables unchanged. Reuse discovery, never scenario renders.
+let configurationProvider;
 let cliBuild;
 let cliDirectory;
 after(async () => {
@@ -823,7 +826,7 @@ async function createFixture(t, options = {}) {
   await mkdir(bin);
   const engine = options.engine ?? "docker";
   const engineLog = join(directory, `${engine}.log`);
-  const provider = composeConfigurationProvider();
+  const provider = (configurationProvider ??= composeConfigurationProvider());
   const cli = await developmentCli();
   const fake = { directory, engine, options, cli, lifecycle: false };
   fake.server = await startCommandServer({

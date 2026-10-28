@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
@@ -2296,6 +2296,17 @@ async function writePreflight(outDir, profile, diagnostics, output = {}) {
   return preflight;
 }
 
+function sameProfileFile(input, output) {
+  try {
+    const inputFile = statSync(input, { bigint: true });
+    const outputFile = statSync(output, { bigint: true });
+    return inputFile.dev === outputFile.dev && inputFile.ino === outputFile.ino;
+  } catch {
+    // Normal cleanup and input loading own missing, inaccessible, or looping paths.
+    return false;
+  }
+}
+
 // Renders one profile in-process: writes the same files as the CLI and returns its
 // preflight summary. `args` takes the CLI's parsed shape: { profile, input, outDir }.
 // It never writes to stdout or stderr or exits; a refusal without a preflight rejects.
@@ -2316,6 +2327,12 @@ export async function renderInstallationProfile(args) {
     installation: resolve(outDir, "installation.yaml"),
     preflight: resolve(outDir, "preflight.json"),
   };
+  // Check file identity before cleanup, including symlink and case-insensitive aliases.
+  if (Object.values(output).some((path) => sameProfileFile(resolve(args.input), path))) {
+    fail(
+      "--input must not name a generated output file; choose another input name or output directory.",
+    );
+  }
   // A failed rerender must not expose artifacts or a success report from a prior run.
   await Promise.all(Object.values(output).map((path) => rm(path, { force: true })));
   const diagnostics = { errors: [], warnings: [], prerequisites: [], nextSteps: [] };

@@ -30,6 +30,7 @@ import {
   READ_UNAVAILABLE,
   namespaceListDenied,
 } from "../helpers/refusal-text.mjs";
+import { liftRestriction } from "../helpers/iam-grants.mjs";
 
 const slack = {
   enabled: true,
@@ -314,12 +315,16 @@ test("active Agent can deploy the current saved draft as a new version", async (
     fixture,
     `/console/agents/${agent.id}?namespace=${encodeURIComponent(namespace.id)}`,
   );
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1/ })
+    .waitFor({ state: "attached" });
 
   await page.screenshot({ path: join(artifacts, "revision-deploy.png"), fullPage: true });
 
   // The viewed version stays immutable; create a draft before deploying v2.
-  await page.getByRole("button", { name: "Create new version" }).first().click();
+  await page.getByRole("button", { name: "Open draft" }).first().click();
   await page
     .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
@@ -448,7 +453,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
     },
   );
   await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Create new version" }).first().click();
+  await page.getByRole("button", { name: "Open draft" }).first().click();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.getByRole("alert").filter({ hasText: READ_UNAVAILABLE }).first().waitFor();
   assert.equal(deploymentRequests, 0);
@@ -869,7 +874,7 @@ test("Credentials shows issued-account denial only while that source is selected
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   assert.equal((await deniedList).status(), 403);
-  fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
+  liftRestriction(fixture.policy, restriction);
   // The refusal names the grant the list checks and who can grant it.
   const feedback = page.getByText(
     `Service Accounts unavailable. ${namespaceListDenied("Service Accounts")}`,

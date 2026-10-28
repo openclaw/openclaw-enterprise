@@ -284,7 +284,9 @@ contains a Secret value. For the CLI steps, see
 [Let an Agent use a Secret](../guides/topics/iam.md#let-an-agent-use-a-secret).
 
 The subject must be an existing human Principal or a ServicePrincipal in the
-path Namespace. A human does not need a separate Namespace ServicePrincipal.
+path Namespace, by its ID: an email address is refused with a message that says
+to use the person's `principalId`. A human does not need a separate Namespace
+ServicePrincipal.
 The Role and target must exist in the path Namespace. `namespace` Permissions
 support only `read`; for a `namespace` target, `resourceId` must equal the
 Namespace ID in the path.

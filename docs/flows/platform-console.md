@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-25
-last_updated_session: fix-2505
+updated: 2026-10-28
+last_updated_session: fix-3678
 ---
 
 # Platform console request flow
@@ -69,7 +69,7 @@ graph TD
     M3 --> M4["Worker creates resources, grants and first deployment"]
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
     M --> M2["Console grants Agent use of selected Secrets"]
-    E2 --> N["GET draft Configuration or immutable Agent revision"]
+    E2 --> N["GET draft Configuration or Agent revision"]
     E3 --> O["PATCH Configuration, then grant selected Secret access"]
     E4 --> P["DELETE exact Agent"]
     E5 --> P2["POST exact Agent stop"]
@@ -183,8 +183,8 @@ unavailable; selection never becomes an API query selector.
 Namespace checks, naming a known selection; retained-view reads do not extend this.
 `shell.mts:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
-Load renders replace the shell; `createShell` activates a control whose mouse
-press a render replaced before release.
+Load renders replace the shell; `createShell` activates a primary navigation link
+whose mouse press a render replaced before release.
 Empty lists show access guidance. `navigation.mts:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
 
@@ -359,6 +359,7 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
 - 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

@@ -156,7 +156,8 @@ export FIRST_AGENT_RECORD='<local-state-directory>/first-agent-<name-hash>.json'
 
 Run this whole block in Bash. It checks the recorded Namespace, Agent,
 Configuration, credential source and original Secret before any deletion. Missing
-records, failed lookups or changed references stop cleanup; they never fall back
+records, unsupported Sandbox Driver/authentication pairs, failed lookups or changed
+references stop cleanup; they never fall back
 to deleting whichever Secret is referenced now. For a missing record or drift,
 leave resources in place and establish ownership manually before removing them.
 A name prefix alone is not ownership evidence.
@@ -166,6 +167,9 @@ A name prefix alone is not ownership evidence.
   set -euo pipefail
   RECORD="$(jq -ec --arg ns "$OCC_NAMESPACE" --arg agent "$AGENT_ID" '
     select(.version == 3 and .namespaceId == $ns and .agentId == $agent)
+    | select((.sandboxDriver == "none" and .authMethod == "api_key") or
+        (.sandboxDriver == "openshell" and
+          (.authMethod == "api_key" or .authMethod == "codex_pat")))
     | select(.configurationId | type == "string" and startswith("cfg_"))
     | select(.secretId | type == "string" and startswith("sec_"))
     | {namespaceId, agentId, configurationId, secretId, credentialSourceId,

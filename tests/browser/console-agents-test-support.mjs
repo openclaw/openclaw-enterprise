@@ -136,12 +136,9 @@ export async function waitForCreateFormReads(page) {
 }
 
 export async function expectNativeAdminHidden(page) {
+  assert.equal(await page.locator(".native-admin-access").isVisible(), false);
   assert.equal(
-    await page.getByRole("heading", { name: "Gateway administration" }).isVisible(),
-    false,
-  );
-  assert.equal(
-    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
+    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
     false,
   );
 }

@@ -30,6 +30,7 @@ export interface ExecutingExchange {
 
 interface ExchangeOwner {
   readonly clock: Clock;
+  admitted(): boolean;
   finish(): void;
   cancel(): void;
 }
@@ -115,7 +116,8 @@ export async function executeExchange(
         if (
           !plan.bindRequestDigest ||
           !requestDigestSha256 ||
-          !/^[0-9a-f]{64}$/.test(requestDigestSha256)
+          !/^[0-9a-f]{64}$/.test(requestDigestSha256) ||
+          !owner.admitted()
         ) {
           return failure();
         }
@@ -125,10 +127,15 @@ export async function executeExchange(
         if ("kind" in authorized) {
           return authorized;
         }
-        assertSendStart = authorized.assertSendStart;
-        if (signal.aborted) {
+        if (signal.aborted || !owner.admitted()) {
           return authorized.settle ? authorized.settle("not-submitted") : failure();
         }
+        assertSendStart = () => {
+          if (!owner.admitted()) {
+            throw new Error("DISPATCH_CLOSED");
+          }
+          authorized.assertSendStart();
+        };
         senderEntered = true;
         senderWork = send(
           {

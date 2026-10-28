@@ -293,16 +293,18 @@ for (const viewport of [
     // read lands it grows the status above the strip. Measure the strip once the reads are in.
     await waitForIdleFetches(page);
     const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
-    // The strip sits in the middle of the viewport, as after reading the overview.
+    // Scroll after reading the overview, keeping the strip visible even when the compact
+    // desktop summary already places it above the viewport's midpoint.
     await page.evaluate(() => {
       const strip = globalThis.document.querySelector(".agent-tabs")!.getBoundingClientRect();
-      globalThis.scrollBy(0, strip.top - globalThis.innerHeight / 2);
+      const target = Math.min(globalThis.innerHeight / 2, strip.top / 2);
+      globalThis.scrollBy(0, strip.top - target);
     });
     const before = await page.evaluate(() => ({
       scrollY: globalThis.scrollY,
       strip: globalThis.document.querySelector(".agent-tabs")!.getBoundingClientRect().top,
     }));
-    assert.ok(before.scrollY > 0, "the page scrolled to put the strip mid-viewport");
+    assert.ok(before.scrollY > 0, "the page is scrolled before opening Logs");
     await logsTab.click();
     await page
       .getByRole("log", { name: "Runtime log output" })
@@ -2105,16 +2107,29 @@ test("a Gateway view points at an unready Harness Pod instead of reading as a ne
   assert.equal(await hint.count(), 0);
 });
 
-test("the Gateway hint skips a rollout's old Harness Pod and covers a Harness with no Pod", async (t) => {
+test("the Gateway hint skips a rollout's old Harness Pod and reports a previously ready Harness Pod no longer observed", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   // A rollout keeps an unready old Harness Pod beside a ready one: no hint.
   computeDriver.state.harnessPod = { ready: true, stale: true };
-  computeDriver.state.lines = [
-    line(1, "codex app-server remote WebSocket connection failed: connect ECONNREFUSED"),
-  ];
+  computeDriver.state.lines = [line(1, "Gateway connection failed: connect ECONNREFUSED")];
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  const statusPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}/runtime`;
+  const statusReply = () =>
+    page.waitForResponse((response) => response.url() === `${fixture.origin}${statusPath}`);
+  const initial = statusReply();
   await login(page, fixture, url);
+  const present = await initial;
+  assert.equal(present.status(), 200);
+  assert.ok(
+    (await present.json()).data.pods.some(
+      (pod: { role: string; phase: string; ready: boolean }) =>
+        pod.role === "agent" && pod.phase === "Running" && pod.ready,
+    ),
+  );
   await page
     .locator(".runtime-pod")
     .getByText(`agent-${revisionId.slice(4, 12)}-old`)
@@ -2126,13 +2141,32 @@ test("the Gateway hint skips a rollout's old Harness Pod and covers a Harness wi
     .waitFor();
   assert.equal(await page.getByRole("note").count(), 0);
 
-  // A dedicated Harness whose Pod does not exist yet still explains the Gateway errors.
+  // Settle the ready observation before changing it; the paused clock prevents a poll racing it.
+  await waitForIdleFetches(page);
+  const before = await settledFetches(page, statusPath);
+  // A later empty observation does not mean this previously ready Harness never started.
   computeDriver.state.harnessPod = { created: false };
-  await page.reload();
-  await page.locator("#runtime-log-source").selectOption("gateway");
-  const missing = page.getByRole("note").filter({ hasText: "The Agent (Harness) has no Pod yet" });
+  const next = statusReply();
+  await page.clock.runFor(10_000);
+  const absent = await next;
+  assert.equal(absent.status(), 200);
+  assert.equal(
+    (await absent.json()).data.pods.some((pod: { role: string }) => pod.role === "agent"),
+    false,
+  );
+  // A network response alone does not prove the page has applied its body.
+  await waitForSettledFetches(page, statusPath, before + 1);
+  await waitForIdleFetches(page);
+  const missing = page.getByRole("note");
   await missing.waitFor();
-  assert.match((await missing.textContent()) ?? "", /see Deployment activity/);
+  assert.equal(
+    await missing.textContent(),
+    "No current Agent (Harness) Pod was reported. Check Deployment activity for the latest status.",
+  );
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText(/ECONNREFUSED/)
+    .waitFor();
 });
 
 // The permission answer already says the reader lacks operate and log text, so neither the status
@@ -3104,11 +3138,11 @@ test("a refused status poll clears the Pod details and keeps authorized log read
 
 // Back compares a read the view shows as refused or missing like data (finding 1553): an
 // unchanged 404 keeps the view, a 403 granted since and a shown read refused since rebuild it
-// (finding 1562). The Configuration tab keeps rate-limited runtime reads out of it.
+// (finding 1562). The Deployment tab exposes Refresh deployment without runtime log reads.
 test("Back keeps a view whose refusal is unchanged and rebuilds one granted or refused since", async (t) => {
   const logs = await logsFixture(t);
   const { page, deployment, leave } = await openRetainedLogs(t, logs, logs.fixture.credentials, {
-    tab: "configuration",
+    tab: "deployment",
     firstDeployment: refusedRoute(404),
   });
   const refresh = page.getByRole("button", { name: "Refresh deployment" });

@@ -280,10 +280,10 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
   `pnpm test:files --test-name-pattern='dedicated replacement starts a candidate Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
 - Check embedded Gateway repair after a never-served unready predecessor:
   `pnpm test:files --test-name-pattern='never-served unready Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
-- For real model turns, run `node --test tests/integration/docker-compute-real.test.mjs`
-  (Docker Compose embedded and dedicated), or
-  `node --test tests/integration/harness-topology-k3d-real.test.mjs` (Kubernetes).
-  Select images, infrastructure and credentials in [test environment settings](../testing/docker.md#docker-compose-development-test-environment).
+- For real model turns, run
+  `node --test tests/integration/harness-topology-k3d-real.test.mjs` (Kubernetes) with the
+  inputs in [the real-runtime suite](../testing/kubernetes.md#run-the-real-runtime-suite-directly).
+  Docker Compute deploys no Agent: it rejects every Harness authentication binding.
 - Verify provider-backed dedicated Codex with
   `node --test tests/integration/service-account-driver-real.test.mjs`,
   `OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1` and an authorized mounted

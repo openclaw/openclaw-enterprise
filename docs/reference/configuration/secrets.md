@@ -55,7 +55,7 @@ message naming the fix. Update the Configuration with replacement
 `secretBindings`, or assign the Agent another Configuration. Namespace membership,
 Configuration access, Agent access, or possession of a ref does not grant
 consumption. Deployment stores normalized references and the selected
-SecretDriver identity in the immutable AgentRevision; it does not store backend
+SecretDriver identity in the AgentRevision; it does not store backend
 locators or value bytes. Secret storage CRUD, update/restart semantics,
 Kubernetes Secret RBAC, no-leakage rules, and troubleshooting are owned by the
 [Kubernetes Secret Driver](../drivers/kubernetes-secret.md).

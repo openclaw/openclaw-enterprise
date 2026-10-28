@@ -1,72 +1,75 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-27"
-last_updated_session: authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad
+last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-A process in an Agent execution asks for repository metadata. Its authenticated
-supervisor captures the request and the connection that will receive the answer.
-OpenClaw Control Plane (OCC) decides whether the sender can obtain a credential, whether it can send
-this request and which response it can release. The bundled legacy supervisor
-cannot enforce this exchange. See the [release cutoff](../reference/credential-sources/protected-inference.md)
-and [Credential Proxy threat model](../reference/security/credential-proxy.md).
+A process in a dedicated Agent asks GitHub for a repository's identity. The
+supervisor sends the authorized request and holds the reply until OpenClaw
+Control Plane (OCC) approves what the process may receive. This flow describes
+the exchange required of the supervisor. The bundled legacy supervisor lacks
+it. See the [release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
 
-- Trigger: an installed supervisor sends `HttpCredentialAccess.Resolve`, followed
-  by `AuthorizeSend` and `HttpResponsePreReturn.Evaluate` over authenticated TLS
+- A [source binding](../reference/credential-sources.md#bind-a-source-to-an-agent)
+  and deployment establish the route. The installation must have current
+  evidence of loaded enforcement.
+- The authenticated supervisor opens one TLS stream,
+  `HttpInstallationExchange.Exchange`, for credential resolution, send
+  authorization and response release
   (`apps/controller/src/drivers/egress-proxy/openshell-authority.ts:createOpenShellEgressAuthority`).
-- Assumptions: source admission and Agent deployment produced an exact plan; a current
-  verified loaded-enforcement receipt permits installation; the running Agent's service
-  principal holds exact source `operate` permission.
 
 ## Flow
 
-Suppose a dedicated Agent has a prepared `github-app-metadata` source for
-repository ID `12345`, name `acme/widgets`. A process requests
-`GET /repos/acme/widgets` at the admitted origin with an empty body.
+### Follow the metadata GET
 
-1. **Classify the request.** The GitHub adapter checks the captured method, origin,
-   path, headers and body against the execution's route. A second repository
-   or `POST /repos/acme/widgets/pulls` fails before credential access.
-2. **Authorize access.** OCC checks the authenticated installation, execution,
-   binding, withdrawal state and the Agent's current `credential_source:operate`.
-   The resolver selects a committed, usable token for this grant. Only the
-   trusted sender receives the injection header.
-3. **Authorize send.** On the same exchange, OCC checks current authority and
-   the selected material version as it authorizes the attempt. If the binding
-   was withdrawn after resolution, the sender receives no permit. An acknowledged
-   permit lets it start this exact request within the recorded deadline.
-4. **Release repository identity.** The sender holds GitHub's complete response.
-   The adapter requires a `200` JSON response of at most 64 KiB with the admitted numeric ID
-   and matching repository name (ASCII letter case may differ). It returns `{"id":12345,"full_name":"acme/widgets"}`
-   in the admitted spelling, with `Content-Type: application/json` and
-   `Cache-Control: no-store`. A mismatch withholds the response. Other upstream
-   fields and headers stay outside the workload.
+Suppose the revision admits `github-app-metadata` for repository ID `12345`,
+`acme/widgets`, at `https://api.github.com`.
 
-The credential-free metadata profile uses the same request and response rules.
-It records `no_material_required` and adds no credential header.
-[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/e573b7de03bafa2e84ea072d8c10cef7320575d4/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+1. **Match the request.** The supervisor captures the process's bodyless
+   `GET /repos/acme/widgets` and binds the reply to that exchange. The GitHub
+   adapter checks the method, URL, headers and body against the installed route.
+2. **Resolve the token.** OCC checks the installation, binding, withdrawal
+   state and the Agent's current `credential_source:operate`. The resolver
+   selects a usable installation token that the worker already prepared.
+   OCC returns the resulting `Authorization: Bearer …` header to the supervisor.
+3. **Permit one send.** On the same stream, OCC rechecks authority and the
+   token version. If the Agent lost its source grant after resolution, OCC
+   refuses the send. Otherwise, the supervisor can start the request by the
+   deadline in the permit. Issuing a permit does not confirm receipt by GitHub.
+4. **Release the identity.** The supervisor submits GitHub's complete reply.
+   The adapter checks for a `200` JSON response of at most 64 KiB with the
+   admitted ID and name (ASCII letter case may differ). For example, even if
+   GitHub returns `"full_name":"Acme/Widgets"` and a description, the caller
+   can receive a `200` with `Content-Type: application/json`,
+   `Cache-Control: no-store` and this body.
+
+```json
+{ "id": 12345, "full_name": "acme/widgets" }
+```
+
+If GitHub returns ID `67890` under the same name, the supervisor withholds the
+response. GitHub has already received the request. With the credential-free
+profile the same filters apply, but resolution records `no_material_required`
+and the supervisor sends no credential header.
+[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 
 ```mermaid
 graph TD
-  A["Capture request and recipient"] --> B{"Exact route and current access?"}
-  B -- "denied" --> X["Refuse send"]
-  B -- "allowed" --> C["Resolve material or record none required"]
-  C --> D{"Commit fresh send authorization"}
-  D -- "withdrawn, duplicate or uncertain" --> X
-  D -- "acknowledged" --> E["Supervisor sends before deadline"]
-  E --> F{"Protect response on the same exchange"}
-  F -- "approved and live" --> G["Release approved bytes; delivery unconfirmed"]
-  F -- "unsafe, late or failed" --> H["Withhold response; provider effects may exist"]
+  A["<b>Resolve token</b><br/>Match route and access"] -->|Denied| X["Refuse before send"]
+  A -->|Header ready| B["<b>Authorize send</b><br/>Recheck grant and version"]
+  B -->|Denied| X
+  B -->|Permit| C["<b>Send GET</b><br/>Hold GitHub's reply"]
+  C --> D{"Valid identity<br/>and live caller?"}
+  D -->|Yes| G["Release ID and name"]
+  D -->|No| H["Withhold reply"]
 ```
-
-The diagram traces the source contract. Installed enforcement requires observing
-the actual transport, provider and workload.
 
 ## Execution Trace
 
@@ -151,12 +154,14 @@ refuses; peer expiry must be valid and future at resolution, send and response l
 or handle cannot transfer custody. Closing the stream cancels it. Cancellation or expiry
 releases material; pending policy or receipt work keeps its slot. No pipelining.
 
-`packages/occ/src/credential-proxy.ts:resolve` then moves the slot to the verified Sandbox's share,
-maps the peer to persisted installation state and classifies one exact route through its
-provider. Before capture or policy I/O, it reserves the UUIDv7 request ID; its creation time
-fixes the 30-second replay horizon. Slots and IDs are
-[bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
-unsupported or ambiguous operations refuse before reserving one.
+`packages/occ/src/credential-proxy.ts:resolve` moves the slot to the verified Sandbox's share,
+maps the peer to persisted installation state and pins eligible providers and methods before
+classification. Ambiguity blocks classification. OCC rechecks pins before and after provider
+use and at material access, send authorization and response release. Changes restored between checks
+escape detection. Secret Driver network access and supervisor response writes remain downstream.
+After one exact route matches, OCC reserves a UUIDv7 request ID before capture or policy I/O.
+Creation fixes the 30-second replay horizon. [Slots and IDs are bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
+unsupported or ambiguous operations refuse before reservation.
 
 Supplier enrollment starts at its authenticated current supervisor hello, not the first
 exchange. The supplier must keep the corresponding private key outside the Agent and
@@ -329,10 +334,8 @@ None.
 
 ## Changelog
 
-- 2026-10-27 14:03: Document the accompanying send authorization transaction. (authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad - 61c38c4c5a008bbdd8ad8eb2d70aa68492b7fdcc)
+- 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 
-- 2026-10-27 13:15: Document the accompanying Compute readiness capability boundary. (authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de - f6396abd5698efacabfeb150ef6cd38cdef6e814)
-
-- 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
+- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

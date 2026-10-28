@@ -37,6 +37,7 @@ import {
   SECRET_CREATE_DENIED,
   SLACK_LOOKUP_DENIED,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -62,13 +63,27 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  async function checkPolicySupport(pluginName) {
+    const policies = dialog.getByRole("group", { name: "Plugin policies" });
+    for (const label of ["tools enabled by default", "require approval for", "default reviewer"]) {
+      const field = policies.getByRole("combobox", { name: `${pluginName} ${label}`, exact: true });
+      assert.equal(await field.isDisabled(), true);
+      assert.equal(await field.locator("option:checked").textContent(), "Not supported");
+    }
+    await dialog
+      .getByRole("group", { name: "Driver policy" })
+      .getByText(/driver-specific settings are not supported/i)
+      .waitFor();
+    await dialog.getByRole("heading", { name: "Tools", exact: true }).waitFor();
+    await dialog.getByText(/per-tool policies are not supported/i).waitFor();
+  }
   await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
   await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
   assert.equal(await dialog.getByLabel("Google account", { exact: true }).inputValue(), "");
   await dialog
     .getByRole("option", { name: "Install without an account" })
     .waitFor({ state: "attached" });
-  assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
+  await checkPolicySupport("Google Workspace");
   async function save(enabled) {
     await dialog.getByRole("button", { name: "Done", exact: true }).click();
     const saved = page.waitForResponse(
@@ -90,7 +105,7 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   await dialog.getByRole("button", { name: id, exact: true }).click();
   const enabled = dialog.getByLabel(`Enable ${id}`, { exact: true });
   assert.equal(await enabled.isChecked(), true);
-  assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
+  await checkPolicySupport(id);
   assert.equal(await dialog.getByLabel(/plugin approvers mode/).count(), 0);
   assert.equal(await dialog.getByLabel("Filter tools").count(), 0);
   await enabled.uncheck();
@@ -376,21 +391,11 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   const spare = await fixture.createSecret(namespace.id, "Spare bot", "synthetic-spare-token");
   // This administrator may not create Secrets in the Namespace, so the Namespace permission answer
   // denies Secret create; nothing here creates one.
-  fixture.policy.restrictions.push({
-    id: "deny-approver-secret-create",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "create", "secret", { namespaceId: namespace.id });
   // Nor operate the spare token, which a people search needs on its Secret (finding 2469).
-  fixture.policy.restrictions.push({
-    id: "deny-approver-spare-operate",
+  restrict(fixture.policy, "operate", "secret", {
     namespaceId: namespace.id,
-    resourceKind: "secret",
     resourceId: spare.id,
-    action: "operate",
-    effect: "deny",
   });
   const { page } = await newPage(t, fixture, { browser });
   const lookups = [];

@@ -28,6 +28,7 @@ import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-ex
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { agentClients } from "../helpers/egress-custody-observations.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -330,15 +331,13 @@ test("OpenShell HTTP origins keep port 80 in native gRPC connections", async (t)
     const upstream = track(
       connect(port, "127.0.0.1", () => {
         socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-        if (head.length > 0) {
-          upstream.write(head);
-        }
-        socket.pipe(upstream);
-        upstream.pipe(socket);
       }),
     );
-    upstream.on("error", () => socket.destroy());
-    socket.on("close", () => upstream.destroy());
+    // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+    if (head.length > 0) {
+      upstream.write(head);
+    }
+    relaySockets(socket, upstream);
   });
   t.after(async () => {
     for (const socket of sockets) {
@@ -1588,15 +1587,16 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
   await assert.rejects(forwarded.health(AbortSignal.timeout(5_000)), ordinary);
   let closed;
   for (const deadline = Date.now() + 10_000; closed === undefined && Date.now() < deadline;) {
-    try {
-      await forwarded.health(AbortSignal.timeout(5_000));
-    } catch (error) {
-      if (error instanceof SandboxGatewayUnavailableError) {
-        closed = error;
-      } else {
-        ordinary(error);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+    const error = await forwarded.health(AbortSignal.timeout(5_000)).then(
+      () => null,
+      (cause) => cause,
+    );
+    assert.notEqual(error, null, "a stale forward's health retry must not succeed");
+    if (error instanceof SandboxGatewayUnavailableError) {
+      closed = error;
+    } else {
+      ordinary(error);
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
   assert.ok(closed !== undefined, "a closed forward must read as an outage");

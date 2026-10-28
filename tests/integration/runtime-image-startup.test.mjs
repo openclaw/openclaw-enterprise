@@ -46,6 +46,7 @@ import {
   reviewedCodexSeccompSecurityOptions,
   assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
@@ -1287,17 +1288,15 @@ try {
     await runRepositoryMaterialInitProbe(materialVolumeName, descriptor);
 
     await runDocker(["network", "create", "--driver", "bridge", networkName]);
+    // The container runs the shared relay's own source, so a clean single-use upstream close
+    // still delivers bytes queued for the slower sandbox proxy (finding 2186).
     const forwarder = String.raw`
 const net = require("node:net");
 const targetHost = process.argv[1];
 const targetPort = Number(process.argv[2]);
+${relaySockets}
 const server = net.createServer((client) => {
-  const upstream = net.connect(targetPort, targetHost);
-  client.on("error", () => upstream.destroy());
-  client.on("close", () => upstream.destroy());
-  upstream.on("error", () => client.destroy());
-  upstream.on("close", () => client.destroy());
-  client.pipe(upstream).pipe(client);
+  relaySockets(client, net.connect(targetPort, targetHost));
 });
 server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
 `;
@@ -1798,7 +1797,7 @@ assert.deepEqual(provenance.patches, {
   "openclaw-codex-full-access-profile.patch": "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
   "stock-codex-0.163.0-alpha.2-dependency-pin.patch": provenance.codexDependencyPinPatchSha256,
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-  "openclaw-control-ui-browser-reconnect.patch": "48dbcb32c453861b8d8facf9d1fd62003a994c234289270727eb41763b8b8d9c",
+  "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
   "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
 });

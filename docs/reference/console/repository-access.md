@@ -21,7 +21,7 @@ visible and must be repaired or removed before saving. Overrides never widen sil
 The server resolves selections against current Namespace policy on save and
 deployment. Push and PR permissions remain bundled; see
 [access levels](../repository-credentials/access-levels.md) for token permissions,
-merges, and the API contract. Edit saved drafts in **Create new version** >
+merges, and the API contract. Edit saved drafts in **Open draft** >
 **Repositories**; saved versions stay unchanged. Save or cancel edits before
 navigating away; returning to the tab can refresh the session and discard them.
 An interrupted save may complete; inspect the saved draft before retrying.

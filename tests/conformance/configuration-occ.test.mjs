@@ -7,7 +7,6 @@ import {
   resolveApprovedProductionHarness,
 } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   AuthorizationDeniedError,
   ConfigurationHarnessError,
@@ -32,6 +31,13 @@ import { refusedAnswer } from "../helpers/refusal-answers.mjs";
 import { GATEWAY_MANAGED_MODE_DENIED } from "../helpers/refusal-text.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import {
+  OPENCLAW_SANDBOX_SETTINGS,
+  admittedConfiguration,
+  openClawSandboxRefusal,
+  withSetting,
+} from "../helpers/admitted-configuration.mjs";
 
 const administrator = "principal-configuration-administrator";
 const deployOnly = "principal-configuration-deploy-only";
@@ -113,7 +119,7 @@ async function fixture(options = {}) {
         providers: { teamstore: { source: "store" } },
         defaults: { store: "teamstore" },
       },
-      agents: { defaults: { sandbox: { mode: "all" } } },
+      agents: { defaults: { sandbox: { scope: "agent" } } },
       plugins: { entries: { example: { enabled: true, regions: ["west"], retryCount: 2 } } },
     },
   });
@@ -932,7 +938,10 @@ test("a Configuration left ahead of its record by failed updates recovers on the
     resolveApprovedDevelopmentHarness,
   );
   assert.equal(revision.configurationGeneration, 4);
-  assert.deepEqual(revision.configuration, admitLoggingConfiguration(valuesWith(["east"]), "info"));
+  assert.deepEqual(
+    revision.configuration,
+    admittedConfiguration(servedAs(valuesWith(["east"]), agent.name), "info"),
+  );
   // Lost write 1 to 2; lost retry 2 to 3 and its compensation 3 to 2; failed retry 2 to 3;
   // recovery 3 to 4.
   assert.deepEqual(steps, [
@@ -1123,12 +1132,220 @@ test("Agent deployment snapshots its selected Configuration and Compute identity
   assert.equal(revision.configurationId, configuration.id);
   assert.equal(revision.configurationKind, "agent");
   assert.equal(revision.configurationGeneration, configuration.generation);
-  assert.deepEqual(revision.configuration, admitLoggingConfiguration(configuration.values, "info"));
+  assert.deepEqual(
+    revision.configuration,
+    admittedConfiguration(servedAs(configuration.values, agent.name), "info"),
+  );
   assert.equal(Object.isFrozen(configuration.values.models.providers.openai.apiKey), true);
   assert.equal(Object.isFrozen(revision.configuration.plugins.entries.example.regions), true);
   assert.equal(agent.executionMode, "embedded");
   assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
   assert.deepEqual(revision.compute, { id: compute.id, implementation: compute.implementation });
+});
+
+test("Agent deployment keeps the display name its Configuration sets", async () => {
+  const { agent, configuration, controller, namespace } = await fixture();
+  // The Configuration owner chose this name for the Control UI; the OCC Agent name must not
+  // replace it, and the entry's other identity settings stay as written.
+  const values = {
+    ...configuration.values,
+    agents: {
+      ...configuration.values.agents,
+      // A roster entry selects its own model when agents.defaults.model is unset.
+      entries: {
+        main: {
+          model: "openai/gpt-4.1",
+          models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+          identity: { name: "Configured name", emoji: "🦞" },
+        },
+      },
+    },
+  };
+  await controller.updateConfiguration(administrator, {
+    namespaceId: namespace.id,
+    configurationId: configuration.id,
+    values,
+  });
+
+  const revision = await controller.deployAgent(
+    administrator,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+
+  assert.notEqual(agent.name, "Configured name");
+  assert.deepEqual(revision.configuration, admittedConfiguration(values, "info"));
+});
+
+// OpenClaw's default personal security preset fills unset settings: it lets another participant
+// steer a running turn under the first requester's authority and lets apply_patch write outside
+// the workspace; its corporate preset turns on OpenClaw's Docker sandbox, which the OCE runtime
+// cannot run (finding 2767), and its exec mode "ask" and strictInlineEval, which need an approval
+// client the OCE Console does not have, so every shell command, then every inline program such as
+// `python3 -c`, failed (finding 2771). Admission fills each GATEWAY_SECURITY_DEFAULTS setting the
+// Configuration leaves unset in the document every Compute Driver renders, for embedded and
+// dedicated Gateways, and leaves steering unset so the preset's default (on) applies. The
+// Configuration's value wins, so a strict Configuration stays strict.
+test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable and steering to the Configuration", async () => {
+  const { agent, configuration, controller, namespace } = await fixture();
+  const codexValues = {
+    agents: {
+      defaults: {
+        model: { primary: "codex/gpt-4.1" },
+        models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
+  const deploy = async (values, executionMode) => {
+    const selected = await controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+    await controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: selected.id,
+      executionMode,
+    });
+    return controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    );
+  };
+  const corporate = { security: { preset: "corporate" } };
+  const cases = {
+    // Admission fills each default, keeps the settings beside them (the base's sandbox scope, an
+    // empty applyPatch, the queue mode), and adds no steering value.
+    unset: { messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
+    // The corporate preset fills only what is still unset, so the Gateway runs without its
+    // sandbox and runs shell commands and inline programs without waiting for an approval.
+    "the corporate preset": corporate,
+    // An explicit strictInlineEval `true` is kept beside the filled mode: inline programs then wait
+    // for an approval, as that Configuration asks.
+    "an explicit inline-program rule": {
+      ...corporate,
+      tools: { exec: { strictInlineEval: true } },
+    },
+    // Explicit values reach the Gateway as written; inline programs need no approval in an
+    // explicit mode "full" either.
+    "explicit looser values": {
+      messages: { queue: { allowCollaborativeSteering: true } },
+      tools: { exec: { mode: "full", applyPatch: { enabled: true, workspaceOnly: false } } },
+    },
+    // A strict steering `false` is kept, not replaced by the preset's default, and so is an exec
+    // mode "ask" for an operator who connects an approval channel; beside it admission fills no
+    // strictInlineEval.
+    "explicit stricter values": {
+      messages: { queue: { allowCollaborativeSteering: false } },
+      tools: { exec: { mode: "ask", applyPatch: { enabled: true, workspaceOnly: true } } },
+    },
+    // A legacy exec security or ask value is an explicit policy too: like the preset, admission
+    // fills no mode beside it, since the Gateway would apply a mode over it, and no
+    // strictInlineEval.
+    "a legacy exec security": { ...corporate, tools: { exec: { security: "allowlist" } } },
+    "a legacy exec ask": { ...corporate, tools: { exec: { ask: "always" } } },
+  };
+  for (const [executionMode, base] of [
+    ["embedded", configuration.values],
+    ["dedicated", codexValues],
+  ]) {
+    for (const [name, settings] of Object.entries(cases)) {
+      const values = { ...base, ...settings };
+      const revision = await deploy(values, executionMode);
+      assert.equal(revision.harness.mode, executionMode, name);
+      assert.deepEqual(
+        revision.configuration,
+        admittedConfiguration(servedAs(values, agent.name), "info"),
+        `${executionMode}: ${name}`,
+      );
+    }
+  }
+  // An Agent entry's own exec policy replaces the filled mode, but OpenClaw resolves its
+  // strictInlineEval as the entry's value, else the top-level one (finding 2788). Under corporate,
+  // such an entry keeps the preset's `true`, so its inline programs still wait for an approval;
+  // an entry in mode "full", or with its own value, keeps what it sets. The personal preset's
+  // value is the filled `false`, so nothing is added there.
+  // The main entry's exec policy, and whether a corporate deployment adds the preset's `true`.
+  for (const [name, exec, corporateKeeps] of [
+    ["mode allowlist", { mode: "allowlist" }, true],
+    ["legacy security", { security: "allowlist" }, true],
+    ["mode full", { mode: "full" }, false],
+    ["its own value", { mode: "ask", strictInlineEval: false }, false],
+  ]) {
+    for (const preset of ["corporate", "personal"]) {
+      const values = {
+        ...configuration.values,
+        security: { preset },
+        agents: {
+          ...configuration.values.agents,
+          entries: {
+            main: {
+              model: "openai/gpt-4.1",
+              models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+              tools: { exec },
+            },
+          },
+        },
+      };
+      const revision = await deploy(values, "embedded");
+      assert.equal(revision.configuration.tools.exec.strictInlineEval, false, `${preset}: ${name}`);
+      assert.deepEqual(
+        revision.configuration.agents.entries.main.tools.exec,
+        preset === "corporate" && corporateKeeps ? { ...exec, strictInlineEval: true } : exec,
+        `${preset}: ${name}`,
+      );
+    }
+  }
+  // Like the preset, admission fills only unset settings. A value of the wrong type, or a
+  // non-object on the path, stays for the Gateway's own validation, which refuses it at startup,
+  // so it cannot loosen the setting.
+  for (const tools of [{ exec: { mode: 1, applyPatch: { workspaceOnly: "no" } } }, ["read"]]) {
+    const invalid = await deploy({ ...codexValues, tools }, "dedicated");
+    assert.deepEqual(invalid.configuration.tools, tools);
+    assert.equal(invalid.configuration.messages, undefined);
+  }
+});
+
+// The rule's refused and accepted values, for every Agent and for one Agent's entry, which
+// overrides it (findings 2767, 2773). configuration-controller.test.mjs proves that each save
+// path, Agent save and deployment run it.
+test("Configuration save refuses OpenClaw's sandbox and keeps the values the OCE runtime runs", async () => {
+  const { controller, namespace } = await fixture();
+  const save = (values) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+  for (const setting of OPENCLAW_SANDBOX_SETTINGS) {
+    const entry = ["agents", "entries", "main", ...setting.entry];
+    for (const value of setting.refused) {
+      for (const [path, values] of [
+        [setting.path, withSetting({}, setting.path, value)],
+        // An accepted value for every Agent does not admit an Agent's entry that turns it on.
+        [entry, withSetting(withSetting({}, setting.path, setting.accepted[0]), entry, value)],
+      ]) {
+        await assert.rejects(save(values), {
+          name: "ConfigurationHarnessError",
+          message: openClawSandboxRefusal(setting, path),
+        });
+      }
+    }
+    for (const value of setting.accepted) {
+      const values = withSetting(withSetting({}, setting.path, value), entry, value);
+      assert.deepEqual((await save(values)).values, values, JSON.stringify(values));
+    }
+  }
+  // The settings beside an accepted mode save, and so does a corporate security preset, which
+  // turns the sandbox on only where the Configuration leaves the mode unset.
+  for (const values of [
+    { agents: { defaults: { sandbox: { mode: "off", scope: "session" } } } },
+    { security: { preset: "corporate" } },
+  ]) {
+    assert.deepEqual((await save(values)).values, values);
+  }
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {
@@ -1677,8 +1894,23 @@ for (const scope of ["primary", "default-fallback", "entry-fallback", "provider-
     );
 
     assert.deepEqual(configuration.values, values);
-    // Admission freezes the original fallback order for the runtime to execute.
-    assert.deepEqual(admitted.configuration, admitLoggingConfiguration(values, "info"));
+    // Admission freezes the original fallback order for the runtime to execute, and names the
+    // sole roster entry after the OCC Agent.
+    assert.deepEqual(
+      admitted.configuration,
+      admittedConfiguration(
+        {
+          ...values,
+          agents: {
+            ...values.agents,
+            entries: {
+              main: { ...values.agents.entries.main, identity: { name: dedicated.name } },
+            },
+          },
+        },
+        "info",
+      ),
+    );
     assert.deepEqual(admitted.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
     assert.equal(admitted.compute.id, "configuration-occ-compute");
   });

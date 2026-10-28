@@ -57,8 +57,9 @@ OpenClaw gateway multi-tenant.
 The platform supports global Namespace settings. Resource references follow the
 scope and authorization rules of each resource type.
 
-OCC owns platform resources and immutable deployment snapshots. External systems
-retain ownership of infrastructure, provider accounts, credentials, and model
+OCC owns platform resources. At deployment, it records the selected configuration
+and execution settings in an Agent revision. Later edits leave that revision unchanged.
+External systems retain ownership of infrastructure, provider accounts, credentials, and model
 sources. Drivers operate those systems through interfaces with defined responsibilities; they cannot
 grant themselves authorization or change platform-resource ownership.
 
@@ -108,7 +109,7 @@ and metrics integrations have their own [operational contracts](guides/observabi
 ## Control Plane
 
 The API serves the console and authorized resource operations. An independent
-worker claims durable work and invokes selected Drivers. PostgreSQL stores
+worker claims operations from the queue and calls the selected Drivers. PostgreSQL stores
 platform state, IAM policy, controller work, and audit evidence.
 
 The API authenticates human sessions and non-Agent service keys, resolves an
@@ -227,7 +228,7 @@ OCC checks admission and session retention, but does not authorize or audit each
 native command. Operators share the selected gateway's exposed conversations
 and credentials; this grants no access to another Agent or platform IAM.
 
-Configuration and immutable AgentRevision records remain authoritative for
+Configuration and AgentRevision records remain authoritative for
 managed deployments. Native edits may diverge; OCC neither imports them nor
 promises to reset persistent gateway state on redeployment.
 

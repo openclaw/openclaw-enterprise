@@ -8,6 +8,16 @@ This record preserves the dated changes to the protected credential request page
 
 ## Changelog
 
+- 2026-10-27 15:34: Document the accompanying provider conflict refusal and callback pinning. (authoring-run/9e204161-489f-4c88-9848-c811faa3e6d9 - 0b8d61ffd7b7014274eb92b03a6e646d40e7c4f7)
+
+- 2026-10-27 15:01: Document the accompanying exchange-local provider selection. (authoring-run/99c08399-c9b0-4cb5-85c2-7275416e51ea - 5e73f33bfff6f361aebcf9f744ffbec363eeb362)
+
+- 2026-10-27 14:03: Document the accompanying send authorization transaction. (authoring-run/a648467a-1f9a-493f-89cb-e93c1e3e38ad - 61c38c4c5a008bbdd8ad8eb2d70aa68492b7fdcc)
+
+- 2026-10-27 13:15: Document the accompanying Compute readiness capability boundary. (authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de - f6396abd5698efacabfeb150ef6cd38cdef6e814)
+
+- 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
+
 - 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
 
 - 2026-10-24: Name Git-only Proxy refusals. (fix-2360)

@@ -130,8 +130,8 @@ Editing an Agent or one of its referenced resources changes only
 the inputs available to a future deployment; it does not change an existing
 `AgentRevision` or running Agent workload. An explicit, separately authorized
 [network policy application](../reference/sandbox-policies.md) can update the
-active Sandbox in place when its Driver supports live changes; its confirmed
-application evidence is separate from the immutable deployment snapshot.
+active Sandbox in place when its Driver supports live changes. OCC records the
+result separately. The Agent revision keeps the policy saved at deployment.
 
 Deploying an Agent follows one path.
 
@@ -153,7 +153,7 @@ Deploying an Agent follows one path.
    selected runtime targets and that the selected `SandboxDriver` supports the
    entire `SandboxPolicy`. Gateway readiness remains part of the exact Agent's
    version preparation.
-7. OCC creates an immutable `AgentRevision` from the admitted Agent,
+7. OCC creates an `AgentRevision` from the admitted Agent,
    configuration, references including nullable `backendId`, requested plugin
    selections, server-approved Harness identity/version and explicit mode,
    sandbox policy, and selected compute, sandbox, and plugin implementations.
@@ -227,7 +227,7 @@ sequenceDiagram
 
     Client->>API: Deploy Agent
     API->>IAM: Authorize deployment and referenced resources
-    API->>OCC: Admit immutable AgentRevision
+    API->>OCC: Admit AgentRevision
     OCC->>DB: Commit version, audit, and work
     API-->>Client: 202 AgentRevision
     Worker->>DB: Claim version work

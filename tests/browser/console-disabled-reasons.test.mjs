@@ -16,6 +16,7 @@ import {
   nativeValues,
   newPage,
 } from "./console-agents-browser-helpers.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // A disabled control whose reason sits nearby but is not linked to it leaves a screen reader
 // user with a dead control and no why (finding D749). Each disabled control below is described
@@ -31,7 +32,7 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
   const { page } = await newPage(t, fixture);
 
   // The current version: diagnostics need Agent operate, which a reader lacks.
-  const current = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+  const current = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "deployment");
   await login(page, fixture, current, reader.credentials);
   await page.getByText(DIAGNOSTICS_DENIED, { exact: true }).waitFor();
   const run = page.getByRole("button", { name: "Run diagnostics for this version" });
@@ -83,12 +84,7 @@ test("Configure Slack on an embedded Agent is described by the execution mode", 
 test("the Namespace selector names no missing reason on a page without the no-Namespace panel", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  fixture.policy.restrictions.push({
-    id: "deny-all-namespace-read",
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "read", "namespace");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, "/console/backends");
   await page.getByRole("heading", { name: "Backends", exact: true }).waitFor();

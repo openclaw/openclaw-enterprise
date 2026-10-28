@@ -163,6 +163,43 @@ for (const c of configurationSaves) {
   });
 }
 
+// A member who can only read the Configuration sees what the saved document runs with, but no
+// toggle takes an edit no Save could keep; the reason is linked to each toggle.
+test("a member who can only read the Configuration sees the collaboration and safety settings unavailable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Safety Reader", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Safety Reader", {
+    ...nativeValues("reader"),
+    messages: { queue: { allowCollaborativeSteering: false } },
+  });
+  const member = await createReader(fixture, namespace);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href,
+    member.credentials,
+  );
+  await page.getByText("These settings are read-only with your access.", { exact: true }).waitFor();
+  for (const [name, checked] of [
+    ["Strict mode", true],
+    ["Other participants can steer a running turn", false],
+    ["apply_patch changes files only in the workspace", true],
+  ] as const) {
+    const toggle = page.getByRole("checkbox", { name, exact: true });
+    assert.equal(await toggle.isChecked(), checked, name);
+    assert.equal(await toggle.isDisabled(), true, name);
+    assert.match((await toggle.getAttribute("aria-describedby")) ?? "", /gateway-safety-reason/);
+  }
+  assert.equal(
+    await page
+      .locator("#gateway-safety-collaborative-steering-hint .gateway-safety-source")
+      .textContent(),
+    "Set in Configuration. ",
+  );
+});
+
 // Every field a tab's Save would write is disabled or inert: an edit no Save can keep would
 // only block leaving the tab or Deploy (finding 1539).
 const editableFields = (page: Page, scope = ".agent-card") =>
@@ -674,6 +711,10 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
   );
   await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
+    await page
+      .getByRole("tablist", { name: "Workspace file", exact: true })
+      .getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) })
+      .click();
     await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
     const editor = page.getByLabel(name, { exact: true });
     assert.equal(await editor.inputValue(), `# ${name}\n`);
@@ -707,7 +748,7 @@ const STOP_REFUSED = stopRefused("this Agent");
 async function expectOperateControls(page: Page, allowed: boolean) {
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRow.waitFor({ state: allowed ? "visible" : "hidden" });
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Deployment", exact: true }).click();
   const run = page.getByRole("button", { name: "Run diagnostics for this version", exact: true });
   await run.waitFor();
   const denial = page.getByText(DIAGNOSTICS_DENIED, { exact: true });
@@ -780,7 +821,8 @@ async function operateScenario(t: TestContext, name: string) {
       if (answered) {
         await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
         for (const file of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
-          await page.getByText(`${file} loaded.`, { exact: true }).waitFor();
+          // All files load before retention, including the editors hidden by the picker.
+          await page.getByText(`${file} loaded.`, { exact: true }).waitFor({ state: "attached" });
         }
       }
     },
@@ -886,7 +928,8 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   await page.unroute(scenario.permissionsUrl);
   await scenario.rememberStatusDenial();
   // The row stays because this viewer used it; the denial disables Stop and adds its notice.
-  const notice = stopRow.getByText(AGENT_STOP_DENIED);
+  // Exact: the refusal repeats the reason after "Stop was refused:".
+  const notice = stopRow.getByText(AGENT_STOP_DENIED, { exact: true });
   await scenario.rereadThroughLogs();
   await notice.waitFor();
   scenario.operate(true);

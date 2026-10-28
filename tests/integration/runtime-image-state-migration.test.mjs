@@ -193,7 +193,8 @@ function releasedGatewayStateVolume(t, mountPath) {
   });
 }
 
-// startGateway(readinessAttempts) starts a Gateway on the released state volume.
+// startGateway(readinessAttempts, until) starts a Gateway on the released state
+// volume and waits until runGatewaySmoke's `until`.
 async function assertReleasedGatewayMigratesOnce(startGateway) {
   // The current OpenClaw refuses this database until Doctor migrates it. Doctor's
   // full repair pass takes about 20 s here and over a minute on a busy CI runner.
@@ -216,8 +217,10 @@ async function assertReleasedGatewayMigratesOnce(startGateway) {
   await runDocker(["stop", "--time", "60", released.containerName]);
   await runDocker(["rm", "-f", released.containerName]);
 
-  // A current database starts without Doctor.
-  const current = await startGateway();
+  // A current database starts without Doctor. The launcher decides before it spawns
+  // OpenClaw, and the start above already proved OpenClaw accepts the migrated
+  // database, so this start ends at the spawn (about 20 CPU-seconds less).
+  const current = await startGateway(undefined, "spawned");
   assert.deepEqual(stateMigrationPhases(current.logs), [], current.logs);
   assert.doesNotMatch(current.logs, /openclaw doctor --fix/);
   assert.deepEqual(await agentDatabaseFacts(current.containerName), migrated);
@@ -484,11 +487,12 @@ describe("runtime image released state migration", { concurrency: 4 }, () => {
       // The volume replaces the Gateway's /home/node tmpfs, as its PersistentVolume does.
       const volume = await releasedGatewayStateVolume(t, "/home/node");
       const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
-      await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
+      await assertReleasedGatewayMigratesOnce((readinessAttempts, until) =>
         runGatewaySmoke(t, "openclaw", {
           configurationPath: "/etc/openclaw/openclaw.json",
           entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
           readinessAttempts,
+          until,
           tmpfs: [],
           volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`, `${volume}:/home/node`],
           withAppServer: false,
@@ -503,9 +507,10 @@ describe("runtime image released state migration", { concurrency: 4 }, () => {
     async (t) => {
       // The Docker Driver's Agent state volume, over the Gateway's /home/node tmpfs.
       const volume = await releasedGatewayStateVolume(t, "/home/node/.openclaw");
-      await assertReleasedGatewayMigratesOnce((readinessAttempts) =>
+      await assertReleasedGatewayMigratesOnce((readinessAttempts, until) =>
         runGatewaySmoke(t, "openclaw", {
           readinessAttempts,
+          until,
           volumes: [`${volume}:/home/node/.openclaw`],
           withAppServer: false,
         }),

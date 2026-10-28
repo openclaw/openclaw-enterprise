@@ -17,7 +17,7 @@ import {
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
-import { availablePort, refusingPort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
 // verifier and no Compute status port. When it holds a startup failure it serves
@@ -72,7 +72,9 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
                 },
                 listen(port, host) {
                   server.listening = { port, host };
-                  real.listen(http.port, "127.0.0.1");
+                  // The kernel picks a free loopback port, so no other socket can take it
+                  // between the pick and the bind; the test reads it once listening.
+                  real.listen(0, "127.0.0.1");
                 },
               };
             }
@@ -294,18 +296,18 @@ async function close(server) {
 const serviceUrl = "http://tenant--sandbox.openshell.localhost:8080/";
 
 test("the OpenShell client reads a held failure from the real Harness wrapper through the service host", async (t) => {
-  const freePort = await availablePort();
   const { servers } = runCodexEntrypoint({
     env: providerEnv,
     probe: failedProbe("stream error: model unavailable"),
-    http: { createServer, port: freePort },
+    http: { createServer },
   });
   const held = servers.find((server) => server.real !== undefined);
   t.after(() => close(held.real));
   await new Promise((resolve) =>
     held.real.listening ? resolve() : held.real.once("listening", resolve),
   );
-  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${freePort}` });
+  const heldPort = held.real.address().port;
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${heldPort}` });
   const signal = AbortSignal.timeout(5_000);
   const document = await client.getServiceDocument(
     serviceUrl,
@@ -325,7 +327,7 @@ test("the OpenShell client reads a held failure from the real Harness wrapper th
   const upgrade = await new Promise((resolve, reject) => {
     const request = httpRequest({
       host: "127.0.0.1",
-      port: freePort,
+      port: heldPort,
       path: "/",
       headers: {
         authorization: `Bearer ${TOKEN}`,
@@ -883,20 +885,20 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
   );
 
   await t.test("a raw request target over HTTP leaves the held wrapper serving", async (t) => {
-    const freePort = await availablePort();
     const { servers } = runCodexEntrypoint({
       env: providerEnv,
       probe: failedProbe("stream error: model unavailable"),
-      http: { createServer, port: freePort },
+      http: { createServer },
     });
     const held = servers.find((server) => server.real !== undefined);
     t.after(() => close(held.real));
     await new Promise((resolve) =>
       held.real.listening ? resolve() : held.real.once("listening", resolve),
     );
+    const heldPort = held.real.address().port;
     // The request line carries "//" verbatim; HTTP clients would normalize it.
     const raw = await new Promise((resolve, reject) => {
-      const socket = connect(freePort, "127.0.0.1");
+      const socket = connect(heldPort, "127.0.0.1");
       let text = "";
       socket.setEncoding("utf8");
       socket.on("data", (chunk) => {
@@ -912,7 +914,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     assert.ok(raw.includes(JSON.stringify(badRequest)), raw);
     // The same wrapper still serves its held failure afterwards.
     const signal = AbortSignal.timeout(5_000);
-    const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${freePort}` });
+    const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${heldPort}` });
     const document = await client.getServiceDocument(
       serviceUrl,
       "/openclaw/runtime/status",

@@ -82,9 +82,8 @@ Follow these pages in order in the same operator shell:
    offers a TUI and an HTTP check using the optional loopback password on
    Kubernetes trusted-proxy gateways.
 
-Before upgrading a retained installation, read the
-[breaking-change notices](deploy/breaking-changes.md) and complete the
-[upgrade migration checklist](deploy/upgrade-checklist.md). Then use
+Before upgrading a retained installation, complete the
+[upgrade checklist](deploy/upgrade-checklist.md). Then use
 [production image upgrades](deploy/production-upgrade.md) to release the
 control plane without replacing Agent revisions, or to update Agent runtimes
 and redeploy the running fleet. Runtime releases require an interruption

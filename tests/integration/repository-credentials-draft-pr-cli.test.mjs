@@ -3,11 +3,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
+import { refusingPort } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 
 // `oce-github pr-create` in OpenShell mode: each failure class prints its own line, so an
@@ -109,11 +109,10 @@ test(
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
     t.after(() => server.close());
-    const closed = createServer().listen(0, "127.0.0.1");
-    await once(closed, "listening");
-    const closedPort = closed.address().port;
-    closed.close();
-    await once(closed, "close");
+    // A released port could be taken by a parallel listener; this one refuses until released.
+    const refusing = await refusingPort();
+    t.after(() => refusing.release());
+    const closedPort = refusing.port;
 
     const run = (args, { port = server.address().port, env = {} } = {}) => {
       const redirect = `import tls from "node:tls";

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -37,6 +38,7 @@ import { validateOpenShellRepositoryTransport } from "../../apps/controller/src/
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
+  GrpcOpenShellGatewayClient,
   normalizeServiceUrl,
   OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
@@ -66,7 +68,11 @@ import {
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import {
+  bindReservedPortInProcess,
+  reservedPortArgs,
+  reservePort,
+} from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -2001,6 +2007,7 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
 
 test("OpenShell native startup creates private temporary state without changing the supervisor temporary directory", async () => {
   const directory = await mkdtemp(join(tmpdir(), "oce-native-temporary-"));
+  let statusPort;
   try {
     const supervisorTemporary = join(directory, "supervisor");
     await mkdir(supervisorTemporary);
@@ -2029,9 +2036,14 @@ test("OpenShell native startup creates private temporary state without changing 
       revision: fixture.revision,
       requirements: fixture.requirements,
     });
+    // The startup binds its status port: hold it until then, so no parallel test takes it.
+    statusPort = await reservePort({ host: "0.0.0.0" });
     const result = spawnSync(
       process.execPath,
-      request.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length - 1),
+      [
+        ...reservedPortArgs(statusPort),
+        ...request.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length - 1),
+      ],
       {
         encoding: "utf8",
         timeout: 5_000,
@@ -2044,7 +2056,7 @@ test("OpenShell native startup creates private temporary state without changing 
           OPENCLAW_NODE_SETUP_CODE: "controlled-filesystem-phase",
           OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
           OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
-          OPENCLAW_RUNTIME_STATUS_PORT: String(await availablePort({ host: "0.0.0.0" })),
+          OPENCLAW_RUNTIME_STATUS_PORT: String(statusPort.port),
         },
       },
     );
@@ -2054,6 +2066,7 @@ test("OpenShell native startup creates private temporary state without changing 
     assert.equal(temporary.mode & 0o7777, 0o700);
     assert.equal((await stat(supervisorTemporary)).mode & 0o7777, 0o777);
   } finally {
+    await statusPort?.release();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -2869,7 +2882,11 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
     },
   };
   const transportToken = "withdrawn-harness-transport";
-  const port = await availablePort({ host: "0.0.0.0" });
+  // The held Harness serves its failure on this port. Hold it until the Harness answers there,
+  // so a test running in parallel cannot take it first.
+  const reservation = await reservePort({ host: "0.0.0.0" });
+  t.after(() => reservation.release());
+  const { port } = reservation;
   requirements.loginMode = "chatgptAuthTokens";
   requirements.command = harnessRuntimeCommand(AGENT_RUNTIME_ENTRYPOINT);
   requirements.workspaceMounts = requirements.workspaceMounts.slice(0, 1);
@@ -2912,7 +2929,11 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
     CODEX_HOME: codexHome,
     OPENCLAW_WORKSPACE_DIR: join(root, "workspace"),
   };
-  const command = ["-e", ...sandbox.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length)];
+  const command = [
+    ...reservedPortArgs(reservation),
+    "-e",
+    ...sandbox.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length),
+  ];
   const child = spawn(process.execPath, command, {
     env: environment,
     stdio: ["ignore", "ignore", "pipe"],
@@ -2951,6 +2972,9 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
     }
   }
   assert.equal(unauthenticated.status, 401);
+  // The Harness answered, so it listens: free the reservation, which would reset a connection
+  // the kernel hands it.
+  await reservation.release();
   const response = await fetch(statusUrl, {
     headers: { Authorization: `Bearer ${transportToken}` },
   });
@@ -3204,10 +3228,11 @@ for (const harnessId of ["codex", "openclaw"]) {
                   "no-new-privileges",
                   "--user",
                   `${process.getuid()}:${process.getgid()}`,
+                  // The concurrent initializer containers share these test-owned mounts on SELinux.
                   "--volume",
-                  `${workspace}:/sandbox/enterprise`,
+                  `${workspace}:/sandbox/enterprise:z`,
                   "--volume",
-                  `${home}:/sandbox/.openclaw-runtime/home`,
+                  `${home}:/sandbox/.openclaw-runtime/home:z`,
                   ...Object.entries(execution.environment).flatMap(([key, value]) => [
                     "--env",
                     `${key}=${value}`,
@@ -5624,6 +5649,138 @@ test("installation refuses OpenShell repository credentials before reading sessi
   );
 });
 
+test("observed-hook preview recognizes a released Codex through its authenticated WebSocket", async (t) => {
+  const token = "fixture-preview-transport";
+  let acknowledged = false;
+  let serving = true;
+  let status = 400;
+  let upgrades = 0;
+  // Native Codex answers ordinary HTTP with 400 after its launch endpoint closes.
+  // Real HTTP/WebSocket transport proves this Driver check; the recorded release is its input.
+  const server = createServer((_request, response) => {
+    response.writeHead(status);
+    response.end("WebSocket upgrade required");
+  });
+  const sockets = new Set();
+  server.on("upgrade", (request, socket) => {
+    upgrades++;
+    sockets.add(socket);
+    socket.on("error", () => {});
+    socket.once("close", () => sockets.delete(socket));
+    if (!serving || request.headers.authorization !== `Bearer ${token}`) {
+      socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+    const accept = createHash("sha1")
+      .update(request.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+      .digest("base64");
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+        `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    for (const peer of sockets) {
+      peer.destroy();
+    }
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const transport = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${server.address().port}`,
+  });
+  t.after(() => transport.close());
+  const gateway = workspaceGatewayClient();
+  gateway.getServiceDocument = (...args) => transport.getServiceDocument(...args);
+  gateway.serviceWebSocketHandshake = (...args) => transport.serviceWebSocketHandshake(...args);
+  gateway.getService = async (_workspace, sandbox, name) =>
+    harnessService(sandbox, name, "http://preview--codex.openshell.test/");
+  gateway.getSandbox = async () => ({ id: "preview-sandbox" });
+  const git = {
+    configuration: { observedHookPreviewWorkspace: namespaceContext().namespace.name },
+    overlappingPolicy: () => undefined,
+    previewReleased: () => acknowledged,
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    backend: backendFor(gateway),
+    openShellGit: git,
+  });
+  const { context, revision, requirements } = runtimeSandboxFixture(driver);
+  revision.executionAdmission = { version: 6, mode: "protected" };
+  const registry = {
+    version: 1,
+    backendId: "github-primary",
+    providerInstanceId: "github-com-primary",
+    appId: "12345",
+    githubInstallationId: "67890",
+    maximumDurationSeconds: 600,
+    repositories: [],
+    installationAccess: {
+      repositoryRef: "installation",
+      namespaces: [{ namespaceId: revision.namespaceId, accessMode: "installation" }],
+    },
+  };
+  revision.repositoryCredentials = {
+    driver: { id: "repository", implementation: "github" },
+    deadlineWallMs: Date.now() + 600000,
+    bindings: [
+      resolveGitHubRepositoryBinding(registry, {
+        namespaceId: revision.namespaceId,
+        repositoryRef: "installation",
+        profile: "github-installation",
+      }),
+    ],
+  };
+  const plan = {
+    id: randomUUID(),
+    generation: 1,
+    routes: [],
+    driver: { id: driver.id, implementation: "openshell", configurationId: "a".repeat(64) },
+    execution: {
+      installationId: "ins_fixture",
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      servicePrincipalId: "sp_fixture",
+      revisionId: revision.id,
+      executionId: randomUUID(),
+    },
+    repositoryGit: revision.repositoryCredentials,
+    repositoryGitAuthorization: "request-hook-observed",
+  };
+  revision.egressPlan = plan;
+  const input = { ...context, revision, requirements, transportToken: token };
+  const installation = { plan, sandboxId: "preview-sandbox" };
+  const release = () => assert.fail("an acknowledged release must never be sent again");
+  // A serving socket without a receipt, or a receipt without an authenticated socket, stays pending.
+  assert.equal(await driver.observeHeldRepositoryGitPreview(input), undefined);
+  await assert.rejects(driver.enrollHarness(input, installation, release), /Cannot verify/);
+  acknowledged = true;
+  serving = false;
+  assert.equal(await driver.observeHeldRepositoryGitPreview(input), undefined);
+  await assert.rejects(driver.enrollHarness(input, installation, release), /Cannot verify/);
+  serving = true;
+  // Only a closed launch endpoint may fall back to the acknowledged serving socket.
+  for (status of [400, 404, 403, 503, 204]) {
+    const allowed = status === 400 || status === 404;
+    let before = upgrades;
+    assert.equal(
+      await driver.observeHeldRepositoryGitPreview(input),
+      allowed ? "installed" : undefined,
+      `observation status ${status}`,
+    );
+    assert.equal(upgrades - before, allowed ? 1 : 0, `observation upgrades for ${status}`);
+    before = upgrades;
+    if (allowed) {
+      await driver.enrollHarness(input, installation, release);
+    } else {
+      await assert.rejects(driver.enrollHarness(input, installation, release), /Cannot verify/);
+    }
+    assert.equal(upgrades - before, allowed ? 1 : 0, `enrollment upgrades for ${status}`);
+  }
+});
+
 test("OpenShell refuses repository provision and enrollment before any gateway or release call", async () => {
   const gateway = workspaceGatewayClient();
   const driver = openShellDriver(gateway);
@@ -6349,7 +6506,12 @@ test(
       id: "repository-credentials",
       configuration: { sessionDurationSeconds: 600 },
     };
-    const port = await availablePort();
+    // The Git worker binds its authority on this port in-process, well after the configuration
+    // names it. Hold the port until then, so a test running in parallel cannot take it.
+    const authorityPort = await reservePort();
+    t.after(() => authorityPort.release());
+    await bindReservedPortInProcess(authorityPort);
+    const { port } = authorityPort;
     configuration.repository.openShell.authority = {
       ...fragment.repository.openShell.authority,
       host: "127.0.0.1",
@@ -6730,6 +6892,8 @@ test(
             /requires one explicitly admitted GitHub binding and its dedicated Codex execution/,
           );
           assert.equal(created, undefined, "the online sender cannot take over a v4 execution");
+          // The Git worker has bound its authority port since it started.
+          await authorityPort.release();
           const result = await sandbox.provisionHarness({ ...ctx, requirements: required });
           const cold = sandbox.standingGitExecution(ctx);
           assert.equal(cold.continuity.model, inferenceProvider);

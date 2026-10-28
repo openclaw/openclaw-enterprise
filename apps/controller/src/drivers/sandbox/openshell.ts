@@ -3647,9 +3647,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const signal = context.signal;
     const doc = await client.getServiceDocument(service.url, path, token, signal);
     if (doc.status !== 200) {
-      // The startup endpoint is gone once the launcher accepts its release. Neither an
-      // unanswered request nor a service refusal can stand in for its authenticated ACK.
-      return doc.status === 404 && git.previewReleased(revision.id) ? "installed" : undefined;
+      // Native Codex can answer ordinary HTTP with 400 after the launch endpoint closes.
+      // Only our recorded ACK and an authenticated serving socket confirm this release.
+      return (doc.status === 400 || doc.status === 404) &&
+        git.previewReleased(revision.id) &&
+        (await client.serviceWebSocketHandshake(service.url, token, signal))
+        ? "installed"
+        : undefined;
     }
     const { profile, startupId, ...identity } = asRecord(doc.json) ?? {};
     if (
@@ -3714,7 +3718,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (document.status !== 200) {
       if (
         preview &&
-        !(document.status === 404 && this.openShellGit?.previewReleased(context.revision.id))
+        !(
+          (document.status === 400 || document.status === 404) &&
+          this.openShellGit?.previewReleased(context.revision.id) &&
+          (await client.serviceWebSocketHandshake(
+            service.url,
+            context.transportToken,
+            context.signal,
+          ))
+        )
       ) {
         throw new OpenShellSandboxConfigurationFailure(
           "Cannot verify the observed-hook launcher's release.",

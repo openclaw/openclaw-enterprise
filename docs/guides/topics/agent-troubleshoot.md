@@ -17,7 +17,7 @@ Once access is fixed, refresh and confirm the Namespace is `ready`.
 
 ## Deployment is blocked or has no selected version
 
-On Kubernetes, open the Agent's **Create new version** draft, then
+On Kubernetes, open the Agent's **Open draft** draft, then
 **Credentials**. Select **Reload authentication source**, then confirm under
 **Harness authentication** that **Authentication source** is the source you
 expect, not **None**. Check that the saved model authentication matches the
@@ -60,7 +60,7 @@ workspace intact. See [writable runtime state](../../reference/drivers/openshell
 
 ## Verify runtime health after deployment
 
-The console's **Deployment activity** shows persisted status; it has no live
+The console's **Deployment** tab shows persisted status; it has no live
 gateway-health or chat view. **Current version** means the control plane selected
 that version. It can be a version whose deployment failed, for example when an
 embedded replacement's model check rejected its key after it replaced the
@@ -111,7 +111,7 @@ The operation may have succeeded. Before retrying:
 - For model and channel credentials, reload the Agent's Credentials tab and check
   its saved bindings. An operator can inspect generated transport storage through
   the exact Agent runtime-credentials API.
-- For deployment, inspect the Agent's **Versions** list and the status for the
+- For deployment, inspect the Agent's **Viewing version** picker and the status for the
   saved version; a second deployment creates another version.
 - For a workspace file, reload that file and compare its content with your
   intended edit before saving again.

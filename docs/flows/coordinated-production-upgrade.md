@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-27"
-last_updated_session: "authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585"
+updated: "2026-10-28"
+last_updated_session: "authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a"
 ---
 
 # Production image upgrade flow
@@ -92,16 +92,20 @@ not Kubernetes image availability, receipt durability, or disposal. The helper
 preserves the live broker hostname; broker restart recovery remains an operator
 task in the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
 
-After rendering the chart and running a server-side Helm dry run,
+After rendering and a server-side Helm dry run,
 [`scripts/upgrade-startup-preflight.mjs`](../../scripts/upgrade-startup-preflight.mjs)
-copies rendered API and worker Pod templates (selected controller image, env,
-mounts, service account) into one-shot Pods whose Installation volume uses a
-temporary candidate Secret. Each runs `loadStartupConfigurationSnapshot` and
-`loadInstallationConfiguration`, resolving Drivers and Preset files without the
-database. On a typed configuration refusal,
-`apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` prints
-up to 32 field diagnostics through the API/worker log filter. The helper saves
-the paths and messages in component logs before stopping writers.
+copies API and worker templates into one-shot Pods with the image,
+environment, mounts and service account; the Installation mount uses a temporary
+candidate Secret.
+
+An API Pod with a theme first calls
+`apps/controller/src/composition/console-theme.ts:loadConsoleTheme`. Invalid bundles
+stop preflight; workers do not load themes. Both call
+`loadStartupConfigurationSnapshot` and `loadInstallationConfiguration` to resolve
+Drivers and Preset files without opening the database.
+`apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` formats
+typed configuration refusals with up to 32 field diagnostics through the API/worker
+log filter. The helper saves logs before writers stop.
 
 With the bundled Kubernetes Compute Driver, each Pod runs
 `KubernetesComputeDriver.preflight` with its Kubernetes credentials (its service
@@ -144,16 +148,16 @@ edits per the
 
 ### 2. Reconcile a prior attempt
 
-`scripts/upgrade-production-images:506`
+`scripts/upgrade-production-images:1040`
 
-Every attempt rereads Helm status, values, and the Installation Secret. Only
-recorded baseline or candidate values are accepted; Secret UID, Installation
-annotation, and other data must match the baseline. Resume requires a prepared
-record; otherwise inspect evidence and remaining preflight resources. It binds
+Reconciliation rejects ineligible Helm states before reading values or the
+Installation Secret. Values must match the recorded baseline or candidate;
+Secret UID, Installation annotation, and other data must match the baseline.
+Resume requires a prepared record; otherwise inspect evidence and remaining
+preflight resources. It binds
 kubeconfig contents, inputs, OCC URL, scripts, flow, chart, and pair evidence,
 requalifies the pair, and rejects changed eligible nodes. Candidates must match
-saved reviewed inputs, which the helper applies. Unexpected drift or an
-in-progress Helm release stops execution.
+saved reviewed inputs, which the helper applies. Unexpected drift stops execution.
 
 If a previously started Helm release is deployed at a newer version with the
 candidate values, the script continues without repeating Helm. Otherwise it
@@ -245,18 +249,21 @@ step on its workspace node state before native setup, and a native worker before
 it connects (`openClawStateMigrationHelper` in `runtime-startup.ts`). Embedded execution
 requires one runtime container; dedicated execution requires both gateway and
 Agent containers. Each replacement gateway runs read-only
-`openclaw doctor --lint --json --severity-min error` with a heap cap
+`openclaw doctor --lint --json --severity-min error`, one at a time, with a heap cap
 (`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway's memory limit;
 an OOM kill can stop both. The cgroup v2 check (`gateway_free_memory`) requires
 one reading with cap plus 640 MiB free or two consecutive readings with cap plus
-256 MiB. This reduces risk without reserving memory or guaranteeing availability.
-Transient failures are retried. Initially unavailable data allows warning and run.
+256 MiB. This reduces risk but reserves no memory. Transient failures are retried.
+Initially unavailable data allows warning and run.
 After insufficient memory is observed, unavailable reads reset consecutive
-evidence; only fresh sufficient readings admit Doctor within the original deadline.
+evidence; only fresh sufficient readings admit Doctor within its own deadline.
 Failure reports separate Doctor's exit status from gateway restarts since Ready.
 Missing or incomparable counts or Pod identities report unknown; only a comparable
 increase with last termination `OOMKilled` names an OOM kill. A memory timeout
-joins started Doctors before releasing the evidence lock.
+starts no further Doctor. Then, also after a failed Doctor, `revision_pod_change_since_ready`
+fails the upgrade for any revision Pod the wait required (gateway or dedicated agent)
+missing, replaced, restarted, or unready; the readiness wait ignores ended Pods, so
+resume checks the replacement.
 Failures retain dispatch, status, Pod, and Doctor evidence.
 
 ### 6. Hand off application verification
@@ -275,20 +282,21 @@ begins with the read-only `scripts/split-layout-tenants.mjs export --out FILE`.
 Its `createOccApi.expect` requires a data envelope for each successful resource
 response before `exportTenants` assembles the bundle. Malformed JSON, an empty
 body, or a missing data envelope causes export to exit nonzero before `main`
-writes the bundle; an actual empty collection remains valid. After restoring
-the API response path, the operator retries the read and checks the exported
-inventory before proceeding with recovery. Empty
-204 deletes and explicitly accepted 404 responses retain their existing meaning.
+writes the bundle; an actual empty collection remains valid. Restore the API
+response path, retry the read, and check exported inventory before recovery. Empty 204 deletes
+and explicitly accepted 404 responses retain their meaning.
 
-On re-creation, `importTenants` filters skipped sources and checks that each
-selected source Namespace has a distinct target name. Saved destination IDs
-remain reserved even when their sources are skipped. It combines those IDs with
-selected unsaved sources resolved from live names, and rejects shared destinations
-before any mutation or ID-map save. The operator
-chooses distinct `--rename` targets, skips a source, or corrects a conflicting
-saved map before retrying. A one-to-one mapping can still reuse an empty target
-and resume. A skipped source without a saved destination reserves nothing.
-The check does not separate resources an older import already merged.
+On re-creation, `importTenants` requires distinct target names for selected
+Namespaces. Saved destination IDs stay reserved even for skipped sources; skipped
+sources without saved destinations reserve nothing. The importer resolves selected
+unsaved targets by live name and rejects shared destinations before any mutation or ID-map
+save. Choose distinct `--rename` targets, skip a source, or correct the saved map
+before retrying. Saved mappings resume after validation. Previously merged
+resources stay merged.
+
+`--rename` keys are literal: `constructor` and `__proto__` remain unchanged unless
+renamed. Without a saved mapping, exact-name reuse requires a Namespace without
+Agents or Secrets.
 
 ## Debugging and Verification
 
@@ -323,6 +331,12 @@ The check does not separate resources an older import already merged.
 
 ## Changelog
 
+- 2026-10-28 18:11: Check Helm status before reconciliation reads. (authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a - 541cc3f43bdfb09615ecee0cfb79c533e6a0b56c)
+- 2026-10-28 21:01: Check API themes before writer quiescence. (authoring-run/bf262f39-fa9d-4e70-94e1-e2fc516234e9 - 304fcfb169bc8403794e8562a08b1e3ee4cc23ac)
+
+- 2026-10-28 06:40: Check every revision Pod, not only the gateway, after Doctor. (fix-2755)
+- 2026-10-28 05:40: Check gateways after failed Doctors. (bughunt-1028)
+- 2026-10-28 00:40: Run Doctors serially; fail on gateways changed afterward. (fix-2736)
 - 2026-10-26 23:24: Record source checkout verification before private inputs. (authoring-run/dc3e51c1-8f14-4410-9c70-e4a993ea58fe - 821bee5fe0bb446319fab40ad21055b1e942eb37)
 - 2026-10-25 11:53: Record native scale, Helm upgrade, and rollout failures; preserve recovery. (authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585 - 87784a3230964bd8a7a1763f8350c1fd2b4284e0)
 - 2026-10-25 09:19: Keep preflight kubectl errors in private evidence. (authoring-run/6fccb13c-5ec3-44d5-aded-c3c3e9c1da81 - aaabca1fec6b28fbbb674f48f11f015242f86b59)

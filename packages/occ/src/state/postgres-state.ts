@@ -123,6 +123,7 @@ import {
   credentialSourcesMatch,
   validCredentialSourceSnapshots,
   namespaceRoleGrantsBeyondRead,
+  assertBindingSubjectNotEmail,
   validHarnessAuthSnapshot,
 } from "./platform-state.ts";
 import {
@@ -4141,6 +4142,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The IAM AccessBinding must belong to an available Namespace.",
           );
         }
+        assertBindingSubjectNotEmail(binding.subjectId);
         // Same subject rule as the in-memory adapter: a human without a Namespace, a
         // non-Agent ServicePrincipal of the exact Namespace, or the ServicePrincipal of a
         // live Agent there. The Agent owner key is deferred, so it cannot vouch mid-unit.

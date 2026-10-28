@@ -42,16 +42,32 @@ test("route registration rejects mixed-case literals that constrain a header nam
     "conditional name": {
       propertyNames: { if: { const: "host" }, then: true, else: { not: { const: "X-Blocked" } } },
     },
+    // Patterns match the lowercased name too, so an uppercase letter in one never matches.
+    "pattern property": { patternProperties: { "^X-Blocked$": { type: "string" } } },
+    "name pattern": { propertyNames: { not: { pattern: "^X-Blocked$" } } },
+    "name pattern in a character class": { propertyNames: { pattern: "^[Xx]-blocked$" } },
+    "hex-escaped name pattern": { propertyNames: { pattern: "^\\u0058-blocked$" } },
+  };
+  const refused: Record<string, string> = {
+    "pattern property": "^X-Blocked$",
+    "name pattern": "^X-Blocked$",
+    "name pattern in a character class": "^[Xx]-blocked$",
+    "hex-escaped name pattern": "^\\u0058-blocked$",
   };
   for (const [name, headers] of Object.entries(cases)) {
     await t.test(name, async (t) => {
       const app = createApp();
       t.after(() => app.close());
       app.get("/example", { schema: { headers: { type: "object", ...headers } } }, () => "ok");
-      await assert.rejects(async () => app.ready(), {
-        code: "FST_ERR_SCH_VALIDATION_BUILD",
-        message: /Route headers schemas must name headers in lowercase: X-Blocked/u,
-      });
+      const expected = `Route headers schemas must name headers in lowercase: ${refused[name] ?? "X-Blocked"}`;
+      await assert.rejects(
+        async () => app.ready(),
+        (error: Error & { code?: string }) => {
+          assert.equal(error.code, "FST_ERR_SCH_VALIDATION_BUILD");
+          assert.ok(error.message.endsWith(expected), error.message);
+          return true;
+        },
+      );
     });
   }
 });
@@ -68,8 +84,10 @@ test("lowercase header constraints preserve header values and query names", asyn
           type: "object",
           properties: { "x-mode": { const: "READ" } },
           required: ["x-mode"],
+          // Uppercase escapes (\d, \S) and header-value patterns are not header names.
+          patternProperties: { "^x-count-\\d$": { type: "string", pattern: "^[A-F0-9]+$" } },
           dependencies: { "x-trigger": ["x-companion"] },
-          propertyNames: { not: { enum: ["x-blocked"] } },
+          propertyNames: { not: { enum: ["x-blocked"] }, pattern: "^\\S+$" },
         },
         querystring: { type: "object", propertyNames: { enum: ["Mode"] } },
       },
@@ -103,8 +121,14 @@ test("lowercase header constraints preserve header values and query names", asyn
     assert.equal(missing.statusCode, 400);
     assert.equal(missing.json().error.code, "INVALID_REQUEST");
   }
+  // The pattern property matches the lowercased name and checks the value as sent.
+  const counted = await app.inject({ url, headers: { "X-Mode": "READ", "X-Count-1": "AB" } });
+  assert.equal(counted.statusCode, 200);
+  const badCount = await app.inject({ url, headers: { "X-Mode": "READ", "X-Count-1": "ab" } });
+  assert.equal(badCount.statusCode, 400);
+  assert.equal(badCount.json().error.code, "INVALID_REQUEST");
   const wrongValue = await app.inject({ url, headers: { "X-Mode": "read" } });
   assert.equal(wrongValue.statusCode, 400);
   assert.equal(wrongValue.json().error.code, "INVALID_REQUEST");
-  assert.equal(hits, 4);
+  assert.equal(hits, 5);
 });

@@ -74,7 +74,8 @@ Missing or non-ready explicitly selected CredentialSources return `409 RESOURCE_
 Unsupported discovery reads no credential.
 
 Saved-Agent discovery requires an active dedicated Agent and caller `read` and
-`update`. Bound Secrets use [`SecretDriver.withValue`](../reference/drivers/secret.md).
+`update`. It lists only plugins that Agent save admits for this Agent; details for
+others return the save refusal. Bound Secrets use [`SecretDriver.withValue`](../reference/drivers/secret.md).
 Bound and explicitly supplied CredentialSources use Credential Gateway `withSourceToken`,
 which may refresh tokens and return account metadata. Bound credential callbacks
 recheck binding and caller and Agent `operate` grants. Missing or non-ready
