@@ -1101,6 +1101,14 @@ test(
       "the shared native admin session must reconnect to the current redeployed revision",
     );
     await waitForStockUi(currentSessionPage);
+    const banner = currentSessionPage.getByRole("paragraph").filter({
+      hasText: "edit and save the Agent’s draft Configuration, then select Deploy new version",
+    });
+    await banner.waitFor();
+    assert.equal(
+      await banner.getByRole("link", { name: "Learn more", exact: true }).getAttribute("href"),
+      "https://docs-enterprise.openclaw.org/reference/agents/gateway-managed-mode/",
+    );
     await assertManagedNativeConfigWriteRejected(
       currentSessionPage,
       currentStatus.origin,
