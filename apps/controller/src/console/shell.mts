@@ -295,6 +295,11 @@ export function createShell({
     enableMenuKeys(menu, closeAccount);
     menu.append(
       button("Settings", () => navigate("settings"), { role: "menuitem", tabindex: "-1" }),
+      // The launcher's chooser, which never opens a destination by itself.
+      button("Switch destination", () => navigate("launch?choose=1", null), {
+        role: "menuitem",
+        tabindex: "-1",
+      }),
       button("Sign out", () => void logout(), { role: "menuitem", tabindex: "-1" }),
     );
     account.append(...(menuFirst ? [menu, toggle] : [toggle, menu]));

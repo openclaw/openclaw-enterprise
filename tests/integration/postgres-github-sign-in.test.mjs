@@ -797,7 +797,7 @@ test(
       (candidate) => new URL(candidate.url()).pathname === "/namespaces",
     );
     await page.getByRole("button", { name: "Continue with GitHub" }).click();
-    await page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
+    await page.waitForURL(/\/console\/(launch|agents|providers|namespaces|settings)/);
     const confirmedResult = await (await resultRequest).response();
     assert.equal(confirmedResult.status(), 200);
     const browserSession = await page.evaluate(

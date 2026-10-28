@@ -519,6 +519,107 @@ p {
   display: block;
   margin: var(--space-5) auto 0;
 }
+/* The workspace launcher (/console/launch): an entry point after sign-in, outside the
+   administration shell. A header with the account, then one column of destination cards. */
+.launcher-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-8);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+.launcher-header .brand {
+  margin: 0;
+}
+.launcher-account {
+  display: flex;
+  gap: var(--space-4);
+  align-items: center;
+  min-width: 0;
+}
+.launcher-account > div {
+  display: grid;
+  min-width: 0;
+  text-align: right;
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  overflow-wrap: anywhere;
+}
+.launcher-account button {
+  flex: none;
+}
+.launcher-content {
+  max-width: 850px;
+  margin: 0 auto;
+  padding: var(--space-12) var(--space-8);
+}
+.launcher-content > h1 {
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl--line-height);
+}
+.launcher-destinations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-8);
+}
+.launcher-destination {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+.launcher-destination h2 {
+  margin: var(--space-3) 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+.launcher-destination > p {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+}
+.launcher-destination > .launcher-open {
+  align-self: stretch;
+  margin-top: auto;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  font-weight: var(--weight-medium);
+}
+.launcher-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+.launcher-footer p {
+  margin: 0;
+}
+@media (max-width: 760px) {
+  .launcher-destinations {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 520px) {
+  .launcher-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: var(--space-5);
+  }
+  .launcher-account {
+    flex: 1 0 100%;
+    justify-content: space-between;
+  }
+  .launcher-account > div {
+    text-align: left;
+  }
+  .launcher-content {
+    padding: var(--space-8) var(--space-5);
+  }
+}
 .error {
   color: var(--danger);
   margin-top: var(--space-5);

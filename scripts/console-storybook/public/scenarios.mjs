@@ -422,6 +422,97 @@ const shareExistingPerson = [
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
 export const scenarios = {
+  launcherAdmin: {
+    group: "Pages/Launcher",
+    name: "Administrator chooser",
+    path: "/console/launch?choose=1",
+    singleAgent: true,
+    nativeAdmin: "available",
+    description:
+      "Open the permitted Claw or Fleet administration. Sign out, then sign in again with example credentials: the launcher is the default destination.",
+    gap: "Simulated permissions and availability; not live backend or runtime proof.",
+  },
+  launcherMultiple: {
+    group: "Pages/Launcher",
+    name: "Multiple Claws",
+    path: "/console/launch",
+    nativeAdmin: "available",
+    otherNativeAdmin: "stopped",
+    observabilityDenied: true,
+    description:
+      "One available Claw and one stopped Claw both remain visible. Refresh availability rechecks the fixture. Open Claw visits a simulated native UI.",
+  },
+  launcherSingle: {
+    group: "Pages/Launcher",
+    name: "One Claw chooser-only mode",
+    path: "/console/launch?choose=1",
+    singleAgent: true,
+    nativeAdmin: "available",
+    observabilityDenied: true,
+    description:
+      "Chooser-only mode keeps a sole destination visible. Ordinary entry opens it automatically, covered by the browser suite.",
+  },
+  launcherUnavailable: {
+    group: "Pages/Launcher",
+    name: "One stopped Claw",
+    path: "/console/launch",
+    singleAgent: true,
+    nativeAdmin: "stopped",
+    observabilityDenied: true,
+    description:
+      "An assigned but stopped workspace remains visible. Refresh does not start the Agent.",
+  },
+  launcherEmpty: {
+    group: "Pages/Launcher",
+    name: "No access assigned",
+    path: "/console/launch",
+    emptyAgents: true,
+    observabilityDenied: true,
+    description:
+      "No assigned destinations. Check again and Sign out remain available; no request is sent to an administrator.",
+  },
+  launcherFailure: {
+    group: "Pages/Launcher",
+    name: "Discovery unavailable",
+    path: "/console/launch",
+    nativeAdmin: "available",
+    observabilityDenied: true,
+    rules: [{ suffix: "/native-admin", status: 503, code: "DEPENDENCY_UNAVAILABLE", once: true }],
+    description:
+      "A failed discovery never becomes a single-destination redirect or an empty-access state. Try again repeats the check.",
+  },
+  launcherLoading: {
+    group: "Pages/Launcher",
+    name: "Checking access",
+    path: "/console/launch",
+    nativeAdmin: "available",
+    observabilityDenied: true,
+    rules: [{ suffix: "/native-admin", hold: true }],
+    description:
+      "The first destination read is held. No destination is offered while discovery is incomplete.",
+  },
+  launcherLogin: {
+    group: "Pages/Launcher",
+    name: "Sign in and continue",
+    path: "/console/launch",
+    signedOut: true,
+    singleAgent: true,
+    nativeAdmin: "available",
+    observabilityDenied: true,
+    description:
+      "Use any example email and password to sign in to the fixture and continue to the simulated native UI. Do not enter real credentials.",
+  },
+  launcherDefaultLogin: {
+    group: "Pages/Launcher",
+    name: "Default sign-in after Sign out",
+    path: "/console/login",
+    signedOut: true,
+    singleAgent: true,
+    nativeAdmin: "available",
+    observabilityDenied: true,
+    description:
+      "Bare sign-in has no destination. Sign in with example credentials to open the only assigned Claw instead of the administration pages. Do not enter real credentials.",
+  },
   secrets: {
     group: "Pages/Secrets",
     name: "Populated",

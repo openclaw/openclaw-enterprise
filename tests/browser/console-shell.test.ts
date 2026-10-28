@@ -112,7 +112,8 @@ test("the desktop shell shows the sidebar surface, the current-page bar and the 
   assert.equal((await style(other, "backgroundColor")).backgroundColor, "rgba(0, 0, 0, 0)");
   assert.match(await pageMarker(other), /^0px none/);
 
-  // The account row: initials, name and email; its menu offers Settings and Sign out.
+  // The account row: initials, name and email; its menu offers Settings, Switch destination
+  // and Sign out.
   const account = page.getByRole("button", { name: `${name} ${email}`, exact: true });
   assert.equal(await account.locator(".account-avatar").textContent(), "CA");
   assert.equal(await account.locator(".account-name").textContent(), name);
@@ -126,7 +127,7 @@ test("the desktop shell shows the sidebar surface, the current-page bar and the 
   });
   assert.deepEqual(
     await page.getByRole("menu", { name: "Account" }).getByRole("menuitem").allTextContents(),
-    ["Settings", "Sign out"],
+    ["Settings", "Switch destination", "Sign out"],
   );
   await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
@@ -181,7 +182,11 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   await avatar.click();
   const menu = page.locator("#account-menu-top");
   assert.equal(await menu.isVisible(), true);
-  assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Settings", "Sign out"]);
+  assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), [
+    "Settings",
+    "Switch destination",
+    "Sign out",
+  ]);
   assert.equal(await navigation.getAttribute("aria-expanded"), "false", "the drawer stays shut");
   assert.equal(await page.locator(".sidebar").isVisible(), false);
   await page.keyboard.press("Escape");
@@ -424,7 +429,8 @@ test("the sign-in page says Sign in, labels the email field and names the build"
   await email.fill(fixture.credentials.email);
   await page.getByLabel("Password", { exact: true }).fill(fixture.credentials.password);
   await submit.click();
-  await page.waitForURL(/\/console\/agents/);
+  // Bare sign-in opens the launcher; with no Agents, administration is its only destination.
+  await page.waitForURL(/\/console\/namespaces/);
 });
 
 // A development build has no commit to name, so the sign-in page has no footer.

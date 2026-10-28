@@ -206,7 +206,8 @@ export async function proveTabBinding(t, databaseUrl, provider) {
     await tabB.getByLabel("Email", { exact: true }).fill(bob.email);
     await tabB.getByLabel("Password").fill(bob.password);
     await tabB.getByRole("button", { name: "Sign in" }).click();
-    await tabB.waitForURL(/\/console\/agents/);
+    // Bare sign-in opens the launcher; with no Agents, administration is its only destination.
+    await tabB.waitForURL(/\/console\/namespaces/);
     const session = await tabB.evaluate(
       async () => (await (await fetch("/api/auth/session")).json()).data,
     );

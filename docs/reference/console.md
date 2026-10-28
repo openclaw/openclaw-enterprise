@@ -1,6 +1,7 @@
 # Platform console
 
-Open `/console/` on your OCC address to manage Agents, Namespace Secrets, and supported Slack settings,
+Use the [workspace launcher](console/launcher.md) to open your Claw, or `/console/`
+on your OCC address to manage Agents, Namespace Secrets, and supported Slack settings,
 workspace files, and credentials. Authorized operators can also open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console has no rollback, live
 runtime health, or browser chat through OCE.
@@ -24,7 +25,8 @@ Installation, see the
 
 The console uses [session cookies](authentication.md); it never stores tokens or
 accepts service keys. Expiry clears private content and drafts. Sign in again to
-return to the validated page after access checks.
+return to the validated page after access checks. Sign-in without such a page
+opens the [workspace launcher](console/launcher.md).
 See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
 
 ## Customize deployment branding

@@ -3635,6 +3635,9 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  // Sign-in opens the launcher, whose only destination here is administration, in this tab.
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByLabel("Preset template").waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);

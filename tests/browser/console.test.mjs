@@ -1478,7 +1478,8 @@ test("an abandoned GitHub attempt does not turn password sign-in into a GitHub f
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL(/\/console\/agents/);
+  // Bare sign-in opens the launcher; with no Agents, administration is its only destination.
+  await page.waitForURL(/\/console\/namespaces/);
   assert.equal(requests.includes("/api/auth/providers/github/result"), false);
   await expectNoText(page, /Could not (?:finish signing|sign) in with GitHub/, async () => {
     await page.locator(settledView).waitFor();
@@ -1922,7 +1923,7 @@ test("recovery-only password sign-in keeps the form behind Recovery sign-in", as
     .waitFor();
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL(/\/console\/agents/);
+  await page.waitForURL(/\/console\/namespaces/);
 });
 
 test("password sign-in stays visible unless discovery reports it recovery-only", async (t) => {
@@ -2758,10 +2759,11 @@ test("login ignores untrusted returns and resolves an opaque Agent key only afte
     "/console/login",
     "/console/agents/not-an-agent",
   ]) {
+    // The login page takes no return URL; signed in, it opens the workspace launcher.
     await page.goto(`${fixture.origin}/console/login?return=${encodeURIComponent(value)}`);
-    await page.waitForURL(/\/console\/agents(?:\?|$)/);
+    await page.getByRole("heading", { name: "Where would you like to go?" }).waitFor();
     assert.equal(new URL(page.url()).origin, fixture.origin);
-    assert.equal(new URL(page.url()).pathname, "/console/agents");
+    assert.equal(new URL(page.url()).pathname, "/console/launch");
   }
   await page.goto(`${fixture.origin}/console/#native-agent=${key.toUpperCase()}`);
   await page.waitForURL(/\/console\/agents(?:\?|$)/);
@@ -2812,8 +2814,9 @@ test("a refused provider exchange discards its pending login destination", async
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL(/\/console\/agents(?:\?|$)/);
-  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  // Without its destination, sign-in opens the launcher's chooser, not the old Agent.
+  await page.getByRole("heading", { name: "Where would you like to go?" }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/launch");
 });
 
 test("Agent recovery survives a transient session check and tab refocus", async (t) => {

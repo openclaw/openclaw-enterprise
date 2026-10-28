@@ -580,7 +580,7 @@ export function installFixture(scenario, evidence) {
   }
   if (scenario.emptyAgents) {
     agents.clear();
-  } else {
+  } else if (!scenario.singleAgent) {
     agents.set("agt_00000000-0000-4000-8000-000000000002", {
       ...agent,
       id: "agt_00000000-0000-4000-8000-000000000002",
@@ -1919,11 +1919,15 @@ export function installFixture(scenario, evidence) {
           return response(saved, 202);
         }
         if (suffix === "/native-admin" && method === "GET") {
+          // The API returns an absolute URL; the launcher accepts nothing else.
           return response({
-            status: scenario.nativeAdmin ?? "disabled",
+            status:
+              (id === agent.id ? undefined : scenario.otherNativeAdmin) ??
+              scenario.nativeAdmin ??
+              "disabled",
             url:
               (id === agent.id ? scenario.nativeAdminUrl : undefined) ??
-              "/storybook-fixtures/native-admin.html",
+              new URL("/storybook-fixtures/native-admin.html", location.origin).href,
           });
         }
         if (suffix === "/harness-status" && method === "GET") {

@@ -536,6 +536,10 @@ test("a refused administrator's refusal stays with that account", async (t) => {
   await page.getByLabel("Email", { exact: true }).fill(member.credentials.email);
   await page.getByLabel("Password").fill(member.credentials.password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  // Sign-in opens the launcher, which finds nothing assigned; Back returns to the console.
+  await page.getByRole("heading", { name: "No access assigned", exact: true }).waitFor();
+  assert.equal(await page.getByText(REFUSED).count(), 0);
+  await page.goBack();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
   await waitForEnabled(opener);

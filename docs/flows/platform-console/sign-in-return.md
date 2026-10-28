@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: 2026-10-26
-last_updated_session: fix-2643
+last_updated_session: authoring-run/59e116e9-8a97-44aa-a937-ca6ce42b9668
 ---
 
 # Console sign-in and destination recovery
@@ -27,6 +27,7 @@ graph TD
   C --> D["Confirm session"]
   B -->|present| D
   D -->|page intent| E["Open console page"]
+  D -->|no page intent| W["Open workspace launcher"]
   D -->|Agent key| F["Resolve authorized Agent"]
   F -->|allowed| E
   F -->|unavailable| G["Open Agents"]
@@ -79,6 +80,9 @@ had one: a mark in tab `sessionStorage`, set when a session resolves and cleared
 by logout, tells a reload after expiry from a first visit. Sign-in reauthorizes
 that destination; it never restores drafts or replays a mutation. A `403` remains
 an access denial and does not start login. The login page accepts no return URL.
+Without a validated intent, including after logout, `showLogin` uses the
+[workspace launcher](workspace-launcher.md) intent; an authenticated visit to
+`/console/login` opens it too.
 
 A native Agent recovery link can supply a 32-character lowercase hexadecimal key
 in the console root fragment. `loadPage` removes the fragment before sign-in and
@@ -119,6 +123,7 @@ native-gateway integration.
 ## Related docs
 
 - [Parent console flow](../platform-console.md)
+- [Workspace launcher flow](workspace-launcher.md)
 - [External sign-in reference](../../reference/authentication/external-sign-in.md)
 
 ## Manual Notes
@@ -126,6 +131,8 @@ native-gateway integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 10:52: Default sign-in without a page intent to the workspace launcher. (authoring-run/59e116e9-8a97-44aa-a937-ca6ce42b9668 - 7f338874d20460c6eacb63e8c559ae92c09c2703)
 
 - 2026-10-26 18:00: A Secrets page link's Secret ID survives sign-in. (2645)
 
