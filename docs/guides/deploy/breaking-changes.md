@@ -56,12 +56,13 @@ another participant during a running turn now runs as a separate turn after it,
 instead of a refusal.
 
 **Who is affected.** Agents deployed before the upgrade whose Configuration does
-not set these settings.
+not set these settings. The runtime upgrade deploys every running Agent again.
 
 **How to tell.** The Agent version's `configuration` does not contain
 `messages.queue.allowCollaborativeSteering`.
 
-**Steps.** After the upgrade, deploy each Agent again. To keep the refusal, set
+**Steps.** After the upgrade, deploy again each Agent the upgrade did not
+deploy. To keep the refusal, set
 `messages.queue.collaborativeSteeringFallback: "reject"` in the Configuration.
 
 ## 2026-10-27: chart listener ports start at 1024
