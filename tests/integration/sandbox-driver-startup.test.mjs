@@ -6666,7 +6666,6 @@ test(
             undefined,
             routeStore(),
           );
-          await authorityPort.release();
           // v4 promised a send cutoff. The online sender must refuse that revision before creation.
           const exactRevision = structuredClone(rev);
           exactRevision.executionAdmission.version = 4;
@@ -6681,6 +6680,8 @@ test(
             /requires one explicitly admitted GitHub binding and its dedicated Codex execution/,
           );
           assert.equal(created, undefined, "the online sender cannot take over a v4 execution");
+          // The Git worker has bound its authority port since it started.
+          await authorityPort.release();
           const result = await sandbox.provisionHarness({ ...ctx, requirements: required });
           const cold = sandbox.standingGitExecution(ctx);
           assert.equal(cold.continuity.model, inferenceProvider);
