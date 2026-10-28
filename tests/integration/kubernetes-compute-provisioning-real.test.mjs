@@ -701,7 +701,8 @@ test(
     });
     // The regular provisioning API must admit separately identified proxy users
     // without changing the platform's workspace identity. This fixture proves
-    // configuration handoff, not OIDC login or native Gateway authorization.
+    // persisted handoff and the Compute-rendered Gateway document, not OIDC login
+    // or native Gateway authorization.
     const gatewayAuth = {
       mode: "trusted-proxy",
       trustedProxy: {
@@ -997,6 +998,23 @@ test(
     );
     assert.equal(initialFailure.agentId, provisioned.agentId);
     assert.equal(initialFailure.revisionId, provisioned.revisionId);
+    // Inspect the actual immutable document rendered by Compute through the API/worker
+    // path. OCC's saved input alone cannot catch a renderer that drops human grants.
+    // Fixture runtime qualification fails later; it does not undo this rendered snapshot.
+    const renderedGatewayConfiguration = await resource(
+      "configmap",
+      `${gatewayName(provisioned.agentId)}-rev-${hash(provisioned.revisionId)}`,
+      gatewayPlacement,
+    );
+    assert.equal(renderedGatewayConfiguration.immutable, true);
+    assert.deepEqual(
+      JSON.parse(renderedGatewayConfiguration.data["openclaw.json"]).gateway.auth,
+      {
+        ...gatewayAuth,
+        trustedProxy: { ...gatewayAuth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
+      },
+      "the provisioning worker must preserve human identities and grants in the rendered Gateway ConfigMap",
+    );
     const initialDeployment = await fixture.request(
       "GET",
       `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`,

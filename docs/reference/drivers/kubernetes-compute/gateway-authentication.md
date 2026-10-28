@@ -11,9 +11,11 @@ email-style identity: OpenClaw matches `identityScopes` case-insensitively for
 identities containing `@`, so such variants would share one grant.
 
 > **Warning: trusted teammates only.** Shared human access is opt-in for teammates
-> trusted with the Agent's configured tools, credentials and workspace. Profiles
-> provide attribution, and Gateway roles restrict operations; neither provides
-> per-person execution or data isolation. Participants share the Agent's sandbox
+> trusted with the Agent's configured tools, credentials and workspace. Preserving
+> distinct native identities and grants improves attribution and permission control
+> compared with sharing one Control UI identity. Gateway roles restrict operations,
+> but these controls provide neither per-person execution nor data isolation.
+> Participants share the Agent's sandbox
 > and its OpenShell policy when OpenShell is configured. Use separate Agents and
 > sandboxes when people must not share that authority or data. See OpenClaw's
 > [multi-user trust boundary](https://docs.openclaw.ai/concepts/multi-user#trust-boundary).
@@ -107,9 +109,10 @@ admission before rollout. Machine-only admin auto-approval remains valid.
 With auto-approval enabled, device scopes are a shared grant, not a per-human cap.
 Omitting them uses OpenClaw's defaults: `operator.read`, `operator.write`,
 `operator.approvals` and `operator.questions`. Explicit read/write device scopes
-can likewise widen a narrower identity grant. Set device scopes explicitly for
-the least-privileged admitted human; per-identity grants cannot subtract them, but
-the ingress's per-person `x-openclaw-scopes` cap can. A paired device keeps its grant under any
+can likewise widen a narrower identity grant. For human-enabled automatic
+enrollment, choose device scopes explicitly for the least-privileged admitted
+human rather than rely on the native defaults. Per-identity grants cannot
+subtract device scopes, but the ingress's per-person `x-openclaw-scopes` cap can. A paired device keeps its grant under any
 admitted identity that presents its key, and narrowing a person's grant does not
 narrow their devices. Admitting humans does not narrow devices already paired
 with admin grants, for example under earlier machine-only admin auto-approval:
