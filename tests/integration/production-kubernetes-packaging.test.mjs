@@ -6571,6 +6571,82 @@ test(
   },
 );
 
+test("joint Git issuer cluster domain preserves its Service identity", tooling, async () => {
+  const selected = {
+    ...protectedRepositoryValues,
+    "openshellGit.enabled": "true",
+    "openshellGit.tlsSecretName": "openshell-git-tls",
+    "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
+    "openshellGit.clients[0].namespaceSelector.matchLabels.app": "supervisors",
+    "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+    "openshellGit.jointTokenIssuer.enabled": "true",
+    "openshellGit.jointTokenIssuer.bundleConfigMapName": "git-jwt-bundle",
+    "egressAuthority.enabled": "true",
+    "egressAuthority.tlsSecretName": "authority-server-tls",
+    "egressAuthority.issuerSecretName": "gateway-jwt-keys",
+    "egressAuthority.clients[0].namespaceSelector.matchLabels.app": "supervisors",
+    "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
+  };
+  const domainKey = "openshellGit.jointTokenIssuer.clusterDomain";
+  // A boolean false is a type error; an empty or absent value keeps the short hostname.
+  const invalidDomain = "false";
+  for (const [overrides, endpoint, trust] of [
+    [
+      {},
+      "https://openclaw-enterprise-openshell-git.issuer-test.svc:8446/token/git",
+      "spiffe-jwt-svid",
+    ],
+    // Helm removes null overrides during coalescing; older upgrades likewise lack this key.
+    [
+      { [domainKey]: "null" },
+      "https://openclaw-enterprise-openshell-git.issuer-test.svc:8446/token/git",
+      "spiffe-jwt-svid",
+    ],
+    [
+      { [domainKey]: "cluster.internal", "openshellGit.jointTokenIssuer.port": 10446 },
+      "https://openclaw-enterprise-openshell-git.issuer-test.svc.cluster.internal:10446/token/git",
+      "spiffe-jwt-svid",
+    ],
+    [
+      {
+        [domainKey]: invalidDomain,
+        "openshellGit.jointTokenIssuer.enabled": "false",
+        "egressAuthority.enabled": "false",
+      },
+      "disabled",
+      undefined,
+    ],
+  ]) {
+    const { stdout } = await renderProductionChart(
+      { ...selected, ...overrides },
+      { namespace: "issuer-test", isUpgrade: true },
+    );
+    const objects = await resources(stdout);
+    for (const [kind, workload, consumer] of [
+      ["Deployment", "openclaw-enterprise-api", "api"],
+      ["Deployment", "openclaw-enterprise-worker", "worker"],
+      ["Job", "oce-initialization", "installation-check"],
+    ]) {
+      const object = objects.find((item) => item.kind === kind && item.metadata.name === workload);
+      const pod = object.spec.template.spec;
+      const { env } = [...(pod.initContainers ?? []), ...pod.containers].find(
+        ({ name }) => name === consumer,
+      );
+      const value = (name) => env.find((entry) => entry.name === name)?.value;
+      assert.equal(value("OCC_OPENSHELL_GIT_TOKEN_ENDPOINT"), endpoint, consumer);
+      assert.equal(value("OCC_OPENSHELL_GIT_TOKEN_ASSERTION_SOURCE"), trust, consumer);
+    }
+  }
+  for (const [domain, diagnostic] of [
+    [invalidDomain, /openshellGit\.jointTokenIssuer\.clusterDomain must be a string/],
+    ["cluster.123", /openshellGit\.jointTokenIssuer\.clusterDomain.*numeric/],
+    // Valid individual DNS labels can still produce an unusably long Service hostname.
+    [Array(4).fill("a".repeat(50)).join("."), /openshellGit\.jointTokenIssuer\.clusterDomain.*253/],
+  ]) {
+    await assert.rejects(renderProductionChart({ ...selected, [domainKey]: domain }), diagnostic);
+  }
+});
+
 test(
   "protected OpenShell Git installs without a repository broker and refuses the retired trial",
   tooling,
