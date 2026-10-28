@@ -1108,17 +1108,16 @@ function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string
 // deepFreeze cannot freeze is copied on every snapshot, as before.
 const sharedRecords = new WeakSet<object>();
 
-function isPlainData(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) {
+// `seen` stops at a cycle (structuredClone keeps one), whose objects are checked once.
+function isPlainData(value: unknown, seen = new Set<object>()): boolean {
+  if (typeof value !== "object" || value === null || seen.has(value)) {
     return true;
   }
-  if (Array.isArray(value)) {
-    return value.every(isPlainData);
-  }
+  seen.add(value);
   const prototype = Object.getPrototypeOf(value);
   return (
-    (prototype === Object.prototype || prototype === null) &&
-    Object.values(value).every(isPlainData)
+    (Array.isArray(value) || prototype === Object.prototype || prototype === null) &&
+    Object.values(value).every((entry) => isPlainData(entry, seen))
   );
 }
 
