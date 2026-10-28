@@ -2019,7 +2019,9 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
     // all fail before service lookup, creation or workspace initialization.
     for (const observed of [previous, program + "\n0;", ...admissions.map(([other]) => other)]) {
       const parts = nodeProgramArguments(observed).slice(1);
-      if (JSON.stringify(parts) === JSON.stringify(expected)) continue;
+      if (JSON.stringify(parts) === JSON.stringify(expected)) {
+        continue;
+      }
       const stored = { ...saved, spec: { ...saved.spec, command: [...prefix, ...parts] } };
       sandboxes.set(name, stored);
       calls.length = 0;
