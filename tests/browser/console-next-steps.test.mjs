@@ -343,6 +343,22 @@ test("a rejected credential's record stops alerting once the Agent binds another
     .waitFor({ state: "attached" });
   assert.equal(await activity.getByRole("alert", { includeHidden: true }).count(), 0);
   assert.equal(await activity.getByText(recorded).count(), 0);
+
+  // Detaching the source is not a replacement. No new credential is available to deploy.
+  const detached = await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: null,
+  });
+  assert.equal(detached.harnessAuth, null);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await activity
+    .getByRole("alert", { includeHidden: true })
+    .getByText(recorded)
+    .waitFor({ state: "attached" });
+  assert.equal(
+    await activity.getByText(MODEL_CREDENTIAL_REJECTED_REPLACED, { exact: false }).count(),
+    0,
+  );
 });
 
 // A member who may deploy but holds AgentRevision read per version. The Deploy answer creates a

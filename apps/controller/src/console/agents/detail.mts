@@ -2407,6 +2407,7 @@ export async function renderAgentDetail(
   // given another credential since that version was deployed.
   function credentialReplacedSince(revisionId: string) {
     return (
+      agent.harnessAuth != null &&
       latestRevisionDetail !== null &&
       "harnessAuth" in latestRevisionDetail &&
       latestRevisionDetail.id === revisionId &&
