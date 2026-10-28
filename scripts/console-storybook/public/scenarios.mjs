@@ -8882,7 +8882,7 @@ export const scenarios = {
     firstDeploymentQueued: true,
     actions: [click("Stop Agent")],
     description:
-      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway.",
+      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway. Confirming reports cancellation requested, not completed; later lifecycle reads retire that local result.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopNeverDeployed: {

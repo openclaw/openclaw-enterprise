@@ -679,6 +679,79 @@ test("Stop stays enabled and says it cancels a first deployment that is queued",
   await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
 });
 
+for (const readback of ["stop status", "deployment"]) {
+  test(`First-deployment Stop feedback expires after a later lifecycle read via ${readback}`, async (t) => {
+    const { fixture, namespace, state } = await createRuntimeAuthFixture(t, `Stop ${readback}`);
+    const agent = await fixture.createAgent(namespace.id, "Later lifecycle", nativeValues("v1"), {
+      harnessAuth: { method: "runtime" },
+    });
+    const first = await fixture.deployAgent(namespace.id, agent.id);
+    await state.transact((unit) =>
+      unit.agents.transitionAgentDesiredRuntimeState(namespace.id, agent.id, "stopped", "running"),
+    );
+    const { page } = await newPage(t, fixture, { browser });
+    await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, first.id), (route) =>
+      route.fulfill(deploymentStatusResponse(first, { status: "queued" })),
+    );
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+    await stopRegion.getByText(STOP_CANCELS_FIRST_DEPLOYMENT, { exact: true }).waitFor();
+    await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Stop Agent", exact: true }).click();
+    await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
+    await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+    await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
+
+    // Another actor deploys. A lifecycle read must retire this viewer's earlier Stop result,
+    // whether it comes from Stop's own readback or the detail page's deployment refresh.
+    const later = await fixture.deployAgent(namespace.id, agent.id);
+    await state.transact((unit) =>
+      unit.agents.transitionAgentDesiredRuntimeState(namespace.id, agent.id, "stopped", "running"),
+    );
+    if (readback === "deployment") {
+      await fixture.activateRevision(namespace.id, agent.id, later.id);
+      await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, first.id), (route) =>
+        route.fulfill(deploymentStatusResponse(first, { status: "succeeded" })),
+      );
+      const activity = await openDeploymentActivity(page);
+      await activity.getByRole("button", { name: "Refresh deployment" }).click();
+    } else {
+      await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+    }
+    await waitForEnabled(stopRegion.getByRole("button", { name: "Stop Agent", exact: true }));
+
+    // The later deployment is stopped elsewhere and its selected revision is cleared by the
+    // worker. No new Stop from this viewer occurred, so its old cancellation must not reappear.
+    const stopped = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+    );
+    assert.equal(stopped.status, 202);
+    if (readback === "deployment") {
+      await state.transact((unit) =>
+        unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, later.id),
+      );
+    }
+    // Readback is reachable once the detail page observes the other actor's stop.
+    const activity = await openDeploymentActivity(page);
+    await activity.getByRole("button", { name: "Refresh deployment" }).click();
+    await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+    await stopRegion
+      .getByText("No version is selected. Deploy a new version to start this Agent.", {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal(
+      await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).count(),
+      0,
+    );
+  });
+}
+
 // A first deployment that succeeded while the list still holds the Agent read from before it,
 // or one whose outcome the page could not read, may have a version running: Stop stays, and its
 // dialog never claims that no version is serving (finding D691). The API answers if nothing runs.

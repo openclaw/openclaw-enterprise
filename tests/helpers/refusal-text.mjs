@@ -414,8 +414,8 @@ export const STOP_REQUESTED =
   "Stop requested. Deploy a new version to restart. Runtime shutdown is not verified here.";
 // A Stop that the API accepted while a first deployment was queued or in progress.
 export const STOP_REQUESTED_FIRST_DEPLOYMENT =
-  "Deployment cancelled. Deploy a new version to restart.";
-// The Stop panel with no version selected and no first deployment it cancelled.
+  "Deployment cancellation requested. Deploy a new version to restart.";
+// The Stop panel with no version selected and no first-deployment Stop requested here.
 export const STOPPED_NO_VERSION =
   "No version is selected. Deploy a new version to start this Agent.";
 // A Stop status read that failed: the prefix, then why (agents/stop.mts).
