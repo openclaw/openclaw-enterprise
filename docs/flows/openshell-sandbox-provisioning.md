@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-28
-last_updated_session: agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88
+last_updated_session: authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -374,7 +374,7 @@ model execution.
 
 ## Changelog
 
-- 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
+- 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
 
 - 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
 
