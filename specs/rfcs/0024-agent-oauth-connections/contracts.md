@@ -37,79 +37,30 @@ refresh. [Credential access and lifecycle](../0023-egress-proxy-credential-lifec
 
 ### MCP authorization
 
-For an `mcp_oauth` version, the Credential Refresh Driver uses the official
-TypeScript MCP client (`@modelcontextprotocol/client`). The plugin declares its
-MCP server URL. After the owner connects their account and deploys the Agent,
-the dedicated worker exposes every tool the server returns from `tools/list`
-for that connection. The server authorizes each `tools/call` under the user's
-grant and account permissions.
+The administrator enters the MCP server URL. The OCE Token Service uses the
+official TypeScript MCP client to discover the protected resource and its
+authorization server under the Installation's management egress policy. The
+administrator can supply a preregistered client ID and any required secret, or
+allow the SDK to choose from the issuer's advertised methods.
 
-1. **Approve the template.** The Driver reads the server's authentication
-   challenge and uses the SDK to discover protected resource and authorization
-   server metadata. Discovery uses credential-free requests subject to management
-   egress policy, including redirects. The administrator approves the server URL,
-   exact resource identifier, issuer, authorization and token endpoints, registered
-   client, and allowed scopes as one immutable version. The administrator reviews
-   the scopes in the challenge and in the protected resource's `scopes_supported`.
-   Either source can name scopes the other omits. The challenge identifies the
-   scopes needed for the current request. Without a scoped challenge, the SDK
-   suggests the advertised resource scopes. The administrator decides which
-   scopes the template offers, including any required for identity or refresh.
-   Saving a version requires at least one approved scope so that the owner
-   can make an explicit request.
-2. **Connect.** Console shows the owner the version's entire approved list.
-   The owner chooses which scopes to request for this connection. Console labels
-   any required scopes and includes them in the selection. OCC validates that
-   selection against the displayed version before creating a source or redirect.
-   It rejects a missing or empty selection, an unlisted scope, an omitted
-   required scope, or a stale version. The source records the validated set.
-   The Driver passes that set to SDK `auth()` with the version's registered
-   client. Before redirecting, it checks the consent URL's destination,
-   `resource`, and exact scope set, including any scope the SDK adds.
-   Token requests go directly to the pinned endpoint with redirects disabled.
-   A changed destination requires a new version and fresh consent.
-   A tool that needs additional scopes can return `insufficient_scope`. The
-   owner can request more through **Reconnect**. Scopes outside the approved
-   list require a new template version first.
-   The Driver keeps the PKCE verifier and SDK discovery state in the private
-   authorization session. OCC checks the initiating user, Agent, and single-use
-   callback state, and forwards the callback's optional `iss` to the Driver. The
-   SDK rejects an issuer mismatch, or a missing issuer when the authorization
-   server advertises issuer identification, before exchanging the code.
-3. **Refresh and present.** The Token Service uses the SDK
-   for exchange and refresh so both requests include the approved resource.
-   Before activating an access token, the service verifies that the user's
-   effective grant matches the selection recorded for this connection. Under
-   OAuth, an issuer may omit `scope` when it grants exactly the requested set.
-   A refresh without a scope change retains the original grant. If the effective
-   set differs or cannot be established, the service withholds the token and
-   requires reconnection.
-   Deployment matches the ready connection to the plugin's server, resource, and
-   issuer. The worker uses the same placeholder across access-token rotations.
+- **Client ID Metadata Document (CIMD).** Prefer this when
+  `client_id_metadata_document_supported` is true and the issuer can fetch
+  OCE's HTTPS client document. Its URL is the client ID.
+- **Dynamic Client Registration (DCR).** Otherwise, register at the advertised
+  `registration_endpoint` after the administrator approves it. If automatic
+  setup is unavailable, Console asks for a preregistered client.
 
-Verify the following with a controlled MCP server and issuer.
+At setup, the template version records the resolved client, server URL, resource,
+issuer, approved endpoints, and at least one scope approved from the challenge
+and resource metadata.
 
-- Offer `files:read` and `files:write` in the template. When the server challenges
-  for `files:read`, the owner still sees both approved scopes. Select only
-  `files:read`. Inspect the outgoing consent URL and the saved connection for
-  exactly that scope. Reject a forged scope before creating a source. Withhold
-  a refreshed token that adds `files:write`, even though the template allows it.
-  Repeat discovery without a challenge scope and verify the SDK suggests the
-  resource's advertised scopes.
-- Inspect the OAuth authorization request, the code exchange, and the refresh
-  request. Each must send the template's exact MCP resource identifier as the
-  `resource` parameter. This identifies the server the token is intended for.
-- Try saving an MCP template with the HTTP-method filter `endpoint.access: read-only`.
-  Verify that OCC rejects the save and creates no version. A connection with
-  only `files:read` must still be able to send a tool call by HTTP `POST`.
-
-Change the advertised token endpoint and verify it receives no secret or code.
-An invalid callback issuer must fail before exchange.
-After rotation, the same worker placeholder must reach the server with the second
-access token. With an authorized test account, compare the worker's tool catalog
-with the server's `tools/list` for that connection and invoke a tool from Console.
-
-[MCP scope selection](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#scope-selection-strategy) · [OAuth token response](https://www.rfc-editor.org/rfc/rfc6749#section-5.1) · [SDK OAuth client](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
+At **Connect**, the owner chooses from the entire approved scope list.
+OCC validates the nonempty selection and required scopes before creating a
+source. The Token Service checks the callback issuer before exchange and uses
+the pinned client, resource, and endpoints throughout OAuth. It checks requested
+and granted scopes against the owner's selection, including on refresh.
+Changed endpoints require a new version and consent. The deployed worker exposes
+every tool the server lists for that connection (`tools/list`). [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
 ### Client registrations
 
@@ -118,16 +69,16 @@ A client identifier is unique only within its authorization server
 ([RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)), so the
 Token Service keys each registration by the trusted `issuer` and `clientId` pair.
 
-- `registerClient({ issuer, clientId }, clientSecret)` returns an opaque
-  `clientRegistrationId` bound to that pair. Connection templates with the same
-  pair share one registration. The same `clientId` at a different `issuer` gets
-  a separate registration.
-- `rotateClientSecret(clientRegistrationId, clientSecret)` sets the secret
-  version for new connections. The Token Service pins each connection to the
-  version used for its exchange. Existing connections continue refreshing with
-  that version until the provider disables it, then report `reauthorize`.
-- `removeClient(clientRegistrationId)` deletes the secret. OCC calls it only when
-  no connection template version or source carries the registration.
+- `registerClient({ issuer, clientId }, clientSecret?)` stores the resolved client
+  and any secret in Token Service custody. A public MCP client can omit the secret.
+  Templates with the same pair share the returned `clientRegistrationId`. The
+  same `clientId` at another issuer gets a separate registration.
+- For clients with a secret, `rotateClientSecret(clientRegistrationId, clientSecret)`
+  sets the version for new connections. The Token Service pins each connection
+  to the version used for its exchange. Existing connections continue refreshing
+  with that version until the provider disables it, then report `reauthorize`.
+- `removeClient(clientRegistrationId)` removes the stored registration and any
+  secret it holds. OCC calls it only when no template version or source uses it.
 
 Each connection template version and credential source records its
 `clientRegistrationId`. The Token Service keeps the referenced client secret
@@ -239,6 +190,9 @@ issue seven-day refresh tokens.
   worker request with the same placeholder and verify that OpenShell presents
   the new access token. With no eligible prepared token, verify that OpenShell
   refuses the request without contacting the issuer.
+- **MCP.** Exercise supplied clients, CIMD, DCR, and the manual fallback. On a
+  dedicated worker, verify a Console tool call uses the selected scopes and that
+  an unselected scope stays unavailable after refresh.
 - **Client registrations.** Two connection templates with the same `clientId` in
   two Keycloak realms keep independent secrets: rotating one leaves the other's
   sources refreshing.
