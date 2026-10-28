@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
 import {
+  appendFile,
   chmod,
   lstat,
   mkdir,
@@ -150,7 +151,7 @@ function progress(lane, message) {
   process.stderr.write(`[prepare:${laneName(lane)}] ${message}\n`);
 }
 
-async function timedPreparation(lane, phase, operation) {
+export async function timedPreparation(lane, phase, operation) {
   const started = performance.now();
   try {
     return await operation();
@@ -158,6 +159,23 @@ async function timedPreparation(lane, phase, operation) {
     const elapsedMs = Math.round(performance.now() - started);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
+    if (
+      process.env.OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY === "1" &&
+      process.env.GITHUB_STEP_SUMMARY &&
+      lane === "images-packaging" &&
+      ["k3d-create", "runtime-image-import", "codex-seccomp-profile"].includes(phase) &&
+      Number.isSafeInteger(elapsedMs) &&
+      elapsedMs >= 0
+    ) {
+      try {
+        await appendFile(
+          process.env.GITHUB_STEP_SUMMARY,
+          `- ${phase}: ${elapsedMs} ms (elapsed; see step outcome)\n`,
+        );
+      } catch {
+        // Summary output is best effort; preserve the operation's result and stderr.
+      }
+    }
   }
 }
 

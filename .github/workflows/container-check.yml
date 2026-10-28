@@ -147,6 +147,7 @@ jobs:
           corepack pnpm install --frozen-lockfile --ignore-scripts
       - name: Smoke the exact export on its native architecture
         env:
+          OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY: "1"
           IMAGE: ${{ matrix.image }}
           PLATFORM: linux/${{ matrix.arch }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
