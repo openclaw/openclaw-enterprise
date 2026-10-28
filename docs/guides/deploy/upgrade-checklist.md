@@ -22,12 +22,9 @@ command; use this page as its migration inventory.
       dependencies, and required Kubernetes assets.
 - [ ] Confirm the candidate image still ships every `/app/deploy/presets/` file
       that `presets.files` names; the image helper's startup preflight stops
-      before quiescence on a missing one. Images built after #779 (2026-09-30)
-      drop the four `devday*.json` files. The helper refuses Installation
-      changes other than the Plugin Driver, so remove those entries and restart
+      before quiescence on a missing one. The helper refuses Installation
+      changes other than the Plugin Driver, so remove such entries and restart
       first; saved Presets stay.
-      You can add `/app/deploy/presets/swe-preset.json` (formerly
-      `devday.json`) afterward.
 - [ ] On a single-cluster install, run
       `kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace`.
       Releases with the shared tenant namespace refuse to start while a row has
@@ -35,10 +32,10 @@ command; use this page as its migration inventory.
       [split-layout tenant](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations));
       the image helper's preflight stops before quiescence.
 - [ ] Before the window, render the candidate chart with your live values
-      (`helm template`): releases after 2026-10-05
-      [refuse some values](production-upgrade-recovery.md#correct-values-newer-releases-refuse)
-      older ones accepted. The image helper renders again and runs its startup
-      preflight before stopping anything.
+      (`helm template`) and
+      [correct any value it refuses](production-upgrade-recovery.md#correct-values-the-candidate-refuses).
+      The image helper renders again and runs its startup preflight before
+      stopping anything.
 - [ ] Decide whether this is a controller-only, runtime-only, or coordinated
       release. A controller-only release does not request Agent deployments,
       but the new worker can restart existing Agent Pods once and interrupt
@@ -95,9 +92,8 @@ Create a private evidence directory and record these values before mutation.
       the OpenShell Gateway's production limitations.
 - [ ] Compare Agent drafts and persisted Preset plugin policies with the
       candidate's [plugin policy contract](../../reference/agent-plugins.md).
-      Resolve unsupported approval fields or values deliberately, including the
-      former `native`, `prompt`, and `approve` values when upgrading to a
-      candidate that rejects them. Verify intended reviewer and approval behavior
+      Resolve unsupported approval fields or values deliberately. Verify
+      intended reviewer and approval behavior
       before deploying those drafts.
 - [ ] If the dedicated Codex Localhost seccomp profile is used, verify its
       artifact and sandbox probe on every eligible node, including replacement
@@ -118,27 +114,6 @@ Create a private evidence directory and record these values before mutation.
 Give every surface the disposition and operator action listed in
 [upgrade surface dispositions](upgrade-dispositions.md), from controller images
 and database migrations to retained volumes and local profile state.
-
-## Remove legacy RWX workspaces
-
-After recording the baseline and completing any required backups above, remove
-legacy RWX development Agents before deploying the RWO-only controller:
-
-1. Inventory Harness workspace PVC access modes and confirm with their Agent
-   owners which legacy RWX-backed Agents can be discarded. Record these as
-   intentional deletions in the inventory.
-2. Using the current compatible OCE version, delete those Agents through OCE and
-   confirm their workspace PVCs are gone. Deleting an Agent also deletes its
-   Gateway state; this transition does not preserve or migrate its data. Keep the
-   old API and worker running for this cleanup, then quiesce them for the upgrade.
-3. Upgrade only after no legacy RWX Harness claims remain. Recreate any needed
-   Agents with new RWO storage.
-
-Do not change PVC access modes in place. The RWO-only version rejects legacy
-RWX claims during reconciliation and final Agent deletion; upgrading first can
-block both redeployment and cleanup. A failed deletion can already have removed
-Gateway state before rejecting the Harness claim; it does not preserve the whole
-Agent. Existing RWO-backed Agents need no recreation.
 
 ## Apply the release in dependency order
 
@@ -166,8 +141,7 @@ Agent. Existing RWO-backed Agents need no recreation.
 - [ ] The authenticated Installation and protected startup configuration agree.
       API and worker selected the same Driver identities.
 - [ ] Namespace, Agent, Configuration, Preset, and Secret-metadata inventories
-      contain the expected IDs, accounting for recorded legacy RWX deletions and
-      newly created replacement Agents. IAM, Backend, service-account, deployment-work,
+      contain the expected IDs. IAM, Backend, service-account, deployment-work,
       and audit-record inventories also reconcile. The controller-only helper
       requests no deployments, but affected Agents' Pods can restart once on the
       same image; check for versions affected by broker restart.
@@ -177,8 +151,7 @@ Agent. Existing RWO-backed Agents need no recreation.
 - [ ] Runtime releases selected new successful versions. Gateway and Agent Pods
       are ready on the requested digest; stopped Agents were not started.
 - [ ] PVC and PV identities, workspace hashes, gateway state, and representative
-      sessions match the baseline for retained Agents. Recreated legacy RWX Agents
-      have new identities and fresh storage; verify their new RWO claims instead.
+      sessions match the baseline.
 - [ ] Authentication, audit, metrics, traces, and alert delivery still reach
       their sinks.
 - [ ] A real model response succeeds for each execution mode and provider in

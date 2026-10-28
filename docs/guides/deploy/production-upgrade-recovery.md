@@ -199,9 +199,8 @@ the preflight), Helm's `--wait` has marked the candidate release `failed`:
 rename as above, follow the Helm failure steps above, then repeat the command
 with `--resume --migration-history-checked`.
 
-## Correct values newer releases refuse
+## Correct values the candidate refuses
 
-Releases after 2026-10-05 refuse some values that earlier releases accepted.
 Before the maintenance window, render the candidate chart with your live values
 from the candidate checkout:
 
@@ -222,21 +221,20 @@ The upgrade command does not accept these changes in candidate files. Edit the
 live values or Installation YAML and apply it with the installed release's
 checkout, as in
 [Apply other Installation changes](production-upgrade.md#apply-other-installation-changes),
-so the baseline files match live state. Except where a row says otherwise, each
-correction keeps the behavior the old release already had.
+so the baseline files match live state.
 
 | Refused value                                                                                                                                                                     | Correction                                                                                                                                                                                                      |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `auth.github.allowedOrgs`, `allowedTeams` or `auth.google.allowedDomains` set while that provider is disabled                                                                     | Remove the list; the old chart ignored it.                                                                                                                                                                      |
+| `auth.github.allowedOrgs`, `allowedTeams` or `auth.google.allowedDomains` set while that provider is disabled                                                                     | Remove the list.                                                                                                                                                                                                |
 | `""` or `{}` for those allowlists, or `{}` for a provider's `egressCidrs`                                                                                                         | Write `[]` or remove the key.                                                                                                                                                                                   |
 | An IPv4-mapped `api.trustedProxy.cidrs` entry with a prefix from 97 to 128, such as `::ffff:a00:0/104`                                                                            | Write the IPv4 CIDR with the prefix minus 96: `10.0.0.0/8`. A Compose install's API refuses the same entry in `OCC_AUTH_TRUSTED_PROXY_CIDRS` at startup.                                                        |
-| An IPv6 `api.trustedProxy.cidrs` entry that contains `::ffff:0:0/96`, such as `::ffff:0:0/96`, `::ffff:a00:0/64` or `::/64`                                                       | Such an entry trusted forwarded headers from every IPv4 peer. List your proxies' own CIDRs instead; this changes behavior.                                                                                      |
+| An IPv6 `api.trustedProxy.cidrs` entry that contains `::ffff:0:0/96`, such as `::ffff:0:0/96`, `::ffff:a00:0/64` or `::/64`                                                       | Such an entry trusts forwarded headers from every IPv4 peer. List your proxies' own CIDRs instead.                                                                                                              |
 | A Unicode `auth.baseUrl` host, such as `https://bücher.example.com`, with a punycode `agentNativeAdmin.sharedCookieDomain`                                                        | Write the host in punycode: `https://xn--bcher-kva.example.com`.                                                                                                                                                |
 | An `auth.baseUrl` with a `/.` or `/%2e` path, a short loopback such as `http://127.1`, or U+200B (zero-width space)                                                               | Remove the path and invisible characters; write `127.0.0.1`.                                                                                                                                                    |
-| An `auth.baseUrl` with a path or query, such as `https://example.com/occ`                                                                                                         | Serve OCC at the root of its own origin and set that origin, such as `https://occ.example.com`. This changes behavior: point browsers, CLI and API clients, and your proxy at the new origin.                   |
+| An `auth.baseUrl` with a path or query, such as `https://example.com/occ`                                                                                                         | Serve OCC at the root of its own origin and set that origin, such as `https://occ.example.com`. Point browsers, CLI and API clients, and your proxy at the new origin.                                          |
 | A `presets.files` Preset `name` with leading or trailing Unicode spaces (such as U+00A0), U+2028, U+2029 or C1 control characters                                                 | Correct the `name` in the file, or remove the entry. Startup adds a Preset with the corrected name; delete any saved copy with the old name you no longer need.                                                 |
 | A Backend `id` with a C1 control character (U+0080 to U+009F)                                                                                                                     | Rename the Backend. No Agent can store such an ID, but ServiceAccounts created through that Backend keep it in a binding that cannot change: delete them before the rename and recreate them after the upgrade. |
-| With `requireImmutableDigest: true`, an upper-case `gateway` or `agent` digest in the Installation's `drivers.compute.configuration.images`, such as `@sha256:ABC…` or `@SHA256:` | Write `sha256` and the hex digits in lower case; the digest is the same. Kubernetes could not pull the upper-case spelling.                                                                                     |
+| With `requireImmutableDigest: true`, an upper-case `gateway` or `agent` digest in the Installation's `drivers.compute.configuration.images`, such as `@sha256:ABC…` or `@SHA256:` | Write `sha256` and the hex digits in lower case; the digest is the same.                                                                                                                                        |
 
 ## Roll back across human sign-in
 

@@ -3,7 +3,7 @@
 Single-cluster Installations created by the 2026-09-28 release keep each
 Namespace's Gateways, Gateway state and canonical Secrets in a separate
 `oce-gateways-<hash>` namespace. The current controller refuses to start on that
-layout; the [breaking-change notice](breaking-changes-before-2026-10-10.md#2026-10-05-split-layout-tenants-block-the-controller-upgrade)
+layout; [split-layout installations](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 says how to tell. This page moves each tenant to the shared layout before the
 [control-plane upgrade](production-upgrade.md#upgrade-the-control-plane). Adopt
 in place where you can; use the export fallback for tenants that can't be
@@ -74,8 +74,6 @@ are passed through).
 5. Deploy each Agent `apply` listed as running (`occ agent deploy <id>`) that is
    not running yet, and check it. A Gateway from the 2026-09-28 release
    migrates its agent database at its first start, about 15 seconds longer.
-   If one stops with `uses schema version 23`, see the
-   [notice](breaking-changes-before-2026-10-10.md#2026-10-09-released-gateways-need-an-agent-database-migration).
 6. Delete the old namespaces. After this there is no way back:
 
    ```bash
