@@ -4212,6 +4212,20 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   const capabilities = await controller.request("GET", `${path}/plugins/capabilities`);
   assert.equal(capabilities.status, 200);
   assert.equal(capabilities.data.policyScopeByPlugin[packageId], "enablement_only");
+  // Saved-Agent discovery offers the package only where Agent save admits it, and its details
+  // refusal is the save refusal (finding 2787).
+  const discover = async () => {
+    const catalog = await controller.request("POST", `${path}/plugins`, { body: {} });
+    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+    const details = await controller.request("POST", `${path}/plugins/details`, {
+      body: { pluginId: packageId },
+    });
+    return { ids: catalog.data.plugins.map((entry) => entry.id), details };
+  };
+  const offered = await discover();
+  assert.deepEqual(offered.ids, [packageId]);
+  assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
+  assert.equal(offered.details.data.id, packageId);
   for (const unsupportedPolicy of [
     { toolDefaults: { approval: "all_actions" } },
     { tools: { "gmail.users.messages.list": { enabled: false } } },
@@ -4253,6 +4267,10 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   const deploy = await controller.request("POST", `${path}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
   assert.equal(deploy.body.error.message, mode.body.error.message);
+  const codexOffer = await discover();
+  assert.deepEqual(codexOffer.ids, []);
+  assertApiError(codexOffer.details, 400, "INVALID_REQUEST");
+  assert.equal(codexOffer.details.body.error.message, mode.body.error.message);
 
   // The Sandbox can provision native workers. The replacement Compute cannot deliver the package.
   await changeHarness("openclaw");
@@ -4267,6 +4285,10 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   const unsupported = await controller.request("POST", `${path}/deploy`);
   assert.equal(unsupported.status, 400, JSON.stringify(unsupported.body));
   assert.equal(unsupported.body.error.message, "Google Workspace requires Kubernetes Compute.");
+  const computeOffer = await discover();
+  assert.deepEqual(computeOffer.ids, []);
+  assertApiError(computeOffer.details, 400, "INVALID_REQUEST");
+  assert.equal(computeOffer.details.body.error.message, unsupported.body.error.message);
   assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
 
   controller.fixture.controller.selectDriver("compute", kubernetes.id);

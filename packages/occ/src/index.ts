@@ -8460,7 +8460,7 @@ export class OpenClawController {
     },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
-    return this.withSavedAgentPluginCredential(
+    const page = await this.withSavedAgentPluginCredential(
       principalId,
       namespaceId,
       agentId,
@@ -8484,6 +8484,24 @@ export class OpenClawController {
       },
       input.credentialSource,
     );
+    if (page.plugins.length === 0) {
+      return page;
+    }
+    const validatePlacement = await this.savedAgentPluginPlacement(namespaceId, agentId);
+    return {
+      ...page,
+      plugins: page.plugins.filter((entry) => {
+        try {
+          validatePlacement(entry.id);
+          return true;
+        } catch (error) {
+          if (error instanceof ConfigurationHarnessError) {
+            return false;
+          }
+          throw error;
+        }
+      }),
+    };
   }
 
   async discoverSavedAgentPluginDetails(
@@ -8493,7 +8511,7 @@ export class OpenClawController {
     input: { readonly pluginId: string; readonly credentialSource?: CredentialSourceReference },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
-    return this.withSavedAgentPluginCredential(
+    const entry = await this.withSavedAgentPluginCredential(
       principalId,
       namespaceId,
       agentId,
@@ -8510,6 +8528,39 @@ export class OpenClawController {
       },
       input.credentialSource,
     );
+    (await this.savedAgentPluginPlacement(namespaceId, agentId))(entry.id);
+    return entry;
+  }
+
+  /**
+   * The Plugin Driver's catalog does not know the Agent. Saved-Agent discovery offers only the
+   * plugins that Agent save admits for this Agent's Harness, execution mode and Compute, and
+   * refuses details with the save refusal (finding 2787). Read after discovery authorized the
+   * caller for the Agent.
+   */
+  private async savedAgentPluginPlacement(
+    namespaceId: string,
+    agentId: string,
+  ): Promise<(pluginId: string) => void> {
+    const { mode, readConfiguration } = await this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const agent = await state.agents.findAgent(namespace.id, agentId);
+      const metadata =
+        agent === undefined
+          ? undefined
+          : await state.configurations.findConfiguration(namespace.id, agent.configurationId);
+      if (agent === undefined || metadata === undefined) {
+        throw new ScopeViolationError(
+          "The Agent does not belong to the exact Installation and Namespace.",
+        );
+      }
+      return {
+        mode: agent.executionMode,
+        readConfiguration: this.savedConfigurationReader(metadata),
+      };
+    });
+    const harness = { id: resolveConfiguredHarnessId((await readConfiguration()).values), mode };
+    return (pluginId) => this.validatePluginPlacement({ [pluginId]: { enabled: true } }, harness);
   }
 
   private async withSavedAgentPluginCredential<T>(
