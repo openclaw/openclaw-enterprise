@@ -930,10 +930,16 @@ test("Hardcoded OpenAI catalog returns curated details without provider requests
     }
   }
   assert.deepEqual(await driver.listCatalog(context("dedicated")), page.plugins);
-  // The curated catalog is a single page with fixed IDs; anything else is an invalid response.
-  const invalidResponse = { name: "PluginDiscoveryError", reason: "invalid_response" };
-  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }), invalidResponse);
-  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }), invalidResponse);
+  // The curated catalog is a single page with fixed IDs: a cursor is an invalid response, and
+  // an unknown ID is the caller's error (finding 2790).
+  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }), {
+    name: "PluginDiscoveryError",
+    reason: "invalid_response",
+  });
+  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }), {
+    name: "PluginPolicyValidationError",
+    pluginId: "invalid",
+  });
   assert.deepEqual(requests, []);
 });
 

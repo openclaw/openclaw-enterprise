@@ -1617,10 +1617,14 @@ test("Curated discovery admits plugins with skills without provider I/O and save
   assert.ok(notion);
   assert.notEqual(notion.available, false);
   assert.equal(notion.selectableWithoutTools, true);
-  assert.equal(
-    (await fixture.request("POST", `${path}/details`, { body: { pluginId: "unknown" } })).status,
-    503,
-  );
+  // An unknown ID is the caller's error, named in the refusal (finding 2790); a cursor
+  // on the single-page catalog is still an invalid catalog response.
+  const unknown = await fixture.request("POST", `${path}/details`, {
+    body: { pluginId: "unknown" },
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error.code, "INVALID_REQUEST");
+  assert.match(unknown.body.error.message, /\(codex-plugin\) does not offer: unknown\./);
   assert.equal((await fixture.request("POST", path, { body: { cursor: "unknown" } })).status, 503);
 
   // The exact selected ID and policy enter the real Agent and immutable revision path.
