@@ -588,6 +588,12 @@ for (const surface of ["list", "detail"]) {
             .getByRole("region", { name: "Stop Agent", exact: true })
             .getByRole("button", { name: "Stop Agent", exact: true });
     await waitForEnabled(stop);
+    if (surface === "detail") {
+      await page
+        .getByRole("region", { name: "Stop Agent", exact: true })
+        .getByText("Stops this Agent. The Agent stays and can be deployed again.", { exact: true })
+        .waitFor();
+    }
     assert.equal(
       requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length,
       0,

@@ -81,12 +81,14 @@ export function createAgentStop(
     const requested = state.agent.desiredRuntimeState === "stopped";
     // A failed readable deployment can hide newer queued work. As on the Agents list,
     // its outcome informs confirmation copy, not whether Agent-level Stop is available.
-    setText(
-      summary,
-      cancelsFirstDeployment(state.agent, state.latestDeployment)
-        ? "Cancels the deployment in progress. The Agent stays and can be deployed again."
-        : "Stops the running version. The Agent stays and can be deployed again.",
-    );
+    let summaryText = "Stops this Agent. The Agent stays and can be deployed again.";
+    if (cancelsFirstDeployment(state.agent, state.latestDeployment)) {
+      summaryText =
+        "Cancels the deployment in progress. The Agent stays and can be deployed again.";
+    } else if (state.agent.activeRevisionId || state.latestDeployment === "succeeded") {
+      summaryText = "Stops the running version. The Agent stays and can be deployed again.";
+    }
+    setText(summary, summaryText);
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
     feedback.replaceChildren(
