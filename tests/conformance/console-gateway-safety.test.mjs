@@ -37,6 +37,28 @@ test("an unset setting shows the value deployment admission or OpenClaw's preset
   );
 });
 
+test("the steering help says what the Gateway does with another participant's message when off", () => {
+  // OpenClaw's preset fills messages.queue.collaborativeSteeringFallback when unset: "queue" for
+  // personal (the default), "reject" for corporate. An explicit value wins over the preset.
+  const queued = "Off: their message runs as a separate turn after it.";
+  const refused =
+    "Off: the Gateway refuses their message and asks them to resend it with /followup, which runs it as a separate turn after it.";
+  const off = (values) => steering.help(values).slice(steering.help(values).indexOf("Off:"));
+  const corporate = { security: { preset: "corporate" } };
+  const fallback = (value, values = {}) => ({
+    ...values,
+    messages: {
+      queue: { allowCollaborativeSteering: false, collaborativeSteeringFallback: value },
+    },
+  });
+  assert.equal(off({}), queued);
+  assert.equal(off({ security: { preset: "personal" } }), queued);
+  assert.equal(off(corporate), refused);
+  assert.equal(off(fallback("reject")), refused);
+  assert.equal(off(fallback("queue", corporate)), queued);
+  assert.match(steering.help({}), /^On: while a turn runs/);
+});
+
 test("a toggle writes only its own setting and removes it again at the default", () => {
   const values = { messages: { queue: { mode: "collect" } }, gateway: { mode: "local" } };
   const off = withGatewaySafetyValue(values, steering, false);

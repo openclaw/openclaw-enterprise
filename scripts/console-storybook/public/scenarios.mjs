@@ -4476,6 +4476,16 @@ export const scenarios = {
       "Strict mode writes every locked-down value into the Configuration JSON; Save Configuration keeps them, and the next deployment applies them.",
     gap: "Simulated UI proof; does not show a deployed Gateway steering a turn.",
   },
+  gatewaySafetyCorporate: {
+    group: "Pages/Agent detail",
+    name: "Collaboration and safety, corporate preset",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    securityPreset: "corporate",
+    description:
+      "With OpenClaw's corporate security preset, steering is off by default, and the help text says the Gateway refuses another participant's message and asks them to resend it with /followup.",
+    gap: "Simulated UI proof; does not show a deployed Gateway refusing a message.",
+  },
   gatewaySafetyReader: {
     group: "Pages/Agent detail",
     name: "Collaboration and safety, viewer can only read",

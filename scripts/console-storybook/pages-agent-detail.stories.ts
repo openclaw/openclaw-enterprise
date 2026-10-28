@@ -25,6 +25,7 @@ export const GatewayPasswordSaveDenied = story("gatewayPasswordSaveDenied");
 export const GatewayPasswordSaving = story("gatewayPasswordSaving");
 export const GatewaySafety = story("gatewaySafety");
 export const GatewaySafetyStrict = story("gatewaySafetyStrict");
+export const GatewaySafetyCorporate = story("gatewaySafetyCorporate");
 export const GatewaySafetyReader = story("gatewaySafetyReader");
 export const PluginsDraft = story("pluginsDraft");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
