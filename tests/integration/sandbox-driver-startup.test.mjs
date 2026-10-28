@@ -6282,7 +6282,7 @@ test(
       ],
     };
     const registryPath = join(tls.directory, "registry.json");
-    await writeFile(registryPath, JSON.stringify(registry));
+    await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
     configuration.backend.push({
       id: "github-primary",
       type: "github",
@@ -6999,7 +6999,7 @@ test(
           revokedRegistry.repositories[0].namespaces[0].namespaceId =
             "ns_00000000-0000-4000-8000-000000000999";
           const revokedPath = join(tls.directory, "registry-revoked.json");
-          await writeFile(revokedPath, JSON.stringify(revokedRegistry));
+          await writeFile(revokedPath, JSON.stringify(revokedRegistry), { mode: 0o600 });
           const revoked = structuredClone(configuration);
           revoked.backend.find(({ id }) => id === "github-primary").configuration.registryPath =
             revokedPath;
