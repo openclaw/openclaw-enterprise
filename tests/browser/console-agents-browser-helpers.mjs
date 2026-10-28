@@ -1062,9 +1062,11 @@ export function waitForChosenVersion(scope, n) {
 }
 
 // Denies AgentRevision read on one version, as an administrator's per-version restriction does.
-// State reads the policy on each request, so it applies from the next read on.
+// State reads the policy on each request, so it applies from the next read on. Its id is
+// `deny-read-<revision id>`: console-next-steps looks it up to deny only once.
 export function denyRevisionRead(fixture, namespace, revision) {
   restrict(fixture.policy, "read", "agent_revision", {
+    id: `deny-read-${revision.id}`,
     namespaceId: namespace.id,
     resourceId: revision.id,
   });
