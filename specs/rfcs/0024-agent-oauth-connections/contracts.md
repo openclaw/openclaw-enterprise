@@ -15,6 +15,15 @@ methods. A Driver that omits them offers no browser connections.
 
 ### Browser authorization
 
+For connections created from either template protocol, the OCE Token Service
+implements the browser operations behind `CredentialRefreshDriver`. It retains
+the refresh grant in encrypted custody and renews access tokens in the
+background. It serializes refresh per source and atomically commits each new
+access token with any replacement refresh token. At request time, OpenShell
+presents an eligible, prepared access token for the deployed binding. If none
+is available, egress refuses the request. A worker request never triggers a
+refresh. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
+
 - `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri, selectedScopes? })`
   returns `{ authorizationUrl, privateState }`. MCP requires the owner's validated
   `selectedScopes`. Configured OAuth uses the version's fixed scopes. The Driver
@@ -22,8 +31,8 @@ methods. A Driver that omits them offers no browser connections.
   `privateState` is opaque to OCC.
 - `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
   `state`, exchanges the code with the verifier and the version's client
-  registration, and establishes refresh custody for this protocol. After it obtains
-  a usable access token, it returns `ready` with an optional verified
+  registration, and commits the grant and first usable access token in the Token
+  Service. It then returns `ready` with an optional verified
   `accountEmail`. On failure it returns a code. It never returns a token.
 
 ### MCP authorization
@@ -67,7 +76,7 @@ grant and account permissions.
    callback state, and forwards the callback's optional `iss` to the Driver. The
    SDK rejects an issuer mismatch, or a missing issuer when the authorization
    server advertises issuer identification, before exchanging the code.
-3. **Refresh and present.** The credential service behind the Driver uses the SDK
+3. **Refresh and present.** The Token Service uses the SDK
    for exchange and refresh so both requests include the approved resource.
    Before activating an access token, the service verifies that the user's
    effective grant matches the selection recorded for this connection. Under
@@ -75,14 +84,8 @@ grant and account permissions.
    A refresh without a scope change retains the original grant. If the effective
    set differs or cannot be established, the service withholds the token and
    requires reconnection.
-   The service serializes refresh per source and atomically saves the new access
-   token and any replacement refresh token. It reports `ready` once it holds a
-   usable access token and refresh grant. Deployment matches the ready connection
-   to the plugin's server, resource, and issuer. Protected egress presents the
-   prepared access token at the approved MCP endpoint. The worker uses the same
-   placeholder across rotations.
-   A Driver that only hands a refresh token to OpenShell cannot admit this protocol
-   until it supports that handoff of prepared access tokens.
+   Deployment matches the ready connection to the plugin's server, resource, and
+   issuer. The worker uses the same placeholder across access-token rotations.
 
 Verify the following with a controlled MCP server and issuer.
 
@@ -110,37 +113,27 @@ with the server's `tools/list` for that connection and invoke a tool from Consol
 
 ### Client registrations
 
-OCE has no Installation-owned Secrets, so the Refresh Driver keeps OAuth client
-secrets. A client identifier is unique only within its authorization server
+The Token Service manages OAuth client registrations for the Installation.
+A client identifier is unique only within its authorization server
 ([RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)), so the
-Driver keys each secret by the trusted `issuer` and `clientId` pair:
+Token Service keys each registration by the trusted `issuer` and `clientId` pair.
 
 - `registerClient({ issuer, clientId }, clientSecret)` returns an opaque
   `clientRegistrationId` bound to that pair. Connection templates with the same
   pair share one registration. The same `clientId` at a different `issuer` gets
   a separate registration.
-- `rotateClientSecret(clientRegistrationId, clientSecret)` replaces the stored
-  secret. New connections that carry the registration use it for the code exchange
-  and refresh. Existing connections keep the secret they were configured with:
-  OpenShell replaces refresh material only as a whole, never returns a stored
-  refresh token, and starts a new authorization epoch that revokes running
-  Sandboxes' placeholders. When the provider disables the old secret, those
-  connections report `reauthorize`. Operators overlap secrets where the provider
-  allows it; Google keeps two client secrets active during rotation.
+- `rotateClientSecret(clientRegistrationId, clientSecret)` sets the secret
+  version for new connections. The Token Service pins each connection to the
+  version used for its exchange. Existing connections continue refreshing with
+  that version until the provider disables it, then report `reauthorize`.
 - `removeClient(clientRegistrationId)` deletes the secret. OCC calls it only when
   no connection template version or source carries the registration.
 
 Each connection template version and credential source records its
-`clientRegistrationId`. The Driver stores secrets durably for every API replica
-and across restarts. OCC stores no secret value.
-
-OpenShell keeps providers per Workspace, and each OCE Namespace has its own
-Workspace, so the OpenShell Credential Refresh Driver needs one Installation-level
-place for client secrets. Its configuration gains a required `clientWorkspace`
-when browser connections are enabled: an operator-provisioned OpenShell Workspace
-that holds one Driver-owned provider per client registration. The Driver reads a
-secret back over the operator-TLS connection, so operator TLS is a prerequisite.
-The Workspace grants no Agent access; no Sandbox attaches its providers.
+`clientRegistrationId`. The Token Service keeps the referenced client secret
+versions available across replicas and restarts. OCC stores only the
+registration reference. Client secrets and refresh grants stay out of the
+worker's OpenShell attachment.
 
 ### OIDC account identity
 
@@ -226,7 +219,6 @@ installation cannot enforce the executable restriction recorded at consent.
 | Withdrawal pending or failed after disconnect               | Personal restriction stays in force              | Retry withdrawal, or stop or delete the Agent  |
 | Provider disables a rotated-out client secret               | Older connections report `reauthorize`           | Owners **Reconnect**                           |
 
-For templates with configured OAuth endpoints, OpenShell refreshes access tokens.
 The operator guide documents provider rules. Google requires verification for
 public applications requesting `gmail.readonly`, and External Testing applications
 issue seven-day refresh tokens.
@@ -242,6 +234,11 @@ issue seven-day refresh tokens.
   second sender and a shared reply destination, including while withdrawal is
   delayed or has failed after disconnect. Prove that codes and
   tokens are absent from responses, logs, and audit.
+- **Refresh ownership.** For both configured OAuth and MCP, observe the Token
+  Service refresh the access token with the issuer in the background. Send a
+  worker request with the same placeholder and verify that OpenShell presents
+  the new access token. With no eligible prepared token, verify that OpenShell
+  refuses the request without contacting the issuer.
 - **Client registrations.** Two connection templates with the same `clientId` in
   two Keycloak realms keep independent secrets: rotating one leaves the other's
   sources refreshing.

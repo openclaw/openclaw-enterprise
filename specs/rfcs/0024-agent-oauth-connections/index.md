@@ -27,12 +27,12 @@ Agent. The Agent's tool, such as `gog`, can then read that user's Gmail. Only th
 user can use the Agent.
 
 Installation administrators define connections as Installation-wide **connection
-templates**, which Presets can reference. For templates with configured OAuth
-endpoints, the Credential Refresh Driver exchanges the code and gives OpenShell
-the grant to refresh access tokens. For MCP templates, the Driver uses the
-official TypeScript MCP client for exchange and refresh. In both flows the tool
-receives only a placeholder. OCE core contains no provider-specific endpoints,
-scopes, or binaries.
+templates**, which Presets can reference. For both configured OAuth and MCP
+templates, the OCE Token Service exchanges the authorization code, keeps the
+refresh grant, and refreshes access tokens in the background. For MCP, it uses
+the official TypeScript MCP client. On a deployed Agent, OpenShell presents the
+prepared access token at the approved endpoint. The tool receives only a placeholder.
+OCE core contains no provider-specific endpoints, scopes, or binaries.
 
 ## Motivation
 
@@ -48,9 +48,8 @@ Device login, used only by the experimental `codex-oauth` model source, does not
 help: Google's device-code flow does not permit Gmail scopes. Gmail needs the
 browser authorization-code flow, with an OCC callback.
 
-This proposal reuses the custody model of
-[device login](../../../apps/controller/src/drivers/credential-refresh/openshell.ts),
-which hands the grant to OpenShell without persisting the refresh token.
+Browser connections use the [RFC-0023 Token Service lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle).
+It separates background refresh from the worker's outbound request.
 
 ## Goals
 
@@ -98,7 +97,7 @@ Namespace.
 | `displayName`                       | The label on the **Connect** button and consent warning.                                                                                        |
 | `issuer`                            | The authorization server's identifier, an exact `https` URL. It scopes the client ID and is the expected `iss` for `accountIdentity: oidc`.     |
 | `authorizationUrl`, `tokenUrl`      | Where OCC sends the user, and where the Driver exchanges the code. Exact `https` URLs.                                                          |
-| `clientId`, `clientSecret`          | The administrator's OAuth client at `issuer`. The Refresh Driver keeps the secret; OCC stores no value.                                         |
+| `clientId`, `clientSecret`          | The administrator's OAuth client at `issuer`. The Token Service manages the client secret.                                                      |
 | `scopes`, `authorizationParameters` | Fixed scopes for configured OAuth. MCP owners pick a subset. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
 | `endpoint`                          | Credential destination (`host`, `port`, `path`). `access` is `read-only` or `full` for `oauth2`, and `full` for `mcp_oauth`.                    |
 | `envVar`, `binary`                  | The placeholder variable and the one executable that may send it.                                                                               |
@@ -204,9 +203,9 @@ Preset stays valid.
 These changes require review of this RFC before implementation. The
 [companion](contracts.md) defines their inputs, results, and failure behavior.
 
-1. **`CredentialRefreshDriver`** gains browser authorization, client registration,
-   and OIDC provider verification. It keeps OAuth client secrets; the OpenShell
-   implementation adds a `clientWorkspace` setting for them.
+1. **`CredentialRefreshDriver`** exposes browser authorization, client registration,
+   and OIDC provider verification. For connection templates, the OCE Token Service
+   implements these operations and owns refresh.
 2. **Protected egress** uses the [RFC-0023 contract](../0023-egress-proxy-credential-lifecycle/contracts.md).
    The sender must enforce the consented destination and HTTP methods. Admission
    must also establish the promised executable restriction before the Agent can
@@ -214,8 +213,10 @@ These changes require review of this RFC before implementation. The
 3. **`IAMDriver`** gains Installation-level access bindings, a `namespace` subject
    kind, and an optional Namespace context on authorization requests.
 
-Connections create sources of the existing `oauth2-refresh-token` type. The type
-keeps its Secret-backed registration path for manual use.
+Browser connections use the existing `oauth2-refresh-token` source type. For a
+template-created source, the Backend must select the Token Service as its only
+refresh owner and support delivery of prepared access tokens. Manual registration
+keeps its existing Secret-backed path.
 
 ### Console and API flow
 
@@ -223,9 +224,8 @@ keeps its Secret-backed registration path for manual use.
 sequenceDiagram
   participant User as Owner browser
   participant API as OCC API and console
-  participant Refresh as Credential Refresh Driver
+  participant Refresh as OCE Token Service (Credential Refresh Driver)
   participant Issuer as OAuth issuer
-  participant Gateway as OpenShell credential custody
   User->>API: Connect on the personal Agent
   API->>Refresh: startBrowserAuthorization
   Refresh-->>API: authorizationUrl, privateState
@@ -234,9 +234,10 @@ sequenceDiagram
   Issuer->>API: GET /oauth/callback with code, state, and optional iss
   API->>Refresh: completeBrowserAuthorization
   Refresh->>Issuer: Exchange code with PKCE verifier
-  Refresh->>Gateway: Configure refresh custody and mint
-  alt Exchange and mint succeed
-    Refresh-->>API: ready
+  alt Exchange succeeds
+    Issuer-->>Refresh: Access token and refresh grant
+    Refresh->>Refresh: Commit grant and prepared access token
+    Refresh-->>API: ready after commit
     API-->>User: Connected; Ready for deployment checks
   else Consent denied, state invalid, or exchange refused
     Refresh-->>API: failure code
@@ -291,11 +292,9 @@ integration, real-cluster, and live-provider outcomes.
 - **OCC exchanges the code and stores the refresh token as a Secret.** This needs no
   new Refresh Driver methods, but it puts a rotating refresh token in OCC storage
   and inherits the `issuerRotated` update hazards.
-- **Installation-owned Secrets for the OAuth client secret.** This keeps the
-  Refresh Driver contract smaller, but adds a Secret scope that only this feature
-  would use and splits refresh material between two owners. The Refresh Driver
-  already holds the per-source refresh material, so it also holds the client
-  secret.
+- **Installation-owned Secrets for the OAuth client secret.** In this proposal,
+  the Token Service manages the issuer's client registration and the connection's
+  grant. A separate Installation Secret would split those responsibilities.
 - **A Google-specific Gateway type.** Each new provider would need an OCE release.
 - **Shared Agents with a warning.** Anyone with access could read the mailbox.
 - **Consent for the whole execution.** RFC-0023 gives processes in the same
