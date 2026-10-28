@@ -1638,7 +1638,11 @@ for (const launcher of dedicatedGatewayLaunchers) {
       allow: ["read", "sessions"],
       alsoAllow: ["gateway", "diffs"],
       deny: ["sessions_send"],
+      // Deployment admission's value for a setting OpenClaw's security preset would fill.
+      exec: { applyPatch: { workspaceOnly: true } },
     };
+    // A strict Configuration's explicit steering value reaches the Gateway unchanged.
+    baseConfig.messages = { queue: { allowCollaborativeSteering: false } };
     baseConfig.agents = { defaults: { modelSelectionScope: "agent" } };
     baseConfig.cron = { enabled: true, triggers: { enabled: true } };
     baseConfig.plugins.entries.codex.config.codexDynamicToolsExclude = ["web_search"];
@@ -1703,6 +1707,7 @@ for (const launcher of dedicatedGatewayLaunchers) {
     assert.equal(gatewayPolicy.actions.message.includes("send"), true);
     assert.equal(gatewayPolicy.actions.message.includes("set-profile"), false);
     assert.deepEqual(gatewayPolicy.automations, { scope: "caller", allowCommandJobs: false });
+    assert.deepEqual(effective.messages, baseConfig.messages);
     assert.equal(effective.agents.defaults.modelSelectionScope, "session");
     assert.deepEqual(effective.cron, { enabled: true, triggers: { enabled: false } });
     if (launcher.env.APP_SERVER_URL !== undefined) {

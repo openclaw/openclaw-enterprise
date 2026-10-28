@@ -8,7 +8,9 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import {
+  containerLogTail,
   createAdmittedRuntimeImageConfiguration,
+  gatewayReadinessReport,
   image,
   runDocker,
   runGatewaySmoke,
@@ -222,35 +224,56 @@ export async function runWritableGatewayRestart(t) {
       const config=JSON.parse(fs.readFileSync(path,"utf8"));
       const journal=path+".oce-peer-bridge.json";
       fetch("http://127.0.0.1:18791/readyz").then(r=>console.log(JSON.stringify({
-        ready:r.status===200, prefix:config.messages?.responsePrefix,
+        ready:r.status===200, readyStatus:r.status, prefix:config.messages?.responsePrefix,
         bridge:config.plugins?.entries?.codex?.config?.codexPlugins,
         journalMode:fs.existsSync(journal)?fs.statSync(journal).mode&0o777:null,
-      }))).catch(()=>process.exit(1));`,
+      }))).catch((error)=>{console.error(String(error?.cause?.code??error));process.exit(1);});`,
     ]);
     return JSON.parse(result.stdout.trim());
   }
+  // Polls until `predicate` holds. On a timeout or an exit, the error starts with what the
+  // wrapper's readiness was waiting on (gatewayReadinessReport) and ends with the newest logs:
+  // a same-peer restart once stayed unready for 90 s and only the oldest log lines and a
+  // boolean were kept, so the failed readiness condition was unknown (finding 2784).
   async function waitState(name, label, predicate) {
-    const deadline = Date.now() + 90_000;
+    const startedAt = Date.now();
+    const deadline = startedAt + 90_000;
     let last;
+    let lastAt;
+    let polls = 0;
+    let probeFailures = 0;
+    let lastProbeError;
     while (Date.now() < deadline) {
+      polls += 1;
       try {
         last = await state(name);
+        lastAt = Date.now() - startedAt;
         if (predicate(last)) {
           return last;
         }
-      } catch {
+      } catch (error) {
+        probeFailures += 1;
+        lastProbeError = error.message.split("\n").slice(0, 3).join(" | ").slice(0, 400);
         const observed = JSON.parse((await runDocker(["inspect", name])).stdout)[0];
         if (!observed.State.Running) {
-          const logs = await runDocker(["logs", name]);
           throw new Error(
-            `${label}: Gateway exited ${observed.State.ExitCode}\n${logs.stdout}\n${logs.stderr}`,
+            `${label}: Gateway exited ${observed.State.ExitCode}\n${await containerLogTail(name)}`,
+            { cause: error },
           );
         }
       }
       await delay(250);
     }
-    const logs = await runDocker(["logs", name]);
-    throw new Error(`${label}: ${JSON.stringify(last)}\n${logs.stdout}\n${logs.stderr}`);
+    const report = await gatewayReadinessReport(name);
+    throw new Error(
+      [
+        `${label}: not ready within 90 s. ${report.headline}`,
+        `last state (${lastAt ?? "-"} ms into the wait, ${polls} polls, ${probeFailures} failed): ${JSON.stringify(last)}`,
+        ...(lastProbeError === undefined ? [] : [`last failed poll: ${lastProbeError}`]),
+        report.detail,
+        `log tail (newest last):\n${await containerLogTail(name)}`,
+      ].join("\n"),
+    );
   }
   async function edit(name, code) {
     await runDocker([

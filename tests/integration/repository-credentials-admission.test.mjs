@@ -43,7 +43,7 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.mjs";
 import {
   BROKER_PROXY_DISABLED,
   BROKER_PROXY_DOMAIN_DECISION,
@@ -447,13 +447,7 @@ test("Repository options expose only Namespace-approved display choices behind A
   const removedQuery = await f.request("GET", `${path}?descriptionRefs=project`);
   assert.equal(removedQuery.status, 400, JSON.stringify(removedQuery));
 
-  f.iamState.restrictions.push({
-    id: "deny-repository-options",
-    namespaceId: f.namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(f.iamState, "create", "agent", { namespaceId: f.namespace.id });
   const denied = await f.request("GET", path);
   assert.equal(denied.status, 403, JSON.stringify(denied));
   assert.equal(denied.error.code, "FORBIDDEN");
@@ -489,13 +483,7 @@ test("Exact-Agent repository choices require Agent update authorization", async 
   const agent = await f.createAgent();
   const path = `${f.collection}/${agent.id}/repository-options`;
   assert.equal((await f.request("GET", path)).status, 200);
-  f.iamState.restrictions.push({
-    id: "deny-repository-options-update",
-    namespaceId: f.namespace.id,
-    resourceKind: "agent",
-    action: "update",
-    effect: "deny",
-  });
+  restrict(f.iamState, "update", "agent", { namespaceId: f.namespace.id });
   const denied = await f.request("GET", path);
   assert.equal(denied.status, 403, JSON.stringify(denied));
   assert.equal(denied.error.code, "FORBIDDEN");
@@ -613,13 +601,7 @@ test("Missing repository composition cannot hide denied or unavailable IAM", asy
   assert.deepEqual(notConfigured.data, []);
   assert.equal(notConfigured.meta.notConfigured, true);
 
-  f.iamState.restrictions.push({
-    id: "deny-create-without-repositories",
-    namespaceId: f.namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(f.iamState, "create", "agent", { namespaceId: f.namespace.id });
   const denied = await f.request("GET", path);
   assert.equal(denied.status, 403, JSON.stringify(denied));
   assert.equal(denied.error.code, "FORBIDDEN");
@@ -650,12 +632,9 @@ test("Successful repository discovery does not authorize later writes", async (t
     { action: "deploy", method: "POST", target: `${path}/deploy` },
   ]) {
     // Fresh NativeIAM policy must win over an earlier successful discovery.
-    f.iamState.restrictions.push({
+    restrict(f.iamState, scenario.action, "agent", {
       id: `deny-${scenario.action}-after-discovery`,
       namespaceId: f.namespace.id,
-      resourceKind: "agent",
-      action: scenario.action,
-      effect: "deny",
     });
     const response = await f.request(
       scenario.method,

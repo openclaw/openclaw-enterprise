@@ -259,6 +259,9 @@ function gatewayRuntimeEntrypoint(managedMode: boolean): string {
 const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
+// OCE upgrades this runtime by replacing the Gateway image, as Kubernetes does.
+process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
+
 ${PLUGIN_RUNTIME_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${startupPhaseHelper("gateway")}

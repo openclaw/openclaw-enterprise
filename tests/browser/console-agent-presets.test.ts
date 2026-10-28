@@ -81,6 +81,7 @@ import {
   namespaceListDenied,
   PLUGIN_CREDENTIALS_REJECTED,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
@@ -3807,14 +3808,7 @@ test("denied Preset reads do not automatically start an Agent form", async (t) =
     () => globalThis.document.querySelector<HTMLSelectElement>("#agent-preset")?.disabled === false,
   );
   // Deny the exact read after the list is visible to exercise a changed grant.
-  fixture.policy.restrictions.push({
-    id: "deny-selected-preset",
-    namespaceId: namespace.id,
-    resourceKind: "preset",
-    resourceId: starter.id,
-    action: "read",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "read", "preset", { namespaceId: namespace.id, resourceId: starter.id });
   const denied = page.waitForResponse((response) =>
     response.url().endsWith(`/namespaces/${namespace.id}/presets/${starter.id}`),
   );

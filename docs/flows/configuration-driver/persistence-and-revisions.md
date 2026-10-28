@@ -112,8 +112,7 @@ Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-s
 the Sandbox execution mode, the Harness and its mode, and the Compute checks.
 With a Compute Driver and a Harness resolver selected, every Agent save reads
 its Configuration once from the Configuration Driver, inside the save's
-transaction; a Driver outage then fails the save with `503` instead of letting
-an unchecked pair through. `deployAgent` then locks the Agent, authorizes a read of the
+transaction; a Driver outage then fails the save with `503`. `deployAgent` then locks the Agent, authorizes a read of the
 referenced Configuration, and locks its ownership metadata. It authorizes the
 caller's selected Secret bindings and the Agent service principal's consumption,
 checks topology/model-source compatibility, and asks the selected Secret Driver
@@ -124,7 +123,17 @@ Next OCC reads the selected Configuration Driver's stored document. For the
 bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
 When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
-stored reusable Configuration and its generation remain unchanged. Compute then
+stored reusable Configuration and its generation remain unchanged.
+[`admitGatewaySecurityDefaults`](../../../packages/occ/src/gateway-security-defaults.ts)
+then fills `tools.exec.applyPatch.workspaceOnly`, which OpenClaw's `personal` security preset
+would loosen, `agents.defaults.sandbox.mode: "off"`, which its `corporate` preset would turn
+on although the OCE runtime cannot run OpenClaw's sandbox (an explicit other mode, or a
+`tools.exec.host: "sandbox"`, is refused at save and here), and `tools.exec.mode: "full"` when
+`tools.exec` sets no mode, security or ask, where `corporate` would fill `ask`, which needs an
+approval client OCE does not have, then `tools.exec.strictInlineEval: false` beside mode `full`
+and no security or ask, where `corporate`'s `true` needs that client for each inline program;
+other unset settings keep the preset's defaults
+([reference](../../reference/configuration.md#agent-references-and-immutable-versions)). Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
 [the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)

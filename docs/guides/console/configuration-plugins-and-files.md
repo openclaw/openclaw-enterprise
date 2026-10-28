@@ -21,6 +21,30 @@ In the draft, **Enable gateway password access** stages the generated-password
 reference; authentication mode and proxy settings stay unchanged. The Compute
 Driver owns the password; the Console shows only its reference.
 
+**Collaboration and safety** shows two Gateway settings as a deployment of the
+draft applies them, and whether each value is the default or set in the
+Configuration:
+
+- **Other participants can steer a running turn**
+  (`messages.queue.allowCollaborativeSteering`, default on): another Gateway
+  participant in the conversation can add guidance to a running turn. The turn
+  keeps the identity and permissions of the participant who started it, even when
+  the participant steering has fewer. Participants are channel users or local
+  operators with distinct Gateway identities. OCE native admin and workspace
+  access share one Gateway identity, so this setting does not separate OCE users.
+  When off, their message runs as a separate turn after it. With
+  `messages.queue.collaborativeSteeringFallback: reject` (the default of
+  `security.preset: corporate`), the Gateway refuses it instead and asks them to
+  resend it with `/followup`. The help text shows which applies.
+- **apply_patch changes files only in the workspace**
+  (`tools.exec.applyPatch.workspaceOnly`, default on).
+
+**Strict mode** writes the locked-down value of each setting into the
+Configuration; turning it off removes them, so each setting follows its default.
+A toggle set back to its default removes its value. Each change edits the
+Configuration JSON: save it, then deploy a new version. Without Configuration
+`update`, the toggles are unavailable.
+
 **Edit Configuration** edits native JSON. **Save Configuration** requires an object;
 **Cancel** discards edits. **Edit current Configuration** opens the current draft's editor,
 not a historical copy. Without Configuration `update`, or Secret `operate` on a Secret the

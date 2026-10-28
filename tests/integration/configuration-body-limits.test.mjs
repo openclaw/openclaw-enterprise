@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -33,11 +32,10 @@ const driverAccepts = async (values) => {
 };
 
 async function createFixture(t) {
-  const audit = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit, providers: [] });
+  const fixture = await createConsoleAppFixture(t, { providers: [] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Configuration body limits", { ready: true });
-  return { ...fixture, audit, namespace };
+  return { ...fixture, namespace };
 }
 
 // Sends `text` as the exact request body, without re-encoding it.
@@ -162,7 +160,7 @@ test("Configuration writes refuse a caller without the grant before reading the 
     });
     assert.equal(small.status, 403, `${method}: ${JSON.stringify(small.body)}`);
     assert.deepEqual(small.body.error, forbidden[method], method);
-    const auditStart = fixture.audit.events.length;
+    const auditStart = fixture.auditSink.events.length;
     const refused = await partialWrite({
       origin: fixture.origin,
       method,
@@ -176,7 +174,7 @@ test("Configuration writes refuse a caller without the grant before reading the 
     assert.deepEqual(refused.body.error, forbidden[method], method);
     // The refusal keeps its audit row, naming the exact grant the write itself checks.
     assertWriteAuthorizationDenial(
-      fixture.audit.events.slice(auditStart),
+      fixture.auditSink.events.slice(auditStart),
       { principalId: memberId, action, grant, resource: target },
       method,
     );

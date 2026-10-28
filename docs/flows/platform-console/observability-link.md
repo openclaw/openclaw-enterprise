@@ -47,9 +47,7 @@ host that is not four decimal octets from 0 to 255 with no leading zeros, a
 tab or newline, a backslash before the query, and unknown fields. Shorthand
 and integer hosts, and any `@` before the host, stop
 API and worker startup with log code `OBSERVABILITY_URL_INVALID`; correct the
-URL and restart. The
-[breaking-change notice](../../guides/deploy/breaking-changes.md) has the
-wording. Production and configured PostgreSQL development pass the
+URL and restart. Production and configured PostgreSQL development pass the
 validated URL to `createFastifyApp`. Compose development also accepts an
 observability-only YAML with its default Drivers. Changing it requires API restart; it is
 not persisted as an Installation resource or used as an OTLP export target.

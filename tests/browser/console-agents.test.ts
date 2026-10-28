@@ -88,6 +88,7 @@ import {
   REPOSITORY_ACCESS_NOT_CONFIGURED,
   REPOSITORY_CHOICES_CREATE_DENIED,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -470,13 +471,9 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(JSON.stringify(audit.events).includes(key), false);
 
   // The server still enforces the exact source grant when the form is saved.
-  fixture.policy.restrictions.push({
-    id: "deny-harness-secret-operate",
+  restrict(fixture.policy, "operate", "secret", {
     namespaceId: namespace.id,
-    resourceKind: "secret",
     resourceId: secret.id,
-    action: "operate",
-    effect: "deny",
   });
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   const savedSecretInput = page.getByLabel("API key Secret");
@@ -496,13 +493,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     created.data.harnessAuth,
   );
 
-  fixture.policy.restrictions.push({
-    id: "deny-agent-create",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   requests.length = 0;
   // With the permission answer the start page refuses at once (finding 1521). Without one the
   // form opens, and the API still refuses the creation itself.
@@ -742,13 +733,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
         namespaces: [{ namespaceId, profiles: ["git-read"] }],
       },
     ]);
-  deniedFixture.policy.restrictions.push({
-    id: "deny-repository-discovery",
-    namespaceId: deniedNamespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(deniedFixture.policy, "create", "agent", { namespaceId: deniedNamespace.id });
   const { page: deniedPage } = await newPage(t, deniedFixture);
   const deniedRequests = apiRequests(deniedPage, deniedFixture.origin);
   // Without a permission answer the form opens (with one it refuses at once, finding 1521), so
@@ -1008,13 +993,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
     `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
     async (route) => {
       const response = await route.fetch();
-      fixture.policy.restrictions.push({
-        id: "stale-agent-create-authorization",
-        namespaceId: namespace.id,
-        resourceKind: "agent",
-        action: "create",
-        effect: "deny",
-      });
+      restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
       await route.fulfill({ response });
     },
     { times: 1 },
@@ -1259,13 +1238,7 @@ test("Agent repository recovery with empty current policy requires an explicit n
     `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
     async (route) => {
       const response = await route.fetch();
-      fixture.policy.restrictions.push({
-        id: "reject-before-policy-refresh",
-        namespaceId: namespace.id,
-        resourceKind: "agent",
-        action: "create",
-        effect: "deny",
-      });
+      restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
       await route.fulfill({ response });
     },
     { times: 1 },

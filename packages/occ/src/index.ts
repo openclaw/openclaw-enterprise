@@ -327,7 +327,9 @@ import {
   SecretStorageDriverError,
   SecretValueError,
 } from "./errors.ts";
+import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 import {
+  refuseOpenClawSandbox,
   refuseRetiredOpenClawSettings,
   validateConfigurationSettings,
   validateWorkspaceBootstrapSettings,
@@ -582,6 +584,7 @@ export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export { imageReferenceProblem } from "./image-reference.ts";
 export type { ImageReferenceProblem } from "./image-reference.ts";
 export { DEPLOYMENT_FAILURE_STEPS, deploymentFailureStep } from "./deployment-failure-steps.ts";
+export { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
   environmentReference,
@@ -10210,6 +10213,8 @@ export class OpenClawController {
       validateWorkspaceBootstrapSettings(configuration.values);
       // The Gateway refuses a setting the pinned OpenClaw retired and does not start (finding 2709).
       refuseRetiredOpenClawSettings(configuration.values);
+      // The Gateway starts, then fails every turn in OpenClaw's sandbox (finding 2767).
+      refuseOpenClawSandbox(configuration.values);
       this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
@@ -14310,9 +14315,11 @@ export class OpenClawController {
       return;
     }
     const configuration = await readConfiguration();
-    // Deploy admission's rules for a stored Configuration that predates them (findings 2699, 2709).
+    // Deploy admission's rules for a stored Configuration that predates them (findings 2699, 2709,
+    // 2767).
     validateWorkspaceBootstrapSettings(configuration.values);
     refuseRetiredOpenClawSettings(configuration.values);
+    refuseOpenClawSandbox(configuration.values);
     let configuredHarnessId: string;
     try {
       configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
@@ -14474,10 +14481,12 @@ export class OpenClawController {
       sandbox?.configureAgent !== undefined
         ? frozenValues(sandbox.configureAgent(frozenValues(values), harness))
         : values;
+    // Every Compute Driver renders the Gateway's document from this snapshot.
+    const securedConfiguration = admitGatewaySecurityDefaults(sandboxConfiguration);
     return frozenValues(
       compute.runtimeLogging === "driver"
-        ? sandboxConfiguration
-        : admitLoggingConfiguration(sandboxConfiguration, this.loggingLevel),
+        ? securedConfiguration
+        : admitLoggingConfiguration(securedConfiguration, this.loggingLevel),
     );
   }
 

@@ -4242,11 +4242,6 @@ export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
 // the saved device identity. No deadline here: the controller's convergence
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
-const PRIVATE_WORKSPACE_NODE_STATE = `mkdirSync(state, { recursive: true, mode: 0o700 });
-// PVC parents can propagate setgid even with mkdir's 0700 mode. Keep the
-// process-owned node state private before OpenClaw creates its child directories.
-chmodSync(state, 0o700);`;
-
 function agentWithNodeEntrypoint(entrypoint: string): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
@@ -4274,7 +4269,10 @@ if (
 ) {
   throw new Error("The workspace node is not provisioned.");
 }
-${PRIVATE_WORKSPACE_NODE_STATE}
+mkdirSync(state, { recursive: true, mode: 0o700 });
+// PVC parents can propagate setgid even with mkdir's 0700 mode. Keep the
+// process-owned node state private before OpenClaw creates its child directories.
+chmodSync(state, 0o700);
 initializeRuntimeAssets();
 publishAgentPluginSkillPath();
 const configPath = join(state, "openclaw.json");

@@ -265,10 +265,13 @@ case "$*" in
   *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
   *'namespaceId: $namespace.id'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","baselineRevisionId":"rev_test"}' ;;
-  *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0,"gatewayUid":"gateway-test-uid"}' ;;
+  *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0,"gatewayUid":"gateway-test-uid","revisionPods":[{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}]}' ;;
   *'{namespaceId: $namespaceId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","deploymentId":"rev_candidate"}' ;;
+  *'role: $role'*) printf '%s\\n' '[{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}]' ;;
+  *'.revisionPods'*) printf '%s\\n' '{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}' ;;
   *'{namespace: .metadata.namespace, name: .metadata.name,'*) printf '%s\\n' '{"namespace":"tenant-test","name":"gateway-test","restarts":0,"uid":"gateway-test-uid"}' ;;
   *' .uid') cat >/dev/null; printf '"gateway-test-uid"\\n' ;;
+  *'was replaced by a new Pod'*) exit 0 ;;
   *'.restarts'*|*'.gatewayRestarts'*) cat >/dev/null; printf '0\\n' ;;
   *'.lastState.terminated.reason'*) cat >/dev/null; printf '0\\tnone\\n' ;;
   *'spec.containers'*'length'*)
@@ -289,6 +292,7 @@ case "$*" in
   *'.activeRevisionId'*) cat >/dev/null; printf 'rev_candidate\\n' ;;
   *'.executionMode'*) cat >/dev/null; printf 'dedicated\\n' ;;
   *'.deploymentId'*) printf 'rev_candidate\\n' ;;
+  *'.role'*) cat >/dev/null; printf 'gateway\\n' ;;
   *'.gatewayNamespace'*) cat >/dev/null; printf 'tenant-test\\n' ;;
   *'.gatewayName'*) cat >/dev/null; printf 'gateway-test\\n' ;;
   *'.namespaceId'*) cat >/dev/null; printf 'ns_test\\n' ;;

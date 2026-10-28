@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
@@ -28,8 +27,7 @@ const roster = {
 };
 
 async function setup(t) {
-  const audit = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const driver = new OCCPluginDriver();
   fixture.controller.registerDriver(driver);
@@ -47,12 +45,12 @@ async function setup(t) {
       body: { name: `preflight-agent-${created}`, configurationId: configuration.id, ...fields },
     });
   };
-  return { ...fixture, audit, namespace, agents, validate, create };
+  return { ...fixture, namespace, agents, validate, create };
 }
 
 test("Agent create preflight refuses what Agent create refuses, with its message, and saves nothing", async (t) => {
   const f = await setup(t);
-  const mutationsBefore = f.audit.events.filter((event) => event.kind === "mutation").length;
+  const mutationsBefore = f.auditSink.events.filter((event) => event.kind === "mutation").length;
   const refusals = [
     // The plugin's every tool is denied (findings 508, 1848).
     [denyAll, { plugins }],
@@ -83,7 +81,10 @@ test("Agent create preflight refuses what Agent create refuses, with its message
   // The preflight wrote nothing: no Secret, Configuration or Agent, and no mutation audit row.
   assert.deepEqual((await f.request("GET", f.agents)).data, []);
   assert.deepEqual((await f.request("GET", `/namespaces/${f.namespace.id}/secrets`)).data, []);
-  assert.equal(f.audit.events.filter((event) => event.kind === "mutation").length, mutationsBefore);
+  assert.equal(
+    f.auditSink.events.filter((event) => event.kind === "mutation").length,
+    mutationsBefore,
+  );
   // Agent create gives each pair the same answer once its Configuration is saved.
   for (const [index, [values, fields]] of refusals.entries()) {
     const refused = await f.create(values, fields);
@@ -154,7 +155,7 @@ test("Agent create preflight refuses a caller without Agent create as Agent crea
       { name: taken.data.name, configurationId: configuration.id, plugins },
     ],
   ]) {
-    const auditStart = f.audit.events.length;
+    const auditStart = f.auditSink.events.length;
     const refused = await f.request("POST", path, { session, body });
     assert.equal(refused.status, 403, `${action}: ${JSON.stringify(refused.body)}`);
     // The same refusal as Agent create: the deny-all pair is never evaluated for this caller.
@@ -163,7 +164,7 @@ test("Agent create preflight refuses a caller without Agent create as Agent crea
       message: createDenied("Agent", f.namespace.id),
     });
     assertWriteAuthorizationDenial(
-      f.audit.events.slice(auditStart),
+      f.auditSink.events.slice(auditStart),
       { principalId: member.principal.id, action, grant: "create", resource: target },
       action,
     );

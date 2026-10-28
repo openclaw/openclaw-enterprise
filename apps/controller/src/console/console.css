@@ -650,17 +650,20 @@ p {
 .runtime-debug h2 {
   color: inherit;
 }
-/* The inverse mascot has its contour in the artwork. In forced colours, picture uses the
-   original mark at the same size as an operator-supplied logo. */
+/* Navigation logos share a 48 px limit. Contain preserves wide artwork when max-width
+   constrains it; narrow artwork uses its natural aspect ratio. */
+.sidebar .brand img,
+.topbar .brand img {
+  width: auto;
+  height: 48px;
+  max-width: 48px;
+}
+/* The inverse mascot has its contour in the artwork. Forced colours use the original mark. */
 .brand-mascot {
   display: flex;
   flex: none;
 }
 @media (forced-colors: none) {
-  .brand-mascot img {
-    width: 48px;
-    height: 38px;
-  }
   .brand:has(.brand-mascot) {
     gap: var(--space-1);
   }
@@ -1858,6 +1861,23 @@ select:not([multiple])[size="1"] {
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
+/* Size the selected result for its wrapped generic failures as well as its record.
+   Actual errors remain in normal flow and can grow beyond these sizing copies. */
+.version-deployment-result {
+  display: grid;
+}
+.version-deployment-result > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.version-deployment-error-size {
+  visibility: hidden;
+  pointer-events: none;
+}
+.version-deployment-error-size [data-message]::before {
+  content: attr(data-message);
+}
+
 .deployment-heading,
 .agent-version-heading {
   display: flex;
@@ -2028,6 +2048,10 @@ select:not([multiple])[size="1"] {
 .agent-deployment-panels {
   display: grid;
   gap: var(--space-5);
+}
+.agent-deployment-panels :focus-visible {
+  /* Leave the keyboard outline visible when a refusal expands the panel. */
+  scroll-margin-block: var(--space-2);
 }
 .agent-deployment-panels > * {
   margin: 0;
@@ -3505,6 +3529,39 @@ select:not([multiple])[size="1"] {
 }
 .plugin-toggle input {
   width: auto;
+}
+/* Collaboration and safety toggles above the Configuration JSON editor. */
+.gateway-safety {
+  display: grid;
+  gap: var(--space-3);
+  margin-block: var(--space-4) var(--space-6);
+  max-width: var(--prose-max);
+}
+.gateway-safety h3,
+.gateway-safety > p {
+  margin: 0;
+}
+.gateway-safety-settings {
+  display: grid;
+  gap: var(--space-3);
+  padding-left: var(--space-6);
+}
+.gateway-safety-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--weight-medium);
+}
+.gateway-safety-toggle input {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+}
+.gateway-safety-setting .field-help {
+  margin: var(--space-1) 0 0;
+}
+.gateway-safety-source {
+  font-weight: var(--weight-medium);
 }
 .plugin-tool {
   border: 1px solid var(--line);

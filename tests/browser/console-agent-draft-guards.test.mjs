@@ -61,6 +61,7 @@ import {
   GRANT_EXCEEDS_CEILING,
   NO_SANDBOX_DRIVER_NETWORK_POLICY,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t);
@@ -246,13 +247,9 @@ test("Policy denials reads the Sandbox log of a version a Sandbox Driver provisi
 test("A refused policy editing change says who can change it", async (t) => {
   const { fixture, namespace, agent } = await createPolicyConsole(t);
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  fixture.policy.restrictions.push({
-    id: "deny-agent-administer",
+  restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: agent.id,
-    action: "administer",
-    effect: "deny",
   });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
@@ -1716,14 +1713,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
 
   // The caller's own denial names the grant deploy checked on the Agent the request named, and
   // who grants it (finding 2534); a Restriction reads as a missing grant. The console shows it.
-  fixture.policy.restrictions.push({
-    id: "deny-typed-refusal-deploy",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    resourceId: agent.id,
-    action: "deploy",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "deploy", "agent", { namespaceId: namespace.id, resourceId: agent.id });
   const ownDenial = await refusal(403);
   assert.equal(ownDenial, callerDenied("Agent deploy", `Agent ${agent.id}`));
   await page.getByText(ownDenial, { exact: true }).waitFor();
@@ -1855,13 +1845,9 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     const deploy = page.getByRole("button", { name: "Deploy new version" });
     await waitForEnabled(deploy);
     if (mutation === "authentication") {
-      fixture.policy.restrictions.push({
-        id: "deny-authentication-save",
+      restrict(fixture.policy, "update", "agent", {
         namespaceId: namespace.id,
-        resourceKind: "agent",
         resourceId: agent.id,
-        action: "update",
-        effect: "deny",
       });
       await page.getByRole("button", { name: "Save authentication source" }).click();
       // A refused Agent save names the grants it needs (finding 1530).

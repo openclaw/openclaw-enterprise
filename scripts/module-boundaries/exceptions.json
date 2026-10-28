@@ -175,6 +175,18 @@
     },
     {
       "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/gateway-security-defaults.ts",
+      "specifier": "file:packages/occ/src/gateway-security-defaults.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console shows the effective Gateway collaboration and safety settings from the dependency-free values OCC's deployment admission fills, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
       "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
       "to": "packages/contracts/src/runtime-failure.mjs",
       "specifier": "../../../../../../packages/contracts/src/runtime-failure.mjs",
