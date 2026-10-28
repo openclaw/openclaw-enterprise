@@ -257,7 +257,6 @@ function managedPluginInstallation() {
     if (release?.capabilities.gateway.includes("skill")) {
       const directory = skills + "/" + release.skill;
       const instructions = directory + "/SKILL.md";
-      verifiedPluginFile(instructions, release.skillSha256);
       skill = { directory, instructions };
     }
     install = { id, root, release, skills, skill };
@@ -2563,6 +2562,7 @@ function installGatewayPlugins(runtime, failures) {
 
   // The image supplies the managed skill. Only native packages go through OpenClaw's installer.
   const { id, release, skills: skillsDirectory, skill } = install;
+  if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
   const { [id]: selection, ...selections } = runtime.manifest.selections ?? {};
   if (!selection || Boolean(selection.enabled) !== Boolean(release)) throw new Error("The managed plugin selection differs from the runtime release.");
   const native = { ...runtime, manifest: { ...runtime.manifest, selections } };
