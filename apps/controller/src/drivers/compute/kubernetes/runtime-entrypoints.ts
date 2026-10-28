@@ -301,37 +301,6 @@ function holdStartupFailure(check, code) {
 // deadline shares the bound. Whole-line comments here cost nothing at runtime: nodeProgramArguments
 // drops them before the dedicated Harness command is measured against the exec string budget.
 export const PLUGIN_RUNTIME_HELPERS = String.raw`
-${GOOGLE_INSTALL_HELPERS}
-function nativeOpenClawSelections(runtime) {
-  const selections = runtime.manifest.selections ?? {};
-  const id = process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID;
-  if (!id) return selections;
-  const { [id]: managed, ...native } = selections;
-  return native;
-}
-
-const googleSkillsDirectory = "/usr/local/lib/oce/plugins/google/skills";
-function googleInstallSkill(release) {
-  if (!release?.capabilities.gateway.includes("skill")) return undefined;
-  const directory = googleSkillsDirectory + "/" + release.skill;
-  return { directory, instructions: directory + "/SKILL.md" };
-}
-
-function configureGoogleInstallSkill(runtime, config) {
-  const id = process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID;
-  const release = installedGoogleRelease();
-  const selected = Boolean(id && runtime.manifest.selections?.[id]?.enabled);
-  if (selected !== Boolean(release)) throw new Error("The managed Google plugin selection differs from the runtime release.");
-  const skill = googleInstallSkill(release);
-  if (!skill && !config.skills?.load?.extraDirs?.includes(googleSkillsDirectory)) return;
-  if (skill) verifiedGoogleFile(skill.instructions, release.skillSha256);
-  const skills = config.skills ??= {};
-  const load = skills.load ??= {};
-  const directories = (load.extraDirs ?? []).filter((path) => path !== googleSkillsDirectory);
-  load.extraDirs = skill ? [...directories, googleSkillsDirectory] : directories;
-  writeOpenClawConfig(config);
-}
-
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
   dirname: pluginDirname,
@@ -1254,7 +1223,7 @@ function samePluginFailures(left, right) {
 function openClawPluginConfiguration(runtime, failures = [], base) {
   if (runtime.manifest?.kind === "openclaw") {
     return pluginRuntimeTranslator.openClawRuntimeArtifact(
-      nativeOpenClawSelections(runtime),
+      runtime.manifest.selections ?? {},
       failures,
       runtime.manifest.pluginApprovers,
       gatewayServesPublicOrigin(base),
@@ -1466,7 +1435,7 @@ function verifyOpenClawPluginInstall(plugin) {
 function installOpenClawPlugins(runtime, failures = []) {
   const artifact =
     runtime.manifest?.kind === "openclaw"
-      ? pluginRuntimeTranslator.openClawRuntimeArtifact(nativeOpenClawSelections(runtime), failures, runtime.manifest.pluginApprovers)
+      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
       : { installs: [] };
   const installs = artifact.installs ?? [];
   const failed = [...failures];
@@ -1509,10 +1478,6 @@ function installOpenClawPlugins(runtime, failures = []) {
   for (const plugin of installs) {
     if (failedIds.has(plugin.pluginId)) continue;
     verifyOpenClawPluginInstall(plugin);
-  }
-  if (runtime.manifest?.kind === "openclaw" && process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID) {
-    configureGoogleInstallSkill(runtime, readOpenClawConfig());
-    if (process.env.OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256) successfulPluginIds.push(process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID);
   }
   return { successfulPluginIds, failures: failed };
 }
@@ -2421,6 +2386,7 @@ const { spawn } = require("node:child_process");
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
 ${PLUGIN_RUNTIME_HELPERS}
+${GOOGLE_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
@@ -2571,6 +2537,38 @@ function requireWorkspaceNodePlugins(config) {
   ) {
     throw new Error("The workspace node requires the file-transfer plugin.");
   }
+}
+
+const googleSkillsDirectory = "/usr/local/lib/oce/plugins/google/skills";
+function googleInstallSkill(release) {
+  if (!release?.capabilities.gateway.includes("skill")) return undefined;
+  const directory = googleSkillsDirectory + "/" + release.skill;
+  return { directory, instructions: directory + "/SKILL.md" };
+}
+
+function installGatewayPlugins(runtime, failures) {
+  const id = process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID;
+  if (!id || runtime.manifest.kind !== "openclaw") return installOpenClawPlugins(runtime, failures);
+
+  // Google supplies a skill from the image. Only native packages go through OpenClaw's installer.
+  const { [id]: google, ...selections } = runtime.manifest.selections ?? {};
+  const release = installedGoogleRelease();
+  if (Boolean(google?.enabled) !== Boolean(release)) throw new Error("The managed Google plugin selection differs from the runtime release.");
+  const native = { ...runtime, manifest: { ...runtime.manifest, selections } };
+  const result = installOpenClawPlugins(native, failures);
+
+  const skill = googleInstallSkill(release);
+  if (skill) verifiedGoogleFile(skill.instructions, release.skillSha256);
+  const config = readOpenClawConfig();
+  if (skill || config.skills?.load?.extraDirs?.includes(googleSkillsDirectory)) {
+    const skills = config.skills ??= {};
+    const load = skills.load ??= {};
+    const directories = (load.extraDirs ?? []).filter((path) => path !== googleSkillsDirectory);
+    load.extraDirs = skill ? [...directories, googleSkillsDirectory] : directories;
+    writeOpenClawConfig(config);
+  }
+  if (release) result.successfulPluginIds.push(id);
+  return result;
 }
 
 // Every change this makes is under plugins.*, which OpenClaw hot-applies.
@@ -2985,7 +2983,7 @@ function configureGateway(peerStatus) {
   const pluginResult =
     pluginRuntime === undefined
       ? { successfulPluginIds: [], failures: peerFailures }
-      : installOpenClawPlugins(pluginRuntime, peerFailures);
+      : installGatewayPlugins(pluginRuntime, peerFailures);
   if (pluginRuntime !== undefined) {
     logStartupPhase("plugin-install", pluginInstallStartedAt);
   }
