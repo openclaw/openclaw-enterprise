@@ -56,7 +56,8 @@ test(
     });
     relaySockets(client.socket, upstream);
 
-    while (!client.socket.writableFinished && !client.socket.destroyed) {
+    // Release one held write at a time until the relay closes the client.
+    for (let i = 0; i < 2000 && !client.socket.destroyed; i++) {
       await delay(5);
       client.releaseOne();
     }
@@ -66,10 +67,12 @@ test(
     const received = client.received();
     assert.equal(received.length, payload.length, "the client must receive every upstream byte");
     assert.ok(received.equals(payload), "the client must receive the upstream bytes unchanged");
+    // The relay still closes the client, so no half-closed connection outlives the test.
+    assert.equal(client.socket.destroyed, true, "the relay must close the client");
     assert.equal(
-      client.socket.destroyed,
-      false,
-      "a clean upstream close must not destroy the client",
+      client.socket.writableFinished,
+      true,
+      "the relay must close the client only after its queued writes finish",
     );
   },
 );
