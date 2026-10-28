@@ -35,7 +35,7 @@ Rootless Podman is not qualified for the complete OCE/OpenShell profile. K3s
 requires delegated cgroup controllers, including `cpuset`; see
 [local cgroup troubleshooting](../operate/troubleshooting.md#local-k3s-cannot-find-the-cpuset-controller).
 
-Build the CLI and start the Kubernetes profile:
+Build and start the profile:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
@@ -92,7 +92,7 @@ Helm, recovery, installation-only drift checks and certificate copying.
 
 ### Run OCC in Compose with Kubernetes compute
 
-To select the hybrid profile on a fresh state directory:
+For a fresh hybrid profile:
 
 ```bash
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
@@ -115,7 +115,7 @@ If the K3s channel lookup fails or times out, follow
 
 ### Start the OpenShell fail-closed profile
 
-For OpenShell, use the owned launcher:
+Start OpenShell:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
@@ -137,7 +137,7 @@ If Agent Sandbox rollout fails, startup tries to report controller status, image
 IDs, and Warning reasons before rollback. It includes only these diagnostic
 fields; it omits messages, environment values, and logs.
 
-For native rootful Podman on Linux with the Compose control plane, use:
+For native rootful Linux Podman with Compose:
 
 ```bash
 pnpm cli:build
@@ -151,7 +151,6 @@ sudo env PATH="$PATH" \
 ```
 
 Use the same environment with `dev-down` to remove the Installation and database.
-An environment-only script outside the checkout can supply both commands' settings.
 
 Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to run PostgreSQL, OCC, and its
 Kubernetes worker in Compose. Startup installs private Envoy routing in k3d,
@@ -177,7 +176,7 @@ engine. Kubernetes-only startup rejects Compose arguments. Keep profile exports
 for cleanup; otherwise startup defaults to Compose with Docker Compute.
 
 Startup prints the private [state directory](../../reference/settings/development.md#required-development-controller-environment)
-containing kubeconfig and credentials. Its default is `openclaw-development`
+with kubeconfig and credentials. It defaults to `openclaw-development`
 under the temporary directory (macOS: `/private/var/folders/<id>/T`). Set absolute
 `OCC_DEVELOPMENT_STATE_DIRECTORY` for startup and cleanup to override it; parent
 paths cannot contain symlinks (macOS: use `/private/tmp/...`, not `/tmp/...`).

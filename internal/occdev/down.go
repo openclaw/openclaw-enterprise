@@ -92,7 +92,7 @@ func Down(ctx context.Context, opts Options) error {
 		// its image volume could not be removed. Check the recorded endpoint
 		// even when the cluster was already absent on this attempt.
 		imageVolume := "k3d-" + state.Cluster + "-images"
-		volumes, err := r.output(ctx, r.engine, "volume", "ls", "--filter", "label=k3d.cluster="+state.Cluster, "--format", "{{.Name}}")
+		volumes, err := r.output(cleanupCtx, r.engine, "volume", "ls", "--filter", "label=k3d.cluster="+state.Cluster, "--format", "{{.Name}}")
 		if err != nil {
 			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: cannot confirm k3d image volume absence for %s: %w; "+
 				"check access to the recorded %s endpoint %s; retry occ dev down with the same Kubernetes settings and state directory",

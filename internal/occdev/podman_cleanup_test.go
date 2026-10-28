@@ -62,6 +62,7 @@ func TestPodmanDownConfirmsOwnedResourceRemoval(t *testing.T) {
 "volume ls --quiet --filter label=com.docker.compose.project=occ-dev-cleanup"|\
 "volume ls --quiet --filter label=io.podman.compose.project=occ-dev-cleanup") if [ -f ` + shellQuote(volume) + ` ]; then cat ` + shellQuote(volume) + `; fi ;;
 "volume rm owned-volume") ` + removeVolume + ` ;;
+"volume ls --filter label=k3d.cluster=occ-dev-cleanup --format {{.Name}}") ;;
 "network ls --quiet --filter label=com.docker.compose.project=occ-dev-cleanup"|\
 "network ls --quiet --filter label=io.podman.compose.project=occ-dev-cleanup") ;;
 `,

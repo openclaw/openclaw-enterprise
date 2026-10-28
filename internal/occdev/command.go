@@ -235,11 +235,9 @@ func (r *runner) selectContainerEngine(ctx context.Context, requested string, re
 }
 
 // composeProvider resolves the Compose provider Podman's `podman compose`
-// delegates to. The Kubernetes-profile Compose command passes
-// --project-directory, which standalone podman-compose does not support, so
-// prefer docker-compose, which reaches Podman through the DOCKER_HOST endpoint
-// startup pins, and keep podman-compose for hosts without it. Up and down must
-// agree, or a host with only docker-compose could start a stack it cannot stop.
+// delegates to for Kubernetes-profile startup. Prefer docker-compose, which
+// reaches Podman through the DOCKER_HOST endpoint startup pins, and keep
+// podman-compose for hosts without it. Cleanup uses the engine directly.
 func composeProvider() (string, error) {
 	for _, candidate := range []string{"docker-compose", "podman-compose"} {
 		if found, err := exec.LookPath(candidate); err == nil {

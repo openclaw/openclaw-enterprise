@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-29
-last_updated_session: authoring-run/88c984db-3b18-420c-acfc-7e329a46af89
+updated: 2026-11-02
+last_updated_session: authoring-run/cc64e6e0-08c8-4e33-ae68-b3abbc2d60bf
 ---
 
 # Compose development startup
@@ -71,10 +71,9 @@ Engine and Compose JSON probes select Docker or Podman independently of a
 `docker` alias. Podman requires `yq` v4 and a Compose provider. Docker Compute
 requires standalone `podman-compose`, which `scripts/dev-up` pins and `occ dev
 down` matches so the stack is stopped with the provider that started it. The
-Kubernetes-profile Compose command that `occ dev up` and `occ dev down` drive
-prefers `docker-compose` — it passes `--project-directory`, which standalone
-`podman-compose` does not support — and falls back to `podman-compose` when
-`docker-compose` is absent. Rootful
+Kubernetes-profile startup prefers `docker-compose` and falls back to
+`podman-compose` when `docker-compose` is absent. It uses absolute paths without
+`--project-directory`; shutdown uses the Podman engine directly. Rootful
 Podman on Linux must expose its API socket (for example,
 `systemctl enable --now podman.socket`); startup resolves that socket and pins
 it as `DOCKER_HOST` for the provider. Explicit `-f FILE`, `-fFILE`, `-f=FILE`, `--file FILE`, or
@@ -279,31 +278,27 @@ Docker or Podman Compose call in a process group. It kills that group on
 cancellation and stops any remaining descendants after the command returns,
 including after success. `cmd/occ/main.go:main` receives Ctrl-C through
 `signal.NotifyContext`; context cancellation stops the isolated group.
-Unconfirmed termination preserves state without rollback.
+Unconfirmed termination preserves state without rollback. The
+`OCC_DEVELOPMENT_KEEP_ON_FAILURE` option retains failed state and resources;
+[development settings](../../reference/settings/development.md) defines cleanup.
 `internal/occdev/command.go:composeServiceID` uses exact project/service labels.
 After both one-shot services succeed, startup creates k3d on the Compose network.
-With the default Sandbox profile, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
-image; its default `+v1.35` resolves the latest K3s 1.35 patch. An explicit
-image skips lookup. OpenShell uses its pinned image in both control-plane modes.
+For Sandbox `none`, `OCC_DEVELOPMENT_K3S_IMAGE` defaults to the latest K3s 1.35
+patch (`+v1.35`); explicit images skip lookup. OpenShell pins its image in both modes.
 Both profiles use `internal/occdev/kubernetes.go:developmentImageGCArgs` to retain
 local images (GC thresholds 100/99); disk-pressure eviction remains enabled.
 The API binds loopback; default kubeconfig/context stay unchanged.
 
-The host kubeconfig stays private. Non-root API/worker containers receive
-read-only configuration and kubeconfig for the TLS-verified internal load balancer,
-without the engine socket.
+The host kubeconfig stays private. Non-root API/worker mounts provide read-only
+configuration and kubeconfig for the TLS-verified load balancer, without an engine socket.
 
-`internal/occdev/kubernetes.go:engineImageReference` resolves engine-recorded names,
-including Podman `localhost/` and Docker Hub, defaults omitted tags to `:latest`,
-and rejects missing or ambiguous matches. Digest-pinned sources are usually
-multi-arch lists that Docker's containerd image store (Docker 29) can neither
-save with `--platform` nor export completely, so
-`internal/occdev/k3d_import.go:stageDevelopmentPlatformChild` re-points the
-staging tag at the registry's platform child so the importer can save a complete
-single-platform archive. Unlisted sources and a failed child pull keep
-the pinned reference and filter.
-`importDevelopmentImage` resolves
-cluster digests. Both startup paths call
+`internal/occdev/kubernetes.go:engineImageReference` resolves Podman/Docker names,
+defaults omitted tags to `:latest`, and rejects missing or ambiguous matches.
+Docker 29's containerd store cannot completely export manifest lists.
+`internal/occdev/k3d_import.go:stageDevelopmentPlatformChild` selects the registry's
+platform child for the staging tag and single-platform archive. Unlisted sources
+or failed child pulls retain the pinned reference and platform filter.
+`importDevelopmentImage` resolves cluster digests. Startup calls
 `internal/occdev/status_proxy_k3d.go:developmentStatusProxySource` before
 `writeInstallation`; node inventory retains caller context outside polling.
 
@@ -363,8 +358,9 @@ existing targets and reports removal failures with the original error.
 Shutdown validates recorded ownership, stops reconcilers, then removes owned
 k3d and Compose resources through the recorded engine. Podman uses exact project labels and direct removal, retrying while
 container dependencies disappear. It verifies container/volume/network absence;
-no dependency cascades or image pruning. Shutdown has five minutes; rollback has
-two. Cleanup retains failed state.
+no dependency cascades or image pruning. Both engines must also confirm the
+recorded k3d image volume is absent before discarding state. Shutdown, including
+that final check, has five minutes; rollback has two. Cleanup retains failed state.
 Success removes state and owned keys. External `--key-output` files remain
 operator-owned unless OpenShell readiness fails.
 
@@ -409,7 +405,13 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Changelog
 
+- 2026-11-02 09:27: Preserve upstream platform-child image imports alongside local image retention during rebase. (authoring-run/cc64e6e0-08c8-4e33-ae68-b3abbc2d60bf - a545b4ac2f9062f2f117db7cccb5f9e944e14b32)
+
 - 2026-10-29 18:57: Resolved the manifest-list platform child before saving images. (authoring-run/88c984db-3b18-420c-acfc-7e329a46af89 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
+
+- 2026-10-29 13:11: Reconcile provider selection, direct Podman cleanup, and failed-startup inspection after rebasing. (authoring-run/cd588abb-6557-4867-b5d7-771efff137fc - 8e4c719e88a794f489cac9998a8089e2ad985ddf)
+
+- 2026-10-28 09:29: Include final k3d image-volume verification in the shutdown deadline after rebasing cleanup. (authoring-run/02f5302f-15fe-45b7-9cc2-f196b6b6c574 - 680f45a414c5b5d840b6f42d449e5ebc56637a5d)
 
 - 2026-10-28 09:41: Normalize attached Podman file options for startup and cleanup, retaining file validation. (authoring-run/fc103f5f-f130-4239-a879-78ed1d7e6602 - 8eea685f0303ad004e222fc4399a019a9486dcb3)
 
