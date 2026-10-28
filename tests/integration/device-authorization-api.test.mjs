@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -55,6 +56,7 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
       id: "device-test-sandbox",
       capability: "sandbox",
       implementation: "test-admission-only",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       async cleanup() {},
     },

@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
@@ -1606,6 +1607,7 @@ test("dedicated OpenClaw delivers the selected Google release digest without a S
       id: "native-sandbox",
       implementation: "openshell",
       capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       async workspaceNodePeerLabels() {
         return undefined;
@@ -1668,6 +1670,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -1937,6 +1940,7 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -2111,6 +2115,7 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels() {
       return undefined;
@@ -2186,6 +2191,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -2342,6 +2348,7 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {
       assert.fail("no preparation pass runs here");
@@ -3087,6 +3094,7 @@ test("activation waits for the first repository Git credential install and the n
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -3606,6 +3614,7 @@ test("the Pod quota check reads only the revision's own workload Deployments", a
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels() {
       return undefined;
@@ -4535,6 +4544,7 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
     id: "sandbox-namespace-cleanup",
     implementation: "test/namespace-cleanup",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup(context) {
       assert.equal(context.revision, undefined);
@@ -8491,6 +8501,7 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     harnessResource({ namespace, revision }) {
       return {
@@ -8872,6 +8883,7 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
@@ -9025,6 +9037,7 @@ test("credential-source authentication renders no model Secret and requires the 
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
@@ -9240,6 +9253,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
@@ -9350,6 +9364,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     id: "sandbox-native-worker",
     implementation: "test/native-worker",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {},
     async cleanup() {},
@@ -13233,6 +13248,7 @@ test("containment-only Sandbox cleanup retries after its Compute-owned workload 
     id: "sandbox-containment-only",
     implementation: "test/containment-only",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup(context) {
       assert.equal(deploymentPresent, false);
@@ -14272,6 +14288,7 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
         id: "sandbox-native-worker",
         implementation: "test/native-worker",
         capability: "sandbox",
+        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
         facets: ["networking", "filesystem", "process"],
         async provisionHarness() {},
         async cleanup() {},
@@ -15865,6 +15882,7 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
     id: "sandbox-containment-only-stop",
     implementation: "test/containment-only",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup(context) {
       assert.equal(deploymentPresent, false);
@@ -16273,6 +16291,7 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
     id: "sandbox-provider-stop",
     implementation: "test/provider-owned",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["execution"],
     async provisionHarness() {
       assert.fail("stop must not provision a Harness workload");
@@ -16412,6 +16431,7 @@ test("stop and retirement end credential-source access through Sandbox cleanup",
     id: "sandbox-credential-stop",
     implementation: "test/provider-owned",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {
       assert.fail("stop and retirement must not provision a Harness workload");

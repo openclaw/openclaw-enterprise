@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -307,6 +308,7 @@ export function nativeSandboxDriver(facets = ["networking", "filesystem", "proce
     id: "console-native-sandbox",
     capability: "sandbox",
     implementation: "console-native",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets,
     async provisionHarness() {
       assert.fail("provisioning admission must leave effects to the worker");
