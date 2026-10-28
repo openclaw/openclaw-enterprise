@@ -143,7 +143,11 @@ characters total, without a per-segment cap. Namespace names and unqualified
 label names/values retain their 63 limit. The chart and
 `scripts/prepare-bootstrap-volume:is_dns_subdomain` share this prefix/claim
 rule; the chart checks peers only for nonempty maps. Repository Backend IDs
-follow their rule within 200 UTF-16 code units, as in the chart.
+follow their rule within 200 UTF-16 code units, as in the chart. After composing
+all Backends, preflight also checks the startup rule that their IDs are unique.
+A repository Backend cannot use `chatgpt-primary` when managed ChatGPT accounts
+are enabled; that ID remains valid without the ChatGPT Backend. A collision
+produces failed preflight without either deployment file.
 
 ### 4. Build Helm values
 
@@ -303,7 +307,11 @@ activation, and repository registry creation need separate evidence.
 
 - 2026-10-28 20:25: Refuse input/output file collisions before cleanup in the accompanying change. (authoring-run/ebaa9b91-58b3-47dc-97d9-ad103250247d - 420d76bcbd15dcd3644e474d413484c35ce22797)
 
+- 2026-10-19 04:34: Preserve Backend ID checks and upstream CA mount alias rules in the ordinary main merge. (authoring-run/4a78d437-454c-4401-81af-914631ec80fd - 839abfa1235847cdd0b2a9a31ae9212f560fe985)
+
 - 2026-10-18 14:40: Compare database CA mount destinations with Helm. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
+
+- 2026-10-17 17:55: Refuse composed Backend ID collisions before deployment files are written. (authoring-run/e4102058-8f0c-46a5-9b80-14c6ba6d7801 - 7b3a70b371fd914540fbc05e3a8080b2bbb1dd6d)
 
 - 2026-10-13 16:26: Merge current profile validation while retaining hosted discovery DNS snapshots and explicit network policy inputs. (authoring-run/1e1d633d-329d-462f-b077-6cb27c43a6e4 - da72ecf45a0989b857fd7f05d8238a38a979eb64)
 

@@ -32,6 +32,7 @@ import {
   KubernetesComputeDriver,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { validateBackendDefinitions } from "../../packages/occ/src/backends.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { helmTemplate } from "../helpers/production-chart.mjs";
@@ -941,6 +942,31 @@ function withGitHubSignIn(input, github) {
     controlPlane: { ...controlPlane, recoveryUserId: "recovery-admin_1", github },
   };
 }
+
+test("preflight refuses Backend ID collisions only when both Backends are configured", async (t) => {
+  const repository = { ...repositoryConfiguration(), backendId: "chatgpt-primary" };
+  await assertPreflightFailure(
+    "codex",
+    managedCodexInput({ repository }),
+    /Generated Backend IDs must be unique; repository\.backendId .*chatgpt-primary.* is already used/,
+  );
+
+  // The name is not reserved: it is valid when no ChatGPT Backend is generated.
+  const repositoryOnly = await render("codex", codexInput({ repository }));
+  assert.equal(repositoryOnly.summary.ok, true);
+  assert.match(repositoryOnly.installation, /id: chatgpt-primary\n {4}type: github/);
+  const distinct = await render(
+    "codex",
+    managedCodexInput({ repository: repositoryConfiguration() }),
+  );
+  assert.equal(distinct.summary.ok, true);
+  assert.match(distinct.installation, /id: chatgpt-primary\n {4}type: chatgpt/);
+  assert.match(distinct.installation, /id: github-primary\n {4}type: github/);
+  for (const output of [repositoryOnly, distinct]) {
+    t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+    validateBackendDefinitions(loadYaml(output.installation).backend);
+  }
+});
 
 test(
   "preflight refuses sign-in Secrets that ChatGPT or repository credentials use, as Helm does",

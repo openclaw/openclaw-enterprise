@@ -1284,6 +1284,9 @@ test("console retained views clear after session expiry and exact Agent denial",
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  // The list appears before its row permission reads finish. Expiring earlier can
+  // sign out this page before the intended return-to-Agents session check.
+  await waitForSettledView(page);
   expireSessions(fixture);
   const sessionPattern = "**/api/auth/session";
   const expiredSession = await holdRoute(t, page, sessionPattern, (route, response) =>
