@@ -8,8 +8,6 @@ This record preserves the dated changes to the Agent plugin deployment flow. See
 
 ## Changelog
 
-- 2026-10-28 19:30: Saved-Agent discovery offers only plugins that Agent save admits for the Agent's Harness and Compute (finding 2787). (fix-2786-2787)
-
 - 2026-10-18 03:00: Check the primary model's `tools.byProvider` deny lists and a sole entry's `alsoAllow` under a profile (findings 1855, 1857). (lows-1018c)
 
 - 2026-10-18 02:20: Check roster entries' `tools.deny` in the OpenClaw Driver's selection check (finding 1848). (lows-1018b - 628ee9fbf)

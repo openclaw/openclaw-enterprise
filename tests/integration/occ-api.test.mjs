@@ -4212,20 +4212,6 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   const capabilities = await controller.request("GET", `${path}/plugins/capabilities`);
   assert.equal(capabilities.status, 200);
   assert.equal(capabilities.data.policyScopeByPlugin[packageId], "enablement_only");
-  // Saved-Agent discovery offers the package only where Agent save admits it, and its details
-  // refusal is the save refusal (finding 2787).
-  const discover = async () => {
-    const catalog = await controller.request("POST", `${path}/plugins`, { body: {} });
-    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
-    const details = await controller.request("POST", `${path}/plugins/details`, {
-      body: { pluginId: packageId },
-    });
-    return { ids: catalog.data.plugins.map((entry) => entry.id), details };
-  };
-  const offered = await discover();
-  assert.deepEqual(offered.ids, [packageId]);
-  assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
-  assert.equal(offered.details.data.id, packageId);
   for (const unsupportedPolicy of [
     { toolDefaults: { approval: "all_actions" } },
     { tools: { "gmail.users.messages.list": { enabled: false } } },
@@ -4267,10 +4253,6 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   const deploy = await controller.request("POST", `${path}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
   assert.equal(deploy.body.error.message, mode.body.error.message);
-  const codexOffer = await discover();
-  assert.deepEqual(codexOffer.ids, []);
-  assertApiError(codexOffer.details, 400, "INVALID_REQUEST");
-  assert.equal(codexOffer.details.body.error.message, mode.body.error.message);
 
   // The Sandbox can provision native workers. The replacement Compute cannot deliver the package.
   await changeHarness("openclaw");
@@ -4285,10 +4267,6 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   const unsupported = await controller.request("POST", `${path}/deploy`);
   assert.equal(unsupported.status, 400, JSON.stringify(unsupported.body));
   assert.equal(unsupported.body.error.message, "Google Workspace requires Kubernetes Compute.");
-  const computeOffer = await discover();
-  assert.deepEqual(computeOffer.ids, []);
-  assertApiError(computeOffer.details, 400, "INVALID_REQUEST");
-  assert.equal(computeOffer.details.body.error.message, unsupported.body.error.message);
   assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
 
   controller.fixture.controller.selectDriver("compute", kubernetes.id);
@@ -9072,4 +9050,106 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assertApiError(deploy, 409, "RESOURCE_CONFLICT");
   assert.equal(deploy.body.error.message, noRoute);
+});
+
+test("saved-Agent discovery offers the Google package only where Agent save admits it", async () => {
+  // Finding 2787: the Plugin Driver's catalog takes no Agent, so OCC checks each entry against
+  // the Agent's Harness and the Installation's Compute, as Agent save does.
+  const sandbox = {
+    id: "sandbox-native",
+    capability: "sandbox",
+    implementation: "test-native-sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {},
+    async cleanup() {},
+  };
+  const kubernetes = createTestKubernetesComputeDriver("compute-google-discovery", {
+    sandboxDriver: sandbox,
+  });
+  const controller = await configuredController({ computeDriver: kubernetes });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "google-package-discovery");
+  const configuration = await createConfiguration(
+    controller,
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+  );
+  const driver = new OCCPluginDriver();
+  controller.fixture.controller.registerDriver(driver);
+  controller.fixture.controller.selectDriver("plugin", driver.id);
+  const packageId = "occ-plugin:google@1.0.0";
+  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Discovery Agent",
+      executionMode: "dedicated",
+      configurationId: configuration.id,
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const path = `/namespaces/${namespace.id}/agents/${created.data.id}`;
+  // Each step compares discovery with what saving the package on this Agent returns.
+  const discoverAndSave = async () => {
+    const catalog = await controller.request("POST", `${path}/plugins`, { body: {} });
+    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+    const details = await controller.request("POST", `${path}/plugins/details`, {
+      body: { pluginId: packageId },
+    });
+    const save = await controller.request("PATCH", path, {
+      body: { configurationId: configuration.id, plugins: { [packageId]: { enabled: true } } },
+    });
+    return { ids: catalog.data.plugins.map((entry) => entry.id), details, save };
+  };
+
+  // A dedicated OpenClaw Agent on Kubernetes Compute is offered the package and may save it.
+  const offered = await discoverAndSave();
+  assert.deepEqual(offered.ids, [packageId]);
+  assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
+  assert.equal(offered.details.data.id, packageId);
+  assert.equal(offered.save.status, 200, JSON.stringify(offered.save.body));
+  const cleared = await controller.request("PATCH", path, {
+    body: { configurationId: configuration.id, plugins: {} },
+  });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+
+  // The same Agent on the Codex Harness: save refuses the package, so discovery hides it.
+  const codex = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+    { body: { values: createHarnessConfiguration("codex", "gpt-5.1") } },
+  );
+  assert.equal(codex.status, 200, JSON.stringify(codex.body));
+  const codexOffer = await discoverAndSave();
+  assert.deepEqual(codexOffer.ids, []);
+  assertApiError(codexOffer.save, 400, "INVALID_REQUEST");
+  assert.match(
+    codexOffer.save.body.error.message,
+    /Google Workspace requires a dedicated OpenClaw/,
+  );
+  assertApiError(codexOffer.details, 400, "INVALID_REQUEST");
+  assert.equal(codexOffer.details.body.error.message, codexOffer.save.body.error.message);
+
+  // Back on OpenClaw, Compute that cannot deliver the package refuses it the same way.
+  const openclaw = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+    { body: { values: createHarnessConfiguration("openclaw", "gpt-5.1") } },
+  );
+  assert.equal(openclaw.status, 200, JSON.stringify(openclaw.body));
+  const unsupportedCompute = createReadyComputeDriver("compute-without-package-discovery", {
+    validateHarnessAuth() {},
+    async stopRevision() {},
+  });
+  for (const replacement of [sandbox, unsupportedCompute]) {
+    controller.fixture.controller.registerDriver(replacement);
+    controller.fixture.controller.selectDriver(replacement.capability, replacement.id);
+  }
+  const computeOffer = await discoverAndSave();
+  assert.deepEqual(computeOffer.ids, []);
+  assertApiError(computeOffer.save, 400, "INVALID_REQUEST");
+  assert.equal(
+    computeOffer.save.body.error.message,
+    "Google Workspace requires Kubernetes Compute.",
+  );
+  assertApiError(computeOffer.details, 400, "INVALID_REQUEST");
+  assert.equal(computeOffer.details.body.error.message, computeOffer.save.body.error.message);
 });
