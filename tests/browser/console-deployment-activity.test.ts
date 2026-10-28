@@ -24,6 +24,7 @@ async function deploymentFixture(t: TestContext) {
   let cleanupKey = "";
   let revisionId = "";
   const control = {
+    // The work record stays unreadable to every read until cleared (see unavailableDuring).
     unavailable: false,
     claimed: false,
     succeeded: false,
@@ -63,7 +64,6 @@ async function deploymentFixture(t: TestContext) {
               }
               assert.equal(record?.state, "queued");
               if (control.unavailable) {
-                control.unavailable = false;
                 return undefined;
               }
               if (control.failed) {
@@ -113,7 +113,18 @@ async function deploymentFixture(t: TestContext) {
   workKey = `agent_revision:${revisionId}:reconcile`;
   cleanupKey = `agent_revision:${revisionId}:repository_cleanup:retire:${createHash("sha256").update(revisionId, "utf8").digest("hex")}`;
   const url = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`;
-  return { fixture, namespace, agent, revisionId, url, control };
+  // An outage lasts for the whole read under test. A Refresh also lists the versions, and that
+  // list reads the same work record concurrently, so a one-shot failure could reach the list
+  // first and leave the deployment read a 200 (finding 2794).
+  async function unavailableDuring(read: () => Promise<void>) {
+    control.unavailable = true;
+    try {
+      await read();
+    } finally {
+      control.unavailable = false;
+    }
+  }
+  return { fixture, namespace, agent, revisionId, url, control, unavailableDuring };
 }
 
 for (const viewport of [
@@ -124,7 +135,8 @@ for (const viewport of [
     `deployment activity preserves reading position and reveals final refusal at ${viewport.width}`,
     { timeout: 60_000 },
     async (t) => {
-      const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+      const { fixture, namespace, agent, revisionId, url, control, unavailableDuring } =
+        await deploymentFixture(t);
       const { page } = await newPage(t, fixture, { context: { viewport } });
       const region = page.getByRole("region", { name: "Deployment activity" });
       const details = region.locator("details");
@@ -248,8 +260,7 @@ for (const viewport of [
       const foldedPosition = await readerPosition();
       assert.equal(foldedPosition.focused && foldedPosition.hit, true);
       assert.ok(foldedPosition.top >= 0 && foldedPosition.bottom <= foldedPosition.viewport);
-      control.unavailable = true;
-      await poll(503);
+      await unavailableDuring(() => poll(503));
       assert.equal(await isOpen(), false);
       const transientPosition = await readerPosition();
       assert.equal(transientPosition.focused && transientPosition.hit, true);
@@ -306,8 +317,7 @@ for (const viewport of [
         const pending = control.claimed ? "running" : "queued";
         await poll(pending);
         await readerStays("unchanged/queued poll");
-        control.unavailable = true;
-        await poll(503);
+        await unavailableDuring(() => poll(503));
         await readerStays("transient failure");
         await poll(pending);
         await readerStays("recovery");
@@ -346,10 +356,11 @@ for (const viewport of [
         if (await isOpen()) {
           await details.locator("summary").click();
         }
-        control.unavailable = true;
-        const failed = next();
-        await refresh.click();
-        await received(failed, 503);
+        await unavailableDuring(async () => {
+          const failed = next();
+          await refresh.click();
+          await received(failed, 503);
+        });
         await page.waitForFunction(
           () => document.querySelector<HTMLDetailsElement>(".deployment-status > details")?.open,
         );
@@ -362,7 +373,8 @@ for (const viewport of [
 // A failed deploy keeps polling while its retire cleanup is pending. Its cleanup's progress and a
 // recovered read are routine: the reader's fold and focus stay; the cleanup's result reveals.
 test("a pending cleanup after a final outcome keeps the reader's fold until it ends", async (t) => {
-  const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+  const { fixture, namespace, agent, revisionId, url, control, unavailableDuring } =
+    await deploymentFixture(t);
   control.failed = true;
   control.cleanup = "queued";
   const { page } = await newPage(t, fixture);
@@ -434,8 +446,7 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
   }
   await poll("queued");
   await readerStays("unchanged poll");
-  control.unavailable = true;
-  await poll(null);
+  await unavailableDuring(() => poll(null));
   await readerStays("transient failure");
   await poll("queued");
   await readerStays("recovery");

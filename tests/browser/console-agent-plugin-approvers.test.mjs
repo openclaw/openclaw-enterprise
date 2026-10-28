@@ -79,6 +79,10 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   }
   await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
   await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
+  assert.equal(await dialog.getByLabel("Google account", { exact: true }).inputValue(), "");
+  await dialog
+    .getByRole("option", { name: "Install without an account" })
+    .waitFor({ state: "attached" });
   await checkPolicySupport("Google Workspace");
   async function save(enabled) {
     await dialog.getByRole("button", { name: "Done", exact: true }).click();

@@ -22231,6 +22231,35 @@
                           "required": ["agent", "plugin", "tools"],
                           "type": "object"
                         },
+                        "credentialSlots": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": { "type": "string" },
+                              "label": { "type": "string" },
+                              "pluginId": { "type": "string" },
+                              "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                              "sources": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "name": { "type": "string" }
+                                  },
+                                  "required": ["id", "name"],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": ["pluginId", "releaseSha256", "id", "label", "sources"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "discoveryCredential": {
                           "anyOf": [
                             { "const": "required", "type": "string" },

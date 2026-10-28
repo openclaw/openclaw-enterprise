@@ -112,6 +112,7 @@
     "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
+    "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
@@ -543,6 +544,9 @@
     },
     {
       "path": "tests/integration/egress-stock-online-authority.test.mjs"
+    },
+    {
+      "path": "tests/integration/managed-plugin-request-authority.test.ts"
     },
     {
       "path": "tests/integration/egress-stock-online-git-authority.test.mjs",

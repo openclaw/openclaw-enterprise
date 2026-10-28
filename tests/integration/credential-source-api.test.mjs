@@ -9,8 +9,11 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { storedCredentialSourceConfig } from "../helpers/refusal-text.mjs";
@@ -24,6 +27,7 @@ const SECRET_FIELD = {
 };
 const TOOL_TYPES = Object.keys(SECRET_FIELD);
 const OAUTH2_TYPES = TOOL_TYPES.filter((type) => type !== "bearer-token");
+
 const TOOL = { host: "tools.example.test", env_var: "TOOL_TOKEN" };
 const ISSUER = { ...TOOL, token_url: "https://issuer.example.test/token", client_id: "occ" };
 const toolConfig = (type, config) => ({ ...(type === "bearer-token" ? TOOL : ISSUER), ...config });
@@ -73,7 +77,7 @@ const checkedAt = (rows, point) =>
 // Fastify app, authentication, IAM, OCC transactions, and OpenShell Driver.
 async function fixture(
   t,
-  { toolSources = false, gateway = { endpoint: "http://127.0.0.1:1" } } = {},
+  { toolSources = false, persistedIam = false, gateway = { endpoint: "http://127.0.0.1:1" } } = {},
 ) {
   const providers = new Map();
   const profiles = new Map();
@@ -149,6 +153,7 @@ async function fixture(
   const secretDriver = createTestSecretDriver();
   const app = await createConsoleAppFixture(t, {
     now: () => new Date(now),
+    ...(persistedIam ? { provisionedPeople: [] } : {}),
     computeDriver,
     secretDriver,
   });
@@ -237,7 +242,7 @@ async function fixture(
       const stored = {
         id: "cs_" + randomUUID(),
         namespaceId: namespace.id,
-        name: "stored",
+        name: `Stored ${type}`,
         type,
         config: type === "openai" ? config : toolConfig(type, config),
         secrets:
@@ -290,6 +295,120 @@ async function fixture(
   };
 }
 
+test("the saved Agent picker and binding use the granted source and the same reviewed release", async (t) => {
+  const f = await fixture(t, { toolSources: true, persistedIam: true });
+  const { stored: google } = await f.seedStoredRecord("oauth2-refresh-token", {
+    token_url: "https://oauth2.googleapis.com/token",
+    host: "gmail.googleapis.com",
+    path: "/gmail/v1/users/me/messages",
+    scope: "https://www.googleapis.com/auth/gmail.readonly",
+    env_var: "GOG_ACCESS_TOKEN",
+  });
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("plugin-compute"),
+  ]) {
+    f.controller.registerDriver(driver);
+    f.controller.selectDriver(driver.capability, driver.id);
+  }
+  const { stored: other } = await f.seedStoredRecord("bearer-token", {
+    host: "tools.example.test",
+    path: "/lookup",
+    env_var: "LOOKUP_TOKEN",
+  });
+  const { stored: sameHost } = await f.seedStoredRecord("oauth2-client-credentials", {
+    host: "gmail.googleapis.com",
+    port: "8443",
+    path: "/different-path",
+    env_var: "ANOTHER_TOKEN",
+  });
+  const agent = await f.createAgent(
+    f.namespace.id,
+    "Google Agent",
+    createHarnessConfiguration("openclaw", "gpt-5"),
+    {
+      harnessAuth: null,
+      executionMode: "dedicated",
+      credentialSources: [{ sourceId: google.id }, { sourceId: other.id }],
+    },
+  );
+  const path = `/namespaces/${f.namespace.id}/agents/${agent.id}`;
+  const slots = async () =>
+    (await f.request("GET", `${path}/plugins/capabilities`)).data.credentialSlots;
+  assert.deepEqual((await slots())[0].sources, []);
+  const iam = `/namespaces/${f.namespace.id}/iam`;
+  const role = await f.request("POST", `${iam}/roles`, {
+    body: {
+      name: "Read Gmail",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  for (const source of [google, other, sameHost]) {
+    const grant = await f.request("POST", `${iam}/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: role.data.id,
+        resourceKind: "credential_source",
+        resourceId: source.id,
+      },
+    });
+    assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  }
+  const [slot] = await slots();
+  assert.deepEqual(slot.sources, [{ id: google.id, name: google.name }]);
+  const save = (sourceId, releaseSha256) =>
+    f.request("PATCH", path, {
+      body: {
+        configurationId: agent.configurationId,
+        plugins: {
+          [slot.pluginId]: {
+            enabled: true,
+            driverPolicy: { releaseSha256, credentials: { [slot.id]: sourceId } },
+          },
+        },
+      },
+    });
+  const stale = await save(google.id, "0".repeat(64));
+  assert.equal(stale.status, 400, JSON.stringify(stale.body));
+  const otherAccount = await save("cs_" + randomUUID(), slot.releaseSha256);
+  assert.equal(otherAccount.status, 400, JSON.stringify(otherAccount.body));
+  const unsupported = await save(google.id, slot.releaseSha256);
+  assert.equal(unsupported.status, 400, JSON.stringify(unsupported.body));
+  assert.match(unsupported.body.error.message, /OpenShell Sandbox and Credential Gateway/);
+  const sandbox = {
+    id: "openshell-placement",
+    capability: "sandbox",
+    implementation: "openshell",
+    facets: ["networking", "filesystem", "process"],
+    async cleanup() {},
+  };
+  f.controller.registerDriver(sandbox);
+  f.controller.selectDriver("sandbox", sandbox.id);
+  const saved = await save(google.id, slot.releaseSha256);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(saved.data.plugins[slot.pluginId].driverPolicy, {
+    releaseSha256: slot.releaseSha256,
+    credentials: { account: google.id },
+  });
+  const conflicting = await f.request("PATCH", path, {
+    body: {
+      configurationId: agent.configurationId,
+      credentialSources: [google, other, sameHost].map(({ id }) => ({ sourceId: id })),
+    },
+  });
+  assert.equal(conflicting.status, 400, JSON.stringify(conflicting.body));
+  assert.match(conflicting.body.error.message, /another attached credential.*guarded Google host/);
+  const clear = await f.request("PATCH", path, {
+    body: {
+      configurationId: agent.configurationId,
+      plugins: { [slot.pluginId]: { enabled: false } },
+    },
+  });
+  assert.equal(clear.status, 200, JSON.stringify(clear.body));
+  assert.deepEqual(clear.data.credentialSources, [{ sourceId: google.id }, { sourceId: other.id }]);
+});
 test("Installation discovery serializes OpenShell model authentication and refresh source metadata", async (t) => {
   const f = await fixture(t, { toolSources: true });
   // The real Driver advertises model login and OAuth2 refresh sources. The Installation
