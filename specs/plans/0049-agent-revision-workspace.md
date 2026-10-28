@@ -1,7 +1,7 @@
 # Agent revision workspace implementation plan
 
 - **ID:** TASK-0049
-- **Delivery status:** In progress
+- **Delivery status:** Completed
 - **Owner:** Console contributors
 - **Authority:** [Console reference](../../docs/reference/console/versions-and-channel-drafts.md)
 - **Source baseline:** `222d2266842db457415e146b70a30abf430480aa`
@@ -68,16 +68,16 @@ instructions, Console reference, and `docs/flows/platform-console/agent-editing.
 - [x] Update the owning reference and flow. Run docs checks and the flow validator.
 - [x] Build Storybook from changed source and inspect desktop and mobile.
       Capture screenshots and an interaction video outside the checkout.
-- [ ] Run lint, formatting, typecheck, workspace isolation, and proportional
+- [x] Run lint, formatting, typecheck, workspace isolation, and proportional
       browser checks. Request independent review and address material findings.
 
 ## Task 3: Deploy into local Kubernetes development
 
 - [x] Inspect retained Podman/k3d state and choose the existing suitable local
       environment. Preserve unrelated services, kubeconfig, and contexts.
-- [ ] Build a uniquely tagged controller image from the changed checkout, import
+- [x] Build a uniquely tagged controller image from the changed checkout, import
       it into the selected cluster, and update only its OCE control-plane release.
-- [ ] Confirm controller and worker readiness, Kubernetes Compute selection,
+- [x] Confirm controller and worker readiness, Kubernetes Compute selection,
       and the changed Console through the real deployment. Record its loopback URL.
 
 If startup requires interrupting unrelated services, obtain the user's choice
@@ -92,8 +92,9 @@ they do not establish a model turn unless that workflow is exercised.
 
 The implementation, current reference, flow, and rebuilt Storybook are complete.
 Desktop, mobile, empty, read-only, missing-credential, loading, unavailable, and
-long-history previews were inspected. Screenshots and a recorded walkthrough
-remain outside the checkout; upload and independent review are pending.
+long-history previews were inspected. Screenshots and a recorded walkthrough remain outside the checkout and are
+uploaded to an [unlisted evidence gist](https://gist.github.com/russellb/a3c737081cd2b03d84946cf68e4e0a2b).
+The captures identify their tested revision and simulated Storybook boundary.
 
 The first affected-browser run passed 542 of 568 cases. Twenty-two failures
 needed navigation or selector updates for the new layout; four timing failures
@@ -102,11 +103,31 @@ responsive checks. New selection and delayed failure-badge regressions passed;
 the latter first failed with a Historical badge beside a Failed notice.
 Typecheck, lint, formatting, workspace isolation, and design-token checks pass.
 
+Independent shared autoreview assessed the implementation at `7c99f4bfa` through
+P2 and returned two findings. Desktop pagination lost focus after its final page;
+a regression reproduced this and passed after focus returned to the visible
+selected row. Fresh draft-only-tab transitions already passed real browser
+checks; destination mapping is now explicit. Eight focused review checks pass
+without skips. The reviewer did not execute tests, and its original findings
+report remains unchanged; these are the subsequent verification results.
+
 The retained `oce-observability-full` cluster now has ready API, worker,
 PostgreSQL, and Console proxy workloads and selects Kubernetes Compute. The
 dedicated alternative VM remains stopped because another VM serves unrelated
-workloads. A full controller image build and upgrade are in progress. Its
-Console uses reserved loopback port 3302; final deployment verification is pending.
+workloads. The final controller image is deployed by Helm revision 5, with API and worker
+ready and 64 canonical migrations complete. Its immutable digest is
+`sha256:2a9b63d212a8ad0559002e6d3ef1244aa34b6d2510e38fffaf80bf2b26319b80`.
+The Docker source snapshot is
+`8c8834279a21b986e6abe7f7c3990c3e0bd372842d9dccef25641f77f23d9e91`.
+
+Real browser sign-in and authenticated API reads pass at loopback port 3302.
+Served CSS and revision JavaScript match the checked source byte for byte.
+The real `revision-workspace-dev` Namespace is ready, and its
+**Revision workspace demo** draft supports desktop/mobile navigation and opening
+and canceling the editor. The old failed default Namespace and its Presets are
+preserved. This verifies the deployed control plane and Kubernetes Compute
+selection; no model credentials, Agent deployment, or model turn were requested
+or exercised.
 
 ## Manual Notes
 

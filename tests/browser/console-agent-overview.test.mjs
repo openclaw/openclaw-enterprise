@@ -187,6 +187,36 @@ test("Revision workspace keeps the selected section and exact snapshot in its co
   );
 });
 
+for (const tab of ["repositories", "credentials"]) {
+  test(`Leaving draft ${tab} opens an unvisited revision quietly on Configuration`, async (t) => {
+    const { fixture, namespace, agent, page } = await agentPage(t, `Fresh ${tab}`, `Fresh ${tab}`);
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    // Start at the draft-only section so the revision destination has no retained page that
+    // could hide an unsupported-tab notice from the first snapshot load.
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", tab));
+    await page.locator(settledView).waitFor();
+    await page
+      .getByRole("tab", {
+        name: tab === "repositories" ? "Repositories" : "Credentials",
+        exact: true,
+        selected: true,
+      })
+      .waitFor();
+    await chooseRevision(page, revision.id);
+    await page.waitForURL(
+      (url) =>
+        url.searchParams.get("revision") === revision.id &&
+        url.searchParams.get("tab") === "configuration",
+    );
+    await page
+      .locator(settledView)
+      .getByRole("heading", { name: "Revision v1", exact: true })
+      .waitFor();
+    await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+    assert.equal(await page.locator(".agent-tab-notice").isVisible(), false);
+  });
+}
+
 async function agentPage(t, namespaceName, agentName, fixtureOptions) {
   const { fixture, namespace } = await readyNamespace(t, namespaceName, fixtureOptions);
   const agent = await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
@@ -1234,35 +1264,48 @@ test("A failed version raises no recovery while the current version is on no loa
   assert.equal(await page.getByText("v2 deployment failed").count(), 0);
 });
 
-// A viewed version on no loaded page shows on its own below the list. When Load older versions
-// loads the page that holds it, focus goes to the first newly listed version, not the viewed
-// one that was already shown (finding 2115).
-test("Load older versions preserves the viewed version and returns focus to its picker", async (t) => {
-  const { fixture, namespace, agent, page } = await agentPage(t, "Paged viewed", "Paged viewed");
-  await page.setViewportSize({ width: 900, height: 900 });
-  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
-  await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
-  await routeOneVersionPerPage(page, fixture, namespace, agent);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration"),
-  );
-  const chooser = page.getByLabel("Viewing version", { exact: true });
-  await chooser.waitFor({ state: "attached" });
-  assert.equal(await chooser.inputValue(), first.revision.id);
-  const older = page.getByRole("button", { name: "Load older versions", exact: true });
-  await older.click();
-  await chooser
-    .locator("option")
-    .filter({ hasText: /^v2(?: ·|$)/ })
-    .waitFor({ state: "attached" });
-  assert.equal(await chooser.inputValue(), first.revision.id);
-  await older.waitFor({ state: "detached" });
-  assert.equal(await chooser.evaluate((node) => node === globalThis.document.activeElement), true);
-  assert.equal(await chooser.inputValue(), first.revision.id);
-});
+// A viewed version outside the loaded history remains selected while paging. When the final
+// page removes Load older versions, focus returns to the visible native or sidebar control.
+for (const width of [900, 1440]) {
+  test(`Load older versions preserves the viewed version and returns focus to its picker at ${width}px`, async (t) => {
+    const { fixture, namespace, agent, page } = await agentPage(
+      t,
+      `Paged viewed ${width}`,
+      "Paged viewed",
+    );
+    await page.setViewportSize({ width, height: 900 });
+    const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+    await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
+    await routeOneVersionPerPage(page, fixture, namespace, agent);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration"),
+    );
+    const chooser = page.getByLabel("Viewing version", { exact: true });
+    await chooser.waitFor({ state: "attached" });
+    assert.equal(await chooser.inputValue(), first.revision.id);
+    const older = page.getByRole("button", { name: "Load older versions", exact: true });
+    await older.click();
+    await chooser
+      .locator("option")
+      .filter({ hasText: /^v2(?: ·|$)/ })
+      .waitFor({ state: "attached" });
+    assert.equal(await chooser.inputValue(), first.revision.id);
+    await older.waitFor({ state: "detached" });
+    const visibleControl =
+      width > 1100
+        ? page.locator(`.agent-revision-list [data-revision="${first.revision.id}"]`)
+        : chooser;
+    assert.equal(await visibleControl.isVisible(), true);
+    assert.equal(
+      await visibleControl.evaluate((node) => node === globalThis.document.activeElement),
+      true,
+    );
+    assert.equal(await chooser.inputValue(), first.revision.id);
+  });
+}
 
 // A succeeded deployment becomes current, so a different current version on no loaded page may
 // be a newer one this reader cannot read; the summary still read "v2 · Completed" with no hint

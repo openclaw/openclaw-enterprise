@@ -2069,7 +2069,8 @@ export async function renderAgentDetail(
   function revisionTab(revision: string) {
     if (
       ["workspace", "access"].includes(selectedTab) ||
-      (revision === "draft" && selectedTab === "logs")
+      (revision === "draft" && selectedTab === "logs") ||
+      (revision !== "draft" && ["repositories", "credentials"].includes(selectedTab))
     ) {
       return "configuration";
     }
@@ -2213,7 +2214,16 @@ export async function renderAgentDetail(
       const row = [...history.querySelectorAll<HTMLButtonElement>("[data-revision]")].find(
         (control) => control.dataset.revision === focus,
       );
-      (focus === "older" && older ? older : (row ?? chooser)).focus({ preventScroll: true });
+      const selectedRow =
+        history.querySelector<HTMLButtonElement>('[aria-current="true"]') ??
+        history.querySelector<HTMLButtonElement>("button");
+      // The last paging button disappears; desktop history has no visible native chooser.
+      const fallback = chooser.getClientRects().length > 0 ? chooser : selectedRow;
+      const control = focus === "older" && older ? older : (row ?? fallback);
+      control?.focus({ preventScroll: true });
+      if (control && control === selectedRow) {
+        control.scrollIntoView({ block: "nearest" });
+      }
     }
   }
 
