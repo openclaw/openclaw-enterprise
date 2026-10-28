@@ -1720,6 +1720,7 @@ async function protectedOpenShellComposition(
     preview = false,
     gatewayVersion = "0.1.5",
     harness = "codex",
+    protectedExecution = true,
   } = {},
 ) {
   class ProtectedGitComputeDriver extends OpenShellGitComputeDriver {
@@ -1755,7 +1756,7 @@ async function protectedOpenShellComposition(
     (installationAccess || harness === "openclaw") &&
     new OpenShellGitRuntime(
       {
-        protectedExecution: true,
+        protectedExecution,
         ...(preview && { observedHookPreviewWorkspace: "preview-1" }),
       },
       createGitHubRepositoryDeliveryResolver(
@@ -1820,9 +1821,11 @@ async function protectedOpenShellComposition(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
     { capabilities: { sandbox, credential_proxy: proxy } },
   );
-  f.controller.registerDriver(owner);
+  f.controller.registerDriver(protectedExecution ? owner : sandbox);
   f.controller.selectDriver("sandbox", sandbox.id);
-  f.controller.selectDriver("credential_proxy", proxy.id);
+  if (protectedExecution) {
+    f.controller.selectDriver("credential_proxy", proxy.id);
+  }
   if (credentialGateway || harness === "openclaw") {
     const catalog = new OpenShellCredentialGatewayDriver(
       { binaries: [harness === "openclaw" ? "/usr/bin/node" : "/usr/bin/codex"] },
@@ -1836,7 +1839,7 @@ async function protectedOpenShellComposition(
       // supplied: no Kubernetes provisioning or model execution is claimed.
       const compute = createTestKubernetesComputeDriver("native-repository-admission", {
         gatewayRuntime: true,
-        protectedDriver: owner,
+        ...(protectedExecution ? { protectedDriver: owner } : { sandboxDriver: sandbox }),
         credentialGatewayDriver: catalog,
       });
       compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
@@ -1977,6 +1980,75 @@ async function nativeOpenShellAgent(t, bindings, options) {
   });
   return { ...f, agent };
 }
+
+test("Unprotected OpenShell refuses native OpenClaw repository bindings on save and deploy", async (t) => {
+  // A Sandbox with repository transport is not a protected composition. Native
+  // Git needs the paired Proxy release; accepting this configuration otherwise
+  // defers a known refusal until worker provisioning. Use real Compute admission
+  // for create, update, and an Agent persisted before this guard was restored.
+  const f = await nativeOpenShellAgent(t, [], { protectedExecution: false });
+  const path = f.collection + "/" + f.agent.id;
+  const before = await f.request("GET", f.collection);
+  const pendingBefore = f.state.pendingOperations();
+  for (const [method, target, input] of [
+    [
+      "POST",
+      f.collection,
+      {
+        name: "Unsupported native Git",
+        configurationId: f.configuration.id,
+        executionMode: "dedicated",
+        harnessAuth: f.agent.harnessAuth,
+        credentialSources: f.agent.credentialSources,
+        repositoryBindings: selection,
+      },
+    ],
+    ["PATCH", path, { configurationId: f.configuration.id, repositoryBindings: selection }],
+  ]) {
+    const response = await f.request(method, target, input);
+    assert.equal(response.status, 409, JSON.stringify(response));
+    assert.equal(response.error.code, "RESOURCE_CONFLICT");
+    assert.equal(response.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
+  }
+  assert.deepEqual((await f.request("GET", f.collection)).data, before.data);
+  assert.deepEqual(f.state.pendingOperations(), pendingBefore);
+
+  // Simulate the supported persisted state from before this admission repair,
+  // without bypassing the production deployment validator.
+  await f.state.transact((unit) =>
+    unit.agents.updateConfiguration(
+      f.namespace.id,
+      f.agent.id,
+      f.configuration.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      selection,
+    ),
+  );
+  const stored = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
+  const response = await f.request("POST", path + "/deploy");
+  assert.equal(response.status, 409, JSON.stringify(response));
+  assert.equal(response.error.code, "RESOURCE_CONFLICT");
+  assert.equal(response.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
+  assert.deepEqual((await f.request("GET", path + "/revisions")).data, []);
+  assert.deepEqual(f.state.pendingOperations(), pendingBefore);
+  const after = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
+  assert.equal(after.desiredRuntimeState, stored.desiredRuntimeState);
+  assert.equal(after.activeRevisionId, stored.activeRevisionId);
+  assert.equal(f.gatewayReads(), 0, "unsupported composition needs no gateway read");
+  const outsider = await f.requestWithoutGrants(f.app);
+  for (const [method, suffix, body] of [
+    ["PATCH", "", { configurationId: f.configuration.id, repositoryBindings: selection }],
+    ["POST", "/deploy", undefined],
+  ]) {
+    await assertSameAnswer(
+      (id) => outsider(method, f.collection + "/" + id + suffix, body),
+      [f.agent.id, "agt_" + randomUUID()],
+    );
+  }
+});
 
 test("Dedicated native OpenClaw applies the OpenShell profile gate before creating deployment work", async (t) => {
   const installation = [{ repositoryRef: "installation", profile: "github-installation" }];

@@ -4495,7 +4495,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         harness.id === "openclaw" &&
         harness.mode === "embedded") ||
       (harness.id === "codex" && harness.mode === "dedicated") ||
-      (this.sandboxDriver?.repositoryAccess &&
+      (this.protectedExecution?.sandbox.repositoryAccess &&
         harness.id === "openclaw" &&
         harness.mode === "dedicated")
     )) {

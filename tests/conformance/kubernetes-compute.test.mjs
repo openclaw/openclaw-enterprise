@@ -305,16 +305,27 @@ test("repository capability admits only configured Compute-owned native topologi
     capability: "sandbox",
     repositoryAccess: {},
   };
-  const protectedDriver = new KubernetesComputeDriver(configured, { sandboxDriver });
+  const unprotectedDriver = new KubernetesComputeDriver(configured, { sandboxDriver });
+  assert.throws(
+    () =>
+      unprotectedDriver.validateRepositoryCredentials(
+        { id: "openclaw", mode: "dedicated", version: "1.0.0" },
+        sandboxDriver.id,
+      ),
+    {
+      message:
+        "Repository credentials require an embedded OpenClaw or dedicated Codex Kubernetes runtime.",
+    },
+  );
   assert.doesNotThrow(() =>
-    protectedDriver.validateRepositoryCredentials(
-      { id: "openclaw", mode: "dedicated", version: "1.0.0" },
+    unprotectedDriver.validateRepositoryCredentials(
+      { id: "codex", mode: "dedicated", version: "1.0.0" },
       sandboxDriver.id,
     ),
   );
   assert.throws(
     () =>
-      protectedDriver.validateRepositoryCredentials(
+      unprotectedDriver.validateRepositoryCredentials(
         { id: "openclaw", mode: "dedicated", version: "1.0.0" },
         "another-sandbox",
       ),

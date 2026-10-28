@@ -485,7 +485,8 @@
     {
       "path": "tests/integration/repository-credentials-admission.test.mjs",
       "expectedTests": [
-        "Dedicated native OpenClaw applies the OpenShell profile gate before creating deployment work"
+        "Dedicated native OpenClaw applies the OpenShell profile gate before creating deployment work",
+        "Unprotected OpenShell refuses native OpenClaw repository bindings on save and deploy"
       ]
     },
     {
