@@ -61,6 +61,14 @@ export const CredentialsSecretListDenied = {
   ...story("credentialsSecretListDenied"),
   name: "Secret list denied",
 };
+export const CredentialsSecretListRefresh = {
+  ...story("credentialsSecretListRefresh"),
+  name: "Refresh Secret list without saving",
+};
+export const CredentialsSecretListRetry = {
+  ...story("credentialsSecretListRetry"),
+  name: "Retry Secret list without losing a choice",
+};
 export const CredentialsSecretListScrolling = {
   ...story("credentialsSecretListScrolling"),
   name: "Scrolling Secret list",

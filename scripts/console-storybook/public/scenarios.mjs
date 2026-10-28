@@ -7496,6 +7496,47 @@ export const scenarios = {
     description:
       "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
   },
+  credentialsSecretListRefresh: {
+    group: "Components/Credentials",
+    name: "Refresh Secret list without saving",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    // Setup makes three exact collection reads; the permission endpoint is separate.
+    rules: [{ path: presetSecretsPath, method: "GET", skip: 3, once: true, delayMs: 3000 }],
+    description:
+      "The first explicit refresh waits three seconds, preserving query, focus and the staged app token. Save channel Secrets applies the choices.",
+    steps: [
+      "Type a nonmatching name in Slack bot token. ArrowDown highlights Create; a second ArrowDown highlights Refresh Secret list. Press Enter.",
+      "Loading Secrets is disabled during the three-second read. Check that query, focus and staged app token remain. Afterward, choose a Secret; only Save channel Secrets saves bindings. Existing access restrictions still apply.",
+    ],
+    gap: "The delay is simulated. Real two-tab persistence, races and grants require the browser test; no provider readiness is established.",
+  },
+  credentialsSecretListRetry: {
+    group: "Components/Credentials",
+    name: "Retry Secret list without losing a choice",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    // Fail the first explicit collection read, after the three successful setup reads.
+    rules: [
+      {
+        path: presetSecretsPath,
+        method: "GET",
+        skip: 3,
+        once: true,
+        status: 503,
+        code: "UNAVAILABLE",
+      },
+    ],
+    description:
+      "The first explicit refresh fails; retry succeeds without clearing the query or staged app token, or saving bindings.",
+    steps: [
+      "Type a nonmatching name in Slack bot token. Press ArrowDown twice to pass Create and highlight Refresh Secret list, then Enter. Check Secrets unavailable, retained query/focus and the staged app token.",
+      "Choose Refresh Secret list again. The read succeeds with query, focus and staged app token intact. Clear the query to choose a Secret; Save channel Secrets alone persists the choices.",
+    ],
+    gap: "The one-shot failure is simulated. Real staged-choice preservation, late responses and grants require the browser test; no provider readiness is established.",
+  },
   credentialsSecretListScrolling: {
     group: "Components/Credentials",
     name: "Scrolling Secret list",

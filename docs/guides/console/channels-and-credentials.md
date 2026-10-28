@@ -53,6 +53,11 @@ See [Slack setup](../integrations/slack.md) for credentials and policy details.
 In any Secret picker, typing a Secret's exact name selects it when you press
 Enter or leave the field, as choosing its suggestion does; other text restores
 the bound Secret.
+Choose **Refresh Secret list** to find a Secret created in another tab or retry a
+failed list read. It preserves your search, focus, and staged choices without saving.
+The highlighted Secret stays highlighted by identity; if removed, choose again before
+pressing Enter. Refresh is unavailable while a read is pending; repeated activation is not queued.
+Existing access restrictions still apply.
 
 **Create Secret** stores the value immediately. Cancelling the channel drawer
 discards token selections but does not delete that Namespace Secret. The modal
