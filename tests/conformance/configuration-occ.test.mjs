@@ -114,7 +114,7 @@ async function fixture(options = {}) {
         providers: { teamstore: { source: "store" } },
         defaults: { store: "teamstore" },
       },
-      agents: { defaults: { sandbox: { mode: "all" } } },
+      agents: { defaults: { sandbox: { scope: "agent" } } },
       plugins: { entries: { example: { enabled: true, regions: ["west"], retryCount: 2 } } },
     },
   });
@@ -1174,10 +1174,12 @@ test("Agent deployment keeps the display name its Configuration sets", async () 
 
 // OpenClaw's default personal security preset fills unset settings: it lets another participant
 // steer a running turn under the first requester's authority and lets apply_patch write outside
-// the workspace. Admission keeps apply_patch in the workspace in the document every Compute Driver
-// renders, for embedded and dedicated Gateways, and leaves steering unset so the preset's default
-// (on) applies. The Configuration's value wins for both, so a strict Configuration stays strict.
-test("deployment admission keeps apply_patch in the workspace and leaves steering to the Configuration", async () => {
+// the workspace; its corporate preset turns on OpenClaw's Docker sandbox, which the OCE runtime
+// cannot run (finding 2767). Admission keeps apply_patch in the workspace and the sandbox off in
+// the document every Compute Driver renders, for embedded and dedicated Gateways, and leaves
+// steering unset so the preset's default (on) applies. The Configuration's value wins, so a strict
+// Configuration stays strict.
+test("deployment admission keeps apply_patch in the workspace, the sandbox off and steering to the Configuration", async () => {
   const { agent, configuration, controller, namespace } = await fixture();
   const codexValues = {
     agents: {
@@ -1218,6 +1220,16 @@ test("deployment admission keeps apply_patch in the workspace and leaves steerin
     assert.equal(filled.harness.mode, executionMode);
     assert.deepEqual(filled.configuration.messages, { queue: { mode: "collect" } });
     assert.deepEqual(filled.configuration.tools, { exec: { applyPatch: { workspaceOnly: true } } });
+    // The sandbox settings beside an unset mode are kept.
+    assert.deepEqual(filled.configuration.agents.defaults.sandbox, {
+      ...base.agents.defaults.sandbox,
+      mode: "off",
+    });
+    // The corporate preset fills only what is still unset, so the Gateway runs without its
+    // sandbox.
+    const corporate = await deploy({ ...base, security: { preset: "corporate" } }, executionMode);
+    assert.deepEqual(corporate.configuration.security, { preset: "corporate" });
+    assert.equal(corporate.configuration.agents.defaults.sandbox.mode, "off");
     // Explicit values of either kind reach the Gateway as written: an explicit steering `false`
     // (strict) is kept, not replaced by the preset's default.
     for (const [allowCollaborativeSteering, workspaceOnly] of [

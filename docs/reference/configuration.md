@@ -111,7 +111,7 @@ Agent Configuration. A representative request body is:
 {
   "kind": "agent",
   "values": {
-    "agents": { "defaults": { "sandbox": { "mode": "all" } } }
+    "agents": { "defaults": { "skipBootstrap": true } }
   }
 }
 ```
@@ -131,7 +131,7 @@ requires the replacement `values` and may also set `secretBindings` and
 ```json
 {
   "values": {
-    "agents": { "defaults": { "sandbox": { "mode": "all" } } }
+    "agents": { "defaults": { "skipBootstrap": false } }
   },
   "expectedGeneration": 1
 }
@@ -191,8 +191,11 @@ Every write and Preset save also refuses, with the `400` every deployment gives,
 an `agents.defaults.model` or `agents.entries.<id>.model` primary or fallback
 that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included),
 fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
-and `agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
-optional file list, naming the setting. A Preset value that waits on a variable
+`agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
+optional file list, and an `agents.defaults.sandbox.mode` or
+`agents.entries.<id>.sandbox.mode` other than `off`, naming the setting. OCE
+isolates each Agent in its own runtime; OpenClaw's sandbox needs Docker or
+another backend that runtime does not have. A Preset value that waits on a variable
 is checked as far as its written text goes, and in full once filled. A
 Configuration saved before these checks still reads; deployment refuses it, and
 only a write that keeps the value is refused. Agent
@@ -232,7 +235,9 @@ Configuration and its generation remain unchanged. The snapshot adds the
 [Agent display name](agents/deployment.md#versions-and-deployment) to that document;
 its metadata names the source generation. Admission also sets
 `tools.exec.applyPatch.workspaceOnly: true` where the document leaves it
-unset, as before OpenClaw's `personal` security preset. Other unset settings
+unset, as before OpenClaw's `personal` security preset, and
+`agents.defaults.sandbox.mode: "off"`, so `security.preset: corporate` does not
+turn on OpenClaw's sandbox. The saved Configuration keeps neither. Other unset settings
 keep the preset's defaults: `messages.queue.allowCollaborativeSteering` is on,
 so other participants can steer a running turn, which keeps its first
 requester's permissions.

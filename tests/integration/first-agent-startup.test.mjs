@@ -201,10 +201,14 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
   // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
-  // the Gateway security default the Configuration leaves unset (apply_patch in the workspace).
+  // the Gateway security defaults the Configuration leaves unset (apply_patch in the workspace,
+  // OpenClaw's sandbox off).
   const values = (sandbox, approvalsReviewer) => ({
     ...settings(sandbox, approvalsReviewer),
-    agents: { entries: { main: { identity: { name: record.name } } } },
+    agents: {
+      defaults: { sandbox: { mode: "off" } },
+      entries: { main: { identity: { name: record.name } } },
+    },
     tools: { exec: { applyPatch: { workspaceOnly: true } } },
   });
   const configured = settings("read-only");

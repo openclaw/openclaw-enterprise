@@ -16,11 +16,16 @@ function withUnset(parent, [key, ...rest], value) {
   return { ...parent, [key]: withUnset(current, rest, value) };
 }
 
-// Deployment admission keeps OpenClaw's earlier value for one setting its personal security preset
-// would otherwise fill: apply_patch stays in the workspace. Like the preset, it fills only an unset
-// setting. Collaborative steering keeps the preset's default (on) unless the Configuration sets it.
+// Deployment admission fills two settings ahead of OpenClaw's security preset, which fills only
+// what is still unset: apply_patch stays in the workspace (OpenClaw's earlier value), and OpenClaw's
+// own sandbox stays off (its Docker backend cannot run in the OCE runtime, finding 2767).
+// Collaborative steering keeps the preset's default (on) unless the Configuration sets it.
 export function withGatewaySecurityDefaults(values) {
-  return withUnset(values, ["tools", "exec", "applyPatch", "workspaceOnly"], true);
+  return withUnset(
+    withUnset(values, ["tools", "exec", "applyPatch", "workspaceOnly"], true),
+    ["agents", "defaults", "sandbox", "mode"],
+    "off",
+  );
 }
 
 // The document deployment admission freezes into an AgentRevision when OCC owns native logging.
