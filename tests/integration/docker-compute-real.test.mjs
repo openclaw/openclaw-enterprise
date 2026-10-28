@@ -38,7 +38,7 @@ const selected =
 const requiresDockerCompute = {
   skip: selected
     ? false
-    : "Set OCC_TEST_DOCKER_COMPUTE_REAL=1 or OCC_TEST_PODMAN_COMPUTE_REAL=1 plus Compose runtime image variables to run the real Docker Compute proof.",
+    : "Set OCC_TEST_DOCKER_COMPUTE_REAL=1 or OCC_TEST_PODMAN_COMPUTE_REAL=1 plus Compose runtime image variables and OPENAI_API_KEY to run the real Docker Compute proof.",
 };
 
 const DEFAULT_RUNTIME_IMAGE = "oce-harness-real:pr26-compatible-runtime";
@@ -656,6 +656,7 @@ async function assertHarnessAuthRefusal({ request, namespaceId, mode, label }) {
   assert.equal(agent.status, 201, JSON.stringify(agent.error));
   assertDriverRefusal(
     await request("PATCH", `/namespaces/${namespaceId}/agents/${agent.data.id}`, {
+      configurationId: configuration.data.id,
       harnessAuth: { method: "runtime" },
     }),
     `${mode} Agent update to a Harness authentication binding`,
