@@ -2317,6 +2317,10 @@ select:not([multiple])[size="1"] {
   background: var(--surface);
   box-shadow: var(--shadow-1);
 }
+.channel-secrets .secret-typeahead-listbox {
+  position: static;
+  margin-top: var(--space-1);
+}
 .secret-typeahead-listbox [role="option"],
 .secret-typeahead-empty {
   padding: var(--space-3);
