@@ -111,7 +111,8 @@
     "tests/conformance/controller-stop-yields.test.mjs",
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
-    "tests/integration/credential-proxy-configuration.test.ts"
+    "tests/integration/credential-proxy-configuration.test.ts",
+    "tests/helpers/socket-relay.test.mjs"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -120,6 +121,9 @@
   "files": [
     {
       "path": "tests/integration/tls-peer-certificate.test.mjs"
+    },
+    {
+      "path": "tests/helpers/socket-relay.test.mjs"
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"

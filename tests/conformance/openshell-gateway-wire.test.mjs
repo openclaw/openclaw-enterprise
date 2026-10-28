@@ -28,6 +28,7 @@ import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-ex
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { agentClients } from "../helpers/egress-custody-observations.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -330,15 +331,13 @@ test("OpenShell HTTP origins keep port 80 in native gRPC connections", async (t)
     const upstream = track(
       connect(port, "127.0.0.1", () => {
         socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-        if (head.length > 0) {
-          upstream.write(head);
-        }
-        socket.pipe(upstream);
-        upstream.pipe(socket);
       }),
     );
-    upstream.on("error", () => socket.destroy());
-    socket.on("close", () => upstream.destroy());
+    // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+    if (head.length > 0) {
+      upstream.write(head);
+    }
+    relaySockets(socket, upstream);
   });
   t.after(async () => {
     for (const socket of sockets) {

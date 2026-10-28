@@ -37,6 +37,7 @@ import { startCredentialServiceFixture } from "../fixtures/repository-credential
 import { selfSigned } from "../helpers/certificates.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 import {
   cleanEnvironment,
   listen,
@@ -698,12 +699,10 @@ async function loopbackBrokerTunnel(t, fixture) {
     }
     const upstream = connect(fixture.listeners.address.port, "127.0.0.1", () => {
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      upstream.write(head);
-      socket.pipe(upstream).pipe(socket);
     });
-    socket.on("error", () => upstream.destroy());
-    socket.on("close", () => upstream.destroy());
-    upstream.on("error", () => socket.destroy());
+    // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+    upstream.write(head);
+    relaySockets(socket, upstream);
   });
   return (await listen(t, proxy)).replace("https:", "http:");
 }
