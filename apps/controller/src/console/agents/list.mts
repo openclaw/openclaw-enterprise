@@ -1,7 +1,26 @@
-import type { AgentDeploymentStatusWire, Namespace } from "@openclaw-enterprise/contracts";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import type {
+  Agent,
+  AgentCallerPermissionsResponse,
+  AgentDeploymentStatusWire,
+  Namespace,
+} from "@openclaw-enterprise/contracts";
+import type { Static } from "typebox";
+import { GENERIC_DENIAL, namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import { element } from "../dom.mjs";
 import type { createNavigation } from "../navigation.mjs";
+import {
+  ACCESS_NOT_INCLUDED,
+  AGENT_PAGE_READ_DENIED,
+  AGENT_SAVE_REFUSED,
+  ASK_INSTALLATION_ADMINISTRATOR,
+  askAdministratorTo,
+  askForGrant,
+  CONFIGURATION_SAVE_REFUSED,
+  type CredentialChoiceGap,
+  NAMESPACE_UNAVAILABLE,
+  notIncluded,
+  SAVE_READ_REFUSED,
+} from "./access-reasons.mjs";
 
 export const displayDate = (value: string) => new Date(value).toLocaleString();
 export const shortId = (value: string) => `${value.slice(0, 12)}…${value.slice(-6)}`;
@@ -24,8 +43,9 @@ export function link(label: string, target: string, context: AgentNavigation) {
 // A Namespace that is still provisioning (or failed to) refuses Agent, Configuration and
 // deployment writes with NAMESPACE_NOT_READY; "conflicts with the saved state" would send the
 // operator to the wrong place.
+// Every view that meets NAMESPACE_NOT_READY shows this one sentence (finding 2538).
 export const NAMESPACE_NOT_READY_MESSAGE =
-  "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
+  "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes. If it stays provisioning, ask an operator to finish that setup.";
 
 // Why a Namespace can't take new Agents, by status. Neither becomes ready by waiting.
 const NOT_READY_REASONS: Partial<Record<Namespace["status"], string>> = {
@@ -70,13 +90,44 @@ export function namespaceCreation(
 export const NAMESPACE_MISSING = Object.freeze({
   blocked: true,
   missing: true,
-  note: "This Namespace is missing or you no longer have access. Choose another Namespace.",
+  note: `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`,
 });
 
-// The API's catch-all answers: a caller's own denial and an untyped conflict. They name nothing
-// the caller can act on, so views keep their own guidance instead of showing them.
-export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
+// The API's catch-all answers: a caller's own denial that names no grant (api-client.mts) and an
+// untyped conflict. They name nothing the caller can act on, so views keep their own guidance
+// instead of showing them.
+export { GENERIC_DENIAL };
 export const GENERIC_CONFLICT = "The requested platform resource already exists.";
+
+// Granting an Agent a credential writes Namespace IAM policy, which only Installation
+// administration may do (UX plan A2); credentials.mts words its grant steps with this.
+// TODO: when #3686 lands, word those steps with askAdministratorTo (access-reasons.mts) and
+// remove this, so one module words every ask (finding 2578).
+export const askInstallationAdministrator = (task: string) =>
+  `needs Installation administration access: ask an Installation administrator to ${task}.`;
+
+// The grant a read needs, so its 403 names it as Stop, Delete and occ's hints do (finding 1530):
+// `task` says what the request does and `grant` names the one permission it checks, in the
+// permissions cheat sheet's words. It wins over the API's named denial (finding 2534), which
+// shows a raw ID where this names the task. The text depends only on the request, never on
+// whether the resource exists.
+export interface AccessNeed {
+  readonly task: string;
+  readonly grant: string;
+}
+
+// Namespace lists (Secrets, Presets, ServiceAccounts) check Namespace read, then read on each item:
+// a 403 is the Namespace read, and an item the caller may not read is left out instead.
+export const namespaceListNeed = (items: string): AccessNeed => ({
+  task: `listing ${items} in this Namespace`,
+  grant: "Namespace read",
+});
+
+// The Stop and Delete pages reread the Agent for its status, which authorizes Agent read.
+export const AGENT_STATUS_READ_NEED: AccessNeed = {
+  task: "reading this Agent's status",
+  grant: "Agent read on it",
+};
 
 // The API records these deployment endings as failed, but nothing went wrong with the version,
 // so the console shows a neutral outcome instead. A newer version took over before this one
@@ -89,8 +140,17 @@ const NEUTRAL_DEPLOYMENT_OUTCOMES = new Map<string, "stopped" | "superseded">([
   ["REVISION_STOPPED", "stopped"],
 ]);
 
-// "superseded" or "stopped" for a neutral ending, otherwise null.
-export function neutralDeploymentOutcome(status: AgentDeploymentStatusWire | null | undefined) {
+// "superseded" or "stopped" for a neutral ending, otherwise null. Takes a deployment record or a
+// Versions list item's status and error code in the record's shape (finding 2422).
+export function neutralDeploymentOutcome(
+  status:
+    | {
+        readonly status: AgentDeploymentStatusWire["status"];
+        readonly error: { readonly code: string } | null;
+      }
+    | null
+    | undefined,
+) {
   return status?.status === "failed" && status.error
     ? (NEUTRAL_DEPLOYMENT_OUTCOMES.get(status.error.code) ?? null)
     : null;
@@ -122,7 +182,16 @@ export const NEUTRAL_DEPLOYMENT_NOTES = {
   stopped: "Stopped before it finished",
 };
 
-export function message(cause: unknown, mutation = false): string {
+// message() for a caller known to administer the Installation: its own 403 is not one that asking
+// an Installation administrator can fix, so the denial names nobody (finding 2113).
+export function administratorMessage(cause: unknown): string {
+  const error = responseFields(cause);
+  return error.status === 403 && typeof error.refusal !== "string"
+    ? ACCESS_NOT_INCLUDED
+    : message(cause);
+}
+
+export function message(cause: unknown, mutation = false, need?: AccessNeed): string {
   const error = responseFields(cause);
   if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
     const fieldLabels: Record<string, string> = {
@@ -135,12 +204,17 @@ export function message(cause: unknown, mutation = false): string {
       configuration: "native configuration",
     };
     const field = typeof error.field === "string" ? fieldLabels[error.field] : undefined;
-    return `Saved ${field ?? "configuration"} could not be read. Editing and deployment are unavailable for these settings. Ask an administrator to repair the saved configuration, then refresh this page.`;
+    return `Saved ${field ?? "configuration"} could not be read. Editing and deployment are unavailable for these settings. ${askAdministratorTo("repair the saved configuration, then refresh this page")}`;
   }
   if (error.status === 403) {
+    // A view's own refusal or grant names the task in its words; without one, the API's named
+    // denial (finding 2534) says which grant is missing, and an older API's generic one nothing.
     return typeof error.refusal === "string"
       ? error.refusal
-      : "Access denied. You do not have permission for this operation.";
+      : need
+        ? notIncluded(need.task, need.grant)
+        : (namedDenial(cause) ??
+          `${ACCESS_NOT_INCLUDED} ${askAdministratorTo("check your access")}`);
   }
   if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";
@@ -201,32 +275,113 @@ export function preAdmissionRefusal(cause: unknown) {
 
 // A refused save names the grants it needs, as Stop, Delete and occ do (finding 1530). Each save
 // shows one fixed text for every 403, so it says nothing the server did not: no IDs, and nothing
-// about whether a resource exists.
+// about whether a resource exists. The API's named denial would show the saved resource's raw ID
+// where this names it in words.
 export const SAVE_REFUSALS = Object.freeze({
-  configuration:
-    "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.",
-  agent:
-    "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
-  // A save first rereads the Agent and its Configuration; a refused read is not a refused
-  // update (finding 1540).
-  read: "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.",
+  configuration: CONFIGURATION_SAVE_REFUSED,
+  agent: AGENT_SAVE_REFUSED,
+  managedMode: `Changing Gateway managed mode requires Installation administer, Agent update and Configuration read access, plus access to the Agent's bound resources. ${askAdministratorTo("change this setting")}`,
+  read: SAVE_READ_REFUSED,
 });
+
+const NAMED_DENIAL_PREFIX = "Not authorized: ";
+
+/**
+ * The API's named denial after the refused action ("Slack lookup was refused: this needs Secret
+ * operate on ..."), or undefined when the API named no grant. A request that checks several
+ * grants uses it: the API names the one it lacked, where the console's own text lists them all.
+ */
+export function namedRefusal(action: string, cause: unknown) {
+  const named = namedDenial(cause);
+  return named === undefined
+    ? undefined
+    : `${action} was refused: ${named.slice(NAMED_DENIAL_PREFIX.length)}`;
+}
+
+// Rechecking an open Agent page reads the Agent, its versions and the shown version or draft: the
+// API names the one grant it lacked.
+export function agentPageReadRefusal(cause: unknown) {
+  return namedDenial(cause) ?? AGENT_PAGE_READ_DENIED;
+}
+
+// A refused save that binds Secrets a permission answer read after the refusal says the caller
+// may not operate: it names them and that grant, not the Configuration update the caller may
+// have (finding 2453). The names are the caller's own choices, read from the Secret list.
+export function secretOperateRefusal(names: readonly string[]) {
+  const them = names.length > 1 ? "them" : "it";
+  const listed =
+    names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  return `Save was refused: your access does not include Secret operate on ${listed}, which each save needs on every Secret it binds. Choose another Secret, or ${ASK_INSTALLATION_ADMINISTRATOR} for Secret operate on ${them}.`;
+}
 
 // Shown beside Agent-side save controls when the caller's permission answer denies Agent update.
 // Gating only: an unknown answer keeps the controls, and the API still decides.
-export const AGENT_UPDATE_DENIED =
-  "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
+export const AGENT_UPDATE_DENIED = notIncluded(
+  "saving these settings",
+  "Agent update on this Agent",
+);
+// Shown instead when the answer allows Agent update but not the Configuration read each Agent
+// update needs; the source note would name the wrong grant.
+export const AGENT_CONFIGURATION_READ_DENIED = `Saving these settings needs read access to this Agent's Configuration, which your access does not include. ${askForGrant("Configuration read on it")}`;
+// Shown instead when the answer allows Agent update but not the source grants each Agent update
+// also checks on what the Agent and its Configuration bind (finding 2441).
+export const AGENT_SOURCES_DENIED = `Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. ${askForGrant("that access")}`;
+// Shown instead when the Agent uses a ServiceAccount for Harness authentication: each Agent update
+// also checks read on it, and the answer does not say which of the grants is missing (finding
+// 2459).
+export const AGENT_SOURCES_SERVICE_ACCOUNT_DENIED = `Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. ${askForGrant("that access")}`;
+
+// Which grant the permission answer says an Agent-side save lacks, or undefined when it allows the
+// save or is unknown. Each Agent update also needs Configuration read and checks the caller's
+// grant on every source the Agent and its Configuration bind (finding 2441).
+export function agentSaveGap(
+  permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null | undefined,
+  agent?: { harnessAuth?: { method: string; source?: { kind: string } } | null | undefined },
+): CredentialChoiceGap | undefined {
+  if (permissions?.update === false) {
+    return "update";
+  }
+  if (permissions?.configurationRead === false) {
+    return "configurationRead";
+  }
+  if (permissions?.agentSourcesOperate !== false) {
+    return undefined;
+  }
+  const harnessAuth = agent?.harnessAuth;
+  return harnessAuth?.method === "codex_pat" && harnessAuth.source?.kind === "service_account"
+    ? "serviceAccount"
+    : "sources";
+}
+
+const AGENT_SAVE_DENIALS: Record<CredentialChoiceGap, string> = {
+  update: AGENT_UPDATE_DENIED,
+  configurationRead: AGENT_CONFIGURATION_READ_DENIED,
+  sources: AGENT_SOURCES_DENIED,
+  serviceAccount: AGENT_SOURCES_SERVICE_ACCOUNT_DENIED,
+};
+
+// Why the permission answer says an Agent-side save would be refused, or undefined when it allows
+// the save or is unknown.
+export function agentSaveDenial(
+  permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null | undefined,
+  agent?: Partial<Pick<Agent, "harnessAuth">>,
+): string | undefined {
+  const gap = agentSaveGap(permissions, agent);
+  return gap === undefined ? undefined : AGENT_SAVE_DENIALS[gap];
+}
 
 // Marks a 403 from a save so message() names the grants it needs: the save's own when the
 // write itself was refused (`written`), read access when a read before it was (finding 1540).
+// A refused write that a fresh Secret answer explains says so instead (`named`, finding 2453).
 export function refusedSave<Cause>(
   cause: Cause,
-  save: "configuration" | "agent",
+  save: "configuration" | "agent" | "managedMode",
   written: boolean,
+  named?: string,
 ) {
   const error = responseFields(cause);
   if (error.status === 403) {
-    error.refusal = SAVE_REFUSALS[written ? save : "read"];
+    error.refusal = written ? (named ?? SAVE_REFUSALS[save]) : SAVE_REFUSALS.read;
   }
   return cause;
 }
@@ -267,6 +422,130 @@ export function rejectionMessage(cause: unknown, mutation = false): string {
   return error.status === 400 && error.serverMessage !== undefined
     ? error.serverMessage
     : message(cause, mutation);
+}
+
+// The API's answer to a request that does not match its schema. It names a JSON path, which
+// helps where the reader typed the value, but the console sent everything else itself.
+const CONTRACT_MISMATCH = "The request does not match the operation contract";
+
+// When to try again after the API's Retry-After: seconds up to two minutes, then whole minutes.
+export function retryAfterText(seconds: number) {
+  if (seconds < 120) {
+    return `Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+  }
+  return `Try again in about ${Math.ceil(seconds / 60)} minutes.`;
+}
+
+// How long a rate-limited reader waits: the API's Retry-After when it sent one.
+function tooManyRequests(cause: unknown) {
+  const seconds = requestFailure(cause).retryAfterSeconds;
+  return `Too many requests. ${seconds === undefined ? "Wait before trying again." : retryAfterText(seconds)}`;
+}
+
+// The API's sentence for a 409 that explains itself, or undefined for a conflict it does not
+// explain (no message, or the generic "already exists" text), where the view says its own.
+export function explainedConflict(cause: unknown): string | undefined {
+  const { status, serverMessage } = requestFailure(cause);
+  return status === 409 && serverMessage !== undefined && serverMessage !== GENERIC_CONFLICT
+    ? serverMessage
+    : undefined;
+}
+
+// One description of a failed request for the views that once showed a bare message()
+// (finding 2538). The API's 400 and typed 409 sentences name the rule or the state that
+// refused the request, and the API never puts a secret value in one, so they show as written
+// (views set them as textContent). `next` follows a 409: the step that recovers in this view,
+// such as a refresh ("" when the view adds its own); `conflict` replaces the generic sentence
+// for a 409 the API does not explain.
+// `form` says the reader entered the values sent, so a 400 the API does not explain asks to check
+// them; without a form it never mentions entered values. Denials, missing resources and
+// unanswered requests keep message()'s text.
+export function describeFailure(
+  cause: unknown,
+  {
+    mutation = false,
+    form = false,
+    next,
+    conflict = "The request conflicts with the current state.",
+    need,
+  }: {
+    mutation?: boolean;
+    form?: boolean;
+    next?: string;
+    conflict?: string;
+    need?: AccessNeed;
+  } = {},
+): string {
+  const error = requestFailure(cause);
+  const then = next ? ` ${next}` : "";
+  if (error.status === 400) {
+    if (
+      error.serverMessage !== undefined &&
+      (form || !error.serverMessage.startsWith(CONTRACT_MISMATCH))
+    ) {
+      return error.serverMessage;
+    }
+    return form
+      ? message(cause, mutation)
+      : "The API refused this request as malformed. Refresh the page and try again.";
+  }
+  if (error.status === 409) {
+    if (error.code === "NAMESPACE_NOT_READY") {
+      return NAMESPACE_NOT_READY_MESSAGE;
+    }
+    const explained = explainedConflict(cause);
+    return explained !== undefined
+      ? `${explained}${then}`
+      : `${conflict}${next === undefined ? " Refresh, then try again." : then}`;
+  }
+  if (error.status === 429) {
+    return tooManyRequests(cause);
+  }
+  return message(cause, mutation, need);
+}
+
+// An outage names who acts if it continues, as sign-in's 503 does.
+const READ_OUTAGE =
+  "The service did not answer. Try again; if it continues, ask an operator to check the API.";
+
+// Why a read failed and what to do next, by status, for the views whose catch once said
+// "unavailable, retry" for a denial and an outage alike (finding 2538): a 403 names the grant
+// (`need`) and who grants it, a 429 how long to wait, and an outage who to ask if it continues.
+export function readFailureReason(cause: unknown, need?: AccessNeed): string {
+  const error = requestFailure(cause);
+  if (error.status === 403) {
+    return message(cause, false, need);
+  }
+  if (error.status === 404) {
+    return "It is no longer available. Refresh the page.";
+  }
+  if (error.status === 400 || error.status === 409 || error.status === 429) {
+    return describeFailure(cause);
+  }
+  const { name } = responseFields(cause);
+  return name === "TypeError" || name === "TimeoutError"
+    ? "The request was interrupted. Try again."
+    : READ_OUTAGE;
+}
+
+/** "<subject> could not be read. <reason>" for a failed read (readFailureReason). */
+export const readFailure = (subject: string, cause: unknown, need?: AccessNeed) =>
+  `${subject} could not be read. ${readFailureReason(cause, need)}`;
+
+// A channel credential value that Configuration save or provisioning refuses: a reference without
+// a Secret binding, a `${` the runtime does not substitute, or a value the setting "holds" that is
+// not one whole reference or a SecretRef it accepts, an inline credential included (findings 2319,
+// 2477, 2493, 2517); otherwise undefined. The message names the setting, so a form shows it under
+// the field that holds the Configuration.
+const CHANNEL_REFERENCE_REFUSAL =
+  / (?:without a Configuration Secret binding|the runtime does not substitute): | holds /;
+export function channelBindingRefusal(cause: unknown): string | undefined {
+  const { status, serverMessage } = requestFailure(cause);
+  return status === 400 &&
+    serverMessage?.startsWith("Configuration setting channels.") &&
+    CHANNEL_REFERENCE_REFUSAL.test(serverMessage)
+    ? serverMessage
+    : undefined;
 }
 
 export function assertReadableConfiguration(resource: unknown) {

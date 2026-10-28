@@ -41,7 +41,11 @@ func Down(ctx context.Context, opts Options) error {
 			// The socket is on the engine host, so use it only for the worker mount.
 			// Host-side Compose commands must retain Podman's selected connection.
 			r.env["OCC_CONTAINER_ENGINE_SOCKET"] = socket
-			args = append([]string{"compose"}, podmanComposeArgs(opts.ComposeArgs, r.env["COMPOSE_FILE"], r.env["COMPOSE_PATH_SEPARATOR"])...)
+			composeArgs, err := podmanComposeArgs(opts.ComposeArgs, r.env["COMPOSE_FILE"], r.env["COMPOSE_PATH_SEPARATOR"])
+			if err != nil {
+				return err
+			}
+			args = append([]string{"compose"}, composeArgs...)
 		}
 		args = append(args, "down")
 		if opts.Volumes {
@@ -85,6 +89,25 @@ func Down(ctx context.Context, opts Options) error {
 		if err := r.cleanup(ctx, state, true); err != nil {
 			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: %w", directory, err)
 		}
+		// k3d can report successful cluster deletion after only warning that
+		// its image volume could not be removed. Check the recorded endpoint
+		// even when the cluster was already absent on this attempt.
+		imageVolume := "k3d-" + state.Cluster + "-images"
+		volumes, err := r.output(ctx, r.engine, "volume", "ls", "--filter", "label=k3d.cluster="+state.Cluster, "--format", "{{.Name}}")
+		if err != nil {
+			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: cannot confirm k3d image volume absence for %s: %w; "+
+				"check access to the recorded %s endpoint %s; retry occ dev down with the same Kubernetes settings and state directory",
+				directory, imageVolume, err, r.engine, state.DockerHost)
+		}
+		for _, volume := range strings.Fields(string(volumes)) {
+			if volume == imageVolume {
+				// Down does not remove the volume itself; tell the operator how to finish.
+				return fmt.Errorf("cleanup incomplete; preserving %s for recovery: k3d image volume %s remains; "+
+					"select the recorded %s endpoint %s, verify label k3d.cluster=%s and that the volume is unused before removing it there; "+
+					"retry occ dev down with the same Kubernetes settings and state directory",
+					directory, imageVolume, r.engine, state.DockerHost, state.Cluster)
+			}
+		}
 		if err := os.RemoveAll(directory); err != nil {
 			return err
 		}
@@ -98,6 +121,11 @@ func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttemp
 	var failures []error
 	if s.DeploymentMode == "k3d" {
 		if clusterAttempted {
+			// Before the delete, which keeps a network the registry still uses
+			// and would leave it behind; a retry detaches, then deletes.
+			if err := r.detachRecordedDevelopmentImageRegistry(ctx, s); err != nil {
+				return err
+			}
 			exists, err := r.clusterExists(ctx, s.Cluster)
 			if err != nil {
 				failures = append(failures, err)
@@ -132,23 +160,36 @@ func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttemp
 	return errors.Join(failures...)
 }
 
-func podmanComposeArgs(args []string, files, separator string) []string {
-	result := append([]string{}, args...)
+func podmanComposeArgs(args []string, files, separator string) ([]string, error) {
+	result := make([]string, 0, len(args)+2)
 	explicit, override := false, false
-	for i, arg := range args {
-		value := ""
-		if (arg == "-f" || arg == "--file") && i+1 < len(args) {
-			value = args[i+1]
-		} else if strings.HasPrefix(arg, "--file=") {
-			value = strings.TrimPrefix(arg, "--file=")
-		} else if strings.HasPrefix(arg, "-f") && len(arg) > 2 {
-			value = arg[2:]
-		}
-		if value != "" {
-			explicit = true
-			if filepath.Base(value) == "compose.podman.yaml" {
-				override = true
+	for i := 0; i < len(args); i++ {
+		arg, value := args[i], ""
+		switch {
+		case arg == "-f" || arg == "--file":
+			result = append(result, arg)
+			if i+1 < len(args) {
+				i++
+				value = args[i]
+				result = append(result, value)
 			}
+		case strings.HasPrefix(arg, "--file="):
+			value = strings.TrimPrefix(arg, "--file=")
+			result = append(result, arg)
+		case strings.HasPrefix(arg, "-f") && len(arg) > 2:
+			// Podman can interpret an "h" in -fFILE as help. Match scripts/dev-up.
+			value = strings.TrimPrefix(arg[2:], "=")
+			result = append(result, "--file="+value)
+		default:
+			result = append(result, arg)
+			continue
+		}
+		if value == "" {
+			return nil, fmt.Errorf("--file requires a Compose file path")
+		}
+		explicit = true
+		if filepath.Base(value) == "compose.podman.yaml" {
+			override = true
 		}
 	}
 	if !explicit {
@@ -169,5 +210,5 @@ func podmanComposeArgs(args []string, files, separator string) []string {
 	if !override {
 		result = append(result, "-f", "compose.podman.yaml")
 	}
-	return result
+	return result, nil
 }

@@ -13,7 +13,7 @@ The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage.
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/qa-advisory.yml:jobs`: post-merge and 6-hourly QA on `main`; trusted pull requests opt in with `full-qa`.
+- `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests opt in with `full-qa`.
 - `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
@@ -62,7 +62,7 @@ graph TD
 `scripts/ci/test-suites/<lane>.json` references for runners and preparation.
 Each lane owns its tests, environment, required inputs and preparation settings.
 
-CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci.md#tests-in-each-workflow) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`.
+CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci.md#tests-in-each-workflow) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`.
 
 The selector verifies that the tested merge has the event head as its second parent. It
 compares that tree with its first parent, the current base, using policy from the base.
@@ -116,7 +116,7 @@ The provider job uses the shared `blacksmith-8vcpu-ubuntu-2404` runner for image
 
 For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.mjs:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
 
-`checks-browser`, `checks-browser-2`, `postgres-auth`, `postgres-platform`, `images-model-probes`, `images-runtime-startup`, `images-runtime-startup-2` and `images-runtime-startup-3` use separate runners and required artifacts. `scripts/ci/prepare.mjs:imageBuildArgs` enables scoped BuildKit caches for hosted image jobs: packaging exports; probes and runtime startup restore. Images load into the job's Docker engine; cache credentials stay in preparation.
+`checks-browser`, `checks-browser-2`, `postgres-auth`, `postgres-platform`, `images-runtime-startup`, `images-runtime-startup-2` and `images-runtime-startup-3` use separate runners and required artifacts. `scripts/ci/prepare.mjs:imageBuildArgs` enables scoped BuildKit caches for hosted image jobs: packaging exports; runtime startup restores. Images load into the job's Docker engine; cache credentials stay in preparation.
 
 Kubernetes preparation records host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
@@ -259,27 +259,5 @@ External reconciliation awaits an approved resource ledger.
 - 2026-10-14 10:19: Retain cleanup ownership. (authoring-run/ee448fbe-3e0a-40d4-b7d1-3f122d3e5f1b - 10f34280f56dc2375f48df9d2161024520a35882)
 
 - 2026-10-14 09:44: Document command-group termination, pipes with shutdown deadlines, and abandoned runner and fixture handoffs in the accompanying fix. (authoring-run/6dec0b67-a5cd-4a9e-82dc-7609f956b115 - 47d5b8cc901e225e51227a905ee688c69c8ea729)
-
-- 2026-10-08 11:04: Isolate launcher queue. (authoring-run/09563984-5be9-4e9d-bf17-142ceb70d96d - 9e7a30a5da374826b1a2ba79b3bca9cdcb74d1f2)
-
-- 2026-10-08 09:57: Documented Keycloak egress repair and manual qualification. (authoring-run/e5c12029-7b1c-4214-a4b9-bde04d03ab41 - 12719f1d366291b774eb9d4948be451c9dd7d805)
-
-- 2026-10-06 02:00: Per-file Agent namespace watch files. (audit-followup-ci-runner)
-
-- 2026-10-04 03:44: Add a non-required affected-package advisory to the accompanying CI change. (authoring-run/5808365b-c590-4c11-92d6-4ee32efc3626 - 070147565f45e720918de9e649b93cad71820b07)
-
-- 2026-10-04 03:00: Split the baseline lane into two parallel parts. (ci-split-checks - 77323afe4d57960c37e07b62e684942a418d585a)
-
-- 2026-10-04 01:41: Document metrics image preparation, shared pins and pull failure handling in the accompanying changes. (authoring-run/091c2e1e-27cb-4514-a1ea-8308051d6ab9 - 61ce8407ac7f46c137f17e7d3bdaf8e9377fa4ff)
-
-- 2026-10-01 02:34: Document the advisory impact summary in the accompanying changes. (authoring-run/0f81a0c3-327f-4389-ae2e-89431878a2d7 - c61836797191a0924671eaaec074863fe2d80cfe)
-
-- 2026-10-01 01:06: Preserve Git path byte identity in the selector and document its coverage decision in the accompanying changes. (authoring-run/2403db12-cdf4-4070-aece-2f4b45ff0234 - 5e0906ccd42473596c2006474adf199d42ab74df)
-
-- 2026-09-29 22:55: Split browser, PostgreSQL authentication, and image model-probe lanes; cache hosted controller/runtime builds while retaining required result accounting. (01a0f0d0-002a-7dc3-af73-e7d25dfe92e2 - b8d7e48f5837d11e54e04dce40650f7ccc5100f0)
-
-- 2026-09-30 02:42: Document generated API reference selection in the accompanying changes. (authoring-run/cd1c4c87-0519-4df7-8bf2-abbff0d53424 - a56c027ff8ec22655cca49aa6a912081cb98b593)
-
-- 2026-09-30 02:03: Describe the documentation-only checks and required gate in the accompanying changes. (authoring-run/ac4af003-ce47-4e8d-83af-040e227a7673 - 20c06dffda90748e5ea16348eaa04feb79d551ab)
 
 [GitHub Actions testing documentation history](github-actions-testing/history.md) preserves the older dated entries.

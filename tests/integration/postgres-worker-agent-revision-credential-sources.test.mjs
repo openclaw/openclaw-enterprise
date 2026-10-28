@@ -20,6 +20,8 @@ import {
 import {
   advanceCleanupRetries,
   completion,
+  deferWork,
+  makeWorkDue,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
@@ -241,11 +243,10 @@ function assertRetryDelay(series, expectedMs) {
 
 // Lets a scheduled retry run now instead of waiting out its delay. The worker still claims it.
 async function runScheduledRetryNow(fixture, series) {
-  const updated = await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp()
-     WHERE idempotency_key = $1 AND state = 'queued'`,
-    [series.idempotencyKey],
-  );
+  const updated = await makeWorkDue(fixture.observerPool, {
+    key: series.idempotencyKey,
+    state: "queued",
+  });
   assert.equal(updated.rowCount, 1);
 }
 
@@ -1383,11 +1384,7 @@ revisionTest(
 // Admits `number` for `owner` with its deployment held back, as one that has not run yet.
 async function admitHeldRevision(fixture, owner, number) {
   const revision = await fixture.revision(owner, number);
-  await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 day'
-     WHERE idempotency_key = $1`,
-    [revision.idempotencyKey],
-  );
+  await deferWork(fixture.observerPool, revision.idempotencyKey, "1 day");
   return revision;
 }
 
@@ -2477,12 +2474,7 @@ test(
     );
     await removeAccessBindings(fixture, requester);
     const [held] = await withdrawalAttempts(fixture, active);
-    const holdUntil = (interval) =>
-      fixture.observerPool.query(
-        `UPDATE occ.controller_work SET available_at = clock_timestamp() + $2::interval
-         WHERE idempotency_key = $1`,
-        [held.idempotencyKey, interval],
-      );
+    const holdUntil = (interval) => deferWork(fixture.observerPool, held.idempotencyKey, interval);
     await holdUntil("1 day");
     await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,

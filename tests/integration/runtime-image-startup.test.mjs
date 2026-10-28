@@ -3,7 +3,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
+import {
+  cpuScaledImageTimeoutMs,
+  imageSmokeTimeoutMultiplier,
+} from "../helpers/image-smoke-timeout.mjs";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
@@ -17,6 +21,7 @@ import {
   REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
   REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
+import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
 import {
@@ -41,6 +46,7 @@ import {
   reviewedCodexSeccompSecurityOptions,
   assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
@@ -517,6 +523,9 @@ const environment = {
   CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "synthetic-offline-key",
   OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
   APP_TOKEN_SHA: ${JSON.stringify(createHash("sha256").update("synthetic-transport-token").digest("hex"))}, APP_SERVER_PORT: "4500",
+  // The workspace node supervisor points hooks at a CA copy the sandbox cannot read.
+  NODE_EXTRA_CA_CERTS: "/home/node/.oce-native-hooks/gateway-ca.pem",
+  OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS: "/run/oce/repository-credentials/ca-bundle.pem",
 };
 let native;
 // The entrypoint arrives on stdin: inlined, it can exceed the per-argument limit.
@@ -543,6 +552,8 @@ vm.runInNewContext(fs.readFileSync(0, "utf8"), {
         const appServerEnvironment = options.env ?? environment;
         assert.equal(Object.hasOwn(appServerEnvironment, "APP_SERVER_TOKEN"), false);
         assert.equal(Object.hasOwn(appServerEnvironment, "APP_TOKEN_SHA"), false);
+        assert.equal(Object.hasOwn(appServerEnvironment, "OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS"), false);
+        assert.equal(appServerEnvironment.NODE_EXTRA_CA_CERTS, environment.NODE_EXTRA_CA_CERTS);
         native = cp.spawn(command, [...args.slice(0, appServer + 1), "--listen", "stdio://"], {
           ...options, env: appServerEnvironment, stdio: ["pipe", "pipe", "pipe"],
         });
@@ -577,14 +588,16 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
     const { config } = await rpc("config/read", {});
     assert.equal(config.allow_login_shell, false);
     assert.equal(config.shell_environment_policy.set.PATH, environment.PATH);
+    assert.equal(config.shell_environment_policy.set.NODE_EXTRA_CA_CERTS, environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS);
     const result = await rpc("command/exec", {
-      command: ["/bin/bash", "-c", 'test -z "$APP_SERVER_TOKEN" || exit 1; test -z "$APP_TOKEN_SHA" || exit 1; command -v gh; command -v git; git config --system --get-all include.path'],
+      command: ["/bin/bash", "-c", 'test -z "$APP_SERVER_TOKEN" || exit 1; test -z "$APP_TOKEN_SHA" || exit 1; command -v gh; command -v git; git config --system --get-all include.path; echo "$NODE_EXTRA_CA_CERTS"'],
       sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
       timeoutMs: 5000,
     });
     assert.equal(result.exitCode, 0);
     assert.deepEqual(result.stdout.trim().split("\\n"), [
       "/opt/oce/repository-credentials/bin/gh", "/usr/bin/git", "/run/oce/repository-credentials/gitconfig",
+      environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,
     ]);
     fs.accessSync("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js");
     process.stdout.write("native-repository-shell-ready\\n");
@@ -639,7 +652,6 @@ test(
     });
 
     const { logs } = await runGatewaySmoke(t, "openclaw", {
-      collectPlugins: false,
       configuration,
       extraEnvironment: ["OPENCLAW_LOG_LEVEL=error"],
     });
@@ -674,7 +686,9 @@ test(
   "runtime image discovers the bundled Codex plugin from a fresh gateway home",
   imageTestOptions,
   async (t) => {
-    const { logs, containerName, pluginList } = await runGatewaySmoke(t, "codex");
+    const { logs, containerName, pluginList } = await runGatewaySmoke(t, "codex", {
+      collectPlugins: true,
+    });
 
     const entries = jsonLogEntries(logs);
     assertGatewayReadyLog(entries);
@@ -832,18 +846,18 @@ test(
     const launch = String.raw`
 const fs = require("node:fs");
 const cp = require("node:child_process");
-const { gatewayArgs, harness, workspaceNodeId } = JSON.parse(fs.readFileSync(0, "utf8"));
+const { gatewayArgs, harness, workspaceNodeId, startupMs, harnessRunMs, validateMs } = JSON.parse(fs.readFileSync(0, "utf8"));
 const model = "openai/runtime-image-schema";
 function validate(path) {
   const home = fs.mkdtempSync("/tmp/oce-config-validate-");
   const result = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
     env: { PATH: process.env.PATH, HOME: home, OPENCLAW_CONFIG_PATH: path },
-    encoding: "utf8", timeout: 60000, maxBuffer: 1024 * 1024,
+    encoding: "utf8", timeout: validateMs, maxBuffer: 1024 * 1024,
   });
   const report = JSON.parse(result.stdout);
   return { status: result.status, valid: report.valid, issues: report.issues ?? [] };
 }
-function run(args, env, readinessUrl) {
+function run(args, env, readinessUrl, limitMs = startupMs) {
   const child = cp.spawn("node", args, { env: { PATH: process.env.PATH, HOME: "/home/node", ...env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (value) => { output += value; });
@@ -856,7 +870,7 @@ function run(args, env, readinessUrl) {
   return new Promise((resolve, reject) => {
     // Kill the owned process group: a launcher can leave native children holding
     // stdout open even after it exits. Container removal is the outer safeguard.
-    const deadline = setTimeout(() => killGroup("SIGKILL"), 90000);
+    const deadline = setTimeout(() => killGroup("SIGKILL"), limitMs);
     child.once("error", reject);
     child.once("exit", () => {
       stopped = true;
@@ -936,7 +950,7 @@ function run(args, env, readinessUrl) {
     OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
     OPENAI_API_KEY: "sk-openclaw-runtime-image-schema-synthetic",
     OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({ agents: { defaults: { model } } }),
-  });
+  }, undefined, harnessRunMs);
   const harnessConfig = "/home/node/.openclaw-node/openclaw.json";
   process.stdout.write(JSON.stringify({
     gateway: { ...gatewayRun, restart: gatewayRestart, conflictingRestart, config: JSON.parse(fs.readFileSync(gatewayConfig, "utf8")), validation: validate(gatewayConfig) },
@@ -944,6 +958,16 @@ function run(args, env, readinessUrl) {
   }));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 `;
+    // The Gateway start and validation waits scale with the runner's CPUs: the
+    // lane's other files start runtimes at the same time, so a slow start under that
+    // load is not a failure (finding 2460). The worker never connects without a
+    // network, so its run always ends at harnessRunMs after writing its
+    // configuration; that window stays fixed, or each run would take longer on
+    // fewer CPUs. The container runs these one after another: its limit is their
+    // sum plus a minute to create and remove it.
+    const startupMs = cpuScaledImageTimeoutMs(90_000);
+    const harnessRunMs = 90_000 * imageSmokeTimeoutMultiplier;
+    const validateMs = cpuScaledImageTimeoutMs(60_000);
     const { stdout } = await runDocker(
       [
         "run",
@@ -966,17 +990,25 @@ function run(args, env, readinessUrl) {
         "none",
         "--volume",
         `${configurationPath}:/etc/openclaw/openclaw.json:ro`,
+        "--volume",
+        `${configurationPath}:/etc/openclaw-managed/openclaw.json:ro`,
         "--entrypoint",
         "node",
         image,
         "-e",
         launch,
       ],
-      { timeout: 300_000 * imageSmokeTimeoutMultiplier },
+      {
+        timeout:
+          3 * startupMs + harnessRunMs + 2 * validateMs + 60_000 * imageSmokeTimeoutMultiplier,
+      },
       JSON.stringify({
         gatewayArgs: nodeProgramArguments(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT),
         harness: NATIVE_WORKER_ENTRYPOINT,
         workspaceNodeId: randomBytes(32).toString("hex"),
+        startupMs,
+        harnessRunMs,
+        validateMs,
       }),
     );
     const { gateway, harness } = JSON.parse(stdout);
@@ -1063,27 +1095,27 @@ const config = {
 };
 const profile = ":danger-full-access";
 const providerEnv = { OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE: profile };
-function permissionFields(appServer, sandboxPolicy) {
+async function permissionFields(appServer, sandboxPolicy) {
   const thread = threadPermissions(appServer);
-  const turn = buildTurnStartParams({ prompt: "policy check", hostCapabilities: {}, config }, {
+  const turn = await buildTurnStartParams({ prompt: "policy check", hostCapabilities: {}, config }, {
     appServer, sandboxPolicy, cwd: "/tmp", preserveNativeTurnSettings: true,
   });
   return [thread, turn.permissions ?? turn.sandboxPolicy?.type];
 }
-const results = JSON.parse(process.argv[1]).map(({ appServer, modelProvider }) => {
+const results = await Promise.all(JSON.parse(process.argv[1]).map(async ({ appServer, modelProvider }) => {
   const resolve = (env) => resolveCodexAppServerRuntimeOptions({
     pluginConfig: { appServer }, modelProvider, model: "gpt-6-astra", config, env, requirementsToml: null,
   });
   const runtime = resolve(providerEnv);
-  assert.deepEqual(permissionFields(runtime), [{ permissions: profile }, profile]);
+  assert.deepEqual(await permissionFields(runtime), [{ permissions: profile }, profile]);
   const local = resolve({});
-  assert.deepEqual(permissionFields(local), [{ sandbox: "danger-full-access" }, "dangerFullAccess"]);
+  assert.deepEqual(await permissionFields(local), [{ sandbox: "danger-full-access" }, "dangerFullAccess"]);
   const restricted = { ...runtime, sandbox: "workspace-write" };
-  assert.deepEqual(permissionFields(restricted), [{ sandbox: "workspace-write" }, "workspaceWrite"]);
-  assert.deepEqual(permissionFields({ ...runtime, networkProxy: {} }), [{}, undefined]);
-  assert.equal(permissionFields(runtime, { type: "readOnly" })[1], "readOnly");
+  assert.deepEqual(await permissionFields(restricted), [{ sandbox: "workspace-write" }, "workspaceWrite"]);
+  assert.deepEqual(await permissionFields({ ...runtime, networkProxy: {} }), [{}, undefined]);
+  assert.equal((await permissionFields(runtime, { type: "readOnly" }))[1], "readOnly");
   return { sandbox: runtime.sandbox, approvalsReviewer: runtime.approvalsReviewer };
-});
+}));
 
 // A real Codex can accept thread/start yet constrain its effective sandbox. The bundled
 // Gateway client must surface that refusal before the caller can use the thread for a turn.
@@ -1256,17 +1288,15 @@ try {
     await runRepositoryMaterialInitProbe(materialVolumeName, descriptor);
 
     await runDocker(["network", "create", "--driver", "bridge", networkName]);
+    // The container runs the shared relay's own source, so a clean single-use upstream close
+    // still delivers bytes queued for the slower sandbox proxy (finding 2186).
     const forwarder = String.raw`
 const net = require("node:net");
 const targetHost = process.argv[1];
 const targetPort = Number(process.argv[2]);
+${relaySockets}
 const server = net.createServer((client) => {
-  const upstream = net.connect(targetPort, targetHost);
-  client.on("error", () => upstream.destroy());
-  client.on("close", () => upstream.destroy());
-  upstream.on("error", () => client.destroy());
-  upstream.on("close", () => client.destroy());
-  client.pipe(upstream).pipe(client);
+  relaySockets(client, net.connect(targetPort, targetHost));
 });
 server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
 `;
@@ -1495,6 +1525,13 @@ const homeControlSentinelPath = "/home/node/openclaw-stock-codex-control-sentine
 const homeControlSentinel = "synthetic-openclaw-control-sentinel\\n";
 fs.writeFileSync(homeControlSentinelPath, homeControlSentinel, { mode: 0o600 });
 assert.equal(fs.readFileSync(homeControlSentinelPath, "utf8"), homeControlSentinel);
+// As the workspace node supervisor does: hooks trust a private CA copy the sandbox cannot
+// read, and sandboxed commands keep the Pod's broker CA bundle (finding 2412).
+const hookCaPath = "/home/node/.oce-native-hooks/gateway-ca.pem";
+fs.mkdirSync("/home/node/.oce-native-hooks", { mode: 0o700 });
+fs.writeFileSync(hookCaPath, fs.readFileSync(brokerCaBundle, "utf8"), { mode: 0o600 });
+environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS = brokerCaBundle;
+environment.NODE_EXTRA_CA_CERTS = hookCaPath;
 let native;
 vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
   URL, console, setTimeout, setInterval,
@@ -1624,6 +1661,14 @@ const timeout = setTimeout(() => {
 
     markStockBrokerStage("outside-home-read");
     await expectFailure("outside-workspace-home-read-denied", "cat " + homeControlSentinelPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
+    await expectFailure("hook-ca-read-denied", "cat " + hookCaPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
+    // Node loads extra CAs lazily; reading them proves the sandboxed command can.
+    const shellNodeCa = await execShell("node -e " + JSON.stringify('process.stdout.write(process.env.NODE_EXTRA_CA_CERTS + "|" + require("node:tls").getCACertificates("extra").length);'));
+    assert.equal(shellNodeCa.exitCode, 0, shellNodeCa.stderr);
+    assert.doesNotMatch(shellNodeCa.stderr, /Ignoring extra certs/);
+    const [shellCaPath, shellCaCount] = shellNodeCa.stdout.split("|");
+    assert.equal(shellCaPath, brokerCaBundle);
+    assert.ok(Number(shellCaCount) > 0, "sandboxed node must trust the broker CA bundle");
     const sentinelBeforeSandboxWrite = fs.readFileSync(homeControlSentinelPath, "utf8");
     markStockBrokerStage("outside-home-shadow-write");
     const shadowWrite = await execShell("printf shadowed > " + homeControlSentinelPath + " && printf sandbox-write-exit0", brokerPermissionProfile);
@@ -1713,7 +1758,17 @@ test(
   "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
+    const source = await readOpenclawSource();
+    assert.equal(
+      source.commit,
+      GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+      "expected a policy-qualified runtime",
+    );
     const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
+    const codexExecutableSource = AGENT_RUNTIME_ENTRYPOINT.match(
+      /^function codexExecutable\(\) \{\n[\s\S]*?\n\}\n/m,
+    )?.[0];
+    assert.ok(codexExecutableSource, "the Harness entrypoint must define codexExecutable()");
     const script = String.raw`
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
@@ -1730,12 +1785,21 @@ assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "c
 assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
-assert.equal(provenance.commit, "f8386bc7df0a6c9eda7a28ae81943c5c06a414ff");
-assert.equal(provenance.sourceArchiveSha256, "ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d");
-assert.equal(provenance.openclawBridgePatchSha256, "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca");
-assert.equal(provenance.openclawConnectPatchSha256, "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2");
-assert.equal(provenance.codexDependencyPinPatchSha256, "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9");
-assert.equal(provenance.openclawRequiredWorkerAuthorityPatchSha256, "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8");
+const expectedSource = JSON.parse(process.argv[2]);
+assert.equal(provenance.commit, expectedSource.commit);
+assert.equal(provenance.sourceArchiveSha256, expectedSource.sourceArchiveSha256);
+assert.equal(provenance.openclawBridgePatchSha256, "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc");
+assert.equal(Object.hasOwn(provenance, "openclawConnectPatchSha256"), false);
+assert.equal(provenance.codexDependencyPinPatchSha256, "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119");
+assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804");
+assert.deepEqual(provenance.patches, {
+  "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
+  "openclaw-codex-full-access-profile.patch": "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
+  "stock-codex-0.163.0-alpha.2-dependency-pin.patch": provenance.codexDependencyPinPatchSha256,
+  "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
+  "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
+  "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+});
 assert.equal(provenance.codex.version, "0.163.0-alpha.2");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
@@ -1775,6 +1839,13 @@ const codexPackage = JSON.parse(readFileSync(resolve(codexPackageRoot, "package.
 const platformPackageRoot = resolve(codexPackageRoot, "..", platform.packageDirectory);
 const platformPackage = JSON.parse(readFileSync(resolve(platformPackageRoot, "package.json"), "utf8"));
 const platformBinary = resolve(platformPackageRoot, platform.binaryPath);
+// Login and the model check spawn codexExecutable() so a timeout's SIGKILL ends native
+// Codex, not just the npm launcher (finding 2274). Run the generated helper on this
+// image's PATH: a shim in place of the launcher symlink would make it fall back.
+${codexExecutableSource}
+const harnessCodex = codexExecutable();
+assert.ok(harnessCodex.startsWith("/"), "codexExecutable() fell back to " + harnessCodex + " on PATH " + process.env.PATH);
+assert.equal(realpathSync(harnessCodex), realpathSync(platformBinary));
 const platformBinarySha256 = createHash("sha256").update(readFileSync(platformBinary)).digest("hex");
 const platformInventoryPath = relative("/app/node_modules/openclaw", realpathSync(platformBinary));
 assert.ok(!platformInventoryPath.startsWith(".."), "Codex platform binary must live under the inventoried OpenClaw package root.");
@@ -1910,6 +1981,7 @@ const deadline = setTimeout(() => {
       "-e",
       script,
       JSON.stringify(defaultPluginPolicy),
+      JSON.stringify(source),
     ]);
     assert.match(stdout, /shared-codex-0.163.0-alpha.2-ready/);
   },

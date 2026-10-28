@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # ChannelDriver contract
 
 ## Overview

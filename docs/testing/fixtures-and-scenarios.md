@@ -17,6 +17,12 @@ under test.
 Captured state must be keyless. The [released Gateway fixture](../../tests/fixtures/runtime-state/released-gateway-state.tar.gz)
 has device identity and config version keys removed; regenerate it the same
 way using the image identified in its test.
+The [workspace node fixture](../../tests/fixtures/runtime-state/workspace-node-state-openclaw-f8386bc7.tar.gz)
+is a dedicated Harness's node state and workspace from the OpenClaw `f8386bc7`
+runtime image (shared state schema 20). To record it, run `openclaw setup --baseline`
+and one `openclaw node run` on that image as uid 1000. Then copy the database with
+`VACUUM INTO`, delete its `device_identities` rows, vacuum it again and archive it
+without the Git sample hooks. Each test run saves a new identity in the older row format.
 
 ## Make cases easy to add and diagnose
 

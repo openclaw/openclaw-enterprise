@@ -21,10 +21,10 @@ import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-dis
 import { isPluginSelections } from "./plugin-fields.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
-  AGENT_UPDATE_DENIED,
   SAVE_REFUSALS,
   assertReadableConfiguration,
-  message,
+  describeFailure,
+  readFailure,
   rejectionMessage,
 } from "./list.mjs";
 import { configuredHarnessId } from "./harness-auth.mjs";
@@ -69,11 +69,22 @@ interface PluginEditorOptions {
   onSaved(savedAgent: Readonly<Record<string, unknown>>): void;
   onReload(): void;
   savedNotice?: string;
-  updateAllowed?: Promise<boolean | undefined> | null;
+  /** Why the permission answer refuses a save (Agent update, or its source grants). */
+  saveDenied?: Promise<string | undefined> | null;
 }
+
+// A caller who may not update the Agent reads its plugin selections (finding 2436).
+const PLUGINS_READ_ONLY =
+  "These are the version draft's plugin selections, read-only with your access. The next deployment uses them as saved.";
 
 export const API_KEY_PLUGIN_MESSAGE =
   "Codex plugins need a ChatGPT login. This Agent uses an API key, so each selected plugin is disabled when it deploys (PLUGIN_AUTH_REQUIRED). Change its Harness authentication under Credentials to use plugins.";
+
+// The policy capabilities read authorizes Agent update on the Agent.
+const PLUGIN_CAPABILITIES_NEED = {
+  task: "reading this Agent's plugin policy controls",
+  grant: "Agent update on it",
+};
 
 const PLUGIN_WARNING_EXPLANATIONS = Object.freeze({
   PLUGIN_AUTH_REQUIRED:
@@ -82,11 +93,45 @@ const PLUGIN_WARNING_EXPLANATIONS = Object.freeze({
     "was disabled for this startup because it could not be installed. Check the Agent's runtime logs.",
 });
 
-/** One sentence per deployment startup warning, keeping its code for lookup. */
+// The saved Agent default approvers as text: a version's snapshot and a reader's view of the
+// draft, which has no field to edit them (finding 2447).
+function approverSummary(
+  approvers: PluginApprovers | undefined,
+  notes: { inherited: string; empty: string; listed: string },
+) {
+  return [
+    element("h3", {}, "Default plugin approvers"),
+    element(
+      "p",
+      { className: "muted" },
+      approvers === undefined
+        ? notes.inherited
+        : approvers.length === 0
+          ? notes.empty
+          : notes.listed,
+    ),
+    ...(approvers?.length
+      ? [
+          element(
+            "ul",
+            {},
+            ...approvers.map((entry) =>
+              element("li", {}, element("code", {}, `${entry.channel}: ${entry.id}`)),
+            ),
+          ),
+        ]
+      : []),
+  ];
+}
+
+/**
+ * One sentence per deployment startup warning, keeping its code for lookup. A code this console
+ * does not know still gets a sentence and a next step, not the code alone (finding 2538).
+ */
 export function pluginWarningText(warning: PluginDeploymentWarning) {
   const explanation = Object.hasOwn(PLUGIN_WARNING_EXPLANATIONS, warning.code)
     ? PLUGIN_WARNING_EXPLANATIONS[warning.code]
-    : "reported a startup warning.";
+    : "reported a startup warning this console does not describe. Check the Agent's runtime logs.";
   return `${warning.pluginId} ${explanation} (${warning.code})`;
 }
 
@@ -104,7 +149,7 @@ export function renderAgentPlugins(
     onSaved,
     onReload,
     savedNotice = "",
-    updateAllowed = null,
+    saveDenied = null,
   }: PluginEditorOptions,
 ) {
   if (!draft) {
@@ -118,27 +163,12 @@ export function renderAgentPlugins(
         "This version's plugin selections are immutable. Select Create new version to change them for a future deployment.",
       ),
       element("pre", { tabindex: "0" }, JSON.stringify(snapshot.plugins?.plugins ?? {}, null, 2)),
-      element("h3", {}, "Default plugin approvers"),
-      element(
-        "p",
-        { className: "muted" },
-        snapshot.pluginApprovers === undefined
-          ? "No Agent default was set when this version was created; the existing OpenClaw approval routing applies."
-          : snapshot.pluginApprovers.length === 0
-            ? "Explicit empty list: no Slack user can approve plugins in this version by default."
-            : "This version's Agent default approvers are immutable.",
-      ),
-      ...(snapshot.pluginApprovers?.length
-        ? [
-            element(
-              "ul",
-              {},
-              ...snapshot.pluginApprovers.map((entry) =>
-                element("li", {}, element("code", {}, `${entry.channel}: ${entry.id}`)),
-              ),
-            ),
-          ]
-        : []),
+      ...approverSummary(snapshot.pluginApprovers, {
+        inherited:
+          "No Agent default was set when this version was created; the existing OpenClaw approval routing applies.",
+        empty: "Explicit empty list: no Slack user can approve plugins in this version by default.",
+        listed: "This version's Agent default approvers are immutable.",
+      }),
     );
   }
 
@@ -165,6 +195,7 @@ export function renderAgentPlugins(
   input.value = retained?.text ?? initialText;
   let catalogCredential: PluginCapabilities["discoveryCredential"] | null = null;
   let catalogCapabilityChecked = false;
+  // The failed capabilities read's reason, shown once under the policy controls.
   let catalogCapabilityError = false;
   const hasBoundCredential =
     agent.harnessAuth?.method === "credential_source" ||
@@ -185,21 +216,25 @@ export function renderAgentPlugins(
     catalogPath: `${path}/plugins`,
     requestBody: (body) => body,
     canDiscover: () =>
+      !updateDenied &&
       codex &&
       !apiKeyAuth &&
       (catalogCredential === "none" || (catalogCredential === "required" && hasBoundCredential)),
-    canPrefetch: () => codex && !apiKeyAuth && hasBoundCredential,
+    canPrefetch: () => !updateDenied && codex && !apiKeyAuth && hasBoundCredential,
     isPending: () => pending,
     unavailableMessage: () =>
-      !codex
-        ? "Plugin browsing requires the Codex harness. You can still edit existing plugin selections."
-        : apiKeyAuth
-          ? "Plugin browsing is unavailable with API-key authentication."
-          : !catalogCapabilityChecked
-            ? "Checking plugin catalog availability…"
-            : catalogCapabilityError
-              ? "Could not check plugin catalog availability. Refresh this page or edit existing plugin selections."
-              : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+      // A caller who may not update the Agent is not told to edit its selections (finding 2436).
+      updateDenied
+        ? "Plugin browsing needs Agent update access."
+        : !codex
+          ? "Plugin browsing requires the Codex harness. You can still edit existing plugin selections."
+          : apiKeyAuth
+            ? "Plugin browsing is unavailable with API-key authentication."
+            : !catalogCapabilityChecked
+              ? "Checking plugin catalog availability…"
+              : catalogCapabilityError
+                ? "Plugin browsing needs the plugin capabilities, which could not be read. Refresh this page, or edit existing plugin selections."
+                : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
       "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound credential. Saved selections can still be edited.",
@@ -242,7 +277,6 @@ export function renderAgentPlugins(
   );
   const feedback = element("p", { className: "hint", role: "status" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
-  const updateNote = element("p", { className: "muted", role: "status", hidden: true });
   const save = button("Save plugin selections", () => void savePlugins(), {
     tone: "primary",
   });
@@ -257,14 +291,15 @@ export function renderAgentPlugins(
     reload.disabled = true;
     void onReload();
   });
+  const intro = element(
+    "p",
+    { className: "muted" },
+    "Save selections on this Agent, then deploy a new version to apply them.",
+  );
   const section = element(
     "section",
     { className: "agent-card" },
-    element(
-      "p",
-      { className: "muted" },
-      "Save selections on this Agent, then deploy a new version to apply them.",
-    ),
+    intro,
     ...(agent.harnessAuth?.method === "credential_source"
       ? [
           statusBlock(
@@ -281,7 +316,6 @@ export function renderAgentPlugins(
       : []),
     discovery.fields.section,
     capabilitiesStatus,
-    updateNote,
     element("div", { className: "form-actions" }, save, discard, reload),
     feedback,
     saveError,
@@ -321,7 +355,8 @@ export function renderAgentPlugins(
     } else if (reloadRequired) {
       feedback.textContent = "Plugin selections changed. Reload this Agent before saving again.";
     } else if (!dirty && !pending) {
-      feedback.textContent = "No plugin changes to save.";
+      // A caller who may not save reads the selections; nothing addresses an editor.
+      feedback.textContent = updateDenied ? "" : "No plugin changes to save.";
     }
   }
 
@@ -441,11 +476,14 @@ export function renderAgentPlugins(
             ? rejectionMessage(cause, mutationStarted)
             : error.status === 400
               ? "Plugin selections were rejected. Check plugin IDs and policy JSON, then retry."
-              : error.status === 409
-                ? "Plugin changes conflict with the current Agent state. Refresh this Agent before retrying."
-                : error.status === 501
-                  ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
-                  : message(cause, mutationStarted);
+              : error.status === 501
+                ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
+                : // A typed 409 names the setting or state that refused the save.
+                  describeFailure(cause, {
+                    mutation: mutationStarted,
+                    conflict: "Plugin changes conflict with the current Agent state.",
+                    next: "Refresh this Agent before retrying.",
+                  });
       // Save disables while it runs, which dropped focus to the page. Focus the reader moved
       // anywhere else while the save ran, in this section too, stays there (finding 1978).
       revealStatus(saveError, save);
@@ -466,45 +504,87 @@ export function renderAgentPlugins(
   if (savedNotice) {
     feedback.textContent = savedNotice;
   }
-  // An answer already settled applies before this section is first painted.
-  void updateAllowed?.then((allowed) => {
-    if (allowed === false && context.isCurrent()) {
-      updateDenied = true;
-      updateNote.textContent = AGENT_UPDATE_DENIED;
-      updateNote.hidden = false;
-      // The selections stay in view while their fields are disabled.
-      input.closest("details")?.setAttribute("open", "");
-      updateState();
-    }
-  });
-  void context.request(`${path}/plugins/capabilities`).then(
-    (response) => {
-      if (context.isCurrent()) {
-        const capabilities = response as PluginCapabilities;
-        catalogCredential = capabilities.discoveryCredential;
-        catalogCapabilityChecked = true;
-        discovery.fields.setCapabilities(capabilities);
-        discovery.update();
-        defaultApprovers.hidden = capabilities.approvers?.agent !== true;
-        if (!defaultApprovers.hidden) {
-          defaultApprovers.refreshNames();
+  function readCapabilities() {
+    void context.request(`${path}/plugins/capabilities`).then(
+      (response) => {
+        if (context.isCurrent()) {
+          const capabilities = response as PluginCapabilities;
+          catalogCredential = capabilities.discoveryCredential;
+          catalogCapabilityChecked = true;
+          discovery.fields.setCapabilities(capabilities);
+          discovery.update();
+          defaultApprovers.hidden = capabilities.approvers?.agent !== true;
+          if (!defaultApprovers.hidden) {
+            defaultApprovers.refreshNames();
+          }
         }
-      }
-    },
-    (cause: unknown) => {
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (requestFailure(cause).status === 401) {
-        context.onExpired();
-      } else {
-        catalogCapabilityError = true;
-        catalogCapabilityChecked = true;
-        discovery.update();
-        capabilitiesStatus.textContent =
-          "Plugin policy controls could not be loaded. Plugin selections JSON remains editable.";
-      }
-    },
-  );
+      },
+      (cause: unknown) => {
+        if (!context.isCurrent()) {
+          return;
+        }
+        if (requestFailure(cause).status === 401) {
+          context.onExpired();
+        } else {
+          catalogCapabilityError = true;
+          catalogCapabilityChecked = true;
+          discovery.fields.setCapabilities(null, true);
+          discovery.update();
+          // A refusal names the grant this read checks, an outage who to ask (finding 2538).
+          capabilitiesStatus.textContent = `${readFailure(
+            "Plugin policy controls",
+            cause,
+            PLUGIN_CAPABILITIES_NEED,
+          )} Plugin selections JSON remains editable.`;
+        }
+      },
+    );
+  }
+  // An answer already settled applies before this section is first painted. Reading the policy
+  // capabilities needs Agent update: a caller the answer denies it reads the saved selections
+  // and is not sent a read that answers 403. An unknown answer still reads them (finding 2436).
+  // A caller missing only the source grants a save checks is not sent it either: no save could
+  // keep a policy edit (finding 2441).
+  void Promise.resolve(saveDenied).then((reason) => {
+    if (!context.isCurrent()) {
+      return;
+    }
+    if (reason === undefined) {
+      readCapabilities();
+      return;
+    }
+    updateDenied = true;
+    // An unsaved edit kept from an earlier visit can be neither saved nor discarded from the
+    // summary, and kept Deploy on "Save or discard plugin changes" (finding 2463): the summary
+    // shows the Agent as read, so the kept edit is dropped and the tab reports a clean state.
+    context.drafts.forget("plugins");
+    input.value = initialText;
+    pluginApprovers = structuredClone(initialApprovers);
+    outcomeUnknown = false;
+    reloadRequired = false;
+    updateState();
+    // The saved selections and default approvers show as a summary, like a version snapshot's:
+    // the editor's disabled Configure, Save and Discard controls and its instructions addressed
+    // an editor this caller is not (findings 2447, 2455). The approver field waits for the
+    // capabilities read, which this caller is not sent, so the approvers show as text too.
+    const selections = Object.keys(agent.plugins ?? {});
+    section.replaceChildren(
+      element("h2", {}, "Plugin selections"),
+      element("p", { className: "muted" }, PLUGINS_READ_ONLY),
+      selections.length
+        ? element("pre", { tabindex: "0" }, JSON.stringify(agent.plugins, null, 2))
+        : element("p", {}, "No plugins are selected."),
+      element(
+        "div",
+        { className: "plugin-approvers-saved" },
+        ...approverSummary(agent.pluginApprovers, {
+          inherited: "No Agent default is set; the existing OpenClaw approval routing applies.",
+          empty: "Explicit empty list: no Slack user can approve plugins by default.",
+          listed: "The next deployment uses these Agent default approvers.",
+        }),
+      ),
+      element("p", { className: "muted", role: "status" }, reason),
+    );
+  });
   return section;
 }

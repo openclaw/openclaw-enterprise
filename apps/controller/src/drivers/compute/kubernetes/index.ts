@@ -2,6 +2,8 @@ import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/con
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
+  codexProxiesRepositoryBroker,
+  codexRepositoryBrokerNetworkProxy,
   type PreparedTokenService,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -10,6 +12,7 @@ import {
   computeReleasePublicKey,
   signComputeExecutionRelease,
 } from "../egress-enrollment.ts";
+import { forwardMethod } from "../../../backends/token-service/forward-method.ts";
 import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
@@ -19,7 +22,7 @@ import {
   openAiBaseUrlRewritesIpv4,
   openAiBaseUrlSpellingMessage,
 } from "../../openai-endpoint.ts";
-import { compareResourceQuantities } from "./resource-quantities.ts";
+import { compareResourceQuantities, isResourceQuantity } from "./resource-quantities.ts";
 import {
   asRecord,
   hasControlCharacter,
@@ -45,7 +48,7 @@ import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-
 import {
   MODEL_EGRESS_EXCLUDED_IPV4_CIDRS,
   MODEL_EGRESS_PORT,
-  modelEgressRefusal,
+  modelEgressWarning,
 } from "./model-egress.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -157,6 +160,7 @@ import {
   keyedSettingPath,
   KubernetesSecretWriteForbiddenError,
   provisionsDedicatedOpenClaw,
+  requireChannelSecretBindings,
   requireOpenClawRoster,
   resolveConfiguredHarnessId,
   ResourceConflictError,
@@ -202,6 +206,7 @@ import {
   requireWorkspaceNodePlugins,
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
+import { managedGatewayConfiguration, validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
@@ -239,11 +244,14 @@ import {
   PUBLIC_GITHUB_READ_SKILL,
 } from "../../repo/github/public-read/codex.ts";
 import {
+  EMBEDDED_GATEWAY_OWNER_STARTUP,
+  INITIALIZE_EMBEDDED_GATEWAY_OWNER,
+} from "../embedded-gateway-owner.ts";
+import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
@@ -251,6 +259,7 @@ import {
   RUNTIME_READINESS_PATH,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
+  gatewayRuntimeEntrypoint,
 } from "./runtime-entrypoints.ts";
 
 import {
@@ -550,6 +559,7 @@ interface GatewayConfigurationSnapshot {
   readonly name: string;
   readonly revision: number;
   readonly revisionId: string;
+  readonly gatewayManagedMode: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -1453,6 +1463,10 @@ const RESOURCE_REQUIREMENTS_SCHEMA = Object.freeze({
     },
   },
 });
+const DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED =
+  "Dedicated Gateways require runtime.gatewayNodeSelector for control-plane scheduling.";
+const DEDICATED_STORAGE_ROUTING_REQUIRED =
+  "Dedicated Harness storage requires gateway routing and node enrollment.";
 const POD_LABEL_VALUE_PATTERN = "^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)?$";
 const POD_LABEL_VALUE = new RegExp(POD_LABEL_VALUE_PATTERN);
 const POD_LABELS_SCHEMA = {
@@ -1626,18 +1640,6 @@ function normalizedNetworkHost(value: string, description: string): string {
   return host;
 }
 
-function mergeDomainDecision(
-  domains: Record<string, "allow" | "deny">,
-  host: string,
-  decision: "allow" | "deny",
-): void {
-  if (domains[host] === "deny" || decision === "deny") {
-    domains[host] = "deny";
-    return;
-  }
-  domains[host] = "allow";
-}
-
 function validateResources(value: V1ResourceRequirements, description: string, path: string): void {
   const resources = asRecord(value);
   const requests = asRecord(resources?.requests);
@@ -1703,6 +1705,47 @@ function configurationConstraintFailure(
     : new ConfigurationValidationError([{ path, code, message }]);
 }
 
+function validateKubernetesAuthentication(
+  authentication: KubernetesComputeDriverOptions["authentication"],
+  path: "/authentication" | "/executionCluster/authentication",
+): void {
+  if (asRecord(authentication) === undefined) {
+    throw configurationConstraintFailure(
+      "Exactly one explicit Kubernetes authentication mode is required.",
+      path,
+    );
+  }
+  if (authentication.mode === "inCluster") {
+    if ("kubeconfigPath" in authentication || "context" in authentication) {
+      throw configurationConstraintFailure(
+        "In-cluster and kubeconfig authentication cannot be combined.",
+        path,
+      );
+    }
+  } else if (authentication.mode === "kubeconfig") {
+    const kubeconfigPath = required(
+      authentication.kubeconfigPath,
+      "Dedicated kubeconfig path",
+      `${path}/kubeconfigPath`,
+    );
+    if (!isAbsolute(kubeconfigPath)) {
+      throw new ConfigurationValidationError([
+        {
+          path: `${path}/kubeconfigPath`,
+          code: "INVALID_FORMAT",
+          message: "Dedicated kubeconfig path must be absolute.",
+        },
+      ]);
+    }
+    required(authentication.context, "Explicit Kubernetes context", `${path}/context`);
+  } else {
+    throw configurationConstraintFailure(
+      "Exactly one explicit Kubernetes authentication mode is required.",
+      path,
+    );
+  }
+}
+
 function validatePeer(value: KubernetesWorkloadPeer, description: string, path?: string): void {
   if (asRecord(value) === undefined) {
     throw configurationConstraintFailure(`${description} is required.`, path, "REQUIRED");
@@ -1725,33 +1768,55 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string, path?:
       path === undefined ? undefined : `${path}/podLabels`,
     );
   }
+  validateKubernetesLabels(
+    labels,
+    description,
+    path === undefined ? undefined : `${path}/podLabels`,
+  );
+}
+
+// ValidateResourceQuotaResourceName: a quota resource name without a "/" must be a standard
+// quota resource.
+const STANDARD_QUOTA_RESOURCE =
+  /^(?:(?:requests\.|limits\.)?(?:cpu|memory|ephemeral-storage)|requests\.storage|(?:requests\.)?hugepages-.+|pods|services|services\.nodeports|services\.loadbalancers|replicationcontrollers|resourcequotas|secrets|configmaps|persistentvolumeclaims)$/;
+
+// A label key (also a ResourceQuota resource name) as the API server checks it: a qualified
+// name, an optional DNS subdomain prefix and a name of at most 63 characters.
+function isKubernetesQualifiedName(key: string): boolean {
+  const parts = key.split("/");
+  const name = parts.at(-1) ?? "";
+  const prefix = parts.length === 2 ? parts[0] : undefined;
+  return (
+    parts.length <= 2 &&
+    name.length > 0 &&
+    name.length <= 63 &&
+    POD_LABEL_VALUE.test(name) &&
+    (prefix === undefined || isKubernetesResourceName(prefix))
+  );
+}
+
+// NetworkPolicy peers and node selectors: the API server refuses a Pod, Deployment or
+// NetworkPolicy whose labels break these rules, after a dedicated deploy stopped its predecessors.
+function validateKubernetesLabels(
+  labels: Readonly<Record<string, unknown>>,
+  description: string,
+  path?: string,
+): void {
   for (const [key, label] of Object.entries(labels)) {
-    required(key, `${description} label key`, path === undefined ? undefined : `${path}/podLabels`);
+    required(key, `${description} label key`, path);
     if (typeof label !== "string") {
-      throw configurationConstraintFailure(
-        `${description} labels must be strings.`,
-        path === undefined ? undefined : `${path}/podLabels`,
-      );
+      throw configurationConstraintFailure(`${description} labels must be strings.`, path);
     }
-    const parts = key.split("/");
-    const name = parts.at(-1) ?? "";
-    const prefix = parts.length === 2 ? parts[0] : undefined;
-    if (
-      parts.length > 2 ||
-      name.length === 0 ||
-      name.length > 63 ||
-      !POD_LABEL_VALUE.test(name) ||
-      (prefix !== undefined && !isKubernetesResourceName(prefix))
-    ) {
+    if (!isKubernetesQualifiedName(key)) {
       throw configurationConstraintFailure(
         `${description} label keys must be Kubernetes label keys.`,
-        path === undefined ? undefined : `${path}/podLabels`,
+        path,
       );
     }
     if (label.length > 63 || !POD_LABEL_VALUE.test(label)) {
       throw configurationConstraintFailure(
         `${description} label values must be Kubernetes label values.`,
-        path === undefined ? undefined : `${path}/podLabels`,
+        path,
       );
     }
   }
@@ -2023,16 +2088,12 @@ function validateGatewayRoutingTarget(
   validateKubernetesNamespaceName(
     required(routing.gatewayNamespace, `${setting} Gateway namespace`, `${path}/gatewayNamespace`),
     `${setting} Gateway namespace`,
-    setting === "Gateway routing"
-      ? "/gatewayRouting/gatewayNamespace"
-      : "/executionCluster/harnessRouting/gatewayNamespace",
+    `${path}/gatewayNamespace`,
   );
   validateKubernetesNamespaceName(
     required(routing.envoyNamespace, `${setting} Envoy namespace`, `${path}/envoyNamespace`),
     `${setting} Envoy namespace`,
-    setting === "Gateway routing"
-      ? "/gatewayRouting/envoyNamespace"
-      : "/executionCluster/harnessRouting/envoyNamespace",
+    `${path}/envoyNamespace`,
   );
   validatePort(
     routing.envoyHttpsTargetPort ?? 10443,
@@ -2319,8 +2380,7 @@ function isManagedKubernetesNamespaceName(
     name === kubernetesNamespaceName(namespaceId) ||
     name === previousKubernetesNamespaceName(namespaceId) ||
     // A released split-layout storage namespace adopted as the tenant namespace in place
-    // (docs/guides/deploy/breaking-changes-before-2026-10-10.md, 2026-10-05).
-    // It keeps its storage label.
+    // (docs/guides/deploy/split-layout-upgrade.md). It keeps its storage label.
     (name === kubernetesGatewayNamespaceName(namespaceId) &&
       labels["openclaw.dev/gateway-namespace"] === namespaceId)
   );
@@ -2898,14 +2958,56 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
   }
 }
 
+const NATIVE_HOOK_RELAY_PATH = ["plugins", "entries", "codex", "config", "appServer"] as const;
+
+// Compute renders plugins.entries.codex.config.appServer.nativeHookRelay for Dedicated Codex
+// (gatewayNativeHookRelayConfiguration), so each step of that path must be an object and the
+// relay unset. Admission and preparation apply this one rule; preparation alone refused it
+// after a dedicated deployment stopped its predecessors (finding 2315).
+function requireComputeNativeHookRelay(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: (setting: string, requirement: string) => Error,
+): void {
+  let step: Record<string, unknown> = configuration;
+  for (const [index, key] of NATIVE_HOOK_RELAY_PATH.entries()) {
+    const value = step[key];
+    if (value === undefined || value === null) {
+      return;
+    }
+    const record = asRecord(value);
+    if (record === undefined) {
+      throw createError(
+        NATIVE_HOOK_RELAY_PATH.slice(0, index + 1).join("."),
+        "must be an object on Dedicated Codex",
+      );
+    }
+    step = record;
+  }
+  if (step.nativeHookRelay !== undefined) {
+    throw createError(
+      `${NATIVE_HOOK_RELAY_PATH.join(".")}.nativeHookRelay`,
+      "must be unset on Dedicated Codex: the native hook relay is owned by the Compute Driver",
+    );
+  }
+}
+
 // The dedicated OpenClaw model catalog: every selected model is openai/<id> with exactly one
 // entry under models.providers.openai.models that carries the transport, token and cost
-// metadata the native worker needs. The caller owns these settings, so each refusal names
-// the setting (`createError`); a model reference is not echoed.
+// metadata the native worker needs. The Compute Driver owns the runtime transport. The caller
+// owns these settings, so each refusal names the setting (`createError`); a model reference is
+// not echoed.
 function nativeRuntimeConfiguration(
   configuration: OpenClawConfigurationDocument,
   createError: (setting: string, requirement: string) => Error,
+  authMethod: HarnessAuthSnapshot["method"],
 ): object {
+  const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+  if (asRecord(defaults?.embeddedAgent)?.runtimeServer !== undefined) {
+    throw createError(
+      "agents.defaults.embeddedAgent.runtimeServer",
+      "must be unset on Dedicated OpenClaw: the selected Compute Driver owns the runtime transport",
+    );
+  }
   const models = harnessModels(configuration);
   const providers = asRecord(asRecord(configuration.models)?.providers);
   const openai = asRecord(providers?.openai);
@@ -2964,26 +3066,21 @@ function nativeRuntimeConfiguration(
         "must set api, baseUrl, positive integer contextWindow and maxTokens, and non-negative cost input, output, cacheRead and cacheWrite (here or on models.providers.openai) on Dedicated OpenClaw",
       );
     }
-    let endpoint: URL | undefined;
-    try {
-      endpoint = new URL(baseUrl as string);
-    } catch {
-      endpoint = undefined;
-    }
+    const endpoint = normalizeOpenAiBaseUrl(baseUrl as string);
     if (
       endpoint === undefined ||
-      endpoint.protocol !== "https:" ||
-      endpoint.hostname !== "api.openai.com" ||
-      endpoint.port !== "" ||
-      endpoint.username !== "" ||
-      endpoint.password !== "" ||
-      endpoint.search !== "" ||
-      endpoint.hash !== "" ||
-      endpoint.pathname.replace(/\/$/u, "") !== "/v1"
+      openAiBaseUrlRewritesIpv4(baseUrl as string) ||
+      new URL(endpoint).port !== ""
     ) {
       throw createError(
         `${setting}.baseUrl`,
-        "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
+        "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
+      );
+    }
+    if (authMethod !== "credential_source" && endpoint !== "https://api.openai.com/v1") {
+      throw createError(
+        `${setting}.baseUrl`,
+        "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 unless harnessAuth.method is credential_source",
       );
     }
     if (entry.reasoning !== undefined && typeof entry.reasoning !== "boolean") {
@@ -3014,6 +3111,7 @@ function nativeRuntimeConfiguration(
     return {
       id,
       api,
+      baseUrl: endpoint,
       name: isNonEmptyString(entry.name) ? entry.name : id,
       contextWindow,
       maxTokens,
@@ -3032,7 +3130,7 @@ function nativeRuntimeConfiguration(
     models: {
       providers: {
         openai: {
-          baseUrl: "https://api.openai.com/v1",
+          baseUrl: runtimeModels[0]!.baseUrl,
           apiKey: { source: "env", provider: "model", id: MODEL_API_KEY },
           models: runtimeModels,
         },
@@ -3046,16 +3144,13 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
   if (revision.harness.id !== "openclaw" || revision.harness.mode !== "dedicated") {
     return undefined;
   }
-  const defaults = asRecord(asRecord(revision.configuration.agents)?.defaults);
-  const embeddedAgent = asRecord(defaults?.embeddedAgent);
-  if (embeddedAgent?.runtimeServer !== undefined) {
-    throw new ConfigurationFailure(
-      "Dedicated OpenClaw runtime transport is owned by the selected Compute Driver.",
-    );
-  }
   return {
     configuration: JSON.stringify(
-      nativeRuntimeConfiguration(revision.configuration, preparationSettingError),
+      nativeRuntimeConfiguration(
+        revision.configuration,
+        preparationSettingError,
+        revision.harnessAuth.method,
+      ),
     ),
   };
 }
@@ -3183,11 +3278,55 @@ function gatewayDocumentBeforeLanBind(
   return JSON.stringify(earlier);
 }
 
+/** Compute observes prepared-source readiness; it does not resolve warm credentials. */
+type PreparedTokenReadinessIssuer = Pick<
+  NonNullable<ReturnType<PreparedTokenService["issuer"]>>,
+  "sourceFromRoute" | "ready"
+>;
+type PreparedTokenReadinessService = {
+  issuer(
+    ...args: Parameters<PreparedTokenService["issuer"]>
+  ): PreparedTokenReadinessIssuer | undefined;
+};
+
+function preparedTokenReadiness(
+  service: PreparedTokenReadinessService | undefined,
+): PreparedTokenReadinessService | undefined {
+  if (!service) {
+    return undefined;
+  }
+  const select = forwardMethod(service, service.issuer);
+  return Object.freeze(
+    Object.assign(Object.create(null), {
+      issuer(provider) {
+        const owner = select(provider);
+        if (!owner) {
+          return undefined;
+        }
+        return Object.freeze(
+          Object.assign(Object.create(null), {
+            sourceFromRoute: forwardMethod(owner, owner.sourceFromRoute),
+            ready: forwardMethod(owner, owner.ready),
+          } satisfies PreparedTokenReadinessIssuer),
+        );
+      },
+    } satisfies PreparedTokenReadinessService),
+  );
+}
+
 export class KubernetesComputeDriver implements ComputeDriver {
   readonly discoverHarnessModels = discoverHarnessModels;
 
   requiresStoppedPredecessors(revision: AgentRevision): boolean {
     return revision.harness.mode === "dedicated";
+  }
+
+  private validateGatewayManagedMode(revision: Readonly<AgentRevision>): void {
+    if (revision.gatewayManagedMode === true && this.options.runtime === undefined) {
+      throw new ConfigurationHarnessError(
+        "Agent setting gatewayManagedMode requires a supported Gateway runtime on Kubernetes Compute.",
+      );
+    }
   }
 
   static readonly configurationSchema = Object.freeze({
@@ -3394,6 +3533,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly id: string;
   readonly capability = "compute" as const;
   readonly implementation: string;
+  // Declared only with a Gateway runtime, which managed revisions require (validateGatewayManagedMode).
+  readonly supportsGatewayManagedMode?: true;
   readonly supportsWorkspaceSetup = true as const;
   readonly requiresAgentRuntimeCredentials?: true;
   readonly agentProvisioning = Object.freeze({
@@ -3403,7 +3544,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly preparedRepositoryIngress: boolean;
-  private readonly preparedTokens: PreparedTokenService | undefined;
+  private readonly preparedTokens: PreparedTokenReadinessService | undefined;
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
 
@@ -3438,42 +3579,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): readonly ErrorDetail[] {
     try {
       const options = configuration;
-      const authentication = options.authentication;
-      if (asRecord(authentication) === undefined) {
-        throw configurationConstraintFailure(
-          "Exactly one explicit Kubernetes authentication mode is required.",
-          "/authentication",
-        );
-      }
-      if (authentication.mode === "inCluster") {
-        if ("kubeconfigPath" in authentication || "context" in authentication) {
-          throw configurationConstraintFailure(
-            "In-cluster and kubeconfig authentication cannot be combined.",
-            "/authentication",
-          );
-        }
-      } else if (authentication.mode === "kubeconfig") {
-        const path = required(
-          authentication.kubeconfigPath,
-          "Dedicated kubeconfig path",
-          "/authentication/kubeconfigPath",
-        );
-        if (!isAbsolute(path)) {
-          throw new ConfigurationValidationError([
-            {
-              path: "/authentication/kubeconfigPath",
-              code: "INVALID_FORMAT",
-              message: "Dedicated kubeconfig path must be absolute.",
-            },
-          ]);
-        }
-        required(authentication.context, "Explicit Kubernetes context", "/authentication/context");
-      } else {
-        throw configurationConstraintFailure(
-          "Exactly one explicit Kubernetes authentication mode is required.",
-          "/authentication",
-        );
-      }
+      validateKubernetesAuthentication(options.authentication, "/authentication");
       if (
         asRecord(options.images) === undefined ||
         typeof options.images.requireImmutableDigest !== "boolean"
@@ -3537,7 +3643,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       for (const [key, quantity] of Object.entries(quota)) {
         required(key, "Quota resource", "/resources/namespace/quota");
-        resourceQuantity(quantity, "Namespace quota resource", "resources.namespace.quota");
+        // The API server refuses the Namespace's ResourceQuota otherwise, at the first deploy.
+        if (
+          !isKubernetesQualifiedName(key) ||
+          (!key.includes("/") && !STANDARD_QUOTA_RESOURCE.test(key))
+        ) {
+          throw configurationConstraintFailure(
+            `Namespace quota resource ${JSON.stringify(key)} must be a Kubernetes resource name, such as requests.cpu or count/pods.`,
+            "/resources/namespace/quota",
+          );
+        }
+        const value = resourceQuantity(
+          quantity,
+          "Namespace quota resource",
+          "resources.namespace.quota",
+        );
+        if (!isResourceQuantity(value) || (compareResourceQuantities(value, "0") ?? 0) < 0) {
+          throw configurationConstraintFailure(
+            `Namespace quota resource ${key} must be a non-negative Kubernetes quantity string, such as 4 or 8Gi.`,
+            "/resources/namespace/quota",
+          );
+        }
       }
       if (asRecord(options.network) === undefined) {
         throw configurationConstraintFailure("Network policy is required.", "/network");
@@ -3704,6 +3830,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
           throw error;
         }
+        for (const setting of ["nodeSelector", "gatewayNodeSelector"] as const) {
+          const selector = options.runtime[setting];
+          if (selector !== undefined) {
+            validateKubernetesLabels(
+              asRecord(selector) ?? {},
+              `runtime.${setting}`,
+              `/runtime/${setting}`,
+            );
+          }
+        }
         const gatewayStorageClassName = required(
           options.runtime.gatewayStorageClassName,
           "SQLite-compatible gateway storage class",
@@ -3747,21 +3883,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "/runtime/codexModelBaseUrl",
           );
         }
-        // Fail at startup, not at the first Codex auth probe: the Harness reaches the endpoint
-        // only through its model egress policy (finding 1740).
-        const unreachableModelEndpoint =
-          options.runtime.codexModelBaseUrl === undefined
-            ? undefined
-            : modelEgressRefusal(
-                "Codex model endpoint",
-                normalizeOpenAiBaseUrl(options.runtime.codexModelBaseUrl)!,
-              );
-        if (unreachableModelEndpoint !== undefined) {
-          throw configurationConstraintFailure(
-            unreachableModelEndpoint,
-            "/runtime/codexModelBaseUrl",
-          );
-        }
         if (options.runtime.codexSeccompProfile !== undefined) {
           validateCodexSeccompProfile(options.runtime.codexSeccompProfile);
         }
@@ -3789,8 +3910,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "/executionCluster",
           );
         }
-        // Checked before the execution plane's own check below, which reads the harness routing
-        // as its Gateway routing, so a refusal names the setting the operator wrote.
         const harnessHostname: unknown = execution.harnessRouting?.hostname;
         if (harnessHostname !== undefined && typeof harnessHostname !== "string") {
           throw configurationConstraintFailure(
@@ -3808,38 +3927,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "/executionCluster/harnessRouting/hostname",
         );
         validateGatewayRoutingTarget(execution.harnessRouting, "Harness routing");
-        const { executionCluster: _executionCluster, ...control } = options;
-        const { gatewayClients: _gatewayClients, ...network } = options.network;
-        try {
-          requireConfiguration(KubernetesComputeDriver, {
-            ...control,
-            authentication: execution.authentication,
-            gatewayRouting: execution.harnessRouting,
-            network: { ...network, dns: execution.network?.dns },
-          });
-        } catch (error) {
-          if (!(error instanceof ConfigurationValidationError)) {
-            throw error;
-          }
-          // Only these inputs were replaced when constructing the execution-plane options.
-          // Inherited control-plane fields retain their original paths.
-          const fields = [
-            ["/authentication", "/executionCluster/authentication"],
-            ["/gatewayRouting", "/executionCluster/harnessRouting"],
-            ["/network/dns", "/executionCluster/network/dns"],
-          ] as const;
-          throw new ConfigurationValidationError(
-            error.error.details.map((detail) => {
-              const field = fields.find(
-                ([source]) => detail.path === source || detail.path.startsWith(`${source}/`),
-              );
-              return {
-                ...detail,
-                path: field ? field[1] + detail.path.slice(field[0].length) : detail.path,
-              };
-            }) as [ErrorDetail, ...ErrorDetail[]],
-          );
-        }
+        validateKubernetesAuthentication(
+          execution.authentication,
+          "/executionCluster/authentication",
+        );
+        validatePeer(execution.network.dns, "DNS peer", "/executionCluster/network/dns");
         for (const [key, description, cidrs] of [
           [
             "harnessEndpointCidrs",
@@ -4008,6 +4100,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.options = structuredClone(options);
     if (options.runtime !== undefined) {
       this.requiresAgentRuntimeCredentials = true;
+      this.supportsGatewayManagedMode = true;
     }
     this.protectedExecution =
       selection.protectedDriver && new ProtectedExecutionDriver(selection.protectedDriver);
@@ -4022,7 +4115,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.sandboxDriver = this.protectedExecution?.sandbox ?? selection.sandboxDriver;
     this.preprovisionedNamespace = selection.preprovisionedNamespace;
-    this.preparedTokens = selection.preparedTokens;
+    this.preparedTokens = preparedTokenReadiness(selection.preparedTokens);
     if (this.preprovisionedNamespace && options.executionCluster) {
       throw new ConfigurationFailure(
         "A preprovisioned Namespace requires single-cluster Kubernetes execution.",
@@ -4055,7 +4148,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   async preflight(): Promise<ComputePreflightResult> {
     const warnings: {
-      code: "KUBERNETES_VERSION_BELOW_MINIMUM" | "KUBERNETES_STATUS_PROXY_SOURCE_BROAD";
+      code:
+        | "KUBERNETES_VERSION_BELOW_MINIMUM"
+        | "KUBERNETES_STATUS_PROXY_SOURCE_BROAD"
+        | "KUBERNETES_MODEL_EGRESS_BLOCKED";
       message: string;
     }[] = broadStatusProxySourceCidrs(this.options).map((cidr) => ({
       code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
@@ -4064,6 +4160,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
         `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
         "can reach the Agent status port. Use the API server /32 or /128 source addresses.",
     }));
+    // A Codex model endpoint the generated model egress policy does not admit still starts: an
+    // operator's own NetworkPolicy can open it (finding 2284). Startup validated the URL.
+    const codexModelBaseUrl = this.options.runtime?.codexModelBaseUrl;
+    const modelEgress =
+      codexModelBaseUrl === undefined
+        ? undefined
+        : modelEgressWarning("Codex model endpoint", normalizeOpenAiBaseUrl(codexModelBaseUrl)!);
+    if (modelEgress !== undefined) {
+      warnings.push({ code: "KUBERNETES_MODEL_EGRESS_BLOCKED", message: modelEgress });
+    }
     let controlIdentity: string | undefined;
     const planes =
       this.options.executionCluster === undefined
@@ -4371,10 +4477,74 @@ export class KubernetesComputeDriver implements ComputeDriver {
     secretBindings?: SecretBindings | null,
     credentialSourceType?: CredentialSourceType,
   ): void {
+    this.validateAdmittedHarnessAuth(
+      "admission",
+      harness,
+      auth,
+      configuration,
+      secretBindings,
+      credentialSourceType,
+    );
+    // The Agent's execution mode decides placement, so Agent save (null bindings) refuses it too
+    // (finding 2376).
+    this.requireDedicatedRuntimePlacement(harness);
+    // Preparation renders these settings and checks the rendered document
+    // (validateAdmittedHarnessAuth), so a conflicting caller value is refused here, before a
+    // dedicated deployment stops its predecessors. They follow the Installation's runtime and
+    // routing, so Agent save leaves them to deployment.
+    if (secretBindings !== null) {
+      this.requireComputeRenderedSettings(harness, configuration);
+    }
+  }
+
+  // With runtime set, preparation refuses a dedicated Harness without these Installation
+  // settings (DEDICATED_STORAGE_ROUTING_REQUIRED, DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED) only
+  // after the deployment stopped its predecessors (finding 2349). Embedded and channel-runtime
+  // Installations need none of them, so startup accepts them; Agent save and deployment admission
+  // refuse here, naming the setting.
+  private requireDedicatedRuntimePlacement(harness: RevisionHarnessDescriptor): void {
+    const runtime = this.options.runtime;
+    if (harness.mode !== "dedicated" || runtime === undefined) {
+      return;
+    }
+    // Composition supplies node enrollment in every controller, so gatewayRouting is the
+    // setting an operator can change; only a Driver built without enrollment names both.
+    const missing =
+      this.nodeEnrollment === undefined
+        ? "gateway routing and node enrollment"
+        : this.options.gatewayRouting === undefined
+          ? "gatewayRouting"
+          : Object.keys(runtime.gatewayNodeSelector ?? {}).length === 0
+            ? "runtime.gatewayNodeSelector"
+            : undefined;
+    if (missing !== undefined) {
+      // Only OpenClaw has an embedded mode; Codex Agents name it as a harness change (finding 2391).
+      const embedded =
+        harness.id === "openclaw"
+          ? "Select Embedded OpenClaw"
+          : "Codex runs only as a Dedicated Agent: select Embedded OpenClaw";
+      throw new ConfigurationHarnessError(
+        `Dedicated Agents need ${missing} in this Installation's Kubernetes Compute configuration. ${embedded}, or ask an operator to configure it.`,
+      );
+    }
+  }
+
+  // validateHarnessAuth's rules for a document that may carry Compute's rendered settings:
+  // preparation and activation pass the admitted revision's, also on maintenance and recovery
+  // passes of the active revision.
+  private validateAdmittedHarnessAuth(
+    stage: "admission" | "preparation",
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+    secretBindings?: SecretBindings | null,
+    credentialSourceType?: CredentialSourceType,
+  ): void {
     // Agent save passes null bindings and checks only what depends on the Agent. What the
-    // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) and
-    // the Configuration's channel bindings, which it may stage after its values, wait for
-    // deployment.
+    // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) waits
+    // for deployment, and so do the Configuration's channel bindings: OCC's Configuration save
+    // runs the same rule (requireChannelSecretBindings), and deployment repeats it for a row
+    // stored before that.
     const agentSave = secretBindings === null;
     if (!agentSave) {
       requireNativeWorkerSandbox(harness, this.sandboxDriver);
@@ -4394,7 +4564,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Only dedicated execution serves main, so that rule stays here, at deployment.
     requireOpenClawRoster(configuration);
     // The same rules as Configuration save, with its messages, for a row stored before them.
-    this.validateConfigurationContent(configuration);
+    this.validateConfigurationContent(configuration, undefined, stage === "admission");
     if (native || codex) {
       requireDedicatedMainAgentDefault(
         configuration,
@@ -4492,10 +4662,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       harnessProbeConfiguration(configuration);
     }
     if (native) {
-      nativeRuntimeConfiguration(configuration, callerSettingError);
+      nativeRuntimeConfiguration(configuration, callerSettingError, auth.method);
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
+    }
+    if (native || codex) {
+      managedGatewayConfiguration(configuration, configuration, codex, callerSettingError);
     }
     // Preparation and the Gateway entrypoint would refuse these only after a dedicated
     // deployment stopped its predecessors. The caller owns them, so admission names the setting.
@@ -4549,8 +4722,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
-   * model credentials only through the Harness authentication binding, and model selections
-   * and provider apiKeys on the primary model's provider.
+   * model credentials only through the Harness authentication binding, the Gateway tool policy,
+   * and model selections and provider apiKeys on the primary model's provider.
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
@@ -4564,9 +4737,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private validateConfigurationContent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
+    toolPolicy = true,
   ): void {
     enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError);
     requireHarnessCredentialBinding(configuration, callerSettingError, options);
+    // Every OpenClaw topology applies the tool policy, embedded too (findings 2688, 2689).
+    // Preparation and activation skip it: an active revision saved before this rule keeps its
+    // maintenance and recovery passes until a redeploy, which admission checks (finding 2694).
+    // Dedicated preparation still checks its composed policy (managedGatewayConfiguration).
+    if (toolPolicy) {
+      validateGatewayToolPolicy(configuration, callerSettingError, options);
+    }
   }
 
   getGatewayEndpoint(revision: AgentRevision): string | undefined {
@@ -5616,9 +5797,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.options.runtime !== undefined &&
       Object.keys(this.options.runtime.gatewayNodeSelector ?? {}).length === 0
     ) {
-      throw new ConfigurationFailure(
-        "Dedicated Gateways require runtime.gatewayNodeSelector for control-plane scheduling.",
-      );
+      throw new ConfigurationFailure(DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED);
     }
     const observed = await this.getNamespace(namespace);
     if (observed === undefined) {
@@ -6077,6 +6256,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
+    this.validateGatewayManagedMode(revision);
     if (execution === "withdraw-public-reader") {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
       const observed = await this.getNamespace(namespace);
@@ -6123,7 +6303,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
     await this.prepareRevisionStage("harness_auth", async () =>
-      this.validateHarnessAuth(
+      this.validateAdmittedHarnessAuth(
+        "preparation",
         revision.harness,
         revision.harnessAuth,
         admittedRevision.configuration,
@@ -7108,6 +7289,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 return held;
               }
             }
+          } else if (providerEndpoint !== undefined && sandboxDriver.harnessStatus !== undefined) {
+            // A Codex Harness supervisor holding a failure found before Codex and its node
+            // start (state migration, workspace setup) never connects its node either:
+            // read the hold here too (finding 2686).
+            const held = heldProviderHarnessFailure(await observeProviderHarness());
+            if (held !== undefined) {
+              return held;
+            }
           }
           // The provider's Harness Pod and the Gateway are ready, so only the node's
           // connection is outstanding: say so, as the Compute-owned Harness path does
@@ -7356,6 +7545,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Compute ownership is invalid.");
     }
+    this.validateGatewayManagedMode(revision);
     if (execution === "withdraw-public-reader") {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
       const observed = await this.getNamespace(namespace);
@@ -7387,7 +7577,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.verifyGatewayRoutingConfiguration(admittedRevision);
     const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
-    this.validateHarnessAuth(
+    this.validateAdmittedHarnessAuth(
+      "preparation",
       revision.harness,
       revision.harnessAuth,
       admittedRevision.configuration,
@@ -12750,6 +12941,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
+      gatewayManagedMode: revision.gatewayManagedMode,
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -12781,42 +12973,109 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private gatewaySandboxOrigin(revision: AgentRevision): string | undefined {
-    const sandbox = this.options.gatewayRouting?.sandbox;
-    if (sandbox === undefined || revision.harness.mode !== "dedicated") {
+    if (
+      this.options.gatewayRouting?.sandbox === undefined ||
+      revision.harness.mode !== "dedicated"
+    ) {
       return undefined;
     }
-    const host = `agent-${sha256Hex(`${revision.namespaceId}/${revision.agentId}`, 32)}.${sandbox.domain}`;
+    return this.sandboxRouteOrigin(sha256Hex(`${revision.namespaceId}/${revision.agentId}`, 32));
+  }
+
+  // The origin of an Agent's sandbox route (agent-<hash>.<domain>) under gatewayRouting.sandbox.
+  private sandboxRouteOrigin(agentHash: string): string | undefined {
+    const sandbox = this.options.gatewayRouting?.sandbox;
+    if (sandbox === undefined) {
+      return undefined;
+    }
     const port = sandbox.publicPort ?? 443;
-    return `https://${host}${port === 443 ? "" : `:${port}`}`;
+    return `https://agent-${agentHash}.${sandbox.domain}${port === 443 ? "" : `:${port}`}`;
+  }
+
+  // Compute renders mcp.apps.sandboxOrigin and sandboxPort for a dedicated Agent's sandbox route
+  // (gatewaySandboxConfiguration); the caller may leave them unset or repeat them. Preparation
+  // accepts only the Agent's origin. Admission has no Agent identity, so it accepts any origin
+  // of the route's form and preparation still checks the Agent's (finding 2317).
+  private requireComputeSandboxRoute(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    acceptsOrigin: (origin: unknown) => boolean,
+    createError: (setting: string, requirement: string) => Error,
+  ): void {
+    const mcp = asRecord(configuration.mcp);
+    if (configuration.mcp !== undefined && mcp === undefined) {
+      throw createError("mcp", "must be an object");
+    }
+    const apps = asRecord(mcp?.apps);
+    if (mcp?.apps !== undefined && apps === undefined) {
+      throw createError("mcp.apps", "must be an object");
+    }
+    if (apps?.sandboxOrigin !== undefined && !acceptsOrigin(apps.sandboxOrigin)) {
+      throw createError(
+        "mcp.apps.sandboxOrigin",
+        "must be unset or match the Compute-owned sandbox route",
+      );
+    }
+    const port = this.options.network.gatewayPort + 1;
+    if (apps?.sandboxPort !== undefined && apps.sandboxPort !== port) {
+      throw createError(
+        "mcp.apps.sandboxPort",
+        `must be unset or ${port} to match the Compute-owned sandbox route`,
+      );
+    }
+  }
+
+  // Deployment admission of the settings preparation renders for a dedicated Agent, with the
+  // same rules and the caller's messages.
+  private requireComputeRenderedSettings(
+    harness: RevisionHarnessDescriptor,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    if (this.rendersNativeHookRelay(harness)) {
+      requireComputeNativeHookRelay(configuration, callerSettingError);
+    }
+    if (harness.mode === "dedicated" && this.options.gatewayRouting?.sandbox !== undefined) {
+      this.requireComputeSandboxRoute(
+        configuration,
+        (origin) => {
+          const agentHash =
+            typeof origin === "string"
+              ? /^https:\/\/agent-([0-9a-f]{32})\./.exec(origin)?.[1]
+              : undefined;
+          return agentHash !== undefined && origin === this.sandboxRouteOrigin(agentHash);
+        },
+        callerSettingError,
+      );
+    }
+  }
+
+  // Compute relays native hooks for Dedicated Codex when it runs the Gateway behind routing.
+  private rendersNativeHookRelay(harness: RevisionHarnessDescriptor): boolean {
+    return (
+      harness.mode === "dedicated" &&
+      harness.id === "codex" &&
+      this.options.runtime !== undefined &&
+      this.options.gatewayRouting !== undefined
+    );
   }
 
   private gatewayNativeHookRelayConfiguration(
     revision: AgentRevision,
     configuration: OpenClawConfigurationDocument,
   ): OpenClawConfigurationDocument {
-    if (revision.harness.mode !== "dedicated" || revision.harness.id !== "codex") {
+    if (!this.rendersNativeHookRelay(revision.harness)) {
       return configuration;
     }
+    // Defined whenever gatewayRouting is; the check narrows the type.
     const endpoint = this.getGatewayEndpoint(revision);
-    if (this.options.runtime === undefined || endpoint === undefined) {
+    if (endpoint === undefined) {
       return configuration;
     }
+    requireComputeNativeHookRelay(configuration, preparationSettingError);
     const document = structuredClone(configuration) as Record<string, OpenClawConfigurationValue>;
     let appServer = document;
-    for (const key of ["plugins", "entries", "codex", "config", "appServer"]) {
-      const value = appServer[key] ?? {};
-      if (asRecord(value) === undefined) {
-        throw new ConfigurationFailure(
-          "Dedicated Codex plugin configuration must contain objects.",
-        );
-      }
-      appServer[key] = value;
-      appServer = value as Record<string, OpenClawConfigurationValue>;
-    }
-    if (appServer.nativeHookRelay !== undefined) {
-      throw new ConfigurationFailure(
-        "Dedicated Codex native hook relay is owned by the Compute Driver.",
-      );
+    for (const key of NATIVE_HOOK_RELAY_PATH) {
+      appServer[key] ??= {};
+      appServer = appServer[key] as Record<string, OpenClawConfigurationValue>;
     }
     // The Gateway writes each credential into the Harness filesystem through Codex, and
     // the Harness entrypoint creates this directory under its own HOME.
@@ -12840,23 +13099,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (origin === undefined) {
       return configuration;
     }
+    this.requireComputeSandboxRoute(
+      configuration,
+      (candidate) => candidate === origin,
+      preparationSettingError,
+    );
     const mcp = asRecord(configuration.mcp);
     const apps = asRecord(mcp?.apps);
-    if (
-      (configuration.mcp !== undefined && mcp === undefined) ||
-      (mcp?.apps !== undefined && apps === undefined)
-    ) {
-      throw new ConfigurationFailure("Native MCP Apps configuration must be an object.");
-    }
     const port = this.options.network.gatewayPort + 1;
-    if (
-      (apps?.sandboxOrigin !== undefined && apps.sandboxOrigin !== origin) ||
-      (apps?.sandboxPort !== undefined && apps.sandboxPort !== port)
-    ) {
-      throw new ConfigurationFailure(
-        "Native sandbox origin and port must match the Compute-owned sandbox route.",
-      );
-    }
     return {
       ...configuration,
       mcp: {
@@ -13226,9 +13476,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision.harness.mode === "dedicated" &&
       (this.options.gatewayRouting === undefined || this.nodeEnrollment === undefined)
     ) {
-      throw new ConfigurationFailure(
-        "Dedicated Harness storage requires gateway routing and node enrollment.",
-      );
+      throw new ConfigurationFailure(DEDICATED_STORAGE_ROUTING_REQUIRED);
     }
     if (this.options.gatewayRouting === undefined) {
       return;
@@ -13610,16 +13858,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryConsumer: { readonly role: "gateway" | "agent" } | undefined,
     repositoryMaterial: ResolvedRepositoryMaterialSpec | undefined,
   ): CodexRepositoryBrokerNetworkPolicy | undefined {
-    const dedicatedCodex =
-      revision.harness.id === "codex" &&
-      revision.harness.mode === "dedicated" &&
-      repositoryConsumer?.role === "agent";
-    const embeddedCodex =
-      revision.harness.id === "openclaw" &&
-      revision.harness.mode === "embedded" &&
-      repositoryConsumer?.role === "gateway" &&
-      revision.plugins?.driver.implementation === "occ/codex-plugin";
-    if (!dedicatedCodex && !embeddedCodex) {
+    // OCC applies the same rule at Agent save, provisioning and deployment, without the broker
+    // host, which only the prepared material names. This check stays as the backstop for a deny
+    // of that host and for revisions admitted before OCC checked.
+    if (
+      repositoryConsumer === undefined ||
+      !codexProxiesRepositoryBroker(revision.harness, revision.plugins?.driver.implementation)
+    ) {
       return undefined;
     }
     if (this.options.network.repositoryCredentials === undefined) {
@@ -13633,54 +13878,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       );
     }
     const origin = repositoryCredentialBrokerOriginFromMaterial(repositoryMaterial);
-    const brokerHost = normalizedNetworkHost(origin.hostname, "Repository credential broker host");
-    const networkProxy = asRecord(
-      asRecord(asRecord(asRecord(revision.configuration.plugins)?.entries)?.codex)?.config,
-    )?.appServer;
-    const policy = asRecord(asRecord(networkProxy)?.networkProxy);
-    if (policy?.enabled === false) {
-      throw new ConfigurationFailure(
-        "Repository credential broker host is blocked by an explicitly disabled Codex network proxy.",
-      );
+    const host = normalizedNetworkHost(origin.hostname, "Repository credential broker host");
+    const proxy = codexRepositoryBrokerNetworkProxy(revision.configuration, host);
+    if ("refusal" in proxy) {
+      throw new ConfigurationFailure(proxy.refusal);
     }
-    if (policy?.mode !== undefined && policy.mode !== "limited" && policy.mode !== "full") {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy has an unsupported Codex network mode.",
-      );
-    }
-    if (policy?.allowLocalBinding !== undefined && typeof policy.allowLocalBinding !== "boolean") {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy has an unsupported local binding policy.",
-      );
-    }
-    const domainsInput = policy?.domains === undefined ? undefined : asRecord(policy.domains);
-    if (policy?.domains !== undefined && domainsInput === undefined) {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy domains must be an object.",
-      );
-    }
-    const domains: Record<string, "allow" | "deny"> = {};
-    for (const [host, decision] of Object.entries(domainsInput ?? {})) {
-      if (decision !== "allow" && decision !== "deny") {
-        throw new ConfigurationFailure(
-          "Repository credential broker network policy has an unsupported domain decision.",
-        );
-      }
-      mergeDomainDecision(
-        domains,
-        normalizedNetworkHost(host, "Repository credential broker network domain"),
-        decision,
-      );
-    }
-    if (domains[brokerHost] === "deny") {
-      throw new ConfigurationFailure(
-        "Repository credential broker host is explicitly denied by Codex network proxy policy.",
-      );
-    }
-    return {
-      host: brokerHost,
-      domains,
-    };
+    return { host, domains: proxy.domains };
   }
 
   private publicGithubReadCandidate(revision: AgentRevision) {
@@ -13740,6 +13943,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
+    this.validateGatewayManagedMode(revision);
     // A launch fact, not an authorization grant. Never infer it for stored revisions:
     // older workers must refuse the new command and older Sandboxes keep their exact command.
     if (this.protectedCodexInference(revision)) {
@@ -14295,64 +14499,28 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
-  // Each enabled channel's credential references (`${NAME}` or an env SecretRef) need a
-  // Configuration Secret binding of that name. The error names the channel, not the reference.
+  // Deployment admission: requireChannelSecretBindings, the rule OCC's Configuration save runs,
+  // against the Configuration's bindings, read only once a channel holds a reference.
   private validateChannelSecretBindings(
-    configuration: OpenClawConfigurationDocument,
+    configuration: Readonly<OpenClawConfigurationDocument>,
     secretBindings: SecretBindings | undefined,
   ): void {
-    const channels = asRecord(configuration.channels) ?? {};
     let bindings: ReturnType<typeof normalizeSecretBindings> | undefined;
-    for (const provider of enabledChannelProviders(
+    requireChannelSecretBindings(
       configuration,
-      CHANNEL_PROVIDERS,
-      callerSettingError,
-    )) {
-      const required = new Set<string>();
-      this.collectChannelSecretBindingIds(channels[provider], required);
-      if (required.size === 0) {
-        continue;
-      }
-      if (bindings === undefined) {
-        try {
-          bindings = normalizeSecretBindings(secretBindings);
-        } catch {
-          throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+      enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError),
+      (name) => {
+        if (bindings === undefined) {
+          try {
+            bindings = normalizeSecretBindings(secretBindings);
+          } catch {
+            throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+          }
         }
-      }
-      if ([...required].some((id) => bindings![id] === undefined)) {
-        throw callerSettingError(
-          keyedSettingPath("channels", provider),
-          "uses a credential reference without a matching Configuration Secret binding: bind each referenced name in secretBindings",
-        );
-      }
-    }
-  }
-
-  private collectChannelSecretBindingIds(value: unknown, ids: Set<string>): void {
-    if (typeof value === "string") {
-      const match = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value);
-      if (match !== null) {
-        ids.add(match[1]!);
-      }
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        this.collectChannelSecretBindingIds(item, ids);
-      }
-      return;
-    }
-    const record = asRecord(value);
-    if (record === undefined) {
-      return;
-    }
-    if (record.source === "env" && typeof record.id === "string" && record.id.length > 0) {
-      ids.add(record.id);
-    }
-    for (const item of Object.values(record)) {
-      this.collectChannelSecretBindingIds(item, ids);
-    }
+        return Object.hasOwn(bindings, name);
+      },
+      callerSettingError,
+    );
   }
 
   private channelNetworkPolicy(
@@ -15508,13 +15676,24 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         : undefined;
     const runtime = this.options.runtime;
     const dedicated = !embedded;
-    const privateHome = runtime !== undefined || dedicated;
+    // The first process to see the signing key must be the packaged launcher.
+    // Custom environment and repository tooling can alter how it is loaded.
+    const recordEmbeddedGatewayOwner =
+      embedded &&
+      role === "gateway" &&
+      runtime !== undefined &&
+      configuration !== undefined &&
+      Object.keys(environment).length === 0 &&
+      secretEnvironment.length === 0 &&
+      repositoryMaterial === undefined;
     const writableConfiguration =
       role === "gateway" &&
       configuration !== undefined &&
-      runtime !== undefined &&
-      this.options.gatewayRouting !== undefined &&
-      configuration.usesWritableNativeAdminConfig;
+      (configuration.gatewayManagedMode === false ||
+        (runtime !== undefined &&
+          this.options.gatewayRouting !== undefined &&
+          configuration.usesWritableNativeAdminConfig));
+    const privateHome = runtime !== undefined || dedicated || writableConfiguration;
     const volumes: V1Volume[] = [];
     const volumeMounts: V1VolumeMount[] = [];
     const variables: V1EnvVar[] = [];
@@ -16024,6 +16203,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         },
       });
     }
+    if (recordEmbeddedGatewayOwner) {
+      const publicKey = { name: "gateway-owner-key", mountPath: "/run/oce-gateway-owner-key" };
+      const startup = { name: "gateway-owner-start", mountPath: "/run/oce-gateway-owner-start" };
+      for (const { name } of [publicKey, startup]) {
+        volumes.push({ name, emptyDir: { medium: "Memory", sizeLimit: "64Ki" } });
+      }
+      // Only this init can change the public key. It has no mount of Agent-controlled state.
+      initContainers.push({
+        name: "prepare-embedded-gateway-owner",
+        image,
+        imagePullPolicy: "IfNotPresent",
+        command: [...SETUP_WRAPPER_COMMAND],
+        args: [INITIALIZE_EMBEDDED_GATEWAY_OWNER],
+        volumeMounts: [publicKey, startup],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: { drop: ["ALL"] },
+        },
+      });
+      volumeMounts.push({ ...publicKey, readOnly: true }, startup);
+      variables.push({ name: "OPENCLAW_EMBEDDED_GATEWAY_OWNER", value: "1" });
+    }
     if (dedicated && this.options.executionCluster !== undefined) {
       if (role === "gateway") {
         variables.push({
@@ -16036,7 +16238,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ) {
           variables.push({
             name: "NODE_EXTRA_CA_CERTS",
-            value: `${configuration?.usesWritableNativeAdminConfig ? MANAGED_CONFIGURATION_DIRECTORY : CONFIGURATION_DIRECTORY}/execution-ca.pem`,
+            value: `${writableConfiguration ? MANAGED_CONFIGURATION_DIRECTORY : CONFIGURATION_DIRECTORY}/execution-ca.pem`,
           });
         }
       } else {
@@ -16064,9 +16266,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       runtime !== undefined &&
       (selectedNodes === undefined || Object.keys(selectedNodes).length === 0)
     ) {
-      throw new ConfigurationFailure(
-        "Dedicated Gateways require runtime.gatewayNodeSelector for control-plane scheduling.",
-      );
+      throw new ConfigurationFailure(DEDICATED_GATEWAY_NODE_SELECTOR_REQUIRED);
     }
     const runtimeNodeSelector = selectedNodes === undefined ? {} : { nodeSelector: selectedNodes };
     const codexSeccompProfile =
@@ -16078,6 +16278,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             },
           }
         : {};
+    let runtimeEntrypoint: string | undefined;
+    if (runtime !== undefined) {
+      if (role === "gateway") {
+        if (typeof configuration?.gatewayManagedMode !== "boolean") {
+          throw new ConfigurationFailure(
+            "Gateway runtime requires the Agent revision's managed mode.",
+          );
+        }
+        runtimeEntrypoint = gatewayRuntimeEntrypoint(configuration.gatewayManagedMode);
+      } else {
+        runtimeEntrypoint =
+          nativeRuntime === undefined
+            ? (pluginRuntime?.entrypoint ?? AGENT_RUNTIME_ENTRYPOINT)
+            : NATIVE_WORKER_ENTRYPOINT;
+      }
+    }
     return {
       ...deployment,
       metadata: {
@@ -16179,25 +16395,25 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   ...codexSeccompProfile,
                 },
                 ...(volumeMounts.length === 0 ? {} : { volumeMounts }),
-                ...(runtime === undefined
+                ...(runtimeEntrypoint === undefined
                   ? {}
                   : {
                       // Under tini, SIGTERM stops the wrapper in every startup phase.
                       command: [...RUNTIME_WRAPPER_COMMAND],
                       args: nodeProgramArguments(
-                        (workspaceSetup === undefined || (!embedded && role === "gateway")
-                          ? ""
-                          : workspaceSetupVerifier(
-                              workspaceSetup,
-                              role === "gateway"
-                                ? required(configuration?.workspace, "Initial workspace directory")
-                                : harnessSetupWorkspace,
-                            )) +
-                          (role === "gateway"
-                            ? GATEWAY_RUNTIME_ENTRYPOINT
-                            : nativeRuntime === undefined
-                              ? (pluginRuntime?.entrypoint ?? AGENT_RUNTIME_ENTRYPOINT)
-                              : NATIVE_WORKER_ENTRYPOINT),
+                        (recordEmbeddedGatewayOwner ? EMBEDDED_GATEWAY_OWNER_STARTUP : "") +
+                          (workspaceSetup === undefined || (!embedded && role === "gateway")
+                            ? ""
+                            : workspaceSetupVerifier(
+                                workspaceSetup,
+                                role === "gateway"
+                                  ? required(
+                                      configuration?.workspace,
+                                      "Initial workspace directory",
+                                    )
+                                  : harnessSetupWorkspace,
+                              )) +
+                          runtimeEntrypoint,
                       ),
                     }),
               },

@@ -5,7 +5,7 @@ import {
 // Runs the real Driver and host helper. SSH and systemd are replaced by fixtures;
 // only tests/integration/ssh-compute-real.test.mjs provides opt-in host proof.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -71,6 +71,7 @@ function revision(driver, number = 1, agentId = "agent-ssh-1", configuration = {
     namespaceId: tenant.id,
     agentId,
     revision: number,
+    gatewayManagedMode: false,
     backendId: null,
     harnessAuth: { method: "runtime" },
     configurationId: `configuration-${agentId}`,
@@ -217,8 +218,36 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(resolve));
 }
 
+// Startup refuses a runtime.root (and Node or OpenClaw path) under /tmp or /var/tmp, which the
+// unit's PrivateTmp hides, and tmpdir() is /tmp on CI runners. Fixture hosts live in the
+// gitignored test-results directory instead.
+const fixtureHosts = fileURLToPath(new URL("../../test-results/ssh-compute/", import.meta.url));
+
+async function stopFixtureUnits(state) {
+  // Detached unit processes survive helper exit, as systemd services would.
+  for (const name of await readdir(state)) {
+    if (!name.endsWith(".pid")) {
+      continue;
+    }
+    const pid = Number(await readFile(join(state, name), "utf8").catch(() => ""));
+    // A pid file read between create and write is empty (0): kill(0) would signal
+    // this runner's own process group. A removed file reads as empty too.
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      continue;
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
+}
+
 async function fixture(t, selection = {}) {
-  const base = await mkdtemp(join(tmpdir(), "occ-ssh-"));
+  await mkdir(fixtureHosts, { recursive: true });
+  const base = await mkdtemp(join(fixtureHosts, "occ-ssh-"));
   const root = join(base, "root");
   const units = join(base, "units");
   const state = join(base, "fixture");
@@ -285,25 +314,7 @@ async function fixture(t, selection = {}) {
   };
   const driver = createSshComputeDriver(configured, { executor, ...selection });
   t.after(async () => {
-    // Detached unit processes survive helper exit, as systemd services would.
-    for (const name of await readdir(state)) {
-      if (!name.endsWith(".pid")) {
-        continue;
-      }
-      const pid = Number(await readFile(join(state, name), "utf8").catch(() => ""));
-      // A pid file read between create and write is empty (0): kill(0) would signal
-      // this runner's own process group. A removed file reads as empty too.
-      if (!Number.isSafeInteger(pid) || pid <= 0) {
-        continue;
-      }
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch (error) {
-        if (error.code !== "ESRCH") {
-          throw error;
-        }
-      }
-    }
+    await stopFixtureUnits(state);
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
@@ -413,6 +424,93 @@ function setOption(object, keys, value) {
   target[keys.at(-1)] = value;
 }
 
+// The unit's PrivateTmp hides /tmp and /var/tmp, so a state root there timed out every deploy;
+// docs already forbade it (finding 2358).
+test("SSH startup refuses a runtime.root and Node or OpenClaw paths the unit cannot use", () => {
+  const dedicated =
+    "Use a dedicated absolute directory without . or .. segments, such as /var/lib/openclaw-enterprise.";
+  const privateTmp =
+    "Use a path outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those.";
+  for (const [root, message] of [
+    ["/", dedicated],
+    ["//", dedicated],
+    ["/var/lib/../../tmp/oce", dedicated],
+    ["/var/lib/./oce", dedicated],
+    ["/tmp", privateTmp],
+    ["/tmp/openclaw-enterprise", privateTmp],
+    ["//var/tmp/oce", privateTmp],
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError, root);
+        assert.deepEqual(error.error.details, [
+          { path: "/runtime/root", code: "INVALID_VALUE", message },
+        ]);
+        return true;
+      },
+    );
+  }
+  for (const root of [
+    "/var/lib/openclaw-enterprise",
+    "/srv/tmp/oce",
+    "/tmpdata",
+    "/var/tmpfiles",
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    requireConfiguration(SshComputeDriver, candidate);
+  }
+  // The unit's ExecStart and ExecStartPre run the Node and OpenClaw paths, which PrivateTmp
+  // hides just the same.
+  for (const [edit, path, prefix] of [
+    [(candidate) => (candidate.runtime.nodePath = "/tmp/node"), "/runtime/nodePath", ""],
+    [
+      (candidate) => (candidate.runtime.openclawPath = "/var/tmp/oc.js"),
+      "/runtime/openclawPath",
+      "",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.nodePath = "/tmp/node"),
+      "/hosts",
+      "hosts.stable.nodePath: ",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.openclawPath = "//tmp/oc.js"),
+      "/hosts",
+      "hosts.stable.openclawPath: ",
+    ],
+    [
+      (candidate) => (candidate.runtime.openclawPath = "/var/./tmp/oc.js"),
+      "/runtime/openclawPath",
+      "",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.nodePath = "/usr/../tmp/node"),
+      "/hosts",
+      "hosts.stable.nodePath: ",
+    ],
+  ]) {
+    const candidate = options();
+    edit(candidate);
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError, path);
+        assert.deepEqual(error.error.details, [
+          { path, code: "INVALID_VALUE", message: `${prefix}${privateTmp}` },
+        ]);
+        return true;
+      },
+    );
+  }
+  const elsewhere = options();
+  elsewhere.hosts.stable.openclawPath = "/srv/tmp/oc.js";
+  requireConfiguration(SshComputeDriver, elsewhere);
+});
+
 test("SSH closed schema and semantic validation reject every invalid option", () => {
   const schema = SshComputeDriver.configurationSchema;
   assert.equal(schema.additionalProperties, false);
@@ -438,6 +536,8 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       Number.MAX_SAFE_INTEGER + 1,
       /connectTimeoutSeconds must be a positive safe/,
     ],
+    // OpenSSH refuses a longer ConnectTimeout, so every probe would fail and blame the host.
+    [["ssh", "connectTimeoutSeconds"], 2_147_483_648, /connectTimeoutSeconds must be at most/],
     [["hosts", "stable", "address"], "", /Host address is required/],
     [["hosts", "stable", "address"], "-oProxyCommand=bad", /Host address must be a hostname or IP/],
     [["hosts", "stable", "address"], "host;false", /Host address must be a hostname or IP/],
@@ -693,6 +793,7 @@ Environment=HOME=${dir}/home
 Environment=OPENCLAW_STATE_DIR=${dir}/state
 Environment=OPENCLAW_CONFIG_PATH=${dir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
+Environment=OPENCLAW_NO_AUTO_UPDATE=1
 EnvironmentFile=${dir}/gateway-password.env
 EnvironmentFile=-${dir}/env
 ExecStart=${process.execPath} ${f.configured.runtime.openclawPath} gateway --port ${port}
@@ -967,7 +1068,7 @@ test("SSH activation invokes lifecycle start hooks and cleans them up after acti
   bind(f.driver, invalidAuth);
   await assert.rejects(
     f.driver.activateRevision(invalidAuth),
-    /unsupported field unsupportedField/,
+    /gateway\.auth\.unsupportedField is not a supported native gateway authentication field/,
   );
   assert.deepEqual(hooks, beforeInvalidAuth);
 });
@@ -1000,12 +1101,21 @@ test("SSH activation keeps its own failure first when the lifecycle cleanup also
   assertCleanupFailure(error, /snapshot|ownership/i, [/lifecycle hook beforeWorkloadStop failed/]);
 });
 
-test("SSH revisions fail closed on unbound identities, unsupported topology, sandbox and Secret delivery", async (t) => {
+test("SSH revisions fail closed on invalid identities and unsupported workload features", async (t) => {
   const f = await fixture(t);
   const rev = revision(f.driver);
   await assert.rejects(f.driver.prepareRevision(rev), /bound Namespace and Agent/);
   await f.driver.ensureNamespace(tenant);
   bind(f.driver, rev);
+  const managed = { ...rev, gatewayManagedMode: true };
+  const unsupportedManaged = {
+    name: "ConfigurationHarnessError",
+    message: "Agent setting gatewayManagedMode is not supported on SSH Compute.",
+  };
+  const beforeManagedMode = f.calls.length;
+  await assert.rejects(f.driver.prepareRevision(managed), unsupportedManaged);
+  await assert.rejects(f.driver.activateRevision(managed), unsupportedManaged);
+  assert.equal(f.calls.length, beforeManagedMode);
   for (const harnessAuth of [undefined, { method: "runtime", source: {} }]) {
     await assert.rejects(f.driver.prepareRevision({ ...rev, harnessAuth }), /operator-managed/);
   }
@@ -1580,4 +1690,75 @@ test("system SSH executor settles when a descendant of ssh keeps its stderr open
     ),
     /cancelled or timed out/,
   );
+});
+
+// Direct fixture checks keep unit-file discovery separate from process liveness.
+async function unitFileFixture(t) {
+  const base = await mkdtemp(join(tmpdir(), "occ-unit-file-"));
+  const units = join(base, "units");
+  const state = join(base, "state");
+  await Promise.all([mkdir(units), mkdir(state)]);
+  const ctl = (...args) => {
+    const result = spawnSync(join(fixtureBin, "systemctl"), args, {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {
+        PATH: process.env.PATH,
+        OCC_SSH_FIXTURE_STATE: state,
+        OCC_SSH_FIXTURE_UNIT_DIRECTORY: units,
+      },
+    });
+    assert.ifError(result.error);
+    return result.status;
+  };
+  t.after(async () => {
+    await stopFixtureUnits(state);
+    await rm(base, { recursive: true, force: true });
+  });
+  const unit = "discovery.service";
+  const path = join(units, unit);
+  await writeFile(path, "[Service]\nEnvironment=OPENCLAW_GATEWAY_PORT=31443\n");
+  return { ctl, unit, path, units, state };
+}
+
+test("SSH fixture rejects bare-name link without loading or enabling a unit", async (t) => {
+  const { ctl, unit, path, units, state } = await unitFileFixture(t);
+  assert.equal(ctl("link", unit), 1);
+  await missing(join(units, "absent.service"));
+  assert.equal(ctl("link", "absent.service"), 1);
+  assert.deepEqual(
+    (await readdir(state)).filter((name) => name !== "systemctl.log"),
+    [],
+  );
+  assert.equal(ctl("stop", unit), 5);
+  assert.equal(ctl("link", path), 0);
+  assert.equal(ctl("enable", unit), 0);
+  assert.equal(ctl("stop", unit), 0);
+  assert.equal(ctl("disable", unit), 0);
+  assert.equal(ctl("link", path), 0);
+  assert.equal(ctl("stop", unit), 0);
+});
+
+test("SSH fixture requires a discoverable file to enable a disabled running unit", async (t) => {
+  const { ctl, unit, path, state } = await unitFileFixture(t);
+  assert.equal(ctl("enable", path), 0);
+  assert.equal(ctl("start", unit), 0);
+  assert.equal(ctl("disable", unit), 0);
+  assert.equal(ctl("is-active", "--quiet", unit), 0);
+  const pid = await readFile(join(state, `${unit}.pid`), "utf8");
+  // Neither rejected operation may rediscover the disabled file or disturb its live unit.
+  for (const operation of ["enable", "link"]) {
+    assert.equal(ctl(operation, unit), 1);
+    await missing(join(state, `${unit}.linked`));
+    await missing(join(state, `${unit}.enabled`));
+    assert.equal(ctl("is-enabled", unit), 1);
+    assert.equal(await readFile(join(state, `${unit}.pid`), "utf8"), pid);
+    assert.equal(ctl("is-active", "--quiet", unit), 0);
+  }
+  assert.equal(ctl("stop", unit), 0);
+  await missing(join(state, `${unit}.pid`));
+  assert.equal(ctl("is-active", "--quiet", unit), 1);
+  assert.equal(ctl("stop", unit), 5);
+  assert.equal(ctl("enable", path), 0);
+  assert.equal(ctl("is-enabled", unit), 0);
 });

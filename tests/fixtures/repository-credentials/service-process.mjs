@@ -35,6 +35,7 @@ function launchService(resources) {
   const pending = new Map();
   let sequence = 0;
   let outputBytes = 0;
+  let stderr = "";
   let failure;
   let receipt;
   const closed = new Promise((resolve) => {
@@ -75,7 +76,10 @@ function launchService(resources) {
     }
   };
   child.stdout.on("data", collect);
-  child.stderr.on("data", collect);
+  child.stderr.on("data", (chunk) => {
+    collect(chunk);
+    stderr += chunk;
+  });
   child.on("message", ({ id, result, error }) => {
     const request = pending.get(id);
     if (request) {
@@ -89,6 +93,7 @@ function launchService(resources) {
   });
   return {
     stop,
+    stderr: () => stderr,
     async stopGracefully() {
       if (!receipt) {
         assert.equal(child.kill("SIGTERM"), true, "owned service termination must be sent");
@@ -234,6 +239,9 @@ export async function startServiceProcessFixture(
     kill,
     shutdown,
     generation: () => generation,
+    tls,
+    // The running process's log lines (each JSON line is one event), for log assertions.
+    stderr: () => processOwner.stderr(),
     admissionId,
     open: (id, recoverOnly = false, durableAdmission = false) =>
       control(

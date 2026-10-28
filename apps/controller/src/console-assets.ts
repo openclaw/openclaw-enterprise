@@ -31,7 +31,13 @@ const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
 const CONSOLE_ASSETS = new Map([
   ...Object.entries({
-    "image/png": ["oce-mascot.png", "favicon-16.png", "favicon-32.png", "apple-touch-icon.png"],
+    "image/png": [
+      "oce-mascot.png",
+      "oce-mascot-inverse.png",
+      "favicon-16.png",
+      "favicon-32.png",
+      "apple-touch-icon.png",
+    ],
     "image/vnd.microsoft.icon": ["favicon.ico"],
     "text/javascript; charset=utf-8": [
       "api-client.mts",
@@ -44,10 +50,12 @@ const CONSOLE_ASSETS = new Map([
       "secrets.mts",
       "runtime-images.mts",
       "agents/list.mts",
+      "agents/access-reasons.mts",
       "agents/collection.mts",
       "agents/lifecycle-confirmation.mts",
       "agents/logs.mts",
       "agents/sandbox-policy.mts",
+      "agents/gateway-safety.mts",
       "agents/logs-view.mts",
       "agents/presets.mts",
       "agents/create.mts",
@@ -103,6 +111,30 @@ const CONSOLE_ASSETS = new Map([
     "/console/preset-variables.mjs",
     {
       path: new URL("../../../packages/contracts/src/preset-variables.mjs", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console reads Slack tokens with OCC's environment reference grammar.
+  [
+    "/console/environment-references.mjs",
+    {
+      path: new URL("../../../packages/occ/src/environment-references.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console shows the Gateway security values deployment admission fills from OCC's own table.
+  [
+    "/console/gateway-security-defaults.mjs",
+    {
+      path: new URL("../../../packages/occ/src/gateway-security-defaults.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console offers each failed deployment's next step from OCC's own table.
+  [
+    "/console/deployment-failure-steps.mjs",
+    {
+      path: new URL("../../../packages/occ/src/deployment-failure-steps.ts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],
@@ -200,9 +232,7 @@ export async function readConsoleAsset(
     if (!asset.contentType.startsWith("text/")) {
       return { body: source, contentType: asset.contentType, statusCode: 200 };
     }
-    const body = asset.path.pathname.endsWith(".mts")
-      ? browserJavaScript(pathname, source)
-      : source;
+    const body = /\.m?ts$/.test(asset.path.pathname) ? browserJavaScript(pathname, source) : source;
     return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
   const shell = await readFile(CONSOLE_SHELL);

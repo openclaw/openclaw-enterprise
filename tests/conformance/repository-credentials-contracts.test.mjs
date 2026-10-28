@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:https";
 import { access } from "node:fs/promises";
-import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.mjs";
+import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import {
   createResourceScope,
   createTestResourceScope,
@@ -537,12 +537,7 @@ test("gateway authentication rejects foreign attempt, result and plan objects", 
     bound.driver.settle({ kind: "acquired", attemptId: "copy" }),
     /foreign-outcome/,
   );
-  await assert.rejects(
-    bound.driver.withAuthentication({}, {}, async () => {
-      throw new Error("must-not-send");
-    }),
-    /invalid-credential/,
-  );
+  assert.throws(() => bound.driver.prepareAuthentication({}, {}), /invalid-credential/);
 });
 
 test("partial fixture cleanup retains the startup failure and releases owned material and files", async () => {

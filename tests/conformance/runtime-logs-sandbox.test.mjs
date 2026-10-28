@@ -14,7 +14,10 @@ import {
   OpenShellSandboxDriver,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
+import { denialsDuring } from "../helpers/console-app.mjs";
 import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
+import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   createRuntimeLogComputeDriver,
   createRuntimeLogFixture,
@@ -608,11 +611,9 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
   assert.equal(mixed.body.data, undefined, "a refused chunk returns no records");
 
   const pod = await read("source=sandbox&pod=gateway-x-0");
-  assert.equal(pod.status, 400, pod.text);
-  assert.equal(pod.body.error.code, "RUNTIME_LOGS_POD_INVALID");
+  assertApiError(pod, 400, "RUNTIME_LOGS_POD_INVALID");
   const previous = await read("source=sandbox&previous=true");
-  assert.equal(previous.status, 400, previous.text);
-  assert.equal(previous.body.error.code, "RUNTIME_LOGS_POD_INVALID");
+  assertApiError(previous, 400, "RUNTIME_LOGS_POD_INVALID");
 
   gateway.state.error = Object.assign(new Error("permission denied: missing sandbox:read"), {
     code: 7,
@@ -842,12 +843,48 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
   assert.equal(failed.text.includes("sandbox:read"), false);
   gateway.state.sandboxError = undefined;
 
+  // A revision is read only through the Compute Driver it was placed on: with another one
+  // selected, even a ready Sandbox is unknown and OpenShell is not read.
+  const placed = fixture.computeDriver;
+  const replacement = createRuntimeLogComputeDriver({
+    id: "replacement-compute",
+    sandboxNamespace: SANDBOX_NAMESPACE,
+  });
+  fixture.controller.registerDriver(replacement);
+  fixture.controller.selectDriver("compute", replacement.id);
+  gateway.state.sandbox = record("SANDBOX_PHASE_READY");
+  const before = gateway.requests.length;
+  assert.deepEqual(
+    (await read(reader.session)).data,
+    observed({ state: "unknown", code: "UNAVAILABLE" }),
+  );
+  assert.equal(gateway.requests.length, before, "no read through an unplaced Compute Driver");
+  fixture.controller.selectDriver("compute", placed.id);
+
   // Without Agent read the request is denied before any Sandbox read.
   const outsider = await fixture.createPrincipal("harness-outsider", target, []);
   const reads = gateway.requests.length;
   const denied = await fixture.request("GET", statusPath, { session: outsider.session });
   assert.equal(denied.status, 403, denied.text);
   assert.equal(gateway.requests.length, reads);
+  // The reader's grant names this Agent: a second Agent of the Namespace is refused to it,
+  // audited once for that Agent, before any Sandbox read.
+  const sibling = await fixture.deployAgent("harness-sibling", { namespace: target.namespace });
+  const siblingReads = gateway.requests.length;
+  const { response: siblingDenied, denials } = await denialsDuring(fixture.auditSink, () =>
+    fixture.request(
+      "GET",
+      `/namespaces/${target.namespace.id}/agents/${sibling.agent.id}/harness-status`,
+      { session: reader.session },
+    ),
+  );
+  assertApiError(siblingDenied, 403, "FORBIDDEN");
+  assert.equal(
+    siblingDenied.body.error.message,
+    callerDenied("Agent read", `Agent ${sibling.agent.id}`),
+  );
+  assert.deepEqual(denials, [{ action: "read", kind: "agent", id: sibling.agent.id }]);
+  assert.equal(gateway.requests.length, siblingReads);
 
   // A stopped Agent's Sandbox is removed by design, so it is not read or reported.
   const stop = await fixture.request(
@@ -1082,8 +1119,18 @@ test("without a log-reading Sandbox Driver the sandbox source is absent", async 
   );
   assert.equal("harness" in runtime.data, false, "an embedded Agent has no Harness Sandbox");
   const logs = await fixture.request("GET", target.logsPath("source=sandbox"));
-  assert.equal(logs.status, 400, logs.text);
-  assert.equal(logs.body.error.code, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
+  assertApiError(logs, 400, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
+  await fixture.activate(target);
+  const harness = await fixture.request(
+    "GET",
+    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/harness-status`,
+  );
+  assert.equal(harness.status, 200, harness.text);
+  assert.deepEqual(
+    harness.data,
+    { status: "unobserved" },
+    "an active embedded Agent is unobserved, not unknown",
+  );
 });
 
 test("the OpenShell log reader exposes GetSandboxLogs and nothing else", async () => {

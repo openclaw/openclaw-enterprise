@@ -16,4 +16,5 @@ export const DeletionRetryUnknown = {
   ...story("deletionRetryUnknown"),
   name: "Repeat cleanup outcome unknown",
 };
+export const StatusAccessEndsDuringConfirmation = story("deletionRetryAccessEnded");
 export const PermissionDuringConfirmation = story("deletionPermissionDuringConfirmation");

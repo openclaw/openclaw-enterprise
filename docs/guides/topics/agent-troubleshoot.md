@@ -17,7 +17,7 @@ Once access is fixed, refresh and confirm the Namespace is `ready`.
 
 ## Deployment is blocked or has no selected version
 
-On Kubernetes, open the Agent's **Create new version** draft, then
+On Kubernetes, open the Agent's **Open draft** draft, then
 **Credentials**. Select **Reload authentication source**, then confirm under
 **Harness authentication** that **Authentication source** is the source you
 expect, not **None**. Check that the saved model authentication matches the
@@ -32,12 +32,12 @@ If the deployment was accepted, use the returned version ID to check its
 GET /namespaces/:namespaceId/agents/:agentId/deployments/:revisionId
 ```
 
-| Status      | Next check                                                                                                                   |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `queued`    | If it stays queued, ask the operator whether a worker is available.                                                          |
-| `running`   | A worker holds the work. If it stays running, ask the operator to check workload startup, storage, and required credentials. |
-| `failed`    | Give the returned error code and version ID to the operator. Correct the reported cause before requesting a new deployment.  |
-| `succeeded` | The requested work completed; this does not establish live model availability. Verify a model response separately.           |
+| Status      | Next check                                                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `queued`    | If it stays queued, ask the operator whether a worker is available.                                                            |
+| `running`   | A worker started the work. If it stays running, ask the operator to check workload startup, storage, and required credentials. |
+| `failed`    | Follow the next step in `error.message`. If it names an administrator or operator, give them the error code and version ID.    |
+| `succeeded` | The requested work completed; this does not establish live model availability. Verify a model response separately.             |
 
 For Kubernetes workload problems, operators can use the
 [Compute failure checks](../../reference/drivers/kubernetes-compute.md#failure-conditions).
@@ -49,11 +49,18 @@ driver refused an object it does not own, such as a Deployment with the Agent's
 workload name but no OCE ownership labels. The driver never adopts such an
 object. Delete it, then deploy again.
 
+For an OpenShell `workspace-baseline` failure with `created directory admission
+failed` and `insecure-permissions`, ask the operator to check the node-state
+directory's owner and mode. Its private root must be `0700`; OCE prepares it at
+startup, including on storage that adds setgid. After correcting the startup or
+storage problem, deploy the Agent again. Keep its retained state and shared
+workspace intact. See [writable runtime state](../../reference/drivers/openshell-sandbox.md#writable-runtime-state).
+
 <span id="the-console-says-serving-status-unavailable"></span>
 
 ## Verify runtime health after deployment
 
-The console's **Deployment activity** shows persisted status; it has no live
+The console's **Deployment** tab shows persisted status; it has no live
 gateway-health or chat view. **Current version** means the control plane selected
 that version. It can be a version whose deployment failed, for example when an
 embedded replacement's model check rejected its key after it replaced the
@@ -66,6 +73,37 @@ to verify your local setup or ask an operator to
 Check for an actual answer from the configured model, not just a selected
 version or successful file read.
 
+## An embedded Gateway reports an unverifiable state owner
+
+A hard stop can leave the old Gateway's locks on the Agent's volume. With
+Gateway managed mode on or off, OCE can recover a verified Docker predecessor
+or the first eligible Kubernetes container in the same Pod. A new Pod cannot
+verify the previous Pod's owner. An older image may also lack a record of the
+original PID 1 start time. If the replacement reports an unverifiable owner,
+use the following procedure.
+
+1. Record the Agent, state volume and original container ID. On Kubernetes,
+   also record the Pod UID and node. Stop the Agent in OCC and verify with the
+   compute provider that the exact container exited. A missing Pod or expired
+   heartbeat alone cannot establish this. If its node is unreachable, keep the
+   Agent stopped until the infrastructure operator verifies shutdown.
+   [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
+2. Keep other writers off the volume. Start a maintenance container from the
+   Gateway's pinned image as its runtime user. Mount the retained volume and
+   configuration at the Gateway's paths and use its state directory and profile.
+   Inspect the holders without starting a Gateway.
+
+   ```sh
+   node /app/openclaw.mjs gateway recover-lock --json
+   ```
+
+3. Match every reported holder to the stopped workload. If any holder could
+   still write or cannot be identified, leave all locks in place. Otherwise repeat the
+   command with `--confirm` and the exact `confirmation` fingerprint from the
+   inspection. If OpenClaw reports a changed record, inspect and verify its holders again.
+4. Exit the maintenance container, deploy the Agent again and send a chat
+   message to verify it can use its retained state.
+
 ## A save or deployment lost its response
 
 The operation may have succeeded. Before retrying:
@@ -73,7 +111,7 @@ The operation may have succeeded. Before retrying:
 - For model and channel credentials, reload the Agent's Credentials tab and check
   its saved bindings. An operator can inspect generated transport storage through
   the exact Agent runtime-credentials API.
-- For deployment, inspect the Agent's **Versions** list and the status for the
+- For deployment, inspect the Agent's **Viewing version** picker and the status for the
   saved version; a second deployment creates another version.
 - For a workspace file, reload that file and compare its content with your
   intended edit before saving again.

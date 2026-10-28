@@ -12,10 +12,17 @@ it does not qualify this stock adapter or upgrade its v5/v6 guarantees.
 The bundled OpenShell Driver therefore refuses `git-write` delivery: deploy returns
 `409 REPOSITORY_GIT_SENDER_UNQUALIFIED` and creates no revision, and a revision
 admitted before this check fails with the same code instead of waiting for the
-convergence deadline. Use [native prepared Git](prepared-native-git.md) or a separately
-installed sender qualified for the profile, or remove the binding. A `git-read` or
+convergence deadline. Remove the binding, select a separately installed sender qualified
+for the profile, or use [native prepared Git](prepared-native-git.md), which runs without
+a Sandbox or Credential Proxy. A `git-read` or
 `git-full` binding has no protected delivery profile, so deploy refuses it on any
 Credential Proxy with `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
+
+This composition's Credential Proxy serves only repository Git. Creating a Proxy-owned
+credential source (static, prepared or metadata), or deploying an Agent without a repository
+binding, answers `409 RESOURCE_CONFLICT` naming `repository.openShell`. A Git Agent's model uses an
+existing Gateway Harness source; see
+[enroll prepared GitHub access](../../guides/credential-proxy.md#enroll-prepared-github-access).
 
 For an existing installation, first follow the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
@@ -133,8 +140,11 @@ grpc_endpoint = "https://openclaw-enterprise-openshell-git.openclaw-system.svc:8
 tls_ca_cert_path = "/etc/openshell/certs/oce-git-ca.pem"
 audience = "oce-prepared-git"
 max_payload_bytes = 4194304
-timeout = "3s"
+timeout = "5s"
 ```
+
+The `github-installation` preview requires exactly `5s` here. OCE still caps its
+authorization decision at three seconds.
 
 Start the configured OCE worker before restarting the Gateway: Gateway startup
 calls authenticated `Describe` and refuses an unavailable or incompatible service.
@@ -166,9 +176,12 @@ for membership and permissions, and the
 for policy fields. Keep repository scope when it is sufficient. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
-`profile: github-installation` in the Agent's `repositoryBindings`.
-No default profile or wildcard selects this scope. The installed sender must
-positively confirm `github_installation` support.
+`profile: github-installation` in the Agent's `repositoryBindings`, as its only
+binding (Agent save and deploy refuse it next to another). No default profile or
+wildcard selects this scope. The installed sender must positively confirm
+`github_installation` support. With the bundled OpenShell Credential Proxy, that
+needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
+`409 RESOURCE_CONFLICT`, and on a gateway other than 0.1.5, `503`.
 
 OCE does not add a ref allowlist to installation scope. GitHub's membership,
 permissions and branch rules set its limit. See
@@ -191,7 +204,13 @@ each token and session still expires. Remove standing approval with its current
 approval generation **before** clearing the repository binding. An already
 authorized request can finish after withdrawal.
 
-A repository-scoped one-draft grant spends its allowance at authorization, before
+By default (`draftPullLimit: one-per-grant`), a repository-scoped draft grant allows one
+draft, and every Agent and version that has the grant shares it. To let Agents open a new
+draft from the same review ref, set `draftPullLimit: none` in the Namespace policy. OCE then
+records each draft use without spending an allowance; the draft-only, head and base checks
+still apply. This changes the grant identity: deploy a new version to use it.
+
+A one-draft grant spends its allowance at authorization, before
 OCE knows whether GitHub created a draft. On an uncertain push or draft outcome,
 inspect the original remote ref or PR and retained operation; do not replay it.
 See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
@@ -305,8 +324,8 @@ uncertain request outcomes before retrying.
 ## GitHub App key rotated or revoked
 
 See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
-A ready Agent is not evidence of usable Git material. A rejected key can leave
-already issued material usable until expiry, then close requests.
+A ready Agent is not evidence of usable Git material. A changed key retires
+issued material within about a minute, even when GitHub rejects the new key.
 
 ## Move from the earlier trial
 

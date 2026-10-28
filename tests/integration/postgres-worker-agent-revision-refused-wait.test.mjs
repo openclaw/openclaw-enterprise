@@ -15,6 +15,7 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   completedPasses,
+  expireWorkLease,
   waitForWorkPass,
   waitForWorkStateDue,
 } from "../helpers/postgres-worker-revision-support.mjs";
@@ -560,11 +561,7 @@ async function refusedStopRestarts(context, shape, restart) {
   const candidate = await fixture.revision(owner, shape === "exclusive" ? 2 : 1);
   candidateId = candidate.id;
   const expireLease = () =>
-    fixture.observerPool.query(
-      `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND state = 'claimed'`,
-      [candidate.idempotencyKey],
-    );
+    expireWorkLease(fixture.observerPool, { key: candidate.idempotencyKey, state: "claimed" });
   for (let count = 1; count <= restarts; count += 1) {
     const ended = await waitForWorkPass(
       `refused stop ${count + failedStops} to block, or the work to end`,

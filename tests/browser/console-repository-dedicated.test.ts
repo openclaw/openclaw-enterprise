@@ -4,7 +4,6 @@ import test from "node:test";
 import type {
   AgentDeploymentStatusWire,
   AgentReadWire,
-  AgentResponse,
   AgentRevisionResponse,
   ConfigurationWire,
   PresetWire,
@@ -17,8 +16,9 @@ import {
   repositoryCheckbox,
   setSlackSelection,
   waitForEnabled,
+  isMaskedSecretValue,
 } from "./console-agents-browser-helpers.mjs";
-import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
+import { openCreateSecretDialog, createAgentThroughForm } from "./console-agents-test-support.mjs";
 import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -113,15 +113,7 @@ for (const issuesEnabled of [true, false]) {
     }
     const profile = issuesEnabled ? "git-full" : "git-write";
     const label = issuesEnabled ? "Contributor" : "Contributor · no issue management";
-    const createdResponse = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-        response.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-    const response = await createdResponse;
-    assert.equal(response.status(), 201);
-    const { data: agent }: AgentResponse = await response.json();
+    const agent = await createAgentThroughForm(page, fixture, namespace.id);
     const expectedBindings = [
       { repositoryRef: "application", profile },
       { repositoryRef: "documentation", profile },
@@ -156,8 +148,8 @@ for (const issuesEnabled of [true, false]) {
       await openCreateSecretDialog(channelDialog, label);
       const secretDialog = page.getByRole("dialog", { name: `Create ${label} Secret` });
       assert.equal(
-        await secretDialog.getByLabel("Value", { exact: true }).getAttribute("type"),
-        "password",
+        await isMaskedSecretValue(secretDialog.getByLabel("Value", { exact: true })),
+        true,
       );
       await secretDialog.getByLabel("Value", { exact: true }).fill(value);
       await secretDialog.getByRole("button", { name: "Create Secret", exact: true }).click();
@@ -224,9 +216,9 @@ for (const issuesEnabled of [true, false]) {
     assert.equal(status, "queued");
     await expectDeploymentOutcome(page, "Queued");
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-    await page
-      .getByRole("heading", { name: `Version v${revision.revision}`, exact: true })
-      .waitFor();
+    const version = page.getByRole("combobox", { name: "Viewing version", exact: true });
+    await version.waitFor();
+    assert.equal(await version.inputValue(), revision.id);
     await page
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })
       .waitFor();

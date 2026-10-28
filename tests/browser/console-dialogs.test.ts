@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page } from "playwright";
 
+import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   consoleViewports,
   detailUrl,
@@ -51,6 +54,7 @@ const openDialog = (page: Page) =>
         radius: corners.slice(0, 2).join(" "),
         border: `${style.borderTopWidth} ${style.borderTopStyle} ${style.borderTopColor}`,
       },
+      clientWidth: document.documentElement.clientWidth,
       bottomRadius: corners.slice(2).join(" "),
       animation: `${style.animationName} ${style.animationDuration}`,
       box: { left: box.left, right: box.right, top: box.top, bottom: box.bottom },
@@ -63,7 +67,15 @@ const openDialog = (page: Page) =>
   });
 
 test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become bottom sheets on a phone and return focus to their opener", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Dialog pattern");
+  // A transparent page background exposes a backdrop painted twice on the page but once in the gutter.
+  const directory = await temporaryDirectory(t, "console-dialog-canvas-");
+  await writeFile(
+    join(directory, "theme.json"),
+    JSON.stringify({ schemaVersion: 1, colors: { bg: "#f7f5f000" } }),
+  );
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Dialog pattern", {
+    consoleTheme: await loadConsoleTheme(directory),
+  });
   const agent = await fixture.createAgent(namespace.id, "Dialog Agent", nativeValues("dialogs"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const slackAgent = await fixture.createAgent(
@@ -206,10 +218,11 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   for (const { name } of cases) {
     const phone = seen.get(`${name} 390`);
     assert.ok(phone, `${name} was measured at phone width`);
-    const { box, viewport, chrome, bottomRadius } = phone;
+    // clientWidth excludes a real scrollbar, but not an unnecessarily reserved empty gutter.
+    const { box, viewport, clientWidth, chrome, bottomRadius } = phone;
     assert.deepEqual(
       { left: box.left, right: box.right, bottom: Math.round(box.bottom) },
-      { left: 0, right: viewport.width, bottom: viewport.height },
+      { left: 0, right: clientWidth, bottom: viewport.height },
       `${name} is a full-width sheet on the bottom edge at 390`,
     );
     assert.ok(box.top > 0, `${name} leaves the page visible above the sheet`);
@@ -235,6 +248,25 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   await page.emulateMedia({ reducedMotion: "reduce" });
   await cases[0].open();
   assert.match((await openDialog(page)).animation, /^none /);
+
+  // A short desktop page has an empty, stable scrollbar gutter outside the native backdrop.
+  // Compare its actual paint to the adjacent canvas, without assuming a scrollbar width or colour.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${fixture.origin}/console/secrets?namespace=${namespace.id}`);
+  const create = page.getByRole("button", { name: "Create Secret", exact: true });
+  await create.click();
+  const { viewport, clientWidth } = await openDialog(page);
+  const pageHeight = await page.locator("html").evaluate((html) => html.scrollHeight);
+  assert.equal(pageHeight, viewport.height, "the page has no vertical scrollbar");
+  if (viewport.width < clientWidth) {
+    const column = (x: number) =>
+      page.screenshot({ clip: { x, y: 10, width: 1, height: 10 }, scale: "css" });
+    const canvas = await column(viewport.width - 1);
+    const gutter = await column(clientWidth - 1);
+    assert.ok(gutter.equals(canvas), "the backdrop reaches across the empty scrollbar gutter");
+  }
+  await page.keyboard.press("Escape");
+  assert.equal(await hasFocus(create), true);
 });
 
 // Where the open sheet and its actions sit against the visible area, once the visual viewport's

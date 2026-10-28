@@ -11,6 +11,13 @@ simulated data.
    shadow and backdrop. Cancel is on the left and the confirming action on the
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
    Create Secret).
+   In Delete, read what stays in the Namespace, then open **View separate cleanup
+   commands**. Each command includes the Namespace ID. Copying it keeps the
+   confirmation open and runs nothing.
+   In **Backdrop at the desktop scrollbar**, choose **Open preview in its own tab**
+   to check the window’s scrollbar gutter, rather than the surrounding frame.
+   An empty gutter blends into the backdrop; a classic scrollbar remains visible.
+   Press Escape: the page keeps its position and original colours.
 2. Open **Plugins (wide)**. The same chrome holds the plugin workspace, 72 rem
    wide. Wider than 1100 px the catalog and the selected plugin's detail sit
    side by side.
@@ -35,3 +42,25 @@ simulated data.
    Tap Name. The sheet rises with the on-screen keyboard, so Cancel and Create
    Secret stay above it. A desktop browser has no on-screen keyboard; pinch
    zoom shrinks the visible area the same way, and the sheet follows it.
+
+## Create a Secret with a long Agent name
+
+Open **Components / Dialogs / Create Secret**, then repeat in **Create Secret
+(phone)**. Both use the same simulated scenario.
+
+1. Inspect the initial Name before typing. The long Agent name is shortened with
+   an ellipsis; the Name ends with **Slack bot token** and fits the 200-character
+   limit. Scroll within the input to inspect its end.
+2. Replace Name with **Walkthrough Slack bot token**. Enter
+   `synthetic-demo-token` as Value, then select **Create Secret**.
+3. Confirm the modal closes and **Walkthrough Slack bot token** is selected in
+   the Slack editor. Creation returns Secret metadata from the simulated service
+   with status 201. The selection remains staged until the editor is saved.
+4. For cancellation, open **Pages / Create Agent / Create Slack Secret before
+   Agent exists**. Enter a synthetic value and click the backdrop. The Secret
+   modal closes while the Slack editor stays open. Reopen Create new Secret and
+   confirm Value is empty. Press Escape, then cancel the editor.
+
+Capture the initial Name, the edited form and the selected Secret on desktop and
+phone, plus a short recording of editing and creation. Use synthetic values only.
+These fixtures do not verify backend persistence or delivery to Slack.

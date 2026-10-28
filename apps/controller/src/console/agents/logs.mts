@@ -8,8 +8,17 @@ import type {
   RuntimeLogStream,
 } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
-import { button, element, replaceChildrenIfChanged, setText, statusBlock } from "../dom.mjs";
-import { displayDate, namespacePath } from "./list.mjs";
+import {
+  button,
+  describeDisabled,
+  element,
+  replaceChildrenIfChanged,
+  setText,
+  statusBlock,
+  withRequestId,
+} from "../dom.mjs";
+import { LOG_TEXT_DENIED, runtimeStatusDenied } from "./access-reasons.mjs";
+import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
 import { fitLogTimeColumn, SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
 interface AgentLogsContext {
@@ -32,8 +41,14 @@ interface AgentLogsOptions {
   agent: { id: string };
   revisionId: string;
   shown?: Promise<void>;
-  permissions?(options?: { fresh: boolean }): Promise<{ operate: boolean } | null>;
+  permissions?(options?: {
+    fresh: boolean;
+  }): Promise<{ operate: boolean; readLogs?: boolean } | null>;
+  // Whether the caller may read this version (AgentRevision read); undefined when unknown.
+  versionRead?: Promise<boolean | undefined>;
   onLogsDenied?(): void;
+  // A read was refused after the same read succeeded: the caller's access changed.
+  onAccessChanged?(): void;
 }
 
 // A reader without operate can read logs without observing a Pod or status timestamp.
@@ -50,10 +65,14 @@ const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
 // time the Logs tab reopens. A status denial also keeps whether the caller's permission answer
 // allowed operate when it was last shown (null until an answer is compared): once a later
-// answer allows operate where it did not, the view asks once more. The answer has no read_logs
-// bit, so a log text denial lasts until sign-out.
+// answer allows operate where it did not, the view asks once more. A log text denial lasts until
+// the console Refresh or sign-out; a view whose answer denies read_logs is not sent the read.
 const deniedLogViews = new Set<string>();
 const deniedStatusViews = new Map<string, boolean | null>();
+// Denials that came after this page session read the same output: the caller's access changed,
+// which the view says instead of restating the rule (finding 2550).
+const revokedLogViews = new Set<string>();
+const revokedStatusViews = new Set<string>();
 // Denials are per signed-in operator: another user signing in on this tab asks again.
 const logViewKey = (context: LogViewIdentity, agentId: string) =>
   JSON.stringify([context.operatorId ?? null, context.namespaceId, agentId]);
@@ -63,11 +82,33 @@ export function logTextDenied(context: LogViewIdentity, agentId: string) {
   return deniedLogViews.has(logViewKey(context, agentId));
 }
 
+/**
+ * Forgets the Agent's remembered runtime denials: the console Refresh calls this, so the rebuilt
+ * Logs view reads again and an access change can be checked (finding 2566).
+ */
+export function forgetRuntimeDenials(namespaceId: string, agentId: string) {
+  for (const views of [deniedLogViews, deniedStatusViews, revokedLogViews, revokedStatusViews]) {
+    for (const key of views.keys()) {
+      const [, keyNamespace, keyAgent] = JSON.parse(key) as unknown[];
+      if (keyNamespace === namespaceId && keyAgent === agentId) {
+        views.delete(key);
+      }
+    }
+  }
+}
+
 /** Forgets every remembered runtime denial: sign-out calls this, so a new sign-in asks again. */
 export function clearRuntimeDenials() {
   deniedLogViews.clear();
   deniedStatusViews.clear();
+  revokedLogViews.clear();
+  revokedStatusViews.clear();
 }
+
+const LOGS_ACCESS_CHANGED =
+  "Your access to this Agent changed, so its logs are no longer shown. Refresh to check your access, or ask an Installation administrator.";
+const STATUS_ACCESS_CHANGED =
+  "Your access to this Agent changed, so its runtime status is no longer shown. Refresh to check your access, or ask an Installation administrator.";
 
 const LEVELS = ["error", "warn", "info", "debug", "unknown"] satisfies RuntimeLogLevel[];
 
@@ -78,10 +119,9 @@ function runtimeErrorText(
   manualRead = false,
 ) {
   if (error.status === 403) {
-    // Name both grants: without status the Logs section never says what log text needs.
-    return tier === "logs"
-      ? "Log text requires Agent read_logs (or administer) and read access."
-      : "Runtime status requires Agent operate and read access plus read access to this version. Log text needs Agent read_logs (or administer) and read access.";
+    // Each names its own grant: a status refusal still reads log text, whose pane names
+    // read_logs if that is refused too.
+    return tier === "logs" ? LOG_TEXT_DENIED : runtimeStatusDenied({});
   }
   if (error.status === 501) {
     return "This Compute Driver does not expose runtime status or logs, or an operator turned them off.";
@@ -100,9 +140,7 @@ function runtimeErrorText(
       return "Too many requests. Waiting before the next read.";
     }
     const seconds = error.retryAfterSeconds;
-    return seconds === undefined
-      ? "Too many requests. Try again shortly."
-      : `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+    return `Too many requests. ${seconds === undefined ? "Try again shortly." : retryAfterText(seconds)}`;
   }
   if (error.status === 504) {
     return "The read timed out. Try again.";
@@ -116,11 +154,9 @@ function runtimeErrorText(
   if (error.status === 404) {
     return "This version is not available.";
   }
-  return "Runtime status or logs are unavailable. Try again shortly.";
-}
-
-function withRequestId(text: string, error: RequestFailure) {
-  return error.requestId ? `${text} Request ID: ${error.requestId}` : text;
+  return tier === "status"
+    ? "Current runtime status is unavailable. Checking again shortly."
+    : "Runtime status or logs are unavailable. Try again shortly.";
 }
 
 /**
@@ -164,7 +200,9 @@ export function renderAgentLogs(
     shown = Promise.resolve(),
     // Returns the caller's newest permission answer; `{ fresh: true }` reads it again.
     permissions = () => Promise.resolve(null),
+    versionRead = Promise.resolve(undefined),
     onLogsDenied = () => {},
+    onAccessChanged = () => {},
   }: AgentLogsOptions,
 ) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
@@ -251,6 +289,9 @@ export function renderAgentLogs(
     size: "sm",
     disabled: true,
   });
+  // Status refreshes rebuild the picker enabled-state. A download still in flight
+  // must stay disabled across those refreshes (issue 3387).
+  let downloadPending = false;
   const hiddenLevels = new Set<string>();
   const levelChips = LEVELS.map((level) =>
     button(
@@ -416,6 +457,22 @@ export function renderAgentLogs(
     clearTimeout(retryHintTimer);
     logError.hidden = text === null;
     logError.textContent = text ?? "";
+    describeDeniedControls();
+  }
+
+  // A refused log read disables every log control; each is described by the refusal that says
+  // why (finding D749).
+  function describeDeniedControls() {
+    for (const control of [
+      sourceSelect,
+      previous,
+      includeDebug,
+      followButton,
+      refreshButton,
+      downloadButton,
+    ]) {
+      describeDisabled(control, logsDenied ? logError : null);
+    }
   }
 
   function showLogReadError(
@@ -426,12 +483,20 @@ export function renderAgentLogs(
     if (logsDenied) {
       return;
     }
-    showLogError(withRequestId(runtimeErrorText(error, "logs", source.id, manualRead), error));
+    if (error.status === 403 && (logsAllowed || rows > 0)) {
+      revokedLogViews.add(deniedKey);
+      onAccessChanged();
+    }
+    showLogError(
+      error.status === 403 && revokedLogViews.has(deniedKey)
+        ? LOGS_ACCESS_CHANGED
+        : withRequestId(runtimeErrorText(error, "logs", source.id, manualRead), error.requestId),
+    );
     if (manualRead && error.status === 429 && error.retryAfterSeconds !== undefined) {
       // A later error or a successful read replaces the text and cancels this (finding 1715).
       // A view held for Back is updated too, so it never returns with a wait that has passed.
       retryHintTimer = setTimeout(() => {
-        showLogError(withRequestId("Too many requests. You can try again now.", error));
+        showLogError(withRequestId("Too many requests. You can try again now.", error.requestId));
       }, error.retryAfterSeconds * 1000);
     }
     if (error.status !== 403) {
@@ -541,7 +606,7 @@ export function renderAgentLogs(
       !harnessDown
         ? ""
         : harnessPods.length === 0
-          ? "The Agent (Harness) has no Pod yet. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: see Deployment activity for why it has not started."
+          ? "No current Agent (Harness) Pod was reported. Check Deployment activity for the latest status."
           : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.",
     );
     const pod = selectedPod();
@@ -558,8 +623,9 @@ export function renderAgentLogs(
     sourceSelect.disabled = logsDenied || description.sources.length === 0;
     includeDebug.disabled = logsDenied || description.sources.length === 0;
     refreshButton.disabled = !readable;
-    downloadButton.disabled = !readable;
+    downloadButton.disabled = downloadPending || !readable;
     followButton.disabled = !readable || previous.checked;
+    describeDeniedControls();
   }
 
   // A later status denial clears the Pod details, not an independently authorized log cursor.
@@ -577,6 +643,11 @@ export function renderAgentLogs(
     }
   }
 
+  // A status refusal names only the grants the caller's answers show missing (finding D753).
+  async function statusDenial(operate: boolean | undefined) {
+    return runtimeStatusDenied({ operate, versionRead: await versionRead });
+  }
+
   async function loadStatus() {
     clearTimeout(statusTimer);
     if (!current()) {
@@ -586,13 +657,29 @@ export function renderAgentLogs(
     // refusal) supersedes a read in flight.
     const ticket = ++statusRead;
     const superseded = () => ticket !== statusRead;
+    // A caller whose permission answer denies operate is not sent the status read: its 403 was
+    // an audited denial and a raw error on each first visit (finding 2454). The page's answer can
+    // predate an operate grant, so the remembered denial below compares it with a fresh answer
+    // once, which is not audited; an answer still in flight is that fresh answer. An unknown
+    // answer still asks for status.
+    if (!deniedStatusViews.has(statusKey) && !permissionsAsked) {
+      const operate = (await permissions())?.operate;
+      if (!current() || superseded()) {
+        return;
+      }
+      if (operate === false && !deniedStatusViews.has(statusKey)) {
+        deniedStatusViews.set(statusKey, false);
+      }
+    }
     if (deniedStatusViews.has(statusKey)) {
       // A rebuilt view compares the denial with a fresh answer, so an operate grant since
       // shows on the next visit to Logs (finding 1579). Back's check already compared a
       // retained view's answer; its resumed loads take the newest one.
       const fresh = !permissionsAsked;
       permissionsAsked = true;
-      const operate = (await permissions({ fresh }))?.operate === true;
+      const answer = (await permissions({ fresh }))?.operate;
+      const operate = answer === true;
+      const denial = await statusDenial(answer);
       // Another status load may have taken the denial while this one waited.
       if (!current() || !deniedStatusViews.has(statusKey)) {
         return;
@@ -602,7 +689,7 @@ export function renderAgentLogs(
         deniedStatusViews.delete(statusKey);
       } else {
         deniedStatusViews.set(statusKey, operate);
-        showStripStatus(runtimeErrorText({ status: 403 }, "status"));
+        showStripStatus(revokedStatusViews.has(statusKey) ? STATUS_ACCESS_CHANGED : denial);
         offerLogsWithoutStatus();
         return;
       }
@@ -641,6 +728,12 @@ export function renderAgentLogs(
         }
       } catch (cause) {
         const error = requestFailure(cause);
+        // A first refusal names the missing grants; a refusal of shown status is a revocation,
+        // which says so instead (below), so it waits for no answer.
+        const denial =
+          error.status === 403 && !description?.observedAt
+            ? await statusDenial((await permissions())?.operate)
+            : null;
         if (!current() || superseded()) {
           return;
         }
@@ -648,7 +741,25 @@ export function renderAgentLogs(
           context.onExpired();
           return;
         }
-        showStripStatus(withRequestId(runtimeErrorText(error, "status"), error));
+        // A status this view already showed was readable: its refusal is a revocation.
+        if (error.status === 403 && description !== null && description.observedAt !== null) {
+          revokedStatusViews.add(statusKey);
+          onAccessChanged();
+        }
+        // The Pod cards stay after a failed refresh: say when they were observed, so they do
+        // not read as current. A refusal is not a stale view; its revocation path clears them.
+        const lastObserved = error.status === 403 ? null : description?.observedAt;
+        const failure = denial ?? runtimeErrorText(error, "status");
+        showStripStatus(
+          error.status === 403 && revokedStatusViews.has(statusKey)
+            ? STATUS_ACCESS_CHANGED
+            : withRequestId(
+                lastObserved
+                  ? `Showing runtime status last observed ${displayDate(lastObserved)}. ${failure}`
+                  : failure,
+                error.requestId,
+              ),
+        );
         if (error.status === 403) {
           offerLogsWithoutStatus();
         }
@@ -691,22 +802,33 @@ export function renderAgentLogs(
 
   // Client-side only: filters narrow the rows already loaded, never the server read.
   function applyFilters() {
-    let lines = 0;
-    let shown = 0;
     for (const row of pane.children as HTMLCollectionOf<HTMLElement>) {
       row.hidden = !rowVisible(row);
-      if (row.dataset.level !== undefined) {
-        lines += 1;
-        shown += row.hidden ? 0 : 1;
-      }
     }
-    const filtering = hiddenLevels.size > 0 || filterInput.value.trim() !== "";
-    filterStatus.textContent = filtering
-      ? `Showing ${shown} of ${lines} loaded lines. Filters search only the lines loaded in this view, not the whole container log.`
-      : "Filters search only the lines loaded in this view, not the whole container log.";
+    updateFilterStatus();
+  }
+
+  // The status is a live region: unchanged text is not written again, so a Follow poll that
+  // appends lines with no filter active does not re-announce it.
+  function updateFilterStatus() {
+    let text = "Filters search only the lines loaded in this view, not the whole container log.";
+    if (hiddenLevels.size > 0 || filterInput.value.trim() !== "") {
+      // Gap and withheld notices have no level and are not counted.
+      const lines = pane.querySelectorAll(":scope > [data-level]").length;
+      const shown = pane.querySelectorAll(":scope > [data-level]:not([hidden])").length;
+      text = `Showing ${shown} of ${lines} loaded lines. ${text}`;
+    }
+    if (filterStatus.textContent !== text) {
+      filterStatus.textContent = text;
+    }
   }
 
   function appendRecords(records: readonly RuntimeLogRecord[]) {
+    // An empty Follow poll writes nothing: the filter status is a live region that would be
+    // announced again, and rows the reader selected text in stay as they are.
+    if (records.length === 0) {
+      return;
+    }
     const atBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
     for (const record of records) {
       const row = recordRow(record);
@@ -718,7 +840,8 @@ export function renderAgentLogs(
       pane.firstChild.remove();
       rows -= 1;
     }
-    applyFilters();
+    // New rows were filtered as they were added; the rows already shown keep their state.
+    updateFilterStatus();
     if (atBottom) {
       pane.scrollTop = pane.scrollHeight;
     }
@@ -755,11 +878,12 @@ export function renderAgentLogs(
   async function download() {
     const source = selectedSource();
     const pod = selectedPod();
-    if (!current() || logsDenied || !source || !readableSelection(source)) {
+    if (downloadPending || !current() || logsDenied || !source || !readableSelection(source)) {
       return;
     }
     const query = logQuery(source, pod);
     query.set("download", "true");
+    downloadPending = true;
     downloadButton.disabled = true;
     try {
       const text = await read(`${base}/logs?${query}`, { responseType: "text" });
@@ -799,6 +923,7 @@ export function renderAgentLogs(
       }
       showLogReadError(error, source, { manualRead: true });
     } finally {
+      downloadPending = false;
       downloadButton.disabled = logsDenied || !readableSelection();
     }
   }
@@ -876,6 +1001,13 @@ export function renderAgentLogs(
     }
     let retryAfter = FOLLOW_POLL_MS;
     try {
+      // A caller whose permission answer denies log text is not sent its read, which the API
+      // refuses and audits on each Logs visit (finding D758): the view shows that refusal. Once
+      // a read was allowed, a later refusal is the API's own, which says access changed. An
+      // unknown answer still reads.
+      if (!logsAllowed && (await permissions())?.readLogs === false) {
+        throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
+      }
       const page = (await read(`${base}/logs?${query}`)) as AgentRuntimeLogPageWire;
       if (!current() || restartPending || logsDenied) {
         restoreShownStatus();
@@ -887,6 +1019,7 @@ export function renderAgentLogs(
         pane.replaceChildren();
         rows = 0;
         shownSelection = selection;
+        updateFilterStatus();
       }
       cursor = page.cursor;
       appendRecords(page.records);
@@ -895,19 +1028,23 @@ export function renderAgentLogs(
         lastStream = page.stream;
         renderPickers();
       }
-      const lines = page.records.filter(({ type }) => type === "line").length;
-      if (restart) {
-        logStatus.textContent =
+      const hasLine = page.records.some(({ type }) => type === "line");
+      // A Follow poll's first line replaces an empty tail's "No output" status.
+      if (restart || hasLine) {
+        const text =
           page.stream === null
             ? "This version has no running Pod for this source."
-            : lines === 0 && page.withheld > 0
+            : !hasLine && page.withheld > 0
               ? `Only withheld output in the last ${TAIL_LINES} lines.`
-              : lines === 0
+              : !hasLine
                 ? `No ${includeDebug.checked ? "" : "info-or-higher "}output in the last ${TAIL_LINES} lines.`
                 : source.kind === "sandbox"
                   ? `Showing policy decisions and supervisor output of sandbox ${page.stream.sandbox ?? ""}.`
                   : `Showing ${previous.checked ? "the previous instance of " : ""}${page.stream.container} in ${page.stream.pod}.`;
-        shownStatus = logStatus.textContent;
+        if (logStatus.textContent !== text) {
+          logStatus.textContent = text;
+        }
+        shownStatus = text;
       }
     } catch (cause) {
       const error = requestFailure(cause);
@@ -1032,7 +1169,11 @@ export function renderAgentLogs(
     ),
   );
   if (logsDenied) {
-    showLogError(runtimeErrorText({ status: 403 }, "logs"));
+    showLogError(
+      revokedLogViews.has(deniedKey)
+        ? LOGS_ACCESS_CHANGED
+        : runtimeErrorText({ status: 403 }, "logs"),
+    );
   }
   // Back reuses this view only while what it shows is still readable: the check reads on from
   // where the view stopped, as its polls would, and a refusal rebuilds the page instead
@@ -1064,12 +1205,15 @@ export function renderAgentLogs(
       reads.map((path) =>
         context.request(path, { revalidate: false }).catch((error: unknown) => {
           // Each refusal is audited: the rebuilt view takes it as known instead of asking again.
+          // This view read both before, so a refusal now is a revocation (finding 2550).
           if (requestFailure(error).status === 403) {
             if (path === base) {
               // Not yet compared with a permission answer: the rebuilt view takes its answer.
               deniedStatusViews.set(statusKey, null);
+              revokedStatusViews.add(statusKey);
             } else {
               deniedLogViews.add(deniedKey);
+              revokedLogViews.add(deniedKey);
             }
           }
           throw error;

@@ -5,7 +5,8 @@ transport without putting provider material in the Agent's configuration. OCC
 controls access to the execution; the selected Driver enforces the request and
 credential delivery. For prepared GitHub access, Token Service also maintains
 the short-lived credential. The setup and verification depend on the selected
-delivery profile.
+delivery profile. The [architecture walkthrough](../design/credential-proxy.md)
+shows what a child process can request and what it can read in the response.
 
 **There is no qualified stock OpenShell deployment for protected access in this
 release.** Stock OpenShell 0.1.5 is not qualified. A successful fixture, Helm
@@ -178,7 +179,7 @@ substitute. A capable exact-dispatch Driver with verified policy reduction v2
 can instead admit Git alongside independently authorized routes as v7; see
 [selection differences](../reference/drivers/selection.md#select-a-protected-sender).
 Fresh static `openai` registration while Proxy is selected produces an egress
-source. For the v5/v6 combination, retain a suitable existing ordinary source
+source (a Git-only `repository.openShell` Proxy refuses it with `409`). For the v5/v6 combination, retain a suitable existing ordinary source
 or provision it in a supported Gateway-only installation before enabling Git.
 If neither is available, stop before enrollment.
 Neither configuration qualifies stock OpenShell. Native prepared Git is a separate

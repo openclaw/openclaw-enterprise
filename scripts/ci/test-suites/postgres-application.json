@@ -6,6 +6,7 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/postgres-worker-agent-revision.test.mjs",
+    "tests/integration/postgres-worker-repository-roles.test.ts",
     "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
     "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
     "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
@@ -47,7 +48,8 @@
         "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
         "the revision worker retries transient Backend binding read failures without activating",
         "an older revision retry is superseded without preparing or retiring a newer active revision",
-        "deployment status judges claim liveness by the database clock, not the controller clock",
+        "an expired claim keeps a started deployment running under any controller clock",
+        "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
         "real PostgreSQL preserves the failure budget while an Agent runtime converges",
         "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
         "an overdue Agent runtime fails closed without activating its incomplete revision",
@@ -64,6 +66,17 @@
         "a Kubernetes 403 on a private Secret write fails deployment on the first attempt",
         "a Kubernetes 403 on a private Secret write during maintenance preparation keeps the maintenance chain",
         "a Kubernetes 403 on a private Secret write during maintenance activation keeps the maintenance chain"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-repository-roles.test.ts",
+      "expectedTests": [
+        "worker refuses repository credentials when repositoryPolicy is present with the wrong id",
+        "worker refuses repository credentials when repositoryPolicy is present with the wrong implementation",
+        "worker refuses repository credentials when repositoryPolicy is absent",
+        "worker refuses repository credentials when nativeRepositorySender is present with the wrong id",
+        "worker refuses repository credentials when nativeRepositorySender is present with the wrong implementation",
+        "worker refuses repository credentials when nativeRepositorySender is absent"
       ]
     },
     {

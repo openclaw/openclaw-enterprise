@@ -28,12 +28,14 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
+  holdRequests,
   login,
   setSlackSelection,
   slackSelectionValue,
@@ -49,6 +51,8 @@ import {
   waitForEnabled,
   waitForInputValue,
   statusTone,
+  isMaskedSecretValue,
+  trackSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
   STARTER_CONTROL_UI,
@@ -64,12 +68,27 @@ import {
   agentPostRequests,
   optionValues,
   createRepositoryLaunchFixture,
+  runProvisioningPolls,
   waitForCreateFormReads,
+  submitCreateAgent,
+  createAgentThroughForm,
 } from "./console-agents-test-support.mjs";
 import {
   expectDeploymentOutcome,
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
+import {
+  ADMINISTRATOR_ACCESS_DENIED,
+  AGENT_SAVE_DENIED,
+  createDenied,
+  DEPENDENCY_UNAVAILABLE,
+  GENERIC_DENIAL,
+  AGENT_CREATE_INSTALLATION_DENIED,
+  CHANNELS_NEED_DEDICATED,
+  REPOSITORY_ACCESS_NOT_CONFIGURED,
+  REPOSITORY_CHOICES_CREATE_DENIED,
+} from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -226,13 +245,23 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     .waitFor();
   assert.equal(await createSecretDialog.getByLabel("Binding key").inputValue(), "SLACK_BOT_TOKEN");
   assert.equal(await createSecretDialog.getByLabel("Binding key").getAttribute("readonly"), "");
+  // The fixed key reads as text, not as a field like Name (finding 2370).
+  const fieldChrome = (label: string, exact = false) =>
+    createSecretDialog.getByLabel(label, { exact }).evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { border: style.borderTopColor, background: style.backgroundColor };
+    });
+  const [fixedKey, nameField] = [await fieldChrome("Binding key"), await fieldChrome("Name", true)];
+  assert.equal(fixedKey.border, "rgba(0, 0, 0, 0)");
+  assert.equal(fixedKey.background, "rgba(0, 0, 0, 0)");
+  assert.notEqual(nameField.border, fixedKey.border);
   assert.equal(
     await createSecretDialog.getByLabel("Name", { exact: true }).inputValue(),
     "Console-created Agent Slack bot token",
   );
   assert.equal(
-    await createSecretDialog.getByLabel("Value", { exact: true }).getAttribute("type"),
-    "password",
+    await isMaskedSecretValue(createSecretDialog.getByLabel("Value", { exact: true })),
+    true,
   );
   // Dismissing the topmost dialog discards its token, not the underlying Slack edits.
   await createSecretDialog.getByLabel("Value", { exact: true }).fill("discarded-secret-value");
@@ -249,20 +278,13 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await openCreateSecretDialog(createChannelDialog, "Slack bot token");
   assert.equal(await createSecretDialog.getByLabel("Value", { exact: true }).inputValue(), "");
   await createSecretDialog.getByLabel("Value", { exact: true }).fill(createdSlackBotSecretValue);
-  const secretReached = Promise.withResolvers<void>();
-  const secretRelease = Promise.withResolvers<void>();
-  t.after(() => secretRelease.resolve());
   // The real Secret write must finish before its dialog can be dismissed.
-  await page.route(`${fixture.origin}/namespaces/${namespace.id}/secrets`, async (route) => {
-    if (route.request().method() !== "POST") {
-      await route.continue();
-      return;
-    }
-    const response = await route.fetch();
-    secretReached.resolve();
-    await secretRelease.promise;
-    await route.fulfill({ response });
-  });
+  const secretWrite = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/secrets`,
+    { method: "POST", afterServer: true, timeout: 0 },
+  );
   const botSecretResponse = page.waitForResponse((response) => {
     if (
       response.url() !== `${fixture.origin}/namespaces/${namespace.id}/secrets` ||
@@ -273,14 +295,14 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     return response.request().postDataJSON()?.name === "Console-created Agent Slack bot token";
   });
   await createSecretDialog.getByRole("button", { name: "Create Secret" }).click();
-  await secretReached.promise;
+  await secretWrite.requested;
   await page.mouse.click(secretBounds.x / 2, secretBounds.y + 8);
   assert.equal(await createSecretDialog.isVisible(), true);
   assert.equal(
     await createSecretDialog.getByRole("button", { name: "Create Secret" }).isDisabled(),
     true,
   );
-  secretRelease.resolve();
+  secretWrite.release();
   const createdSlackBotSecret = (await (await botSecretResponse).json()).data;
   await createChannelDialog
     .getByText("Secret selected. Apply channel settings, then Create Agent binds it.")
@@ -310,14 +332,9 @@ test("Agent creation stores its API key separately, grants exact access, and sav
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
       response.request().method() === "POST",
   );
-  const createResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  const createResponse = await submitCreateAgent(page, fixture, namespace.id);
   const configuration = await (await configurationResponse).json();
-  const created = await (await createResponse).json();
+  const created = await createResponse.json();
   assert.equal(secretDriver.valueFor(secret), key);
   assert.equal(secretDriver.calls.filter((call) => call.operation === "create").length, 4);
   for (const payload of [secret, configuration, created]) {
@@ -359,7 +376,10 @@ test("Agent creation stores its API key separately, grants exact access, and sav
       url.searchParams.get("revision") === "draft"
     );
   });
-  await page.getByRole("button", { name: "Create new version" }).waitFor();
+  await page
+    .getByRole("combobox", { name: "Viewing version", exact: true })
+    .getByRole("option", { name: "Draft · Editable Configuration", exact: true, selected: true })
+    .waitFor({ state: "attached" });
   await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
   await page.getByText("No version is currently selected for service.").waitFor();
   // A never-deployed Agent has no Stop card and reports no stop request (finding 1899). The
@@ -376,9 +396,10 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     exact: true,
   });
   await boundSecret.waitFor();
+  // It opens the console Secrets page on that Secret, not the API path (finding D757).
   assert.equal(
     await boundSecret.getAttribute("href"),
-    `/namespaces/${namespace.id}/secrets/${secret.id}`,
+    `/console/secrets?namespace=${namespace.id}&secret=${secret.id}`,
   );
   const visibleConfiguration = await page.locator("body").textContent();
   assert.ok(visibleConfiguration !== null);
@@ -450,13 +471,9 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(JSON.stringify(audit.events).includes(key), false);
 
   // The server still enforces the exact source grant when the form is saved.
-  fixture.policy.restrictions.push({
-    id: "deny-harness-secret-operate",
+  restrict(fixture.policy, "operate", "secret", {
     namespaceId: namespace.id,
-    resourceKind: "secret",
     resourceId: secret.id,
-    action: "operate",
-    effect: "deny",
   });
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   const savedSecretInput = page.getByLabel("API key Secret");
@@ -469,20 +486,14 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   );
   await page.getByRole("button", { name: "Save authentication source" }).click();
   assert.equal((await deniedBinding).status(), 403);
-  await page.getByText(/Access denied|not authorized|permission/i).waitFor();
+  await page.getByText(AGENT_SAVE_DENIED, { exact: true }).waitFor();
   assert.deepEqual(
     (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${created.data.id}`)).data
       .harnessAuth,
     created.data.harnessAuth,
   );
 
-  fixture.policy.restrictions.push({
-    id: "deny-agent-create",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   requests.length = 0;
   // With the permission answer the start page refuses at once (finding 1521). Without one the
   // form opens, and the API still refuses the creation itself.
@@ -492,7 +503,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start with default Preset" }).click();
-  await page.getByText(/Repository choices are denied/).waitFor();
+  await page.getByText(REPOSITORY_CHOICES_CREATE_DENIED, { exact: true }).waitFor();
   await enterManualModel(page, "denied-agent-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Denied Agent");
   await openAdvancedSettings(page);
@@ -517,31 +528,25 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   ]);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const { promise: optionsGate, resolve: releaseOptions } = Promise.withResolvers<void>();
-  t.after(() => releaseOptions());
-  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, async (route) => {
-    await optionsGate;
-    await route.continue();
-  });
+  const options = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/repository-options`,
+  );
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByText("Loading approved repositories…").waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  releaseOptions();
+  options.release();
   await page.getByText(/No approved repositories are available/).waitFor();
   await waitForCreateFormReads(page);
   await waitForEnabled(page.getByRole("button", { name: "Create Agent" }));
 
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Ordinary Agent");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const created = await (await createdResponse).json();
+  const createdResponse = await submitCreateAgent(page, fixture, namespace.id);
+  const created = await createdResponse.json();
   assert.equal(Object.hasOwn(created.data, "repositoryBindings"), false);
   assert.equal(
     Object.hasOwn(
@@ -552,7 +557,7 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   );
 });
 
-test("Dedicated repository Agent keeps its bindings through Slack save and the channel credential gate", async (t) => {
+test("Dedicated repository Agent keeps its bindings through a Slack save that binds both tokens", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
     {
       repositoryRef: "application",
@@ -568,22 +573,31 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the c
     "Dedicated model",
     "fixture-model-key",
   );
+  const slackAppSecret = await fixture.createSecret(
+    namespace.id,
+    "Repository Slack app",
+    "xapp-repository-fixture",
+  );
+  const slackBotSecret = await fixture.createSecret(
+    namespace.id,
+    "Repository Slack bot",
+    "xoxb-repository-fixture",
+  );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Dedicated repository Agent");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
   await repositoryCheckbox(page, "example/application").click();
+  // The intro names repository access where the Installation offers it (finding 2423).
+  await page
+    .getByText(
+      "Choose a model and repository access. Add Slack when you want this Agent to work with your team.",
+      { exact: true },
+    )
+    .waitFor();
   await page.locator("#repository-default-git-full").check();
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const response = await createdResponse;
-  assert.equal(response.status(), 201);
-  const agent = (await response.json()).data;
+  const agent = await createAgentThroughForm(page, fixture, namespace.id);
   assert.equal(agent.executionMode, "dedicated");
   assert.deepEqual(agent.repositoryBindings, [
     { repositoryRef: "application", profile: "git-full" },
@@ -599,6 +613,10 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the c
     "CREPOSITORY123",
   );
   await page.getByLabel("Who can use the agent in these channels?").selectOption("everyone");
+  // Configuration save refuses Slack token references without Secret bindings (finding 2319).
+  const slackDialog = page.getByRole("dialog", { name: "Configure Slack" });
+  await selectSecret(slackDialog, "Slack app token", slackAppSecret);
+  await selectSecret(slackDialog, "Slack bot token", slackBotSecret);
   const savedResponse = page.waitForResponse(
     (result) =>
       result.url().endsWith(`/configurations/${agent.configurationId}`) &&
@@ -617,16 +635,17 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the c
   });
   assert.equal(Object.hasOwn(saved.data.values.channels.slack, "allowFrom"), false);
   assert.equal(saved.data.values.plugins.entries.codex.enabled, true);
+  assert.deepEqual(
+    [
+      saved.data.secretBindings.SLACK_APP_TOKEN.source,
+      saved.data.secretBindings.SLACK_BOT_TOKEN.source,
+    ],
+    [slackAppSecret.ref, slackBotSecret.ref],
+  );
   const sameAgent = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.deepEqual(sameAgent.data.repositoryBindings, agent.repositoryBindings);
 
-  // Channel Secrets remain user-supplied; runtime credentials are generated by deployment.
-  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
-  await page
-    .getByText("Complete these in Credentials before deploying: Slack Secret bindings.")
-    .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-  await waitForEnabled(page.getByLabel("Slack app token"));
+  // Runtime credentials are generated by deployment, never by a Slack save.
   assert.equal(
     pathRequests(
       requests,
@@ -658,21 +677,27 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
     response.url().endsWith("/agents/repository-options"),
   );
   await unavailablePage.getByRole("button", { name: "Start with default Preset" }).click();
+  // No Repo Driver is a fixed state: discovery answers no options and says why (finding 2387).
   const options = await optionsResponse;
-  assert.equal(options.status(), 503);
-  assert.equal((await options.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
-  await unavailablePage
-    .getByText(/Repository access is not available in this Installation's configuration/)
-    .waitFor();
+  assert.equal(options.status(), 200);
+  const optionsBody = await options.json();
+  assert.deepEqual([optionsBody.data, optionsBody.meta.notConfigured], [[], true]);
+  await unavailablePage.getByText(REPOSITORY_ACCESS_NOT_CONFIGURED, { exact: false }).waitFor();
   assert.match(
     await unavailablePage
       .getByRole("status")
       .filter({
-        hasText: "Repository access is not available in this Installation's configuration",
+        hasText: REPOSITORY_ACCESS_NOT_CONFIGURED,
       })
       .innerText(),
     /You can continue without repository access/,
   );
+  // Without repository access the intro offers only what the form has (finding 2423).
+  await unavailablePage
+    .getByText("Choose a model. Add Slack when you want this Agent to work with your team.", {
+      exact: true,
+    })
+    .waitFor();
   const setupGuide = unavailablePage.getByRole("link", { name: "Set up repository access" });
   assert.equal(
     await setupGuide.getAttribute("href"),
@@ -708,13 +733,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
         namespaces: [{ namespaceId, profiles: ["git-read"] }],
       },
     ]);
-  deniedFixture.policy.restrictions.push({
-    id: "deny-repository-discovery",
-    namespaceId: deniedNamespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(deniedFixture.policy, "create", "agent", { namespaceId: deniedNamespace.id });
   const { page: deniedPage } = await newPage(t, deniedFixture);
   const deniedRequests = apiRequests(deniedPage, deniedFixture.origin);
   // Without a permission answer the form opens (with one it refuses at once, finding 1521), so
@@ -724,9 +743,10 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   );
   await login(deniedPage, deniedFixture, `/console/agents/new?namespace=${deniedNamespace.id}`);
   await deniedPage.getByRole("button", { name: "Start with default Preset" }).click();
-  await deniedPage.getByText(/Repository choices are denied/).waitFor();
+  const repositoryDenial = deniedPage.getByText(REPOSITORY_CHOICES_CREATE_DENIED, { exact: true });
+  await repositoryDenial.waitFor();
   // A refusal is a danger alert, not a quiet hint (finding 2006).
-  assert.deepEqual(await statusTone(deniedPage.getByText(/Repository choices are denied/)), {
+  assert.deepEqual(await statusTone(repositoryDenial), {
     className: "status",
     tone: "danger",
     role: "alert",
@@ -836,7 +856,8 @@ test("Agent creation blocks selective Agent-create IAM unavailability even when 
 
 for (const failure of [
   { name: "not found", status: 404, code: "NOT_FOUND" },
-  { name: "rate limited", status: 429, code: "RATE_LIMITED" },
+  // A rate limit in front of the API: the route itself sends no 429.
+  { name: "proxy rate limited", status: 429, proxy: true },
   { name: "internal error", status: 500, code: "INTERNAL_ERROR" },
   { name: "dependency unavailable", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
   { name: "missing error code", status: 503 },
@@ -868,15 +889,17 @@ for (const failure of [
     const failDiscovery = (route: Route) =>
       failure.status === undefined
         ? route.abort("failed")
-        : route.fulfill({
-            status: failure.status,
-            contentType: "application/json",
-            body: JSON.stringify(
-              failure.body ?? {
-                error: { code: failure.code, message: "untrusted-server-detail" },
-              },
-            ),
-          });
+        : failure.proxy
+          ? route.fulfill(proxyErrorResponse(failure.status))
+          : route.fulfill({
+              status: failure.status,
+              contentType: "application/json",
+              body: JSON.stringify(
+                failure.body ?? {
+                  error: { code: failure.code, message: "untrusted-server-detail" },
+                },
+              ),
+            });
     await page.route(path, failDiscovery);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start with default Preset" }).click();
@@ -896,13 +919,7 @@ for (const failure of [
     await page.getByRole("button", { name: "Retry repository choices", exact: true }).click();
     await page.getByText(/No approved repositories are available/).waitFor();
     await waitForEnabled(page.getByRole("button", { name: "Create Agent" }));
-    const createdResponse = page.waitForResponse(
-      (response) =>
-        response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-        response.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: "Create Agent" }).click();
-    assert.equal((await createdResponse).status(), 201);
+    await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
     assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
     assert.equal(agentPostRequests(requests, namespace.id).length, 1);
   });
@@ -976,13 +993,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
     `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
     async (route) => {
       const response = await route.fetch();
-      fixture.policy.restrictions.push({
-        id: "stale-agent-create-authorization",
-        namespaceId: namespace.id,
-        resourceKind: "agent",
-        action: "create",
-        effect: "deny",
-      });
+      restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
       await route.fulfill({ response });
     },
     { times: 1 },
@@ -992,14 +1003,8 @@ test("Agent creation recovers from stale authoritative admission without replaci
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
       response.request().method() === "POST",
   );
-  const rejected = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  await submitCreateAgent(page, fixture, namespace.id, { status: 403 });
   const savedConfiguration = await (await savedConfigurationResponse).json();
-  assert.equal((await rejected).status(), 403);
   await page.getByRole("heading", { name: "Recover from a rejected Agent save" }).waitFor();
   await page
     .getByText(
@@ -1139,13 +1144,8 @@ test("Agent creation recovers from stale authoritative admission without replaci
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
   await repositoryCheckbox(page, "example/application").click();
   await page.locator("#repository-default-git-read").check();
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const created = await (await createdResponse).json();
+  const createdResponse = await submitCreateAgent(page, fixture, namespace.id);
+  const created = await createdResponse.json();
   assert.deepEqual(created.data.repositoryBindings, [
     { repositoryRef: "application", profile: "git-read" },
   ]);
@@ -1238,13 +1238,7 @@ test("Agent repository recovery with empty current policy requires an explicit n
     `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
     async (route) => {
       const response = await route.fetch();
-      fixture.policy.restrictions.push({
-        id: "reject-before-policy-refresh",
-        namespaceId: namespace.id,
-        resourceKind: "agent",
-        action: "create",
-        effect: "deny",
-      });
+      restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
       await route.fulfill({ response });
     },
     { times: 1 },
@@ -1292,13 +1286,7 @@ test("Agent repository recovery with empty current policy requires an explicit n
   await model.fill("gpt-5.1");
   await model.press("Tab");
   await page.getByLabel("Agent name").fill("Explicit ordinary draft");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const created = (await (await createdResponse).json()).data;
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.equal(Object.hasOwn(created, "repositoryBindings"), false);
   assert.notEqual(created.configurationId, saved.id);
   assert.equal(
@@ -1498,6 +1486,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     },
   );
 
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByLabel("Preset template").selectOption(workspacePreset.data.id);
@@ -1559,10 +1548,17 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  assert.equal((await provisionResponse).status(), 202);
-  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
-  allowProvisioningSuccess = true;
+  await runProvisioningPolls(
+    page,
+    async () => {
+      await page.getByRole("button", { name: "Create Agent" }).click();
+      assert.equal((await provisionResponse).status(), 202);
+      assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
+      allowProvisioningSuccess = true;
+    },
+    `/namespaces/${namespace.id}/agents/provision/work_create`,
+    1,
+  );
   await page.waitForURL((url) => {
     return (
       url.pathname === `/console/agents/${agentId}` &&
@@ -1656,9 +1652,7 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
-  await page
-    .getByText(/Repository access is not available in this Installation's configuration/)
-    .waitFor();
+  await page.getByText(REPOSITORY_ACCESS_NOT_CONFIGURED, { exact: false }).waitFor();
   await page.getByLabel("Agent name", { exact: true }).fill("Model-only Agent");
   await enterManualModel(page, "model-only-test-key", "gpt-5.1");
   const admission = page.waitForResponse(
@@ -1668,7 +1662,9 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await admission).status(), 403);
-  await page.getByText("Access denied. You do not have permission for this operation.").waitFor();
+  // This viewer read the Installation, which only an Installation administrator can, so the
+  // denial does not send them to one.
+  await page.getByText(ADMINISTRATOR_ACCESS_DENIED, { exact: true }).waitFor();
   const submitted = agentProvisionPostRequests(requests, namespace.id);
   assert.equal(submitted.length, 1);
   const body = submittedBody<ProvisionAgentBody>(submitted[0]);
@@ -1676,12 +1672,37 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   assert.equal(Object.hasOwn(body, "repositoryBindings"), false);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+
+  // A named denial (finding 2534) asks an Installation administrator, which this caller is, so
+  // the form keeps the plain text (finding 2113).
+  const requestId = `req_${randomUUID()}`;
+  await page.unroute(`**/namespaces/${namespace.id}/agents/provision`);
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill(
+      apiErrorResponse(403, "FORBIDDEN", createDenied("Agent", namespace.id), { requestId }),
+    ),
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page
+    .getByText(`${ADMINISTRATOR_ACCESS_DENIED} Request ID: ${requestId}`, { exact: true })
+    .waitFor();
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 2);
 });
 
 test("Dedicated Agent creation uses regular create when provisioning is unsupported", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Unsupported provision", { ready: true });
+  const slackAppSecret = await fixture.createSecret(
+    namespace.id,
+    "Unsupported Slack app",
+    "xapp-unsupported-fixture",
+  );
+  const slackBotSecret = await fixture.createSecret(
+    namespace.id,
+    "Unsupported Slack bot",
+    "xoxb-unsupported-fixture",
+  );
   const values = nativeValues("unsupported-provision", {
     harnessId: "codex",
     providerModel: "gpt-5.1",
@@ -1713,16 +1734,11 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await channelDialog
     .getByLabel("Who can use the agent in these channels?")
     .selectOption("everyone");
+  // Create Agent refuses Slack token references without Secret bindings (finding 2319).
+  await selectSecret(channelDialog, "Slack app token", slackAppSecret);
+  await selectSecret(channelDialog, "Slack bot token", slackBotSecret);
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const response = await createdResponse;
-  assert.equal(response.status(), 201);
-  const createdAgent: AgentWire = (await response.json()).data;
+  const createdAgent: AgentWire = await createAgentThroughForm(page, fixture, namespace.id);
   // Navigation follows the model Secret grant; the Agent POST alone does not finish creation.
   await page.waitForURL((url) => url.pathname.startsWith("/console/agents/agt_"));
 
@@ -1733,8 +1749,22 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   assert.deepEqual(slackConfiguration(configuration.values).channels, {
     CUNSUPPORTED123: { requireMention: true, users: ["*"] },
   });
-  assert.equal(Object.hasOwn(configuration, "secretBindings"), false);
-  assert.equal(accessBindingPostRequests(requests, namespace.id).length, 1);
+  assert.deepEqual(
+    [
+      configuration.secretBindings?.SLACK_APP_TOKEN?.source,
+      configuration.secretBindings?.SLACK_BOT_TOKEN?.source,
+    ],
+    [slackAppSecret.ref, slackBotSecret.ref],
+  );
+  // The model Secret and both Slack Secrets.
+  assert.equal(accessBindingPostRequests(requests, namespace.id).length, 3);
+  // The preflight checked the same bindings, so an unbound token is refused before any save.
+  const [preflight] = pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`);
+  assert.deepEqual(
+    (preflight?.body as { configuration?: { secretBindings?: unknown } })?.configuration
+      ?.secretBindings,
+    configuration.secretBindings,
+  );
   assert.deepEqual(
     agentPostRequests(requests, namespace.id).map((request) => request.body),
     [
@@ -1957,7 +1987,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
           error: {
             code: "DEPENDENCY_UNAVAILABLE",
             // The catch-all outage text names no reason, so the outcome stays unknown.
-            message: "A required platform dependency is unavailable.",
+            message: DEPENDENCY_UNAVAILABLE,
           },
           meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
         }),
@@ -2128,10 +2158,7 @@ test("Agent creation explains a denied capability check instead of offering a re
       body: JSON.stringify({
         error: {
           code: status === 403 ? "FORBIDDEN" : "DEPENDENCY_UNAVAILABLE",
-          message:
-            status === 403
-              ? "The exact platform operation was not authorized."
-              : "A required platform dependency is unavailable.",
+          message: status === 403 ? GENERIC_DENIAL : DEPENDENCY_UNAVAILABLE,
         },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000002" },
       }),
@@ -2145,11 +2172,7 @@ test("Agent creation explains a denied capability check instead of offering a re
   await page.getByText(/^Your permissions in this Namespace could not be checked/).waitFor();
   permissions = { agents: { create: false } };
   await page.getByRole("button", { name: "Retry permission check" }).click();
-  await page
-    .getByText(
-      "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.",
-    )
-    .waitFor();
+  await page.getByText(AGENT_CREATE_INSTALLATION_DENIED).waitFor();
   assert.equal(await page.getByRole("button", { name: "Retry permission check" }).count(), 0);
   const retry = page.getByRole("button", { name: "Retry capability check" });
   assert.equal(
@@ -2221,9 +2244,7 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
     "Runtime details · Embedded",
   );
   // Slack is simply unavailable for Embedded Agents, not an error.
-  const embeddedChannelNote = page.getByText(
-    "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.",
-  );
+  const embeddedChannelNote = page.getByText(CHANNELS_NEED_DEDICATED);
   await embeddedChannelNote.waitFor();
   assert.equal(await embeddedChannelNote.getAttribute("class"), "hint");
   // Codex keeps Dedicated execution; only native OpenClaw depends on the runtime.
@@ -2499,15 +2520,7 @@ test("Agent creation blocks an incompatible fallback after changing provider unt
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
     "anthropic/claude-sonnet-4-6",
   );
-  const saved = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const response = await saved;
-  assert.equal(response.status(), 201);
-  const agent = (await response.json()).data;
+  const agent = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
   assert.equal(agent.executionMode, "embedded");
   const persisted = await fixture.request(
@@ -2550,15 +2563,7 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
       page,
       `test-${mode}-${selectedModel}-key`,
     );
-    const saved = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-        response.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: "Create Agent" }).click();
-    const response = await saved;
-    assert.equal(response.status(), 201);
-    const agent = (await response.json()).data;
+    const agent = await createAgentThroughForm(page, fixture, namespace.id);
     assert.equal(agent.executionMode, mode);
     assert.deepEqual(agent.harnessAuth, { method: "api_key", source: selectedSecret.ref });
     const configuration = await fixture.request(

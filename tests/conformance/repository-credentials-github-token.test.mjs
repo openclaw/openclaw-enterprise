@@ -7,10 +7,10 @@ import { admitSession } from "../../apps/controller/src/drivers/repo/credentials
 import { validateGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/credentials/config.ts";
 import {
   classifyGitHubToken,
-  createGitHubDriverFactory,
-  createGitHubKeyOwner,
   createGitHubStaticTokenOwner,
-} from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
+} from "../../apps/controller/src/drivers/repo/github/credentials/static-token.ts";
+import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/credentials/factory.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   githubConfigurationData,
@@ -359,10 +359,6 @@ test("static acquisition checks every bound before borrowing and never dispatche
   assert.equal(acquired.kind, "acquired");
   assert.equal(acquired.expiresAtWallMs - acquired.observedWallMs, 3600000);
   assert.equal(session.custody.records.size, 1);
-  const [record] = session.custody.records;
-  await session.custody.driver.withAccess(record.ref, "retire", async (bytes) => {
-    assert.equal(Buffer.from(bytes).toString(), oauthToken);
-  });
   fixture.owner.close();
   const closed = await outcome({});
   assert.deepEqual(

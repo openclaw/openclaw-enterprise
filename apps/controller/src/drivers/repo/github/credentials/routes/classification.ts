@@ -10,7 +10,7 @@ export type Route = Readonly<{
   graphql?: true;
 }>;
 const resourceNumber = /^[1-9][0-9]{0,14}$/;
-// Native gh 2.100.0 uses this JSON media profile for GraphQL and REST reads.
+// Native gh 2.103.2 uses this JSON media profile for GraphQL and REST reads.
 export const nativeGraphqlAccept =
   "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview";
 const queryValues: Readonly<Record<string, RegExp>> = Object.freeze({

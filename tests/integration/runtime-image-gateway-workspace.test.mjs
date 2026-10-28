@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { codexGatewayModelConfiguration } from "../../apps/controller/src/drivers/compute/codex-model-configuration.ts";
+import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   imageTestOptions,
@@ -21,8 +23,9 @@ import {
 
 // Codex Gateway cases on the real runtime image, split from
 // runtime-image-startup.test.mjs by measured case durations so CI runs them
-// beside it: the Gateway hot-loads its workspace node binding in place, and
-// custom-provider subagents keep their native model IDs in the remote workspace.
+// beside it: the Gateway hot-loads its workspace node binding in place,
+// custom-provider subagents keep their native model IDs in the remote workspace,
+// and a write-scoped run's native command approval reaches the reviewer.
 
 test(
   "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
@@ -244,7 +247,6 @@ test(
     // call a provider, and the peer deliberately refuses before any model turn.
     const { containerName } = await runGatewaySmoke(t, "codex", {
       configuration,
-      collectPlugins: false,
       waitUntilReady: false,
       extraEnvironment: ["APP_SERVER_URL=ws://127.0.0.1:4500", "OPENCLAW_DEBUG=1"],
     });
@@ -252,12 +254,7 @@ test(
       new URL("../fixtures/runtime-codex-subagent-model.mjs", import.meta.url),
       "utf8",
     );
-    const dockerfile = await readFile(
-      new URL("../../deploy/runtime/Dockerfile", import.meta.url),
-      "utf8",
-    );
-    const commit = dockerfile.match(/^ARG OPENCLAW_COMMIT=([0-9a-f]{40})$/m)?.[1];
-    assert.ok(commit, "The image source pin must be explicit.");
+    const { commit } = await readOpenclawSource();
     const cases = ["main", "string", "object", "alias"].map((agentId) => ({
       agentId,
       model: nativeIds[agentId === "alias" ? "parent" : agentId],
@@ -302,5 +299,74 @@ test(
     assert.ok(
       result.observed.every(({ childSessionKey }) => childSessionKey.includes(":subagent:")),
     );
+  },
+);
+
+test(
+  "runtime image delivers a write-scoped run's Codex command approval to the reviewer and returns the verdict",
+  imageTestOptions,
+  async (t) => {
+    // A dedicated Codex Agent's app-server policy: the OpenShell full-access profile with
+    // human review by the user reviewer, asking before escalated commands.
+    const configuration = codexGatewayModelConfiguration(
+      admitLoggingConfiguration(createHarnessConfiguration("codex", "gpt-5.6-luna"), "info"),
+      { baseUrl: "https://models.example.test/v1", modelProvider: "openai-compatible" },
+    );
+    Object.assign(configuration.plugins.entries.codex.config.appServer, {
+      ...OPENSHELL_CODEX_APP_SERVER_POLICY,
+      approvalPolicy: "on-request",
+      remoteWorkspaceRoot: "/sandbox/enterprise",
+    });
+    const { containerName } = await runGatewaySmoke(t, "codex", {
+      configuration,
+      waitUntilReady: false,
+      extraEnvironment: ["APP_SERVER_URL=ws://127.0.0.1:4500"],
+    });
+    const fixture = await readFile(
+      new URL("../fixtures/runtime-codex-command-approval.mjs", import.meta.url),
+      "utf8",
+    );
+    const { commit } = await readOpenclawSource();
+    // A single command without shell separators: the approval bridge can bind it, so it
+    // must reach a reviewer (compound bash -c payloads are refused before review).
+    const command = "/bin/bash -c 'touch /etc/oce-approval-probe'";
+    let stdout;
+    try {
+      ({ stdout } = await runDocker(
+        [
+          "exec",
+          "-e",
+          `OCC_TEST_APPROVAL_COMMAND=${command}`,
+          "-e",
+          `OCC_TEST_OPENCLAW_COMMIT=${commit}`,
+          containerName,
+          "node",
+          "--input-type=module",
+          "-e",
+          fixture,
+        ],
+        { timeout: 240_000 * imageSmokeTimeoutMultiplier },
+      ));
+    } catch (error) {
+      const logs = await runDocker(["logs", containerName]).catch((cause) => cause);
+      t.diagnostic(commandOutput(logs));
+      throw error;
+    }
+    const result = JSON.parse(stdout.trim().split("\n").at(-1));
+    t.diagnostic(JSON.stringify(result));
+    assert.equal(result.commit, commit);
+    // The reviewer saw the exact command and allowed it once, and Codex got that verdict.
+    // Before the fix, the write-scoped run's wait failed with "missing scope:
+    // operator.approvals", so the peer got "decline" even after the reviewer allowed it.
+    assert.deepEqual(
+      result.events.map(({ event, pluginId, decision }) => ({ event, pluginId, decision })),
+      [
+        { event: "plugin.approval.requested", pluginId: "codex", decision: undefined },
+        { event: "plugin.approval.resolved", pluginId: "codex", decision: "allow-once" },
+      ],
+    );
+    assert.match(result.events[0].description, /touch \/etc\/oce-approval-probe/u);
+    assert.deepEqual(result.peerAnswer, { decision: "accept" });
+    assert.equal(result.runStatus, "ok");
   },
 );
