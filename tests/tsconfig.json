@@ -19,6 +19,8 @@
     "../packages/utils/prepack.ts",
     "helpers/credential-source-owner-upgrade.ts",
     "fixtures/runtime-google-skill-policy.mts",
+    "fixtures/codex-local-plugins/probe.ts",
+    "fixtures/codex-local-plugins/enrollment.ts",
     "fixtures/repository-credentials/module-guard.ts",
     "fixtures/repository-credentials/planning.ts"
   ],
