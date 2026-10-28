@@ -1332,7 +1332,6 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
     defaultsMode,
     { label: "Agent save" },
   );
-  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
   await writePastOcc(configurationDriver, agent.configurationId, withHost(undefined, "sandbox"));
   assertRefused(
     await request(context.app, "PATCH", agent.agentPath, {
