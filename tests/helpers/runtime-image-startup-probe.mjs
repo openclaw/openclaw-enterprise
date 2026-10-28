@@ -44,9 +44,10 @@ import {
 // through a private CA), and observes the wrapper from outside.
 // The production example lets both roles burst to four cores; these cases run
 // tighter, the Codex wrapper at 500m and the embedded Gateway at one core (its
-// probe cap counts at most one core); the runtime image model probe tests cover
-// the Gateway at 500m. Both roles get the Gateway's memory limit, without swap
-// (the Harness's own production limit is higher).
+// probe cap counts at most one core; the Gateway restart cases take two); the
+// runtime image model probe tests cover the Gateway at 500m. Both roles get the
+// Gateway's memory limit, without swap (the Harness's own production limit is
+// higher).
 const startupProbeCpuLimit = "0.5";
 const gatewayStartupProbeCpuLimit = "1";
 const startupProbeModel = runtimeImageModel;
@@ -324,6 +325,7 @@ function startupProbeFailure(headline, reason, evidence, snapshot) {
 // `act`, if given, then runs against the live containers. `homeVolume`, if
 // given, replaces the wrapper's /home/node tmpfs, as a Gateway's
 // PersistentVolume does, so a later scenario can start on the same state.
+// `cpus`, if given, replaces the wrapper's CPU limit.
 export async function runStartupProbeScenario(
   t,
   {
@@ -337,6 +339,7 @@ export async function runStartupProbeScenario(
     terminatedGatewayNamespace,
     podOwner,
     gatewayManagedMode = false,
+    cpus,
   },
 ) {
   const scenarioStartedAt = Date.now();
@@ -398,7 +401,7 @@ export async function runStartupProbeScenario(
     "--network",
     `container:${sidecar}`,
     "--cpus",
-    wrapper.cpus,
+    cpus ?? wrapper.cpus,
     ...gatewayMemoryArguments,
     "--user",
     "1000:1000",

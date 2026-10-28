@@ -25,6 +25,10 @@ import {
   withStartupProbeEvidence,
 } from "./runtime-image-startup-probe.mjs";
 
+// The probe files' one-core cap kept the Gateway CPU-throttled for these whole
+// cases; the production example allows up to four cores.
+const restartGatewayCpus = "2";
+
 // Runs in the Gateway container: waits for the runtime readiness endpoint the
 // kubelet probes, then sends one chat turn at once, as a client does on the
 // first message after Start. Prints the turn's outcome as JSON.
@@ -192,6 +196,7 @@ export function uncleanStopRestartTest(recovery, title) {
       ...stateMount,
       podOwner,
       gatewayManagedMode,
+      cpus: restartGatewayCpus,
       until: ({ events }) => events.some(observedValue("ready", true)),
       act: async ({ containerName }) => {
         firstTurn = await sendFirstTurn(containerName);
@@ -239,6 +244,7 @@ export function uncleanStopRestartTest(recovery, title) {
       ...stateMount,
       podOwner,
       gatewayManagedMode,
+      cpus: restartGatewayCpus,
       until: ({ phases }) => phaseAt(phases, "native-spawn") !== undefined,
       act: async ({ containerName }) => {
         // A failed exec is reported with the wrapper output below.
