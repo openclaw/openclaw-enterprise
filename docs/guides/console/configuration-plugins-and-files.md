@@ -28,8 +28,8 @@ Configuration:
 - **Other participants can steer a running turn**
   (`messages.queue.allowCollaborativeSteering`, default on): another person in the
   conversation can add guidance to a running turn. The turn keeps the identity
-  and permissions of the person who started it. When off, their message runs as
-  a separate turn after it.
+  and permissions of the person who started it, even when the person steering
+  has fewer. When off, their message runs as a separate turn after it.
 - **apply_patch changes files only in the workspace**
   (`tools.exec.applyPatch.workspaceOnly`, default on).
 

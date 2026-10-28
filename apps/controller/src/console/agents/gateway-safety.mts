@@ -21,7 +21,7 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     id: "collaborative-steering",
     path: ["messages", "queue", "allowCollaborativeSteering"],
     label: "Other participants can steer a running turn",
-    help: "On: while a turn runs, another person in the conversation can add guidance to it. The turn keeps the identity and permissions of the person who started it, so steering gives nobody more access. Off: their message runs as a separate turn after it.",
+    help: "On: while a turn runs, another person in the conversation can add guidance to it. The turn keeps the identity and permissions of the person who started it, even when the person steering has fewer. Off: their message runs as a separate turn after it.",
     strict: false,
     preset: { personal: true, corporate: false },
   },
