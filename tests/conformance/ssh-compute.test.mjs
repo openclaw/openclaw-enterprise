@@ -793,6 +793,7 @@ Environment=HOME=${dir}/home
 Environment=OPENCLAW_STATE_DIR=${dir}/state
 Environment=OPENCLAW_CONFIG_PATH=${dir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
+Environment=OPENCLAW_NO_AUTO_UPDATE=1
 EnvironmentFile=${dir}/gateway-password.env
 EnvironmentFile=-${dir}/env
 ExecStart=${process.execPath} ${f.configured.runtime.openclawPath} gateway --port ${port}

@@ -123,6 +123,11 @@ not build, download, or publish runtime images. Missing image references,
 unsupported Harness combinations, unavailable container-engine access, failed
 transport authentication, or unready containers fail closed.
 
+To upgrade OpenClaw, deploy the Agent with a different gateway image. As on
+Kubernetes, the gateway starts OpenClaw and its state migration with
+`OPENCLAW_NO_AUTO_UPDATE=1`: OpenClaw does not check for updates, send its
+installation count request, or install updates.
+
 Container image references must already resolve in the selected engine. The
 development Driver accepts tags as well as digests; production Kubernetes
 digest requirements do not imply that the local engine enforces immutable
