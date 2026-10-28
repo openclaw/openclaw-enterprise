@@ -270,6 +270,12 @@ Completion proves the selected Helm rollout and OCC access; runtime upgrades
 also verify recorded deployments, ready Pods, and Doctor without errors.
 Operators then verify model responses, providers, channels, credentials,
 workspace continuity, native access, and required restore behavior.
+After traffic selection, the operator
+[verifies the served Console](../release/container-promotion.md#verify-the-served-console)
+against the routed controller's publication commit.
+`scripts/verify-console-release.ts:verifyConsoleRelease` reads the selected
+commit's Console files locally, constructs the expected shell with trusted
+release producers, then compares the delivered shell and fixed same-origin CSS.
 
 ### Read-only export after a split-layout refusal
 

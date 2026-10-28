@@ -360,6 +360,8 @@ response and check relevant channels, credentials, workspace data, and native UI
 access. Doctor lint proves that OpenClaw found no error-level diagnostic; it does
 not prove those application paths.
 
+After promotion, [verify the served Console](../../release/container-promotion.md#verify-the-served-console).
+
 ## Recover from a partial failure
 
 Keep the evidence directory and maintenance restrictions, and do not start another upgrade. [Recover a partial production upgrade](production-upgrade-recovery.md) covers resuming the helper, uncertain migrations, unknown Agent dispatches and older images.
