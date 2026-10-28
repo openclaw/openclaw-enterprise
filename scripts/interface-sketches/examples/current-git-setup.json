@@ -1,548 +1,634 @@
 {
-  "title": "01b  OpenShell Git setup",
-  "width": 2360,
-  "height": 1610,
+  "title": "01b OpenShell Git setup",
+  "width": 1016,
+  "height": 1913,
   "items": [
     {
       "kind": "text",
-      "x": 40,
-      "y": 55,
-      "text": "01b  OpenShell Git setup",
-      "size": 36
+      "x": 24,
+      "y": 58,
+      "text": "01b OpenShell Git setup",
+      "size": 34,
+      "role": "title"
     },
     {
       "kind": "text",
-      "x": 40,
-      "y": 96,
-      "text": "Installation-wide observed-hook preview  /  provisioning and material refresh",
-      "size": 24
-    },
-    {
-      "kind": "text",
-      "x": 55,
-      "y": 154,
-      "text": "OCE control plane  /  OpenClaw Enterprise",
-      "size": 27
-    },
-    {
-      "kind": "text",
-      "x": 1545,
-      "y": 154,
-      "text": "OpenShell management / supervisor",
-      "size": 27
+      "x": 24,
+      "y": 85,
+      "text": "Provisioning and token refresh for the installation-wide observed-hook preview",
+      "size": 17,
+      "role": "subtitle"
     },
     {
       "kind": "box",
-      "x": 30,
-      "y": 175,
-      "w": 1430,
-      "h": 1305,
-      "radius": 16
+      "id": "control-plane",
+      "x": 40,
+      "y": 130,
+      "w": 935.1666666666667,
+      "h": 1189,
+      "role": "control"
     },
     {
       "kind": "box",
-      "x": 1510,
-      "y": 175,
-      "w": 810,
-      "h": 1305,
-      "radius": 16
+      "id": "installed-driver",
+      "x": 431.16666666666674,
+      "y": 402,
+      "w": 528,
+      "h": 210,
+      "role": "control"
+    },
+    {
+      "kind": "box",
+      "id": "worker",
+      "x": 67,
+      "y": 642,
+      "w": 858.8333333333334,
+      "h": 656,
+      "role": "control"
+    },
+    {
+      "kind": "box",
+      "id": "openshell",
+      "x": 307.6666666666667,
+      "y": 1357,
+      "w": 639.3333333333333,
+      "h": 406,
+      "role": "runtime"
+    },
+    {
+      "kind": "box",
+      "id": "sandbox",
+      "x": 323.6666666666667,
+      "y": 1402,
+      "w": 296,
+      "h": 168,
+      "role": "boundary"
     },
     {
       "kind": "node",
       "id": "installation",
-      "x": 65,
-      "y": 205,
-      "w": 355,
-      "h": 90,
-      "lines": ["Installation configuration", "selects paired capabilities"],
-      "size": 23
+      "x": 434.50000000000006,
+      "y": 168,
+      "w": 255,
+      "h": 94,
+      "lines": ["Installation configuration", "Pairs Sandbox and Credential", "Proxy capabilities"],
+      "role": "control"
     },
     {
       "kind": "node",
       "id": "compute",
-      "x": 65,
-      "y": 380,
-      "w": 355,
-      "h": 90,
+      "x": 471.00000000000006,
+      "y": 307,
+      "w": 182,
+      "h": 70,
       "lines": ["ComputeDriver", "Kubernetes Compute"],
-      "size": 23
-    },
-    {
-      "kind": "box",
-      "x": 540,
-      "y": 205,
-      "w": 865,
-      "h": 405,
-      "radius": 16
-    },
-    {
-      "kind": "text",
-      "x": 565,
-      "y": 246,
-      "text": "One InstalledDriver",
-      "size": 27
-    },
-    {
-      "kind": "text",
-      "x": 565,
-      "y": 282,
-      "text": "Shared OpenShell backend for this installation",
-      "size": 23
+      "role": "control"
     },
     {
       "kind": "node",
-      "id": "sandbox",
-      "x": 580,
-      "y": 350,
-      "w": 320,
-      "h": 90,
+      "id": "sandbox-driver",
+      "x": 447.16666666666674,
+      "y": 506,
+      "w": 169,
+      "h": 46,
       "lines": ["SandboxDriver"],
-      "size": 23
+      "role": "control"
     },
     {
       "kind": "node",
-      "id": "proxy",
-      "x": 1025,
-      "y": 480,
-      "w": 340,
-      "h": 90,
+      "id": "proxy-driver",
+      "x": 666.6666666666667,
+      "y": 506,
+      "w": 231,
+      "h": 46,
       "lines": ["CredentialProxyDriver"],
-      "size": 23
-    },
-    {
-      "kind": "line",
-      "points": [
-        [242, 295],
-        [242, 380]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 265,
-      "y": 344,
-      "text": "supplies",
-      "size": 21
-    },
-    {
-      "kind": "line",
-      "points": [
-        [420, 245],
-        [540, 245]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 478,
-      "y": 223,
-      "text": "pairs",
-      "size": 20,
-      "center": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [420, 425],
-        [500, 425],
-        [500, 395],
-        [580, 395]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 476,
-      "y": 372,
-      "text": "uses",
-      "size": 20,
-      "center": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [242, 470],
-        [242, 525],
-        [1025, 525]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 745,
-      "y": 505,
-      "text": "prepare wiring",
-      "size": 22,
-      "center": true,
-      "halo": true
+      "role": "control"
     },
     {
       "kind": "node",
       "id": "harness",
-      "x": 1720,
-      "y": 350,
-      "w": 545,
-      "h": 105,
-      "lines": ["Harness in OpenShell Sandbox", "Agent receives no Git secrets"],
-      "size": 23
-    },
-    {
-      "kind": "line",
-      "points": [
-        [900, 395],
-        [1720, 395]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 1158,
-      "y": 372,
-      "text": "provision or adopt Harness",
-      "size": 23,
-      "center": true,
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 1560,
-      "y": 526,
-      "text": "Proxy checks loaded policy + generation.",
-      "size": 24
-    },
-    {
-      "kind": "text",
-      "x": 1560,
-      "y": 563,
-      "text": "This does not establish mandatory mediation.",
-      "size": 23
-    },
-    {
-      "kind": "box",
-      "x": 65,
-      "y": 655,
-      "w": 1340,
-      "h": 775,
-      "radius": 16
-    },
-    {
-      "kind": "text",
-      "x": 90,
-      "y": 695,
-      "text": "OCE worker",
-      "size": 27
+      "x": 339.6666666666667,
+      "y": 1484,
+      "w": 236,
+      "h": 70,
+      "lines": ["Harness", "Agent receives no Git secrets"],
+      "role": "boundary"
     },
     {
       "kind": "node",
       "id": "policy",
-      "x": 95,
-      "y": 745,
-      "w": 380,
-      "h": 100,
+      "x": 524.1666666666667,
+      "y": 702,
+      "w": 248,
+      "h": 70,
       "lines": ["GitHubRepositoryPolicy", "RepositoryPolicyDriver"],
-      "size": 23
+      "role": "control"
     },
     {
       "kind": "node",
       "id": "adapter",
-      "x": 1030,
-      "y": 780,
-      "w": 335,
-      "h": 150,
-      "lines": ["Git transport adapter", "(OpenShell)"],
-      "size": 25
-    },
-    {
-      "kind": "line",
-      "points": [
-        [1195, 570],
-        [1195, 780]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 1215,
-      "y": 687,
-      "text": "binds selected",
-      "size": 21
-    },
-    {
-      "kind": "text",
-      "x": 1215,
-      "y": 716,
-      "text": "Git transport",
-      "size": 21
-    },
-    {
-      "kind": "line",
-      "points": [
-        [475, 800],
-        [1030, 800]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 730,
-      "y": 749,
-      "text": "Resolves admitted binding",
-      "size": 22,
-      "center": true
-    },
-    {
-      "kind": "text",
-      "x": 730,
-      "y": 777,
-      "text": "+ installation ID (not a token)",
-      "size": 22,
-      "center": true
+      "x": 543.5,
+      "y": 897,
+      "w": 314,
+      "h": 46,
+      "lines": ["OpenShell Git transport adapter"],
+      "role": "control"
     },
     {
       "kind": "node",
-      "id": "service",
-      "x": 95,
-      "y": 1020,
-      "w": 300,
-      "h": 100,
-      "lines": ["Token Service", "scheduled preparation"],
-      "size": 23
+      "id": "token-service",
+      "x": 124,
+      "y": 897,
+      "w": 163,
+      "h": 46,
+      "lines": ["Token Service"],
+      "role": "control"
     },
     {
       "kind": "node",
       "id": "owner",
-      "x": 595,
-      "y": 1020,
-      "w": 350,
-      "h": 100,
-      "lines": ["Prepared Git owner", "restricted material port"],
-      "size": 23
-    },
-    {
-      "kind": "line",
-      "points": [
-        [395, 1070],
-        [595, 1070]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 492,
-      "y": 1046,
-      "text": "prepare",
-      "size": 22,
-      "center": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [1195, 930],
-        [1195, 1070],
-        [945, 1070]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 1175,
-      "y": 1148,
-      "text": "observedHook.readMaterial",
-      "size": 22,
-      "center": true
-    },
-    {
-      "kind": "text",
-      "x": 1175,
-      "y": 1181,
-      "text": "reads prepared install token",
-      "size": 21,
-      "center": true
-    },
-    {
-      "kind": "text",
-      "x": 1175,
-      "y": 1212,
-      "text": "for setup / refresh; not per request",
-      "size": 20,
-      "center": true
+      "x": 130.5,
+      "y": 1030,
+      "w": 225,
+      "h": 94,
+      "lines": ["Prepared Git owner", "Restricted port ·", "observedHook.readMaterial"],
+      "role": "control"
     },
     {
       "kind": "node",
-      "id": "issuer",
-      "x": 95,
-      "y": 1290,
-      "w": 300,
-      "h": 95,
-      "lines": ["Worker signs App JWT", "requests installation token"],
-      "size": 21
+      "id": "app-signer",
+      "x": 83,
+      "y": 1188,
+      "w": 245,
+      "h": 94,
+      "lines": [
+        "Worker App JWT signer",
+        "Signs the App JWT. GitHub",
+        "issues the installation token."
+      ],
+      "role": "control"
     },
     {
       "kind": "node",
-      "id": "store",
-      "x": 595,
-      "y": 1290,
-      "w": 350,
-      "h": 95,
-      "lines": ["PostgreSQL-backed token store", "sealed installation token"],
-      "size": 22
-    },
-    {
-      "kind": "line",
-      "points": [
-        [650, 1120],
-        [650, 1180],
-        [245, 1180],
-        [245, 1290]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 388,
-      "y": 1208,
-      "text": "GitHub issues the token",
-      "size": 21,
-      "center": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [770, 1120],
-        [770, 1290]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 790,
-      "y": 1250,
-      "text": "store / read",
-      "size": 21
+      "id": "token-store",
+      "x": 375.5,
+      "y": 1188,
+      "w": 315,
+      "h": 70,
+      "lines": ["PostgreSQL-backed token store", "Sealed installation token"],
+      "role": "control"
     },
     {
       "kind": "node",
       "id": "gateway",
-      "x": 1730,
-      "y": 780,
-      "w": 525,
-      "h": 245,
-      "lines": [
-        "OpenShell Gateway",
-        "management API",
-        "",
-        "Sentinel provider attached by name",
-        "then conditional credential update"
-      ],
-      "size": 23
-    },
-    {
-      "kind": "line",
-      "points": [
-        [1365, 820],
-        [1730, 820]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 1770,
-      "y": 710,
-      "text": "Create bootstrap provider;",
-      "size": 22,
-      "center": true,
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 1770,
-      "y": 744,
-      "text": "then update prepared token",
-      "size": 22,
-      "center": true,
-      "halo": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [1365, 900],
-        [1550, 900],
-        [1550, 980],
-        [1730, 980]
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 1730,
-      "y": 1080,
-      "text": "Read back installation status:",
-      "size": 22,
-      "center": true,
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 1730,
-      "y": 1112,
-      "text": "check recipient and generation",
-      "size": 22,
-      "center": true,
-      "halo": true
+      "x": 639.6666666666667,
+      "y": 1500,
+      "w": 209,
+      "h": 70,
+      "lines": ["OpenShell Gateway", "Management API"],
+      "role": "runtime"
     },
     {
       "kind": "node",
       "id": "supervisor",
-      "x": 1730,
-      "y": 1250,
-      "w": 525,
-      "h": 100,
-      "lines": ["OpenShell supervisor", "loaded policy + provider generation"],
-      "size": 23
+      "x": 630.6666666666667,
+      "y": 1653,
+      "w": 227,
+      "h": 94,
+      "lines": ["OpenShell supervisor", "Loaded policy and provider", "generation"],
+      "role": "runtime"
     },
     {
       "kind": "line",
       "points": [
-        [1992, 1025],
-        [1992, 1250]
+        [562, 262],
+        [562, 307]
       ],
-      "arrow": true,
-      "dashed": true
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [531.6666666666667, 377],
+        [531.6666666666667, 506]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [592.3333333333334, 377],
+        [592.3333333333334, 387],
+        [782.1666666666667, 387],
+        [782.1666666666667, 506]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [531.6666666666667, 552],
+        [531.6666666666667, 627],
+        [56, 627],
+        [56, 1334],
+        [457.6666666666667, 1334],
+        [457.6666666666667, 1484]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [782.1666666666667, 552],
+        [782.1666666666667, 782],
+        [752.8333333333334, 782],
+        [752.8333333333334, 897]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [648.1666666666667, 772],
+        [648.1666666666666, 897]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [205.5, 943],
+        [205.5, 1030]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [205.5, 1124],
+        [205.5, 1188]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [280.5, 1124],
+        [280.5, 1134],
+        [533, 1134],
+        [533, 1188]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [622, 943],
+        [622, 953],
+        [280.5, 953],
+        [280.5, 1030]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [700.5, 943],
+        [700.5, 1334],
+        [709.3333333333333, 1334],
+        [709.3333333333333, 1500]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [779, 943],
+        [779, 1500]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [744.1666666666667, 1570],
+        [744.1666666666667, 1653]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    { "kind": "text", "x": 56, "y": 153, "text": "OCE control plane", "size": 16, "role": "group" },
+    {
+      "kind": "text",
+      "x": 536.6666666666667,
+      "y": 425,
+      "text": "InstalledDriver · shared",
+      "size": 16,
+      "role": "group"
     },
     {
       "kind": "text",
-      "x": 2010,
-      "y": 1155,
-      "text": "loads attached",
-      "size": 22
+      "x": 536.6666666666667,
+      "y": 447,
+      "text": "OpenShell backend",
+      "size": 16,
+      "role": "group"
     },
     {
       "kind": "text",
-      "x": 2010,
-      "y": 1187,
-      "text": "provider settings",
-      "size": 22
+      "x": 83,
+      "y": 665,
+      "text": "OpenClaw Enterprise",
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "text", "x": 83, "y": 687, "text": "worker", "size": 16, "role": "group" },
+    {
+      "kind": "text",
+      "x": 323.6666666666667,
+      "y": 1380,
+      "text": "OpenShell",
+      "size": 16,
+      "role": "group"
     },
     {
       "kind": "text",
-      "x": 1570,
-      "y": 1410,
-      "text": "Gateway acceptance alone does not confirm installation.",
-      "size": 26
+      "x": 339.6666666666667,
+      "y": 1425,
+      "text": "Sandbox",
+      "size": 16,
+      "role": "group"
     },
     {
       "kind": "text",
-      "x": 55,
-      "y": 1530,
-      "text": "A loaded policy does not prove every request must use the hook. The bundled Driver refuses repository-scoped Git.",
-      "size": 24
+      "x": 569,
+      "y": 298,
+      "text": "Setup: Configures",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 55,
-      "y": 1570,
-      "text": "The separate native Git sender and broker are outside this flow. No token pull occurs on the Git request.",
-      "size": 23
+      "x": 538.6666666666667,
+      "y": 478,
+      "text": "Setup: Uses for",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 538.6666666666667,
+      "y": 497,
+      "text": "provisioning",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 789.1666666666667,
+      "y": 478,
+      "text": "Setup: Prepares proxy",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 789.1666666666667,
+      "y": 497,
+      "text": "wiring",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 464.6666666666667,
+      "y": 1456,
+      "text": "Setup: Provisions or",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 464.6666666666667,
+      "y": 1475,
+      "text": "adopts",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 759.8333333333334,
+      "y": 808,
+      "text": "Setup: Binds selected",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 759.8333333333334,
+      "y": 827,
+      "text": "transport",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 655.1666666666666,
+      "y": 850,
+      "text": "Resolves admitted",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 655.1666666666666,
+      "y": 869,
+      "text": "binding and installation",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 655.1666666666666,
+      "y": 888,
+      "text": "ID",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 212.5,
+      "y": 1021,
+      "text": "Schedules preparation",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 212.5,
+      "y": 1160,
+      "text": "Requests installation",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 212.5,
+      "y": 1179,
+      "text": "token",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 540,
+      "y": 1179,
+      "text": "Stores or reads token",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 287.5,
+      "y": 979,
+      "text": "Setup: Reads prepared",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 287.5,
+      "y": 998,
+      "text": "token",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 716.3333333333333,
+      "y": 1453,
+      "text": "Setup: Bootstraps",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 716.3333333333333,
+      "y": 1472,
+      "text": "provider, then updates",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 716.3333333333333,
+      "y": 1491,
+      "text": "token",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 786,
+      "y": 1411,
+      "text": "Checks recipient and",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 786,
+      "y": 1430,
+      "text": "generation",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 751.1666666666667,
+      "y": 1606,
+      "text": "Setup: Supplies",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 751.1666666666667,
+      "y": 1625,
+      "text": "attached provider",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 751.1666666666667,
+      "y": 1644,
+      "text": "settings",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 24,
+      "y": 1803,
+      "text": "The adapter reads the prepared token during setup or refresh. Git requests do not pull tokens. The native Git sender and broker use a separate path.",
+      "size": 14,
+      "role": "note"
+    },
+    {
+      "kind": "text",
+      "x": 24,
+      "y": 1833,
+      "text": "The sandbox references the sentinel provider by name. The adapter updates its token conditionally and checks the loaded policy and generation",
+      "size": 14,
+      "role": "note"
+    },
+    { "kind": "text", "x": 24, "y": 1853, "text": "independently.", "size": 14, "role": "note" },
+    {
+      "kind": "text",
+      "x": 24,
+      "y": 1883,
+      "text": "The preview observes the hook. Mandatory mediation remains unverified. The bundled Driver refuses repository-scoped Git.",
+      "size": 14,
+      "role": "note"
     }
   ]
 }

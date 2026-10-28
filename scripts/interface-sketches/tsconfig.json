@@ -7,5 +7,5 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "examples/*.ts"]
 }

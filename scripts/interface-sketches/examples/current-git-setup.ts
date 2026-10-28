@@ -1,0 +1,93 @@
+import type { Diagram } from "../diagram.ts";
+
+export default {
+  title: "01b OpenShell Git setup",
+  subtitle: "Provisioning and token refresh for the installation-wide observed-hook preview",
+  groups: [
+    { id: "control-plane", title: "OCE control plane", role: "control" },
+    {
+      id: "installed-driver",
+      title: "InstalledDriver · shared OpenShell backend",
+      role: "control",
+      parent: "control-plane",
+    },
+    { id: "worker", title: "OpenClaw Enterprise worker", role: "control", parent: "control-plane" },
+    { id: "openshell", title: "OpenShell", role: "runtime" },
+    { id: "sandbox", title: "Sandbox", role: "boundary", parent: "openshell" },
+  ],
+  nodes: [
+    {
+      id: "installation",
+      title: "Installation configuration",
+      detail: "Pairs Sandbox and Credential Proxy capabilities",
+      group: "control-plane",
+    },
+    { id: "compute", title: "ComputeDriver", detail: "Kubernetes Compute", group: "control-plane" },
+    { id: "sandbox-driver", title: "SandboxDriver", group: "installed-driver" },
+    { id: "proxy-driver", title: "CredentialProxyDriver", group: "installed-driver" },
+    { id: "harness", title: "Harness", detail: "Agent receives no Git secrets", group: "sandbox" },
+    {
+      id: "policy",
+      title: "GitHubRepositoryPolicy",
+      detail: "RepositoryPolicyDriver",
+      group: "worker",
+    },
+    { id: "adapter", title: "OpenShell Git transport adapter", group: "worker" },
+    { id: "token-service", title: "Token Service", group: "worker" },
+    {
+      id: "owner",
+      title: "Prepared Git owner",
+      detail: "Restricted port · observedHook.readMaterial",
+      group: "worker",
+    },
+    {
+      id: "app-signer",
+      title: "Worker App JWT signer",
+      detail: "Signs the App JWT. GitHub issues the installation token.",
+      group: "worker",
+    },
+    {
+      id: "token-store",
+      title: "PostgreSQL-backed token store",
+      detail: "Sealed installation token",
+      group: "worker",
+    },
+    { id: "gateway", title: "OpenShell Gateway", detail: "Management API", group: "openshell" },
+    {
+      id: "supervisor",
+      title: "OpenShell supervisor",
+      detail: "Loaded policy and provider generation",
+      group: "openshell",
+    },
+  ],
+  edges: [
+    { from: "installation", to: "compute", label: "Configures", kind: "setup" },
+    { from: "compute", to: "sandbox-driver", label: "Uses for provisioning", kind: "setup" },
+    { from: "compute", to: "proxy-driver", label: "Prepares proxy wiring", kind: "setup" },
+    { from: "sandbox-driver", to: "harness", label: "Provisions or adopts", kind: "setup" },
+    { from: "proxy-driver", to: "adapter", label: "Binds selected transport", kind: "setup" },
+    { from: "policy", to: "adapter", label: "Resolves admitted binding and installation ID" },
+    { from: "token-service", to: "owner", label: "Schedules preparation" },
+    { from: "owner", to: "app-signer", label: "Requests installation token" },
+    { from: "owner", to: "token-store", label: "Stores or reads token" },
+    { from: "adapter", to: "owner", label: "Reads prepared token", kind: "setup" },
+    {
+      from: "adapter",
+      to: "gateway",
+      label: "Bootstraps provider, then updates token",
+      kind: "setup",
+    },
+    { from: "adapter", to: "gateway", label: "Checks recipient and generation" },
+    {
+      from: "gateway",
+      to: "supervisor",
+      label: "Supplies attached provider settings",
+      kind: "setup",
+    },
+  ],
+  notes: [
+    "The adapter reads the prepared token during setup or refresh. Git requests do not pull tokens. The native Git sender and broker use a separate path.",
+    "The sandbox references the sentinel provider by name. The adapter updates its token conditionally and checks the loaded policy and generation independently.",
+    "The preview observes the hook. Mandatory mediation remains unverified. The bundled Driver refuses repository-scoped Git.",
+  ],
+} satisfies Diagram;

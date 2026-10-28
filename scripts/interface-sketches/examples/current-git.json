@@ -1,391 +1,254 @@
 {
-  "title": "01  OpenShell Git request",
-  "width": 1700,
-  "height": 1120,
+  "title": "01 OpenShell Git request",
+  "width": 1545,
+  "height": 600,
   "items": [
     {
       "kind": "text",
-      "x": 45,
-      "y": 57,
-      "text": "01  OpenShell Git request",
-      "size": 38
+      "x": 24,
+      "y": 58,
+      "text": "01 OpenShell Git request",
+      "size": 34,
+      "role": "title"
     },
     {
       "kind": "text",
-      "x": 46,
-      "y": 100,
+      "x": 24,
+      "y": 85,
       "text": "GitHub App installation preview",
-      "size": 26
+      "size": 17,
+      "role": "subtitle"
     },
-    {
-      "kind": "text",
-      "x": 65,
-      "y": 155,
-      "text": "control plane / OCE worker",
-      "size": 26
-    },
-    {
-      "kind": "text",
-      "x": 970,
-      "y": 155,
-      "text": "data plane / OpenShell",
-      "size": 26
-    },
+    { "kind": "box", "id": "worker", "x": 764, "y": 130, "w": 741, "h": 148, "role": "control" },
     {
       "kind": "box",
+      "id": "openshell",
       "x": 40,
-      "y": 175,
-      "w": 610,
-      "h": 630
+      "y": 278.5,
+      "w": 506,
+      "h": 154,
+      "role": "runtime"
     },
-    {
-      "kind": "box",
-      "x": 940,
-      "y": 175,
-      "w": 700,
-      "h": 380
-    },
-    {
-      "kind": "line",
-      "points": [
-        [690, 175],
-        [690, 805]
-      ],
-      "color": "#d93636",
-      "dashed": true,
-      "arrow": false
-    },
-    {
-      "kind": "box",
-      "x": 1040,
-      "y": 205,
-      "w": 420,
-      "h": 115,
-      "color": "#d93636"
-    },
-    {
-      "kind": "text",
-      "x": 1060,
-      "y": 235,
-      "text": "sandbox",
-      "size": 22,
-      "color": "#d93636"
-    },
+    { "kind": "box", "id": "sandbox", "x": 56, "y": 316.5, "w": 128, "h": 100, "role": "boundary" },
+    { "kind": "box", "id": "internet", "x": 764, "y": 298, "w": 273, "h": 172, "role": "external" },
     {
       "kind": "node",
       "id": "agent",
-      "x": 1150,
-      "y": 249,
-      "w": 200,
-      "h": 53,
+      "x": 72,
+      "y": 354.5,
+      "w": 96,
+      "h": 46,
       "lines": ["Agent"],
-      "size": 27
+      "role": "boundary"
     },
     {
       "kind": "node",
       "id": "supervisor",
-      "x": 1040,
-      "y": 395,
-      "w": 420,
-      "h": 110,
-      "lines": ["Credential Proxy", "(OpenShell supervisor)"],
-      "size": 26
-    },
-    {
-      "kind": "line",
-      "points": [
-        [1250, 302],
-        [1250, 395]
-      ]
-    },
-    {
-      "kind": "text",
-      "x": 1275,
-      "y": 362,
-      "text": "git push attempt",
-      "size": 24
-    },
-    {
-      "kind": "text",
-      "x": 1475,
-      "y": 443,
-      "text": "outside",
-      "size": 22
-    },
-    {
-      "kind": "text",
-      "x": 1475,
-      "y": 474,
-      "text": "sandbox",
-      "size": 22
+      "x": 346,
+      "y": 342.5,
+      "w": 184,
+      "h": 70,
+      "lines": ["Credential Proxy", "OpenShell supervisor"],
+      "role": "runtime"
     },
     {
       "kind": "node",
-      "id": "git-transport-adapter",
-      "x": 80,
-      "y": 350,
-      "w": 520,
-      "h": 175,
+      "id": "adapter",
+      "x": 780,
+      "y": 168,
+      "w": 314,
+      "h": 94,
       "lines": [
-        "Git transport adapter (OpenShell)",
-        "Handler checks identity / binding;",
-        "classifies the actual HTTP request."
+        "OpenShell Git transport adapter",
+        "Checks identity and binding.",
+        "Classifies the HTTP request."
       ],
-      "size": 25
+      "role": "control"
     },
     {
-      "kind": "line",
-      "points": [
-        [1040, 412],
-        [600, 412]
-      ]
-    },
-    {
-      "kind": "text",
-      "x": 820,
-      "y": 370,
-      "text": "EvaluateHttpRequest",
-      "size": 25,
-      "center": true
-    },
-    {
-      "kind": "text",
-      "x": 820,
-      "y": 398,
-      "text": "(before injection)",
-      "size": 23,
-      "center": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [600, 485],
-        [1040, 485]
-      ]
-    },
-    {
-      "kind": "text",
-      "x": 820,
-      "y": 473,
-      "text": "allow / deny",
-      "size": 25,
-      "center": true
-    },
-    {
-      "kind": "box",
-      "x": 80,
-      "y": 635,
-      "w": 520,
-      "h": 130
-    },
-    {
-      "kind": "text",
-      "x": 340,
-      "y": 670,
-      "text": "Prepared Git owner",
-      "size": 27,
-      "center": true
-    },
-    {
-      "kind": "text",
-      "x": 340,
-      "y": 707,
-      "text": "restricted worker authority",
-      "size": 24,
-      "center": true
-    },
-    {
-      "kind": "text",
-      "x": 340,
-      "y": 742,
-      "text": "observedHook.authorize",
-      "size": 25,
-      "center": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [220, 525],
-        [220, 635]
-      ]
-    },
-    {
-      "kind": "text",
-      "x": 245,
-      "y": 574,
-      "text": "local call",
-      "size": 24
-    },
-    {
-      "kind": "text",
-      "x": 245,
-      "y": 607,
-      "text": "decision returns to adapter",
-      "size": 22
-    },
-    {
-      "kind": "text",
-      "x": 80,
-      "y": 230,
-      "text": "Before allowing the request",
-      "size": 25
-    },
-    {
-      "kind": "text",
-      "x": 80,
-      "y": 271,
-      "text": "Worker rechecks recipient and loaded generation",
-      "size": 24
-    },
-    {
-      "kind": "text",
-      "x": 80,
-      "y": 304,
-      "text": "via Gateway status, without fetching a token.",
-      "size": 24
-    },
-    {
-      "kind": "line",
-      "points": [
-        [940, 590],
-        [1640, 590]
-      ],
-      "color": "#d93636",
-      "dashed": true,
-      "arrow": false
-    },
-    {
-      "kind": "text",
-      "x": 967,
-      "y": 625,
-      "text": "internet",
-      "size": 23
+      "kind": "node",
+      "id": "owner",
+      "x": 1261,
+      "y": 168,
+      "w": 228,
+      "h": 94,
+      "lines": ["Prepared Git owner", "Restricted worker authority ·", "observedHook.authorize"],
+      "role": "control"
     },
     {
       "kind": "node",
       "id": "github",
-      "x": 1100,
-      "y": 670,
-      "w": 300,
-      "h": 80,
-      "lines": ["GitHub"],
-      "size": 29
+      "x": 780,
+      "y": 336,
+      "w": 241,
+      "h": 118,
+      "lines": ["GitHub", "Checks repository", "membership, permissions and", "branch rules."],
+      "role": "external"
     },
     {
       "kind": "line",
       "points": [
-        [1250, 505],
-        [1250, 670]
+        [168, 377.5],
+        [346, 377.5]
       ],
-      "dashed": true
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [530, 360],
+        [561, 360],
+        [561, 219.66666666666666],
+        [741, 219.66666666666666],
+        [741, 199.33333333333331],
+        [780, 199.33333333333331]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [1094, 215],
+        [1261, 215]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [780, 230.66666666666666],
+        [571, 230.66666666666666],
+        [571, 377.5],
+        [530, 377.5]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [530, 395],
+        [780, 395]
+      ],
+      "dashed": true,
+      "arrow": true
     },
     {
       "kind": "text",
-      "x": 1275,
-      "y": 632,
-      "text": "inject + forward if allowed",
-      "size": 24,
+      "x": 780,
+      "y": 153,
+      "text": "OCE worker (control plane)",
+      "size": 16,
+      "role": "group"
+    },
+    {
+      "kind": "text",
+      "x": 56,
+      "y": 301.5,
+      "text": "OpenShell data plane",
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "text", "x": 72, "y": 339.5, "text": "Sandbox", "size": 16, "role": "group" },
+    { "kind": "text", "x": 780, "y": 321, "text": "Internet", "size": 16, "role": "group" },
+    {
+      "kind": "text",
+      "x": 213,
+      "y": 396.5,
+      "text": "Attempt git push",
+      "size": 15,
+      "role": "label",
       "halo": true
     },
     {
       "kind": "text",
-      "x": 950,
-      "y": 786,
-      "text": "GitHub checks repo membership, refs and permissions",
-      "size": 23
+      "x": 585,
+      "y": 186.66666666666666,
+      "text": "EvaluateHttpRequest",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 950,
-      "y": 817,
-      "text": "within the installation; no OCE per-ref filtering.",
-      "size": 23
-    },
-    {
-      "kind": "line",
-      "points": [
-        [45, 865],
-        [1640, 865]
-      ],
-      "arrow": false
+      "x": 585,
+      "y": 205.66666666666666,
+      "text": "before injection",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 45,
-      "y": 910,
-      "text": "Reading the path",
-      "size": 27
-    },
-    {
-      "kind": "line",
-      "points": [
-        [48, 947],
-        [118, 947]
-      ],
-      "dashed": true
+      "x": 1118,
+      "y": 234,
+      "text": "Get local decision",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 135,
-      "y": 955,
-      "text": "Dashed arrow: intended forwarding.",
-      "size": 24
+      "x": 587,
+      "y": 253.66666666666666,
+      "text": "Return allow or deny",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 45,
-      "y": 990,
-      "text": "An allow does not prove the request reached GitHub.",
-      "size": 24
+      "x": 590,
+      "y": 418,
+      "text": "Conditional: Inject",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 45,
-      "y": 1035,
-      "text": "For credential delivery before the request, see",
-      "size": 23
+      "x": 590,
+      "y": 437,
+      "text": "token and forward if",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 45,
-      "y": 1074,
-      "text": "01b \u00b7 Credential setup",
-      "size": 26
+      "x": 590,
+      "y": 456,
+      "text": "allowed",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 890,
-      "y": 910,
-      "text": "Preview limits",
-      "size": 27
+      "x": 24,
+      "y": 510,
+      "text": "Before allowing the request, the worker rechecks the recipient and loaded generation via Gateway status without fetching a token. For credential setup, see 01b.",
+      "size": 14,
+      "role": "note"
     },
     {
       "kind": "text",
-      "x": 890,
-      "y": 955,
-      "text": "One observed denial does not prove every request",
-      "size": 24
+      "x": 24,
+      "y": 540,
+      "text": "An allow does not confirm delivery to GitHub. One observed denial does not establish that every request uses the hook.",
+      "size": 14,
+      "role": "note"
     },
     {
       "kind": "text",
-      "x": 890,
-      "y": 990,
-      "text": "must pass through this hook.",
-      "size": 24
-    },
-    {
-      "kind": "text",
-      "x": 890,
-      "y": 1035,
-      "text": "The bundled Driver refuses repository-scoped Git.",
-      "size": 24
-    },
-    {
-      "kind": "text",
-      "x": 890,
-      "y": 1074,
-      "text": "There is no fallback to the native sender.",
-      "size": 24
+      "x": 24,
+      "y": 570,
+      "text": "OCE adds no per-ref filter. The bundled Driver refuses repository-scoped Git and has no native sender fallback.",
+      "size": 14,
+      "role": "note"
     }
   ]
 }

@@ -1,0 +1,60 @@
+import type { Diagram } from "../diagram.ts";
+
+export default {
+  title: "03 Credential pull and request authorization",
+  subtitle: "Design proposal · OpenShell integration remains unverified",
+  groups: [
+    { id: "control", title: "OCE control plane", role: "control" },
+    { id: "runtime", title: "Data plane", role: "runtime" },
+    { id: "sandbox", title: "Sandbox", role: "boundary", parent: "runtime" },
+    { id: "provider", title: "Internet", role: "external" },
+  ],
+  nodes: [
+    { id: "agent", title: "Agent", group: "sandbox" },
+    {
+      id: "credential-proxy",
+      title: "Credential Proxy",
+      detail: "OpenShell Supervisor",
+      group: "runtime",
+    },
+    {
+      id: "request-authorizer",
+      title: "Request Authorizer",
+      detail: "Network policy enforcement",
+      group: "runtime",
+    },
+    { id: "credential-cache", title: "Credential Cache", group: "runtime" },
+    { id: "external-api", title: "External API", group: "provider" },
+    { id: "identity-edge", title: "identity-edge", group: "control" },
+    { id: "access-authorizer", title: "Request Authorizer", detail: "IAM", group: "control" },
+    { id: "gateway", title: "OpenClaw Gateway + OCC", group: "control" },
+    { id: "resolver", title: "Credential Resolver", group: "control" },
+    { id: "secret-driver", title: "Secret Driver", group: "control" },
+    { id: "token-broker", title: "Token Broker", detail: "Eager refresh", group: "control" },
+    { id: "cron", title: "cron", group: "control" },
+    { id: "secret-store", title: "Secret Store", detail: "Vault or KMS", group: "control" },
+  ],
+  edges: [
+    { from: "agent", to: "credential-proxy", label: "Call API (git push)" },
+    { from: "credential-proxy", to: "request-authorizer", label: "Authorize outbound request" },
+    { from: "credential-proxy", to: "identity-edge", label: "Present Agent identity" },
+    { from: "identity-edge", to: "access-authorizer", label: "Authorize access to material" },
+    { from: "identity-edge", to: "resolver", label: "Resolve for Agent" },
+    { from: "resolver", to: "credential-cache", label: "Resolve declared credential" },
+    { from: "gateway", to: "resolver", label: "Own resolver?", kind: "conditional" },
+    { from: "resolver", to: "secret-driver", label: "Read static credential" },
+    { from: "resolver", to: "token-broker", label: "Read dynamic credential (e.g. JWT)" },
+    { from: "token-broker", to: "secret-driver", label: "Uses Secret Driver" },
+    { from: "secret-driver", to: "secret-store", label: "Read stored secret" },
+    { from: "cron", to: "token-broker", label: "Trigger refresh" },
+    {
+      from: "credential-proxy",
+      to: "external-api",
+      label: "Inject credential and forward request",
+    },
+  ],
+  notes: [
+    "The proposal assumes the Secret Driver stores all secrets, including dynamic secrets.",
+    "It assigns all token refresh to the Token Service. The OpenShell refresh strategy remains open.",
+  ],
+} satisfies Diagram;

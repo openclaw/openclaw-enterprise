@@ -1,351 +1,463 @@
 {
-  "title": "Generic protected exchange",
-  "width": 1870,
-  "height": 940,
+  "title": "02 Generic protected exchange",
+  "width": 1236,
+  "height": 1325,
   "items": [
-    { "kind": "text", "x": 39, "y": 46, "text": "control plane  /  OCE", "size": 25 },
-    { "kind": "text", "x": 812, "y": 46, "text": "data plane  /  required sender", "size": 25 },
-    { "kind": "box", "x": 14, "y": 58, "w": 758, "h": 805, "radius": 16 },
-    { "kind": "box", "x": 807, "y": 58, "w": 478, "h": 533, "radius": 16 },
-    { "kind": "box", "x": 807, "y": 661, "w": 478, "h": 202, "radius": 16 },
     {
-      "kind": "line",
-      "points": [
-        [789, 62],
-        [789, 865]
-      ],
-      "color": "#e43c39",
-      "dashed": true,
-      "arrow": false
-    },
-    {
-      "kind": "line",
-      "points": [
-        [812, 622],
-        [1287, 622]
-      ],
-      "color": "#e43c39",
-      "dashed": true,
-      "arrow": false
-    },
-    { "kind": "text", "x": 835, "y": 650, "text": "internet", "size": 21 },
-    { "kind": "box", "x": 842, "y": 100, "w": 405, "h": 147, "color": "#e43c39", "radius": 16 },
-    { "kind": "text", "x": 863, "y": 133, "text": "sandbox", "size": 21, "color": "#e43c39" },
-    {
-      "kind": "node",
-      "id": "agent",
-      "x": 942,
-      "y": 149,
-      "w": 205,
-      "h": 71,
-      "lines": ["Agent"],
-      "size": 22
-    },
-    {
-      "kind": "node",
-      "id": "trusted-sender",
-      "x": 866,
-      "y": 323,
-      "w": 350,
-      "h": 85,
-      "lines": ["Trusted sender", "(exchange counterpart)"],
-      "size": 22
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "agent", "side": "bottom" },
-        { "node": "trusted-sender", "side": "top" }
-      ],
-      "arrow": true
-    },
-    { "kind": "text", "x": 1060, "y": 282, "text": "provider request", "size": 19 },
-    {
-      "kind": "node",
-      "id": "external-api",
-      "x": 947,
-      "y": 720,
-      "w": 198,
-      "h": 91,
-      "lines": ["External API"],
-      "size": 22
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "trusted-sender", "side": "bottom" },
-        { "node": "external-api", "side": "top" }
-      ],
-      "arrow": true
-    },
-    { "kind": "text", "x": 1054, "y": 474, "text": "inject + forward", "size": 20 },
-    { "kind": "text", "x": 1054, "y": 502, "text": "approved request", "size": 20 },
-    {
-      "kind": "node",
-      "id": "computedriver",
-      "x": 40,
-      "y": 109,
-      "w": 283,
-      "h": 78,
-      "lines": ["ComputeDriver", "(Kubernetes Compute)"],
-      "size": 22
-    },
-    { "kind": "box", "x": 37, "y": 258, "w": 290, "h": 272, "radius": 16 },
-    { "kind": "text", "x": 52, "y": 287, "text": "one InstalledDriver", "size": 18 },
-    {
-      "kind": "node",
-      "id": "sandboxdriver",
-      "x": 56,
-      "y": 311,
-      "w": 251,
-      "h": 68,
-      "lines": ["SandboxDriver"],
-      "size": 22
-    },
-    {
-      "kind": "node",
-      "id": "credentialproxydriver",
-      "x": 56,
-      "y": 423,
-      "w": 251,
-      "h": 69,
-      "lines": ["CredentialProxyDriver"],
-      "size": 21
-    },
-    {
-      "kind": "line",
-      "points": [{ "node": "computedriver", "side": "bottom" }, [177, 255]],
-      "arrow": true
-    },
-    { "kind": "text", "x": 189, "y": 225, "text": "uses paired owner", "size": 19 },
-    { "kind": "text", "x": 59, "y": 511, "text": "same OpenShell backend", "size": 17 },
-    { "kind": "text", "x": 1360, "y": 108, "text": "02   Generic protected exchange", "size": 27 },
-    { "kind": "text", "x": 1361, "y": 154, "text": "How to read this", "size": 23 },
-    {
-      "kind": "node",
-      "id": "occ-request-authority",
-      "x": 409,
-      "y": 116,
-      "w": 331,
-      "h": 93,
-      "lines": ["OCC request authority", "policy, use record, send decision"],
-      "size": 19
-    },
-    {
-      "kind": "node",
-      "id": "credentialproxy",
-      "x": 400,
-      "y": 295,
-      "w": 338,
-      "h": 93,
-      "lines": ["CredentialProxy", "implements CredentialProxyExchange"],
-      "size": 19
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "credentialproxy", "side": "top" },
-        { "node": "occ-request-authority", "side": "bottom" }
-      ],
-      "arrow": true
-    },
-    { "kind": "text", "x": 577, "y": 255, "text": "check / authorize send", "size": 18 },
-    {
-      "kind": "line",
-      "points": [{ "node": "credentialproxydriver", "side": "right" }, [396, 371]],
-      "arrow": true
+      "kind": "text",
+      "x": 24,
+      "y": 58,
+      "text": "02 Generic protected exchange",
+      "size": 34,
+      "role": "title"
     },
     {
       "kind": "text",
-      "x": 354,
-      "y": 404,
-      "text": "bindExchange",
+      "x": 24,
+      "y": 85,
+      "text": "Exact-exchange contract · stock OpenShell lacks a qualified exact sender",
       "size": 17,
-      "halo": true,
-      "center": true
+      "role": "subtitle"
+    },
+    { "kind": "box", "id": "control", "x": 40, "y": 461, "w": 863, "h": 764, "role": "control" },
+    {
+      "kind": "box",
+      "id": "installed-driver",
+      "x": 187.66666666666669,
+      "y": 594,
+      "w": 506.5,
+      "h": 189,
+      "role": "control"
     },
     {
-      "kind": "line",
-      "points": [
-        { "node": "trusted-sender", "side": "left" },
-        { "node": "credentialproxy", "side": "right" }
-      ],
-      "arrow": true
+      "kind": "box",
+      "id": "runtime",
+      "x": 613.8333333333334,
+      "y": 130,
+      "w": 276.5,
+      "h": 293,
+      "role": "runtime"
     },
     {
-      "kind": "text",
-      "x": 800,
-      "y": 333,
-      "text": "exchange¹",
-      "size": 18,
-      "halo": true,
-      "center": true
+      "kind": "box",
+      "id": "sandbox",
+      "x": 677.3333333333334,
+      "y": 168,
+      "w": 128,
+      "h": 100,
+      "role": "boundary"
+    },
+    {
+      "kind": "box",
+      "id": "provider",
+      "x": 923,
+      "y": 461,
+      "w": 272.5,
+      "h": 144,
+      "role": "external"
     },
     {
       "kind": "node",
-      "id": "secretdriver",
-      "x": 60,
-      "y": 654,
-      "w": 255,
-      "h": 78,
-      "lines": ["SecretDriver", "readCredentialInput"],
-      "size": 20
+      "id": "compute-driver",
+      "x": 197.16666666666669,
+      "y": 499,
+      "w": 182,
+      "h": 70,
+      "lines": ["ComputeDriver", "Kubernetes Compute"],
+      "role": "control"
     },
     {
       "kind": "node",
-      "id": "preparedtokenissuer",
-      "x": 447,
-      "y": 654,
-      "w": 275,
-      "h": 78,
-      "lines": ["PreparedTokenIssuer", "readWarm"],
-      "size": 21
+      "id": "sandbox-driver",
+      "x": 203.66666666666669,
+      "y": 698,
+      "w": 169,
+      "h": 46,
+      "lines": ["SandboxDriver"],
+      "role": "control"
     },
     {
-      "kind": "line",
-      "points": [
-        [482, 390],
-        [382, 556],
-        [223, 652]
-      ],
-      "arrow": true
+      "kind": "node",
+      "id": "credential-proxy-driver",
+      "x": 447.1666666666667,
+      "y": 674,
+      "w": 231,
+      "h": 70,
+      "lines": ["CredentialProxyDriver", "Supplies transport owner"],
+      "role": "control"
     },
     {
-      "kind": "text",
-      "x": 321,
-      "y": 605,
-      "text": "static read",
-      "size": 19,
-      "halo": true,
-      "center": true
+      "kind": "node",
+      "id": "request-authority",
+      "x": 313,
+      "y": 1024,
+      "w": 233,
+      "h": 94,
+      "lines": ["OCC request authority", "Policy · use record · send", "decision"],
+      "role": "control"
     },
     {
-      "kind": "line",
-      "points": [[583, 391], { "node": "preparedtokenissuer", "side": "top" }],
-      "arrow": true
+      "kind": "node",
+      "id": "credential-proxy",
+      "x": 561.5,
+      "y": 875,
+      "w": 214,
+      "h": 94,
+      "lines": ["CredentialProxy", "Implements", "CredentialProxyExchange"],
+      "role": "control"
     },
-    { "kind": "text", "x": 599, "y": 583, "text": "warm read", "size": 20 },
+    {
+      "kind": "node",
+      "id": "secret-driver",
+      "x": 76,
+      "y": 1043,
+      "w": 148,
+      "h": 46,
+      "lines": ["SecretDriver"],
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "token-issuer",
+      "x": 609.5,
+      "y": 1035.5,
+      "w": 225,
+      "h": 46,
+      "lines": ["PreparedTokenIssuer"],
+      "role": "control"
+    },
     {
       "kind": "node",
       "id": "versioned-secret",
-      "x": 66,
-      "y": 772,
-      "w": 244,
-      "h": 65,
+      "x": 56,
+      "y": 1163,
+      "w": 188,
+      "h": 46,
       "lines": ["Versioned Secret"],
-      "size": 20
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "secretdriver", "side": "bottom" },
-        { "node": "versioned-secret", "side": "top" }
-      ],
-      "arrow": true
+      "role": "control"
     },
     {
       "kind": "node",
       "id": "prepared-material",
-      "x": 449,
-      "y": 772,
-      "w": 272,
-      "h": 65,
+      "x": 625.5,
+      "y": 1163,
+      "w": 193,
+      "h": 46,
       "lines": ["Prepared material"],
-      "size": 20
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "agent",
+      "x": 693.3333333333334,
+      "y": 206,
+      "w": 96,
+      "h": 46,
+      "lines": ["Agent"],
+      "role": "boundary"
+    },
+    {
+      "kind": "node",
+      "id": "trusted-sender",
+      "x": 629.8333333333334,
+      "y": 337,
+      "w": 223,
+      "h": 70,
+      "lines": ["Trusted sender", "Required for exact dispatch"],
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "external-api",
+      "x": 939,
+      "y": 543,
+      "w": 147,
+      "h": 46,
+      "lines": ["External API"],
+      "role": "external"
     },
     {
       "kind": "line",
       "points": [
-        { "node": "preparedtokenissuer", "side": "bottom" },
-        { "node": "prepared-material", "side": "top" }
+        [288.1666666666667, 569],
+        [288.1666666666667, 698]
       ],
+      "dashed": true,
       "arrow": true
     },
     {
+      "kind": "line",
+      "points": [
+        [562.6666666666667, 744],
+        [562.6666666666666, 798],
+        [632.8333333333333, 798],
+        [632.8333333333333, 875]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [741.3333333333334, 252],
+        [741.3333333333334, 337]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [704.1666666666667, 407],
+        [704.1666666666667, 875]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [668.5, 969],
+        [668.5, 989],
+        [429.5, 989],
+        [429.5, 1024]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [615, 969],
+        [615, 979],
+        [150, 979],
+        [150, 1043]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [722, 969],
+        [722, 1035.5]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [150, 1089],
+        [150, 1163]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [722, 1081.5],
+        [722, 1163]
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [778.5, 407],
+        [778.5, 438],
+        [1012.5, 438],
+        [1012.5, 543]
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    { "kind": "text", "x": 56, "y": 484, "text": "OCE control plane", "size": 16, "role": "group" },
+    {
       "kind": "text",
-      "x": 1362,
-      "y": 200,
-      "text": "The Driver supplies a transport owner.",
-      "size": 21
+      "x": 293.1666666666667,
+      "y": 617,
+      "text": "One InstalledDriver ·",
+      "size": 16,
+      "role": "group"
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 228,
-      "text": "OCC constructs the exchange and returns",
-      "size": 21
+      "x": 293.1666666666667,
+      "y": 639,
+      "text": "OpenShell backend",
+      "size": 16,
+      "role": "group"
     },
-    { "kind": "text", "x": 1362, "y": 256, "text": "only its five bound methods.", "size": 21 },
     {
       "kind": "text",
-      "x": 1362,
+      "x": 629.8333333333334,
+      "y": 153,
+      "text": "Data plane",
+      "size": 16,
+      "role": "group"
+    },
+    {
+      "kind": "text",
+      "x": 693.3333333333334,
+      "y": 191,
+      "text": "Sandbox",
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "text", "x": 939, "y": 484, "text": "Internet", "size": 16, "role": "group" },
+    {
+      "kind": "text",
+      "x": 295.1666666666667,
+      "y": 670,
+      "text": "Setup: Uses paired",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 295.1666666666667,
+      "y": 689,
+      "text": "owner",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 639.8333333333335,
+      "y": 866,
+      "text": "Setup: bindExchange",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 748.3333333333334,
+      "y": 309,
+      "text": "Requests provider",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 748.3333333333334,
       "y": 328,
-      "text": "¹ Resolve, authorize send, begin response,",
-      "size": 21
+      "text": "operation",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 356,
-      "text": "renew response, and protect response.",
-      "size": 21
+      "x": 711.1666666666667,
+      "y": 824,
+      "text": "Calls exchange via",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 384,
-      "text": "The listener adapts transport to that port.",
-      "size": 21
+      "x": 711.1666666666667,
+      "y": 843,
+      "text": "listener",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 456,
-      "text": "Material can be a versioned Secret or a",
-      "size": 21
+      "x": 436.5,
+      "y": 1015,
+      "text": "Checks send authority",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 484,
-      "text": "prepared token. A credential-free route",
-      "size": 21
+      "x": 157,
+      "y": 1015,
+      "text": "Conditional:",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 512,
-      "text": "does not need either material reader.",
-      "size": 21
-    },
-    { "kind": "text", "x": 1361, "y": 604, "text": "Different from Git", "size": 23 },
-    {
-      "kind": "text",
-      "x": 1362,
-      "y": 646,
-      "text": "This is the exact-exchange contract, not",
-      "size": 21
+      "x": 157,
+      "y": 1034,
+      "text": "readCredentialInput",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 674,
-      "text": "the worker’s observed Git hook. Stock",
-      "size": 21
+      "x": 729,
+      "y": 1026.5,
+      "text": "Conditional: readWarm",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 702,
-      "text": "OpenShell is not a qualified exact sender.",
-      "size": 21
+      "x": 157,
+      "y": 1154,
+      "text": "Reads version",
+      "size": 15,
+      "role": "label",
+      "halo": true
     },
     {
       "kind": "text",
-      "x": 35,
-      "y": 908,
-      "text": "The right-hand sender is the required counterpart, not a claim that stock OpenShell implements exact dispatch. The Git preview uses Sheet 01.",
-      "size": 19
+      "x": 729,
+      "y": 1154,
+      "text": "Reads token",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 1019.5,
+      "y": 515,
+      "text": "Conditional: Injects and",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 1019.5,
+      "y": 534,
+      "text": "forwards if approved",
+      "size": 15,
+      "role": "label",
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 24,
+      "y": 1265,
+      "text": "OCC constructs the proxy and exposes only five bound methods to the listener: resolve, authorizeSend, beginResponse, renewResponse, and protectResponse.",
+      "size": 14,
+      "role": "note"
+    },
+    {
+      "kind": "text",
+      "x": 24,
+      "y": 1295,
+      "text": "Credential-free routes skip both material readers. The observed Git hook is shown in 01 and 01b.",
+      "size": 14,
+      "role": "note"
     }
   ]
 }

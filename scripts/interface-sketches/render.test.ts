@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { Resvg } from "@resvg/resvg-js";
+
 import { render, renderSvg, type Sketch } from "./render.ts";
 
 function sample(x = 80): Sketch {
@@ -76,11 +78,42 @@ test("rejects malformed shapes, unsafe values, bad anchors and excessive work", 
     { ...sample(), title: "\ud800" },
     ...[
       { kind: "unknown" },
+      { kind: "text", x: 0, y: 0, text: "bad", role: "control" },
+      { kind: "box", x: 0, y: 0, w: 1, h: 2, role: "title" },
+      { kind: "node", x: 0, y: 0, w: 1, h: 2, lines: [], role: "unknown" },
+      {
+        kind: "line",
+        points: [
+          [0, 0],
+          [1, 1],
+        ],
+        role: "runtime",
+      },
       { kind: "text", x: NaN, y: 1, text: "bad" },
       { kind: "text", x: 0, y: 0, text: "bad", color: "url(https://invalid)" },
       { kind: "text", x: 0, y: 0, text: "bad", halo: "true" },
       { kind: "box", x: 0, y: 0, w: -1, h: 2 },
       { kind: "node", x: 0, y: 0, w: 1, h: 2, lines: [1] },
+      ...[0, -1, 1.5, 3, NaN, Infinity, "2", null, undefined].map((titleLineCount) => ({
+        kind: "node",
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 60,
+        lines: ["Component", "Description"],
+        titleLineCount,
+      })),
+      { kind: "node", x: 0, y: 0, w: 1, h: 2, lines: [], titleLineCount: 1 },
+      { kind: "box", x: 0, y: 0, w: 1, h: 2, titleLineCount: 1 },
+      { kind: "text", x: 0, y: 0, text: "Label", titleLineCount: 1 },
+      {
+        kind: "line",
+        points: [
+          [0, 0],
+          [1, 1],
+        ],
+        titleLineCount: 1,
+      },
       {
         kind: "line",
         points: [
@@ -98,7 +131,9 @@ test("rejects malformed shapes, unsafe values, bad anchors and excessive work", 
       items: Array.from({ length: 5001 }, () => ({ kind: "text", x: 0, y: 0, text: "" })),
     },
   ];
-  for (const input of invalid) assert.throws(() => renderSvg(input), /Invalid sketch:/);
+  for (const input of invalid) {
+    assert.throws(() => renderSvg(input), /Invalid sketch:/);
+  }
 });
 
 test("CLI rejects invalid references before creating or replacing outputs", () => {
@@ -136,7 +171,8 @@ test("CLI rejects invalid references before creating or replacing outputs", () =
 
 test("offline renderer produces deterministic PNG with requested dimensions", async () => {
   const first = await render(sample());
-  const second = await render(sample());
+  const second = await render(JSON.parse(JSON.stringify(sample())));
+  assert.equal(first.svg, second.svg);
   assert.deepEqual(first.png.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   assert.equal(first.png.readUInt32BE(16), 240);
   assert.equal(first.png.readUInt32BE(20), 160);
@@ -144,11 +180,19 @@ test("offline renderer produces deterministic PNG with requested dimensions", as
   assert.ok(first.png.length > 100);
   const empty = { title: "", width: 100, height: 60, items: [] };
   const blank = await render(empty);
-  const labelled = await render({
-    ...empty,
-    items: [{ kind: "text", x: 10, y: 30, text: "Kalam" }],
-  });
-  assert.notDeepEqual(labelled.png, blank.png, "bundled font must produce visible text");
+  const faces: Buffer[] = [];
+  for (const role of ["label", "title", "note"] as const) {
+    const labelled = await render({
+      ...empty,
+      items: [{ kind: "text", role, x: 10, y: 30, size: 18, color: "#243247", text: "Visible" }],
+    });
+    // Same text, size and color isolate real regular, bold and italic glyphs.
+    assert.notDeepEqual(labelled.png, blank.png, `${role} must produce visible text`);
+    for (const face of faces) {
+      assert.notDeepEqual(labelled.png, face, `${role} must have distinct glyphs`);
+    }
+    faces.push(labelled.png);
+  }
 });
 
 test("CLI writes both formats offline from another working directory", () => {
@@ -166,4 +210,140 @@ test("CLI writes both formats offline from another working directory", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("semantic typography is explicit, single-painted and honors raw size overrides", () => {
+  const svg = renderSvg({
+    title: "Typography",
+    width: 500,
+    height: 300,
+    items: [
+      { kind: "text", role: "title", x: 20, y: 40, text: "Heading" },
+      { kind: "text", role: "title", x: 20, y: 80, size: 21, text: "Override" },
+      { kind: "text", role: "group", x: 20, y: 110, text: "Control plane" },
+      { kind: "text", role: "subtitle", x: 20, y: 140, text: "Summary" },
+      {
+        kind: "node",
+        role: "runtime",
+        x: 20,
+        y: 160,
+        w: 200,
+        h: 80,
+        lines: ["Worker", "Runs the request"],
+      },
+    ],
+  });
+  assert.match(svg, /font-size="34" font-weight="700"[^>]*>Heading<\/text>/);
+  assert.match(svg, /font-size="21" font-weight="700"[^>]*>Override<\/text>/);
+  assert.match(svg, /font-size="16" font-weight="700"[^>]*>Control plane<\/text>/);
+  assert.match(svg, /font-size="17" font-weight="400"[^>]*>Summary<\/text>/);
+  assert.match(svg, /y="194"[^>]*font-size="18" font-weight="700"[^>]*>Worker<\/text>/);
+  assert.match(
+    svg,
+    /y="218"[^>]*font-size="15" font-weight="400" font-style="italic" fill="#4b5563"[^>]*>Runs the request<\/text>/,
+  );
+  assert.equal((svg.match(/>Worker<\/text>/g) ?? []).length, 1);
+  assert.equal((svg.match(/@font-face/g) ?? []).length, 3);
+  assert.match(svg, /fill="#ffffff" stroke="#427b76"/);
+  assert.match(svg, /x="40" y="194" text-anchor="start"/);
+  assert.match(svg, /x="40" y="218" text-anchor="start"/);
+});
+
+test("node surfaces and role accents remain visible inside tinted regions", () => {
+  for (const [role, tint, accent] of [
+    ["control", [240, 245, 251], [83, 121, 157]],
+    ["runtime", [238, 247, 245], [66, 123, 118]],
+    ["boundary", [252, 247, 236], [150, 114, 52]],
+    ["external", [245, 246, 248], [115, 123, 135]],
+  ] as const) {
+    const svg = renderSvg({
+      title: "Visibility",
+      width: 100,
+      height: 80,
+      items: [
+        { kind: "box", role, x: 0, y: 0, w: 100, h: 80 },
+        { kind: "node", role, x: 20, y: 20, w: 60, h: 40, lines: [] },
+      ],
+    });
+    const { pixels } = new Resvg(svg, { font: { loadSystemFonts: false } }).render();
+    const pixel = (x: number, y: number): number[] => [
+      ...pixels.subarray((y * 100 + x) * 4, (y * 100 + x) * 4 + 3),
+    ];
+    assert.deepEqual(pixel(10, 40), tint);
+    assert.deepEqual(pixel(50, 40), [255, 255, 255]);
+    assert.deepEqual(pixel(29, 40), accent);
+  }
+  // Tiny raw rectangles are valid input; the accent must shrink inside them.
+  const tiny = renderSvg({
+    title: "Tiny",
+    width: 20,
+    height: 20,
+    items: [{ kind: "node", role: "control", x: 5, y: 5, w: 2, h: 2, lines: [], color: "#123456" }],
+  });
+  assert.match(tiny, /x="5.25" y="5.25" width="0.2" height="1.5"[^>]*fill="#123456"/);
+  assert.match(tiny, /fill="#ffffff" stroke="#123456"/);
+  const raw = renderSvg({
+    title: "Legacy",
+    width: 100,
+    height: 60,
+    items: [{ kind: "node", x: 10, y: 10, w: 80, h: 40, lines: ["Raw"], size: 12, color: "#abc" }],
+  });
+  assert.match(raw, /x="50" y="36" text-anchor="middle"[^>]*font-size="12"/);
+  assert.match(raw, /fill="#ffffff" stroke="#abc"/);
+});
+
+test("standalone SVG carries all bundled faces and offline font attribution", () => {
+  const svg = renderSvg(sample());
+  for (const [name, weight, style] of [
+    ["Regular", 400, "normal"],
+    ["Bold", 700, "normal"],
+    ["Italic", 400, "italic"],
+  ] as const) {
+    const bytes = readFileSync(new URL(`./fonts/LiberationSans-${name}.ttf`, import.meta.url));
+    assert.ok(
+      svg.includes(
+        `font-weight:${weight};font-style:${style};src:url(data:font/ttf;base64,${bytes.toString("base64")})`,
+      ),
+    );
+  }
+  const metadata = svg.match(/<metadata>([\s\S]*?)<\/metadata>/)?.[1];
+  assert.ok(metadata);
+  assert.ok(metadata.includes("SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007"));
+  assert.ok(metadata.includes("Digitized data copyright (c) 2010 Google Corporation"));
+  assert.ok(metadata.includes("Copyright (c) 2012 Red Hat, Inc."));
+  assert.ok(metadata.includes("PERMISSION &amp; CONDITIONS"));
+  assert.ok(metadata.includes("DEALINGS IN THE FONT SOFTWARE."));
+  assert.doesNotMatch(svg, /file:\/\/|\/home\/|\/tmp\//);
+});
+
+test("two-line component titles stay bold above gray italic descriptions", () => {
+  const node = {
+    kind: "node" as const,
+    x: 10,
+    y: 10,
+    w: 200,
+    h: 100,
+    lines: ["Repository", "credentials", "Issues scoped tokens"],
+    titleLineCount: 2,
+  };
+  const sketch = { title: "Component", width: 240, height: 140, items: [node] };
+  const svg = renderSvg(sketch);
+  for (const title of ["Repository", "credentials"]) {
+    assert.match(
+      svg,
+      new RegExp(
+        `font-size="18" font-weight="700" font-style="normal" fill="#243247">${title}</text>`,
+      ),
+    );
+  }
+  assert.match(
+    svg,
+    /font-size="15" font-weight="400" font-style="italic" fill="#4b5563">Issues scoped tokens<\/text>/,
+  );
+  // A title may occupy every line; an explicit size still applies to all lines.
+  assert.doesNotThrow(() =>
+    renderSvg({ ...sketch, items: [{ ...node, lines: node.lines.slice(0, 2) }] }),
+  );
+  const resized = renderSvg({ ...sketch, items: [{ ...node, size: 21 }] });
+  assert.equal((resized.match(/font-size="21"/g) ?? []).length, 3);
 });

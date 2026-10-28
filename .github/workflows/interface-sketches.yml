@@ -24,9 +24,5 @@ jobs:
       - run: npm install --global pnpm@11.15.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
-      - name: Check that each preview matches its source
-        run: |
-          for source in examples/*.json; do
-            node render.ts "$source" "$RUNNER_TEMP/preview"
-            cmp "$RUNNER_TEMP/preview.png" "${source%.json}.png"
-          done
+      - name: Check generated scenes and previews
+        run: pnpm check
