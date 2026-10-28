@@ -27,11 +27,11 @@ Agent. The Agent's tool, such as `gog`, can then read that user's Gmail. Only th
 user can use the Agent.
 
 Installation administrators define connections as Installation-wide **connection
-templates**, which Presets can reference. The Credential Refresh Driver exchanges
-the authorization code and puts the refresh grant in OpenShell custody, and
-OpenShell refreshes the access token. The browser, OCC storage, and the Agent never
-receive the refresh token; the tool receives only a placeholder. OCE core contains
-no provider-specific endpoints, scopes, or binaries.
+templates**, which Presets can reference. For Google, the Credential Refresh Driver
+exchanges the authorization code and gives OpenShell the grant to refresh access
+tokens. For an MCP server, the Driver uses the official TypeScript MCP client for
+exchange and refresh. In both flows the tool receives only a placeholder. OCE core
+contains no provider-specific endpoints, scopes, or binaries.
 
 ## Motivation
 
@@ -103,6 +103,14 @@ Namespace.
 | `envVar`, `binary`                  | The placeholder variable and the one executable that may send it.                                                                               |
 | `accountIdentity`                   | `none` (default) or `oidc`. With `oidc`, OCC also requests `openid email` and shows the connected address.                                      |
 | `jwksUri`                           | Optional with `oidc`. Without it, the Driver discovers the signing keys from `issuer`.                                                          |
+
+Each version has an authorization protocol. Existing templates default to
+`oauth2` and keep their configured endpoints. With `mcp_oauth`, the administrator
+selects the MCP server URL, a registered client, and the requested scopes. The
+Driver discovers the resource, issuer, and endpoints for the administrator to
+approve with the version. Both protocols use the same **Connect** action,
+personal Agent binding, and reconnect/disconnect lifecycle. See the
+[MCP authorization contract](contracts.md#mcp-authorization).
 
 OCC rejects non-HTTPS URLs. Where OpenShell supplies a configured list of tool
 binaries, OCC also rejects a binary outside that list. Admission must separately
@@ -221,7 +229,7 @@ sequenceDiagram
   Refresh-->>API: authorizationUrl, privateState
   API-->>User: Consent warning, then popup to authorizationUrl
   User->>Issuer: Approve the fixed scopes
-  Issuer->>API: GET /oauth/callback with code and state
+  Issuer->>API: GET /oauth/callback with code, state, and optional iss
   API->>Refresh: completeBrowserAuthorization
   Refresh->>Issuer: Exchange code with PKCE verifier
   Refresh->>Gateway: Configure refresh custody and mint
@@ -234,7 +242,9 @@ sequenceDiagram
   end
 ```
 
-_Proposed flow; none of these paths is implemented._
+_Proposed flow for a template with configured OAuth endpoints. An MCP template
+uses the same Console and API steps with the
+[MCP authorization contract](contracts.md#mcp-authorization)._
 
 1. `POST /namespaces/:namespaceId/agents/:agentId/connections` with a connection
    template ID. OCC checks connection template `use`, confirms the caller is the

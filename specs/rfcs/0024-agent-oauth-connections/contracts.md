@@ -19,11 +19,61 @@ methods. A Driver that omits them offers no browser connections.
   returns `{ authorizationUrl, privateState }`. The Driver creates the PKCE
   verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
   `privateState` is opaque to OCC.
-- `completeBrowserAuthorization(context, privateState, { code, state })` verifies
+- `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
   `state`, exchanges the code with the verifier and the version's client
-  registration, configures OpenShell refresh custody, and mints the first token. It
-  returns `ready` with an optional verified `accountEmail`, or a failure code. It
-  never returns a token.
+  registration, and establishes refresh custody for this protocol. After it obtains
+  a usable access token, it returns `ready` with an optional verified
+  `accountEmail`. On failure it returns a code. It never returns a token.
+
+### MCP authorization
+
+For an `mcp_oauth` version, the Credential Refresh Driver uses the official
+TypeScript MCP client (`@modelcontextprotocol/client`). Slack's plugin declares
+its server at `https://mcp.slack.com/mcp`. Selecting the plugin installs the
+server configuration. The owner connects their account through **Connect**.
+
+1. **Approve the template.** The Driver reads the server's authentication
+   challenge and uses the SDK to discover protected resource and authorization
+   server metadata. Discovery uses credential-free requests subject to management
+   egress policy, including redirects. The administrator approves the server URL,
+   exact resource identifier, issuer, authorization and token endpoints, registered
+   client, and scopes as one immutable version. Slack advertises the resource
+   `https://mcp.slack.com` and hosts its OAuth endpoints on `slack.com`.
+   The Slack template requests only `search:read.public` and references a
+   preregistered Slack app.
+2. **Connect.** The Driver calls SDK `auth()` with the approved scopes and an
+   `OAuthClientProvider` backed by the version's client registration. It checks
+   discovered destinations against that version before redirecting the user or
+   sending credentials. Token requests go directly to the pinned endpoint with
+   redirects disabled. A change requires a new version and consent.
+   The Driver keeps the PKCE verifier and SDK discovery state in the private
+   authorization session. OCC checks the initiating user, Agent, and single-use
+   callback state, and forwards the callback's optional `iss` to the Driver. The
+   SDK rejects an issuer mismatch, or a missing issuer when the authorization
+   server advertises issuer identification, before exchanging the code.
+3. **Refresh and present.** The credential service behind the Driver uses the SDK
+   for exchange and refresh so both send the approved resource. Before activating
+   either token it compares the granted scopes with the approved set. Slack
+   reports the user's scopes in `authed_user.scope`. The adapter must check that
+   field before SDK parsing discards it. A different grant requires reconnection.
+   The service serializes refresh per source and atomically saves the new access
+   token and any replacement refresh token. It reports `ready` once it holds a
+   usable access token and refresh grant. Deployment matches the ready connection
+   to the plugin's server, resource, issuer, and required scopes. Protected egress presents the prepared
+   access token at the approved MCP endpoint. The worker uses the same placeholder
+   across rotations.
+   A Driver that only hands a refresh token to OpenShell cannot admit this protocol
+   until it supports that handoff of prepared access tokens.
+
+Verify the adapter against a controlled MCP server and issuer. Observe the same
+resource on consent, exchange, and refresh, and only the approved scope on consent.
+Change the advertised token endpoint and verify it receives no secret or code.
+An invalid callback issuer must fail before exchange, and a broader scope in a
+token response must keep that token out of egress.
+After rotation, the same worker placeholder must reach the server with the second
+access token. Separately verify a live Slack search when a test account is available.
+
+[SDK OAuth client](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts) · [Slack protected resource](https://mcp.slack.com/.well-known/oauth-protected-resource) · [Slack authorization server](https://mcp.slack.com/.well-known/oauth-authorization-server) · [Slack token response](https://docs.slack.dev/reference/methods/oauth.v2.user.access/#response)
 
 ### Client registrations
 
@@ -114,8 +164,12 @@ administrators, who hold every action through the built-in administrator role.
 
 Use [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 for the deployed revision. Limit the authorized route to the endpoint the owner
-approved. For `read-only`, the sender permits only `GET`, `HEAD`, and `OPTIONS`.
-Attaching a source cannot expand an installation's egress ceiling.
+approved. For a configured HTTP template with `read-only` access, the sender
+permits only `GET`, `HEAD`, and `OPTIONS`. Slack MCP search sends JSON-RPC over
+`POST /mcp`. The sender must admit that method at the exact server endpoint.
+Slack enforces the connected user's search scope. An MCP tool allowlist requires
+separate enforcement. Attaching a source cannot expand an installation's egress
+ceiling.
 
 RFC-0023 authenticates an execution. Listing a binary in a connection template
 does not establish which process sent a request. Refuse deployment when the
@@ -137,9 +191,10 @@ installation cannot enforce the executable restriction recorded at consent.
 | Withdrawal pending or failed after disconnect               | Personal restriction stays in force              | Retry withdrawal, or stop or delete the Agent  |
 | Provider disables a rotated-out client secret               | Older connections report `reauthorize`           | Owners **Reconnect**                           |
 
-OpenShell refreshes access tokens. The operator guide documents provider rules,
-such as Google's: `gmail.readonly` is a restricted scope that public applications
-must verify, and External Testing applications issue seven-day refresh tokens.
+For templates with configured OAuth endpoints, OpenShell refreshes access tokens.
+The operator guide documents provider rules. Google requires verification for
+public applications requesting `gmail.readonly`, and External Testing applications
+issue seven-day refresh tokens.
 
 ## Required outcomes
 
