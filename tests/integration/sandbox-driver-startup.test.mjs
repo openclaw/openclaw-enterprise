@@ -5419,14 +5419,17 @@ test("observed-hook preview recognizes a released Codex through its authenticate
   const token = "fixture-preview-transport";
   let acknowledged = false;
   let serving = true;
+  let status = 400;
+  let upgrades = 0;
   // Native Codex answers ordinary HTTP with 400 after its launch endpoint closes.
   // Real HTTP/WebSocket transport proves this Driver check; the recorded release is its input.
   const server = createServer((_request, response) => {
-    response.writeHead(400);
+    response.writeHead(status);
     response.end("WebSocket upgrade required");
   });
   const sockets = new Set();
   server.on("upgrade", (request, socket) => {
+    upgrades++;
     sockets.add(socket);
     socket.on("error", () => {});
     socket.once("close", () => sockets.delete(socket));
@@ -5524,8 +5527,24 @@ test("observed-hook preview recognizes a released Codex through its authenticate
   assert.equal(await driver.observeHeldRepositoryGitPreview(input), undefined);
   await assert.rejects(driver.enrollHarness(input, installation, release), /Cannot verify/);
   serving = true;
-  assert.equal(await driver.observeHeldRepositoryGitPreview(input), "installed");
-  await driver.enrollHarness(input, installation, release);
+  // Only a closed launch endpoint may fall back to the acknowledged serving socket.
+  for (status of [400, 404, 403, 503, 204]) {
+    const allowed = status === 400 || status === 404;
+    let before = upgrades;
+    assert.equal(
+      await driver.observeHeldRepositoryGitPreview(input),
+      allowed ? "installed" : undefined,
+      `observation status ${status}`,
+    );
+    assert.equal(upgrades - before, allowed ? 1 : 0, `observation upgrades for ${status}`);
+    before = upgrades;
+    if (allowed) {
+      await driver.enrollHarness(input, installation, release);
+    } else {
+      await assert.rejects(driver.enrollHarness(input, installation, release), /Cannot verify/);
+    }
+    assert.equal(upgrades - before, allowed ? 1 : 0, `enrollment upgrades for ${status}`);
+  }
 });
 
 test("OpenShell refuses repository provision and enrollment before any gateway or release call", async () => {

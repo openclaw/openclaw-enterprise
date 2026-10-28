@@ -3583,7 +3583,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (doc.status !== 200) {
       // Native Codex can answer ordinary HTTP with 400 after the launch endpoint closes.
       // Only our recorded ACK and an authenticated serving socket confirm this release.
-      return git.previewReleased(revision.id) &&
+      return (doc.status === 400 || doc.status === 404) &&
+        git.previewReleased(revision.id) &&
         (await client.serviceWebSocketHandshake(service.url, token, signal))
         ? "installed"
         : undefined;
@@ -3652,6 +3653,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (
         preview &&
         !(
+          (document.status === 400 || document.status === 404) &&
           this.openShellGit?.previewReleased(context.revision.id) &&
           (await client.serviceWebSocketHandshake(
             service.url,

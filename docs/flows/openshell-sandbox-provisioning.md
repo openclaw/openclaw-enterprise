@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-27
-last_updated_session: authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2
+updated: 2026-10-28
+last_updated_session: agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -261,8 +261,9 @@ bounds trust. Native exposure ends once a post-enrollment pass confirms its
 delete, by `withdrawHarnessExposure`, adoption or recreation with
 `workspaceNodeEnrolled`.
 
-After release, `observeHeldRepositoryGitPreview` and `enrollHarness` confirm the
-recorded acknowledgment and authenticated WebSocket, even when HTTP returns `400`.
+After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
+require the recorded release acknowledgment and authenticated WebSocket. Other
+non-`200` responses stay pending or refuse enrollment without an upgrade.
 
 The Backend reuses clients, retrying setup. Cancellation is checked after
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations
@@ -372,6 +373,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
 
 - 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
 
