@@ -355,9 +355,9 @@ test(
     const result = JSON.parse(stdout.trim().split("\n").at(-1));
     t.diagnostic(JSON.stringify(result));
     assert.equal(result.commit, commit);
-    // The reviewer saw the exact command and allowed it once. Before the fix, the write-scoped
-    // run could not wait for the verdict: the Gateway closed the approval as denied
-    // ("approval-scope-closed") and the peer got "decline" although nobody declined.
+    // The reviewer saw the exact command and allowed it once, and Codex got that verdict.
+    // Before the fix, the write-scoped run's wait failed with "missing scope:
+    // operator.approvals", so the peer got "decline" even after the reviewer allowed it.
     assert.deepEqual(
       result.events.map(({ event, pluginId, decision }) => ({ event, pluginId, decision })),
       [
