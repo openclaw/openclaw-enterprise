@@ -100,7 +100,7 @@ ${PLUGIN_RUNTIME_HELPERS}
     const recovered = await readCodexPluginDetails(params, read);
     assert.deepEqual(recovered.map((detail) => detail.plugin.summary.remotePluginId), candidates.map((entry) => entry.remotePluginId));
     const selections = Object.fromEntries(candidates.slice(0, 4).map((entry) => ["codex-plugin:" + entry.id, { enabled: false, toolDefaults: { approval: "provider_default" } }]));
-    const result = await installCodexPlugins({ manifest: { kind: "codex", selections } });
+    const result = await installCodexPlugins({ manifest: { kind: "codex", selections } }, [], codexAppServerRequest);
     assert.deepEqual(result, { successfulPluginIds: [], failures: [] });
     const effective = await readCodexPluginConfiguration();
     assert.equal(effective.apps._default.enabled, false);

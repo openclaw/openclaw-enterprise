@@ -432,7 +432,8 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
       `${PLUGIN_RUNTIME_HELPERS}
 installCodexPlugins(
   ${JSON.stringify(runtime)},
-  ${JSON.stringify(options.failures ?? [])}
+  ${JSON.stringify(options.failures ?? [])},
+  codexAppServerRequest
 ).then(result.resolve, result.reject);`,
       sandbox,
     );
