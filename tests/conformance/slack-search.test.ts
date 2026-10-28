@@ -3,7 +3,12 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const command = fileURLToPath(new URL("../../apps/controller/plugins/oce-slack-search/bin/oce-slack-search.ts", import.meta.url));
+const command = fileURLToPath(
+  new URL(
+    "../../apps/controller/plugins/oce-slack-search/bin/oce-slack-search.ts",
+    import.meta.url,
+  ),
+);
 const placeholder = "openshell:resolve:env:s" + "1".repeat(64) + "_SLACK_SEARCH_TOKEN";
 
 // Capture the worker CLI's outbound request on a separate fd and answer as Slack would.
