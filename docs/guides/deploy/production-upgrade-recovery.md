@@ -129,7 +129,7 @@ to settle, then resume; consider a larger gateway memory limit if it stays low.
 These readings do not reserve memory or guarantee that the gateway avoids an OOM kill.
 
 A Doctor failure reports its command exit separately from gateway restart
-history. It also names each gateway Pod evicted, deleted, replaced, restarted, or
+history. It also names each gateway or agent Pod evicted, deleted, replaced, restarted, or
 not `Ready` since then: an eviction kills Doctor (exit 137) without a restart.
 A higher restart count on the same Pod with last termination
 `OOMKilled` means an OOM restart occurred after the Ready baseline; it does not
