@@ -22,6 +22,9 @@ Replace `CredentialGatewayDriver` with the `credential_proxy` Installation capab
 A team can separately [approve Git access until it removes that approval](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval).
 OCE renews short-lived installation tokens so the team can keep working in the same Agent and conversation.
 
+[TASK-0048](../../plans/0048-openshell-github-read.md) plans the separate,
+repository-scoped read workflow through the existing stock online authorizer.
+
 ## Two deployment modes
 
 The deployment selects an egress implementation; it does not separately select an authentication mechanism. Protection is an explicit admission decision, independent of how many credentials are configured.
