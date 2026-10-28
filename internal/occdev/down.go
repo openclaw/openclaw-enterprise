@@ -89,6 +89,19 @@ func Down(ctx context.Context, opts Options) error {
 		if err := r.cleanup(ctx, state, true); err != nil {
 			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: %w", directory, err)
 		}
+		// k3d can report successful cluster deletion after only warning that
+		// its image volume could not be removed. Check the recorded endpoint
+		// even when the cluster was already absent on this attempt.
+		volumes, err := r.output(ctx, r.engine, "volume", "ls", "--filter", "label=k3d.cluster="+state.Cluster, "--format", "{{.Name}}")
+		if err != nil {
+			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: cannot confirm k3d image volume absence: %w", directory, err)
+		}
+		imageVolume := "k3d-" + state.Cluster + "-images"
+		for _, volume := range strings.Fields(string(volumes)) {
+			if volume == imageVolume {
+				return fmt.Errorf("cleanup incomplete; preserving %s for recovery: k3d image volume %s remains", directory, imageVolume)
+			}
+		}
 		if err := os.RemoveAll(directory); err != nil {
 			return err
 		}
