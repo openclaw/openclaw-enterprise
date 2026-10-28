@@ -374,7 +374,7 @@
       "y": 1290,
       "w": 300,
       "h": 95,
-      "lines": ["GitHub App signer", "requests token from GitHub"],
+      "lines": ["Worker signs App JWT", "requests installation token"],
       "size": 21
     },
     {
