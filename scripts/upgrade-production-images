@@ -1323,6 +1323,7 @@ while IFS= read -r deployment; do
   [[ "$selected" == "$deployment_id" ]] ||
     die "Agent $agent_id selected $selected instead of deployment $deployment_id."
   pods="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").pods.json"
+  live_pods="${pods%.json}.live.json"
   while true; do
     remaining_seconds=$((deadline - SECONDS))
     ((remaining_seconds > 0)) ||
@@ -1330,11 +1331,16 @@ while IFS= read -r deployment; do
     "${kube[@]}" --request-timeout="${remaining_seconds}s" get pods --all-namespaces \
       --selector "openclaw.dev/revision=$deployment_id" \
       --output json >"$pods"
-    runtime_count=$(jq '[.items[].spec.containers[] | select(.name == "gateway" or .name == "agent")] | length' "$pods")
+    # A Pod that ended (phase Succeeded or Failed, such as an evicted gateway) no
+    # longer serves, and its controller starts a replacement. Kubernetes keeps ended
+    # Pods until garbage collection, so this wait, also on --resume, ignores them.
+    jq '.items |= map(select(.status.phase != "Succeeded" and .status.phase != "Failed"))' \
+      "$pods" >"$live_pods"
+    runtime_count=$(jq '[.items[].spec.containers[] | select(.name == "gateway" or .name == "agent")] | length' "$live_pods")
     if ((runtime_count == expected_runtime_count)); then
       jq -e --arg image "$runtime_image" '
         all(.items[].spec.containers[] | select(.name == "gateway" or .name == "agent"); .image == $image)
-      ' "$pods" >/dev/null ||
+      ' "$live_pods" >/dev/null ||
         die "Agent $agent_id exposes revision Pods on an unexpected runtime image."
       if jq -e '
         (.items | length) > 0 and
@@ -1342,7 +1348,7 @@ while IFS= read -r deployment; do
           .status.phase == "Running" and
           any(.status.conditions[]?; .type == "Ready" and .status == "True")
         )
-      ' "$pods" >/dev/null; then
+      ' "$live_pods" >/dev/null; then
         break
       fi
     fi
@@ -1362,7 +1368,7 @@ while IFS= read -r deployment; do
             if length == 1 then .[0].restartCount else null end)}
       ] |
       if length == 1 then .[0] else error("expected exactly one gateway Pod") end
-    ' "$pods"
+    ' "$live_pods"
   ); then
     die "Agent $agent_id revision does not expose exactly one gateway Pod."
   fi
@@ -1480,14 +1486,54 @@ report_doctor_failure() {
   fi
 }
 
+# Prints how a gateway changed since its Ready baseline, or nothing when it is the
+# same Pod, still Running and Ready, with the same gateway restart count. A read
+# failure is a change too: the upgrade cannot show the gateway kept serving.
+gateway_change_since_ready() {
+  local ready_gateway=$1 output=$2 status=0
+  "${kube[@]}" --request-timeout=15s --namespace "$(jq -r '.gatewayNamespace' <<<"$ready_gateway")" \
+    get "pod/$(jq -r '.gatewayName' <<<"$ready_gateway")" --output json \
+    </dev/null >"$output" 2>"$output.error" || status=$?
+  if ((status != 0)); then
+    if grep -q '(NotFound)' "$output.error"; then
+      printf 'no longer exists (evicted or deleted)\n'
+    else
+      printf 'could not be read again (kubectl exit %s)\n' "$status"
+    fi
+    return
+  fi
+  jq -r --argjson baseline "$ready_gateway" '
+    def count:
+      if type == "number" then . >= 0 and . <= 9007199254740991 and floor == .
+      else false end;
+    [.status.containerStatuses[]? | select(.name == "gateway")] as $rows |
+    if .metadata.uid != $baseline.gatewayUid then
+      "was replaced by a new Pod with the same name"
+    elif .status.reason == "Evicted" then
+      "was evicted (phase \(.status.phase // "unknown"))"
+    elif .metadata.deletionTimestamp != null then
+      "is being deleted"
+    elif .status.phase != "Running" then
+      "stopped (phase \(.status.phase // "unknown"), reason \(.status.reason // "none"))"
+    elif ($rows | length) != 1 or ($rows[0].restartCount | count | not) or
+      ($baseline.gatewayRestarts | count | not) then
+      "has no comparable gateway restart count"
+    elif $rows[0].restartCount != $baseline.gatewayRestarts then
+      "restarted \($rows[0].restartCount - $baseline.gatewayRestarts) time(s) (last termination: \($rows[0].lastState.terminated.reason // "none"))"
+    elif any(.status.conditions[]?; .type == "Ready" and .status == "True") | not then
+      "is not Ready"
+    else
+      empty
+    end' "$output" | cut -c 1-200
+}
+
+# Doctor runs in one gateway at a time: Doctors in several gateways on one node
+# could together exhaust the node's memory and get Pods evicted (finding 2736).
+# Each Doctor's memory wait and run has its own --timeout-seconds bound, so the
+# serial phase scales with the number of Agents instead of sharing one deadline.
 doctor_failed=0
 doctor_timeout=
 if ((target_count > 0)); then
-  doctor_pids=()
-  doctor_agents=()
-  doctor_gateways=()
-  doctor_baselines=()
-  doctor_prefixes=()
   while IFS= read -r target; do
     namespace_id=$(jq -r '.namespaceId' <<<"$target")
     agent_id=$(jq -r '.agentId' <<<"$target")
@@ -1495,6 +1541,7 @@ if ((target_count > 0)); then
     gateway_namespace=$(jq -r '.gatewayNamespace' <<<"$target")
     gateway_name=$(jq -r '.gatewayName' <<<"$target")
     doctor_prefix="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").doctor"
+    deadline=$((SECONDS + timeout_seconds))
     settled=0
     measured_low=0
     admitted=0
@@ -1531,37 +1578,46 @@ if ((target_count > 0)); then
     if ((admitted == 0 && measured_low == 1)); then
       doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout (last read: $free MiB free), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
     fi
-    # On a timeout, start no further Doctor; the ones already started are joined
-    # below, so the evidence lock outlasts every running Doctor command.
+    # On a timeout, start no further Doctor. No Doctor is running then: each one
+    # ends before the next starts, so the evidence lock outlasts all of them.
     [[ -z "$doctor_timeout" ]] || break
     remaining_seconds=$((deadline - SECONDS))
     if ((remaining_seconds <= 0)); then
       doctor_timeout="OpenClaw Doctor did not run before the upgrade timeout."
       break
     fi
-    ("${kube[@]}" --request-timeout="${remaining_seconds}s" \
+    doctor_status=0
+    "${kube[@]}" --request-timeout="${remaining_seconds}s" \
       --namespace "$gateway_namespace" exec "$gateway_name" --container gateway -- \
       env "NODE_OPTIONS=--max-old-space-size=$doctor_heap_mib" \
       node /app/openclaw.mjs doctor --lint --json --severity-min error \
-      >"$doctor_prefix.json" 2>"$doctor_prefix.error") &
-    doctor_pids+=("$!")
-    doctor_agents+=("$agent_id")
-    doctor_gateways+=("$gateway_namespace/$gateway_name")
-    doctor_baselines+=("$target")
-    doctor_prefixes+=("$doctor_prefix")
-  done <"$doctor_targets"
-  for index in "${!doctor_pids[@]}"; do
-    doctor_status=0
-    wait "${doctor_pids[index]}" || doctor_status=$?
+      </dev/null >"$doctor_prefix.json" 2>"$doctor_prefix.error" || doctor_status=$?
     ((doctor_status != 0)) || continue
     doctor_failed=1
-    report_doctor_failure "$doctor_status" "${doctor_agents[index]}" "${doctor_gateways[index]%%/*}" \
-      "${doctor_gateways[index]#*/}" "${doctor_baselines[index]}" "${doctor_prefixes[index]}"
-  done
+    report_doctor_failure "$doctor_status" "$agent_id" "$gateway_namespace" "$gateway_name" \
+      "$target" "$doctor_prefix"
+  done <"$doctor_targets"
 fi
 [[ -z "$doctor_timeout" ]] || die "$doctor_timeout"
 ((doctor_failed == 0)) ||
   die "OpenClaw Doctor failed for at least one replacement gateway; inspect $evidence_dir/status/*.doctor.error."
+
+# Doctor passing proves little if a gateway it checked was then evicted, replaced or
+# restarted, for example under node memory pressure (finding 2736). After the last
+# Doctor, every checked gateway must still be the same Pod, Running and Ready, with
+# the restart count it had when it became Ready.
+gateway_changed=0
+while IFS= read -r target; do
+  agent_id=$(jq -r '.agentId' <<<"$target")
+  gateway_change=$(gateway_change_since_ready "$target" \
+    "$evidence_dir/status/$(json_file_name "$(jq -r '.namespaceId' <<<"$target")--$agent_id--$(jq -r '.deploymentId' <<<"$target")").after-doctor.json") ||
+    gateway_change="could not be compared with its Ready state"
+  [[ -n "$gateway_change" ]] || continue
+  gateway_changed=1
+  warn "Agent $agent_id's gateway Pod $(jq -r '.gatewayNamespace' <<<"$target")/$(jq -r '.gatewayName' <<<"$target") $gateway_change after it became Ready for OpenClaw Doctor."
+done <"$doctor_targets"
+((gateway_changed == 0)) ||
+  die "at least one Agent's gateway did not stay on the same Ready Pod without restarts through OpenClaw Doctor, so the upgrade is not complete. Wait until each named Agent's gateway is Ready, then repeat the command with --resume and the same evidence directory; the resume runs Doctor again in the current gateway without new deployments."
 
 if [[ "$repository_enabled" == true ]]; then
   verify_pair_nodes

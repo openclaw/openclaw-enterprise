@@ -1,6 +1,6 @@
 ---
 created: 2026-09-23
-updated: "2026-10-27"
+updated: "2026-10-28"
 last_updated_session: "authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585"
 ---
 
@@ -245,18 +245,23 @@ step on its workspace node state before native setup, and a native worker before
 it connects (`openClawStateMigrationHelper` in `runtime-startup.ts`). Embedded execution
 requires one runtime container; dedicated execution requires both gateway and
 Agent containers. Each replacement gateway runs read-only
-`openclaw doctor --lint --json --severity-min error` with a heap cap
+`openclaw doctor --lint --json --severity-min error`, one gateway at a time so
+that Doctors cannot stack on one node's memory, with a heap cap
 (`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway's memory limit;
 an OOM kill can stop both. The cgroup v2 check (`gateway_free_memory`) requires
 one reading with cap plus 640 MiB free or two consecutive readings with cap plus
 256 MiB. This reduces risk without reserving memory or guaranteeing availability.
 Transient failures are retried. Initially unavailable data allows warning and run.
 After insufficient memory is observed, unavailable reads reset consecutive
-evidence; only fresh sufficient readings admit Doctor within the original deadline.
+evidence; only fresh sufficient readings admit Doctor. Each Doctor's memory wait
+and run has its own `--timeout-seconds` bound, so N Agents take up to N Doctor runs.
 Failure reports separate Doctor's exit status from gateway restarts since Ready.
 Missing or incomparable counts or Pod identities report unknown; only a comparable
 increase with last termination `OOMKilled` names an OOM kill. A memory timeout
-joins started Doctors before releasing the evidence lock.
+starts no further Doctor. After the last Doctor passes, `gateway_change_since_ready`
+reads every checked gateway again: a missing, evicted, replaced, restarted, or
+unready gateway fails the upgrade and names the Agent. Resume runs Doctor again in
+the current gateway; the readiness wait ignores ended Pods, such as an evicted one.
 Failures retain dispatch, status, Pod, and Doctor evidence.
 
 ### 6. Hand off application verification
@@ -264,7 +269,8 @@ Failures retain dispatch, status, Pod, and Doctor evidence.
 `docs/guides/deploy/production-upgrade.md:Verify the release`
 
 Completion proves the selected Helm rollout and OCC access; runtime upgrades
-also verify recorded deployments, ready Pods, and Doctor without errors.
+also verify recorded deployments, ready Pods, Doctor without errors, and
+gateways that stayed on the same Ready Pod without restarts through Doctor.
 Operators then verify model responses, providers, channels, credentials,
 workspace continuity, native access, and required restore behavior.
 
@@ -323,6 +329,7 @@ The check does not separate resources an older import already merged.
 
 ## Changelog
 
+- 2026-10-28 00:40: Run Doctors one gateway at a time and fail when a checked gateway is evicted, replaced, restarted, or unready afterward. (fix-2736)
 - 2026-10-26 23:24: Record source checkout verification before private inputs. (authoring-run/dc3e51c1-8f14-4410-9c70-e4a993ea58fe - 821bee5fe0bb446319fab40ad21055b1e942eb37)
 - 2026-10-25 11:53: Record native scale, Helm upgrade, and rollout failures; preserve recovery. (authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585 - 87784a3230964bd8a7a1763f8350c1fd2b4284e0)
 - 2026-10-25 09:19: Keep preflight kubectl errors in private evidence. (authoring-run/6fccb13c-5ec3-44d5-aded-c3c3e9c1da81 - aaabca1fec6b28fbbb674f48f11f015242f86b59)
