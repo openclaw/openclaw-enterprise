@@ -46,6 +46,7 @@ async function readExisting(path: string): Promise<Buffer | undefined> {
 
 async function main(args: string[]): Promise<void> {
   const check = args.length === 1 && args[0] === "--check";
+  const problems: string[] = [];
   let sources: Source[];
   if (args.length === 0 || check) {
     const directory = fileURLToPath(new URL("./examples/", import.meta.url));
@@ -60,8 +61,32 @@ async function main(args: string[]): Promise<void> {
         input: resolve(directory, name),
         prefix: resolve(directory, name.slice(0, -3)),
       }));
+    if (check) {
+      const prefixes = new Set(sources.map((source) => source.prefix));
+      const names = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
+      const orphans: string[] = [];
+      for (const name of [...names].filter((name) => name.endsWith(".png")).sort()) {
+        const stem = name.slice(0, -4);
+        if (!prefixes.has(resolve(directory, stem))) {
+          orphans.push(resolve(directory, name));
+          if (names.has(`${stem}.json`)) {
+            orphans.push(resolve(directory, `${stem}.json`));
+          }
+        }
+      }
+      if (orphans.length > 0) {
+        problems.push(
+          `Orphan previews (restore the same-stem .ts source or remove these obsolete files):\n${orphans.join("\n")}`,
+        );
+      }
+    }
     if (sources.length === 0) {
-      throw new Error("No TypeScript examples found.");
+      const message =
+        "No TypeScript examples found. Add a top-level .ts example (not .d.ts or a symlink).";
+      if (!check) {
+        throw new Error(message);
+      }
+      problems.push(message);
     }
   } else if (
     args.length === 2 &&
@@ -89,7 +114,12 @@ async function main(args: string[]): Promise<void> {
     }
   }
   if (stale.length > 0) {
-    throw new Error(`Stale generated files:\n${stale.join("\n")}`);
+    problems.push(
+      `Stale generated files (run pnpm build in scripts/interface-sketches):\n${stale.join("\n")}`,
+    );
+  }
+  if (problems.length > 0) {
+    throw new Error(problems.join("\n\n"));
   }
 }
 

@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -111,6 +112,25 @@ test("canonical builds preserve refinements and detect stale output without writ
   assert.match(stalePng.stderr, /a\.png/);
   assert.doesNotMatch(stalePng.stderr, /a\.json/);
   assert.equal(readFileSync(join(examples, "a.png"), "utf8"), "stale PNG");
+});
+
+test("renaming a source reports its old previews without deleting them", (t) => {
+  const directory = fixture(t);
+  const path = (name: string) => join(directory, "examples", name);
+  writeFileSync(path("old.ts"), source("Renamed diagram"));
+  assert.equal(run(directory).status, 0);
+  const png = readFileSync(path("old.png"));
+  renameSync(path("old.ts"), path("new.ts"));
+  assert.equal(run(directory).status, 0);
+  const orphaned = run(directory, "--check");
+  assert.equal(orphaned.status, 1);
+  assert.match(orphaned.stderr, /old\.png/);
+  assert.match(orphaned.stderr, /old\.json/);
+  assert.doesNotMatch(orphaned.stderr, /new\.(png|json)/);
+  assert.deepEqual(readFileSync(path("old.png")), png);
+  rmSync(path("old.png"));
+  rmSync(path("old.json"));
+  assert.equal(run(directory, "--check").status, 0);
 });
 
 test("bad refineScene exports and invalid refined scenes fail before writing either artifact", (t) => {
