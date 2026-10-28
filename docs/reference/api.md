@@ -3186,6 +3186,7 @@ Save an Agent revision from the Agent's saved settings
 | `data.plugins.driver.id` | `string` | Yes | min length: 1 |
 | `data.plugins.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins.plugins` | `PluginDesiredState` | Yes | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
+| `data.plugins.runtimeConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `data.repositoryCredentials` | `object` | No | — |
 | `data.repositoryCredentials.bindings` | `array<object>` | Yes | min items: 1; max items: 16 |
 | `data.repositoryCredentials.bindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |

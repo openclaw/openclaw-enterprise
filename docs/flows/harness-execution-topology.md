@@ -1,6 +1,6 @@
 ---
 created: 2026-08-21
-updated: 2026-10-27
+updated: 2026-10-28
 last_updated_session: authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5
 ---
 
@@ -197,6 +197,11 @@ ignored rules, disabled tools, read-only sandbox, no-approval policy, timeout, a
 output checks remain in force. Account login and other Harnesses keep their
 endpoints; only the Harness holds model credentials.
 
+The launcher clears its prior generated config before login, then installs this
+revision's file after successful authentication and before the probe. This also
+applies on restart: native login must establish authentication before it can load
+managed policy for definitions without a local default.
+
 For admitted inference, Kubernetes Compute records launch behavior in new protected
 dedicated Codex revisions. The authentication probe and app-server disable unbounded
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
@@ -321,6 +326,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 11:32: Install generated permission definitions after authentication and before the model probe. (authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5 - 03256d60e2)
 
 - 2026-10-27 16:33: Trace immutable Plugin Driver runtime settings and generated configuration loading in the authentication probe. (authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5 - 62a00c3c51)
 

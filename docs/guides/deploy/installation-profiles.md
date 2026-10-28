@@ -16,14 +16,11 @@ PluginDriver. Operators select plugins manually or through the API. Embedded
 OpenClaw cannot enable external Slack channels; the Standard OpenClaw preset
 must leave channels disabled.
 
-Use `codex` for dedicated Codex Agents with the bundled Codex PluginDriver. By
-default, hosted plugin discovery and Codex runtime authentication both use a
-`codex_pat` token that you supply later: add a same-Namespace Secret or enter
-the PAT during Agent creation. The renderer does not create the token or make
-catalog discovery ready.
-If the token's managed requirements name a profile whose definition is missing,
-add [Codex permission profiles](../../reference/drivers/codex-permission-profiles.md)
-to trusted Installation configuration before deploying a new Agent revision.
+Use `codex` for dedicated Codex Agents with the Codex PluginDriver. By default,
+hosted discovery and runtime authentication use `codex_pat`. During Agent creation,
+enter the PAT or select a same-Namespace Secret. The renderer does not supply credentials.
+For missing named profile definitions, configure
+[Codex permission profiles](../../reference/drivers/codex-permission-profiles.md).
 
 Both profiles enable:
 

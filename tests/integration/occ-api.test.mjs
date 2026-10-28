@@ -4,6 +4,8 @@ import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/sl
 import { validateModelCredentialReferences } from "../../apps/controller/src/drivers/configuration/model-auth.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   pluginRuntimeConfigMapData,
   pluginRuntimeSpecForRevision,
@@ -3858,21 +3860,48 @@ test("Agent deployment snapshots Codex permission profiles without plugin select
   const originalConfig = await renderStoredRevision(deployed.data.id);
   assert.match(originalConfig, /\[permissions\."custom-investigation"\.network\]\nenabled = true/);
 
-  // Reconfiguration is a new Driver selection; old revisions must remain renderable from storage.
+  // A restart constructs the same bundled Driver identity with new operator settings.
+  // Reuse persisted state and real admission; the old revision must retain its snapshot.
   const replacementProfiles = {
     "custom-investigation": { extends: ":read-only", network: { enabled: false } },
   };
-  const replacement = new CodexPluginDriver(
-    { permissionProfiles: replacementProfiles },
-    { id: "codex-reconfigured" },
-  );
-  controller.fixture.controller.registerDriver(replacement);
-  controller.fixture.controller.selectDriver("plugin", replacement.id);
-  const historical = await controller.request("GET", `${path}/revisions/${deployed.data.id}`);
+  const restarted = new OpenClawController(controller.fixture.controller.installation, {
+    state: controller.fixture.platformState,
+    recordOperations: false,
+    driverConfigurations: [
+      {
+        capability: "sandbox",
+        driverId: "permission-profile-sandbox",
+        implementation: "openshell",
+        definition: OpenShellSandboxDriver,
+      },
+    ],
+  });
+  for (const capability of ["iam", "compute", "configuration", "secret"]) {
+    const driver = controller.fixture.controller.selectedDriver(capability);
+    restarted.registerDriver(driver);
+    restarted.selectDriver(capability, driver.id);
+  }
+  const app = createControllerApp({
+    controller: restarted,
+    iamDriver: controller.fixture.iamDriver,
+    computeDriver: controller.fixture.computeDriver,
+    configurationDriver: controller.fixture.configurationDriver,
+    secretDriver: controller.fixture.controller.selectedDriver("secret"),
+    resolveHarness: resolveApprovedDevelopmentHarness,
+    auditSink: controller.fixture.auditSink,
+    development: { enabled: true, installationId: controller.fixture.installationId },
+    auth: controller.fixture.authFixture.auth,
+  });
+  app.defaultSession = controller.fixture.session;
+  const replacement = new CodexPluginDriver({ permissionProfiles: replacementProfiles });
+  restarted.registerDriver(replacement);
+  restarted.selectDriver("plugin", replacement.id);
+  const historical = await injectedRequest(app, "GET", `${path}/revisions/${deployed.data.id}`);
   assert.equal(historical.status, 200, JSON.stringify(historical.body));
   assert.deepEqual(historical.data.plugins, deployed.data.plugins);
   assert.equal(await renderStoredRevision(deployed.data.id), originalConfig);
-  const next = await controller.request("POST", `${path}/deploy`);
+  const next = await injectedRequest(app, "POST", `${path}/deploy`);
   assert.equal(next.status, 202, JSON.stringify(next.body));
   assert.deepEqual(next.data.plugins.runtimeConfiguration, {
     permissionProfiles: replacementProfiles,
@@ -3882,17 +3911,61 @@ test("Agent deployment snapshots Codex permission profiles without plugin select
     /\[permissions\."custom-investigation"\.network\]\nenabled = false/,
   );
 
-  // Empty selections cannot bypass the same Harness boundary that protects selected plugins.
+  // Use a real Sandbox implementation so dedicated OpenClaw passes topology admission.
+  // The profiles-only Plugin Driver must then refuse this incompatible Harness before work.
+  const sandbox = new OpenShellSandboxDriver(
+    {
+      gateway: { workspaceMode: "operator" },
+      kubernetes: {
+        runtimeClassName: "openshell-sandbox",
+        userNamespaces: false,
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "model",
+            binaries: [{ path: "/usr/local/bin/node" }],
+            endpoints: [{ host: "api.openai.com", ports: [443] }],
+          },
+        ],
+      },
+    },
+    {
+      id: "permission-profile-sandbox",
+      implementation: "openshell",
+      backend: {
+        id: "openshell",
+        drivers: { sandbox: "permission-profile-sandbox" },
+        client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
+      },
+    },
+  );
+  restarted.registerDriver(sandbox);
+  restarted.selectDriver("sandbox", sandbox.id);
   const incompatible = await createConfiguration(
     controller,
     namespace.id,
     createHarnessConfiguration("openclaw", "gpt-5.1"),
   );
-  const changed = await controller.request("PATCH", path, {
+  const changed = await injectedRequest(app, "PATCH", path, {
     body: { configurationId: incompatible.id },
   });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
-  assertApiError(await controller.request("POST", `${path}/deploy`), 400, "INVALID_REQUEST");
+  const refused = await injectedRequest(app, "POST", `${path}/deploy`);
+  assertApiError(refused, 400, "INVALID_REQUEST");
+  assert.equal(
+    refused.body.error.message,
+    "The Installation's Plugin Driver runtime settings require a dedicated Codex Harness or embedded OpenClaw Harness: change the Harness or ask an Installation administrator to change the Driver settings.",
+  );
+  const revisions = await injectedRequest(app, "GET", `${path}/revisions`);
+  assert.equal(revisions.data.length, 2);
 });
 
 test("Agent plugin reviewer selection preserves omission and rejects unsupported tool scope", async () => {

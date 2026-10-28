@@ -488,7 +488,8 @@ test("compute renders saved Codex permission profiles with quoted names and no d
   assert.doesNotMatch(native, /^default_permissions\s*=/m);
   assert.match(native, /^plugins = false$/m);
   assert.equal(
-    JSON.parse(pluginRuntimeEnvironment(runtime)[PLUGIN_RUNTIME_ENVIRONMENT]).codexConfigurationToml,
+    JSON.parse(pluginRuntimeEnvironment(runtime)[PLUGIN_RUNTIME_ENVIRONMENT])
+      .codexConfigurationToml,
     native,
   );
 

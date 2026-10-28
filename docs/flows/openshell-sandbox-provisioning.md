@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-27
-last_updated_session: authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2
+updated: 2026-10-28
+last_updated_session: authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -224,7 +224,9 @@ mounts and symlinks.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
 and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
 clearing inherited setgid. OpenClaw prepares its children on retry; retained state
-and workspace permissions stay unchanged. Permission failures stop startup. On upgrade, the Driver can adopt a correctly owned Codex workspace-node Sandbox whose launcher differs only in the old directory initialization. It leaves the running Sandbox and its permissions unchanged. Newly created Sandboxes always use private node state.
+and workspace permissions stay unchanged. Permission failures stop startup.
+Adoption requires exact current launcher content; an older launcher is refused.
+Newly created Sandboxes use private node state.
 Workspace, node identity, sessions and images stay separate. The supervisor probes
 `/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
 
@@ -374,6 +376,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 11:16: Remove the retired launcher-adoption exception after the permission-profile probe change. (authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5 - 03256d60e2)
 
 - 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
 

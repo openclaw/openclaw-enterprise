@@ -46,7 +46,9 @@ function validProfileName(name: string): boolean {
   );
 }
 
-export function validateCodexPermissionProfiles(value: unknown): CodexPermissionProfiles | undefined {
+export function validateCodexPermissionProfiles(
+  value: unknown,
+): CodexPermissionProfiles | undefined {
   if (value === undefined) {
     return undefined;
   }

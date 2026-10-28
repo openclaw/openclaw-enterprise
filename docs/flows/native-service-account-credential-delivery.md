@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-16
-last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
+updated: 2026-10-28
+last_updated_session: authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5
 ---
 
 # Harness Authentication Binding Flow
@@ -191,6 +191,13 @@ state remains in the temporary home. Its volume has a `1Gi` size limit.
 External-token startup writes
 placeholder-only auth state instead of running native login (step 6).
 
+When a runtime artifact is supplied, the launcher clears its previous generated
+`CODEX_HOME/config.toml` before authentication. After authentication succeeds, it
+installs the revision's generated config before the model probe and app-server.
+This prevents saved profile definitions without a local default from blocking
+native login before managed policy can load. The same order applies on restart;
+login failure still holds the runtime before any model probe.
+
 The dedicated wrapper retains `APP_SERVER_TOKEN` for local plugin
 authentication (with plugin status enabled, deriving it from the Agent revision
 and startup identity) but omits it from the `codex login` and `codex app-server`
@@ -295,6 +302,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 11:32: Authenticate before installing revision-owned native permission definitions. (authoring-run/5fc3ba3b-2a9d-41d2-ab59-005420aeaac5 - 03256d60e2)
 
 - 2026-10-16 01:36: Keep external OAuth custody while integrating current Sandbox policy. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

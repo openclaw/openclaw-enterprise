@@ -51,6 +51,7 @@ if (scenario === "external") {
 }
 if (args.includes("login")) {
   assert.equal(Object.hasOwn(process.env, "APP_SERVER_TOKEN"), false);
+  assert.equal(fs.existsSync(process.env.CODEX_HOME + "/config.toml"), false);
   const pat = scenario === "pat";
   assert.deepEqual(args, ["-c", "cli_auth_credentials_store=file", "login", pat ? "--with-access-token" : "--with-api-key"]);
   assert.equal(fs.readFileSync(0, "utf8"), pat ? "at-service-account-fixture" : "credential-canary");
@@ -141,6 +142,17 @@ async function startLauncher(
   });
   await Promise.all([
     writeFile(join(directory, "entrypoint.cjs"), AGENT_RUNTIME_ENTRYPOINT),
+    // A restarted Harness can retain the preceding launcher's generated profiles.
+    // Login must not parse those before it can obtain managed policy.
+    writeFile(
+      join(directory, "bootstrap.cjs"),
+      `
+const fs = require("node:fs");
+fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+fs.writeFileSync(process.env.CODEX_HOME + "/config.toml", '[permissions."custom-old"]\\nextends = ":workspace"\\n');
+require("/fixture/entrypoint.cjs");
+`,
+    ),
     npmLauncher
       ? writeNpmLauncher(directory)
       : writeFile(join(directory, "codex"), codexFixture, { mode: 0o755 }),
@@ -205,7 +217,7 @@ async function startLauncher(
       "--entrypoint",
       "node",
       image,
-      "/fixture/entrypoint.cjs",
+      "/fixture/bootstrap.cjs",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );

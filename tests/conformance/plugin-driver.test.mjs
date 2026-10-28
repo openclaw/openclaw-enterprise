@@ -119,7 +119,10 @@ test("Codex permission profiles reject unsupported shapes and invalid inheritanc
     { custom: { ...profile, extends: "custom" } },
     { first: { ...profile, extends: "second" }, second: { ...profile, extends: "first" } },
   ]) {
-    assert.throws(() => new CodexPluginDriver({ permissionProfiles }), ConfigurationValidationError);
+    assert.throws(
+      () => new CodexPluginDriver({ permissionProfiles }),
+      ConfigurationValidationError,
+    );
     assert.notDeepEqual(CodexPluginDriver.validateConfiguration({ permissionProfiles }), []);
   }
 });

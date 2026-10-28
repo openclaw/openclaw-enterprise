@@ -42,12 +42,24 @@ Codex resolves its selected profile and enforces those requirements. OCE's
 execution admission, Sandbox, and network controls remain separate. A native
 configuration rejection keeps the runtime unready.
 
+Use these definitions only when native managed policy already selects a profile.
+With the pinned CLI, API-key and unauthenticated app-servers can initialize but
+reject configuration reads when definitions have no selected default. Leave
+`permissionProfiles` unset for those deployments unless their native policy
+supplies that selection. OCE does not add a default-selection mechanism.
+
 ## Rendering and readiness
 
 The Plugin Driver validates definitions at startup and supplies its nonsecret
 runtime snapshot during deployment admission. Compute renders the saved
-definitions into the Agent's generated `CODEX_HOME/config.toml`. It rejects
-unsupported saved settings instead of reading the current Driver configuration.
+definitions into the native runtime artifact. It rejects unsupported saved
+settings instead of reading the current Driver configuration.
+
+The launcher removes its previous generated `CODEX_HOME/config.toml` before login.
+After authentication succeeds, it installs the revision's generated file before
+the model probe and app-server start. This order lets native Codex authenticate
+before loading managed policy; profiles without a local default can otherwise
+prevent login. A failed login does not start the probe or app-server.
 
 The authentication probe loads that generated file. It retains its explicit
 model endpoint, read-only sandbox, no-approval policy, disabled tools, temporary

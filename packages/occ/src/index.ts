@@ -10271,7 +10271,9 @@ export class OpenClawController {
                 ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }),
               } satisfies PluginRevisionState);
               if (!validPluginRevisionState(snapshot)) {
-                throw new ConfigurationHarnessError("Plugin Driver runtime configuration is invalid.");
+                throw new ConfigurationHarnessError(
+                  "Plugin Driver runtime configuration is invalid.",
+                );
               }
               return snapshot;
             })();
@@ -14197,10 +14199,7 @@ export class OpenClawController {
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
     hasRuntimeConfiguration = false,
   ): void {
-    if (
-      !hasRuntimeConfiguration &&
-      (plugins === undefined || Object.keys(plugins).length === 0)
-    ) {
+    if (!hasRuntimeConfiguration && (plugins === undefined || Object.keys(plugins).length === 0)) {
       return;
     }
     const required = pluginRuntimeHarnessRequirement(this.pluginDriver().implementation, harness);

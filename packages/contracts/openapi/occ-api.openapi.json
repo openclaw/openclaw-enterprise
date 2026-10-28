@@ -18651,7 +18651,12 @@
                           "additionalProperties": false,
                           "properties": {
                             "driver": { "$ref": "#/components/schemas/def-1" },
-                            "plugins": { "$ref": "#/components/schemas/def-6" }
+                            "plugins": { "$ref": "#/components/schemas/def-6" },
+                            "runtimeConfiguration": {
+                              "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                              "properties": {},
+                              "type": "object"
+                            }
                           },
                           "required": ["driver", "plugins"],
                           "type": "object"
@@ -23462,7 +23467,12 @@
                               "additionalProperties": false,
                               "properties": {
                                 "driver": { "$ref": "#/components/schemas/def-1" },
-                                "plugins": { "$ref": "#/components/schemas/def-6" }
+                                "plugins": { "$ref": "#/components/schemas/def-6" },
+                                "runtimeConfiguration": {
+                                  "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                  "properties": {},
+                                  "type": "object"
+                                }
                               },
                               "required": ["driver", "plugins"],
                               "type": "object"
