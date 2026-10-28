@@ -37,15 +37,23 @@ server configuration. The owner connects their account through **Connect**.
    server metadata. Discovery uses credential-free requests subject to management
    egress policy, including redirects. The administrator approves the server URL,
    exact resource identifier, issuer, authorization and token endpoints, registered
-   client, and scopes as one immutable version. Slack advertises the resource
-   `https://mcp.slack.com` and hosts its OAuth endpoints on `slack.com`.
-   The Slack template requests only `search:read.public` and references a
-   preregistered Slack app.
+   client, and requested scopes as one immutable version. The SDK takes scope
+   guidance from the server's challenge and falls back to the protected resource's
+   `scopes_supported` when the challenge omits scope. The administrator reviews
+   those scopes and can choose a narrower set. A plugin declares any scopes its
+   tools require for binding. It need not enumerate the server's supported scopes.
+   For example, Slack advertises both `search:read.public` and `chat:write`.
+   The public-search release requires `search:read.public`. Its template uses a
+   preregistered Slack app. Slack's resource is `https://mcp.slack.com` and its
+   OAuth endpoints are on `slack.com`.
 2. **Connect.** The Driver calls SDK `auth()` with the approved scopes and an
    `OAuthClientProvider` backed by the version's client registration. It checks
-   discovered destinations against that version before redirecting the user or
-   sending credentials. Token requests go directly to the pinned endpoint with
-   redirects disabled. A change requires a new version and consent.
+   the SDK's consent URL against the approved destination and scope set before
+   redirecting the user. Token requests go directly to the pinned endpoint with
+   redirects disabled. Changed destinations require a new version and consent.
+   Newly advertised scopes do not change an existing grant.
+   If a later challenge requires additional scopes, the owner can reconnect
+   after an administrator approves them in a new version.
    The Driver keeps the PKCE verifier and SDK discovery state in the private
    authorization session. OCC checks the initiating user, Agent, and single-use
    callback state, and forwards the callback's optional `iss` to the Driver. The
@@ -66,14 +74,16 @@ server configuration. The owner connects their account through **Connect**.
    until it supports that handoff of prepared access tokens.
 
 Verify the adapter against a controlled MCP server and issuer. Observe the same
-resource on consent, exchange, and refresh, and only the approved scope on consent.
+resource on consent, exchange, and refresh. With a scoped challenge, verify the
+SDK proposes that scope. Without one, verify it proposes the resource's advertised
+scopes and the consent URL requests only the set approved for the version.
 Change the advertised token endpoint and verify it receives no secret or code.
 An invalid callback issuer must fail before exchange, and a broader scope in a
 token response must keep that token out of egress.
 After rotation, the same worker placeholder must reach the server with the second
 access token. Separately verify a live Slack search when a test account is available.
 
-[SDK OAuth client](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts) · [Slack protected resource](https://mcp.slack.com/.well-known/oauth-protected-resource) · [Slack authorization server](https://mcp.slack.com/.well-known/oauth-authorization-server) · [Slack token response](https://docs.slack.dev/reference/methods/oauth.v2.user.access/#response)
+[MCP scope selection](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#scope-selection-strategy) · [SDK OAuth client](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts) · [Slack protected resource](https://mcp.slack.com/.well-known/oauth-protected-resource) · [Slack authorization server](https://mcp.slack.com/.well-known/oauth-authorization-server) · [Slack token response](https://docs.slack.dev/reference/methods/oauth.v2.user.access/#response)
 
 ### Client registrations
 

@@ -106,10 +106,10 @@ Namespace.
 
 Each version has an authorization protocol. Existing templates default to
 `oauth2` and keep their configured endpoints. With `mcp_oauth`, the administrator
-selects the MCP server URL, a registered client, and the requested scopes. The
-Driver discovers the resource, issuer, and endpoints for the administrator to
-approve with the version. Both protocols use the same **Connect** action,
-personal Agent binding, and reconnect/disconnect lifecycle. See the
+selects the MCP server URL and a registered client. The SDK discovers the
+resource, issuer, endpoints, and proposed scopes. The administrator can narrow
+the scopes and approves the resulting version. Both protocols use the same
+**Connect** action, personal Agent binding, and reconnect/disconnect lifecycle. See the
 [MCP authorization contract](contracts.md#mcp-authorization).
 
 OCC rejects non-HTTPS URLs. Where OpenShell supplies a configured list of tool
