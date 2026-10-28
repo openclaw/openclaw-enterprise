@@ -201,11 +201,10 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
   // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
-  // the Gateway security defaults the Configuration leaves unset.
+  // the Gateway security default the Configuration leaves unset (apply_patch in the workspace).
   const values = (sandbox, approvalsReviewer) => ({
     ...settings(sandbox, approvalsReviewer),
     agents: { entries: { main: { identity: { name: record.name } } } },
-    messages: { queue: { allowCollaborativeSteering: false } },
     tools: { exec: { applyPatch: { workspaceOnly: true } } },
   });
   const configured = settings("read-only");
@@ -245,9 +244,17 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   assert.equal(matches(beforeDefaults, "rev_saved"), true, "a saved revision from before the fill");
   assert.equal(matches(beforeDefaults), false, "a new deployment carries the defaults");
   assert.equal(
-    matches({ ...values("danger-full-access"), messages: { queue: {} } }),
+    matches({ ...values("danger-full-access"), tools: { exec: { applyPatch: {} } } }),
     false,
     "a missing default is drift",
+  );
+  assert.equal(
+    matches({
+      ...values("danger-full-access"),
+      messages: { queue: { allowCollaborativeSteering: false } },
+    }),
+    false,
+    "admission leaves collaborative steering unset, so a strict value is drift",
   );
   assert.deepEqual(prior, values("workspace-write"), "reading never rewrites a frozen revision");
   assert.deepEqual(configured, settings("read-only"), "reading never rewrites configured settings");

@@ -232,9 +232,12 @@ transform a copy through `configureAgent` before admission; the reusable
 Configuration and its generation remain unchanged. The snapshot adds the
 [Agent display name](agents/deployment.md#versions-and-deployment) to that document;
 its metadata names the source generation. Admission also sets
-`messages.queue.allowCollaborativeSteering: false` and
-`tools.exec.applyPatch.workspaceOnly: true` where the document leaves them
-unset, the values from before OpenClaw's `personal` security preset.
+`tools.exec.applyPatch.workspaceOnly: true` where the document leaves it
+unset, the value from before OpenClaw's `personal` security preset. Other
+unset settings get the preset's defaults, such as
+`messages.queue.allowCollaborativeSteering: true`: another participant can
+steer a running turn, which keeps the first requester's permissions. Set it
+to `false` to run their messages as separate turns.
 Subsequent Configuration updates do not change a
 running gateway or existing version; only a later explicit deployment observes
 the next generation. Deleting a Configuration still referenced by an Agent

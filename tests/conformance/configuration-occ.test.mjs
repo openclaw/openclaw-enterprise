@@ -1172,11 +1172,12 @@ test("Agent deployment keeps the display name its Configuration sets", async () 
   assert.deepEqual(revision.configuration, admittedConfiguration(values, "info"));
 });
 
-// OpenClaw's default personal security preset fills these two settings when they are unset: it
-// lets another participant steer a running turn under the first requester's authority and lets
-// apply_patch write outside the workspace. Admission keeps the earlier values in the document every
-// Compute Driver renders, for embedded and dedicated Gateways; the Configuration's value wins.
-test("deployment admission keeps the earlier steering and apply_patch defaults unless the Configuration sets them", async () => {
+// OpenClaw's default personal security preset fills unset settings: it lets another participant
+// steer a running turn under the first requester's authority and lets apply_patch write outside
+// the workspace. Admission keeps apply_patch in the workspace in the document every Compute Driver
+// renders, for embedded and dedicated Gateways, and leaves steering unset so the preset's default
+// (on) applies. The Configuration's value wins for both, so a strict Configuration stays strict.
+test("deployment admission keeps apply_patch in the workspace and leaves steering to the Configuration", async () => {
   const { agent, configuration, controller, namespace } = await fixture();
   const codexValues = {
     agents: {
@@ -1208,17 +1209,17 @@ test("deployment admission keeps the earlier steering and apply_patch defaults u
     ["embedded", configuration.values],
     ["dedicated", codexValues],
   ]) {
-    // Unset: admission fills each setting and keeps the settings beside it.
+    // Unset: admission fills workspaceOnly, keeps the settings beside it, and adds no steering
+    // value, so the Gateway's preset turns collaborative steering on.
     const filled = await deploy(
       { ...base, messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
       executionMode,
     );
     assert.equal(filled.harness.mode, executionMode);
-    assert.deepEqual(filled.configuration.messages, {
-      queue: { mode: "collect", allowCollaborativeSteering: false },
-    });
+    assert.deepEqual(filled.configuration.messages, { queue: { mode: "collect" } });
     assert.deepEqual(filled.configuration.tools, { exec: { applyPatch: { workspaceOnly: true } } });
-    // Explicit values of either kind reach the Gateway as written.
+    // Explicit values of either kind reach the Gateway as written: an explicit steering `false`
+    // (strict) is kept, not replaced by the preset's default.
     for (const [allowCollaborativeSteering, workspaceOnly] of [
       [true, false],
       [false, true],
@@ -1237,14 +1238,14 @@ test("deployment admission keeps the earlier steering and apply_patch defaults u
       });
     }
   }
-  // Like the preset, admission fills only unset settings. A value of the wrong type stays for
-  // the Gateway's own validation, which refuses it at startup, so it cannot loosen the setting.
-  const invalid = await deploy(
-    { ...codexValues, messages: { queue: { allowCollaborativeSteering: "no" } }, tools: ["read"] },
-    "dedicated",
-  );
-  assert.deepEqual(invalid.configuration.messages, { queue: { allowCollaborativeSteering: "no" } });
-  assert.deepEqual(invalid.configuration.tools, ["read"]);
+  // Like the preset, admission fills only unset settings. A value of the wrong type, or a
+  // non-object on the path, stays for the Gateway's own validation, which refuses it at startup,
+  // so it cannot loosen the setting.
+  for (const tools of [{ exec: { applyPatch: { workspaceOnly: "no" } } }, ["read"]]) {
+    const invalid = await deploy({ ...codexValues, tools }, "dedicated");
+    assert.deepEqual(invalid.configuration.tools, tools);
+    assert.equal(invalid.configuration.messages, undefined);
+  }
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {
