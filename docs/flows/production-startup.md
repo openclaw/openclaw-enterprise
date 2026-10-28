@@ -128,9 +128,8 @@ Use the default 9464.
 refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persistence.
 IPv4 admission does not establish TLS.
 `validateSandboxDomain` refuses numeric/hex suffixes, including canonical IPv4.
-Correct Helm values and Installation YAML with the
-[hostname correction procedure](../guides/deploy/breaking-changes-before-2026-10-15.md#2026-10-14-gateway-hostnames-must-not-be-rewritten-ipv4)
-before upgrade/restart.
+Correct Helm values and Installation YAML before upgrade/restart; see
+[values the candidate refuses](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
 rejects invalid Kubernetes peer maps, preserving null/empty semantics and accepted labels.

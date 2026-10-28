@@ -78,8 +78,7 @@ leading zeros; shorthand, hex, a single integer, a leading zero, or any `@`
 before the host stops API and worker startup with log code
 `OBSERVABILITY_URL_INVALID` until you correct the URL and restart. A tab, newline,
 or a backslash before the query is refused the same way; a backslash in the query
-stays. A DNS name is unchanged. See the
-[breaking-change notice](../guides/deploy/breaking-changes.md). Unknown fields
+stays. A DNS name is unchanged. Unknown fields
 fail startup. The API exposes the URL only after an
 Installation `administer` check; the console hides the link when unset or
 unauthorized. The destination handles its own authentication. This setting does
