@@ -120,7 +120,8 @@ export async function runDocker(args, options = {}, input) {
 
 // Runs a docker command. A failure rejects with dockerCommandFailure's error. A command that
 // creates a container, volume or network labels it with this process as owner, so a signal
-// that stops the test still removes it (docker-test-owner.mjs).
+// that stops the test still removes it (docker-test-owner.mjs). Failures name the caller's
+// arguments, without the label.
 export async function runDockerCommand(dockerBin, dockerArgs, options = {}, input) {
   const args = withTestOwnerLabel(dockerBin, dockerArgs);
   const { redact = [], ...execOptions } = options;
@@ -144,7 +145,7 @@ export async function runDockerCommand(dockerBin, dockerArgs, options = {}, inpu
   try {
     [result] = await Promise.all([command, inputComplete]);
   } catch (error) {
-    throw dockerCommandFailure(error, args, {
+    throw dockerCommandFailure(error, dockerArgs, {
       timeout,
       elapsedMs: Date.now() - startedAt,
       redact,
