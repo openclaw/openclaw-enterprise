@@ -5178,8 +5178,9 @@ export async function renderAgentDetail(
   function renderDraftConfigurationEditor(context: DetailContext, data: DraftDetails) {
     const { snapshot, values, setDraftEditorState } = data;
     const container = element("div", { className: "configuration-draft-editor" });
-    // The JSON editor and its actions; the collaboration and safety toggles above it stay in
-    // place while it rerenders, so a toggle keeps focus.
+    // The JSON editor and its actions. The collaboration and safety toggles below it stay in
+    // place while it rerenders, so a toggle keeps focus; the editor keeps its place at the top,
+    // where Edit current Configuration brings it into view (finding 2061).
     const body = element("div", {});
     // Each toggle stages its change in the Configuration JSON, through the same draft and save
     // checks as a JSON edit, as Enable gateway password access does.
@@ -5189,12 +5190,14 @@ export async function renderAgentDetail(
         if (editing) {
           editor.dispatchEvent(new Event("input"));
         } else {
+          // The editor opens above the toggle the reader just used, which stays in view.
           editing = true;
           render();
+          (document.activeElement as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
         }
       },
     });
-    container.append(safety.node, body);
+    container.append(body, safety.node);
     const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
@@ -5333,7 +5336,7 @@ export async function renderAgentDetail(
 
     function safetyUnavailable(readable: boolean) {
       if (!editing && configurationReadOnly()) {
-        // The read-only note below names the grant to ask for.
+        // The read-only note above names the grant to ask for.
         return "These settings are read-only with your access.";
       }
       if (pending) {

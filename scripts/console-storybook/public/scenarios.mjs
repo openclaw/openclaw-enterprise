@@ -4484,7 +4484,7 @@ export const scenarios = {
     readOnlyPermissionSummary: true,
     collaborativeSteering: false,
     description:
-      "A viewer sees the saved strict settings, with every toggle unavailable and the reason linked to each. The note under them names the grant to ask for.",
+      "A viewer sees the saved strict settings, with every toggle unavailable and the reason linked to each. The note above them names the grant to ask for.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   pluginsUpdateDenied: {
