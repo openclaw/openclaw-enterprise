@@ -4452,6 +4452,41 @@ export const scenarios = {
     description:
       "A pending save blocks further Configuration edits and deployment; a timed-out write requires draft readback.",
   },
+  gatewaySafety: {
+    group: "Pages/Agent detail",
+    name: "Collaboration and safety settings",
+    path: draft,
+    deployed: true,
+    description:
+      "The Configuration tab shows the Gateway collaboration and safety settings a deployment runs with. By default, other participants can steer a running turn, and apply_patch changes files only in the workspace.",
+    steps: [
+      "Read each toggle's state and where it comes from: Default: on.",
+      "Turn on Strict mode. The Configuration JSON opens with both locked-down values written, and focus stays on Strict mode.",
+      "Turn steering back on. Its value leaves the JSON and Strict mode turns off. Cancel, or Save Configuration and deploy a new version.",
+    ],
+    gap: "Simulated UI proof; does not show a deployed Gateway steering a turn.",
+  },
+  gatewaySafetyStrict: {
+    group: "Pages/Agent detail",
+    name: "Strict mode staged in the Configuration JSON",
+    path: draft,
+    deployed: true,
+    actions: [{ selector: "#gateway-safety-strict", click: true }],
+    description:
+      "Strict mode writes every locked-down value into the Configuration JSON; Save Configuration keeps them, and the next deployment applies them.",
+    gap: "Simulated UI proof; does not show a deployed Gateway steering a turn.",
+  },
+  gatewaySafetyReader: {
+    group: "Pages/Agent detail",
+    name: "Collaboration and safety, viewer can only read",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    collaborativeSteering: false,
+    description:
+      "A viewer sees the saved strict settings, with every toggle unavailable and the reason linked to each. The note under them names the grant to ask for.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   pluginsUpdateDenied: {
     group: "Pages/Agent detail",
     name: "Plugin selections, viewer cannot update the Agent",

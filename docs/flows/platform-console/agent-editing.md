@@ -119,6 +119,9 @@ Success focuses **Edit Configuration** unless the reader moved focus during the 
 `OPENCLAW_GATEWAY_PASSWORD`, changing nothing else; **Cancel** discards it. Kubernetes
 `gatewayConfiguration` recognizes the reference; `deployment` supplies the password.
 
+**Collaboration and safety** toggles (`agents/gateway-safety.mts`) write the edited document
+into the same editor. Unset values come from OCC's `admitGatewaySecurityDefaults`, else OpenClaw's preset.
+
 Saves preserve scroll, focus and admitted snapshots. Rejected edits stay;
 an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read

@@ -213,6 +213,10 @@ Browsing never deploys. Deploy credential changes; workspace edits apply immedia
 Native JSON omits Agent-owned Backend and execution mode. See [versions and Slack
 sender access](../reference/console/versions-and-channel-drafts.md).
 
+In **Collaboration and safety**, Strict mode stages both locked-down values in the
+Configuration JSON and keeps focus; the viewer story shows every toggle unavailable.
+None proves a deployed Gateway's steering.
+
 In **Enable gateway password access**, Cancel discards the staged reference.
 To apply it, save Configuration, then deploy. Compare configured, save-denied,
 and save-in-progress stories; none proves credential delivery or login.
