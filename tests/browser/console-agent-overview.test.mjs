@@ -21,6 +21,7 @@ import {
   AGENT_READ,
   apiRequests,
   asksBeforeUnload,
+  chooseRevision,
   consoleViewports,
   denyRevisionRead,
   deploymentStatusResponse,
@@ -77,12 +78,157 @@ const browser = fileBrowser();
 const overviewApp = fileConsoleApp();
 const readyNamespace = fileReadyNamespace(overviewApp);
 
+test("Revision workspace keeps the selected section and exact snapshot in its connected detail", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Revision workspace",
+    "Revision workspace",
+  );
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("v2", { channels: { slack: { enabled: false, mode: "socket" } } }),
+  );
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("draft"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration"),
+  );
+  const context = page.locator(".agent-version-detail .agent-revision-context");
+  await context.getByRole("heading", { level: 2, name: "Revision v1", exact: true }).waitFor();
+  const sections = page.getByRole("tablist", { name: "Agent sections", exact: true });
+  assert.deepEqual(await sections.getByRole("tab").allTextContents(), [
+    "Revisions",
+    "Workspace files",
+    "Access",
+  ]);
+  assert.equal(await context.getByRole("tab", { name: "Workspace files", exact: true }).count(), 0);
+  assert.equal(await context.getByRole("tab", { name: "Access", exact: true }).count(), 0);
+  assert.equal(await page.locator("#revision-selector").isVisible(), false);
+  const sidebarBounds = await page.locator(".revision-selector").boundingBox();
+  const detailBounds = await page.locator(".agent-version-detail").boundingBox();
+  assert.ok(sidebarBounds && detailBounds);
+  assert.ok(
+    sidebarBounds.x + sidebarBounds.width <= detailBounds.x,
+    "the version list sits beside its detail",
+  );
+  assert.equal(
+    await page
+      .locator(`.agent-revision-list [data-revision="${first.revision.id}"]`)
+      .getAttribute("aria-current"),
+    "true",
+  );
+
+  // Browsing history preserves the user's revision section and reads each admitted snapshot.
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  const slack = page.locator(".channel-card").filter({ hasText: "Slack" });
+  await slack.getByText("Not configured", { exact: true }).waitFor();
+  for (const [revision, status] of [
+    [second.revision, "Disabled"],
+    [first.revision, "Not configured"],
+  ]) {
+    await chooseRevision(page, revision.id);
+    await context
+      .getByRole("heading", { name: `Revision v${revision.revision}`, exact: true })
+      .waitFor();
+    await page.getByRole("tab", { name: "Channels", exact: true, selected: true }).waitFor();
+    await slack.getByText(status, { exact: true }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("tab"), "channels");
+  }
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  for (const [revision, marker] of [
+    [first.revision, "v1"],
+    [second.revision, "v2"],
+  ]) {
+    await chooseRevision(page, revision.id);
+    await context
+      .getByRole("heading", { name: `Revision v${revision.revision}`, exact: true })
+      .waitFor();
+    await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+    await page.getByText("View admitted native configuration", { exact: true }).click();
+    await page.getByText(`"marker": "${marker}"`, { exact: false }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("revision"), revision.id);
+  }
+
+  // Logs cannot describe a draft. Agent-wide sections return to its Configuration.
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await chooseRevision(page, "draft");
+  await context.getByRole("heading", { name: "Build next revision", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+  for (const name of ["Workspace files", "Access"]) {
+    await sections.getByRole("tab", { name, exact: true }).click();
+    await sections.getByRole("tab", { name, exact: true, selected: true }).waitFor();
+    assert.equal(await context.isVisible(), false);
+    await sections.getByRole("tab", { name: "Revisions", exact: true }).click();
+    await context.getByRole("heading", { name: "Build next revision", exact: true }).waitFor();
+    await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+  }
+
+  // A draft-only section is a normal selection change, so its snapshot fallback is quiet.
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
+  await chooseRevision(page, first.revision.id);
+  await context.getByRole("heading", { name: "Revision v1", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+  assert.equal(await page.locator(".agent-tab-notice").isVisible(), false);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator("#revision-selector").isVisible(), true);
+  assert.equal(await page.locator(".agent-revision-list").isVisible(), false);
+  await chooseRevision(page, second.revision.id);
+  await context.getByRole("heading", { name: "Revision v2", exact: true }).waitFor();
+  assert.equal(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    ),
+    true,
+  );
+});
+
 async function agentPage(t, namespaceName, agentName, fixtureOptions) {
   const { fixture, namespace } = await readyNamespace(t, namespaceName, fixtureOptions);
   const agent = await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
   const { page } = await newPage(t, fixture, { browser });
   return { fixture, namespace, agent, page };
 }
+
+test("A historical revision's context reflects the failed outcome from its first record read", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Historical outcome",
+    "Historical outcome",
+  );
+  const historical = await fixture.deployAgent(namespace.id, agent.id);
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // The fixture's real version list has no worker outcome. Hold the historical record's
+  // supported response so the context first renders before learning that deployment failed.
+  const record = await holdRequests(
+    t,
+    page,
+    deploymentRecordUrl(fixture, namespace.id, agent.id, historical.id),
+    {
+      once: true,
+      fulfill: deploymentStatusResponse(historical, {
+        status: "failed",
+        error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+      }),
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, historical.id, "configuration"),
+  );
+  await record.requested;
+  const state = page.locator(".agent-revision-context .agent-revision-state");
+  await state.waitFor();
+  assert.equal(await state.textContent(), "Historical");
+  record.release();
+  await page.locator(".version-selection-notice").filter({ hasText: "Failed version" }).waitFor();
+  assert.equal(await state.textContent(), "Failed");
+});
 
 // A runtime log Compute Driver with the Agent runtime log API enabled.
 function runtimeLogs() {
@@ -347,7 +493,7 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
   const rail = page.locator(".revision-selector");
   await rail
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { name: /^v1(?: ·|$)/ })
+    .getByRole("option", { includeHidden: true, name: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   // A second deploy makes v2 the latest version, whose record is the one the list reads.
   await fixture.deployAgent(namespace.id, agent.id);
@@ -358,12 +504,12 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
     .waitFor({ state: "attached" });
   await rail
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { name: /^v1(?: ·|$)/ })
+    .getByRole("option", { includeHidden: true, name: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   assert.equal(
     await rail
       .getByLabel("Viewing version", { exact: true })
-      .getByRole("option", { name: /^v1(?: ·|$)/ })
+      .getByRole("option", { includeHidden: true, name: /^v1(?: ·|$)/ })
       .textContent(),
     "v1 · Failed",
   );
@@ -382,7 +528,7 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
   });
   await rail
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { name: /^v1(?: ·|$)/ })
+    .getByRole("option", { includeHidden: true, name: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   assert.deepEqual(v1RecordReads, []);
   // Hold v1's record until v1's page and its notice show. The record that lands then must
@@ -399,12 +545,17 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
       }),
     },
   );
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(first.id);
+  await chooseRevision(page, first.id);
   await record.requested;
   // The shell keeps the old draft inert until this version reveals. Check the new page,
   // rather than matching both notices during that handoff.
   await page.locator(settledView).locator(".version-selection-notice").waitFor();
   record.release();
+  await page.locator(".version-selection-notice").filter({ hasText: "Failed version" }).waitFor();
+  assert.equal(
+    await page.locator(".agent-revision-context .agent-revision-state").textContent(),
+    "Failed",
+  );
   await expectVersionRecord(page, "Failed");
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   assert.equal(
@@ -413,7 +564,7 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
   );
   await rail
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { name: /^v1(?: ·|$)/ })
+    .getByRole("option", { includeHidden: true, name: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
 });
 
@@ -446,7 +597,7 @@ for (const [code, outcome] of [
     assert.equal(await v1.textContent(), "v1");
     assert.equal(await v1.textContent(), "v1");
 
-    await page.getByLabel("Viewing version", { exact: true }).selectOption(first.id);
+    await chooseRevision(page, first.id);
     await page
       .getByLabel("Viewing version", { exact: true })
       .locator("option:checked")
@@ -653,8 +804,9 @@ test("A failed first version's page says nothing runs and offers one Open draft"
   );
   // The header holds the action; the Versions list names the draft as one of its entries.
   assert.equal(await page.getByRole("button", { name: "Open draft", exact: true }).count(), 1);
-  await page.getByLabel("Viewing version", { exact: true }).selectOption("draft");
-  await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
+  await chooseRevision(page, "draft");
+  await page.getByRole("heading", { name: "Build next revision", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Deployment", exact: true, selected: true }).waitFor();
   await liveServing.getByText("Not running", { exact: true }).waitFor();
 });
 
@@ -1010,6 +1162,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
 
 test("A failed version raises no recovery while the current version is on no loaded page", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Paged history", "Paged history");
+  await page.setViewportSize({ width: 900, height: 900 });
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
   // v3 is current and serving, but this reader cannot read it; v2, the newest it can read,
@@ -1086,6 +1239,7 @@ test("A failed version raises no recovery while the current version is on no loa
 // one that was already shown (finding 2115).
 test("Load older versions preserves the viewed version and returns focus to its picker", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Paged viewed", "Paged viewed");
+  await page.setViewportSize({ width: 900, height: 900 });
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
   await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
@@ -1096,7 +1250,7 @@ test("Load older versions preserves the viewed version and returns focus to its 
     detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration"),
   );
   const chooser = page.getByLabel("Viewing version", { exact: true });
-  await chooser.waitFor();
+  await chooser.waitFor({ state: "attached" });
   assert.equal(await chooser.inputValue(), first.revision.id);
   const older = page.getByRole("button", { name: "Load older versions", exact: true });
   await older.click();
@@ -1989,9 +2143,13 @@ test("a failed version's banner does not move the overview on a slow link", asyn
         ),
       );
     assert.equal(await leadsOverview(), true);
-    const plugins = page.locator(".agent-tabs").getByRole("tab", { name: "Plugins", exact: true });
+    const plugins = page
+      .locator(".agent-tabs:not(.agent-scope-tabs)")
+      .getByRole("tab", { name: "Plugins", exact: true });
     await plugins.click();
-    await page.locator('.agent-tabs [aria-selected="true"]', { hasText: "Plugins" }).waitFor();
+    await page
+      .locator('.agent-tabs:not(.agent-scope-tabs) [aria-selected="true"]', { hasText: "Plugins" })
+      .waitFor();
     assert.equal(await leadsOverview(), true, "a tab change keeps the card above the overview");
   }
 });
@@ -2043,7 +2201,7 @@ test("a late first deployment read moves nothing above the version tabs", async 
             return node ? { top: rect.top + globalThis.scrollY, height: rect.height } : null;
           };
           return {
-            tabs: box(".agent-tabs").top,
+            tabs: box(".agent-tabs:not(.agent-scope-tabs)").top,
             overview: box(".agent-overview-status"),
             record: box(".version-deployment-record")?.height ?? 0,
             diagnostics: box(".version-diagnostics")?.height ?? 0,
@@ -2167,7 +2325,8 @@ function versionDetailInView() {
 const focusedTab = (page) =>
   page.evaluate(() => {
     const active = globalThis.document.activeElement;
-    return active?.closest(".agent-tabs") && active.getAttribute("aria-selected") === "true"
+    return active?.closest(".agent-tabs:not(.agent-scope-tabs)") &&
+      active.getAttribute("aria-selected") === "true"
       ? active.textContent
       : null;
   });
@@ -2475,10 +2634,11 @@ test("a deploy's details keep their queued height when its first claim starts", 
         .querySelector(".deployment-evidence-content")
         .getBoundingClientRect().height,
       tabs:
-        globalThis.document.querySelector(".agent-tabs").getBoundingClientRect().top +
-        globalThis.scrollY,
+        globalThis.document
+          .querySelector(".agent-tabs:not(.agent-scope-tabs)")
+          .getBoundingClientRect().top + globalThis.scrollY,
     }));
-  await page.getByRole("tab", { name: "Deployment", exact: true }).click();
+  await showDeploymentTab(page);
   const queued = await measure();
   await page.getByText(/^Eligible for next attempt:/).waitFor();
 
@@ -2596,7 +2756,7 @@ for (const viewport of [
     );
     // The version's Configuration tab shows its deployment record too: it names the outcome and
     // points at the card rather than repeating the error (finding 2368).
-    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Revisions", exact: true }).click();
     const versionRecord = await expectVersionRecord(page, "Failed");
     await versionRecord
       .getByText("The error and its next step are at the top of this page.", { exact: true })
@@ -2740,7 +2900,7 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
     .waitFor({ state: "attached" });
   await settled.waitFor();
   // Visit the draft through the page's own control, so leaving it retains its view.
-  await page.getByLabel("Viewing version", { exact: true }).selectOption("draft");
+  await chooseRevision(page, "draft");
   await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
   await settled.waitFor();
   await waitForIdleFetches(page);
@@ -2748,7 +2908,7 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
     globalThis.document.querySelector('.content [aria-live="polite"]').dataset.retainedTag =
       "draft";
   });
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(revision.id);
+  await chooseRevision(page, revision.id);
   await page
     .getByLabel("Viewing version", { exact: true })
     .locator("option:checked")
@@ -2983,16 +3143,14 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
     .locator("option:checked")
     .waitFor({ state: "attached" });
   await page.getByText("Current version · read-only admitted snapshot.", { exact: true }).waitFor();
-  const tabNames = () => page.getByRole("tab").allTextContents();
+  const tabNames = () => page.locator(".agent-revision-context").getByRole("tab").allTextContents();
   assert.deepEqual(await tabNames(), [
     "Configuration",
     "Plugins",
     "Channels",
-    "Workspace files",
     "Policy denials",
     "Deployment",
     "Logs",
-    "Access",
   ]);
   assert.equal(await page.getByRole("heading", { name: "Share Agent" }).count(), 0);
   assert.deepEqual(policyReads(), []);
@@ -3013,7 +3171,7 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
     [`/namespaces/${namespace.id}/iam/access-bindings`, `/namespaces/${namespace.id}/iam/roles`],
   );
 
-  // A draft's strip has the tab too, last; a link to it opens there after sign-in.
+  // Agent-wide access has its own section; a direct link opens it after sign-in.
   const second = (await newPage(t, fixture, { browser })).page;
   await login(second, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
   await second.getByRole("tab", { name: "Access", selected: true }).waitFor();
@@ -3022,7 +3180,15 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
     .getByRole("region", { name: "Share Agent", exact: true })
     .getByText("Current policy loaded.", { exact: true })
     .waitFor();
-  assert.equal((await second.getByRole("tab").allTextContents()).at(-1), "Access");
+  assert.equal(
+    (
+      await second
+        .getByRole("tablist", { name: "Agent sections", exact: true })
+        .getByRole("tab")
+        .allTextContents()
+    ).at(-1),
+    "Access",
+  );
 });
 
 // The sharing panel is built once per page with the page's own context, as it was on the
@@ -3049,6 +3215,7 @@ test("A share in flight finishes across a tab switch", async (t) => {
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await write.requested;
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "plugins");
   assert.equal(await panel.count(), 0);
@@ -3115,6 +3282,7 @@ test("A share in flight holds version and page changes until it finishes", async
   assert.equal(await shown.evaluate((node) => node.isConnected && !node.closest("[inert]")), true);
   // A tab switch keeps the page. Its active panel must still explain a refused leave,
   // including Deployment, which owns a separate panel.
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Deployment", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "deployment");
   await page.getByRole("link", { name: "← Agents" }).click();
@@ -3178,7 +3346,7 @@ test("A share in flight holds a Retry that would rebuild the page", async (t) =>
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await write.requested;
 
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
   const configurationUrl = page.url();
   const entries = await page.evaluate(() => globalThis.history.length);
@@ -3336,7 +3504,8 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   const draft = page.getByRole("heading", { name: "Configuration draft" });
   await draft.waitFor();
   const draftUrl = page.url();
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+  await chooseRevision(
+    page,
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v1(?: ·|$)/ })
@@ -3401,15 +3570,14 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
 });
 
-// A draft's next step (UX spec 3.7, plan D1): beside the Versions rail, a checklist whose steps
-// say what is done, then Deploy on the first screen with its status beside it. The deploy
-// explanation moved into the page's disclosure, and the empty Deployment activity card left.
+// The revision workspace keeps its heading and tabs above the draft checklist and deploy action.
+// The action stays reachable on both screen sizes, with pending work and denial reasons beside it.
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
-  test(`A draft's next-step card brings Deploy up at ${size}`, async (t) => {
+  test(`A draft's revision pane connects its tabs and deploy actions at ${size}`, async (t) => {
     const { fixture, namespace } = await readyNamespace(t, `Next step ${size}`);
     const agent = await fixture.createAgent(namespace.id, "Next Step Agent", nativeValues("v1"));
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
@@ -3454,9 +3622,9 @@ for (const viewport of [
         cardTop: box(doc.querySelector(".agent-draft-actions")).top,
         cardBottom: box(doc.querySelector(".agent-draft-actions")).bottom,
         railTop: box(doc.querySelector(".revision-selector")).top,
-        tabsTop: box(doc.querySelector(".agent-tabs")).top,
-        tabsWidth: box(doc.querySelector(".agent-tabs")).width,
-        layoutWidth: box(doc.querySelector(".agent-version-layout")).width,
+        tabsTop: box(doc.querySelector(".agent-tabs:not(.agent-scope-tabs)")).top,
+        tabsWidth: box(doc.querySelector(".agent-tabs:not(.agent-scope-tabs)")).width,
+        layoutWidth: box(doc.querySelector(".agent-version-detail")).width,
         primaries: doc.querySelectorAll(".content .button--primary:not(:disabled)").length,
         activityShown: [...doc.querySelectorAll(".deployment-status")].some((node) =>
           node.checkVisibility(),
@@ -3464,23 +3632,25 @@ for (const viewport of [
         innerHeight: globalThis.innerHeight,
       };
     });
-    // On the first screen at 1440x900; on a phone, within 1,100 px of the top (spec P7).
-    assert.ok(
-      viewport.width > 1100 ? layout.deployBottom <= layout.innerHeight : layout.deployTop < 1100,
-      JSON.stringify(layout),
-    );
     assert.equal(layout.primaries, 2, JSON.stringify(layout));
     assert.equal(layout.activityShown, false, "no empty Deployment activity card");
-    // The tabs run full width under the card, and the rail.
-    assert.ok(layout.tabsTop > layout.cardBottom, JSON.stringify(layout));
-    assert.equal(layout.tabsWidth, layout.layoutWidth);
+    // Revision tabs stay with the heading above the draft actions.
+    assert.ok(layout.tabsTop < layout.cardTop, JSON.stringify(layout));
+    assert.ok(layout.tabsWidth <= layout.layoutWidth, "revision tabs stay inside their pane");
     assert.ok(layout.cardTop > layout.railTop, JSON.stringify(layout));
     if (viewport.width > 1100) {
       assert.equal(layout.sameLine, true, JSON.stringify(layout));
     }
+    await deploy.scrollIntoViewIfNeeded();
+    const deployBounds = await deploy.boundingBox();
+    assert.ok(deployBounds, "the draft action can be brought into view");
+    assert.ok(deployBounds.y >= 0 && deployBounds.y + deployBounds.height <= viewport.height);
     // The draft's heading steps aside; the step names its Configuration instead.
     assert.equal(await page.getByRole("heading", { name: "Open draft" }).count(), 0);
-    await page.getByText(/^Saved · Configuration .* · generation 1$/).waitFor();
+    await page
+      .locator(".agent-draft-actions")
+      .getByText(/^Saved · Configuration .* · generation 1$/)
+      .waitFor();
 
     // What a deploy does is in the page's disclosure, once, and only beside the next step.
     const explanation =
@@ -3516,6 +3686,7 @@ for (const viewport of [
 // keeps focus on the same version (finding 2115).
 test("Version picker retains selection and focus while deployment outcomes change", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Version picker", "Picker Agent");
+  await page.setViewportSize({ width: 900, height: 900 });
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await fixture.deployAgent(namespace.id, agent.id);
   const latest = await fixture.deployAgent(namespace.id, agent.id);

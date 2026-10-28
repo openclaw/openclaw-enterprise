@@ -376,8 +376,13 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     );
   });
   await page
-    .getByRole("combobox", { name: "Viewing version", exact: true })
-    .getByRole("option", { name: "Draft · Editable Configuration", exact: true, selected: true })
+    .getByRole("combobox", { name: "Viewing version", exact: true, includeHidden: true })
+    .getByRole("option", {
+      includeHidden: true,
+      name: "Draft · Editable Configuration",
+      exact: true,
+      selected: true,
+    })
     .waitFor({ state: "attached" });
   await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
   await page.getByText("No version is currently selected for service.").waitFor();

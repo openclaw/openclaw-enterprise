@@ -216,8 +216,12 @@ for (const issuesEnabled of [true, false]) {
     assert.equal(status, "queued");
     await expectDeploymentOutcome(page, "Queued");
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-    const version = page.getByRole("combobox", { name: "Viewing version", exact: true });
-    await version.waitFor();
+    const version = page.getByRole("combobox", {
+      name: "Viewing version",
+      exact: true,
+      includeHidden: true,
+    });
+    await version.waitFor({ state: "attached" });
     assert.equal(await version.inputValue(), revision.id);
     await page
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })

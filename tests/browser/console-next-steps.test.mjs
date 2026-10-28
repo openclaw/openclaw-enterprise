@@ -264,7 +264,7 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1/ })
     .waitFor({ state: "attached" });
   assert.equal(await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).count(), 0);

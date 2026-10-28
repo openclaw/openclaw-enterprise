@@ -70,7 +70,9 @@ test("A reader who leaves the held heading during an admitted deployment is not 
       globalThis.document.activeElement?.tagName === "H1" &&
       globalThis.document.activeElement.isConnected &&
       !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
-      globalThis.document.querySelector(".agent-tabs [aria-selected=true]") !== null,
+      globalThis.document.querySelector(
+        ".agent-tabs:not(.agent-scope-tabs) [aria-selected=true]",
+      ) !== null,
   );
   const { trail } = await stopFocusTrail(page);
   assert.match(trail[0], /^P#\d+: Deploying…$/, trail.join(" | "));

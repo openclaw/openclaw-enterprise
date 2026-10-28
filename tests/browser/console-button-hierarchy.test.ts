@@ -654,8 +654,12 @@ test("The version picker names the service selection, and bindings and Namespace
   for (const viewport of consoleViewports) {
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await login(page, fixture, detailUrl(fixture, namespace.id, versioned.id));
-    const picker = page.getByRole("combobox", { name: "Viewing version", exact: true });
-    await picker.waitFor();
+    const picker = page.getByRole("combobox", {
+      name: "Viewing version",
+      exact: true,
+      includeHidden: true,
+    });
+    await picker.waitFor({ state: "attached" });
     assert.equal(await picker.locator("option:checked").textContent(), "v1 · Selected for service");
     assert.equal(
       await page

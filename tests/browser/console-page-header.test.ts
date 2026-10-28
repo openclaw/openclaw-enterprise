@@ -213,8 +213,13 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
     }
 
     // Replacing the rail with a picker must not introduce horizontal overflow on phones.
-    const picker = page.getByRole("combobox", { name: "Viewing version", exact: true });
-    const bounds = await picker.boundingBox();
+    const picker = page.getByRole("combobox", {
+      name: "Viewing version",
+      exact: true,
+      includeHidden: true,
+    });
+    const revisionControl = viewport.width > 1100 ? page.locator(".agent-revision-list") : picker;
+    const bounds = await revisionControl.boundingBox();
     assert.ok(bounds, `${size}: picker is visible`);
     assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width, `${size}: picker fits`);
 

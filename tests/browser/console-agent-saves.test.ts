@@ -22,6 +22,7 @@ import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/inde
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  chooseRevision,
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
@@ -557,7 +558,10 @@ for (const c of inPlaceCases) {
 
     await control.click();
     await page.getByRole("status").filter({ hasText: c.saved }).waitFor();
-    await page.getByText(/Configuration .* · generation 2$/).waitFor();
+    await page
+      .locator(".agent-draft-actions")
+      .getByText(/Configuration .* · generation 2$/)
+      .waitFor();
     await place.check();
     assert.equal(await focusedText(page), c.focus);
     if (c.described) {
@@ -735,7 +739,7 @@ test("Refresh sharing, the Configuration editor and the Create Agent shortcuts k
 
   // Edit Configuration opens the editor in place of the pressed button; the editor takes
   // focus instead of the document, without scrolling the page to fit it (finding 1620).
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   const edit = page.getByRole("button", { name: "Edit Configuration" });
   await edit.evaluate((node) => node.scrollIntoView({ block: "end" }));
   const editScroll = await page.evaluate(() => globalThis.scrollY);
@@ -2372,7 +2376,7 @@ test("Edit current Configuration opens the draft's Configuration editor in view 
   await page.waitForURL(/revision=draft/);
   await draftRead.requested;
   await page.waitForFunction(
-    () => globalThis.document.activeElement?.closest(".agent-tabs") !== null,
+    () => globalThis.document.activeElement?.closest(".agent-tabs:not(.agent-scope-tabs)") !== null,
   );
   draftRead.release();
   await draftEditorInView(page);
@@ -2380,9 +2384,7 @@ test("Edit current Configuration opens the draft's Configuration editor in view 
   // Unsaved edits keep the draft in its editor: going to v1 and back through Edit current
   // Configuration brings that editor, with the edits, into view and focus.
   await editor.fill(`${await editor.inputValue()}\n`);
-  await page
-    .getByRole("combobox", { name: "Viewing version", exact: true })
-    .selectOption(revision.id);
+  await chooseRevision(page, revision.id);
   await page.waitForURL((next) => next.searchParams.get("revision") === revision.id);
   await start.scrollIntoViewIfNeeded();
   await start.click();

@@ -293,16 +293,20 @@ test("every keyboard stop on Agents, Agent detail, its logs and Create Agent sho
       // to it rechecks the session, which could hold the next page inert under the first Tab.
       const { page } = await newPage(t, fixture, { browser, context: { viewport } });
       await login(page, fixture, path);
-      await page.getByRole(role, { name: landmark, exact: true }).waitFor();
+      const desktopRevision = title === "Agent detail" && viewport.width > 1100;
+      const actualRole = desktopRevision ? "button" : role;
+      const actualLandmark = desktopRevision ? "v1" : landmark;
+      const actualTag = desktopRevision ? "button" : tag;
+      await page.getByRole(actualRole, { name: actualLandmark, exact: false }).waitFor();
       await page.locator(settledView).waitFor();
-      await page.locator(settledView).locator(`${tag}:visible`).first().waitFor();
+      await page.locator(settledView).locator(`${actualTag}:visible`).first().waitFor();
       const stops = await tabStops(page);
       assert.ok(
-        stops.some(({ name }) => name === landmark),
+        stops.some(({ name }) => name.includes(actualLandmark)),
         `${label}: Tab reaches ${landmark} (${stops.map(({ name }) => name).join(", ")})`,
       );
       assert.ok(
-        stops.some((stop) => stop.tag === tag),
+        stops.some((stop) => stop.tag === actualTag),
         `${label}: Tab reaches a ${tag}`,
       );
       await assertVisibleRings(page, label, stops);
@@ -320,9 +324,13 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
   });
   await login(page, fixture, `${detail.pathname}${detail.search}`);
   await page.locator(settledView).waitFor();
-  const count = await page.getByRole("tab").count();
+  const revisionTabs = page.locator(".agent-revision-context").getByRole("tab");
+  const count = await revisionTabs.count();
   // The strip is one Tab stop; the arrows move through the rest.
-  const stops = await tabStops(page, ({ tag }) => tag === "tab");
+  await revisionTabs.first().focus();
+  const firstStop = await focusedRing(page);
+  assert.ok(firstStop, "the revision section has a visible focus ring");
+  const stops = [firstStop];
   for (let step = 1; step < count; step += 1) {
     await page.keyboard.press("ArrowRight");
     const stop = await focusedRing(page);

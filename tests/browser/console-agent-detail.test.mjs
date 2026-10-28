@@ -10,6 +10,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  chooseRevision,
   accessBindingPostRequests,
   accessibleDescription,
   AGENT_READ,
@@ -219,7 +220,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   });
   const url = detailUrl(fixture, namespace.id, agent.id, current.revision.id, "configuration");
   await login(page, fixture, url);
-  await page.getByLabel("Viewing version", { exact: true }).waitFor();
+  await page.getByLabel("Viewing version", { exact: true }).waitFor({ state: "attached" });
   await page
     .getByLabel("Viewing version", { exact: true })
     .locator("option:checked")
@@ -408,7 +409,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
     ).length >= 1,
   );
 
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+  await chooseRevision(
+    page,
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v2(?: ·|$)/ })
@@ -419,7 +421,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
     .filter({ hasText: pending.id })
     .waitFor({ state: "attached" });
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+  await chooseRevision(
+    page,
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v1(?: ·|$)/ })
@@ -468,7 +471,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByText("Most recent visible deployment · v3").waitFor();
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { name: /^v3(?: ·|$)/ })
+    .getByRole("option", { includeHidden: true, name: /^v3(?: ·|$)/ })
     .waitFor({ state: "attached" });
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await overview.nth(1).getByText("v3 · Queued").waitFor();
@@ -559,7 +562,7 @@ for (const unreadable of ["draft", "revision"]) {
     await page.getByRole("heading", { name: "Affected Agent", exact: true }).waitFor();
     await page
       .getByLabel("Viewing version", { exact: true })
-      .getByRole("option", { name: /^v1(?: ·|$)/ })
+      .getByRole("option", { includeHidden: true, name: /^v1(?: ·|$)/ })
       .waitFor({ state: "attached" });
     if (unreadable === "draft") {
       await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
@@ -598,7 +601,8 @@ for (const unreadable of ["draft", "revision"]) {
         ).length,
         0,
       );
-      await page.getByLabel("Viewing version", { exact: true }).selectOption(
+      await chooseRevision(
+        page,
         await page
           .locator("#revision-selector option")
           .filter({ hasText: /^v1(?: ·|$)/ })
@@ -1084,7 +1088,7 @@ test("Gateway password access saves the generated reference without changing adm
     first.revision.id,
   );
   assert.equal(nonAuthWriteRequests(requests).length, 1);
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await page.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
   assert.equal(await enable.count(), 0);
 
@@ -1156,14 +1160,15 @@ test("Agent detail preserves admitted revision history while draft edits change 
   requests.length = 0;
 
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/, () =>
     waitForIdleFetches(page),
   );
 
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+  await chooseRevision(
+    page,
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v2(?: ·|$)/ })
@@ -1177,7 +1182,8 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
   assertRevisionUrl(page, second.revision.id);
 
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+  await chooseRevision(
+    page,
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v1(?: ·|$)/ })
@@ -1289,7 +1295,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
-  await page.getByLabel("Viewing version").selectOption(second.revision.id);
+  await chooseRevision(page, second.revision.id);
   const requestedMode = page.locator(".configuration-summary dt", {
     hasText: "Requested Gateway managed mode",
   });
@@ -1312,7 +1318,10 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
   await page.getByRole("button", { name: "Save Configuration" }).click();
   assert.equal((await savedConfiguration).status(), 200);
-  await page.getByText(/generation 5/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/generation 5/)
+    .waitFor();
   const patched = configurationPatchRequests(requests, namespace.id, agent.configurationId);
   assert.deepEqual(
     patched.map((request) => request.body),
@@ -1327,7 +1336,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.deepEqual(currentConfiguration.data.values, editedValues);
   assert.deepEqual(currentConfiguration.data.secretBindings, secretBindings);
 
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/, () =>
@@ -1361,7 +1370,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
     .waitFor();
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.harnessAuth, null);
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await page
     .getByRole("link", {
       name: "Auth Revisioned Agent",
@@ -1385,7 +1394,10 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.match(await editor.inputValue(), /"marker": "cancel-server"/);
   await editor.fill(JSON.stringify(nativeValues("after-cancel")));
   await page.getByRole("button", { name: "Save Configuration" }).click();
-  await page.getByText(/generation 7/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/generation 7/)
+    .waitFor();
 
   // Saving an Agent setting preserves both an unsaved editor and a concurrent reassignment.
   await page.getByRole("button", { name: "Edit Configuration" }).click();
@@ -1769,7 +1781,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), editedPlugins);
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await page.waitForURL((current) => current.searchParams.get("revision") === first.revision.id);
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
@@ -3146,7 +3158,10 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   assert.equal(await page.getByRole("button", { name: "Save Configuration" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Reload draft" }).click();
-  await page.getByText(/generation 2/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/generation 2/)
+    .waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "after-unknown"').waitFor();
   assert.equal(interceptedPatches, 1);
@@ -3312,7 +3327,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByText(STOPPED_NO_VERSION).waitFor();
   assert.equal(await page.getByText(/deployment in progress is cancelled/).count(), 0);
 
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("button", { name: "Open draft", exact: true }).last().click();
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
@@ -3422,12 +3437,12 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   const unavailable = page.getByText(WORKSPACE_FILES_UNAVAILABLE, { exact: true });
   assert.equal(await file.count(), 0, "the mounted Workspace must release the old live editor");
   await unavailable.waitFor();
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(
     await page
-      .getByRole("combobox", { name: "Viewing version", exact: true })
-      .getByRole("option")
+      .getByRole("combobox", { name: "Viewing version", exact: true, includeHidden: true })
+      .getByRole("option", { includeHidden: true })
       .filter({ hasText: "Selected for service" })
       .count(),
     0,
@@ -4215,7 +4230,7 @@ test("a version editor without Agent update can recover a failed deployment from
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
   await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
-  await page.getByLabel("Viewing version", { exact: true }).waitFor();
+  await page.getByLabel("Viewing version", { exact: true }).waitFor({ state: "attached" });
   const summary = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   firstPermissions.release();
   const response = await summary;

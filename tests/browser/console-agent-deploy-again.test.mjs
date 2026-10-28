@@ -184,7 +184,10 @@ test("A failed Configuration read leaves Deploy again hidden and is not repeated
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
 
   // Role-agnostic: the tab strip's controls are buttons today and may become tabs.
-  await page.locator(".agent-tabs").getByText("Channels", { exact: true }).click();
+  await page
+    .locator(".agent-tabs:not(.agent-scope-tabs)")
+    .getByText("Channels", { exact: true })
+    .click();
   await page.waitForURL((next) => next.searchParams.get("tab") === "channels");
   await nextFrames(page);
   await nextFrames(page);
@@ -271,7 +274,7 @@ async function deployAgainWithHeldDraft(t, name) {
   await page.waitForFunction(
     () =>
       globalThis.document.querySelector(".agent-detail-pending") === null &&
-      globalThis.document.activeElement?.closest(".agent-tabs") &&
+      globalThis.document.activeElement?.closest(".agent-tabs:not(.agent-scope-tabs)") &&
       globalThis.document.activeElement.textContent === "Configuration",
   );
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).count(), 0);

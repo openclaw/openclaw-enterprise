@@ -250,7 +250,9 @@ test("a failed deployment's Logs link opens its version in view without reloadin
       "true",
     );
     await page.waitForFunction(() => {
-      const tab = globalThis.document.querySelector('.agent-tabs button[aria-selected="true"]');
+      const tab = globalThis.document.querySelector(
+        '.agent-tabs:not(.agent-scope-tabs) button[aria-selected="true"]',
+      );
       const panel = globalThis.document.querySelector(".agent-logs");
       if (!tab || !panel) {
         return false;
@@ -296,13 +298,17 @@ for (const viewport of [
     // Scroll after reading the overview, keeping the strip visible even when the compact
     // desktop summary already places it above the viewport's midpoint.
     await page.evaluate(() => {
-      const strip = globalThis.document.querySelector(".agent-tabs")!.getBoundingClientRect();
+      const strip = globalThis.document
+        .querySelector(".agent-tabs:not(.agent-scope-tabs)")!
+        .getBoundingClientRect();
       const target = Math.min(globalThis.innerHeight / 2, strip.top / 2);
       globalThis.scrollBy(0, strip.top - target);
     });
     const before = await page.evaluate(() => ({
       scrollY: globalThis.scrollY,
-      strip: globalThis.document.querySelector(".agent-tabs")!.getBoundingClientRect().top,
+      strip: globalThis.document
+        .querySelector(".agent-tabs:not(.agent-scope-tabs)")!
+        .getBoundingClientRect().top,
     }));
     assert.ok(before.scrollY > 0, "the page is scrolled before opening Logs");
     await logsTab.click();
@@ -314,7 +320,9 @@ for (const viewport of [
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
     const after = await page.evaluate(() => ({
       scrollY: globalThis.scrollY,
-      strip: globalThis.document.querySelector(".agent-tabs")!.getBoundingClientRect().top,
+      strip: globalThis.document
+        .querySelector(".agent-tabs:not(.agent-scope-tabs)")!
+        .getBoundingClientRect().top,
     }));
     assert.ok(
       Math.abs(after.strip - before.strip) <= 1,
@@ -380,21 +388,27 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
             observer.disconnect();
             resolve(globalThis.innerWidth);
           });
-          observer.observe(globalThis.document.querySelector(".agent-tabs")!);
+          observer.observe(
+            globalThis.document.querySelector(".agent-tabs:not(.agent-scope-tabs)")!,
+          );
         }),
     );
     assert.equal(rendered, width);
   }
 
   async function assertSelectedTabVisible(name: string) {
-    const selected = page.locator('.agent-tabs button[aria-selected="true"]');
+    const selected = page.locator(
+      '.agent-tabs:not(.agent-scope-tabs) button[aria-selected="true"]',
+    );
     assert.equal(await selected.textContent(), name);
     await page.waitForFunction(() => {
-      const button = globalThis.document.querySelector('.agent-tabs button[aria-selected="true"]');
+      const button = globalThis.document.querySelector(
+        '.agent-tabs:not(.agent-scope-tabs) button[aria-selected="true"]',
+      );
       if (!button) {
         throw new Error("Missing selected Agent tab");
       }
-      const strip = button.closest(".agent-tabs")!.getBoundingClientRect();
+      const strip = button.closest(".agent-tabs:not(.agent-scope-tabs)")!.getBoundingClientRect();
       const bounds = button.getBoundingClientRect();
       // Scroll extents are integer CSS pixels; DOMRects retain subpixels.
       // Keep the visibility check strict beyond that rounding uncertainty.
@@ -437,13 +451,15 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   await page.goBack();
   await page.getByRole("log", { name: "Runtime log output" }).waitFor();
   await resize(1440, 900);
-  const strip = await page.locator(".agent-tabs").elementHandle();
+  const strip = await page.locator(".agent-tabs:not(.agent-scope-tabs)").elementHandle();
   await waitForIdleFetches(page);
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
   assert.equal(await strip.evaluate((node) => node.isConnected), false);
   await page.goBack();
-  await page.locator('.agent-tabs button[aria-selected="true"]:enabled').waitFor();
+  await page
+    .locator('.agent-tabs:not(.agent-scope-tabs) button[aria-selected="true"]:enabled')
+    .waitFor();
   assert.equal(await strip.evaluate((node) => node.isConnected), true);
   await resize(390, 844);
   await assertSelectedTabVisible("Logs");

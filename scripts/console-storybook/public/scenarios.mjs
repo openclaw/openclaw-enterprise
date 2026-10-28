@@ -4049,8 +4049,9 @@ export const scenarios = {
     name: "First version",
     path: draft,
     steps: [
-      "Resize through desktop, tablet, and phone widths. Prepare this version sits beside Versions on a desktop and above it below 1,100 px. Each step shows a check when done or an open ring, with its detail line under the step text; Deploy new version stays on the first screen at 1440x900.",
-      "Focus the selected tab and press Left, Right, Home and End: focus moves between tabs without opening one. Enter opens the focused tab. Tab leaves the strip and Shift+Tab returns to the selected tab. At phone width the edge with more tabs past it fades.",
+      "At desktop width, confirm Draft sits in the history rail beside Build next revision. The heading and revision tabs come before Prepare this version and Deploy new version. Each checklist step shows a check when done or an open ring, with its detail line under the step text.",
+      "Focus Configuration in the revision tabs and press Left, Right, Home and End: focus moves without opening a tab. Enter opens it. Agent sections has its own tab list for Revisions, Workspace files and Access.",
+      "At 1,100 px or less, Viewing version replaces the history rail above Build next revision. At phone width, revision tabs scroll sideways and the edge with more tabs past it fades.",
     ],
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",
@@ -4066,7 +4067,7 @@ export const scenarios = {
     steps: [
       "Read Live serving in the summary: Not running.",
       "Read the notice above the Configuration snapshot: Failed version.",
-      "Find Open draft once, in the page header. The version picker names the draft as New version, Editable Configuration.",
+      "Find Open draft once, in the page header. Draft is a separate choice in revision history; opening it shows Build next revision with Draft context.",
     ],
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
@@ -4140,9 +4141,9 @@ export const scenarios = {
     revisionHistory: 3,
     earlierFailedVersion: 2,
     description:
-      "v2's deployment failed and v3 now serves. The version picker marks v2 from the list's own outcome, so the mark shows on load, before v2 is opened.",
+      "v2's deployment failed and v3 is selected for service. Revision history marks v2 from the list's own outcome, so the mark shows on load, before v2 is opened.",
     steps: [
-      'Check Viewing version: v3 includes "Selected for service" and v2 includes "Failed" without opening it; v1 has no outcome label.',
+      'Check revision history: v3 includes "Selected for service" and v2 includes "Failed" without opening it; v1 has no outcome label. At phone width, check the same labels in Viewing version.',
       "Reload the page: v2 keeps its Failed label.",
     ],
     gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
@@ -4152,19 +4153,68 @@ export const scenarios = {
     name: "Long version history",
     path: draft,
     deployed: true,
-    revisionHistory: 8,
-    revisionPageSize: 3,
+    revisionHistory: 32,
+    revisionPageSize: 12,
     // Each older page takes 1.5 s, so its loading state can be seen.
     rules: [{ suffix: "/revisions", queryParam: "cursor", delayMs: 1500 }],
     description:
-      "The version picker loads history one page at a time, newest first. Browsing does not deploy or roll back.",
+      "The desktop revision rail scrolls beside its connected detail panel and loads history one page at a time, newest first. Browsing does not deploy or roll back.",
     steps: [
-      "Open Viewing version and check Draft, v8, v7, and v6. Selected for service identifies the service target.",
+      "Check Draft and v32 through v21 in the desktop rail. Selected for service identifies v32. Select v30: Revision v30 and historical read-only context stay visible above its tabs.",
+      "On desktop, scroll the rail and the Configuration panel: history stays beside the detail panel, and the revision heading and tabs stay visible. On phones, the heading and tabs scroll together. Identifiers are collapsed under Revision details.",
       "Choose Load older versions. During the 1.5-second read the button keeps focus and ignores repeat activation.",
-      "When v5, v4, and v3 load, the button keeps focus. Load the final page; focus returns to Viewing version without changing the viewed version.",
-      "Choose v6, then Open draft. Neither action changes the version selected for service.",
+      "When v20 through v9 load, the button keeps focus. Load the final page; the viewed revision stays v30 and focus returns to a visible revision control.",
+      "Choose Open draft. Build next revision appears above the tabs and the deployment checklist follows them. The version selected for service stays v32.",
+      "At phone width, repeat selection and paging with Viewing version above the heading; the desktop rail is hidden.",
     ],
-    gap: "The fixture uses three versions per page; the API default is 50.",
+    gap: "Simulated history uses 12 versions per page; the API default is 50. This story does not prove deployment or runtime health.",
+  },
+  historicalRevisionWorkspace: {
+    group: "Pages/Agent detail",
+    name: "Historical revision workspace",
+    path: `${currentVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    description:
+      "A historical revision stays visibly separate from the current service target and the draft. Revision tabs belong to the selected snapshot; Workspace files and Access belong to the Agent.",
+    steps: [
+      "Check v7 is selected for service while Revision v6 is historical and read-only. Its history row stays selected; identifiers are collapsed under Revision details.",
+      "Open Plugins and choose v7 in the rail. Plugins stays selected. Open Logs, then choose Draft: Configuration opens with Build next revision and Draft context.",
+      "Choose Workspace files or Access in Agent sections. The revision selector and revision tabs disappear. Return to Revisions: Configuration opens.",
+      "Scroll the revision content and confirm the heading and tabs stay visible. Narrow to phone width and select a revision with Viewing version above the heading.",
+    ],
+    gap: "Simulated UI proof; no backend persistence or runtime execution.",
+  },
+  agentSections: {
+    group: "Pages/Agent detail",
+    name: "Agent sections",
+    path: `${currentVersion}&tab=workspace`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    description:
+      "Workspace files and Access are Agent sections outside the revision workspace. The URL can retain a historical revision while workspace files use the serving runtime.",
+    steps: [
+      "Workspace files is selected in Agent sections. No revision picker, Revision v6 heading, or revision tabs imply that the files belong to v6.",
+      "Choose Access and review Agent grants. Choose Revisions: Configuration opens for the selected saved revision with history and revision context restored.",
+      "Use Back and Forward to restore Workspace files and Access. Repeat at phone width; neither section gains a Viewing version selector.",
+    ],
+    gap: "Simulated UI proof; the fixture does not read a live Agent workspace or persist real IAM grants.",
+  },
+  mobileRevisionWorkspace: {
+    group: "Pages/Agent detail",
+    name: "Mobile revision workspace",
+    path: `${currentVersion}&tab=configuration`,
+    mobile: true,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    description:
+      "The phone layout uses Viewing version above Revision v6 and keeps the revision tabs with their context. The desktop history rail is hidden.",
+    steps: [
+      "Use Viewing version to choose v7, then Draft. Confirm the heading updates and Build next revision appears before the tabs and deployment checklist.",
+      "Scroll the revision tabs to the end and use keyboard Home and End. Focus stays visible beside the scroll fade.",
+      "Open Workspace files and Access in Agent sections; neither shows a revision picker. Return to Revisions and confirm Configuration opens.",
+    ],
+    gap: "Simulated UI proof only; no live runtime or device browser proof.",
   },
   draftAutomaticCredentials: {
     group: "Pages/Agent detail",
@@ -4227,7 +4277,7 @@ export const scenarios = {
   agentSharingHoldsNavigation: {
     group: "Pages/Agent detail",
     name: "Sharing holds navigation",
-    path: `${draft}&tab=configuration`,
+    path: `${revision}&tab=configuration`,
     deployed: true,
     rules: [
       {
@@ -4238,17 +4288,16 @@ export const scenarios = {
       },
     ],
     actions: [
-      { selector: "#revision-selector", value: "rev_00000000-0000-4000-8000-000000000001" },
       click("Access"),
       ...shareExistingPerson,
       { selector: 'a[data-nav="agents"]', click: true },
     ],
     description:
-      "The story opens a version from the draft, shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
+      "The story opens Access from a saved revision, shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
     steps: [
-      "While the note “This page stays open until sharing finishes.” shows, check that the version picker is disabled, and that ← Agents and Refresh keep the page. Select Reset story to replay the hold.",
+      "While the note “This page stays open until sharing finishes.” shows, Access remains an Agent section without a revision picker. ← Agents, Refresh, and Revisions keep the page and explain the pending write. Select Reset story to replay the hold.",
       "Open the preview in its own tab to try browser Back. While sharing, Back opens Configuration. Back again keeps that version open and explains why.",
-      "When the grants are written, the note goes, Direct Agent grants lists the new binding, and navigation is available again. If you tried Back above, Back now reaches the draft and Forward returns through Configuration to Access.",
+      "When the grants are written, the note goes, Direct Agent grants lists the new binding, and navigation is available again. If you tried Back above, Forward returns through Configuration to Access.",
     ],
   },
   agentSharingHoldsAfterDelete: {
@@ -4481,7 +4530,7 @@ export const scenarios = {
     steps: [
       "Read the notice: Version draft · read-only with your access.",
       "Find no Edit Configuration button; View native Configuration opens the saved JSON.",
-      "The draft card reads Version draft, with Deploy disabled and its reason, and no Prepare this version steps.",
+      "Build next revision and Draft context stay above the revision tabs. Deploy is disabled with its reason; no Prepare this version steps appear.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
@@ -4507,7 +4556,7 @@ export const scenarios = {
       "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
     steps: [
       "Read the notice: Version draft · read-only with your access.",
-      "The Versions entry reads Version draft with Read-only Configuration, and the draft card has no Prepare this version steps.",
+      "The Draft history row says Read-only. Build next revision stays above the revision tabs, and the draft card has no Prepare this version steps.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
@@ -4966,7 +5015,7 @@ export const scenarios = {
       "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
     steps: [
       'On arrival the notice begins "Deploying version" and Selected for service reads v6.',
-      "Before the status poll lands, focus Viewing version without changing its v7 selection.",
+      "Before the status poll lands, focus the selected v7 history row without changing selection. At phone width, focus Viewing version instead.",
       'Within about 5 s the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
     ],
   },
@@ -5296,7 +5345,7 @@ export const scenarios = {
     steps: [
       "Above the facts, the failure is one danger status block: a red stripe on a light red wash, the label DEPLOYMENT FAILED · V7, the title This Agent may be offline, and CONVERGENCE_DEADLINE_EXCEEDED in code at the end of the first sentence. Open v7 Logs is the page's one filled button; at 390 wide it spans the block.",
       "In Deployment details, the three step tiles are white cards with a light edge; only the failed Deployment work tile has a red wash, and each marker carries its step's colour.",
-      'In Viewing version, v7 includes "Failed" and v6 includes "Selected for service". The status summary also shows the latest failure.',
+      'In revision history, v7 includes "Failed" and v6 includes "Selected for service". At phone width, check the same labels in Viewing version. The status summary also shows the latest failure.',
       "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
       "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
     ],
@@ -5704,6 +5753,7 @@ export const scenarios = {
       "Deployment status reads take 4 s, longer than the page waits for them (about 2 s). The page shows with Deployment activity as one loading row; the in-progress record then fills that row as folded Deployment details, and Latest visible deployment reads v7 · In progress. Nothing above the version tabs moves.",
     steps: [
       "Reload at desktop and phone width and watch the version tabs: they stay in place when the record arrives, and v7's deployment record fills its two loading rows.",
+      "While the record loads, Revision v7 and its revision tabs remain in the detail panel beside desktop history, or below Viewing version on a phone.",
       "Open Deployment details to read the in-progress stages.",
     ],
   },
@@ -6122,6 +6172,7 @@ export const scenarios = {
     description:
       "Saved Agent plugin selections could not be read. The Agent header and version history remain visible; draft settings and deployment are unavailable. The admitted v1 snapshot is independently readable.",
     steps: [
+      "Build next revision and Draft context stay visible above the tabs. The unreadable-settings banner prevents draft editing and deployment without hiding Agent sections or revision history.",
       "Open Plugins, Channels, and Credentials. Each shows the saved-configuration banner, with no empty settings or editable defaults.",
       "Select v1 to inspect its admitted configuration, then return to Open draft to see the unreadable draft.",
     ],
@@ -6136,6 +6187,7 @@ export const scenarios = {
     description:
       "An admitted revision has unreadable plugin selections. Its identity and history remain visible while its saved settings show a repair banner. Deployment activity can fail separately because it still requires a valid snapshot.",
     steps: [
+      "The selected revision keeps its Revision v1 heading and revision tabs above the read error. Agent sections remain distinct from this snapshot.",
       "Open Plugins and confirm the invalid snapshot is not shown as empty JSON.",
       "Select Open draft. The healthy current draft remains editable independently of the unreadable historical snapshot.",
     ],
@@ -6359,6 +6411,10 @@ export const scenarios = {
     transport: false,
     description:
       "A previous version exists, but generated runtime credentials are missing. Deployment remains blocked pending operator recovery.",
+    steps: [
+      "Build next revision and its tabs come before the deployment checklist and missing-credential reason. The historical revision remains available in the desktop rail or phone selector.",
+      "Open the historical revision, then return to Draft. Browsing does not repair credentials or change the service target.",
+    ],
   },
   buildRevision: {
     group: "Components/Navigation",
@@ -7731,9 +7787,9 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     nativeAdmin: "available",
     description:
-      "Compact Agent status, a version picker, Deployment details, direct Agent UI access, and live workspace file roles.",
+      "Compact Agent status, connected revision history and detail, Deployment details, direct Agent UI access, and separate Agent sections for workspace files and access.",
     steps: [
-      "Browse v6 using Viewing version. The Agent UI target and Selected for service stay on v7.",
+      "Browse v6 in the desktop rail or phone Viewing version selector. Revision v6 says historical and read-only; the Agent UI target and Selected for service stay on v7.",
       "Open Deployment for historical records and diagnostics. Open Logs for runtime output.",
       "Open Workspace files. Choose each file, read its role, and edit one. Unsaved marks that file until Save or Reload.",
       "Open Agent UI directly in a new tab. Review the scope and Gateway managed-mode warning.",
@@ -8448,7 +8504,7 @@ export const scenarios = {
       "Edit saved settings while the current version stays unchanged; deploy a new immutable version.",
     steps: [
       "Open Edit Slack, paste CNEW123 into Channels and press Enter, then Save configuration.",
-      "Choose v1 in Viewing version and open Channels: it still has the original settings.",
+      "Choose v1 in revision history, or Viewing version at phone width, and open Channels: it still has the original settings.",
       "Select Open draft, then Deploy new version. The saved draft is deployed, not the viewed snapshot.",
       "Refresh deployment and inspect the new version. The prior snapshot remains readable.",
       "Workspace file edits are separate: they save immediately without a new revision.",

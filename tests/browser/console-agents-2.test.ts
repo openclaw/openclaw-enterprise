@@ -2084,11 +2084,11 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
   assert.equal(response.status(), 201);
   const { data } = await response.json();
   assert.equal(data.values.agents.defaults.models[model].params.temperature, 0);
-  const details = page.getByRole("combobox", {
-    name: "Viewing version",
-    exact: true,
-  });
-  await details.or(page.getByRole("alert").filter({ hasText: "Outcome unknown" })).waitFor();
+  const details = page.locator("#revision-selector");
+  await page
+    .locator(".agent-version-heading")
+    .or(page.getByRole("alert").filter({ hasText: "Outcome unknown" }))
+    .waitFor();
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.equal(
     agentPostRequests(requests, namespace.id).length,
@@ -2096,7 +2096,12 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
     "the matching saved Configuration was recognized",
   );
   await details
-    .getByRole("option", { name: "Draft · Editable Configuration", exact: true, selected: true })
+    .getByRole("option", {
+      name: "Draft · Editable Configuration",
+      exact: true,
+      selected: true,
+      includeHidden: true,
+    })
     .waitFor({ state: "attached" });
 });
 
@@ -2666,9 +2671,7 @@ for (const swapped of ["Agent", "service principal"]) {
       hasText: swapped === "Agent" ? "Outcome unknown" : "service principal could not be confirmed",
     });
     // If creation incorrectly continues to Agent details, inspect the actual grant before failing.
-    await warning
-      .or(page.getByRole("combobox", { name: "Viewing version", exact: true }))
-      .waitFor();
+    await warning.or(page.locator(".agent-version-heading")).waitFor();
     const saved = await fixture.request("GET", bindings);
     assert.equal(saved.status, 200);
     const grants: IAMAccessBindingWire[] = saved.data;

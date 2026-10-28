@@ -518,6 +518,16 @@ export async function revealNativeConfiguration(page, label) {
   await page.getByText(label).click();
 }
 
+export async function chooseRevision(page, revisionId) {
+  const selector = page.locator("#revision-selector");
+  await selector.waitFor({ state: "attached" });
+  if (await selector.isVisible()) {
+    await selector.selectOption(revisionId);
+  } else {
+    await page.locator(".agent-revision-list").locator(`[data-revision="${revisionId}"]`).click();
+  }
+}
+
 export function detailUrl(fixture, namespaceId, agentId, revision, tab) {
   const url = new URL(`/console/agents/${agentId}`, fixture.origin);
   url.searchParams.set("namespace", namespaceId);

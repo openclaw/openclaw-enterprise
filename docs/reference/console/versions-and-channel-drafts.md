@@ -1,8 +1,31 @@
 # Inspect Agent detail, versions, and channel drafts
 
 This page details the Agent detail page of the [platform console](../console.md):
-tabs and drafts, deployment details, diagnostics, authentication, versions, and the
-Slack channel editor with its Secret picker.
+revision browsing and drafts, deployment details, diagnostics, authentication,
+and the Slack channel editor with its Secret picker.
+
+Choose **Revisions** to inspect a saved Agent revision or build the next one.
+On desktop, the revision history sits beside its detail panel. The selected row
+and the **Revision vN** heading identify the viewed snapshot; its context states
+whether it is current or historical and read-only. **Selected for service** does
+not establish runtime health. The draft shows **Build next revision** with Draft
+context. Above 520 px, the heading and revision tabs stay visible while the panel
+scrolls. At phone widths, the heading and tabs scroll together with the content.
+At widths of 1,100 px or less, **Viewing version** replaces the history rail
+with a native selector above the heading.
+
+Saved revisions have **Configuration**, **Plugins**, **Channels**,
+**Deployment**, **Logs**, and **Policy denials** tabs. The draft also has
+**Repositories** and **Credentials**, but no **Logs**. Changing revisions keeps
+the selected tab when that destination supports it; otherwise it opens
+**Configuration**. The draft's deployment checklist follows its heading and tabs.
+Expand **Revision details** when you need the snapshot identifiers.
+
+**Workspace files** and **Access** are separate Agent sections beside
+**Revisions**. They apply to the Agent and show no revision picker. Workspace
+files use the serving runtime, not the snapshot last viewed in Revisions.
+Returning to **Revisions** opens **Configuration**. Existing tab links and
+Back/Forward navigation continue to work.
 
 Agent tabs change only their panel; Back/Forward restores the selected tab.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,

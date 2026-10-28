@@ -1060,7 +1060,10 @@ test("Agent deployment reports preflight errors and requires reload for changed 
   assert.equal(await deploy.isDisabled(), true);
   assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
   await page.reload();
-  await page.getByText(/generation 2/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/generation 2/)
+    .waitFor();
   await waitForEnabled(deploy);
   const authChange = await fixture.request("PATCH", path, {
     body: { configurationId: agent.configurationId, harnessAuth: null },
@@ -1155,7 +1158,10 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   // A submitted request whose outcome is unknown keeps Deploy disabled, so the failure takes
   // focus. The API's catch-all outage names no refusal (finding 1638).
   await page.reload();
-  await page.getByText(/generation 2/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/generation 2/)
+    .waitFor();
   const unknownOutcome = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
     once: true,
     method: "POST",
@@ -1185,7 +1191,10 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   // An admitted deployment shows one status while its request runs, and the status keeps
   // focus until the new version opens.
   await page.reload();
-  await page.getByText(/generation 2/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/generation 2/)
+    .waitFor();
   await page.evaluate(() => {
     const shown = [];
     const node = globalThis.document.querySelector(".agent-draft-actions p[role=status]");
@@ -1281,7 +1290,9 @@ for (const [scenario, heldRead, heldMs, reader] of [
         globalThis.document.activeElement?.tagName === "H1" &&
         globalThis.document.activeElement.isConnected &&
         !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
-        globalThis.document.querySelector(".agent-tabs [aria-selected=true]") !== null,
+        globalThis.document.querySelector(
+          ".agent-tabs:not(.agent-scope-tabs) [aria-selected=true]",
+        ) !== null,
     );
     const { trail, loadingShown } = await stopFocusTrail(page);
     if (heldRead !== "revision" && heldMs > 250) {
@@ -2313,7 +2324,10 @@ for (const action of ["disable", "drawer"]) {
     } finally {
       patch.release();
     }
-    await page.getByText(/Configuration .*generation 2/).waitFor();
+    await page
+      .locator(".agent-draft-actions")
+      .getByText(/Configuration .*generation 2/)
+      .waitFor();
     await waitForEnabled(deploy);
   });
 }
@@ -2353,7 +2367,10 @@ test("Channel save with a lost response blocks deployment until the draft is rel
     true,
   );
   await page.getByRole("button", { name: "Reload draft" }).click();
-  await page.getByText(/Configuration .*generation 2/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/Configuration .*generation 2/)
+    .waitFor();
   const saved = await fixture.request("GET", configurationPath);
   assert.equal(saved.data.values.channels.slack.enabled, false);
 });

@@ -394,7 +394,10 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
   } finally {
     held.release();
   }
-  await page.getByText(/Configuration .*generation 2/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/Configuration .*generation 2/)
+    .waitFor();
   // The refused traversal kept all four entries, so the same traversal now reaches the list.
   await page.evaluate(() => globalThis.history.go(-4));
   await heading(page, "Agents").waitFor();

@@ -113,7 +113,7 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
   await login(page, fixture, url);
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   const activity = await expectDeploymentOutcome(page, "In progress");
@@ -170,7 +170,7 @@ test("Deployment activity follows pending work until it records a result", async
   await login(page, fixture, url);
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   await expectDeploymentOutcome(page, "In progress");
@@ -220,7 +220,7 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   await login(page, fixture, url);
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   // The failure's card says nothing of the cleanup, so the details it would fold stay open and
@@ -296,7 +296,7 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
   );
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   const activity = await expectDeploymentOutcome(page, "In progress");
@@ -351,7 +351,7 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   await login(page, fixture, url.pathname + url.search);
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   const activity = await expectDeploymentOutcome(page, "In progress");
@@ -421,7 +421,7 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
   await login(page, fixture, url);
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   await showDeploymentTab(page);
@@ -642,7 +642,7 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   await login(page, fixture, url);
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   await showDeploymentTab(page);
@@ -1601,7 +1601,7 @@ test("An unknown Installation access answer keeps the Access tab", async (t) => 
   );
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   await showDeploymentTab(page);
@@ -1665,10 +1665,14 @@ test("Back to a refused Access tab opens Configuration", async (t) => {
   await page.getByRole("heading", { name: "Left Agent" }).waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   await read.requested;
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "plugins");
   read.release();
   await page.getByRole("tab", { name: "Access" }).waitFor({ state: "detached" });
+  await page.goBack();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
+  // Revisions added a Configuration entry; the next Back targets the refused Access entry.
   await page.goBack();
   await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
   await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
@@ -1831,7 +1835,7 @@ test("Agent detail reports a failed dedicated replacement as probably not servin
   await login(page, fixture, url);
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   const summary = page.locator(".agent-current-summary");
@@ -1867,7 +1871,7 @@ test("Agent detail reports a failed selected version as probably not serving", a
   await login(page, fixture, url);
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v2(?: ·|$)/ })
     .waitFor({ state: "attached" });
   const summary = page.locator(".agent-current-summary");
@@ -2210,7 +2214,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     await page.goto(urls.get(c.agent).href);
     await page
       .getByLabel("Viewing version", { exact: true })
-      .getByRole("option", { selected: true })
+      .getByRole("option", { includeHidden: true, selected: true })
       .filter({ hasText: /^v1(?: ·|$)/ })
       .waitFor({ state: "attached" });
     await expectNeutral(c, c.error.code);
@@ -2333,7 +2337,7 @@ test("Agent detail does not move shown sections when Deployment activity first s
   await page.locator(".agent-detail-pending").waitFor({ state: "attached" });
   // The version's own reads finish while Deployment activity's first read is still held.
   await page
-    .locator(".agent-version-heading", { hasText: "Version v1" })
+    .locator(".agent-version-heading", { hasText: "Revision v1" })
     .waitFor({ state: "attached" });
   assert.equal(await page.locator(".agent-detail-pending").count(), 1);
   assert.equal(await page.locator(".agent-version-layout").isVisible(), false);

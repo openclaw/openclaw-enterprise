@@ -15,6 +15,7 @@ import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  chooseRevision,
   AGENT_READ,
   apiRequests,
   detailUrl,
@@ -1194,7 +1195,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.match(new URL(expectedAccess.data.url).hostname, new RegExp(`\\.${nativeDomain}$`));
 
   // Viewing an older configuration snapshot must still open the current active gateway.
-  await page.getByLabel("Viewing version").selectOption(historicalRevisionId);
+  await chooseRevision(page, historicalRevisionId);
   await page.getByRole("link", { name: "Open Agent UI" }).waitFor();
   assertRevisionUrl(page, historicalRevisionId);
   assert.equal(
@@ -1791,7 +1792,7 @@ test("a tab refused after a revoke makes the next tab change read the page again
 
   // Back on Configuration, the page reads the Agent again and shows the refusal, not the
   // Configuration it read before the revoke.
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
   assert.equal(await page.locator(".agent-tabs").count(), 0);
   assert.equal(await page.locator(".version-selection-notice").count(), 0);
@@ -1991,7 +1992,7 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   const agentActions = await page.locator(".agent-toolbar-actions").elementHandles();
   assert.equal(agentActions.length, 1, "Agent detail mounted its page actions");
   const panels = await page
-    .locator("h1, .native-admin-access, .revision-selector, .agent-tabs")
+    .locator("h1, .native-admin-access, .revision-selector, .agent-scope-tabs")
     .elementHandles();
   const top = await page.evaluate(() => globalThis.scrollY);
   requests.length = 0;
@@ -2072,7 +2073,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
     requests.some((request) => request.path.endsWith("/revisions")),
     true,
   );
-  const tabs = await page.locator(".agent-tabs").elementHandle();
+  const tabs = await page.locator(".agent-tabs:not(.agent-scope-tabs)").elementHandle();
   let release;
   const gate = new Promise((resolve) => {
     release = resolve;
@@ -2089,6 +2090,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
     await gate;
     await route.fulfill({ response });
   });
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await held;
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
@@ -2104,6 +2106,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   );
   assert.equal(await page.getByRole("button", { name: "Configure Slack", exact: true }).count(), 0);
   assert.equal(await tabs.evaluate((node) => node.isConnected), true);
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Configure Slack", exact: true }).waitFor();
   assert.equal(requests.filter((request) => request.path === configurationPath).length, 1);
@@ -2121,7 +2124,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   const { page } = await newPage(t, fixture);
   await page.setViewportSize({ width: 1200, height: 800 });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
-  const list = page.getByRole("tablist", { name: "Agent configuration views" });
+  const list = page.getByRole("tablist", { name: "Selected revision details" });
   await list.waitFor();
   const names = [
     "Configuration",
@@ -2129,18 +2132,20 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     "Channels",
     "Repositories",
     "Credentials",
-    "Workspace files",
     "Policy denials",
     "Deployment",
-    "Access",
   ];
   assert.deepEqual(await list.getByRole("tab").allTextContents(), names);
   // Which tab is selected, which one is the Tab stop, which has focus, and the URL's tab=.
   const state = () =>
     page.evaluate(() => {
       const document = globalThis.document;
-      const tabs = [...document.querySelectorAll('[role="tablist"] [role="tab"]')];
-      const panel = document.querySelector('[role="tabpanel"]:not([hidden])');
+      const tabs = [
+        ...document.querySelectorAll('.agent-revision-context [role="tablist"] [role="tab"]'),
+      ];
+      const panel = document.querySelector(
+        '.agent-version-detail > [role="tabpanel"]:not([hidden])',
+      );
       return {
         selected: tabs
           .filter((tab) => tab.getAttribute("aria-selected") === "true")
@@ -2175,9 +2180,9 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   for (const [key, focused] of [
     ["ArrowLeft", "Plugins"],
     ["ArrowLeft", "Configuration"],
-    ["ArrowLeft", "Access"],
+    ["ArrowLeft", "Deployment"],
     ["ArrowRight", "Configuration"],
-    ["End", "Access"],
+    ["End", "Deployment"],
     ["Home", "Configuration"],
   ]) {
     await page.keyboard.press(key);
@@ -2206,8 +2211,9 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await page.waitForURL("**tab=plugins**");
   await page.waitForFunction(
     () =>
-      globalThis.document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ===
-      "Plugins",
+      globalThis.document.querySelector(
+        '.agent-revision-context [role="tab"][aria-selected="true"]',
+      )?.textContent === "Plugins",
   );
   const back = await state();
   // Focus was in the strip, so it follows the selection back to Plugins.
@@ -2225,7 +2231,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
   await list.waitFor();
-  const strip = page.locator(".agent-tabs");
+  const strip = page.locator(".agent-tabs:not(.agent-scope-tabs)");
   const edges = () =>
     strip.evaluate((node) => ({
       before: node.hasAttribute("data-more-before"),
@@ -2233,7 +2239,9 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
       masked: globalThis.getComputedStyle(node).maskImage !== "none",
     }));
   await page.waitForFunction(() =>
-    globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-after"),
+    globalThis.document
+      .querySelector(".agent-tabs:not(.agent-scope-tabs)")
+      .hasAttribute("data-more-after"),
   );
   assert.deepEqual(await edges(), { before: false, after: true, masked: true });
   // Back moves focus with the selection, and a focused tab stays in view when the strip
@@ -2258,13 +2266,14 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await list.getByRole("tab", { name: "Configuration", exact: true }).focus();
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
-  await page.waitForURL("**tab=access**");
+  await page.waitForURL("**tab=deployment**");
   await page.goBack();
   await page.waitForURL("**tab=configuration**");
   await page.waitForFunction(
     () =>
-      globalThis.document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ===
-      "Configuration",
+      globalThis.document.querySelector(
+        '.agent-revision-context [role="tab"][aria-selected="true"]',
+      )?.textContent === "Configuration",
   );
   await frames();
   assert.deepEqual(await focusedInView(), { name: "Configuration", inView: true }, "after Back");
@@ -2272,19 +2281,21 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await page.keyboard.press("End");
   await page.setViewportSize({ width: 360, height: 844 });
   await frames();
-  assert.deepEqual(await focusedInView(), { name: "Access", inView: true }, "after resize");
+  assert.deepEqual(await focusedInView(), { name: "Deployment", inView: true }, "after resize");
   await page.setViewportSize({ width: 390, height: 844 });
   await strip.evaluate((node) => {
     node.scrollLeft = node.scrollWidth;
   });
   await page.waitForFunction(() =>
-    globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-before"),
+    globalThis.document
+      .querySelector(".agent-tabs:not(.agent-scope-tabs)")
+      .hasAttribute("data-more-before"),
   );
   assert.deepEqual(await edges(), { before: true, after: false, masked: true });
   // Include enough desktop width for the additional policy tab to fit without scrolling.
   await page.setViewportSize({ width: 1800, height: 900 });
   await page.waitForFunction(() => {
-    const node = globalThis.document.querySelector(".agent-tabs");
+    const node = globalThis.document.querySelector(".agent-tabs:not(.agent-scope-tabs)");
     return !node.hasAttribute("data-more-before") && !node.hasAttribute("data-more-after");
   });
   assert.equal((await edges()).masked, false, "a strip that fits does not fade");
@@ -3369,7 +3380,7 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
     .selectOption("AGENTS.md");
   assert.equal(await file.inputValue(), "# Unsaved instructions\n");
   await page.setViewportSize({ width: 1200, height: 800 });
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
   assert.equal(await file.inputValue(), "# Unsaved instructions\n");
