@@ -1,0 +1,32 @@
+name: Interface sketches
+on:
+  push:
+    branches: [main, tools/interface-sketches]
+    paths: ["scripts/interface-sketches/**", ".github/workflows/interface-sketches.yml"]
+  pull_request:
+    paths: ["scripts/interface-sketches/**", ".github/workflows/interface-sketches.yml"]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: scripts/interface-sketches
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - run: npm install --global pnpm@11.15.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - name: Check that each preview matches its source
+        run: |
+          for source in examples/*.json; do
+            node render.ts "$source" "$RUNNER_TEMP/preview"
+            cmp "$RUNNER_TEMP/preview.png" "${source%.json}.png"
+          done
