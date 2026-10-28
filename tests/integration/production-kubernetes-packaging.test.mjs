@@ -3182,6 +3182,17 @@ test(
           "scripts/production-healthcheck.mjs",
           "worker",
         ]);
+        // Each probe starts Node inside the worker's CPU limit: a 1 s timeout restarted
+        // healthy workers on a busy node (finding 2789), and a slow boot gets the API's
+        // 2 min before liveness starts.
+        assert.equal(container.readinessProbe.timeoutSeconds, 5);
+        assert.equal(container.livenessProbe.timeoutSeconds, 5);
+        assert.deepEqual(container.startupProbe, {
+          exec: container.livenessProbe.exec,
+          timeoutSeconds: 5,
+          periodSeconds: 5,
+          failureThreshold: 24,
+        });
       }
     }
     assert.ok(!stdout.includes("OCC_INTERNAL_API_"));

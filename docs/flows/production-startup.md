@@ -186,6 +186,8 @@ After initialization, API readiness requires listener, Better Auth, database,
 Installation YAML, Driver, Backend membership, and Compute preflight validation. Private routes, `/healthz` and
 database-backed `/readyz` use the operator-managed endpoint. The startup probe
 allows 120 one-second failures: two minutes to listen, then readiness within a second.
+The worker's exec probes start Node inside its CPU limit, so each has a 5-second
+timeout; its startup probe allows 24 five-second failures, the same two minutes.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
@@ -331,6 +333,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28: Give the worker a startup probe and 5-second exec probe timeouts.
 
 - 2026-10-24 17:23: Reject metrics and repository listeners sharing port 8443 before deployment. (authoring-run/21b9b442-e8b7-45d3-a482-742f1742b077 - fd5723d94aebbd96d93e85649eec908adbc6d58a)
 
