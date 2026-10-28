@@ -15,6 +15,11 @@ const soulVersion = (version) =>
   ).join("");
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
+const submitPassword = [
+  { selector: "#username", value: "operator@example.com" },
+  { selector: "#password", value: "demo-only" },
+  click("Sign in"),
+];
 const runtimeLogsPage = {
   group: "Pages/Agent detail",
   path: `${candidateVersion}&tab=logs`,
@@ -896,12 +901,18 @@ export const scenarios = {
     path: "/console/login",
     signedOut: true,
     rules: [{ path: "/api/auth/sign-in/email", method: "POST", status: 401 }],
-    actions: [
-      { selector: "#username", value: "operator@example.com" },
-      { selector: "#password", value: "demo-only" },
-      click("Sign in"),
-    ],
+    actions: submitPassword,
     description: "A rejected sign-in leaves the form available for retry.",
+  },
+  passwordSignInUnconfirmed: {
+    group: "Pages/Sign in",
+    name: "Password sign-in unconfirmed",
+    path: "/console/login",
+    signedOut: true,
+    rules: [{ path: "/api/auth/sign-in/email", method: "POST", bodyError: true }],
+    actions: submitPassword,
+    description:
+      "An interrupted password response leaves the result unknown. Reload to check the session before entering the password again.",
   },
   expired: {
     group: "Pages/Sign in",

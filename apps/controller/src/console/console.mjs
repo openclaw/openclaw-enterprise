@@ -1338,7 +1338,7 @@ function showLogin(message = "", destination = null) {
                 ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
                 : "Could not sign in. Check your email and password."
               : error.status === undefined
-                ? "Could not reach the sign-in service. Check your connection, then try again."
+                ? "Could not confirm whether sign-in completed. Reload the page to check your session before trying your password again."
                 : error.status >= 500
                   ? signInOutage
                   : "Sign-in is unavailable. Try again.";
