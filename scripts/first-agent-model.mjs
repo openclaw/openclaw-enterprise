@@ -77,13 +77,15 @@ export function firstAgentRevisionValuesMatch(
   priorRevisionId,
 ) {
   // Deployment admission fills the Gateway security defaults the Configuration leaves unset.
-  // A saved revision the helper identified may predate that fill; accept it only there.
-  const admitted = [admitGatewaySecurityDefaults(configured)];
-  if (priorRevisionId !== undefined && revisionId === priorRevisionId) {
-    admitted.push(configured);
-  }
-  return admitted.some((snapshot) =>
-    snapshotValuesMatch(values, snapshot, record, revisionId, priorRevisionId),
+  // A saved revision the helper identified may predate some of those fills, so fill it too
+  // there: a default it lacks matches, and an explicit different value is still drift.
+  const prior = priorRevisionId !== undefined && revisionId === priorRevisionId;
+  return snapshotValuesMatch(
+    prior ? admitGatewaySecurityDefaults(values) : values,
+    admitGatewaySecurityDefaults(configured),
+    record,
+    revisionId,
+    priorRevisionId,
   );
 }
 

@@ -241,16 +241,33 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     false,
     "the historical exception must retain unrelated configuration drift checks",
   );
-  const beforeDefaults = {
-    ...settings("danger-full-access"),
-    agents: { entries: { main: { identity: { name: record.name } } } },
+  // Each admission fill landed separately, so a saved revision can lack any subset of the
+  // defaults (finding 2770). Only the identified prior revision gets them filled before comparing.
+  const current = values("danger-full-access");
+  const entries = { entries: current.agents.entries };
+  const lacking = {
+    "both defaults": { ...settings("danger-full-access"), agents: entries },
+    "the sandbox mode": { ...current, agents: entries },
+    "apply_patch in the workspace": { ...settings("danger-full-access"), agents: current.agents },
   };
-  assert.equal(matches(beforeDefaults, "rev_saved"), true, "a saved revision from before the fill");
-  assert.equal(matches(beforeDefaults), false, "a new deployment carries the defaults");
+  for (const [missing, snapshot] of Object.entries(lacking)) {
+    assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision without ${missing}`);
+    assert.equal(matches(snapshot, "rev_other"), false, `another revision without ${missing}`);
+    assert.equal(matches(snapshot), false, `a new deployment without ${missing}`);
+  }
+  // The fill keeps explicit values, so a prior revision with a looser setting is still drift.
   assert.equal(
-    matches({ ...values("danger-full-access"), tools: { exec: { applyPatch: {} } } }),
+    matches({ ...current, tools: { exec: { applyPatch: { workspaceOnly: false } } } }, "rev_saved"),
     false,
-    "a missing default is drift",
+    "an explicit apply_patch value outside the workspace",
+  );
+  assert.equal(
+    matches(
+      { ...current, agents: { ...entries, defaults: { sandbox: { mode: "all" } } } },
+      "rev_saved",
+    ),
+    false,
+    "an explicit sandbox mode other than off",
   );
   assert.equal(
     matches({
