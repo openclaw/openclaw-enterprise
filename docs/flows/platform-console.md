@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-25
-last_updated_session: fix-2505
+updated: 2026-10-28
+last_updated_session: fix-3678
 ---
 
 # Platform console request flow
@@ -359,6 +359,7 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
 - 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
