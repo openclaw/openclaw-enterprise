@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-27
-last_updated_session: authoring-run/99997d03-9533-4cff-b942-8fe773c472db
+updated: 2026-10-28
+last_updated_session: authoring-run/7832bcaa-29cd-4303-99ce-edf549ad55d6
 ---
 
 # Console Agent editing and runtime requests
@@ -84,18 +84,18 @@ A first read after `FIRST_ACTIVITY_WAIT_MS` shows its outcome folded unless clea
 warnings, or an overview error expand it. If an
 overview refresh fails, the page keeps the outcome and an attention notice outside Deployment.
 
-On failure, `agents/deployment-recovery.mts` shows the API's message, which names the next
-step. OCC's `deployment-failure-steps.ts` table, served at `/console/deployment-failure-steps.mjs`,
-gives each code's step kind: `deploy-again`, `logs` or `change`. It hides the Logs link if the
-caller was denied the log text or version during this sign-in. **Open Configuration** needs Configuration `update`,
-bound Secret `operate` and no known read denial. **Open draft** (read-only Configuration) and
-**Deploy again** (`deploy-again` codes) need `deploy` and a readable Configuration; Deploy again focuses
-**Deploy new version**. Credentials recovery needs Agent saves. Hidden or unlisted
-current versions suppress recovery; viewed versions show results. Activity polls every
-`DEPLOYMENT_POLL_MS` through transient read errors until a result, denial, or missing
-record, patching in place (`patchChildren`); a new result rereads selection.
-**Refresh deployment** rereads both after any poll in flight. A pending deploy lists its
-result rows before the first attempt; the details keep their tallest height until it settles.
+On failure, `agents/deployment-recovery.mts` shows the API’s next step. OCC’s
+`deployment-failure-steps.ts`, served at `/console/deployment-failure-steps.mjs`, classifies
+codes as `deploy-again`, `logs` or `change`. A denied log-text or version read hides Logs for
+this sign-in. **Open Configuration** requires Configuration `update`, bound Secret `operate`
+and no known read denial. **Open draft** (read-only) and **Deploy again** (`deploy-again` codes)
+require `deploy` and readable Configuration; **Deploy again** focuses **Deploy new version**.
+Credentials recovery requires Agent saves. Hidden or unlisted current versions suppress recovery;
+viewed versions show results. Activity polls every `DEPLOYMENT_POLL_MS` through transient errors
+until completion, denial or a missing record, patching in place (`patchChildren`) and rereads
+selection on a new result. **Refresh deployment** rereads both after any pending poll. Pending
+deploys reserve result rows before the first attempt and keep their tallest height until settled.
+**Refresh record** preserves keyboard focus, ignores repeats while reading and never steals focus.
 **Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
@@ -336,6 +336,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 10:57: Clarify keyboard focus during record refresh. (authoring-run/7832bcaa-29cd-4303-99ce-edf549ad55d6 - e7f7c242158627219f6ce9d398c5cc034d721f7e)
 
 - 2026-10-27 13:55: Document Deployment snapshot-read recovery; uncommitted changes. (authoring-run/99997d03-9533-4cff-b942-8fe773c472db - b1e6d83d1cde4741d6f0b857e30e473ec1f97a18)
 

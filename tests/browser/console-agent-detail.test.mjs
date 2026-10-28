@@ -167,6 +167,70 @@ test("Deployment shows a historical version's snapshot read failure and Retry re
   }
 });
 
+test("Refresh record retains keyboard focus without duplicate reads or stealing focus", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { recordOperations: true });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Record refresh", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Refresh Agent", nativeValues("v1"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // The latest deployment polls a different record; only this control reads the viewed version.
+  await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "deployment"));
+  const record = await expectVersionRecord(page, "Queued");
+  const url = deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id);
+  const path = new URL(url).pathname;
+  const refresh = record.getByRole("button", { name: "Refresh record", exact: true });
+  const refreshing = record.getByRole("button", { name: "Refreshing…", exact: true });
+
+  for (const moveFocus of [false, true]) {
+    const reads = pathRequests(requests, "GET", path).length;
+    const held = await holdRequests(t, page, url, { method: "GET", once: true, afterServer: true });
+    await refresh.focus();
+    assert.equal(await hasFocus(refresh), true);
+    await page.keyboard.press("Enter");
+    // Hold a genuine successful Controller answer, not a synthetic deployment response.
+    const answer = await held.requested;
+    assert.equal(answer.status(), 200);
+    const { data } = await answer.json();
+    assert.equal(data.deploymentId, revision.id);
+    assert.equal(data.status, "queued");
+    await refreshing.waitFor();
+    assert.equal(await hasFocus(refreshing), true);
+    assert.equal(await refreshing.getAttribute("aria-disabled"), "true");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Space");
+    assert.equal(pathRequests(requests, "GET", path).length, reads + 1);
+
+    // Remember the reader's actual Tab destination so completion cannot silently move it.
+    let destination;
+    if (moveFocus) {
+      await page.keyboard.press("Tab");
+      assert.equal(await hasFocus(refreshing), false);
+      destination = await page.evaluateHandle(() => globalThis.document.activeElement);
+      assert.equal(await destination.evaluate((node) => node === globalThis.document.body), false);
+    }
+    const delivered = page.waitForResponse(
+      (response) => response.url() === url && response.request().method() === "GET",
+    );
+    held.release();
+    assert.equal((await delivered).status(), 200);
+    await refresh.waitFor();
+    assert.equal(await refresh.getAttribute("aria-disabled"), null);
+    if (moveFocus) {
+      assert.equal(
+        await destination.evaluate((node) => node === globalThis.document.activeElement),
+        true,
+      );
+      await destination.dispose();
+    } else {
+      assert.equal(await hasFocus(refresh), true);
+    }
+    assert.equal(pathRequests(requests, "GET", path).length, reads + 1);
+  }
+});
+
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

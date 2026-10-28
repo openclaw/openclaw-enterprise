@@ -5740,8 +5740,20 @@ export const scenarios = {
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        method: "GET",
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        delayMs: 1800,
+      },
+    ],
     description:
       "v7 is now selected and its original deployment recorded success. This remains historical evidence, not a live probe.",
+    steps: [
+      "Focus Refresh record and press Enter. While Refreshing… is shown, the button keeps focus and repeated Enter or Space does not start another read. Completion leaves focus on Refresh record.",
+      "Refresh again and press Tab before the response arrives. Completion leaves focus on the control you moved to.",
+    ],
   },
   deploymentActivityLoading: {
     group: "Pages/Agent detail",

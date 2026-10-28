@@ -714,7 +714,7 @@ export function createVersionDeploymentEvidence(
         button(loading ? "Refreshing…" : "Refresh record", () => void load(), {
           tone: "ghost",
           size: "sm",
-          disabled: loading,
+          ...(loading ? { "aria-disabled": "true" } : {}),
         }),
       ),
       error
