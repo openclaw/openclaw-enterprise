@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-16
-last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
+updated: 2026-10-26
+last_updated_session: authoring-run/b86fa7f0-f083-4554-9614-a6ce525be335
 ---
 
 # Harness Authentication Binding Flow
@@ -199,9 +199,22 @@ digest. The token remains in the Pod; filtering child environments does not
 isolate same-UID processes.
 
 `startAuthenticatedCodex` gives `probeCodexAuthentication` at most two
-attempts within one monotonic 61-second budget. Only a subprocess `ETIMEDOUT`
-schedules the second, after a one-second timer, timed out at the smaller of
-30 seconds and the remaining budget; an unexplained `SIGKILL` is nonretryable.
+attempts within one monotonic 61-second budget. `runCodexModelCheck` collects
+stdout and stderr asynchronously and waits for process close. The first JSON
+`error` or `turn.failed` event that identifies rejected credentials stops the
+probe process group with `SIGKILL`; only stdout through that event is classified.
+Timeout and output overflow also stop the process group. Native output remains
+private; diagnostics expose only the existing closed-set failure fields.
+If creating the temporary probe directory fails, startup holds `MODEL_PROBE_FAILED`
+with a `WRAPPER_ERROR` cause and no detail token or further retry. With no native
+output, its diagnostic class is `empty`; no app-server is started.
+
+A retryable timeout, transient failure, or eligible reliability-class process
+exit can receive one retry after the bounded jittered delay, with at least one
+second left for the next attempt. Each attempt has at most 30 seconds or the
+remaining budget. Credential rejection, security-class failures, and no-retry
+markers veto that retry. Protected profiles with provider tools disabled do not
+retry. The app-server starts only after the probe succeeds.
 
 Embedded OpenClaw consumes the selected provider's native API key and runs one native
 primary-model probe during actual gateway startup, with tools and fallback
@@ -295,6 +308,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 22:06: Document streamed credential rejection, process-group cleanup, bounded retry behavior, and probe directory failures held as `MODEL_PROBE_FAILED` with a no-detail `WRAPPER_ERROR` cause. (authoring-run/b86fa7f0-f083-4554-9614-a6ce525be335 - b885333a63302f26bfb6bdf892cdf0a3fc20eba3)
 
 - 2026-10-16 01:36: Keep external OAuth custody while integrating current Sandbox policy. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

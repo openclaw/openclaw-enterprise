@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -3272,13 +3274,14 @@ test("gateway runtime status maps native Slack channel status without provider d
   assert.equal(channelStatusCalls, 15);
 });
 
-test("Codex agent app-server uses a per-startup plugin status token", () => {
+test("Codex agent app-server uses a per-startup plugin status token", async () => {
   const directory = mkdtempSync(join(tmpdir(), "oce-plugin-token-"));
   const marker = join(directory, "ready");
   const baseToken = "capability-token-test-value";
   const revisionId = "revision-plugin-compute-1";
   let statusHandler;
   let appServerSpawn;
+  const { promise: startup, resolve: settled } = Promise.withResolvers();
   const files = new Map();
   try {
     const sandbox = {
@@ -3342,28 +3345,39 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
           };
         }
         if (specifier === "node:child_process") {
-          let nativeCalls = 0;
           return {
-            spawnSync() {
-              nativeCalls += 1;
-              return nativeCalls === 1
-                ? { status: 0 }
-                : {
-                    status: 0,
-                    stdout: [
-                      { type: "thread.started" },
-                      { type: "turn.started" },
-                      {
-                        type: "item.completed",
-                        item: { type: "agent_message", text: "READY" },
-                      },
-                      { type: "turn.completed" },
-                    ]
-                      .map((event) => JSON.stringify(event))
-                      .join("\n"),
-                  };
+            spawnSync(_command, args) {
+              assert.ok(args.includes("login"));
+              return { status: 0 };
             },
             spawn(command, args, options) {
+              if (args.includes("exec")) {
+                assert.equal(options.detached, true);
+                const child = Object.assign(new EventEmitter(), {
+                  stdout: new PassThrough(),
+                  stderr: new PassThrough(),
+                });
+                queueMicrotask(() => {
+                  child.stdout.end(
+                    [
+                      { type: "thread.started" },
+                      { type: "turn.started" },
+                      { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+                      { type: "turn.completed" },
+                    ]
+                      .map(JSON.stringify)
+                      .join("\n"),
+                  );
+                  child.stderr.end();
+                  Promise.all([
+                    new Promise((resolve) => child.stdout.on("end", resolve)),
+                    new Promise((resolve) => child.stderr.on("end", resolve)),
+                  ]).then(() => child.emit("close", 0, null));
+                });
+                return child;
+              }
+              assert.ok(args.includes("app-server"));
+              settled();
               appServerSpawn = { command, args, options };
               return { on() {}, kill() {} };
             },
@@ -3374,6 +3388,7 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
     };
 
     vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
+    await startup;
 
     assert.ok(statusHandler);
     assert.equal(appServerSpawn.command, "codex");

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   COMPUTE_RELEASE_PUBLIC_KEY,
@@ -82,6 +84,8 @@ export function createCodexStartup(
     random = 0,
     // How much later than asked a login retry wait wakes (a throttled or stopped process).
     lateWakeMs = 0,
+    // Exercise an actual temporary-directory error before this native probe.
+    probeDirectoryFailureAt,
     // Extra wrapper environment, such as the CA settings the workspace node supervisor passes.
     environment = {},
   },
@@ -119,7 +123,14 @@ export function createCodexStartup(
   let appServerStarts = 0;
   const appServerSpawns = [];
   let nativeCalls = 0;
+  let probeDirectories = 0;
   let clock = 0;
+  let settlement = Promise.withResolvers();
+  let probeReported = false;
+  const probeChildren = new Map();
+  const probeSignals = [];
+  const probeCompletions = [];
+  const settleStartup = () => settlement.resolve();
   const absent = (environment, names) => {
     for (const name of names) {
       assert.equal(
@@ -127,6 +138,102 @@ export function createCodexStartup(
         false,
         `${name} must not reach this environment`,
       );
+    }
+  };
+  const consumeNative = (command, args, options) => {
+    const step = native[nativeCalls++];
+    try {
+      assert.ok(step, "unexpected native invocation after script exhausted");
+      assert.equal(command, "codex");
+      assert.equal(args.includes("login") ? "login" : "probe", step.operation);
+      const childEnvironment = options.env ?? sandbox.process.env;
+      absent(childEnvironment, transportCredentials);
+      if (step.operation === "login") {
+        assert.equal(childEnvironment.CODEX_LOGIN_MODE, loginMode);
+        // The wrapper retains its transport input; native login must not inherit it.
+        assert.equal(
+          tokenMode === "verifier"
+            ? sandbox.process.env.APP_TOKEN_SHA
+            : sandbox.process.env.APP_SERVER_TOKEN,
+          tokenMode === "verifier" ? tokenDigest : transportToken,
+        );
+        assert.deepEqual(Array.from(args), [
+          "-c",
+          "cli_auth_credentials_store=file",
+          "login",
+          providerPat
+            ? "status"
+            : loginMode === "codex_pat"
+              ? "--with-access-token"
+              : "--with-api-key",
+        ]);
+        if (providerPat) {
+          // Native login reads the provider's exact placeholder from typed, private storage.
+          absent(childEnvironment, ["CODEX_ACCESS_TOKEN"]);
+          assert.equal(childEnvironment.CODEX_HOME, codexHome);
+          const authFile = join(codexHome, "auth.json");
+          assert.deepEqual(JSON.parse(readFileSync(authFile, "utf8")), {
+            personal_access_token: providerPlaceholder,
+          });
+          assert.equal(statSync(authFile).mode & 0o777, 0o600);
+        } else {
+          assert.equal(
+            options.input,
+            loginMode === "codex_pat" ? "at-fixture-token" : "fixture-api-key",
+          );
+        }
+        assert.ok(options.timeout > 0 && options.timeout <= 30000);
+        if (step.timeout !== undefined) {
+          assert.equal(options.timeout, step.timeout);
+        }
+        if (step.result.error?.code === "ETIMEDOUT" && step.result.signal === "SIGKILL") {
+          clock += options.timeout;
+        }
+        clock += step.elapsed ?? 0;
+      } else {
+        // A real child process emits bytes, never arbitrary JavaScript values.
+        // Reject an invalid script before async delivery so it cannot strand startup.
+        for (const chunk of step.result.chunks ?? [
+          { stream: "stdout", data: step.result.stdout ?? "" },
+          { stream: "stderr", data: step.result.stderr ?? "" },
+        ]) {
+          assert.ok(["stdout", "stderr"].includes(chunk.stream));
+          assert.ok(
+            typeof chunk.data === "string" || Buffer.isBuffer(chunk.data),
+            "scripted native output must be a string or Buffer",
+          );
+        }
+        assert.ok(args.includes("exec"));
+        if (protectedInference) {
+          for (const argument of [
+            "--ignore-user-config",
+            "model_providers.openai-compatible.request_max_retries=0",
+            "model_providers.openai-compatible.stream_max_retries=0",
+          ]) {
+            assert.ok(args.includes(argument), argument);
+          }
+        }
+        // Check the gate while the probe is running, before any app-server spawn.
+        assert.equal(appServerStarts, 0);
+        assert.equal(existsSync(marker), false, "stale readiness must be removed before probing");
+        // Probe isolation and wrapper credential clearing are separate boundaries.
+        absent(childEnvironment, modelCredentials);
+        absent(sandbox.process.env, modelCredentials);
+        if (providerPat) {
+          assert.equal(childEnvironment.CODEX_HOME, codexHome);
+          assert.ok(args.includes("cli_auth_credentials_store=file"));
+        }
+        assert.ok(options.timeout > 0 && options.timeout <= 30000);
+        if (step.timeout !== undefined) {
+          assert.equal(options.timeout, step.timeout);
+        }
+      }
+      return step;
+    } catch (error) {
+      // The production probe catches process errors. Preserve fixture violations
+      // so a caught assertion can never masquerade as an expected failed probe.
+      boundaryErrors.push(error);
+      throw error;
     }
   };
   const sandbox = {
@@ -145,6 +252,12 @@ export function createCodexStartup(
     setTimeout(callback, delay) {
       const timer = { callback, delay };
       retryTimers.push(timer);
+      // The probe's own timeout is installed before its result is reported.
+      // A timer after that report is the production startup retry decision.
+      if (probeReported) {
+        probeReported = false;
+        settleStartup();
+      }
       return timer;
     },
     clearTimeout(timer) {
@@ -156,10 +269,20 @@ export function createCodexStartup(
     console: {
       error(message) {
         diagnostics.push(message);
+        if (message.startsWith("{")) {
+          const event = JSON.parse(message);
+          if (event.event === "codex.model_probe") {
+            probeReported = true;
+          }
+          if (event.event === "runtime.startup_phase" && event.phase === "plugin-install") {
+            settleStartup();
+          }
+        }
       },
     },
     setInterval(callback, delay) {
       idleTimers.push({ callback, delay });
+      settleStartup();
     },
     process: {
       env: {
@@ -200,6 +323,20 @@ export function createCodexStartup(
         ...environment,
       },
       on() {},
+      kill(pid, signal) {
+        try {
+          const child = probeChildren.get(-pid);
+          assert.ok(child, "only the fixture probe process group may be signaled");
+          assert.equal(signal, "SIGKILL");
+          probeSignals.push({ pid, signal });
+          child.kill(signal);
+        } catch (error) {
+          // The production runner falls back to child.kill if group signaling fails.
+          // A fixture target violation must survive that catch as a test failure.
+          boundaryErrors.push(error);
+          throw error;
+        }
+      },
       exit() {
         assert.fail("startup must either remain unready or start the app server");
       },
@@ -211,7 +348,14 @@ export function createCodexStartup(
       if (specifier === "node:fs") {
         return {
           mkdirSync,
-          mkdtempSync: () => mkdtempSync(join(directory, "probe-")),
+          mkdtempSync() {
+            probeDirectories++;
+            return mkdtempSync(
+              probeDirectories === probeDirectoryFailureAt
+                ? join(directory, "missing-probe-parent", "probe-")
+                : join(directory, "probe-"),
+            );
+          },
           rmSync,
           readFileSync() {
             throw new Error("no plugin runtime payload is configured");
@@ -242,98 +386,91 @@ export function createCodexStartup(
       if (specifier === "node:child_process") {
         return {
           spawnSync(command, args, options) {
-            const step = native[nativeCalls++];
-            try {
-              assert.ok(step, "unexpected native invocation after script exhausted");
-              assert.equal(command, "codex");
-              assert.equal(args.includes("login") ? "login" : "probe", step.operation);
-              const childEnvironment = options.env ?? sandbox.process.env;
-              absent(childEnvironment, transportCredentials);
-              if (step.operation === "login") {
-                assert.equal(childEnvironment.CODEX_LOGIN_MODE, loginMode);
-                // The wrapper retains its transport input; native login must not inherit it.
-                assert.equal(
-                  tokenMode === "verifier"
-                    ? sandbox.process.env.APP_TOKEN_SHA
-                    : sandbox.process.env.APP_SERVER_TOKEN,
-                  tokenMode === "verifier" ? tokenDigest : transportToken,
-                );
-                assert.deepEqual(Array.from(args), [
-                  "-c",
-                  "cli_auth_credentials_store=file",
-                  "login",
-                  providerPat
-                    ? "status"
-                    : loginMode === "codex_pat"
-                      ? "--with-access-token"
-                      : "--with-api-key",
-                ]);
-                if (providerPat) {
-                  // Native login reads the provider's exact placeholder from typed, private storage.
-                  absent(childEnvironment, ["CODEX_ACCESS_TOKEN"]);
-                  assert.equal(childEnvironment.CODEX_HOME, codexHome);
-                  const authFile = join(codexHome, "auth.json");
-                  assert.deepEqual(JSON.parse(readFileSync(authFile, "utf8")), {
-                    personal_access_token: providerPlaceholder,
-                  });
-                  assert.equal(statSync(authFile).mode & 0o777, 0o600);
-                } else {
-                  assert.equal(
-                    options.input,
-                    loginMode === "codex_pat" ? "at-fixture-token" : "fixture-api-key",
-                  );
-                }
-                assert.ok(options.timeout > 0 && options.timeout <= 30000);
-                if (step.timeout !== undefined) {
-                  assert.equal(options.timeout, step.timeout);
-                }
-                if (step.result.error?.code === "ETIMEDOUT" && step.result.signal === "SIGKILL") {
-                  clock += options.timeout;
-                }
-                clock += step.elapsed ?? 0;
-              } else {
-                assert.ok(args.includes("exec"));
-                if (protectedInference) {
-                  for (const argument of [
-                    "--ignore-user-config",
-                    "model_providers.openai-compatible.request_max_retries=0",
-                    "model_providers.openai-compatible.stream_max_retries=0",
-                  ]) {
-                    assert.ok(args.includes(argument), argument);
-                  }
-                }
-                // Check the gate while the probe is running, before any app-server spawn.
-                assert.equal(appServerStarts, 0);
-                assert.equal(
-                  existsSync(marker),
-                  false,
-                  "stale readiness must be removed before probing",
-                );
-                // Probe isolation and wrapper credential clearing are separate boundaries.
-                absent(childEnvironment, modelCredentials);
-                absent(sandbox.process.env, modelCredentials);
-                if (providerPat) {
-                  assert.equal(childEnvironment.CODEX_HOME, codexHome);
-                  assert.ok(args.includes("cli_auth_credentials_store=file"));
-                }
-                assert.ok(options.timeout > 0 && options.timeout <= 30000);
-                if (step.timeout !== undefined) {
-                  assert.equal(options.timeout, step.timeout);
-                }
-                if (step.result.error?.code === "ETIMEDOUT" && step.result.signal === "SIGKILL") {
-                  clock += options.timeout;
-                }
-                clock += step.elapsed ?? 0;
-              }
-              return step.result;
-            } catch (error) {
-              // The production probe catches process errors. Preserve fixture violations
-              // so a caught assertion can never masquerade as an expected failed probe.
-              boundaryErrors.push(error);
-              throw error;
-            }
+            assert.ok(args.includes("login"), "only login may use spawnSync");
+            return consumeNative(command, args, options).result;
           },
           spawn(command, args, options) {
+            if (args.includes("exec")) {
+              // runCodexModelCheck owns the timeout, rather than passing it to spawn.
+              const timer = retryTimers.at(-1);
+              const step = consumeNative(command, args, { ...options, timeout: timer?.delay });
+              try {
+                assert.equal(options.detached, true);
+                assert.deepEqual(Array.from(options.stdio), ["ignore", "pipe", "pipe"]);
+                assert.ok(timer, "the probe must install its timeout before spawning");
+              } catch (error) {
+                boundaryErrors.push(error);
+                throw error;
+              }
+              const child = new EventEmitter();
+              const spawnFailed = ["ENOENT", "EACCES"].includes(step.result.error?.code);
+              child.pid = spawnFailed ? undefined : nativeCalls;
+              child.stdout = new PassThrough();
+              child.stderr = new PassThrough();
+              if (child.pid !== undefined) {
+                probeChildren.set(child.pid, child);
+              }
+              const completion = Promise.withResolvers();
+              probeCompletions.push(completion.promise);
+              let closed = false;
+              const close = (status, signal) => {
+                if (closed) {
+                  return;
+                }
+                closed = true;
+                // Like ChildProcess.close, deliver close only after both streams end.
+                Promise.all(
+                  [child.stdout, child.stderr].map(
+                    (stream) =>
+                      new Promise((resolve) => {
+                        if (stream.readableEnded || stream.destroyed) {
+                          resolve();
+                        } else {
+                          stream.once("end", resolve);
+                          stream.once("close", resolve);
+                        }
+                      }),
+                  ),
+                ).then(() => {
+                  probeChildren.delete(child.pid);
+                  child.emit("close", status, signal);
+                  completion.resolve();
+                });
+                child.stdout.end();
+                child.stderr.end();
+              };
+              child.kill = (signal) => {
+                close(null, signal);
+                return true;
+              };
+              queueMicrotask(() => {
+                clock += step.elapsed ?? 0;
+                // Chunks may split JSON records or UTF-8 code points; the real streams
+                // perform decoding after the production runner sets their encoding.
+                for (const chunk of step.result.chunks ?? [
+                  { stream: "stdout", data: step.result.stdout ?? "" },
+                  { stream: "stderr", data: step.result.stderr ?? "" },
+                ]) {
+                  if (closed) {
+                    break;
+                  }
+                  child[chunk.stream].write(chunk.data);
+                }
+                if (closed) {
+                  return;
+                }
+                if (step.result.error?.code === "ETIMEDOUT") {
+                  clock += timer.delay;
+                  timer.callback();
+                } else {
+                  if (step.result.error) {
+                    child.emit("error", step.result.error);
+                  }
+                  close(step.result.status, step.result.signal ?? null);
+                }
+              });
+              return child;
+            }
             assert.equal(command, "codex");
             assert.ok(args.includes("app-server"));
             // Plugin reviewer validation must observe the admitted model, not a native default.
@@ -346,6 +483,9 @@ export function createCodexStartup(
             }
             appServerStarts++;
             appServerSpawns.push({ args: Array.from(args), env: options.env });
+            if (!protectedInference) {
+              settleStartup();
+            }
             return { on() {}, kill() {} };
           },
         };
@@ -362,8 +502,14 @@ export function createCodexStartup(
       return appServerStarts;
     },
     appServerSpawns,
+    probeSignals,
     start() {
       vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
+      return this.settled();
+    },
+    async settled() {
+      await settlement.promise;
+      await Promise.all(probeCompletions);
     },
     async releaseProtectedExecution() {
       // Exercise the generated Harness. Even an authenticated peer cannot release it by
@@ -410,11 +556,14 @@ export function createCodexStartup(
         },
       });
       await exchange("POST", release, 200);
-      await new Promise((resolve) => setImmediate(resolve));
+      await this.settled();
     },
     retryAfter(milliseconds) {
+      settlement = Promise.withResolvers();
+      probeReported = false;
       clock += milliseconds;
       retryTimers[0].callback();
+      return this.settled();
     },
     status() {
       assert.ok(statusHandler);
@@ -427,6 +576,7 @@ export function createCodexStartup(
       if (boundaryErrors.length) {
         throw boundaryErrors[0];
       }
+      assert.equal(probeChildren.size, 0, "every spawned probe must close");
       assert.equal(
         nativeCalls,
         native.length,
@@ -453,13 +603,14 @@ export async function checkCodexStartup(t, scenario) {
   if (scenario.protectedInference) {
     await runtime.releaseProtectedExecution();
   }
+  await runtime.settled();
   if (scenario.retryAfterMs !== undefined) {
     assert.equal(runtime.appServerStarts, 0);
     assert.equal(runtime.marker(), undefined);
     assert.equal(runtime.status().runtimeFailure, undefined);
     assert.equal(runtime.retryTimers.length, 1);
     assert.equal(runtime.retryTimers[0].delay, scenario.retryDelayMs ?? 1000);
-    runtime.retryAfter(scenario.retryAfterMs);
+    await runtime.retryAfter(scenario.retryAfterMs);
   }
   assert.equal(
     runtime.retryTimers.length,
@@ -467,6 +618,12 @@ export async function checkCodexStartup(t, scenario) {
     "no unexpected retry",
   );
   runtime.assertNativeScriptConsumed();
+  if (scenario.probeSignals !== undefined) {
+    assert.deepEqual(
+      runtime.probeSignals.map(({ signal }) => signal),
+      scenario.probeSignals,
+    );
+  }
   assert.deepEqual(runtime.loginPauses, scenario.loginPauses ?? [], "login retry waits");
   const expected = scenario.expect;
   const probes = checkStartupDiagnostics(runtime, scenario);

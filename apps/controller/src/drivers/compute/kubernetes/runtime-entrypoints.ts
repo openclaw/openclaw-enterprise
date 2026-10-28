@@ -3892,8 +3892,92 @@ function codexProbeStatusFailure(message, detail) {
     ...(codexTransientFailure(message, summary) ? { transient: true } : {}),
   };
 }
+// A top-level error or failed turn that names a provider 401 or 403.
+function codexCredentialRejectedEvent(event) {
+  return (event?.type === "error" && codexAuthenticationRejected(event.message)) ||
+    (event?.type === "turn.failed" && codexAuthenticationRejected(event.error?.message));
+}
+// Runs the model check like spawnSync (the same timeout, kill signal and output limit,
+// and result shape), but ends it at its first JSON event that names a rejected
+// credential. The pinned Codex treats an API-key 401 as a retryable status inside the
+// turn: it resends the request with backoff on each transport, 13 requests over about
+// 13 s, before the turn fails. No retry can change a rejected credential, so the check
+// keeps its output through that event and stops Codex there. Resolve the native
+// binary as for login, and kill the check's whole process group on stop. If native
+// resolution falls back to the npm launcher, its child must not keep retrying.
+function runCodexModelCheck(args, { timeout, maxBuffer, ...options }) {
+  return new Promise((resolve) => {
+    const output = { stdout: "", stderr: "" };
+    const bytes = { stdout: 0, stderr: 0 };
+    let child;
+    let error;
+    let scanned = 0;
+    let rejectedEnd;
+    let settled = false;
+    const settle = (status, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const stdout = rejectedEnd === undefined ? output.stdout : output.stdout.slice(0, rejectedEnd);
+      resolve({ status, signal, stdout, stderr: output.stderr, error });
+    };
+    const stop = (failure) => {
+      // A rejection that already stopped the check keeps its own result.
+      if (rejectedEnd === undefined) error ??= failure;
+      if (!child?.pid) return;
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+    const timer = setTimeout(() => stop(Object.assign(new Error("spawn codex ETIMEDOUT"), { code: "ETIMEDOUT" })), timeout);
+    const collect = (name) => (chunk) => {
+      if (rejectedEnd !== undefined) return;
+      bytes[name] += Buffer.byteLength(chunk);
+      output[name] += chunk;
+      if (bytes[name] > maxBuffer) {
+        stop(Object.assign(new Error("spawn codex ENOBUFS"), { code: "ENOBUFS" }));
+        return;
+      }
+      if (name !== "stdout") return;
+      for (let end = output.stdout.indexOf("\n", scanned); end !== -1; end = output.stdout.indexOf("\n", scanned)) {
+        const line = output.stdout.slice(scanned, end);
+        scanned = end + 1;
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (codexCredentialRejectedEvent(event)) {
+          rejectedEnd = scanned;
+          stop();
+          return;
+        }
+      }
+    };
+    try {
+      child = spawn(codexExecutable(), args, { ...options, detached: true });
+    } catch (failure) {
+      error = failure;
+      settle(null, null);
+      return;
+    }
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", collect("stdout"));
+    child.stderr.on("data", collect("stderr"));
+    child.on("error", (failure) => {
+      error ??= failure;
+      // A failed spawn has no pid; settle its error without waiting for output.
+      if (child.pid === undefined) settle(null, null);
+    });
+    child.on("close", settle);
+  });
+}
 
-function probeCodexAuthentication(timeout) {
+async function probeCodexAuthentication(timeout) {
   let result;
   // Set once stdout parsed into well-formed events; malformed output classifies stderr only.
   let parsedEvents;
@@ -3911,8 +3995,9 @@ function probeCodexAuthentication(timeout) {
     signal: ["SIGKILL", "SIGTERM", "SIGINT"].includes(result?.signal) ? result.signal : null,
   });
   const temporaryDirectory = process.env.TMPDIR || "/tmp";
-  const directory = mkdtempSync(temporaryDirectory.replace(/\/+$/u, "") + "/codex-auth-probe-");
+  let directory;
   try {
+    directory = mkdtempSync(temporaryDirectory.replace(/\/+$/u, "") + "/codex-auth-probe-");
     const selectedModel = process.env.OPENCLAW_HARNESS_MODEL;
     if (typeof selectedModel !== "string" || !/^(openai|codex)\/.+/.test(selectedModel)) return finish("UNAVAILABLE");
     // Pinned native features suppress executable and external tools. Metadata may
@@ -3926,7 +4011,7 @@ function probeCodexAuthentication(timeout) {
       "sleep_tool", "goals", "workspace_dependencies", "skill_search",
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
-    result = spawnSync(codexExecutable(), [
+    result = await runCodexModelCheck([
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
@@ -3964,8 +4049,8 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
             .map((name) => [name, process.env[name]]),
         ),
       },
-      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      timeout, killSignal: "SIGKILL", maxBuffer: 262144,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout, maxBuffer: 262144,
     });
     const output = result.stdout?.trim() ?? "";
     let events;
@@ -3976,9 +4061,10 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     }
     if (events.some((event) => typeof event?.type !== "string")) return finish(probeFailure("INVALID_OUTPUT", "shape"));
     parsedEvents = events;
-    // A failed turn caused by provider 401/403 is a deterministic credential
-    // rejection; timeouts, 5xx, and transport errors keep their existing codes.
-    if (events.some((event) => event.type === "turn.failed" && codexAuthenticationRejected(event.error?.message))) {
+    // A provider 401/403, in a failed turn or in Codex's retry notice, is a
+    // deterministic credential rejection; timeouts, 5xx, and transport errors keep
+    // their existing codes.
+    if (events.some(codexCredentialRejectedEvent)) {
       return finish("AUTHENTICATION_FAILED");
     }
     const allowed = new Set(["thread.started", "turn.started", "turn.completed", "item.started", "item.updated", "item.completed"]);
@@ -4035,9 +4121,10 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     }
     return finish(answered ? undefined : probeFailure("PROBE_STATUS", "no-reply"));
   } catch {
-    return finish(probeFailure("WRAPPER_ERROR"));
+    // Setup can fail before a native process supplies any output.
+    return { failureClass: "empty", ...finish(probeFailure("WRAPPER_ERROR")) };
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
   }
 }
 
@@ -4057,7 +4144,7 @@ function codexProbeRetryable(result) {
 // A single startup budget includes both process attempts and the retry delay.
 // No signal handler is installed before app-server starts, so under tini
 // SIGTERM ends the probe, its backoff or a held failure at once.
-function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 61000) {
+async function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 61000) {
   const startedAt = performance.now();
   const timeout = Math.min(30000, Math.floor(deadline - startedAt));
   if (timeout <= 0) {
@@ -4066,7 +4153,7 @@ function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 610
     return;
   }
   // An execution without an inference route may serve its local app protocol, but never probes a model.
-  const result = noInference ? {} : probeCodexAuthentication(timeout);
+  const result = noInference ? {} : await probeCodexAuthentication(timeout);
   if (!noInference) console.error(JSON.stringify({
     event: "codex.model_probe",
     attempt,

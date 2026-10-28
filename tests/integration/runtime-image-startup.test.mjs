@@ -511,6 +511,7 @@ test(
     // startup computes native settings; the image's actual Codex executes the shell.
     // Docker supplies isolation; this offline check proves no model turn or provider access.
     const probe = `
+(async () => {
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
 const vm = require("node:vm");
@@ -527,25 +528,39 @@ const environment = {
   OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS: "/run/oce/repository-credentials/ca-bundle.pem",
 };
 let native;
+const { promise: startup, resolve: started } = Promise.withResolvers();
 // The entrypoint arrives on stdin: inlined, it can exceed the per-argument limit.
 vm.runInNewContext(fs.readFileSync(0, "utf8"), {
-  URL, console, setTimeout, setInterval,
+  URL, Buffer, console, setTimeout, clearTimeout, setInterval,
   // The wrapper forwards filtered app-server stderr; the probe reads native.stderr itself.
   process: { env: environment, stderr: { write() { return true; } }, on() {}, exit() {} },
   require(name) {
     if (name !== "node:child_process") return require(name);
     return {
       spawnSync(_command, args) {
-        return args.includes("login") ? { status: 0 } : {
-          status: 0,
-          stdout: [
-            { type: "turn.started" },
-            { type: "item.completed", item: { type: "agent_message", text: "READY" } },
-            { type: "turn.completed" },
-          ].map(JSON.stringify).join("\\n"),
-        };
+        assert.ok(args.includes("login"));
+        return { status: 0 };
       },
       spawn(command, args, options) {
+        if (args.includes("exec")) {
+          assert.equal(options.detached, true);
+          const child = Object.assign(new (require("node:events").EventEmitter)(), {
+            stdout: new (require("node:stream").PassThrough)(),
+            stderr: new (require("node:stream").PassThrough)(),
+          });
+          queueMicrotask(() => {
+            child.stdout.end([
+              { type: "turn.started" },
+              { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+              { type: "turn.completed" },
+            ].map(JSON.stringify).join("\\n"));
+            child.stderr.end();
+            Promise.all([new Promise((resolve) => child.stdout.on("end", resolve)),
+              new Promise((resolve) => child.stderr.on("end", resolve))])
+              .then(() => child.emit("close", 0, null));
+          });
+          return child;
+        }
         const appServer = args.indexOf("app-server");
         assert.ok(appServer > 0);
         const appServerEnvironment = options.env ?? environment;
@@ -556,11 +571,13 @@ vm.runInNewContext(fs.readFileSync(0, "utf8"), {
         native = cp.spawn(command, [...args.slice(0, appServer + 1), "--listen", "stdio://"], {
           ...options, env: appServerEnvironment, stdio: ["pipe", "pipe", "pipe"],
         });
+        started();
         return native;
       },
     };
   },
 });
+await startup;
 assert.ok(native);
 const pending = new Map();
 let nextId = 1;
@@ -609,6 +626,7 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
     lines.close();
     native.kill("SIGTERM");
   }
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 `;
     const { stdout } = await runDocker(
@@ -1416,6 +1434,7 @@ console.log("broker-denial-codes-confirmed");
 NODE`;
     const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions();
     const probe = `
+(async () => {
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
 const fs = require("node:fs");
@@ -1534,34 +1553,50 @@ fs.writeFileSync(hookCaPath, fs.readFileSync(brokerCaBundle, "utf8"), { mode: 0o
 environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS = brokerCaBundle;
 environment.NODE_EXTRA_CA_CERTS = hookCaPath;
 let native;
+const { promise: startup, resolve: started } = Promise.withResolvers();
 vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
-  URL, console, setTimeout, setInterval,
+  URL, Buffer, console, setTimeout, clearTimeout, setInterval,
   // The wrapper forwards filtered app-server stderr; the probe reads native.stderr itself.
   process: { env: environment, stderr: { write() { return true; } }, on() {}, exit() {} },
   require(name) {
     if (name !== "node:child_process") return require(name);
     return {
       spawnSync(_command, args) {
-        return args.includes("login") ? { status: 0 } : {
-          status: 0,
-          stdout: [
-            { type: "turn.started" },
-            { type: "item.completed", item: { type: "agent_message", text: "READY" } },
-            { type: "turn.completed" },
-          ].map(JSON.stringify).join("\\n"),
-        };
+        assert.ok(args.includes("login"));
+        return { status: 0 };
       },
       spawn(command, args, options) {
+        if (args.includes("exec")) {
+          assert.equal(options.detached, true);
+          const child = Object.assign(new (require("node:events").EventEmitter)(), {
+            stdout: new (require("node:stream").PassThrough)(),
+            stderr: new (require("node:stream").PassThrough)(),
+          });
+          queueMicrotask(() => {
+            child.stdout.end([
+              { type: "turn.started" },
+              { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+              { type: "turn.completed" },
+            ].map(JSON.stringify).join("\\n"));
+            child.stderr.end();
+            Promise.all([new Promise((resolve) => child.stdout.on("end", resolve)),
+              new Promise((resolve) => child.stderr.on("end", resolve))])
+              .then(() => child.emit("close", 0, null));
+          });
+          return child;
+        }
         const appServer = args.indexOf("app-server");
         assert.ok(appServer > 0);
         native = cp.spawn(command, [...args.slice(0, appServer + 1), "--listen", "stdio://"], {
           ...options, env: environment, stdio: ["pipe", "pipe", "pipe"],
         });
+        started();
         return native;
       },
     };
   },
 });
+await startup;
 assert.ok(native);
 const pending = new Map();
 let nextId = 1;
@@ -1699,6 +1734,7 @@ const timeout = setTimeout(() => {
     native.kill("SIGTERM");
   }
 })().catch((error) => { console.error(error); console.error(stderr); process.exitCode = 1; });
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 `;
     let stdout;
     try {

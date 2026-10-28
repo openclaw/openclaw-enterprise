@@ -59,6 +59,52 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const completedTurn = (...events) => [started, ...events, assistant, completed];
   const scenarios = [
     {
+      name: "streamed stdout decodes split UTF-8 and a final record without newline",
+      events: [],
+      result: {
+        chunks: (() => {
+          const output = Buffer.from(
+            completedTurn()
+              .map((event) => JSON.stringify(event))
+              .join("\n")
+              .replace("READY", "READY ✓"),
+          );
+          const split = output.indexOf(Buffer.from("✓")) + 1;
+          return [
+            { stream: "stdout", data: output.subarray(0, split) },
+            { stream: "stdout", data: output.subarray(split) },
+          ];
+        })(),
+      },
+      expect: ready,
+    },
+    {
+      name: "streamed credential rejection kills the probe group before later output",
+      events: [],
+      result: {
+        chunks: [
+          { stream: "stdout", data: '{"type":"error","message":"unexpected status ' },
+          { stream: "stdout", data: '401 Unauthorized"}\n' },
+          { stream: "stdout", data: "must not be parsed after the rejection" },
+        ],
+      },
+      probeSignals: ["SIGKILL"],
+      expect: {
+        phases: [
+          ["codex-login", "ok"],
+          ["model-probe", "failed"],
+        ],
+        check: "model-probe",
+        code: "AUTHENTICATION_FAILED",
+      },
+    },
+    {
+      name: "a native spawn error settles before close without publishing readiness",
+      events: [],
+      result: { status: null, error: { code: "ENOENT" } },
+      expect: probeFailure({ kind: "PROCESS_EXIT", detail: "error-ENOENT" }),
+    },
+    {
       name: "protected profile without enrollment refuses before any native process",
       protectedInference: "missing",
       native: [],
@@ -455,7 +501,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       expect: probeFailure({ kind: "PROBE_STATUS", detail: "rate_limit" }),
     },
     {
-      // spawnSync kills a probe whose output overflows; that is not an outside kill.
+      // The wrapper kills a probe whose output overflows; that is not an outside kill.
       name: "a probe killed for oversized output is not retried",
       events: [],
       result: { status: null, signal: "SIGKILL", error: { code: "ENOBUFS" } },
@@ -489,7 +535,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
 // Finding 2412: Codex runs hook commands outside its sandbox with its own environment, and
 // sandboxed commands with the environment shell_environment_policy shapes. The sandbox
 // cannot read the hook directory, so its commands keep the CA path the Pod set.
-test("Codex app-server gives sandboxed commands the Pod's CA path, never the hook directory's", (t) => {
+test("Codex app-server gives sandboxed commands the Pod's CA path, never the hook directory's", async (t) => {
   const hookCa = "/home/node/.oce-native-hooks/gateway-ca.pem";
   const podCa = "/run/oce/repository-credentials/sessions/session/ca-bundle.pem";
   const readyTurn = probe([
@@ -517,7 +563,7 @@ test("Codex app-server gives sandboxed commands the Pod's CA path, never the hoo
         ...(shellCa === undefined ? {} : { OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS: shellCa }),
       },
     });
-    runtime.start();
+    await runtime.start();
     runtime.assertNativeScriptConsumed();
     assert.equal(runtime.appServerSpawns.length, 1, name);
     const [{ args, env }] = runtime.appServerSpawns;
@@ -1034,8 +1080,10 @@ test("Codex runtime retries a transient startup model probe failure once", async
     {
       // Only a detail token is marked as retried; a cause with no detail keeps none.
       name: "a wrapper error after a transient failure holds a cause with no detail",
-      // A non-string stdout makes the wrapper throw.
-      native: [login(), killed, probe([], { stdout: 1 })],
+      // The first probe is transiently killed; the retry cannot create its
+      // temporary directory. No second native process is started.
+      probeDirectoryFailureAt: 2,
+      native: [login(), killed],
       retryAfterMs: 1000,
       expect: probeFailure({ kind: "WRAPPER_ERROR" }),
       probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
@@ -1863,24 +1911,25 @@ test("Codex runtime classifies a failed model check's stdout error events, never
       expect: held("error-event"),
       failureClass: "network",
     },
-    // Malformed stdout is not read: the class comes from stderr alone, as before.
+    // A malformed prefix remains invalid even if a later record names rejected credentials.
+    // A suffix after the first rejection is intentionally discarded by the streamed runner.
     {
-      name: "malformed stdout naming a status classifies stderr alone",
+      name: "malformed stdout before a rejection classifies stderr alone",
       events: [],
       result: {
         status: 1,
-        stdout: `${JSON.stringify(failedTurn("unexpected status 401 Unauthorized"))}\nnot-json`,
+        stdout: `not-json\n${JSON.stringify(failedTurn("unexpected status 401 Unauthorized"))}`,
         stderr: "",
       },
       expect: probeFailure({ kind: "INVALID_OUTPUT", detail: "json" }),
       failureClass: "empty",
     },
     {
-      name: "non-event stdout naming a status classifies stderr alone",
+      name: "non-event stdout before a rejection classifies stderr alone",
       events: [],
       result: {
         status: 1,
-        stdout: `${JSON.stringify(failedTurn("unexpected status 401 Unauthorized"))}\nnull`,
+        stdout: `null\n${JSON.stringify(failedTurn("unexpected status 401 Unauthorized"))}`,
         stderr: secretOutput("error sending request for url"),
       },
       expect: probeFailure({ kind: "INVALID_OUTPUT", detail: "shape" }),
