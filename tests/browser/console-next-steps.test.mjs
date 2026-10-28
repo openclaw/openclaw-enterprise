@@ -344,13 +344,51 @@ test("a rejected credential's record stops alerting once the Agent binds another
   assert.equal(await activity.getByRole("alert", { includeHidden: true }).count(), 0);
   assert.equal(await activity.getByText(recorded).count(), 0);
 
+  // Another tab restores the rejected binding. Refresh deployment rereads the Agent without
+  // remounting the page; the recorded failure must become actionable again.
+  async function refreshDeploymentWithBinding(expected) {
+    const reread = page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+        response.request().method() === "GET",
+    );
+    await activity.getByRole("button", { name: "Refresh deployment", exact: true }).click();
+    const response = await reread;
+    assert.equal(response.status(), 200);
+    assert.deepEqual((await response.json()).data.harnessAuth, expected);
+  }
+
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: agent.harnessAuth,
+  });
+  await refreshDeploymentWithBinding(agent.harnessAuth);
+  await activity
+    .getByRole("alert", { includeHidden: true })
+    .getByText(recorded)
+    .waitFor({ state: "attached" });
+  assert.equal(
+    await activity.getByText(MODEL_CREDENTIAL_REJECTED_REPLACED, { exact: false }).count(),
+    0,
+  );
+
+  const rebound = await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "api_key", source: replacement.ref },
+  });
+  await refreshDeploymentWithBinding(rebound.harnessAuth);
+  await activity
+    .getByText(MODEL_CREDENTIAL_REJECTED_REPLACED, { exact: false })
+    .waitFor({ state: "attached" });
+  assert.equal(await activity.getByRole("alert", { includeHidden: true }).count(), 0);
+
   // Detaching the source is not a replacement. No new credential is available to deploy.
   const detached = await fixture.updateAgent(namespace.id, agent.id, {
     configurationId: agent.configurationId,
     harnessAuth: null,
   });
   assert.equal(detached.harnessAuth, null);
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await refreshDeploymentWithBinding(null);
   await activity
     .getByRole("alert", { includeHidden: true })
     .getByText(recorded)

@@ -2407,12 +2407,12 @@ export async function renderAgentDetail(
   // given another credential since that version was deployed.
   function credentialReplacedSince(revisionId: string) {
     return (
-      agent.harnessAuth != null &&
+      currentAgent.harnessAuth != null &&
       latestRevisionDetail !== null &&
       "harnessAuth" in latestRevisionDetail &&
       latestRevisionDetail.id === revisionId &&
       latestRevisionDetail.id === visibleRevisions[0]?.id &&
-      JSON.stringify(latestRevisionDetail.harnessAuth) !== JSON.stringify(agent.harnessAuth)
+      JSON.stringify(latestRevisionDetail.harnessAuth) !== JSON.stringify(currentAgent.harnessAuth)
     );
   }
   // A recorded rejected model credential in this caller's words, as the recovery banner says it
@@ -2425,7 +2425,7 @@ export async function renderAgentDetail(
     if (credentialReplacedSince(revisionId)) {
       return { text: MODEL_CREDENTIAL_REJECTED_REPLACED, settled: true };
     }
-    const ask = credentialRejectedAsk(error.code, agent.harnessAuth, callerPermissions);
+    const ask = credentialRejectedAsk(error.code, currentAgent.harnessAuth, callerPermissions);
     return ask === undefined ? undefined : { text: ask };
   }
   // The answers recordedFailureText reads changed: the permission answer, the Agent's binding or
