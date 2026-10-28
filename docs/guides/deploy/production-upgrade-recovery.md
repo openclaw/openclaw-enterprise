@@ -139,11 +139,12 @@ Wait until the gateway is `Ready` again, then resume; the resume runs Doctor
 again without new deployments.
 
 `did not stay on the same Ready Pod without restarts through OpenClaw Doctor`
-means that every Doctor passed, but afterward a named Agent's gateway Pod was
-evicted, deleted, replaced, restarted, or not `Ready`. Doctors run one at a time,
-but node memory pressure from other Pods can still evict a gateway. Inspect the
-node's events, wait until that Agent's gateway is `Ready`, then resume. The
-resume runs Doctor in the current gateway without new deployments.
+means that every Doctor passed, but afterward a named Agent's gateway Pod, or a
+dedicated Agent's `agent` Pod, was evicted, deleted, replaced, restarted, or not
+`Ready`. Doctors run one at a time, but node memory pressure from other Pods can
+still evict them. Inspect the node's events, wait until that Agent's Pods are
+`Ready`, then resume. The resume runs Doctor in the current gateway without new
+deployments.
 
 `OpenClaw Doctor ran out of its 384 MiB heap` means Doctor reached its heap cap;
 check the separate gateway restart observation. Repeat the command with

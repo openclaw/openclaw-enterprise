@@ -256,9 +256,10 @@ evidence; only fresh sufficient readings admit Doctor within its own deadline.
 Failure reports separate Doctor's exit status from gateway restarts since Ready.
 Missing or incomparable counts or Pod identities report unknown; only a comparable
 increase with last termination `OOMKilled` names an OOM kill. A memory timeout
-starts no further Doctor. Then, also after a failed Doctor, `gateway_change_since_ready`
-fails the upgrade for any gateway missing, replaced, restarted, or unready; the
-readiness wait ignores ended Pods, so resume checks the replacement.
+starts no further Doctor. Then, also after a failed Doctor, `revision_pod_change_since_ready`
+fails the upgrade for any revision Pod the wait required (gateway or dedicated agent)
+missing, replaced, restarted, or unready; the readiness wait ignores ended Pods, so
+resume checks the replacement.
 Failures retain dispatch, status, Pod, and Doctor evidence.
 
 ### 6. Hand off application verification
@@ -325,6 +326,7 @@ The check does not separate resources an older import already merged.
 
 ## Changelog
 
+- 2026-10-28 06:40: Check every revision Pod, not only the gateway, after Doctor. (fix-2755)
 - 2026-10-28 05:40: Check gateways after failed Doctors. (bughunt-1028)
 - 2026-10-28 00:40: Run Doctors serially; fail on gateways changed afterward. (fix-2736)
 - 2026-10-26 23:24: Record source checkout verification before private inputs. (authoring-run/dc3e51c1-8f14-4410-9c70-e4a993ea58fe - 821bee5fe0bb446319fab40ad21055b1e942eb37)

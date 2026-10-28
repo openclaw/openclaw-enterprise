@@ -1377,13 +1377,32 @@ while IFS= read -r deployment; do
   # The ready gateway container's restart count: a Doctor failure reports only
   # restarts after this point.
   gateway_restarts=$(jq -c '.restarts' <<<"$gateway")
+  # Every live revision Pod the wait above required Ready, such as a dedicated Agent's
+  # gateway and Codex agent Pods, with the restart count of its gateway and agent
+  # containers (of all its containers when it has neither). The check after the last
+  # Doctor reads each of them again (finding 2755).
+  revision_pods=$(
+    jq -c '
+      [
+        .items[] |
+        ([.spec.containers[].name] as $names |
+          if any($names[]; . == "gateway") then "gateway"
+          elif any($names[]; . == "agent") then "agent"
+          else "revision" end) as $role |
+        {role: $role, namespace: .metadata.namespace, name: .metadata.name, uid: .metadata.uid,
+          restarts: ([.status.containerStatuses[]? | select($role == "revision" or .name == "gateway" or .name == "agent") |
+            .restartCount] |
+            if length > 0 and all(.[]; type == "number") then add else null end)}
+      ]
+    ' "$live_pods"
+  )
   jq -cn --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
     --arg deploymentId "$deployment_id" --arg gatewayNamespace "$gateway_namespace" \
     --arg gatewayName "$gateway_name" --argjson gatewayRestarts "$gateway_restarts" \
-    --argjson gatewayUid "$(jq '.uid' <<<"$gateway")" \
+    --argjson gatewayUid "$(jq '.uid' <<<"$gateway")" --argjson revisionPods "$revision_pods" \
     '{namespaceId: $namespaceId, agentId: $agentId, deploymentId: $deploymentId,
       gatewayNamespace: $gatewayNamespace, gatewayName: $gatewayName,
-      gatewayRestarts: $gatewayRestarts, gatewayUid: $gatewayUid}' \
+      gatewayRestarts: $gatewayRestarts, gatewayUid: $gatewayUid, revisionPods: $revisionPods}' \
     >>"$doctor_targets"
 done <"$deployments"
 
@@ -1486,13 +1505,14 @@ report_doctor_failure() {
   fi
 }
 
-# Prints how a gateway changed since its Ready baseline, or nothing when it is the
-# same Pod, still Running and Ready, with the same gateway restart count. A read
-# failure is a change too: the upgrade cannot show the gateway kept serving.
-gateway_change_since_ready() {
-  local ready_gateway=$1 output=$2 status=0
-  "${kube[@]}" --request-timeout=15s --namespace "$(jq -r '.gatewayNamespace' <<<"$ready_gateway")" \
-    get "pod/$(jq -r '.gatewayName' <<<"$ready_gateway")" --output json \
+# Prints how a revision Pod changed since its Ready baseline (a doctor-targets.jsonl
+# revisionPods entry), or nothing when it is the same Pod, still Running and Ready,
+# with the same restart count. A read failure is a change too: the upgrade cannot
+# show the Pod kept serving.
+revision_pod_change_since_ready() {
+  local ready_pod=$1 output=$2 status=0
+  "${kube[@]}" --request-timeout=15s --namespace "$(jq -r '.namespace' <<<"$ready_pod")" \
+    get "pod/$(jq -r '.name' <<<"$ready_pod")" --output json \
     </dev/null >"$output" 2>"$output.error" || status=$?
   if ((status != 0)); then
     if grep -q '(NotFound)' "$output.error"; then
@@ -1502,12 +1522,13 @@ gateway_change_since_ready() {
     fi
     return
   fi
-  jq -r --argjson baseline "$ready_gateway" '
+  jq -r --argjson baseline "$ready_pod" '
     def count:
       if type == "number" then . >= 0 and . <= 9007199254740991 and floor == .
       else false end;
-    [.status.containerStatuses[]? | select(.name == "gateway")] as $rows |
-    if .metadata.uid != $baseline.gatewayUid then
+    [.status.containerStatuses[]? |
+      select($baseline.role == "revision" or .name == "gateway" or .name == "agent")] as $rows |
+    if .metadata.uid != $baseline.uid then
       "was replaced by a new Pod with the same name"
     elif .status.reason == "Evicted" then
       "was evicted (phase \(.status.phase // "unknown"))"
@@ -1515,11 +1536,11 @@ gateway_change_since_ready() {
       "is being deleted"
     elif .status.phase != "Running" then
       "stopped (phase \(.status.phase // "unknown"), reason \(.status.reason // "none"))"
-    elif ($rows | length) != 1 or ($rows[0].restartCount | count | not) or
-      ($baseline.gatewayRestarts | count | not) then
-      "has no comparable gateway restart count"
-    elif $rows[0].restartCount != $baseline.gatewayRestarts then
-      "restarted \($rows[0].restartCount - $baseline.gatewayRestarts) time(s) (last termination: \($rows[0].lastState.terminated.reason // "none"))"
+    elif ($rows | length) == 0 or (all($rows[]; .restartCount | count) | not) or
+      ($baseline.restarts | count | not) then
+      "has no comparable \($baseline.role) restart count"
+    elif ([$rows[].restartCount] | add) != $baseline.restarts then
+      "restarted \(([$rows[].restartCount] | add) - $baseline.restarts) time(s) (last termination: \([$rows[].lastState.terminated.reason // empty][0] // "none"))"
     elif any(.status.conditions[]?; .type == "Ready" and .status == "True") | not then
       "is not Ready"
     else
@@ -1601,25 +1622,33 @@ fi
 [[ -z "$doctor_timeout" ]] || die "$doctor_timeout"
 
 # Doctor passing proves little if a gateway it checked was then evicted, replaced or
-# restarted, for example under node memory pressure (finding 2736). After the last
-# Doctor, every checked gateway must still be the same Pod, Running and Ready, with
-# the restart count it had when it became Ready. This also runs after a failed Doctor:
-# an eviction kills Doctor (exit 137) without a container restart, and only this
-# check names it.
-gateway_changed=0
+# restarted, for example under node memory pressure (finding 2736), and neither does a
+# dedicated Agent whose Codex agent Pod went the same way (finding 2755). After the last
+# Doctor, every revision Pod the readiness wait required must still be the same Pod,
+# Running and Ready, with the restart count it had when it became Ready. This also runs
+# after a failed Doctor: an eviction kills Doctor (exit 137) without a container
+# restart, and only this check names it.
+pod_changed=0
 while IFS= read -r target; do
   agent_id=$(jq -r '.agentId' <<<"$target")
-  gateway_change=$(gateway_change_since_ready "$target" \
-    "$evidence_dir/status/$(json_file_name "$(jq -r '.namespaceId' <<<"$target")--$agent_id--$(jq -r '.deploymentId' <<<"$target")").after-doctor.json") ||
-    gateway_change="could not be compared with its Ready state"
-  [[ -n "$gateway_change" ]] || continue
-  gateway_changed=1
-  warn "Agent $agent_id's gateway Pod $(jq -r '.gatewayNamespace' <<<"$target")/$(jq -r '.gatewayName' <<<"$target") $gateway_change after it became Ready for OpenClaw Doctor."
+  target_prefix="$(jq -r '.namespaceId' <<<"$target")--$agent_id--$(jq -r '.deploymentId' <<<"$target")"
+  ready_pods=$(jq -ce '.revisionPods | arrays | select(length > 0) | .[]' <<<"$target") ||
+    die "Agent $agent_id's Doctor target records no revision Pods to check."
+  while IFS= read -r ready_pod; do
+    pod_namespace=$(jq -r '.namespace' <<<"$ready_pod")
+    pod_name=$(jq -r '.name' <<<"$ready_pod")
+    pod_change=$(revision_pod_change_since_ready "$ready_pod" \
+      "$evidence_dir/status/$(json_file_name "$target_prefix--$pod_name").after-doctor.json") ||
+      pod_change="could not be compared with its Ready state"
+    [[ -n "$pod_change" ]] || continue
+    pod_changed=1
+    warn "Agent $agent_id's $(jq -r '.role' <<<"$ready_pod") Pod $pod_namespace/$pod_name $pod_change after it became Ready for OpenClaw Doctor."
+  done <<<"$ready_pods"
 done <"$doctor_targets"
 ((doctor_failed == 0)) ||
   die "OpenClaw Doctor failed for at least one replacement gateway; inspect $evidence_dir/status/*.doctor.error."
-((gateway_changed == 0)) ||
-  die "at least one Agent's gateway did not stay on the same Ready Pod without restarts through OpenClaw Doctor, so the upgrade is not complete. Wait until each named Agent's gateway is Ready, then repeat the command with --resume and the same evidence directory; the resume runs Doctor again in the current gateway without new deployments."
+((pod_changed == 0)) ||
+  die "at least one Agent's gateway or agent Pod did not stay on the same Ready Pod without restarts through OpenClaw Doctor, so the upgrade is not complete. Wait until each named Agent's revision Pods are Ready, then repeat the command with --resume and the same evidence directory; the resume runs Doctor again in the current gateway without new deployments."
 
 if [[ "$repository_enabled" == true ]]; then
   verify_pair_nodes
