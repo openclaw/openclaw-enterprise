@@ -100,6 +100,7 @@
     "tests/conformance/console-json-errors.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
+    "tests/conformance/console-gateway-safety.test.mjs",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
     "tests/conformance/split-layout-tenants.test.mjs",
     "tests/conformance/split-layout-adopt.test.mjs",
@@ -277,6 +278,9 @@
     },
     {
       "path": "tests/conformance/slack-configuration.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-gateway-safety.test.mjs"
     },
     {
       "path": "tests/conformance/service-account-driver.test.mjs"
