@@ -27,11 +27,12 @@ Agent. The Agent's tool, such as `gog`, can then read that user's Gmail. Only th
 user can use the Agent.
 
 Installation administrators define connections as Installation-wide **connection
-templates**, which Presets can reference. For Google, the Credential Refresh Driver
-exchanges the authorization code and gives OpenShell the grant to refresh access
-tokens. For an MCP server, the Driver uses the official TypeScript MCP client for
-exchange and refresh. In both flows the tool receives only a placeholder. OCE core
-contains no provider-specific endpoints, scopes, or binaries.
+templates**, which Presets can reference. For templates with configured OAuth
+endpoints, the Credential Refresh Driver exchanges the code and gives OpenShell
+the grant to refresh access tokens. For MCP templates, the Driver uses the
+official TypeScript MCP client for exchange and refresh. In both flows the tool
+receives only a placeholder. OCE core contains no provider-specific endpoints,
+scopes, or binaries.
 
 ## Motivation
 
@@ -99,7 +100,7 @@ Namespace.
 | `authorizationUrl`, `tokenUrl`      | Where OCC sends the user, and where the Driver exchanges the code. Exact `https` URLs.                                                          |
 | `clientId`, `clientSecret`          | The administrator's OAuth client at `issuer`. The Refresh Driver keeps the secret; OCC stores no value.                                         |
 | `scopes`, `authorizationParameters` | The fixed access the user approves. Users cannot add scopes. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
-| `endpoint`                          | The API `host`, `port`, `path`, and `access` (`read-only` or `full`) that receive the credential.                                               |
+| `endpoint`                          | Credential destination (`host`, `port`, `path`). `access` is `read-only` or `full` for `oauth2`, and `full` for `mcp_oauth`.                    |
 | `envVar`, `binary`                  | The placeholder variable and the one executable that may send it.                                                                               |
 | `accountIdentity`                   | `none` (default) or `oidc`. With `oidc`, OCC also requests `openid email` and shows the connected address.                                      |
 | `jwksUri`                           | Optional with `oidc`. Without it, the Driver discovers the signing keys from `issuer`.                                                          |
@@ -251,8 +252,9 @@ uses the same Console and API steps with the
    recorded owner, registers an empty source as `registering`, and calls
    `startBrowserAuthorization`. It stores `privateState` in a Namespace Secret, as
    device login does, and returns the source ID and `authorizationUrl`.
-2. The console shows which account data the tool can read, then opens the URL in a
-   popup. When a browser blocks popups, it redirects the page.
+2. The console shows the destination and scopes the tool is requesting, then
+   opens the consent URL in a popup. When a browser blocks popups, it redirects
+   the page.
 3. `GET /oauth/callback` requires the session that started the connection. OCC
    finds the session by a hash of `state`, rejects reuse or an age above ten
    minutes, and calls `completeBrowserAuthorization` once. The response sets

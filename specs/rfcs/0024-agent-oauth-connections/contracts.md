@@ -28,12 +28,11 @@ methods. A Driver that omits them offers no browser connections.
 ### MCP authorization
 
 For an `mcp_oauth` version, the Credential Refresh Driver uses the official
-TypeScript MCP client (`@modelcontextprotocol/client`). Slack's plugin declares
-its server at `https://mcp.slack.com/mcp`. Selecting the plugin installs the
-server configuration. After the owner connects their account through **Connect**
-and deploys the Agent, the dedicated worker exposes every tool that Slack returns
-through `tools/list` for that connection. Slack authorizes each `tools/call`
-using the user's grant and workspace permissions.
+TypeScript MCP client (`@modelcontextprotocol/client`). The plugin declares its
+MCP server URL. After the owner connects their account and deploys the Agent,
+the dedicated worker exposes every tool the server returns from `tools/list`
+for that connection. The server authorizes each `tools/call` under the user's
+grant and account permissions.
 
 1. **Approve the template.** The Driver reads the server's authentication
    challenge and uses the SDK to discover protected resource and authorization
@@ -43,9 +42,7 @@ using the user's grant and workspace permissions.
    client, and requested scopes as one immutable version. The SDK takes scope
    guidance from the server's challenge and falls back to the protected resource's
    `scopes_supported` when the challenge omits scope. The administrator reviews
-   those scopes and can choose a narrower set. Slack's template uses a preregistered
-   app. Its resource is `https://mcp.slack.com` and its OAuth endpoints are on
-   `slack.com`.
+   those scopes and can choose a narrower set.
 2. **Connect.** The Driver calls SDK `auth()` with the approved scopes and an
    `OAuthClientProvider` backed by the version's client registration. It checks
    the SDK's consent URL against the approved destination and scope set before
@@ -60,20 +57,22 @@ using the user's grant and workspace permissions.
    SDK rejects an issuer mismatch, or a missing issuer when the authorization
    server advertises issuer identification, before exchanging the code.
 3. **Refresh and present.** The credential service behind the Driver uses the SDK
-   for exchange and refresh so both send the approved resource. Before activating
-   either token it compares the granted scopes with the approved set. Slack
-   reports the user's scopes in `authed_user.scope`. The adapter must check that
-   field before SDK parsing discards it. A different grant requires reconnection.
+   for exchange and refresh so both requests include the approved resource.
+   Before activating an access token, the service verifies that the user's
+   effective grant matches the approved scopes. If the grant differs or the
+   service cannot establish its scope, it withholds the token and requires
+   reconnection.
    The service serializes refresh per source and atomically saves the new access
    token and any replacement refresh token. It reports `ready` once it holds a
    usable access token and refresh grant. Deployment matches the ready connection
    to the plugin's server, resource, and issuer. Protected egress presents the
-   prepared access token at the approved MCP endpoint. The worker uses the same placeholder
-   across rotations.
+   prepared access token at the approved MCP endpoint. The worker uses the same
+   placeholder across rotations.
    A Driver that only hands a refresh token to OpenShell cannot admit this protocol
    until it supports that handoff of prepared access tokens.
 
-Verify the adapter against a controlled MCP server and issuer. Observe the same
+Using a controlled MCP server and issuer, verify that saving a `read-only` MCP
+template fails and creates no version. With a `full` template, observe the same
 resource on consent, exchange, and refresh. With a scoped challenge, verify the
 SDK proposes that scope. Without one, verify it proposes the resource's advertised
 scopes and the consent URL requests only the set approved for the version.
@@ -81,10 +80,10 @@ Change the advertised token endpoint and verify it receives no secret or code.
 An invalid callback issuer must fail before exchange, and a broader scope in a
 token response must keep that token out of egress.
 After rotation, the same worker placeholder must reach the server with the second
-access token. When a test account is available, compare the tools exposed by the
-worker with Slack's `tools/list` for that account and invoke a tool from Console.
+access token. With an authorized test account, compare the worker's tool catalog
+with the server's `tools/list` for that connection and invoke a tool from Console.
 
-[MCP scope selection](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#scope-selection-strategy) · [SDK OAuth client](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts) · [Slack protected resource](https://mcp.slack.com/.well-known/oauth-protected-resource) · [Slack authorization server](https://mcp.slack.com/.well-known/oauth-authorization-server) · [Slack token response](https://docs.slack.dev/reference/methods/oauth.v2.user.access/#response)
+[MCP scope selection](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#scope-selection-strategy) · [SDK OAuth client](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
 ### Client registrations
 
@@ -175,10 +174,14 @@ administrators, who hold every action through the built-in administrator role.
 
 Use [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 for the deployed revision. Limit the authorized route to the endpoint the owner
-approved. For a configured HTTP template with `read-only` access, the sender
-permits only `GET`, `HEAD`, and `OPTIONS`. Slack MCP sends JSON-RPC over
-`POST /mcp`. The sender must admit that method at the exact server endpoint.
-Attaching a source cannot expand an installation's egress ceiling.
+approved. Attaching a source cannot expand an installation's egress ceiling.
+
+For a configured HTTP template with `read-only` access, the sender permits only
+`GET`, `HEAD`, and `OPTIONS`. MCP clients send both read and write tool calls by
+`POST` to the declared endpoint. OCC rejects an `mcp_oauth` template with
+`read-only` access before saving a version. With `full` access, the sender
+admits the transport at that exact endpoint and the MCP server enforces the
+user's grant on each call. [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
 
 RFC-0023 authenticates an execution. Listing a binary in a connection template
 does not establish which process sent a request. Refuse deployment when the
