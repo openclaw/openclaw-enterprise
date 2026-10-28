@@ -8613,7 +8613,7 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row, as the Agents list has no Stop icon.",
+      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopFirstDeploymentQueued: {
