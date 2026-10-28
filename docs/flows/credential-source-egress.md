@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-27"
-last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
+last_updated_session: authoring-run/d77dd1ef-fd4c-48d2-8152-ac22d5f72d18
 ---
 
 # Protected credential request flow
@@ -117,24 +117,26 @@ fence refuses; legacy observations cannot substitute. The gateway compares unkno
 fields too. The local fingerprint covers both hashes and full policies, but is neither
 a canonical supplier hash nor supervisor attestation.
 
-Compute adds `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from the immutable admitted
-revision only to protected provider Harness requirements. Before opening its authenticated
-listener on the existing service port, the generated helper requires the literal to equal
-the manifest's enrollment execution revision; missing or mismatched values refuse.
-Compute suppresses its private status revision, port, container name and Pod UID; the
-provider receives the transport verifier, not the raw transport token.
+Compute sends protected Harnesses `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` and a
+verifier, withholding its private status identifiers and raw bearer. The helper
+refuses mismatched enrollment before opening its authenticated listener.
 
-Before the first model probe, the Harness waits on this listener. Compute awaits the
-installation commit, requeries current evidence and calls the selected Sandbox Driver,
-which checks the exact Sandbox and service and reads the execution/plan challenge.
-Compute signs its fresh process nonce and current installation with a control-plane-only
-key. The listener closes before Codex starts. Restart creates a new challenge; stale
-release cannot unlock the replacement. After 180 seconds, startup fails closed and remains held.
-Reconciliation may repeat readiness exchanges, but enrollment neither
-resolves material nor retries business requests. The worker's active-revision branch can
-repeat this sequence when work is queued. Default Kubernetes has no periodic maintenance
-interval, so Harness-only restart recovery is not automatic;
-see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
+Before inference, Compute commits and rechecks the installation, Sandbox, service
+and challenge, then signs release with its private key. Startup closes the listener;
+replacements need fresh challenges. At 180 seconds it fails closed. Enrollment
+neither resolves credentials nor retries requests. Reconciliation can repeat checks;
+[Harness-only restart recovery remains manual](../reference/credential-sources/protected-inference.md#installation-configuration).
+
+For the v6 GitHub installation preview, `NATIVE_WORKER_ENTRYPOINT`
+(`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`) also holds
+node connection. Sandbox validates `OPENCLAW_NATIVE_EGRESS_ENROLLMENT` against
+admission. A recorded ACK replaces Codex WebSocket observation;
+`ProtectedExecutionDriver.enroll` rechecks policy, recipient and Pod identity.
+Compute requires node enrollment and exposure withdrawal before readiness. Sandbox
+prepares a nonsecret launcher on the revision's PVC and mounts it read-only at
+`/usr/local/bin/git`, before system Git in native shell paths. It delegates to
+Pod-local Git configuration with public CA trust and an identity-bound OpenShell
+alias; the supervisor retains real credentials.
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -336,6 +338,9 @@ None.
 
 ## Changelog
 
+- 2026-10-27 18:09: Describe native OpenClaw startup release for the observed-hook Git preview in the accompanying source change. (authoring-run/d77dd1ef-fd4c-48d2-8152-ac22d5f72d18 - 2b40862ddb8c71dcb73034bbacec14966a62f4fb)
+
+- 2026-10-24: Name Git-only Proxy refusals. (fix-2360)
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 
 - 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)

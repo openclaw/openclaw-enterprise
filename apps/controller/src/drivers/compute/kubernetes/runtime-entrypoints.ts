@@ -4789,6 +4789,10 @@ ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
 // node that never connects.
 ${SUPERVISOR_HELD_FAILURE_HELPER}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
+${HARNESS_EGRESS_ENROLLMENT_HELPER}
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
@@ -4878,6 +4882,7 @@ if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
+function startReleasedNativeWorker(enrollment) {
 const authenticationFailure = probeOpenClawAuthenticationFailure();
 if (authenticationFailure !== undefined) {
   holdFailedAuthentication("model-probe", authenticationFailure.code, authenticationFailure.cause);
@@ -4925,6 +4930,28 @@ if (gatewayCa) {
   writeFileSync(caPath, [inheritedCa, gatewayCa].filter(Boolean).join("\n"), { mode: 0o600 });
   nodeEnv.NODE_EXTRA_CA_CERTS = caPath;
 }
+// Native child workers retain PATH and NODE_EXTRA_CA_CERTS, but deliberately drop
+// Git's CA and credential-helper environment. Keep only the identity-bound
+// OpenShell alias in a private Pod-local Git shim; real credentials stay in the
+// supervisor. Do not widen the native worker's inherited environment.
+let gitTrustDirectory;
+if (enrollment?.repositoryGitAuthorization === "request-hook-observed") {
+  if (!nodeEnv.NODE_EXTRA_CA_CERTS) throw new Error("Native Git trust is missing.");
+  readFileSync(nodeEnv.NODE_EXTRA_CA_CERTS);
+  const alias = process.env.GITHUB_TOKEN;
+  if (typeof alias !== "string" || !/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(alias)) {
+    throw new Error("Native Git requires its OpenShell stable credential alias.");
+  }
+  const authorization = Buffer.from("x-access-token:" + alias).toString("base64");
+  gitTrustDirectory = "/tmp/oce-native-git";
+  mkdirSync(gitTrustDirectory, { mode: 0o700 });
+  writeFileSync(join(gitTrustDirectory, "git"),
+    '#!/bin/sh\nexec /usr/bin/git -c credential.helper= -c http.https://github.com/.extraHeader="Authorization: Basic ' +
+      authorization + '" -c http.sslVerify=true -c http.followRedirects=false -c http.sslCAInfo="$NODE_EXTRA_CA_CERTS" "$@"\n',
+    { mode: 0o700, flag: "wx" });
+  // Sandbox mounts its nonsecret launcher at /usr/local/bin/git. Native startup
+  // and login-shell PATH discovery otherwise put system Git ahead of this shim.
+}
 // Identity and connect open the node state, so Doctor migrates an older one first
 // with the node's own settings: never the model credential or setup code the
 // connect child receives. A failure holds the worker unready rather than
@@ -4971,11 +4998,29 @@ const stop = (signal) => {
 };
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
-child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
+child.on("exit", (code, signal) => {
+  if (gitTrustDirectory) rmSync(gitTrustDirectory, { recursive: true, force: true });
+  process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
+});
 })().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+}
+}
+const nativeEnrollment = process.env.OPENCLAW_NATIVE_EGRESS_ENROLLMENT;
+const protectedStartup = nativeEnrollment !== undefined ||
+  process.env.OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID !== undefined ||
+  process.env.OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY !== undefined;
+if (!protectedStartup) {
+  startReleasedNativeWorker();
+} else {
+  let enrollment;
+  try { enrollment = JSON.parse(nativeEnrollment); } catch {}
+  waitForHarnessEgressEnrollment(enrollment).then(() => {
+    delete process.env.OPENCLAW_NATIVE_EGRESS_ENROLLMENT;
+    startReleasedNativeWorker(enrollment);
+  }, () => holdFailedAuthentication("egress-enrollment", "UNAVAILABLE"));
 }
 `;
 

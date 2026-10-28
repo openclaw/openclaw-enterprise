@@ -4494,7 +4494,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
         !this.sandboxDriver?.repositoryAccess &&
         harness.id === "openclaw" &&
         harness.mode === "embedded") ||
-      (harness.id === "codex" && harness.mode === "dedicated")
+      (harness.id === "codex" && harness.mode === "dedicated") ||
+      (this.sandboxDriver?.repositoryAccess &&
+        harness.id === "openclaw" &&
+        harness.mode === "dedicated")
     )) {
       throw new ConfigurationFailure(
         this.preparedRepositoryIngress
@@ -6150,7 +6153,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const execution = plan.execution;
     if (
-      revision.harness.id !== "codex" ||
+      (revision.harness.id !== "codex" &&
+        !(
+          revision.harness.id === "openclaw" &&
+          revision.executionAdmission.version === 6 &&
+          plan.repositoryGitAuthorization === "request-hook-observed" &&
+          plan.repositoryGit !== undefined
+        )) ||
       revision.harness.mode !== "dedicated" ||
       revision.sandboxDriverId !== plan.sandboxDriverId ||
       !context?.currentEgressInstallation ||
@@ -7172,6 +7181,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   // Bind enrollment to the immutable admitted revision.
                   { name: "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID", value: revision.id },
                   { name: COMPUTE_RELEASE_PUBLIC_KEY, value: computeReleasePublicKey(releaseKey!) },
+                  ...(nativeRuntime === undefined
+                    ? []
+                    : [
+                        {
+                          name: "OPENCLAW_NATIVE_EGRESS_ENROLLMENT",
+                          value: JSON.stringify(harnessEgressEnrollment(revision.egressPlan!)),
+                        },
+                      ]),
                 ]),
           ],
         };

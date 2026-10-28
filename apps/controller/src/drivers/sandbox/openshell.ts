@@ -768,6 +768,28 @@ function harnessRuntimeFiles(
       );
     }
   }
+  if (!codex) {
+    const enrollment = requirements.environment.filter(
+      (entry) => entry.name === "OPENCLAW_NATIVE_EGRESS_ENROLLMENT",
+    );
+    if (
+      !isDeepStrictEqual(
+        enrollment,
+        plan === undefined
+          ? []
+          : [
+              {
+                name: "OPENCLAW_NATIVE_EGRESS_ENROLLMENT",
+                value: JSON.stringify(harnessEgressEnrollment(plan)),
+              },
+            ],
+      )
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Protected native Harness startup must match the admitted egress plan.",
+      );
+    }
+  }
   const nodeCaEntries = requirements.environment.filter(
     (entry) => entry.name === WORKSPACE_NODE_CA_ENVIRONMENT,
   );
@@ -1418,10 +1440,19 @@ const OPENSHELL_CHATGPT_AUTH_BOOTSTRAP = String.raw`{
 }
 `;
 
+function usesNativeGitLauncher(revision: Readonly<AgentRevision>): boolean {
+  return (
+    revision.harness.id === "openclaw" &&
+    revision.executionAdmission?.version === 6 &&
+    revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed"
+  );
+}
+
 function workspaceVolumeMounts(
   requirements: HarnessWorkloadRequirements,
   dataMount: { readonly name: string; readonly mount_path: string; readonly sub_path: string },
   revisionId: string,
+  nativeGit = false,
 ) {
   const volumes = new Map<string, { readonly claimName: string; readOnly: boolean }>();
   const links: OpenShellWorkspaceLink[] = [];
@@ -1474,6 +1505,14 @@ function workspaceVolumeMounts(
     sub_path: `openshell-runtime-${sha256Hex(revisionId, 16)}`,
     read_only: false,
   });
+  if (nativeGit) {
+    mounts.push({
+      name: dataMount.name,
+      mount_path: "/usr/local/bin/git",
+      sub_path: `openshell-runtime-${sha256Hex(revisionId, 16)}/native-git-launcher`,
+      read_only: true,
+    });
+  }
   const distinctRuntimePaths = new Set(runtimePaths);
   if (
     distinctRuntimePaths.size !== runtimePaths.length ||
@@ -1641,7 +1680,13 @@ async function prepareNativeWorkspace(
     );
   }
   const data = sandboxDataMount(options, context.requirements);
-  const workspace = workspaceVolumeMounts(context.requirements, data, context.revision.id);
+  const workspace = workspaceVolumeMounts(
+    context.requirements,
+    data,
+    context.revision.id,
+    usesNativeGitLauncher(context.revision),
+  );
+  const gitLauncher = workspace.mounts.find((mount) => mount.mount_path === "/usr/local/bin/git");
   const claims = [
     ...new Set(workspace.mounts.filter((mount) => !mount.read_only).map((mount) => mount.name)),
   ];
@@ -1662,6 +1707,24 @@ async function prepareNativeWorkspace(
     }
   }
   ${harnessWorkspacePreparationScript(paths)}
+  ${
+    gitLauncher === undefined
+      ? ""
+      : `{
+    const fs = require("node:fs");
+    const path = ${JSON.stringify(`/workspace-preparation/${data.name}/${gitLauncher.sub_path}`)};
+    const content = ${JSON.stringify('#!/bin/sh\nexec /tmp/oce-native-git/git "$@"\n')};
+    const existing = fs.lstatSync(path, { throwIfNoEntry: false });
+    if (existing) {
+      if (!existing.isFile() || existing.uid !== process.getuid() ||
+          (existing.mode & 0o7777) !== 0o500 || fs.readFileSync(path, "utf8") !== content) {
+        throw new Error("Native Git launcher conflicts with existing runtime state.");
+      }
+    } else {
+      fs.writeFileSync(path, content, { mode: 0o500, flag: "wx" });
+    }
+  }`
+  }
   {
     const fs = require("node:fs");
     for (const path of ${JSON.stringify(paths)}) {
@@ -2209,7 +2272,12 @@ function sandboxSpec(
     }
   }
   const dataMount = sandboxDataMount(options, requirements);
-  const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
+  const workspace = workspaceVolumeMounts(
+    requirements,
+    dataMount,
+    revision.id,
+    usesNativeGitLauncher(revision),
+  );
   const volumeMounts = workspace.mounts;
   const podConfig: Record<string, unknown> = {
     runtime_class_name: options.kubernetes.runtimeClassName,
@@ -3217,7 +3285,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     const egressPolicy = plan && protectedEgressPolicy(this.options, context.requirements);
-    if (plan !== undefined && context.revision.harness.id !== "codex") {
+    if (
+      plan !== undefined &&
+      context.revision.harness.id !== "codex" &&
+      !(
+        context.revision.harness.id === "openclaw" &&
+        context.revision.executionAdmission.version === 6 &&
+        plan.repositoryGit !== undefined &&
+        plan.repositoryGitAuthorization === "request-hook-observed"
+      )
+    ) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
         "Protected inference startup enrollment requires the dedicated Codex Harness.",
@@ -3672,6 +3749,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     ) {
       return;
     }
+    // Native workers have no app-server socket. The recorded startup ACK is only
+    // release evidence: ProtectedExecutionDriver still re-verifies the exact policy,
+    // recipient and zero-restart Pod, and Compute separately waits for node enrollment.
+    if (revision.harness.id === "openclaw" && git.previewReleased(revision.id)) {
+      return "installed";
+    }
     const { client, service } = await this.exactHarnessService(
       context,
       "observe the held Git preview",
@@ -3725,6 +3808,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new OpenShellSandboxConfigurationFailure(
         "Harness enrollment must match the admitted egress plan.",
       );
+    }
+    if (
+      context.revision.harness.id === "openclaw" &&
+      installation.plan.repositoryGitAuthorization === "request-hook-observed" &&
+      this.openShellGit?.previewReleased(context.revision.id)
+    ) {
+      // Its one-use release was acknowledged. The native exposure is withdrawn
+      // after node enrollment; never read it again or replay the release.
+      return;
     }
     const { client, service } = await this.exactHarnessService(
       context,

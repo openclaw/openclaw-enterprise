@@ -183,6 +183,12 @@ wildcard selects this scope. The installed sender must positively confirm
 needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
 `409 RESOURCE_CONFLICT`, and on a gateway other than 0.1.5, `503`.
 
+For this preview, Kubernetes Compute also supports dedicated native OpenClaw.
+Set `kubernetes.userNamespaces: false` and at most one operator workspace
+ServiceAccount. Select an existing OpenShell Credential Gateway model source.
+OCE verifies the hook and recipient before native startup, then waits for node
+enrollment. Other delivery profiles remain unsupported.
+
 OCE does not add a ref allowlist to installation scope. GitHub's membership,
 permissions and branch rules set its limit. See
 [operator verification and withdrawal](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal)

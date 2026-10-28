@@ -299,6 +299,27 @@ test("repository capability admits only configured Compute-owned native topologi
       { code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED" },
     );
   }
+  const sandboxDriver = {
+    id: "sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    repositoryAccess: {},
+  };
+  const protectedDriver = new KubernetesComputeDriver(configured, { sandboxDriver });
+  assert.doesNotThrow(() =>
+    protectedDriver.validateRepositoryCredentials(
+      { id: "openclaw", mode: "dedicated", version: "1.0.0" },
+      sandboxDriver.id,
+    ),
+  );
+  assert.throws(
+    () =>
+      protectedDriver.validateRepositoryCredentials(
+        { id: "openclaw", mode: "dedicated", version: "1.0.0" },
+        "another-sandbox",
+      ),
+    { code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED" },
+  );
   for (const [id, mode] of [
     ["codex", "embedded"],
     ["openclaw", "dedicated"],
