@@ -188,8 +188,15 @@ RUN echo '570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b  /tmp
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
-RUN --network=none OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts
+# One runner invocation for both Node test files: the runner compiles the whole
+# source tree for its workers first (about a minute), and a second invocation on
+# a fresh .artifacts mount would compile it again. The test runner restores its
+# cache by renaming directories; a fresh mount keeps those renames off the
+# previous layer.
+RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+    OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
+    src/infra/gateway-lock-recovery.test.ts
 # Type-check the two UI test graphs touched by the bridge. The upstream runner
 # generates its database types and compiler cache under .artifacts.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
@@ -200,11 +207,6 @@ RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run 
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
     src/app/gateway-page-activation.test.ts
-# The test runner restores its cache by renaming directories. A fresh mount
-# keeps those renames off the previous test layer.
-RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
-    OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/infra/gateway-lock-recovery.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
