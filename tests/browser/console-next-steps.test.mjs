@@ -161,7 +161,7 @@ test("a rejected model credential tells a member without Agent update which gran
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    detailUrl(fixture, namespace.id, agent.id, "draft", "deployment"),
     operator.credentials,
   );
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
@@ -205,7 +205,15 @@ test("a rejected credential names the grant a member lacks and what deploying ne
   const hidden = ["Auth Rejected grants", agent.harnessAuth.source.id].filter(Boolean);
   const members = {
     // Agent update, and Secret update in place, but no Secret operate on the bound Secret.
-    editor: [...AGENT_READ, ["update", "agent"], ["deploy", "agent"], ["update", "secret"]],
+    editor: [
+      ...AGENT_READ,
+      ["update", "agent"],
+      ["update", "configuration"],
+      ["deploy", "agent"],
+      ["update", "secret"],
+    ],
+    // The binding can be saved even though a deployment would be refused.
+    bindingEditor: [...AGENT_READ, ["update", "agent"], ["read", "secret"], ["operate", "secret"]],
     // Secret update in place, without Agent deploy.
     updater: [...AGENT_READ, ["operate", "agent"], ["update", "secret"]],
     // Every grant replacing the value in place and deploying it needs.
@@ -228,17 +236,54 @@ test("a rejected credential names the grant a member lacks and what deploying ne
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      detailUrl(fixture, namespace.id, agent.id, "draft", "deployment"),
       member.credentials,
     );
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+    if (label === "bindingEditor") {
+      const denied =
+        "The model provider rejected this version's credential (HTTP 401 or 403). Choose a valid authentication source in Credentials. Your access does not include deploying this Agent. Ask an Installation administrator for Agent deploy on it.";
+      await recovery.getByText(denied, { exact: false }).waitFor();
+      await page
+        .getByRole("region", { name: "Deployment activity" })
+        .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${denied}`, { exact: true })
+        .waitFor({ state: "attached" });
+      assert.doesNotMatch(await recovery.innerText(), /then deploy/i);
+      await recovery.getByRole("link", { name: "Open Credentials" }).click();
+      const save = page.getByRole("button", { name: "Save authentication source", exact: true });
+      await waitForEnabled(save);
+      const saved = page.waitForResponse(
+        (response) =>
+          response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+          response.request().method() === "PATCH",
+      );
+      await save.click();
+      assert.equal((await saved).status(), 200);
+      continue;
+    }
     await recovery.getByText(modelCredentialRejectedAsk(expected[label])).waitFor();
+    await page
+      .getByRole("region", { name: "Deployment activity" })
+      .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${modelCredentialRejectedAsk(expected[label])}`, {
+        exact: true,
+      })
+      .waitFor({ state: "attached" });
+    assert.equal(await recovery.getByRole("link", { name: "Open Credentials" }).count(), 0);
     const text = await recovery.innerText();
     for (const value of hidden) {
       assert.ok(!text.includes(value), `${label}: the hidden Secret is not named`);
     }
     if (label === "editor") {
       assert.doesNotMatch(text, /Agent update on this Agent, which your access does not include/);
+      const draft = page.locator(".agent-draft-actions");
+      await draft
+        .getByText(modelCredentialRejectedReadOnly(expected.editor), { exact: false })
+        .waitFor();
+      assert.doesNotMatch(await draft.innerText(), /update or replace it in Credentials/);
+      assert.equal(await draft.getByRole("button", { name: "Set up credentials" }).count(), 0);
+      for (const value of hidden) {
+        assert.ok(!(await draft.innerText()).includes(value));
+      }
     }
     if (label === "updater") {
       assert.doesNotMatch(text, /Then deploy/);
@@ -274,7 +319,7 @@ test("a rejected credential's record stops alerting once the Agent binds another
     deploymentId: revision.id,
     code: "RUNTIME_AUTHENTICATION_FAILED",
   });
-  const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "deployment");
   await login(page, fixture, draft);
   const activity = page.getByRole("region", { name: "Deployment activity" });
   const recorded = `RUNTIME_AUTHENTICATION_FAILED: ${MODEL_CREDENTIAL_REJECTED_RECORDED}`;

@@ -3060,10 +3060,15 @@ export async function renderAgentDetail(
           Boolean(credentials?.mutationPending());
       }
       deploy.disabled = deployIsDisabled();
+      const rejectedAccess =
+        !runtimeAuth && credentialRejected()
+          ? credentialFixAccess(agent.harnessAuth, callerPermissions)
+          : null;
       if (setupCredentials) {
         // A reader's card offers no editor's action; the status says why (finding 2421).
         setupCredentials.hidden =
           draftReadOnly() ||
+          Boolean(rejectedAccess) ||
           selectedTab === "credentials" ||
           revisionResult.status !== "fulfilled" ||
           channelCredentialBlockReason(values) !== null ||
@@ -3079,7 +3084,12 @@ export async function renderAgentDetail(
         } else if (deploySecretsOperateReason(deploySecretsDenied)) {
           const reason = deploySecretsOperateReason(deploySecretsDenied);
           // A refused deployment's alert already says it.
-          deployStatus.textContent = deployFeedback.textContent === reason ? "" : reason;
+          const deployReason = deployFeedback.textContent === reason ? "" : reason;
+          deployStatus.textContent = rejectedAccess
+            ? [modelCredentialRejectedReadOnly(rejectedAccess), deployReason]
+                .filter(Boolean)
+                .join(" ")
+            : deployReason;
         } else if (deployReloadMessage) {
           deployStatus.textContent = deployReloadMessage;
         } else if (authenticationSaveState === "saving") {
@@ -3133,16 +3143,9 @@ export async function renderAgentDetail(
             credentials?.deployGateMessage() ?? "Credential readiness could not be confirmed.";
           // Secret values can be updated in place, so a rejected credential warns instead of
           // blocking. It never reads "Ready to deploy.": deploying again does not fix it.
-          // A reader who cannot change the draft is told which grants fix it (finding D750).
-          const readOnly = draftReadOnly();
-          const fixAccess =
-            readOnly &&
-            credentialFixAccess(
-              "harnessAuth" in agent ? agent.harnessAuth : undefined,
-              callerPermissions,
-            );
-          const rejected = fixAccess
-            ? modelCredentialRejectedReadOnly(fixAccess)
+          // Channel edit access does not grant access to change the Agent's authentication source.
+          const rejected = rejectedAccess
+            ? modelCredentialRejectedReadOnly(rejectedAccess)
             : "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
           const status = !credentialRejected()
             ? gate
@@ -3150,7 +3153,7 @@ export async function renderAgentDetail(
               ? rejected
               : `${gate} ${rejected}`;
           deployStatus.textContent =
-            readOnly && status !== "Ready to deploy." && !credentialRejected()
+            draftReadOnly() && status !== "Ready to deploy." && !credentialRejected()
               ? `${status} Your access does not include changing this version draft.`
               : status;
         }

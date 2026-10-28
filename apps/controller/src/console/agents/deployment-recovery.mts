@@ -8,7 +8,11 @@ import type { Static } from "typebox";
 import { requestFailure } from "../api-client.mjs";
 import { deploymentFailureStep } from "../deployment-failure-steps.mjs";
 import { element, setHidden, setText } from "../dom.mjs";
-import { type CredentialFixAccess, modelCredentialRejectedAsk } from "./access-reasons.mjs";
+import {
+  type CredentialFixAccess,
+  MODEL_CREDENTIAL_REJECTED_DEPLOY_DENIED,
+  modelCredentialRejectedAsk,
+} from "./access-reasons.mjs";
 import { agentSaveDenial, agentSaveGap, namespacePath } from "./list.mjs";
 import { logTextDenied } from "./logs.mjs";
 
@@ -60,7 +64,10 @@ export function credentialRejectedAsk(
     return undefined;
   }
   const access = credentialFixAccess(harnessAuth, permissions);
-  return access && modelCredentialRejectedAsk(access);
+  if (access) {
+    return modelCredentialRejectedAsk(access);
+  }
+  return permissions?.deploy === false ? MODEL_CREDENTIAL_REJECTED_DEPLOY_DENIED : undefined;
 }
 
 /** What the permission answer says the caller lacks to fix a rejected model credential. */

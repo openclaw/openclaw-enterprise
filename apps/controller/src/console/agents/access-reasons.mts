@@ -136,6 +136,7 @@ const credentialFixGrants = ({ secretBacked, gap, deploy }: CredentialFixAccess,
         : `Then ${then}, which needs Agent deploy on this Agent${operate}.`;
   return `${fix} ${deploying} ${ASK} for whichever of these grants your access does not include.`;
 };
+export const MODEL_CREDENTIAL_REJECTED_DEPLOY_DENIED = `The model provider rejected this version's credential (HTTP 401 or 403). Choose a valid authentication source in Credentials. ${AGENT_DEPLOY_DENIED}`;
 export const modelCredentialRejectedAsk = (access: CredentialFixAccess) =>
   `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(access, "deploy a new version")}`;
 export const modelCredentialRejectedReadOnly = (access: CredentialFixAccess) =>

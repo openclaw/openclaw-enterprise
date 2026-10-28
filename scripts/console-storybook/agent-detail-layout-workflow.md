@@ -52,3 +52,22 @@ simulated API state; they do not prove persistence or live runtime behavior.
    503 → queued, queued → running, a final 403/404, and a delayed success delivered
    after refusal. Run it for the actual controls and response envelopes; Storybook
    is not proof of those Controller responses.
+
+9. Open **Rejected credential, binding editor cannot deploy**
+   (`credentialRejectedBindingEditor`). Recovery must offer **Open Credentials**
+   and ask for Agent deploy, without instructing the actor to deploy. Follow the
+   link, check tab focus, and save the authentication source. Agent update,
+   Configuration read and source operate permit this binding edit; Secret update
+   is separate. Deployment remains unavailable. Repeat at phone width.
+10. Open **Rejected credential, hidden Secret updater cannot rebind**
+    (`credentialRejectedHiddenSecretUpdater`). Recovery and draft guidance must
+    explain Secret update for replacement and source operate for rebinding and
+    deployment. Configuration editing and Agent deploy do not supply that grant.
+    Recovery must not link to the disabled authentication editor or expose the
+    hidden Secret ID or name. Inspect Credentials through its tab and repeat at
+    phone width. This is simulated guidance and non-disclosure proof only: the
+    fixture's hidden-Secret flag also blocks its PATCH path. It cannot establish
+    that an actor with update but no read can replace a known Secret in place.
+
+These two previews require an owner build and walkthrough. Fixture permission
+answers are not IAM enforcement; saved feedback is not backend persistence proof.
