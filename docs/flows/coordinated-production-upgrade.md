@@ -249,8 +249,8 @@ Agent containers. Each replacement gateway runs read-only
 (`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway's memory limit;
 an OOM kill can stop both. The cgroup v2 check (`gateway_free_memory`) requires
 one reading with cap plus 640 MiB free or two consecutive readings with cap plus
-256 MiB. This reduces risk without reserving memory or guaranteeing availability.
-Transient failures are retried. Initially unavailable data allows warning and run.
+256 MiB. This reduces risk but reserves no memory. Transient failures are retried.
+Initially unavailable data allows warning and run.
 After insufficient memory is observed, unavailable reads reset consecutive
 evidence; only fresh sufficient readings admit Doctor within its own deadline.
 Failure reports separate Doctor's exit status from gateway restarts since Ready.
@@ -325,7 +325,7 @@ The check does not separate resources an older import already merged.
 
 ## Changelog
 
-- 2026-10-28 05:40: Check gateways after a failed Doctor too. (bughunt-1028)
+- 2026-10-28 05:40: Check gateways after failed Doctors. (bughunt-1028)
 - 2026-10-28 00:40: Run Doctors serially; fail on gateways changed afterward. (fix-2736)
 - 2026-10-26 23:24: Record source checkout verification before private inputs. (authoring-run/dc3e51c1-8f14-4410-9c70-e4a993ea58fe - 821bee5fe0bb446319fab40ad21055b1e942eb37)
 - 2026-10-25 11:53: Record native scale, Helm upgrade, and rollout failures; preserve recovery. (authoring-run/f03f716e-ea13-48ab-ad6e-e179b342d585 - 87784a3230964bd8a7a1763f8350c1fd2b4284e0)
