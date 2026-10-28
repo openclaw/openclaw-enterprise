@@ -5966,6 +5966,18 @@ export const scenarios = {
       "At 390 each card spans the panel, one under the other.",
     ],
   },
+  runtimeLogsMissingAgentPod: {
+    ...runtimeLogsPage,
+    name: "Gateway logs with no current Agent Pod",
+    runtimePod: "missingAgent",
+    actions: [{ selector: "#runtime-log-source", value: "gateway" }],
+    description:
+      "A simulated dedicated Agent source remains listed when no current Agent Pod is reported. Gateway logs show the note without claiming the Agent never started.",
+    steps: [
+      "Keep Gateway selected and check the note: No current Agent (Harness) Pod was reported. Check Deployment activity for the latest status.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
+  },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
     name: "Runtime logs filtered and downloaded",

@@ -2200,6 +2200,19 @@ export function installFixture(scenario, evidence) {
                   available: true,
                   retention: "Kubernetes keeps the current and the previous instance.",
                 })),
+              // Dedicated sources remain listed even when their current Pod is absent.
+              ...(scenario.runtimePod === "missingAgent"
+                ? [
+                    {
+                      id: "agent",
+                      kind: "container",
+                      pods: [],
+                      available: false,
+                      unavailableCode: "NO_POD",
+                      retention: "Kubernetes keeps the current and the previous instance.",
+                    },
+                  ]
+                : []),
             ],
           });
         }
