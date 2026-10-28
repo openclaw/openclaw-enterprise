@@ -82,8 +82,9 @@ Pending work, warnings, cleanup and failed overview refreshes retain attention
 outside Deployment; overview errors retain the recorded outcome.
 
 `createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` through transient
-errors until completion or refusal, patching in place. Pending polls and recovery
-preserve disclosure choice and measured height. Distinct refusal evidence and
+errors until completion or refusal, patching in place. Pending polls, recovery and
+a pending cleanup's progress after a final outcome preserve disclosure choice and
+measured height; a cleanup result reveals. Distinct refusal evidence and
 manual failed refreshes reveal errors. Terminal polls quietly reread record,
 Agent and revisions; **Refresh deployment** acknowledges immediately and queues
 one full reread behind quiet work. **Refresh record** retains focus and ignores

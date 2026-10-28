@@ -319,6 +319,9 @@ export function createDeploymentStatusPanel(
     refresh,
   );
   let previousEvidence: string | undefined;
+  // The settled facts of the last record read: its outcome once final, whether its cleanup is
+  // pending or how it ended, and its warning count.
+  let previousSettled: string | undefined;
   let loading = false;
   // Quiet polls and their overview rereads leave Refresh alone until the reader presses it.
   let polling = false;
@@ -571,18 +574,27 @@ export function createDeploymentStatusPanel(
       overviewUnavailable,
       readState,
     ].join("/");
+    const settled = error
+      ? undefined
+      : [
+          deploymentPending(outcome) ? "pending" : outcome,
+          deploymentPending(cleanup?.status) ? "pending" : cleanup?.status,
+          warnings?.length,
+        ].join("/");
     const readerRefresh = !polling;
     if (evidence !== previousEvidence || (readerRefresh && error)) {
       const late = previousEvidence === undefined && pageShown();
       // Routine polls preserve the reader's disclosure choice, including recovery from a
-      // failed read. A terminal result or explicit failed refresh still reveals its notice.
+      // failed read and a pending cleanup's progress after a final outcome. A terminal result
+      // or explicit failed refresh still reveals its notice.
       const quietProgress =
         previousEvidence !== undefined &&
         polling &&
         !overviewUnavailable &&
         (error
           ? readState === "transient"
-          : deploymentPending(outcome) && cleanup?.status !== "failed" && !warnings?.length);
+          : (deploymentPending(outcome) && cleanup?.status !== "failed" && !warnings?.length) ||
+            settled === previousSettled);
       if (!quietProgress) {
         if (readState === "refused" && !details.open) {
           reservedHeight = null;
@@ -598,6 +610,9 @@ export function createDeploymentStatusPanel(
         );
       }
       previousEvidence = evidence;
+    }
+    if (settled !== undefined) {
+      previousSettled = settled;
     }
     patchChildren(content, [
       element(

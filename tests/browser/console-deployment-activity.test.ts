@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import type {
@@ -20,11 +21,15 @@ import {
 // No route interception supplies a status or conceals a missing controller route.
 async function deploymentFixture(t: TestContext) {
   let workKey = "";
+  let cleanupKey = "";
   let revisionId = "";
   const control = {
     unavailable: false,
     claimed: false,
     succeeded: false,
+    // A permanent failure whose failed preparation queued the version's retire cleanup.
+    failed: false,
+    cleanup: null as "queued" | "claimed" | "succeeded" | null,
     missingRevision: false,
     refusedLookups: 0,
   };
@@ -37,6 +42,21 @@ async function deploymentFixture(t: TestContext) {
           operations: {
             ...view.operations,
             async findWork(key: string) {
+              if (key === cleanupKey && control.cleanup !== null) {
+                // The cleanup row the worker would enqueue for this revision, in its states.
+                const work = await view.operations.findWork(workKey);
+                return control.cleanup === "queued"
+                  ? { ...work!, idempotencyKey: cleanupKey }
+                  : control.cleanup === "claimed"
+                    ? {
+                        ...work!,
+                        idempotencyKey: cleanupKey,
+                        state: "claimed" as const,
+                        attemptCount: 1,
+                        leaseActive: true,
+                      }
+                    : { ...work!, idempotencyKey: cleanupKey, state: "succeeded" as const };
+              }
               const record = await view.operations.findWork(key);
               if (key !== workKey) {
                 return record;
@@ -45,6 +65,13 @@ async function deploymentFixture(t: TestContext) {
               if (control.unavailable) {
                 control.unavailable = false;
                 return undefined;
+              }
+              if (control.failed) {
+                return {
+                  ...record!,
+                  state: "failed_permanent" as const,
+                  reasonCode: "CONVERGENCE_DEADLINE_EXCEEDED",
+                };
               }
               if (control.succeeded) {
                 return {
@@ -84,6 +111,7 @@ async function deploymentFixture(t: TestContext) {
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   revisionId = revision.id;
   workKey = `agent_revision:${revisionId}:reconcile`;
+  cleanupKey = `agent_revision:${revisionId}:repository_cleanup:retire:${createHash("sha256").update(revisionId, "utf8").digest("hex")}`;
   const url = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`;
   return { fixture, namespace, agent, revisionId, url, control };
 }
@@ -330,6 +358,95 @@ for (const viewport of [
     },
   );
 }
+
+// A failed deploy keeps polling while its retire cleanup is pending. Its cleanup's progress and a
+// recovered read are routine: the reader's fold and focus stay; the cleanup's result reveals.
+test("a pending cleanup after a final outcome keeps the reader's fold until it ends", async (t) => {
+  const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+  control.failed = true;
+  control.cleanup = "queued";
+  const { page } = await newPage(t, fixture);
+  const region = page.getByRole("region", { name: "Deployment activity" });
+  const details = region.locator("details");
+  // A failed version that is not current offers no diagnostics: the reader moves on to its record.
+  const run = page
+    .locator(".version-deployment-record")
+    .getByRole("button", { name: "Refresh record", exact: true });
+  const next = () =>
+    page.waitForResponse(
+      (response) => response.url() === url && response.request().method() === "GET",
+    );
+  async function received(pending: ReturnType<typeof next>, cleanup: string | null) {
+    const response = await pending;
+    if (cleanup === null) {
+      assert.equal(response.status(), 503);
+      await region
+        .getByText("Service unavailable. The read could not be completed. Try again.", {
+          exact: true,
+        })
+        .waitFor({ state: "attached" });
+      return;
+    }
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    assert.equal(body.data.status, "failed");
+    assert.equal(body.data.cleanup?.status, cleanup);
+    await region
+      .locator(".deployment-cleanup")
+      .getByText(
+        { queued: /cleanup pending/, running: /cleanup is running/, succeeded: /completed/ }[
+          cleanup
+        ]!,
+      )
+      .waitFor({ state: "attached" });
+  }
+  const first = next();
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "deployment").href,
+  );
+  await received(first, "queued");
+  const isOpen = () => details.evaluate((node: HTMLDetailsElement) => node.open);
+  assert.equal(await isOpen(), true, "the failure and its pending cleanup open the details");
+  await page.evaluate(() => document.fonts.ready);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  async function poll(cleanup: string | null) {
+    const response = next();
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    await received(response, cleanup);
+  }
+  // The reader has read the failure, folds it and moves on to the version's record below.
+  await details.locator("summary").click();
+  await run.focus();
+  const before = await run.boundingBox();
+  assert.ok(before);
+  async function readerStays(stage: string) {
+    assert.equal(await isOpen(), false, `${stage}: preserve the fold`);
+    assert.equal(
+      await run.evaluate((node) => node === document.activeElement),
+      true,
+      `${stage}: the record's Refresh keeps focus`,
+    );
+    const after = await run.boundingBox();
+    assert.ok(after);
+    assert.ok(Math.abs(after.y - before!.y) <= 1, `${stage}: moved ${after.y - before!.y}px`);
+  }
+  await poll("queued");
+  await readerStays("unchanged poll");
+  control.unavailable = true;
+  await poll(null);
+  await readerStays("transient failure");
+  await poll("queued");
+  await readerStays("recovery");
+  control.cleanup = "claimed";
+  await poll("running");
+  await readerStays("cleanup progress");
+  // The cleanup's result is final: it reveals, as a deploy's result does, and polling stops.
+  control.cleanup = "succeeded";
+  await poll("succeeded");
+  assert.equal(await isOpen(), true, "the cleanup result reveals the details");
+});
 
 // Hold only delivery of a genuine Controller response. A later shared refusal must
 // invalidate that response, not let it restore evidence the reader can no longer read.
