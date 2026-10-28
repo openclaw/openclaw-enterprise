@@ -79,6 +79,7 @@ import {
   tooManyRequestsIn,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
 
@@ -1133,13 +1134,9 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     false,
   );
 
-  fixture.policy.restrictions.push({
-    id: "deny-native-administer",
+  restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: agent.id,
-    action: "administer",
-    effect: "deny",
   });
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
@@ -3128,12 +3125,8 @@ test("Credentials retries denied and interrupted grants without repeating the au
   // sends the grant request; a member's session sends none (finding 2259).
   assert.equal((await probe).status(), 200);
   // Native IAM denies the actor's grant authority while the Agent update remains authorized.
-  fixture.policy.restrictions.push({
-    id: "deny-update-credential-grant",
-    resourceKind: "installation",
+  const deniedGrant = restrict(fixture.policy, "administer", "installation", {
     resourceId: installation.id,
-    action: "administer",
-    effect: "deny",
   });
   await page.getByLabel("Authentication source").selectOption("codex_pat");
   await selectSecret(page, "Service account token Secret", replacement);
@@ -3156,10 +3149,7 @@ test("Credentials retries denied and interrupted grants without repeating the au
   await page.goBack();
   await page.getByRole("button", { name: "Retry credential access" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-  fixture.policy.restrictions.splice(
-    fixture.policy.restrictions.findIndex((item) => item.id === "deny-update-credential-grant"),
-    1,
-  );
+  liftRestriction(fixture.policy, deniedGrant);
   const rolesPath = `/namespaces/${namespace.id}/iam/roles`;
   const broader = await fixture.request("POST", rolesPath, {
     body: {

@@ -4,12 +4,11 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -19,10 +18,9 @@ import {
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
+import { assertApiError } from "../helpers/api-error.mjs";
 
 const executeFile = promisify(execFile);
-const tuiPty = fileURLToPath(new URL("../helpers/tui-pty.py", import.meta.url));
-const python = process.env.PYTHON ?? "python3";
 
 const podmanSelected = process.env.OCC_TEST_PODMAN_COMPUTE_REAL === "1";
 const engineBinary = podmanSelected ? "podman" : "docker";
@@ -60,7 +58,6 @@ const LABEL_MANAGED = "org.openclaw.enterprise.managed";
 const LABEL_DRIVER = "org.openclaw.enterprise.compute-driver";
 const LABEL_NAMESPACE = "org.openclaw.enterprise.namespace-id";
 const LABEL_AGENT = "org.openclaw.enterprise.agent-id";
-const LABEL_REVISION = "org.openclaw.enterprise.revision-id";
 const LABEL_ROLE = "org.openclaw.enterprise.role";
 
 // Dedicated Codex app-server execution sends Codex custom tools, so explicit model overrides
@@ -427,18 +424,19 @@ async function postgresJson(project, env, sql, { secrets = [] } = {}) {
   return JSON.parse(stdout.trim());
 }
 
-async function assertRuntimeDatabaseEvidence({
+async function assertLifecycleDatabaseEvidence({
   project,
   env,
   serviceKeyOutput,
   serviceKey,
   namespaceIds,
-  revisionIds,
+  agentIds,
 }) {
   const namespaceArray = namespaceIds.map(sqlLiteral).join(", ");
-  const revisionArray = revisionIds.map(sqlLiteral).join(", ");
+  const agentArray = agentIds.map(sqlLiteral).join(", ");
   const servicePrincipalId = sqlLiteral(serviceKeyOutput.data.servicePrincipalId);
-  const expectedOperatorMutationAudits = namespaceIds.length + revisionIds.length * 3;
+  // One Configuration and one Agent per refused deployment; no deploy succeeds.
+  const expectedOperatorMutationAudits = namespaceIds.length + agentIds.length * 2;
   const evidence = await postgresJson(
     project,
     env,
@@ -463,14 +461,15 @@ async function assertRuntimeDatabaseEvidence({
           AND revision_id IS NULL
           AND state = 'succeeded'
       ),
-      'revisionLifecycleSucceeded', (
+      'agentRevisions', (
+        SELECT count(*)::integer
+        FROM occ.agent_revisions
+        WHERE agent_id IN (${agentArray})
+      ),
+      'agentWork', (
         SELECT count(*)::integer
         FROM occ.controller_work
-        WHERE revision_id IN (${revisionArray})
-          AND state = 'succeeded'
-          AND claim_token IS NULL
-          AND lease_expires_at IS NULL
-          AND completed_at IS NOT NULL
+        WHERE agent_id IN (${agentArray})
       ),
       'unfinishedLifecycleWork', (
         SELECT count(*)::integer
@@ -484,18 +483,15 @@ async function assertRuntimeDatabaseEvidence({
   assert.equal(
     evidence.operatorMutationAudits,
     expectedOperatorMutationAudits,
-    "service-key operator must be the actor for Namespace, Configuration, Agent, and deploy mutations",
+    "service-key operator must be the actor for Namespace, Configuration, and Agent mutations, with no successful deploy",
   );
   assert.equal(
     evidence.namespaceLifecycleSucceeded,
     namespaceIds.length,
     "each Namespace must complete its controller lifecycle work",
   );
-  assert.equal(
-    evidence.revisionLifecycleSucceeded,
-    revisionIds.length,
-    "each AgentRevision must complete claimed lifecycle work",
-  );
+  assert.equal(evidence.agentRevisions, 0, "a refused deployment must not admit an AgentRevision");
+  assert.equal(evidence.agentWork, 0, "a refused deployment must not queue controller work");
   assert.equal(evidence.unfinishedLifecycleWork, 0, "test-owned lifecycle work must be complete");
 }
 
@@ -544,74 +540,6 @@ function inspectedNetworkName(network) {
   return nonempty(network.Name ?? network.name, "inspected container network name");
 }
 
-function containerEnv(container, name) {
-  const entry = (container.Config?.Env ?? []).find((value) => value.startsWith(`${name}=`));
-  return entry === undefined ? undefined : entry.slice(name.length + 1);
-}
-
-function hasContainerEnv(container, name) {
-  return containerEnv(container, name) !== undefined;
-}
-
-function containerSecretValues(containers) {
-  const secretNames = new Set([
-    "APP_SERVER_TOKEN",
-    "CODEX_ACCESS_TOKEN",
-    "OPENAI_API_KEY",
-    "OPENCLAW_GATEWAY_PASSWORD",
-  ]);
-  return containers
-    .flatMap((container) => container.Config?.Env ?? [])
-    .map((entry) => {
-      const separator = entry.indexOf("=");
-      if (separator === -1) {
-        return undefined;
-      }
-      const name = entry.slice(0, separator);
-      if (!secretNames.has(name)) {
-        return undefined;
-      }
-      return entry.slice(separator + 1);
-    })
-    .filter((value) => typeof value === "string" && value.length > 0);
-}
-
-async function containerLogs(containers, extraSecrets = []) {
-  const secrets = [...extraSecrets, ...containerSecretValues(containers)];
-  const entries = await Promise.all(
-    containers.map(async (container) => {
-      const name = container.Name ?? container.Id;
-      try {
-        const { stdout, stderr } = await docker(["logs", "--tail", "160", container.Id], {
-          timeoutMs: 60_000,
-          secrets,
-        });
-        return `Logs for ${name}:\n${sanitize(`${stdout}${stderr}`, secrets)}`;
-      } catch (error) {
-        return `Logs for ${name} unavailable: ${
-          error instanceof Error ? sanitize(error.message, secrets) : String(error)
-        }`;
-      }
-    }),
-  );
-  return entries.join("\n\n");
-}
-
-function assertNamespaceOnlyAttachment(container, networkName) {
-  const networks = Object.keys(container.NetworkSettings?.Networks ?? {});
-  assert.deepEqual(
-    networks,
-    [networkName],
-    `container ${container.Name} must join only ${networkName}`,
-  );
-  const attachment = container.NetworkSettings.Networks[networkName];
-  assert.equal(
-    Boolean(attachment?.IPAddress),
-    true,
-    `container ${container.Name} must have a Namespace network address`,
-  );
-}
-
 async function waitForNamespaceNetwork(namespaceId) {
   const networks = await waitFor(`${engineName} network for Namespace ${namespaceId}`, async () => {
     const current = await inspectNetworks(namespaceId);
@@ -626,196 +554,6 @@ async function waitForContainers(filters, expected, description) {
     const running = containers.filter((container) => container.State?.Running === true);
     return running.length === expected ? running : undefined;
   });
-}
-
-function gatewayUrl(gateway) {
-  const gatewayPort = containerEnv(gateway, "OPENCLAW_GATEWAY_PORT");
-  assert.ok(gatewayPort, "gateway container must expose OPENCLAW_GATEWAY_PORT");
-  assert.match(String(gatewayPort), /^\d+$/, "gateway port must be inspectable");
-  const bindings = gateway.NetworkSettings?.Ports?.[`${gatewayPort}/tcp`];
-  assert.equal(
-    Array.isArray(bindings) && bindings.length === 1,
-    true,
-    "gateway port must be published exactly once",
-  );
-  const binding = bindings[0];
-  assert.equal(binding.HostIp, "127.0.0.1", "gateway port must publish only on loopback");
-  assert.match(String(binding.HostPort), /^\d+$/, "gateway host port must be inspectable");
-  return `http://127.0.0.1:${binding.HostPort}`;
-}
-
-async function assertGatewayReady(gateway, description) {
-  const response = await fetch(new URL("/readyz", gatewayUrl(gateway)), {
-    signal: AbortSignal.timeout(30_000),
-  });
-  assert.equal(response.status, 200, `${description} must leave the gateway ready`);
-}
-
-async function invokeGateway({ networkName, gateway, gatewayPassword, mode, onFailure }) {
-  assertNamespaceOnlyAttachment(gateway, networkName);
-  const nonce = `OCC-DOCKER-${mode.toUpperCase()}-${randomUUID()}`;
-  const endpoint = new URL("/v1/chat/completions", gatewayUrl(gateway));
-  const denied = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "openclaw/default", messages: [] }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  assert.ok([401, 403].includes(denied.status), "gateway must reject missing bearer token");
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${gatewayPassword}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "openclaw/default",
-      stream: false,
-      messages: [
-        {
-          role: "user",
-          content: `Reply with exactly this nonce and no other text: ${nonce}`,
-        },
-      ],
-    }),
-    signal: AbortSignal.timeout(240_000),
-  });
-  const body = sanitize(await response.text(), [gatewayPassword]);
-  if (response.status !== 200) {
-    const diagnostics = onFailure === undefined ? "" : `\n\n${await onFailure()}`;
-    assert.fail(
-      `${mode} gateway model call must succeed: ${body.slice(0, 2000)}\n\n${response.status} !== 200${diagnostics}`,
-    );
-  }
-  const text = JSON.parse(body).choices?.[0]?.message?.content ?? "";
-  assert.ok(text.includes(nonce), `${mode} gateway model response must include fresh nonce`);
-}
-
-function parseTuiPtyOutput(stdout) {
-  const lines = stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  assert.ok(lines.length > 0, "TUI PTY helper must emit a JSON result");
-  return JSON.parse(lines.at(-1));
-}
-
-async function runTuiPty(args, { secrets, timeoutMs = 540_000, onFailure } = {}) {
-  try {
-    const { stdout } = await command(python, [tuiPty, ...args], {
-      timeoutMs,
-      secrets,
-    });
-    return parseTuiPtyOutput(stdout);
-  } catch (error) {
-    const diagnostics = onFailure === undefined ? "" : `\n\n${await onFailure()}`;
-    throw new Error(`${error instanceof Error ? error.message : String(error)}${diagnostics}`);
-  }
-}
-
-function tuiDockerCommand(gateway, stateDir, args, environment = []) {
-  return [
-    "--",
-    engineBinary,
-    "exec",
-    "--interactive",
-    "--tty",
-    "-e",
-    `OPENCLAW_STATE_DIR=${stateDir}`,
-    ...environment.flatMap(([name, value]) => ["-e", `${name}=${value}`]),
-    gateway.Id,
-    "node",
-    "/app/openclaw.mjs",
-    "tui",
-    ...args,
-  ];
-}
-
-async function assertInvalidPasswordTuiDenied({ context, gateway, gatewayPassword, onFailure }) {
-  const invalidPassword = `invalid-${randomUUID()}`;
-  const nonce = `OCC-TUI-DENIED-${randomUUID()}`;
-  const prompt = `Reply exactly: ${nonce}`;
-  const result = await runTuiPty(
-    [
-      "expect-failure",
-      "--nonce",
-      nonce,
-      "--prompt",
-      prompt,
-      "--timeout",
-      "60",
-      ...tuiDockerCommand(
-        gateway,
-        `/tmp/occ-tui-denied-${randomUUID()}`,
-        ["--session", `occ-tui-denied-${randomUUID()}`, "--message", prompt],
-        [["OPENCLAW_GATEWAY_PASSWORD", invalidPassword]],
-      ),
-    ],
-    {
-      timeoutMs: 90_000,
-      secrets: [gatewayPassword, invalidPassword],
-      onFailure,
-    },
-  );
-  assert.equal(
-    result.denied,
-    true,
-    "fresh TUI client state must reject an invalid gateway password",
-  );
-  assertNoSecretMaterial(
-    result,
-    [gatewayPassword, invalidPassword],
-    "TUI denial output must not leak passwords",
-  );
-  context.diagnostic(
-    `embedded TUI invalid-password denial:\n${result.transcriptTail.slice(-1200)}`,
-  );
-}
-
-async function assertInteractiveTuiConversation({ context, gateway, gatewayPassword, onFailure }) {
-  const firstNonce = `OCC-TUI-FIRST-${randomUUID()}`;
-  const secondNonce = `OCC-TUI-SECOND-${randomUUID()}`;
-  const firstPrompt = `Reply exactly: ${firstNonce}`;
-  const secondPrompt = `Reply exactly: ${secondNonce}`;
-  const result = await runTuiPty(
-    [
-      "conversation",
-      "--first-nonce",
-      firstNonce,
-      "--first-prompt",
-      firstPrompt,
-      "--second-nonce",
-      secondNonce,
-      "--second-prompt",
-      secondPrompt,
-      "--timeout",
-      "240",
-      ...tuiDockerCommand(gateway, `/tmp/occ-tui-client-${randomUUID()}`, [
-        "--session",
-        `occ-tui-${randomUUID()}`,
-        "--message",
-        firstPrompt,
-      ]),
-    ],
-    {
-      secrets: [gatewayPassword],
-      onFailure,
-    },
-  );
-  assert.equal(result.exitCode, 0, "Ctrl+D must exit the TUI client cleanly");
-  assert.match(result.firstReplyLine, new RegExp(firstNonce));
-  assert.equal(result.firstReplyLine.includes(firstPrompt), false);
-  assert.match(result.secondReplyLine, new RegExp(secondNonce));
-  assert.equal(result.secondReplyLine.includes(secondPrompt), false);
-  assertNoSecretMaterial(
-    result,
-    [gatewayPassword],
-    "TUI conversation output must not leak passwords",
-  );
-  context.diagnostic(
-    `embedded TUI replies:\nfirst: ${result.firstReplyLine}\nsecond: ${result.secondReplyLine}\n${result.transcriptTail.slice(-1600)}`,
-  );
-  await assertGatewayReady(gateway, "Ctrl+D after the TUI conversation");
 }
 
 async function assertCollectorOutageDoesNotBlockDockerOperations({
@@ -873,100 +611,73 @@ async function deleteEmptyNamespace({ request, cleanupNamespace, requestOptions 
   });
 }
 
-async function interruptDedicatedPreparation(project, namespaceId, agentId, revisionId) {
-  const worker = await composeServiceContainer(project, "worker");
-  const filters = [
-    [LABEL_NAMESPACE, namespaceId],
-    [LABEL_AGENT, agentId],
-    [LABEL_REVISION, revisionId],
-  ];
-  // Kill the real worker during Codex startup, before it can create the gateway.
-  // The surviving container and expired database lease must be recovered by a fresh process.
-  let survivingAgent;
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    [survivingAgent] = await inspectContainers([...filters, [LABEL_ROLE, "agent"]]);
-    if (survivingAgent?.State?.Running) {
-      break;
-    }
-    await delay(25);
-  }
-  assert.ok(survivingAgent?.State?.Running, "Codex must start before worker interruption");
-  await docker(["kill", "--signal", "KILL", worker.Id]);
-  try {
-    assert.equal(
-      await containerCount([...filters, [LABEL_ROLE, "gateway"]]),
-      0,
-      "interruption must occur before gateway creation",
-    );
-    await waitFor("surviving Codex container to become healthy", async () => {
-      const [current] = await dockerJson(["inspect", survivingAgent.Id]);
-      return current.State?.Health?.Status === "healthy";
-    });
-  } finally {
-    await docker(["start", worker.Id]);
-  }
-  return survivingAgent.Id;
-}
-
-async function createAgentJourney({ request, namespaceId, mode, label, afterAdmission }) {
-  const initialWorkspaceFiles = {
-    "AGENTS.md":
-      "# Agent instructions\nAnswer the user directly and preserve supplied nonce values.\n",
-    "SOUL.md": "",
-    "IDENTITY.md": "# Identity\n- **Name:** Workspace setup proof\n",
-    "USER.md": "# User\n- **Name:** Integration operator\n",
-  };
+// Docker Compute supports no Harness authentication binding, and OCC deploys no Agent
+// without one. Prove both 409s through the real API: a binding is refused where it is saved,
+// and an Agent saved without one is refused at deployment. Returns the refused Agent's ID.
+async function assertHarnessAuthRefusal({ request, namespaceId, mode, label }) {
   const harnessId = mode === "dedicated" ? "codex" : "openclaw";
-  const values = createHarnessConfiguration(harnessId, providerModel);
   const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
     kind: "agent",
-    values,
+    values: createHarnessConfiguration(harnessId, providerModel),
   });
   assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
-  const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
-    name: `${label}-${randomUUID()}`,
-    initialWorkspaceFiles,
+  const agentBody = {
     configurationId: configuration.data.id,
     executionMode: mode,
+  };
+  const assertDriverRefusal = (response, description) => {
+    assertApiError(
+      { status: response.status, body: response },
+      409,
+      "RESOURCE_CONFLICT",
+      description,
+    );
+    assert.equal(
+      response.error.message,
+      "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
+      description,
+    );
+  };
+
+  // The runtime binding needs no stored credential; the refusal comes from the Driver.
+  assertDriverRefusal(
+    await request("POST", `/namespaces/${namespaceId}/agents`, {
+      ...agentBody,
+      name: `${label}-bound-${randomUUID()}`,
+      harnessAuth: { method: "runtime" },
+    }),
+    `${mode} Agent create with a Harness authentication binding`,
+  );
+
+  const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
+    ...agentBody,
+    name: `${label}-${randomUUID()}`,
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.error));
-  const revision = await request(
-    "POST",
-    `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
+  assertDriverRefusal(
+    await request("PATCH", `/namespaces/${namespaceId}/agents/${agent.data.id}`, {
+      configurationId: configuration.data.id,
+      harnessAuth: { method: "runtime" },
+    }),
+    `${mode} Agent update to a Harness authentication binding`,
   );
-  assert.equal(revision.status, 202, JSON.stringify(revision.error));
-  assert.match(
-    revision.data.compute.implementation,
-    /docker/i,
-    "admitted revisions must select the Docker Compute Driver",
+
+  const deploy = await request("POST", `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`);
+  assertApiError(
+    { status: deploy.status, body: deploy },
+    409,
+    "RESOURCE_CONFLICT",
+    `${mode} deployment without a Harness authentication binding`,
   );
-  await afterAdmission?.(agent.data, revision.data);
-  await waitFor(`Agent ${agent.data.id} to activate ${revision.data.id}`, async () => {
-    const current = await request("GET", `/namespaces/${namespaceId}/agents/${agent.data.id}`);
-    assert.equal(current.status, 200, JSON.stringify(current.error));
-    return current.data.activeRevisionId === revision.data.id ? current.data : undefined;
-  });
-  // Observe initial files after the normal Agent activation and before any model
-  // invocation. Docker does not yet expose the OCC workspace-file proxy.
-  const [gateway] = await waitForContainers(
-    [
-      [LABEL_NAMESPACE, namespaceId],
-      [LABEL_AGENT, agent.data.id],
-      [LABEL_ROLE, "gateway"],
-    ],
-    1,
-    "initialized Agent gateway",
+  assert.equal(
+    deploy.error.message,
+    "Deployment requires an explicit Harness authentication binding.",
   );
-  const { stdout } = await docker([
-    "exec",
-    gateway.Id,
-    "node",
-    "-e",
-    "const fs=require('node:fs'); console.log(JSON.stringify(Object.fromEntries(['AGENTS.md','SOUL.md','IDENTITY.md','USER.md'].map(name=>[name,fs.readFileSync('/home/node/.openclaw/workspace/'+name,'utf8')]))));",
-  ]);
-  assert.deepEqual(JSON.parse(stdout), initialWorkspaceFiles);
-  return { agent: agent.data, revision: revision.data };
+  const current = await request("GET", `/namespaces/${namespaceId}/agents/${agent.data.id}`);
+  assert.equal(current.status, 200, JSON.stringify(current.error));
+  assert.equal(current.data.activeRevisionId, undefined, "a refused deployment activates nothing");
+  assert.equal(current.data.harnessAuth ?? null, null, "refused updates must not store a binding");
+  return agent.data.id;
 }
 
 test(
@@ -1027,10 +738,10 @@ test(
 );
 
 test(
-  `${engineName} Compose development drives Docker Compute networks, containers, auth, cleanup, and real model turns`,
+  `${engineName} Compose development drives Docker Compute networks, auth, cleanup, and Harness authentication refusal`,
   { ...requiresDockerCompute, timeout: 1_200_000 },
   async (context) => {
-    // This credentialed proof uses the same compiled CLI operators invoke.
+    // This proof uses the same compiled CLI operators invoke.
     await command("go", ["build", "-trimpath", "-o", OCC_CLI, "./cmd/occ"], {
       timeoutMs: 120_000,
     });
@@ -1041,10 +752,6 @@ test(
           Boolean(process.env.OCC_TEST_OTEL_LOGS_URL)),
       false,
       "Podman does not support Docker Fluentd/OTLP logging proof",
-    );
-    const providerKey = nonempty(
-      process.env.OPENAI_API_KEY,
-      `OPENAI_API_KEY for real ${engineName} Compute model turns`,
     );
     const runtimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE ?? DEFAULT_RUNTIME_IMAGE;
     const gatewayImage = process.env.OCC_DOCKER_GATEWAY_IMAGE ?? runtimeImage;
@@ -1066,6 +773,7 @@ test(
         : process.env,
       timeoutMs: 30_000,
     });
+    // The worker's Driver preflight requires both runtime images, though no Agent starts.
     await Promise.all(
       [gatewayImage, agentImage].map((image) =>
         docker(["image", "inspect", image], { timeoutMs: 30_000 }),
@@ -1082,7 +790,7 @@ test(
     const baseUrl = `http://127.0.0.1:${apiPort}`;
     const composeSubnet = randomComposeSubnet();
     const otelLogs = createOtelLogObservation(context, {
-      description: `${engineName} Compose real-runtime OTel logs`,
+      description: `${engineName} Compose development OTel logs`,
     });
     const loggingPort = otelLogs.enabled ? await availablePort() : undefined;
     const loggingMetricsPort = otelLogs.enabled ? await availablePort() : undefined;
@@ -1136,7 +844,8 @@ test(
             OTEL_COLLECTOR_PORT: String(loggingPort),
             OTEL_COLLECTOR_METRICS_PORT: String(loggingMetricsPort),
           }),
-      OPENAI_API_KEY: providerKey,
+      // No Agent can deploy on Docker Compute, so this journey needs no model credential.
+      OPENAI_API_KEY: "",
     };
 
     context.after(async () => {
@@ -1169,7 +878,7 @@ test(
       await rm(bootstrapDirectory, { recursive: true, force: true });
     });
     await cleanupProject(project, env, [], composeOptions);
-    const composeSecrets = [providerKey, adminPassword];
+    const composeSecrets = [adminPassword];
     try {
       if (podmanSelected) {
         await docker(composeArguments(project, "build", ["migrate"], composeOptions), {
@@ -1241,7 +950,7 @@ test(
     await assert.rejects(
       stat(serviceKeyFile),
       (error) => error instanceof Error && error.code === "ENOENT",
-      "temporary local service-key copy must be removed before TUI attachment",
+      "temporary local service-key copy must be removed after CLI use",
     );
 
     const request = apiClient(baseUrl, serviceKey);
@@ -1300,20 +1009,17 @@ test(
         }),
       ),
     );
-    const embeddedNamespace = namespaces.find((namespace) =>
-      namespace.name.startsWith("embedded-"),
-    );
-    const dedicatedNamespace = namespaces.find((namespace) =>
-      namespace.name.startsWith("dedicated-"),
-    );
+    const modeNamespaces = executionModes.map((mode) => {
+      const namespace = namespaces.find((candidate) => candidate.name.startsWith(`${mode}-`));
+      assert.ok(namespace, `${mode} Namespace must be provisioned`);
+      return namespace;
+    });
     const cleanupNamespace = helperNamespace;
-    assert.ok(embeddedNamespace, "embedded Namespace must be provisioned");
-    assert.ok(dedicatedNamespace, "dedicated Namespace must be provisioned");
-    const embeddedNetwork = await waitForNamespaceNetwork(embeddedNamespace.id);
-    const dedicatedNetwork = await waitForNamespaceNetwork(dedicatedNamespace.id);
-    const cleanupNetwork = await waitForNamespaceNetwork(cleanupNamespace.id);
+    const networks = await Promise.all(
+      namespaces.map((namespace) => waitForNamespaceNetwork(namespace.id)),
+    );
     assert.equal(
-      new Set([embeddedNetwork, dedicatedNetwork, cleanupNetwork].map(inspectedNetworkName)).size,
+      new Set(networks.map(inspectedNetworkName)).size,
       namespaces.length,
       "each Namespace must receive a dedicated Docker network",
     );
@@ -1325,38 +1031,31 @@ test(
       );
     }
 
-    const embedded = await createAgentJourney({
-      request,
-      namespaceId: embeddedNamespace.id,
-      mode: "embedded",
-      label: "embedded",
-    });
-    let survivingCodexId;
-    const dedicated = await createAgentJourney({
-      request,
-      namespaceId: dedicatedNamespace.id,
-      mode: "dedicated",
-      label: "dedicated",
-      afterAdmission: async (agent, revision) => {
-        survivingCodexId = await interruptDedicatedPreparation(
-          project,
-          dedicatedNamespace.id,
-          agent.id,
-          revision.id,
-        );
-      },
-    }).catch(async (error) => {
-      const logs = await composeFailureLogs(
-        project,
-        env,
-        [providerKey, adminPassword, serviceKey],
-        composeOptions,
+    // Docker Compute rejects every Harness authentication binding (see
+    // docs/reference/drivers/docker-compute.md), so OCC admits no Agent deployment here.
+    // TODO: assert real model turns, TUI attach and worker recovery for embedded and dedicated
+    // Agents again when Docker Compute supports Harness authentication (a Compute Driver
+    // contract change that needs an RFC).
+    const agentIds = [];
+    for (const [index, mode] of executionModes.entries()) {
+      const namespaceId = modeNamespaces[index].id;
+      agentIds.push(await assertHarnessAuthRefusal({ request, namespaceId, mode, label: mode }));
+      assert.equal(
+        await containerCount([[LABEL_NAMESPACE, namespaceId]]),
+        0,
+        `refused ${mode} deployment must not start Agent-owned containers`,
       );
-      throw new Error(`${error.message}\n${logs}`, { cause: error });
-    });
+    }
 
-    // Scrape the real API/worker processes after the regular Agent deployment
-    // workflow. Loopback metrics remain private inside each container.
+    // The worker completed Namespace work and claimed nothing for the refused Agents.
+    await assertLifecycleDatabaseEvidence({
+      project,
+      env,
+      serviceKeyOutput,
+      serviceKey,
+      namespaceIds,
+      agentIds,
+    });
     const scrape = async (service) => {
       const container = await composeServiceContainer(project, service);
       const { stdout } = await docker([
@@ -1368,204 +1067,12 @@ test(
       ]);
       return stdout;
     };
-    const workerMetrics = await scrape("worker");
-    assert.match(
-      workerMetrics,
-      new RegExp(
-        `occ_agents\\{[^\\n]*lifecycle_state="running"[^\\n]*\\} ${executionModes.length}(?:\\n|$)`,
-      ),
-    );
-    assert.match(
-      workerMetrics,
-      /occ_agent_operation_duration_seconds_count\{[^\n]*operation="deploy"/,
-    );
-    assert.match(workerMetrics, /occ_work_oldest_pending_age_seconds/);
-    assert.match(workerMetrics, /occ_reconciliation_attempts_total\{[^\n]*outcome="success"/);
+    // Loopback metrics remain private inside each real API and worker container.
+    assert.match(await scrape("worker"), /occ_work_oldest_pending_age_seconds/);
     assert.match(await scrape("controller"), /occ_http_request_duration_seconds_bucket/);
 
-    await assertRuntimeDatabaseEvidence({
-      project,
-      env,
-      serviceKeyOutput,
-      serviceKey,
-      namespaceIds,
-      revisionIds: [embedded.revision.id, dedicated.revision.id],
-    });
-
-    const [embeddedGateway] = await waitForContainers(
-      [
-        [LABEL_NAMESPACE, embeddedNamespace.id],
-        [LABEL_AGENT, embedded.agent.id],
-        [LABEL_REVISION, embedded.revision.id],
-        [LABEL_ROLE, "gateway"],
-      ],
-      1,
-      "embedded OpenClaw gateway container",
-    );
-    assert.ok(
-      hasContainerEnv(embeddedGateway, "OPENAI_API_KEY"),
-      "embedded gateway must receive the model credential",
-    );
-    assert.equal(
-      await containerCount([
-        [LABEL_NAMESPACE, embeddedNamespace.id],
-        [LABEL_AGENT, embedded.agent.id],
-        [LABEL_ROLE, "agent"],
-      ]),
-      0,
-      "embedded execution must not start a separate Codex container",
-    );
-
-    const embeddedPassword = nonempty(
-      containerEnv(embeddedGateway, "OPENCLAW_GATEWAY_PASSWORD"),
-      "embedded gateway password",
-    );
-
-    const dedicatedGateway = (
-      await waitForContainers(
-        [
-          [LABEL_NAMESPACE, dedicatedNamespace.id],
-          [LABEL_AGENT, dedicated.agent.id],
-          [LABEL_REVISION, dedicated.revision.id],
-          [LABEL_ROLE, "gateway"],
-        ],
-        1,
-        "dedicated gateway container",
-      )
-    )[0];
-    const dedicatedAgent = (
-      await waitForContainers(
-        [
-          [LABEL_NAMESPACE, dedicatedNamespace.id],
-          [LABEL_AGENT, dedicated.agent.id],
-          [LABEL_REVISION, dedicated.revision.id],
-          [LABEL_ROLE, "agent"],
-        ],
-        1,
-        "dedicated Codex app-server container",
-      )
-    )[0];
-    assert.ok(
-      !hasContainerEnv(dedicatedGateway, "OPENAI_API_KEY"),
-      "dedicated gateway must not receive the model credential",
-    );
-    assert.ok(
-      hasContainerEnv(dedicatedAgent, "OPENAI_API_KEY"),
-      "dedicated Codex app-server must receive the model credential",
-    );
-    assert.ok(
-      hasContainerEnv(dedicatedGateway, "APP_SERVER_URL") &&
-        hasContainerEnv(dedicatedGateway, "APP_SERVER_TOKEN"),
-      "dedicated gateway must receive only authenticated app-server transport",
-    );
-    assert.ok(
-      hasContainerEnv(dedicatedAgent, "APP_SERVER_TOKEN"),
-      "dedicated Codex app-server must receive the matching app-server token",
-    );
-    assert.equal(
-      dedicatedAgent.Id,
-      survivingCodexId,
-      "recovery must reuse the surviving Codex container",
-    );
-    assert.equal(
-      containerEnv(dedicatedGateway, "APP_SERVER_TOKEN") ===
-        containerEnv(dedicatedAgent, "APP_SERVER_TOKEN"),
-      true,
-      "recovered gateway and surviving Codex must share a transport token",
-    );
-    assertNamespaceOnlyAttachment(dedicatedAgent, inspectedNetworkName(dedicatedNetwork));
-    assertDockerRuntimeOtelSettings(otelLogs, [embeddedGateway, dedicatedGateway, dedicatedAgent]);
-    const dedicatedPassword = nonempty(
-      containerEnv(dedicatedGateway, "OPENCLAW_GATEWAY_PASSWORD"),
-      "dedicated gateway password",
-    );
-
-    await invokeGateway({
-      networkName: inspectedNetworkName(dedicatedNetwork),
-      gateway: dedicatedGateway,
-      gatewayPassword: dedicatedPassword,
-      mode: "dedicated",
-      onFailure: () => containerLogs([dedicatedGateway, dedicatedAgent], [dedicatedPassword]),
-    });
-    if (podmanSelected) {
-      await invokeGateway({
-        networkName: inspectedNetworkName(embeddedNetwork),
-        gateway: embeddedGateway,
-        gatewayPassword: embeddedPassword,
-        mode: "embedded",
-        onFailure: () => containerLogs([embeddedGateway], [embeddedPassword]),
-      });
-      // Exercise the supported controller cleanup path without inventing Agent deletion semantics.
-      await deleteEmptyNamespace({ request, cleanupNamespace });
-      assert.equal((await inspectNetworks(embeddedNamespace.id)).length, 1);
-      assert.equal(
-        await containerCount([
-          [LABEL_NAMESPACE, embeddedNamespace.id],
-          [LABEL_ROLE, "gateway"],
-        ]),
-        1,
-      );
-      const stopped = await request(
-        "POST",
-        `/namespaces/${embeddedNamespace.id}/agents/${embedded.agent.id}/stop`,
-      );
-      assert.equal(stopped.status, 202, JSON.stringify(stopped.error));
-      await waitFor("stopped Agent and completed stop metrics", async () => {
-        const current = await request(
-          "GET",
-          `/namespaces/${embeddedNamespace.id}/agents/${embedded.agent.id}`,
-        );
-        if (current.data.activeRevisionId !== undefined) {
-          return false;
-        }
-        const body = await scrape("worker");
-        return (
-          /occ_agents\{[^\n]*lifecycle_state="stopped"[^\n]*\} 1(?:\n|$)/.test(body) &&
-          /occ_agent_operation_duration_seconds_count\{[^\n]*operation="stop"[^\n]*\} 1(?:\n|$)/.test(
-            body,
-          )
-        );
-      });
-      assert.equal(
-        await containerCount([[LABEL_AGENT, embedded.agent.id]]),
-        0,
-        "supported stop must remove the Agent workload before reporting completion",
-      );
-      await assertComposeLogsDoNotLeakBootstrapServiceKey({ project, env, serviceKey });
-      return;
-    }
-
-    await assertInvalidPasswordTuiDenied({
-      context,
-      gateway: embeddedGateway,
-      gatewayPassword: embeddedPassword,
-      onFailure: () => containerLogs([embeddedGateway], [embeddedPassword]),
-    });
-    const [tuiGateway] = await waitForContainers(
-      [
-        [LABEL_NAMESPACE, embeddedNamespace.id],
-        [LABEL_AGENT, embedded.agent.id],
-        [LABEL_REVISION, embedded.revision.id],
-        [LABEL_ROLE, "gateway"],
-      ],
-      1,
-      "embedded OpenClaw gateway container before TUI attach",
-    );
-    await assertInteractiveTuiConversation({
-      context,
-      gateway: tuiGateway,
-      gatewayPassword: embeddedPassword,
-      onFailure: () => containerLogs([tuiGateway], [embeddedPassword]),
-    });
-    await invokeGateway({
-      networkName: inspectedNetworkName(embeddedNetwork),
-      gateway: embeddedGateway,
-      gatewayPassword: embeddedPassword,
-      mode: "embedded",
-      onFailure: () => containerLogs([embeddedGateway], [embeddedPassword]),
-    });
     await otelLogs.assertRecords({
-      forbidden: [providerKey, adminPassword, serviceKey, embeddedPassword, dedicatedPassword],
+      forbidden: [adminPassword, serviceKey],
       expected: [
         {
           label: "bootstrap service-key creation",
@@ -1589,68 +1096,6 @@ test(
           },
           body: "http.completed",
         },
-        {
-          label: "worker embedded revision completion",
-          serviceName: "occ-worker",
-          resource: {
-            [OTEL_RESOURCE.serviceInstanceId]: project,
-          },
-          attributes: {
-            "event.name": "worker.completed",
-            "occ.namespace.id": embeddedNamespace.id,
-            "occ.agent.id": embedded.agent.id,
-            "occ.revision.id": embedded.revision.id,
-            "work.outcome": "success",
-          },
-          body: "worker.completed",
-        },
-        {
-          label: "worker dedicated revision completion",
-          serviceName: "occ-worker",
-          resource: {
-            [OTEL_RESOURCE.serviceInstanceId]: project,
-          },
-          attributes: {
-            "event.name": "worker.completed",
-            "occ.namespace.id": dedicatedNamespace.id,
-            "occ.agent.id": dedicated.agent.id,
-            "occ.revision.id": dedicated.revision.id,
-            "work.outcome": "success",
-          },
-          body: "worker.completed",
-        },
-        {
-          label: "embedded gateway operational record",
-          serviceName: "openclaw-gateway",
-          resource: {
-            [OTEL_RESOURCE.namespaceId]: embeddedNamespace.id,
-            [OTEL_RESOURCE.agentId]: embedded.agent.id,
-            [OTEL_RESOURCE.revisionId]: embedded.revision.id,
-          },
-          attributes: { "event.name": "gateway.operational" },
-          body: "gateway.operational",
-        },
-        {
-          label: "dedicated gateway operational record",
-          serviceName: "openclaw-gateway",
-          resource: {
-            [OTEL_RESOURCE.namespaceId]: dedicatedNamespace.id,
-            [OTEL_RESOURCE.agentId]: dedicated.agent.id,
-            [OTEL_RESOURCE.revisionId]: dedicated.revision.id,
-          },
-          attributes: { "event.name": "gateway.operational" },
-          body: "gateway.operational",
-        },
-        {
-          label: "dedicated Codex app-server operational record",
-          serviceName: "codex-app-server",
-          resource: {
-            [OTEL_RESOURCE.namespaceId]: dedicatedNamespace.id,
-            [OTEL_RESOURCE.agentId]: dedicated.agent.id,
-            [OTEL_RESOURCE.revisionId]: dedicated.revision.id,
-          },
-          attributes: { "event.name": "codex.operational" },
-        },
       ],
     });
 
@@ -1661,27 +1106,15 @@ test(
         composeOptions,
         request,
         cleanupNamespace,
-        secrets: [providerKey, adminPassword, serviceKey],
+        secrets: [adminPassword, serviceKey],
       });
     } else {
       await deleteEmptyNamespace({ request, cleanupNamespace });
     }
-    assert.equal((await inspectNetworks(embeddedNamespace.id)).length, 1);
-    assert.equal(
-      await containerCount([
-        [LABEL_NAMESPACE, embeddedNamespace.id],
-        [LABEL_ROLE, "gateway"],
-      ]),
-      1,
-    );
-    assert.equal((await inspectNetworks(dedicatedNamespace.id)).length, 1);
-    assert.equal(
-      await containerCount([
-        [LABEL_NAMESPACE, dedicatedNamespace.id],
-        [LABEL_ROLE, "gateway"],
-      ]),
-      1,
-    );
+    // Deleting one Namespace leaves the other Namespaces' networks in place.
+    for (const namespace of modeNamespaces) {
+      assert.equal((await inspectNetworks(namespace.id)).length, 1);
+    }
     await assertComposeLogsDoNotLeakBootstrapServiceKey({ project, env, serviceKey });
   },
 );
@@ -1697,8 +1130,8 @@ for (const setupMode of executionModes) {
       timeout: 300_000,
     },
     async (context) => {
-      // This is real Docker Driver evidence; the Compose Agent workflow above remains
-      // the separate proof of OCC admission, authorization, and worker delivery.
+      // This is real Docker Driver evidence only. OCC admits no Docker deployment (the
+      // Compose journey above asserts that refusal), so no Agent workflow reaches this path.
       const runtimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE ?? DEFAULT_RUNTIME_IMAGE;
       const driver = new DockerComputeDriver({
         images: {

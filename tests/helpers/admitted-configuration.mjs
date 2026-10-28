@@ -16,15 +16,11 @@ function withUnset(parent, [key, ...rest], value) {
   return { ...parent, [key]: withUnset(current, rest, value) };
 }
 
-// Deployment admission keeps OpenClaw's earlier values for the settings its personal security
-// preset would otherwise fill: another participant cannot steer a running turn, and apply_patch
-// stays in the workspace. Like the preset, it fills only unset settings.
+// Deployment admission keeps OpenClaw's earlier value for one setting its personal security preset
+// would otherwise fill: apply_patch stays in the workspace. Like the preset, it fills only an unset
+// setting. Collaborative steering keeps the preset's default (on) unless the Configuration sets it.
 export function withGatewaySecurityDefaults(values) {
-  return withUnset(
-    withUnset(values, ["messages", "queue", "allowCollaborativeSteering"], false),
-    ["tools", "exec", "applyPatch", "workspaceOnly"],
-    true,
-  );
+  return withUnset(values, ["tools", "exec", "applyPatch", "workspaceOnly"], true);
 }
 
 // The document deployment admission freezes into an AgentRevision when OCC owns native logging.

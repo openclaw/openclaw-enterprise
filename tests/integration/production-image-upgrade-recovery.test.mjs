@@ -481,9 +481,15 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         status: "Success",
         message: "private-delete-response-marker",
       });
-    } else if (resource?.startsWith("pod/") && args.includes("get") && state.revisionPods) {
-      // The revision's Pods after a scripted eviction or replacement: a read by name
-      // finds a Pod that still exists, ended or not, as the Kubernetes API does.
+    } else if (
+      resource?.startsWith("pod/") &&
+      args.includes("get") &&
+      state.revisionPods &&
+      !(resource.slice("pod/".length) in state.preflight.pods)
+    ) {
+      // The revision's Pods, as scripted (a dedicated Agent's two) or after an eviction or
+      // replacement: a read by name finds a Pod that still exists, ended or not, as the
+      // Kubernetes API does. The startup preflight's Pods are read below.
       const pod = state.revisionPods.find((item) => "pod/" + item.metadata.name === resource);
       if (!pod) {
         return fail(1, `Error from server (NotFound): pods "${resource.slice(4)}" not found`);
@@ -760,6 +766,19 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       out(`${free === "unlimited" ? "max" : limit}\n${used}\nanon 1\ninactive_file ${cache}\n`);
     } else if (args.includes("exec") && args.includes("doctor")) {
       log(`doctor ${args.slice(args.indexOf("--") + 1).join(" ")}`);
+      // Kubernetes evicts, replaces or restarts the gateway while Doctor runs, as node memory
+      // pressure did on a production-shaped cluster (finding 2736). Doctor then passes, or
+      // fails as a fault below says.
+      if (state.afterDoctor) {
+        Object.assign(state, state.afterDoctor);
+        delete state.afterDoctor;
+        save();
+      }
+      // The kubelet ended the gateway Pod while Doctor ran (an eviction): the exec stream
+      // ends with the kill, and the container did not restart.
+      if (take("doctor-evicted")) {
+        return fail(137, "command terminated with exit code 137");
+      }
       if (take("doctor-error")) {
         return fail(1, "command terminated with exit code 1");
       }
@@ -798,13 +817,6 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       if (state.doctorSpanMs) {
         await new Promise((resolve) => setTimeout(resolve, state.doctorSpanMs));
         log("doctor-end");
-      }
-      // Doctor passes, and then Kubernetes evicts, replaces or restarts the gateway, as
-      // node memory pressure did on a production-shaped cluster (finding 2736).
-      if (state.afterDoctor) {
-        Object.assign(state, state.afterDoctor);
-        delete state.afterDoctor;
-        save();
       }
       out("{}");
     } else if (args.includes("exec")) {
@@ -1985,6 +1997,98 @@ test("a gateway changed after a passing Doctor fails the upgrade and resume chec
   assert.deepEqual(
     targets.map((target) => target.gatewayName),
     ["gateway-2"],
+  );
+  // An eviction while Doctor runs kills Doctor (exit 137) without a container restart. The
+  // failure must still name the eviction, so it is not read as a Doctor or memory problem.
+  const killed = await fixture(t, { agent: true });
+  const killedState = await killed.state();
+  killedState.afterDoctor = { revisionPods: [evicted, replacement] };
+  await writeFile(join(killed.directory, "state.json"), JSON.stringify(killedState));
+  await killed.failNext("doctor-evicted");
+  const failure = await killed.run().then(
+    () => assert.fail("a Doctor killed by an eviction must stop the upgrade"),
+    (stopped) => stopped,
+  );
+  assert.match(failure.stderr, /OpenClaw Doctor was killed \(exit 137\)/);
+  assert.match(
+    failure.stderr,
+    /Agent agt_test's gateway Pod tenant\/gateway was evicted \(phase Failed\) after it became Ready for OpenClaw Doctor\./,
+  );
+  assert.match(failure.stderr, /OpenClaw Doctor failed for at least one replacement gateway/);
+  assert.doesNotMatch(failure.stdout, /Upgraded/);
+  // A dedicated Agent serves through its gateway and Codex agent Pods, and the readiness
+  // wait requires both. Node memory pressure during the Doctors evicts only the agent Pod
+  // (finding 2755): Doctor in the untouched gateway passes, but the upgrade must name the
+  // agent Pod instead of reporting success, and resume checks the replacement.
+  const agentPod = ({
+    name = "agent",
+    uid = "agent-uid",
+    phase = "Running",
+    ready = true,
+  } = {}) => ({
+    metadata: { namespace: "tenant", name, uid },
+    spec: { containers: [{ name: "agent", image: runtime }] },
+    status: {
+      phase,
+      ...(phase === "Failed" ? { reason: "Evicted" } : {}),
+      conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
+      containerStatuses: [{ name: "agent", restartCount: 0, lastState: {} }],
+    },
+  });
+  const dedicated = await fixture(t, {
+    inventoryNamespaces: [
+      {
+        id: "ns_test",
+        status: "ready",
+        agents: [
+          {
+            id: "agt_test",
+            status: "active",
+            desiredRuntimeState: "running",
+            executionMode: "dedicated",
+            activeRevisionId: "rev_old",
+            deploymentInProgress: false,
+          },
+        ],
+      },
+    ],
+  });
+  const dedicatedState = await dedicated.state();
+  dedicatedState.revisionPods = [pod(), agentPod()];
+  dedicatedState.afterDoctor = {
+    revisionPods: [
+      pod(),
+      agentPod({ phase: "Failed", ready: false }),
+      agentPod({ name: "agent-2", uid: "agent-2-uid" }),
+    ],
+  };
+  await writeFile(join(dedicated.directory, "state.json"), JSON.stringify(dedicatedState));
+  const agentFailure = await dedicated.run().then(
+    () => assert.fail("an agent Pod evicted during Doctor must stop the upgrade"),
+    (stopped) => stopped,
+  );
+  assert.match(
+    agentFailure.stderr,
+    /Agent agt_test's agent Pod tenant\/agent was evicted \(phase Failed\) after it became Ready for OpenClaw Doctor\./,
+  );
+  assert.doesNotMatch(agentFailure.stderr, /gateway Pod tenant\/gateway|OpenClaw Doctor failed/);
+  assert.match(agentFailure.stderr, /did not stay on the same Ready Pod without restarts/);
+  assert.doesNotMatch(agentFailure.stdout, /Upgraded/);
+  const resumedDedicated = await dedicated.run("--resume");
+  assert.match(resumedDedicated.stdout, /Upgraded runtime image/);
+  assert.equal((await dedicated.state()).dispatches, 1);
+  const [dedicatedTarget] = (
+    await readFile(join(dedicated.evidence, "doctor-targets.jsonl"), "utf8")
+  )
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    dedicatedTarget.revisionPods.map(({ role, name }) => [role, name]),
+    [
+      ["gateway", "gateway"],
+      ["agent", "agent-2"],
+    ],
   );
 });
 

@@ -2,7 +2,7 @@
 // Moves the tenants of a released single-cluster Installation with split-layout Gateway
 // namespaces across an upgrade: `export` them through OCC, `discard` them on the old release,
 // upgrade, then `import` them.
-// See docs/guides/deploy/breaking-changes-before-2026-10-10.md.
+// See docs/guides/deploy/split-layout-upgrade.md.
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, realpathSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";

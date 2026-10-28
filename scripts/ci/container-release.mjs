@@ -29,6 +29,7 @@ export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/runtime-image-startup-probe.test.mjs",
   "tests/integration/runtime-image-startup-termination.test.mjs",
   "tests/integration/runtime-image-gateway-unclean-restart.test.mjs",
+  "tests/integration/runtime-image-gateway-retained-state.test.mjs",
   "tests/integration/runtime-image-gateway-peer.test.mjs",
   "tests/integration/runtime-image-native-worker.test.mjs",
   "tests/integration/runtime-image-node-state-permissions.test.ts",

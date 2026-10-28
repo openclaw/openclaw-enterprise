@@ -1,20 +1,15 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-27
-last_updated_session: authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2
+updated: 2026-10-28
+last_updated_session: authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute delegates dedicated Codex/OpenClaw to OpenShell. Operator mode
-owns Namespace Workspaces; managed mode fails before mutation.
-[Credential sources](credential-source-lifecycle.md) provide model access without
-Agent Secret permission. Agent revision files and bearer passthrough authenticate Codex Gateway requests
-without a Harness Service.
-
-Development workspace-node setup uses a scoped token in its provider file.
+Kubernetes Compute provisions dedicated Codex and OpenClaw Harnesses through
+OpenShell. [Credential sources](credential-source-lifecycle.md) supply model access.
 
 ## Entry Points
 
@@ -271,6 +266,10 @@ when Workspace, labels, annotations, and spec match exactly and it is neither st
 bounds trust. Native exposure ends once a post-enrollment pass confirms its
 delete, by `withdrawHarnessExposure`, adoption or recreation with
 `workspaceNodeEnrolled`.
+
+After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
+require the recorded release acknowledgment and authenticated WebSocket. Other
+non-`200` responses stay pending or refuse enrollment without an upgrade.
 
 The Backend reuses clients, retrying setup. Cancellation is checked after
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations

@@ -36,6 +36,7 @@ import {
   SECRET_CREATE_DENIED,
   SLACK_LOOKUP_DENIED,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -318,21 +319,11 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   const spare = await fixture.createSecret(namespace.id, "Spare bot", "synthetic-spare-token");
   // This administrator may not create Secrets in the Namespace, so the Namespace permission answer
   // denies Secret create; nothing here creates one.
-  fixture.policy.restrictions.push({
-    id: "deny-approver-secret-create",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "create", "secret", { namespaceId: namespace.id });
   // Nor operate the spare token, which a people search needs on its Secret (finding 2469).
-  fixture.policy.restrictions.push({
-    id: "deny-approver-spare-operate",
+  restrict(fixture.policy, "operate", "secret", {
     namespaceId: namespace.id,
-    resourceKind: "secret",
     resourceId: spare.id,
-    action: "operate",
-    effect: "deny",
   });
   const { page } = await newPage(t, fixture, { browser });
   const lookups = [];

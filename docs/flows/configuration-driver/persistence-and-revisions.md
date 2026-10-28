@@ -125,7 +125,8 @@ When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
 stored reusable Configuration and its generation remain unchanged.
 [`admitGatewaySecurityDefaults`](../../../packages/occ/src/gateway-security-defaults.ts)
-then fills the two settings OpenClaw's `personal` security preset would loosen
+then fills `tools.exec.applyPatch.workspaceOnly`, which OpenClaw's `personal` security preset
+would loosen; other unset settings keep the preset's defaults
 ([reference](../../reference/configuration.md#agent-references-and-immutable-versions)). Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and

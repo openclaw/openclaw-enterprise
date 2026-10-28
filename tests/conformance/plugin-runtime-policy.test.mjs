@@ -1638,9 +1638,10 @@ for (const launcher of dedicatedGatewayLaunchers) {
       allow: ["read", "sessions"],
       alsoAllow: ["gateway", "diffs"],
       deny: ["sessions_send"],
-      // Deployment admission's values for settings OpenClaw's security preset would fill.
+      // Deployment admission's value for a setting OpenClaw's security preset would fill.
       exec: { applyPatch: { workspaceOnly: true } },
     };
+    // A strict Configuration's explicit steering value reaches the Gateway unchanged.
     baseConfig.messages = { queue: { allowCollaborativeSteering: false } };
     baseConfig.agents = { defaults: { modelSelectionScope: "agent" } };
     baseConfig.cron = { enabled: true, triggers: { enabled: true } };

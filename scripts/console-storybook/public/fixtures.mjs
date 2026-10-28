@@ -66,6 +66,9 @@ function configurationValues(scenario) {
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
     };
   }
+  if (scenario.collaborativeSteering !== undefined) {
+    values.messages = { queue: { allowCollaborativeSteering: scenario.collaborativeSteering } };
+  }
   if (scenario.slack) {
     values.channels.slack = {
       enabled: true,

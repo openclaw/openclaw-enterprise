@@ -30,6 +30,7 @@ import {
   READ_UNAVAILABLE,
   namespaceListDenied,
 } from "../helpers/refusal-text.mjs";
+import { liftRestriction } from "../helpers/iam-grants.mjs";
 
 const slack = {
   enabled: true,
@@ -873,7 +874,7 @@ test("Credentials shows issued-account denial only while that source is selected
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   assert.equal((await deniedList).status(), 403);
-  fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
+  liftRestriction(fixture.policy, restriction);
   // The refusal names the grant the list checks and who can grant it.
   const feedback = page.getByText(
     `Service Accounts unavailable. ${namespaceListDenied("Service Accounts")}`,

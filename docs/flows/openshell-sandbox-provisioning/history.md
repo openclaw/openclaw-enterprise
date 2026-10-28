@@ -8,6 +8,8 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
+
 - 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
 
 - 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
@@ -15,6 +17,8 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-10-24 13:29: Consolidate entries through October 14 in the linked history. (authoring-run/5349f11a-ad14-42f1-bef9-5a53b3a632ed - ce21c3b135a94193133b766be66e6a12120adf99)
 
 - 2026-10-24 10:23: Document credential placement and directory ownership through native Codex PAT startup. (authoring-run/e2810921-00cc-4f69-85ab-017b0b89ed89 - 04c1318d744ddfc810c51b2aa308fab5e6e62a7f)
+
+- 2026-10-23 14:21: Confirm released preview readiness with the acknowledged release and authenticated WebSocket in the accompanying Driver change. (authoring-run/5f5f89f5-e1c7-4af8-9b15-abd7a29db02e - 725e2371e5984fbe72d679e0fb7a55833225d70d)
 
 - 2026-10-21 23:23: Record per-source retirement refusal in the accompanying worker change. (authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
 

@@ -6,7 +6,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:tls";
 import { chromium } from "playwright";
-import { availablePort } from "./available-port.mjs";
 import { prepareQaConsoleTheme } from "./qa-installation.mjs";
 import { waitFor } from "./qa-utils.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
@@ -16,8 +15,7 @@ export async function createQaBrowser(f, { themed }) {
     await prepareQaConsoleTheme(f);
   }
   const nativeHost = `native.${f.cluster}.oce.localhost`;
-  const port = await availablePort();
-  const nativeOrigin = `https://${nativeHost}:${port}`;
+  let nativeOrigin;
   const ca = f.browserCA ?? join(f.directory, "browser-ca.crt");
   let relay;
   let upstream;
@@ -63,8 +61,10 @@ export async function createQaBrowser(f, { themed }) {
     );
     await new Promise((accept, reject) => {
       relay.once("error", reject);
-      relay.listen(port, "127.0.0.1", accept);
+      // Port 0: the relay's port is read once bound, so nothing else can take it first.
+      relay.listen(0, "127.0.0.1", accept);
     });
+    nativeOrigin = `https://${nativeHost}:${relay.address().port}`;
     f.resources.after(async () => {
       for (const socket of sockets) {
         socket.destroy();

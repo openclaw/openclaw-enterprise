@@ -77,10 +77,9 @@ Agent revision read access must also cover the replacement versions.
 Review saved Agent and Configuration drafts before a runtime upgrade. Each
 deployment snapshots the current draft, not the previous selected version.
 
-A controller-only release does not deploy Agents, but the new worker can
-restart their Pods once
-([details](breaking-changes-before-2026-10-11.md#2026-10-10-controller-only-releases-can-restart-agent-pods-once)).
-Restarting the repository
+A controller-only release does not deploy Agents, but when it changes the Pod
+specs the controller renders, the new worker restarts the affected Agent Pods
+once on the same image. Restarting the repository
 broker recreates dedicated Codex Pods and can leave a session that the worker
 cannot replace. Before a release, plan the interruption and authorized
 replacement versions for affected Agents; review their drafts and deploy grants.
@@ -269,10 +268,6 @@ migration role, then runs bootstrap. The API and worker do not roll out unless
 both hooks succeed. The command does not request fleet inventory or Agent
 deployment authority. A later replacement version does not settle old cleanup
 or replay repository operations.
-
-For the first release that introduces `occ installation deployment-inventory`,
-verify that operation after the controller upgrade before attempting a runtime
-upgrade.
 
 Success looks like:
 

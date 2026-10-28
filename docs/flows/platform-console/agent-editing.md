@@ -109,18 +109,17 @@ which would be audited (finding D758).
 
 **Edit Configuration** rereads the Agent and Configuration, then PATCHes only
 `{ values, expectedGeneration }`, preserving `secretBindings`. A changed ID or stale
-generation (including a `409` from a racing save) requires **Reload draft**.
+generation (also a racing save's `409`) requires **Reload draft**.
 A response not confirming the same Configuration and Namespace, a newer generation, and the
-sent values and bindings is an unknown outcome that needs a reload before another save.
+sent values and bindings is an unknown outcome; reload before saving again.
 A focused, disabled **Save Configuration** moves focus to **Checking Configuration…**.
-Success focuses **Edit Configuration** unless the reader moved focus during the save.
+Success focuses **Edit Configuration** unless the reader moved focus.
 
-**Enable gateway password access** sets `gateway.auth.password` to reference
-`OPENCLAW_GATEWAY_PASSWORD`, changing nothing else; **Cancel** discards it. Kubernetes
+**Enable gateway password access** and **Collaboration and safety**
+(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access sets `gateway.auth.password` to reference `OPENCLAW_GATEWAY_PASSWORD`, changing nothing else. Kubernetes
 `gatewayConfiguration` recognizes the reference; `deployment` supplies the password.
 
-Saves preserve scroll, focus and admitted snapshots. Rejected edits stay;
-an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
+Saves preserve scroll, focus and admitted snapshots. Rejected edits stay. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
 access, a Workspace file save Agent `operate`. Without Agent `update`, Configuration `read` or
 bound-source grants (`operate`, and `read` on a Harness ServiceAccount; the note names both),

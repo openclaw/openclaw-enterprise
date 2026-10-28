@@ -1,12 +1,13 @@
-// Gateway security settings OCE keeps at the values OpenClaw used before its `security.preset`
-// (default `personal`, openclaw/openclaw#185477), which fills them only when unset. Without them,
-// another participant's message could steer a running turn under the first requester's
-// authority, and apply_patch could write outside the workspace.
+// The Gateway security setting OCE keeps at the value OpenClaw used before its `security.preset`
+// (default `personal`, openclaw/openclaw#185477), which fills it only when unset: without it,
+// apply_patch could write outside the workspace. The preset's other defaults apply, including
+// `messages.queue.allowCollaborativeSteering: true`: another participant with access to the
+// Gateway can steer a running turn, which keeps the first requester's authority. An explicit
+// `false` in the Configuration still turns it off.
 // scripts/first-agent-model.mjs runs this module without installed workspace packages: keep it
 // free of imports and of TypeScript syntax that type stripping cannot erase.
 
 const GATEWAY_SECURITY_DEFAULTS: readonly (readonly [readonly string[], boolean])[] = [
-  [["messages", "queue", "allowCollaborativeSteering"], false],
   [["tools", "exec", "applyPatch", "workspaceOnly"], true],
 ];
 

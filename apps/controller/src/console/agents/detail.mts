@@ -41,6 +41,7 @@ import { renderAgentAccess } from "./access.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
+import { gatewaySafetyControls } from "./gateway-safety.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
   askAdministratorTo,
@@ -5177,6 +5178,26 @@ export async function renderAgentDetail(
   function renderDraftConfigurationEditor(context: DetailContext, data: DraftDetails) {
     const { snapshot, values, setDraftEditorState } = data;
     const container = element("div", { className: "configuration-draft-editor" });
+    // The JSON editor and its actions. The collaboration and safety toggles below it stay in
+    // place while it rerenders, so a toggle keeps focus; the editor keeps its place at the top,
+    // where Edit current Configuration brings it into view (finding 2061).
+    const body = element("div", {});
+    // Each toggle stages its change in the Configuration JSON, through the same draft and save
+    // checks as a JSON edit, as Enable gateway password access does.
+    const safety = gatewaySafetyControls({
+      onChange(next) {
+        editor.value = JSON.stringify(next, null, 2);
+        if (editing) {
+          editor.dispatchEvent(new Event("input"));
+        } else {
+          // The editor opens above the toggle the reader just used, which stays in view.
+          editing = true;
+          render();
+          (document.activeElement as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
+        }
+      },
+    });
+    container.append(body, safety.node);
     const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
@@ -5307,6 +5328,26 @@ export async function renderAgentDetail(
       return editor.value !== initialText;
     }
 
+    // The toggles show the document a save would keep: the editor's JSON while it is open.
+    function syncSafety() {
+      const shown = editing ? parseEditor() : values;
+      safety.update(shown, safetyUnavailable(shown !== undefined));
+    }
+
+    function safetyUnavailable(readable: boolean) {
+      if (!editing && configurationReadOnly()) {
+        // The read-only note above names the grant to ask for.
+        return "These settings are read-only with your access.";
+      }
+      if (pending) {
+        return "Wait for the Configuration save to finish.";
+      }
+      if (outcomeUnknown || reloadRequired) {
+        return "Reload this draft before changing these settings.";
+      }
+      return readable ? null : "Correct the Configuration JSON to change these settings.";
+    }
+
     function parseEditor(reportInvalid = false) {
       const problem = jsonObjectProblem(editor.value);
       if (problem === undefined) {
@@ -5340,6 +5381,7 @@ export async function renderAgentDetail(
       edit.disabled = pending || outcomeUnknown;
       enableGatewayPassword.disabled = pending || outcomeUnknown || reloadRequired;
       editor.readOnly = pending || outcomeUnknown || reloadRequired;
+      syncSafety();
       if (outcomeUnknown) {
         setStatusTone(feedback, "danger");
         feedback.textContent =
@@ -5509,9 +5551,10 @@ export async function renderAgentDetail(
     let shownReadOnly = false;
     function render() {
       shownReadOnly = !editing && configurationReadOnly();
+      syncSafety();
       if (shownReadOnly) {
         // A reader views the saved JSON; no editor whose Save would answer 403 (finding 2421).
-        container.replaceChildren(
+        body.replaceChildren(
           element("p", { className: "hint" }, configurationReadOnlyReason()),
           nativeDocument(values, "View native Configuration"),
           ...(feedback.textContent ? [feedback] : []),
@@ -5519,7 +5562,7 @@ export async function renderAgentDetail(
         return;
       }
       if (!editing) {
-        container.replaceChildren(
+        body.replaceChildren(
           element(
             "p",
             { className: "hint" },
@@ -5541,7 +5584,7 @@ export async function renderAgentDetail(
         return;
       }
       updateState();
-      container.replaceChildren(
+      body.replaceChildren(
         element(
           "div",
           { className: "form-field" },

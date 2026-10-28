@@ -2660,13 +2660,21 @@ test("native tool evidence reads compressed rows, prompt snapshots and command e
       },
     );
   });
-  await t.test("retains direct native Codex call and mirror correlation", async () => {
+  await t.test("binds Codex tool work to its native terminal or Gateway finalizer", async () => {
     const prefix = "codex:thread-fixture:turn-fixture";
+    const runId = "gateway-run";
+    const mirror = (mirrorIdentity, terminal = false) => ({
+      mirrorIdentity,
+      mirrorOrigin: "codex-app-server",
+      mirrorSourceFingerprint: "fixture-fingerprint",
+      runId,
+      ...(terminal ? { runTerminal: true } : {}),
+    });
     const messages = [
       {
         role: "user",
         content: "codex-fixture",
-        __openclaw: { mirrorIdentity: `${prefix}:prompt` },
+        __openclaw: mirror(`${prefix}:prompt`),
       },
       {
         role: "assistant",
@@ -2678,7 +2686,7 @@ test("native tool evidence reads compressed rows, prompt snapshots and command e
             arguments: { action: "list" },
           },
         ],
-        __openclaw: { mirrorIdentity: `${prefix}:tool:codex-call:call` },
+        __openclaw: mirror(`${prefix}:tool:codex-call:call`),
       },
       {
         role: "toolResult",
@@ -2686,13 +2694,13 @@ test("native tool evidence reads compressed rows, prompt snapshots and command e
         toolName: "automations",
         isError: false,
         content: targetResult.content,
-        __openclaw: { mirrorIdentity: `${prefix}:tool:codex-call:result` },
+        __openclaw: mirror(`${prefix}:tool:codex-call:result`),
       },
       {
         role: "assistant",
         content: [{ type: "text", text: "codex-fixture" }],
         stopReason: "stop",
-        __openclaw: { mirrorIdentity: `${prefix}:assistant` },
+        __openclaw: mirror(`${prefix}:assistant`, true),
       },
     ];
     replaceTranscript(messages, []);
@@ -2703,6 +2711,109 @@ test("native tool evidence reads compressed rows, prompt snapshots and command e
     );
     assert.equal(proof.toolName, "automations");
     assert.equal(proof.codexMirrorTurnVerified, true);
+    const evidence = { ...dispatchedEvidence, turnMarker: "codex-fixture" };
+    const absence = { ...evidence, toolName: "agents_list" };
+    const [prompt, call, result, answer] = messages;
+    const write = (...rows) => replaceTranscript(rows, []);
+    const finalizer = { ...answer, __openclaw: mirror(`settled-finalizer:${runId}`, true) };
+    const continuation = { ...answer, __openclaw: mirror("continuation-turn:assistant", true) };
+    for (const [terminal, kind] of [
+      [finalizer, "settled-finalizer"],
+      [continuation, "native-continuation"],
+    ]) {
+      const progress =
+        kind === "native-continuation"
+          ? [
+              {
+                role: "assistant",
+                content: "Finishing",
+                __openclaw: mirror("continuation-turn:commentary:item"),
+              },
+            ]
+          : [];
+      write(prompt, call, result, ...progress, terminal);
+      const finalized = await codex.assertSessionToolCallEvidence({}, evidence);
+      assert.equal(finalized.codexGatewayRunCompletion, kind);
+      assert.equal(finalized.codexMirrorTurnVerified, undefined);
+      await codex.assertNoSessionToolCallEvidence({}, absence);
+      await assert.rejects(
+        codex.assertNoSessionToolCallEvidence({}, evidence),
+        /still invoked automations/,
+      );
+    }
+    // A completed run cannot supply missing IDs or substitute another tool's mirror pair.
+    const unidentified = { ...call, content: [{ ...call.content[0], id: undefined }] };
+    write(prompt, unidentified, { ...result, toolCallId: undefined }, finalizer);
+    await assert.rejects(codex.assertSessionToolCallEvidence({}, evidence), /terminal/);
+    await assert.rejects(codex.assertNoSessionToolCallEvidence({}, absence), /completed/);
+
+    const other = {
+      ...call,
+      content: [{ ...call.content[0], id: "other", name: "other" }],
+      __openclaw: mirror(`${prefix}:tool:other:call`),
+    };
+    const otherResult = {
+      ...result,
+      toolCallId: "other",
+      toolName: "other",
+      __openclaw: mirror(`${prefix}:tool:other:result`),
+    };
+    const wrongResult = { ...result, __openclaw: mirror(`${prefix}:tool:wrong:result`) };
+    write(prompt, other, otherResult, call, wrongResult, continuation);
+    await assert.rejects(codex.assertSessionToolCallEvidence({}, evidence), /terminal/);
+    await codex.assertNoSessionToolCallEvidence({}, absence);
+    write(
+      prompt,
+      other,
+      otherResult,
+      call,
+      {
+        ...wrongResult,
+        isError: true,
+        content: [{ type: "text", text: "user rejected MCP tool call" }],
+      },
+      continuation,
+    );
+    await assert.rejects(codex.assertSessionToolDeniedEvidence({}, evidence), /owned terminal/);
+
+    for (const rows of [
+      [
+        prompt,
+        call,
+        result,
+        { ...continuation, __openclaw: { ...continuation.__openclaw, runId: "other" } },
+      ],
+      [prompt, call, result, { ...finalizer, __openclaw: mirror(`settled-finalizer:${runId}`) }],
+      [
+        prompt,
+        call,
+        result,
+        { ...finalizer, __openclaw: mirror("settled-finalizer:different-run", true) },
+      ],
+      [
+        prompt,
+        call,
+        result,
+        { ...finalizer, __openclaw: mirror(`${prefix}:commentary:other-item`, true) },
+      ],
+      [
+        prompt,
+        call,
+        result,
+        { ...answer, __openclaw: mirror(`${prefix}:commentary:item`) },
+        { ...finalizer, content: [{ type: "text", text: "another answer" }] },
+      ],
+      [prompt, call, finalizer, result],
+      [prompt, { ...call, __openclaw: { ...call.__openclaw, runId: "other" } }, result, finalizer],
+      [prompt, call, result, { ...prompt, __openclaw: mirror("unrelated:prompt") }, finalizer],
+    ]) {
+      write(...rows);
+      await assert.rejects(
+        codex.assertSessionToolCallEvidence({}, evidence),
+        /terminal|matching successful result/,
+      );
+      await assert.rejects(codex.assertNoSessionToolCallEvidence({}, absence), /completed/);
+    }
     messages[2].__openclaw.mirrorIdentity = "codex:other:turn:tool:codex-call:result";
     replaceTranscript(messages, []);
     await assert.rejects(
