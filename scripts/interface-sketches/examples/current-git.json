@@ -1,418 +1,391 @@
 {
-  "title": "Current Git composition",
-  "width": 1870,
-  "height": 940,
+  "title": "01  OpenShell Git request",
+  "width": 1700,
+  "height": 1120,
   "items": [
-    { "kind": "text", "x": 39, "y": 46, "text": "control plane  /  OCE", "size": 25 },
-    { "kind": "text", "x": 812, "y": 46, "text": "data plane  /  OpenShell", "size": 25 },
-    { "kind": "box", "x": 14, "y": 58, "w": 758, "h": 805, "radius": 16 },
-    { "kind": "box", "x": 807, "y": 58, "w": 478, "h": 533, "radius": 16 },
-    { "kind": "box", "x": 807, "y": 661, "w": 478, "h": 202, "radius": 16 },
     {
-      "kind": "line",
-      "points": [
-        [789, 62],
-        [789, 865]
-      ],
-      "color": "#e43c39",
-      "dashed": true,
-      "arrow": false
+      "kind": "text",
+      "x": 45,
+      "y": 57,
+      "text": "01  OpenShell Git request",
+      "size": 38
+    },
+    {
+      "kind": "text",
+      "x": 46,
+      "y": 100,
+      "text": "GitHub App installation preview",
+      "size": 26
+    },
+    {
+      "kind": "text",
+      "x": 65,
+      "y": 155,
+      "text": "control plane / OCE worker",
+      "size": 26
+    },
+    {
+      "kind": "text",
+      "x": 970,
+      "y": 155,
+      "text": "data plane / OpenShell",
+      "size": 26
+    },
+    {
+      "kind": "box",
+      "x": 40,
+      "y": 175,
+      "w": 610,
+      "h": 630
+    },
+    {
+      "kind": "box",
+      "x": 940,
+      "y": 175,
+      "w": 700,
+      "h": 380
     },
     {
       "kind": "line",
       "points": [
-        [812, 622],
-        [1287, 622]
+        [690, 175],
+        [690, 805]
       ],
-      "color": "#e43c39",
+      "color": "#d93636",
       "dashed": true,
       "arrow": false
     },
-    { "kind": "text", "x": 835, "y": 650, "text": "internet", "size": 21 },
-    { "kind": "box", "x": 842, "y": 100, "w": 405, "h": 147, "color": "#e43c39", "radius": 16 },
-    { "kind": "text", "x": 863, "y": 133, "text": "sandbox", "size": 21, "color": "#e43c39" },
+    {
+      "kind": "box",
+      "x": 1040,
+      "y": 205,
+      "w": 420,
+      "h": 115,
+      "color": "#d93636"
+    },
+    {
+      "kind": "text",
+      "x": 1060,
+      "y": 235,
+      "text": "sandbox",
+      "size": 22,
+      "color": "#d93636"
+    },
     {
       "kind": "node",
       "id": "agent",
-      "x": 942,
-      "y": 149,
-      "w": 205,
-      "h": 71,
+      "x": 1150,
+      "y": 249,
+      "w": 200,
+      "h": 53,
       "lines": ["Agent"],
-      "size": 22
+      "size": 27
     },
     {
       "kind": "node",
-      "id": "credential-proxy",
-      "x": 866,
-      "y": 323,
-      "w": 350,
-      "h": 85,
+      "id": "supervisor",
+      "x": 1040,
+      "y": 395,
+      "w": 420,
+      "h": 110,
       "lines": ["Credential Proxy", "(OpenShell supervisor)"],
-      "size": 22
+      "size": 26
     },
     {
       "kind": "line",
       "points": [
-        { "node": "agent", "side": "bottom" },
-        { "node": "credential-proxy", "side": "top" }
-      ],
-      "arrow": true
+        [1250, 302],
+        [1250, 395]
+      ]
     },
-    { "kind": "text", "x": 1060, "y": 282, "text": "git push", "size": 19 },
+    {
+      "kind": "text",
+      "x": 1275,
+      "y": 362,
+      "text": "git push attempt",
+      "size": 24
+    },
+    {
+      "kind": "text",
+      "x": 1475,
+      "y": 443,
+      "text": "outside",
+      "size": 22
+    },
+    {
+      "kind": "text",
+      "x": 1475,
+      "y": 474,
+      "text": "sandbox",
+      "size": 22
+    },
+    {
+      "kind": "node",
+      "id": "git-transport-adapter",
+      "x": 80,
+      "y": 350,
+      "w": 520,
+      "h": 175,
+      "lines": [
+        "Git transport adapter (OpenShell)",
+        "Handler checks identity / binding;",
+        "classifies the actual HTTP request."
+      ],
+      "size": 25
+    },
+    {
+      "kind": "line",
+      "points": [
+        [1040, 412],
+        [600, 412]
+      ]
+    },
+    {
+      "kind": "text",
+      "x": 820,
+      "y": 370,
+      "text": "EvaluateHttpRequest",
+      "size": 25,
+      "center": true
+    },
+    {
+      "kind": "text",
+      "x": 820,
+      "y": 398,
+      "text": "(before injection)",
+      "size": 23,
+      "center": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [600, 485],
+        [1040, 485]
+      ]
+    },
+    {
+      "kind": "text",
+      "x": 820,
+      "y": 473,
+      "text": "allow / deny",
+      "size": 25,
+      "center": true
+    },
+    {
+      "kind": "box",
+      "x": 80,
+      "y": 635,
+      "w": 520,
+      "h": 130
+    },
+    {
+      "kind": "text",
+      "x": 340,
+      "y": 670,
+      "text": "Prepared Git owner",
+      "size": 27,
+      "center": true
+    },
+    {
+      "kind": "text",
+      "x": 340,
+      "y": 707,
+      "text": "restricted worker authority",
+      "size": 24,
+      "center": true
+    },
+    {
+      "kind": "text",
+      "x": 340,
+      "y": 742,
+      "text": "observedHook.authorize",
+      "size": 25,
+      "center": true
+    },
+    {
+      "kind": "line",
+      "points": [
+        [220, 525],
+        [220, 635]
+      ]
+    },
+    {
+      "kind": "text",
+      "x": 245,
+      "y": 574,
+      "text": "local call",
+      "size": 24
+    },
+    {
+      "kind": "text",
+      "x": 245,
+      "y": 607,
+      "text": "decision returns to adapter",
+      "size": 22
+    },
+    {
+      "kind": "text",
+      "x": 80,
+      "y": 230,
+      "text": "Before allowing the request",
+      "size": 25
+    },
+    {
+      "kind": "text",
+      "x": 80,
+      "y": 271,
+      "text": "Worker rechecks recipient and loaded generation",
+      "size": 24
+    },
+    {
+      "kind": "text",
+      "x": 80,
+      "y": 304,
+      "text": "via Gateway status, without fetching a token.",
+      "size": 24
+    },
+    {
+      "kind": "line",
+      "points": [
+        [940, 590],
+        [1640, 590]
+      ],
+      "color": "#d93636",
+      "dashed": true,
+      "arrow": false
+    },
+    {
+      "kind": "text",
+      "x": 967,
+      "y": 625,
+      "text": "internet",
+      "size": 23
+    },
     {
       "kind": "node",
       "id": "github",
-      "x": 947,
-      "y": 720,
-      "w": 198,
-      "h": 91,
+      "x": 1100,
+      "y": 670,
+      "w": 300,
+      "h": 80,
       "lines": ["GitHub"],
-      "size": 22
+      "size": 29
     },
     {
       "kind": "line",
       "points": [
-        { "node": "credential-proxy", "side": "bottom" },
-        { "node": "github", "side": "top" }
+        [1250, 505],
+        [1250, 670]
       ],
-      "arrow": true
-    },
-    { "kind": "text", "x": 1054, "y": 474, "text": "inject + forward", "size": 20 },
-    { "kind": "text", "x": 1054, "y": 502, "text": "approved request", "size": 20 },
-    {
-      "kind": "node",
-      "id": "computedriver",
-      "x": 40,
-      "y": 109,
-      "w": 283,
-      "h": 78,
-      "lines": ["ComputeDriver", "(Kubernetes Compute)"],
-      "size": 22
-    },
-    { "kind": "box", "x": 37, "y": 258, "w": 290, "h": 272, "radius": 16 },
-    { "kind": "text", "x": 52, "y": 287, "text": "one InstalledDriver", "size": 18 },
-    {
-      "kind": "node",
-      "id": "sandboxdriver",
-      "x": 56,
-      "y": 311,
-      "w": 251,
-      "h": 68,
-      "lines": ["SandboxDriver"],
-      "size": 22
-    },
-    {
-      "kind": "node",
-      "id": "credentialproxydriver",
-      "x": 56,
-      "y": 423,
-      "w": 251,
-      "h": 69,
-      "lines": ["CredentialProxyDriver"],
-      "size": 21
-    },
-    {
-      "kind": "line",
-      "points": [{ "node": "computedriver", "side": "bottom" }, [177, 255]],
-      "arrow": true
-    },
-    { "kind": "text", "x": 189, "y": 225, "text": "uses paired owner", "size": 19 },
-    { "kind": "text", "x": 59, "y": 511, "text": "same OpenShell backend", "size": 17 },
-    { "kind": "text", "x": 1360, "y": 108, "text": "01   Current Git composition", "size": 27 },
-    { "kind": "text", "x": 1361, "y": 154, "text": "How to read this", "size": 23 },
-    {
-      "kind": "node",
-      "id": "repositorypolicydriver",
-      "x": 428,
-      "y": 108,
-      "w": 311,
-      "h": 91,
-      "lines": [
-        "RepositoryPolicyDriver",
-        "GitHubRepositoryPolicy",
-        "supplies resolver to Git runtime"
-      ],
-      "size": 17
-    },
-    {
-      "kind": "node",
-      "id": "worker-git-authority",
-      "x": 411,
-      "y": 256,
-      "w": 331,
-      "h": 96,
-      "lines": ["Worker Git authority", "ProtectedRepositoryGitAuthority"],
-      "size": 19
-    },
-    {
-      "kind": "line",
-      "points": [[867, 337], { "node": "worker-git-authority", "side": "right" }],
-      "arrow": true
+      "dashed": true
     },
     {
       "kind": "text",
-      "x": 806,
-      "y": 293,
-      "text": "hook RPC¹",
-      "size": 18,
-      "halo": true,
-      "center": true
-    },
-    {
-      "kind": "node",
-      "id": "openshell-git-runtime",
-      "x": 409,
-      "y": 442,
-      "w": 331,
-      "h": 88,
-      "lines": ["OpenShell Git runtime", "(bound worker transport)"],
-      "size": 21
-    },
-    {
-      "kind": "line",
-      "points": [{ "node": "credentialproxydriver", "side": "right" }, [405, 466]],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 356,
-      "y": 439,
-      "text": "bind Git",
-      "size": 18,
-      "halo": true,
-      "center": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [547, 442],
-        [547, 355]
-      ],
-      "arrow": true
-    },
-    { "kind": "text", "x": 562, "y": 402, "text": "readMaterial", "size": 19 },
-    {
-      "kind": "node",
-      "id": "openshell-gateway",
-      "x": 819,
-      "y": 496,
-      "w": 196,
-      "h": 69,
-      "lines": ["OpenShell Gateway", "provider API"],
-      "size": 18
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "openshell-git-runtime", "side": "right" },
-        { "node": "openshell-gateway", "side": "left" }
-      ],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 778,
-      "y": 481,
-      "text": "install / rotate",
-      "size": 16,
-      "halo": true,
-      "center": true
-    },
-    {
-      "kind": "line",
-      "points": [{ "node": "openshell-gateway", "side": "top" }, [916, 411]],
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "x": 903,
-      "y": 456,
-      "text": "value",
-      "size": 18,
-      "halo": true,
-      "center": true
-    },
-    {
-      "kind": "node",
-      "id": "prepared-git-owner",
-      "x": 392,
+      "x": 1275,
       "y": 632,
-      "w": 351,
-      "h": 88,
-      "lines": ["Prepared Git owner", "(issuer + token store)"],
-      "size": 22
+      "text": "inject + forward if allowed",
+      "size": 24,
+      "halo": true
+    },
+    {
+      "kind": "text",
+      "x": 950,
+      "y": 786,
+      "text": "GitHub checks repo membership, refs and permissions",
+      "size": 23
+    },
+    {
+      "kind": "text",
+      "x": 950,
+      "y": 817,
+      "text": "within the installation; no OCE per-ref filtering.",
+      "size": 23
     },
     {
       "kind": "line",
       "points": [
-        [425, 630],
-        [373, 600],
-        [373, 395],
-        [485, 354]
+        [45, 865],
+        [1640, 865]
       ],
-      "arrow": true
+      "arrow": false
     },
     {
       "kind": "text",
-      "x": 373,
-      "y": 574,
-      "text": "exposes port",
-      "size": 17,
-      "halo": true,
-      "center": true
-    },
-    {
-      "kind": "node",
-      "id": "token-service",
-      "x": 39,
-      "y": 652,
-      "w": 247,
-      "h": 74,
-      "lines": ["Token Service", "scheduled callbacks"],
-      "size": 20
+      "x": 45,
+      "y": 910,
+      "text": "Reading the path",
+      "size": 27
     },
     {
       "kind": "line",
       "points": [
-        { "node": "token-service", "side": "right" },
-        { "node": "prepared-git-owner", "side": "left" }
+        [48, 947],
+        [118, 947]
       ],
-      "arrow": true
+      "dashed": true
     },
     {
       "kind": "text",
-      "x": 338,
-      "y": 667,
-      "text": "prepare",
-      "size": 18,
-      "halo": true,
-      "center": true
-    },
-    {
-      "kind": "node",
-      "id": "postgresql",
-      "x": 442,
-      "y": 772,
-      "w": 271,
-      "h": 66,
-      "lines": ["PostgreSQL", "sealed installation token"],
-      "size": 18
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "prepared-git-owner", "side": "bottom" },
-        { "node": "postgresql", "side": "top" }
-      ],
-      "arrow": true
+      "x": 135,
+      "y": 955,
+      "text": "Dashed arrow: intended forwarding.",
+      "size": 24
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 200,
-      "text": "Compute places the revision. The paired",
-      "size": 21
+      "x": 45,
+      "y": 990,
+      "text": "An allow does not prove the request reached GitHub.",
+      "size": 24
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 228,
-      "text": "Sandbox provisions the Harness; the Proxy",
-      "size": 21
+      "x": 45,
+      "y": 1035,
+      "text": "For credential delivery before the request, see",
+      "size": 23
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 256,
-      "text": "configures and verifies its wiring.",
-      "size": 21
+      "x": 45,
+      "y": 1074,
+      "text": "01b \u00b7 Credential setup",
+      "size": 26
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 327,
-      "text": "¹ EvaluateHttpRequest reaches the worker",
-      "size": 21
+      "x": 890,
+      "y": 910,
+      "text": "Preview limits",
+      "size": 27
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 355,
-      "text": "handler; it checks the binding, classifies",
-      "size": 21
+      "x": 890,
+      "y": 955,
+      "text": "One observed denial does not prove every request",
+      "size": 24
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 383,
-      "text": "the request, then calls observedHook.authorize.",
-      "size": 21
+      "x": 890,
+      "y": 990,
+      "text": "must pass through this hook.",
+      "size": 24
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 453,
-      "text": "The lower arrow is setup: OCE pushes",
-      "size": 21
+      "x": 890,
+      "y": 1035,
+      "text": "The bundled Driver refuses repository-scoped Git.",
+      "size": 24
     },
     {
       "kind": "text",
-      "x": 1362,
-      "y": 481,
-      "text": "prepared values through the Gateway.",
-      "size": 21
-    },
-    {
-      "kind": "text",
-      "x": 1362,
-      "y": 509,
-      "text": "There is no request-time token pull here.",
-      "size": 21
-    },
-    { "kind": "text", "x": 1361, "y": 590, "text": "Separate mode: native Git only", "size": 23 },
-    {
-      "kind": "node",
-      "id": "nativerepositorysender",
-      "x": 1363,
-      "y": 613,
-      "w": 334,
-      "h": 55,
-      "lines": ["NativeRepositorySender"],
-      "size": 20
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "nativerepositorysender", "side": "bottom" },
-        { "node": "repository-credential-broker", "side": "top" }
-      ],
-      "arrow": true
-    },
-    { "kind": "text", "x": 1547, "y": 714, "text": "Unix control client", "size": 18 },
-    {
-      "kind": "node",
-      "id": "repository-credential-broker",
-      "x": 1363,
-      "y": 741,
-      "w": 334,
-      "h": 59,
-      "lines": ["Repository credential broker"],
-      "size": 20
-    },
-    {
-      "kind": "text",
-      "x": 1362,
-      "y": 837,
-      "text": "Not bound in the protected Git path.",
-      "size": 20
-    },
-    {
-      "kind": "text",
-      "x": 35,
-      "y": 908,
-      "text": "Observed-hook installation preview. The bundled Driver refuses repository-scoped Git writes; configured wiring is not proof of mandatory mediation.",
-      "size": 19
+      "x": 890,
+      "y": 1074,
+      "text": "There is no fallback to the native sender.",
+      "size": 24
     }
   ]
 }
