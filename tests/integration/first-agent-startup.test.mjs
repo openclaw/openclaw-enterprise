@@ -202,14 +202,14 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   });
   // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
   // the Gateway security defaults the Configuration leaves unset (apply_patch in the workspace,
-  // OpenClaw's sandbox off, exec at the personal preset's mode).
+  // OpenClaw's sandbox off, exec at the personal preset's mode and inline-program rule).
   const values = (sandbox, approvalsReviewer) => ({
     ...settings(sandbox, approvalsReviewer),
     agents: {
       defaults: { sandbox: { mode: "off" } },
       entries: { main: { identity: { name: record.name } } },
     },
-    tools: { exec: { applyPatch: { workspaceOnly: true }, mode: "full" } },
+    tools: { exec: { applyPatch: { workspaceOnly: true }, strictInlineEval: false, mode: "full" } },
   });
   const configured = settings("read-only");
   const matches = (snapshot, priorRevisionId) =>
@@ -250,6 +250,10 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     "the sandbox mode": { ...current, agents: entries },
     "the tools.exec defaults": { ...settings("danger-full-access"), agents: current.agents },
     "the exec mode": { ...current, tools: { exec: { applyPatch: { workspaceOnly: true } } } },
+    "the inline-program rule": {
+      ...current,
+      tools: { exec: { applyPatch: { workspaceOnly: true }, mode: "full" } },
+    },
   };
   for (const [missing, snapshot] of Object.entries(lacking)) {
     assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision without ${missing}`);
@@ -274,6 +278,14 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     matches({ ...current, tools: { exec: { ...current.tools.exec, mode: "ask" } } }, "rev_saved"),
     false,
     "an explicit exec mode other than the default",
+  );
+  assert.equal(
+    matches(
+      { ...current, tools: { exec: { ...current.tools.exec, strictInlineEval: true } } },
+      "rev_saved",
+    ),
+    false,
+    "an explicit inline-program approval rule",
   );
   assert.equal(
     matches({

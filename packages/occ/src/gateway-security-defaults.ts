@@ -11,24 +11,40 @@
 //   every shell command failed (finding 2771). OCE contains commands with its own isolation. Like
 //   the preset, admission fills no mode beside an explicit `tools.exec.security` or
 //   `tools.exec.ask`: OpenClaw reads a mode over them. An explicit `ask` stays.
+// - `tools.exec.strictInlineEval: false`, the `personal` preset's value, where exec runs in mode
+//   "full" (filled or explicit) beside no `security` or `ask`: `corporate` fills `true`, which
+//   asks for an explicit approval of each inline program (`python3 -c`, `node -e`, an awk program)
+//   even in mode "full", so those commands still failed without an approval client. An explicit
+//   `true` stays.
 // The preset's other defaults apply, including `messages.queue.allowCollaborativeSteering: true`:
 // another participant with access to the Gateway can steer a running turn, which keeps the first
 // requester's authority. An explicit `false` in the Configuration still turns it off.
 // scripts/first-agent-model.mjs runs this module without installed workspace packages: keep it
 // free of imports and of TypeScript syntax that type stripping cannot erase.
 
-// Each setting's path and value, and the settings beside it that also leave it unfilled.
+type ConfigurationObject = Readonly<Record<string, unknown>>;
+
+const always = () => true;
+// No legacy exec policy beside the setting: OpenClaw reads a mode over `security` and `ask`.
+const noExecPolicy = (exec: ConfigurationObject) =>
+  exec.security === undefined && exec.ask === undefined;
+
+// Each setting's path and value, and whether its parent object admits the fill. In order: the
+// inline-program rule reads the mode filled before it.
 const GATEWAY_SECURITY_DEFAULTS: readonly (readonly [
   readonly string[],
   boolean | string,
-  readonly string[],
+  (parent: ConfigurationObject) => boolean,
 ])[] = [
-  [["tools", "exec", "applyPatch", "workspaceOnly"], true, []],
-  [["agents", "defaults", "sandbox", "mode"], "off", []],
-  [["tools", "exec", "mode"], "full", ["security", "ask"]],
+  [["tools", "exec", "applyPatch", "workspaceOnly"], true, always],
+  [["agents", "defaults", "sandbox", "mode"], "off", always],
+  [["tools", "exec", "mode"], "full", noExecPolicy],
+  [
+    ["tools", "exec", "strictInlineEval"],
+    false,
+    (exec) => exec.mode === "full" && noExecPolicy(exec),
+  ],
 ];
-
-type ConfigurationObject = Readonly<Record<string, unknown>>;
 
 function isObject(value: unknown): value is ConfigurationObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -38,22 +54,21 @@ function fill(
   parent: ConfigurationObject,
   path: readonly string[],
   value: boolean | string,
-  beside: readonly string[],
+  admits: (parent: ConfigurationObject) => boolean,
 ): ConfigurationObject {
   const [key, ...rest] = path;
   const current = parent[key!];
   if (rest.length === 0) {
-    return current === undefined && beside.every((name) => parent[name] === undefined)
-      ? { ...parent, [key!]: value }
-      : parent;
+    return current === undefined && admits(parent) ? { ...parent, [key!]: value } : parent;
   }
   if (current === undefined) {
-    return { ...parent, [key!]: fill({}, rest, value, beside) };
+    const created = fill({}, rest, value, admits);
+    return Object.keys(created).length === 0 ? parent : { ...parent, [key!]: created };
   }
   if (!isObject(current)) {
     return parent;
   }
-  const next = fill(current, rest, value, beside);
+  const next = fill(current, rest, value, admits);
   return next === current ? parent : { ...parent, [key!]: next };
 }
 
@@ -67,8 +82,8 @@ function fill(
  */
 export function admitGatewaySecurityDefaults<T extends object>(values: Readonly<T>): T {
   let admitted = values as ConfigurationObject;
-  for (const [path, value, beside] of GATEWAY_SECURITY_DEFAULTS) {
-    admitted = fill(admitted, path, value, beside);
+  for (const [path, value, admits] of GATEWAY_SECURITY_DEFAULTS) {
+    admitted = fill(admitted, path, value, admits);
   }
   return admitted as T;
 }

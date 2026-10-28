@@ -1175,10 +1175,11 @@ test("Agent deployment keeps the display name its Configuration sets", async () 
 // OpenClaw's default personal security preset fills unset settings: it lets another participant
 // steer a running turn under the first requester's authority and lets apply_patch write outside
 // the workspace; its corporate preset turns on OpenClaw's Docker sandbox, which the OCE runtime
-// cannot run (finding 2767), and its exec mode "ask", which needs an approval client the OCE
-// Console does not have, so every shell command failed (finding 2771). Admission keeps apply_patch
-// in the workspace, the sandbox off and exec at the personal preset's mode in the document every
-// Compute Driver renders, for embedded and dedicated Gateways, and leaves steering unset so the
+// cannot run (finding 2767), and its exec mode "ask" and strictInlineEval, which need an approval
+// client the OCE Console does not have, so every shell command, then every inline program such as
+// `python3 -c`, failed (finding 2771). Admission keeps apply_patch in the workspace, the sandbox
+// off and exec at the personal preset's mode and strictInlineEval in the document every Compute
+// Driver renders, for embedded and dedicated Gateways, and leaves steering unset so the
 // preset's default (on) applies. The Configuration's value wins, so a strict Configuration stays
 // strict.
 test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable and steering to the Configuration", async () => {
@@ -1213,7 +1214,7 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
     ["embedded", configuration.values],
     ["dedicated", codexValues],
   ]) {
-    // Unset: admission fills workspaceOnly and the exec mode, keeps the settings beside them, and
+    // Unset: admission fills workspaceOnly and the exec policy, keeps the settings beside them, and
     // adds no steering value, so the Gateway's preset turns collaborative steering on.
     const filled = await deploy(
       { ...base, messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
@@ -1222,7 +1223,7 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
     assert.equal(filled.harness.mode, executionMode);
     assert.deepEqual(filled.configuration.messages, { queue: { mode: "collect" } });
     assert.deepEqual(filled.configuration.tools, {
-      exec: { applyPatch: { workspaceOnly: true }, mode: "full" },
+      exec: { applyPatch: { workspaceOnly: true }, strictInlineEval: false, mode: "full" },
     });
     // The sandbox settings beside an unset mode are kept.
     assert.deepEqual(filled.configuration.agents.defaults.sandbox, {
@@ -1235,9 +1236,20 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
     assert.deepEqual(corporate.configuration.security, { preset: "corporate" });
     assert.equal(corporate.configuration.agents.defaults.sandbox.mode, "off");
     assert.equal(corporate.configuration.tools.exec.mode, "full");
+    assert.equal(corporate.configuration.tools.exec.strictInlineEval, false);
+    // An explicit strictInlineEval `true` is kept beside the filled mode: inline programs then wait
+    // for an approval, as that Configuration asks.
+    const strictInline = await deploy(
+      { ...base, security: { preset: "corporate" }, tools: { exec: { strictInlineEval: true } } },
+      executionMode,
+    );
+    assert.deepEqual(strictInline.configuration.tools, {
+      exec: { strictInlineEval: true, applyPatch: { workspaceOnly: true }, mode: "full" },
+    });
     // Explicit values of each kind reach the Gateway as written: an explicit steering `false`
     // (strict) is kept, not replaced by the preset's default, and so is an exec mode "ask" for an
-    // operator who connects an approval channel.
+    // operator who connects an approval channel. Inline programs need no approval in an explicit
+    // mode "full" either; beside "ask" admission fills nothing.
     for (const [allowCollaborativeSteering, workspaceOnly, mode] of [
       [true, false, "full"],
       [false, true, "ask"],
@@ -1252,11 +1264,16 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       );
       assert.deepEqual(explicit.configuration.messages, { queue: { allowCollaborativeSteering } });
       assert.deepEqual(explicit.configuration.tools, {
-        exec: { mode, applyPatch: { enabled: true, workspaceOnly } },
+        exec: {
+          mode,
+          applyPatch: { enabled: true, workspaceOnly },
+          ...(mode === "full" ? { strictInlineEval: false } : {}),
+        },
       });
     }
     // A legacy exec security or ask value is an explicit policy too: like the preset, admission
-    // fills no mode beside it, since the Gateway would apply a mode over it.
+    // fills no mode beside it, since the Gateway would apply a mode over it, and no
+    // strictInlineEval.
     for (const exec of [{ security: "allowlist" }, { ask: "always" }]) {
       const legacy = await deploy(
         { ...base, security: { preset: "corporate" }, tools: { exec } },

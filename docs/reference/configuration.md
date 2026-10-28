@@ -228,13 +228,13 @@ it. A selected [SandboxDriver](drivers/sandbox.md) may
 transform a copy through `configureAgent` before admission; the reusable
 Configuration and its generation remain unchanged. The snapshot adds the
 [Agent display name](agents/deployment.md#versions-and-deployment) to that document;
-its metadata names the source generation. Where the document leaves them
-unset, admission also sets `tools.exec.applyPatch.workspaceOnly: true`, as
+its metadata names the source generation. Where unset, admission also sets
+`tools.exec.applyPatch.workspaceOnly: true`, as
 before OpenClaw's `personal` security preset;
 `agents.defaults.sandbox.mode: "off"`, as OpenClaw's sandbox cannot run in the
 OCE runtime; and, unless `tools.exec` sets `security` or `ask`,
-`tools.exec.mode: "full"`, as `corporate`'s `ask` needs an approval client OCE
-lacks. Other
+`tools.exec.mode: "full"` and, in that mode, `tools.exec.strictInlineEval: false`,
+as `corporate`'s approvals need a client OCE lacks. Other
 unset settings keep the preset's defaults, such as
 `messages.queue.allowCollaborativeSteering: true`: a steered turn keeps its
 first requester's permissions.
