@@ -12,7 +12,7 @@ import {
   loadOpenShellMiddleware,
   middlewareBearer,
   record,
-  type OpenShellHttpOnlyRelease,
+  type OpenShellHttpPolicySet,
 } from "./openshell-authority.ts";
 import {
   OpenShellExtensionJwtVerifier,
@@ -82,9 +82,9 @@ export interface OpenShellOnlineAuthorityOptions {
     signal: AbortSignal,
   ) => Promise<OpenShellOnlineDecision>;
   readonly budgetMs?: number;
-  /** Advertise this fixed REST-only release for pre-create verification. Refuse upgrades and other bindings. */
-  readonly httpOnlyRelease?: OpenShellHttpOnlyRelease & {
-    readonly validateBindingConfig?: (config: string) => boolean;
+  /** Advertise a pinned REST-only policy set. Each binding must name a release in that set. */
+  readonly httpPolicySet?: OpenShellHttpPolicySet & {
+    readonly validateBindingConfig: (id: string, scope: string) => boolean;
   };
 }
 
@@ -213,12 +213,7 @@ export function createOpenShellOnlineHttpAuthority(
   options: OpenShellOnlineHttpAuthorityOptions,
 ): Server {
   return createAuthority(options, (request, sandbox, deadline) =>
-    httpRequestView(
-      request,
-      sandbox,
-      deadline,
-      options.httpOnlyRelease?.validateBindingConfig !== undefined,
-    ),
+    httpRequestView(request, sandbox, deadline, options.httpPolicySet !== undefined),
   );
 }
 
@@ -329,13 +324,14 @@ function createAuthority<T>(
       identity.sandbox_id === undefined) ||
     supervisor(identity) !== undefined;
   const acceptedBinding = (config: unknown) => {
-    const validate = options.httpOnlyRelease?.validateBindingConfig;
-    const id = bindingId(config, validate !== undefined);
+    const profile = options.httpPolicySet;
+    const id = bindingId(config, profile !== undefined);
     const scope = record(record(record(config).fields).request_scope).stringValue;
     return (
-      (validate ? typeof scope === "string" && validate(scope) : scope === undefined) &&
       id !== undefined &&
-      (options.httpOnlyRelease === undefined || options.httpOnlyRelease.releaseSha256 === id)
+      (profile
+        ? typeof scope === "string" && profile.validateBindingConfig(id, scope)
+        : scope === undefined)
     );
   };
   let pending = 0;
@@ -347,7 +343,7 @@ function createAuthority<T>(
           call.request.gateway,
           options.identity.audience,
           "online-request-authorization",
-          options.httpOnlyRelease,
+          options.httpPolicySet,
         );
       if (description) {
         callback(null, description);
@@ -363,7 +359,7 @@ function createAuthority<T>(
           acceptedBinding(call.request.config),
       });
     },
-    ...(options.httpOnlyRelease !== undefined && {
+    ...(options.httpPolicySet !== undefined && {
       EvaluateWebSocketSession(call: ServerDuplexStream<Wire, Wire>) {
         const sandboxId = supervisor(claims(call));
         call.once("data", (event: Wire) => {
@@ -394,7 +390,7 @@ function createAuthority<T>(
       if (
         !request ||
         call.request.middleware_name !== options.registrationName ||
-        (options.httpOnlyRelease !== undefined && !acceptedBinding(call.request.config)) ||
+        (options.httpPolicySet !== undefined && !acceptedBinding(call.request.config)) ||
         pending >= 1024 ||
         expired()
       ) {

@@ -106,47 +106,47 @@ to use an ambient token.
 
 ## Enable Google Workspace requests from a dedicated worker
 
-For dedicated OpenClaw on Kubernetes, the request guard checks the pinned
-operation map and the selected source’s host, path and OAuth scopes before
-OpenShell substitutes the bearer. Discovery uses public routes.
+OCE binds the selected Google source to its host, path, OAuth scopes and plugin
+release when deploying the Agent. For each request, the OpenShell supervisor
+sends the HTTP details and deployed binding to a shared guard in the execution
+cluster. The guard checks the release’s operation map locally. OpenShell
+substitutes the bearer after approval. Redeploy to apply a new plugin selection.
+Public Discovery uses no credential.
 
 Set the source’s `config.binary` to `/usr/local/lib/oce/plugins/google/bin/gog`
-when the installation allows other executables. OpenShell applies the same HTTP
-checks to helpers launched by `gog`.
+when the installation allows other executables. The checks also cover `gog` helpers.
 
-Enable the API listener using the TLS and public-key Secrets and peer selectors
-above. Use the Gateway’s `gateway_id` and the key ID from its `kid_path`.
+Install the guard once for the OpenShell Gateway. Use the execution cluster’s
+Helm context and the same digest-pinned OCE controller image that deploys the map.
 
-```yaml
-egressAuthority:
-  enabled: true
-  tlsSecretName: oce-egress-tls
-  issuerSecretName: openshell-extension-public
-  pluginRequests:
-    enabled: true
-    port: 9445
-    issuer: openshell-gateway:replace-with-gateway-id
-    keyId: replace-with-signing-key-id
+```sh
+helm upgrade --install oce-plugin-guard deploy/helm/openclaw-plugin-request-guard \
+  --namespace openshell-system --values guard-values.yaml --set-string image="$OCE_IMAGE"
 ```
 
-Append this registration to the Gateway configuration. Match the Service DNS
-name to its certificate, mount its public CA at `tls_ca_cert_path` on the
-Gateway, and allow Gateway and supervisor traffic to the listener. The Gateway
-sends supervisors the registration and CA.
+In `guard-values.yaml`, set `tlsSecretName` for the guard Service DNS name,
+`issuerSecretName` for the Gateway’s verification key (`public.pem`), and
+`issuer` and `keyId` to match the Gateway. Set `clients` to the Gateway and
+supervisor namespace and Pod selectors, as illustrated in the
+[chart values](../../deploy/helm/openclaw-plugin-request-guard/values.yaml).
+Allow both peers to reach the Service. The guard reads its keys at startup.
+Roll its Pods after rotating a Secret in place and update the Gateway’s trusted
+CA if it changes. Register the guard on the Gateway:
 
 ```toml
 [[openshell.supervisor.middleware]]
 name = "oce-plugin-requests"
-grpc_endpoint = "https://openclaw-enterprise-egress-authority.oce-system.svc.cluster.local:9445"
+grpc_endpoint = "https://openclaw-enterprise-plugin-request-guard.openshell-system.svc.cluster.local:9445"
 audience = "urn:openshell:extension:middleware:oce-plugin-requests"
 tls_ca_cert_path = "/etc/openshell/certs/oce-egress-ca.pem"
 max_payload_bytes = 4194304
 timeout = "2s"
 ```
 
-Restart the Gateway after the listener serves authenticated `Describe`. Set
+Restart the Gateway to load the registration. Set
 `drivers.sandbox.configuration.gateway.managedPluginMiddleware` to the same
-`grpc_endpoint`. Select the account, save, and deploy.
+`grpc_endpoint`. Select the account, save, and deploy. If the guard is
+unreachable, the supervisor denies guarded requests before sending them upstream.
 
 For Gmail, configure `gmail.googleapis.com`, `/gmail/v1/users/me/messages` and
 `gmail.readonly`. At a controlled upstream, verify that listing IDs receives the

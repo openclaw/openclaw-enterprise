@@ -13,6 +13,7 @@ import {
   googleScopeFromString,
   type GoogleRequestScope,
 } from "../plugin/google-operations.ts";
+import { managedPluginGuardVersion } from "../plugin/managed-request-policies.ts";
 import { wirePolicy } from "../egress-proxy/openshell-wire-policy.ts";
 import {
   managedCredentialBinding,
@@ -22,6 +23,7 @@ import {
   managedPluginMiddlewareImplementation,
 } from "../plugin/managed-catalog.ts";
 
+const googleRequestRuleName = "oce-google-requests";
 export const managedGoogleCredentialEnvironment = "OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV";
 
 function unsupported(message: string): never {
@@ -49,7 +51,7 @@ export async function verifyManagedPluginRegistration(
     service.protocol_major !== 1 ||
     (service.protocol_minor ?? 0) !== 0 ||
     service.implementation_name !== managedPluginMiddlewareImplementation ||
-    service.implementation_version !== managedGoogleInstall.releaseSha256 ||
+    service.implementation_version !== managedPluginGuardVersion ||
     !isDeepStrictEqual(service.supported_capabilities, capabilities) ||
     !isDeepStrictEqual(service.required_capabilities, capabilities)
   ) {
@@ -165,10 +167,9 @@ export function googleRequestPolicy(scope: GoogleRequestScope) {
   for (const { host, path } of discovery) {
     permit(host, "GET", path);
   }
-  const name = "oce-google-requests";
   const networks = {
-    [name]: {
-      name,
+    [googleRequestRuleName]: {
+      name: googleRequestRuleName,
       binaries: [{ path: managedGoogleInstall.binaryPath }],
       endpoints: [...allows].map(([host, rules]) => ({
         host,
@@ -279,10 +280,25 @@ export function verifyPluginRequestGuard(
       "OpenShell has not admitted the authenticated, fail-closed OCE plugin request guard.",
     );
   }
-  assertPluginRequestPolicy(config.policy, expected);
+  // OpenShell stamps every effective endpoint whose host, port and top-level path
+  // are covered by a credential. Our operation paths live under rules; their
+  // enclosing endpoint has path /**. Only a host-wide source covers that endpoint.
+  const credential = expected.providerRule.endpoints[0]!;
+  const rule = expected.networks[googleRequestRuleName];
+  const endpoints = rule.endpoints.map((endpoint) =>
+    credential.path === "/**" &&
+    endpoint.host === credential.host &&
+    endpoint.ports.includes(credential.port)
+      ? { ...endpoint, provider_credentialed: true }
+      : endpoint,
+  );
+  assertPluginRequestPolicy(config.policy, {
+    ...expected,
+    networks: { [googleRequestRuleName]: { ...rule, endpoints } },
+  });
   const routes = asRecord(asRecord(config.policy)?.network_policies);
   for (const [name, value] of Object.entries(routes ?? {})) {
-    if (name === expected.providerRule.name) {
+    if (name === expected.providerRule.name || name === googleRequestRuleName) {
       continue;
     }
     const endpoints = asRecord(value)?.endpoints;
@@ -328,8 +344,8 @@ export function assertPluginRequestPolicy(
   if (
     !networks ||
     !isDeepStrictEqual(
-      wirePolicy(networks["oce-google-requests"]),
-      wirePolicy(expected.networks["oce-google-requests"]),
+      wirePolicy(networks[googleRequestRuleName]),
+      wirePolicy(expected.networks[googleRequestRuleName]),
     )
   ) {
     unsupported("OpenShell has not admitted the pinned Google request routes.");

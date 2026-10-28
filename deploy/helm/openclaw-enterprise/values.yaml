@@ -348,12 +348,6 @@ worker:
 # host 0.0.0.0 or ::; startup and the upgrade check refuse a mismatch.
 egressAuthority:
   enabled: false
-  # Optional request-shape guard for managed plugins. Uses the same API Service and TLS mounts.
-  pluginRequests:
-    enabled: false
-    port: 9445
-    issuer: ""
-    keyId: ""
   port: 9444 # decimal, without leading zeros
   tlsSecretName: ""
   issuerSecretName: ""

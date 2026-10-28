@@ -1,33 +1,19 @@
+import { createHash } from "node:crypto";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
-import {
-  managedGoogleInstall,
-  managedPluginMiddleware,
-  managedPluginMiddlewareAudience,
-  managedPluginMiddlewareImplementation,
-} from "../plugin/managed-catalog.ts";
 import {
   googleCatalog,
   googleDiscoveryRequests,
   googleRouteCandidates,
+  googleReleaseSha256,
   googleScopeFromString,
   googleSourcePathMatches,
   type GoogleOperation,
   type GoogleParameter,
   type GoogleRequestScope,
   type GoogleSchema,
-} from "../plugin/google-operations.ts";
+} from "./google-operations.ts";
 import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
-import {
-  chartListeners,
-  egressAuthorityConfiguration,
-  type EgressAuthorityConfiguration,
-} from "../../composition/installation-fields.ts";
-import { bindOpenShellMiddleware } from "./openshell-exchange-binding.ts";
-import {
-  createOpenShellOnlineHttpAuthority,
-  type OpenShellOnlineHttpAuthorityOptions,
-  type OpenShellOnlineHttpRequest,
-} from "./openshell-online-authority.ts";
+import type { OpenShellOnlineHttpRequest } from "../egress-proxy/openshell-online-authority.ts";
 
 // OpenShell removes routing, framing and credential headers before this RPC. Only these
 // remaining client headers may accompany the request. Method and resource overrides refuse.
@@ -286,66 +272,43 @@ function validGoogleRequest(
   );
 }
 
-/** The signed supervisor supplies the admitted source envelope. OpenShell owns its bearer
- * and withdrawal. The operation catalog constrains an actual request before substitution. */
-export function createManagedPluginRequestAuthority(
-  identity: OpenShellOnlineHttpAuthorityOptions["identity"],
-) {
-  return createOpenShellOnlineHttpAuthority({
-    identity,
-    registrationName: managedPluginMiddleware,
-    httpOnlyRelease: {
-      implementation: managedPluginMiddlewareImplementation,
-      releaseSha256: managedGoogleInstall.releaseSha256,
-      validateBindingConfig: (raw) => googleScopeFromString(raw) !== undefined,
-    },
-    authorize: async (request) => {
-      const scope = googleScopeFromString(request.bindingConfig);
-      try {
-        if (scope && validGoogleRequest(scope, request)) {
-          return "allow";
-        }
-      } catch {
-        // Malformed percent encodings, JSON and unsupported schema projections fail closed.
-      }
-      return { reasonCode: "managed_plugin_request_denied" };
-    },
-  });
+interface PluginRequestPolicy {
+  acceptsScope(scope: string): boolean;
+  allows(request: OpenShellOnlineHttpRequest): boolean;
 }
 
-/** Both listeners share the chart's TLS and public issuer key. Only the API owns the port. */
-export function managedPluginRequestListener(
-  environment: Readonly<Record<string, string | undefined>>,
-  mode: "production" | "development",
-): EgressAuthorityConfiguration | undefined {
-  const port = environment.OCC_PLUGIN_REQUEST_AUTHORITY_PORT;
-  if (port === undefined) {
-    return undefined;
-  }
-  const files = chartListeners.egressAuthority.files;
-  return egressAuthorityConfiguration(
+// The guard loads reviewed policies from this image. The signed supervisor selects one
+// by its release digest and supplies the source envelope admitted for that deployment.
+const releasedPolicies = new Map<string, PluginRequestPolicy>([
+  [
+    googleReleaseSha256,
     {
-      host: mode === "development" ? "127.0.0.1" : "0.0.0.0",
-      port: /^[1-9][0-9]{0,4}$/.test(port) ? Number(port) : 0,
-      certificatePath: files.certificatePath[0],
-      privateKeyPath: files.privateKeyPath[0],
-      issuerPublicKeyPath: files.issuerPublicKeyPath[0],
-      issuer: environment.OCC_PLUGIN_REQUEST_AUTHORITY_ISSUER,
-      keyId: environment.OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID,
-      audience: managedPluginMiddlewareAudience,
+      acceptsScope: (raw) => googleScopeFromString(raw) !== undefined,
+      allows(request) {
+        const scope = googleScopeFromString(request.bindingConfig);
+        return scope !== undefined && validGoogleRequest(scope, request);
+      },
     },
-    mode,
-    "egressAuthority.pluginRequests",
-  );
+  ],
+]);
+
+// The Gateway advertises one implementation version per registration. Pin the whole set
+// at admission and each individual release in the Sandbox's binding.
+const releases = [...releasedPolicies.keys()].sort();
+export const managedPluginGuardVersion =
+  releases.length === 1
+    ? releases[0]!
+    : createHash("sha256").update(releases.join("\n")).digest("hex");
+
+export function acceptsPluginRequestScope(id: string, scope: string): boolean {
+  return releasedPolicies.get(id)?.acceptsScope(scope) === true;
 }
 
-export function bindManagedPluginRequestAuthority(config: EgressAuthorityConfiguration) {
-  return bindOpenShellMiddleware(config, (publicKey) =>
-    createManagedPluginRequestAuthority({
-      issuer: config.issuer,
-      audience: config.audience,
-      keyId: config.keyId,
-      publicKey,
-    }),
-  );
+export function allowsPluginRequest(request: OpenShellOnlineHttpRequest): boolean {
+  try {
+    return releasedPolicies.get(request.bindingId)?.allows(request) === true;
+  } catch {
+    // Malformed percent encodings, JSON and unsupported schema projections fail closed.
+    return false;
+  }
 }

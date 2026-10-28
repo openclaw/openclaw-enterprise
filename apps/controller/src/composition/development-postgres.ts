@@ -366,11 +366,7 @@ export async function composePostgresDevelopment(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     await drivers?.preparedGitHub?.connect(pool);
-    const exchange = await installEgressAuthority(
-      controller,
-      protectedDriver,
-      drivers?.managedPluginRequestAuthority,
-    );
+    const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");

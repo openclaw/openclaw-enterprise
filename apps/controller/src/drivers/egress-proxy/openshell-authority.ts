@@ -86,16 +86,16 @@ export function loadOpenShellMiddleware() {
   return { definition, service: loaded.openshell.middleware.v1 };
 }
 
-export interface OpenShellHttpOnlyRelease {
+export interface OpenShellHttpPolicySet {
   readonly implementation: string;
-  readonly releaseSha256: string;
+  readonly version: string;
 }
 
 export function describeOpenShellMiddleware(
   gateway: unknown,
   audience: string,
   implementation: "static-egress" | "online-request-authorization",
-  httpOnlyRelease?: OpenShellHttpOnlyRelease,
+  httpPolicySet?: OpenShellHttpPolicySet,
 ): Wire | undefined {
   const execution = implementation === "static-egress";
   const profile = execution
@@ -122,7 +122,7 @@ export function describeOpenShellMiddleware(
         [4, 1],
         [3, 2],
       ]
-    : httpOnlyRelease
+    : httpPolicySet
       ? [
           [1, 1],
           [2, 1],
@@ -133,8 +133,8 @@ export function describeOpenShellMiddleware(
     expected_audience: audience,
     extension: {
       protocol_version: { major: 1, minor: 0 },
-      implementation_name: httpOnlyRelease?.implementation ?? `oce/${implementation}`,
-      implementation_version: httpOnlyRelease?.releaseSha256 ?? "1",
+      implementation_name: httpPolicySet?.implementation ?? `oce/${implementation}`,
+      implementation_version: httpPolicySet?.version ?? "1",
       supported_capabilities: profile,
       required_capabilities: profile,
     },

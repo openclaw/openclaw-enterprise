@@ -6421,6 +6421,93 @@ test(
 );
 
 test(
+  "the plugin request guard installs beside OpenShell without control-plane access",
+  tooling,
+  async () => {
+    const clients = [
+      {
+        namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "execution" } },
+        podSelector: { matchLabels: { "openshell.ai/boundary-role": "supervisor" } },
+      },
+    ];
+    const template = (...args) =>
+      execute(
+        helm,
+        [
+          "template",
+          "guard",
+          "deploy/helm/openclaw-plugin-request-guard",
+          "--set",
+          `image=${values["images.controller"]}`,
+          "--set",
+          "tlsSecretName=guard-tls,issuerSecretName=issuer-keys,issuer=openshell,keyId=current",
+          "--set-json",
+          `clients=${JSON.stringify(clients)}`,
+          ...args,
+        ],
+        { cwd: repository, env: goToolEnvironment() },
+      );
+
+    const objects = await resources((await template()).stdout);
+    const specs = Object.fromEntries(objects.map(({ kind, spec }) => [kind, spec]));
+    assert.deepEqual(Object.keys(specs).sort(), ["Deployment", "NetworkPolicy", "Service"]);
+    const pod = specs.Deployment.template;
+    assert.deepEqual(specs.Service.selector, pod.metadata.labels);
+    assert.deepEqual(specs.NetworkPolicy.podSelector, specs.Deployment.selector);
+    assert.deepEqual(specs.NetworkPolicy.ingress, [
+      { from: clients, ports: [{ protocol: "TCP", port: 9445 }] },
+    ]);
+    assert.deepEqual(specs.NetworkPolicy.policyTypes, ["Ingress", "Egress"]);
+    assert.deepEqual(specs.NetworkPolicy.egress, []);
+    assert.deepEqual(specs.Service.ports, [
+      { name: "plugin-requests", port: 9445, targetPort: "plugin-requests" },
+    ]);
+    assert.equal(pod.spec.automountServiceAccountToken, false);
+    assert.equal(pod.spec.enableServiceLinks, false);
+    assert.equal(pod.spec.securityContext.runAsNonRoot, true);
+    const [guard] = pod.spec.containers;
+    assert.equal(guard.image, values["images.controller"]);
+    assert.deepEqual(guard.args, ["apps/controller/src/plugin-request-guard.ts"]);
+    assert.deepEqual(Object.fromEntries(guard.env.map(({ name, value }) => [name, value])), {
+      OCC_PLUGIN_REQUEST_AUTHORITY_PORT: "9445",
+      OCC_PLUGIN_REQUEST_AUTHORITY_ISSUER: "openshell",
+      OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID: "current",
+    });
+    assert.deepEqual(guard.volumeMounts, [
+      { name: "trust", mountPath: "/etc/openclaw/egress", readOnly: true },
+    ]);
+    assert.deepEqual(
+      pod.spec.volumes.map((volume) => volume.projected.sources),
+      [
+        [
+          {
+            secret: {
+              name: "guard-tls",
+              items: [
+                { key: "tls.crt", path: "tls/tls.crt" },
+                { key: "tls.key", path: "tls/tls.key" },
+              ],
+            },
+          },
+          {
+            secret: {
+              name: "issuer-keys",
+              items: [{ key: "public.pem", path: "issuer/issuer.pub" }],
+            },
+          },
+        ],
+      ],
+    );
+
+    await assert.rejects(template("--set", "image=controller:latest"), /image/);
+    await assert.rejects(
+      template("--set-json", 'clients=[{"namespaceSelector":{},"podSelector":{}}]'),
+      /matchLabels/,
+    );
+  },
+);
+
+test(
   "protected authority packaging confines keys and listener to the owning control plane",
   tooling,
   async () => {
@@ -6544,60 +6631,6 @@ test(
     ]) {
       await assert.rejects(render({ ...protectedValues, ...override }), diagnostic);
     }
-
-    const pluginValues = {
-      ...protectedValues,
-      "egressAuthority.pluginRequests.enabled": "true",
-      "egressAuthority.pluginRequests.issuer": "openshell-gateway:test",
-      "egressAuthority.pluginRequests.keyId": "gateway-current",
-    };
-    const withPlugins = await resources((await render(pluginValues)).stdout);
-    const spec = (kind, name) =>
-      withPlugins.find((object) => object.kind === kind && object.metadata?.name === name).spec;
-    assert.deepEqual(spec("Service", service.metadata.name).ports, [
-      ...service.spec.ports,
-      { name: "plugin-requests", port: 9445, targetPort: "plugin-requests" },
-    ]);
-    assert.deepEqual(spec("NetworkPolicy", ingress.metadata.name).ingress, [
-      {
-        from: ingress.spec.ingress[0].from,
-        ports: [...ingress.spec.ingress[0].ports, { protocol: "TCP", port: 9445 }],
-      },
-    ]);
-    for (const component of ["api", "worker"]) {
-      const container = spec(
-        "Deployment",
-        `openclaw-enterprise-${component}`,
-      ).template.spec.containers.find((entry) => entry.name === component);
-      const settings = Object.fromEntries(
-        container.env
-          .filter(({ name }) => name.startsWith("OCC_PLUGIN_REQUEST_AUTHORITY_"))
-          .map(({ name, value }) => [name, value]),
-      );
-      assert.deepEqual(
-        settings,
-        component === "api"
-          ? {
-              OCC_PLUGIN_REQUEST_AUTHORITY_PORT: "9445",
-              OCC_PLUGIN_REQUEST_AUTHORITY_ISSUER: "openshell-gateway:test",
-              OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID: "gateway-current",
-            }
-          : {},
-      );
-      assert.equal(
-        container.ports?.some((p) => p.name === "plugin-requests" && p.containerPort === 9445) ??
-          false,
-        component === "api",
-      );
-    }
-    await assert.rejects(
-      render({ ...pluginValues, "egressAuthority.pluginRequests.port": 9444 }),
-      /distinct TCP port/,
-    );
-    await assert.rejects(
-      render({ ...pluginValues, "egressAuthority.pluginRequests.keyId": "" }),
-      /keyId is required/,
-    );
 
     const prepared = {
       ...protectedValues,

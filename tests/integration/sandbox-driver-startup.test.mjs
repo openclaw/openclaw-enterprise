@@ -1120,6 +1120,7 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   const provision = () => driver.provisionHarness({ ...context, revision, requirements });
   let created;
   let observedGuard = true;
+  const credentialedHosts = new Set();
   let endpoint = configuration.gateway.managedPluginMiddleware;
   const provider = "_provider_" + openShellProviderName(sourceId).replaceAll("-", "_");
   const providerRule = {
@@ -1164,6 +1165,12 @@ test("a selected Google account uses its exact provider and a signed, fail-close
       ...created.spec.policy,
       network_policies: {
         ...created.spec.policy.network_policies,
+        "oce-google-requests": {
+          ...created.spec.policy.network_policies["oce-google-requests"],
+          endpoints: created.spec.policy.network_policies["oce-google-requests"].endpoints.map(
+            (ep) => (credentialedHosts.has(ep.host) ? { ...ep, provider_credentialed: true } : ep),
+          ),
+        },
         [provider]: providerRule,
         [independentProvider.name]: independentProvider,
       },
@@ -1229,6 +1236,23 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   observedGuard = false;
   await assert.rejects(provision, /has not admitted.*request guard/);
   observedGuard = true;
+
+  // For a host-wide source, stock OpenShell also marks the matching operation
+  // endpoint credentialed in GetSandboxConfig. The saved CreateSandbox spec stays raw.
+  requestScope.path = "/**";
+  providerRule.endpoints[0].path = "/**";
+  created = undefined;
+  await assert.rejects(provision, /pinned Google request routes/);
+  credentialedHosts.add(requestScope.host);
+  await provision();
+  assert.ok(
+    created.spec.policy.network_policies["oce-google-requests"].endpoints.every(
+      (ep) => ep.provider_credentialed === undefined,
+    ),
+  );
+  credentialedHosts.add("www.googleapis.com");
+  await assert.rejects(provision, /pinned Google request routes/);
+  credentialedHosts.delete("www.googleapis.com");
 
   // The worker dispatches the same admitted revision without the withdrawn tool source.
   revision.credentialSources = [

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-10-28
-last_updated_session: authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded
+last_updated_session: authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106
 ---
 
 # Agent Plugin Deployment Flow
@@ -139,7 +139,7 @@ Deployment revalidates selections and Configuration, records the Driver and
 policy-only plugin map in an Agent revision, and queues it. Native app mapping,
 release metadata, and configuration resolve later.
 
-For Google Workspace, the selection references one Agent credential and pins the release digest. The Gateway loads the skill. At deployment, the Sandbox applies the selected source’s destination and OAuth scope limits. OpenShell sends the worker’s HTTP request to the operation guard before substituting the bearer. Withdrawal detaches the source from the affected revision. Worker recovery keeps its other attachments. [Source and worker flow](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+Google Workspace binds an attached Agent credential to a pinned release. The OpenClaw Gateway loads the skill. At deployment, the Sandbox Driver binds the credential’s host, path and scopes. When the worker runs `gog`, its OpenShell supervisor asks the execution cluster’s shared guard to check the actual request against that binding and the release’s operation map. OpenShell injects the bearer after approval. Withdrawal detaches that source. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -365,10 +365,8 @@ establish starvation.
 
 ## Changelog
 
+- 2026-10-28 22:10: Move Google request checks to the shared execution-cluster guard. (authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106 - ce4688a9)
+
 - 2026-10-28 20:30: Trace independent credential attachment, Google request authorization and recovery after withdrawal. (authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded - dbe0d78a)
-
-- 2026-10-27 17:55: Trace the Google account binding and the worker’s guarded request. (01a169f0-a851-7b81-8e83-ff597893aa21)
-
-- 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

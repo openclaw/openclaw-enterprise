@@ -1,5 +1,3 @@
-import { bindManagedPluginRequestAuthority } from "../drivers/egress-proxy/managed-plugin-requests.ts";
-import type { EgressAuthorityConfiguration } from "./installation-fields.ts";
 import type { InstalledDriver, OpenClawController } from "@openclaw-enterprise/occ";
 import type {
   CredentialProxyBinding,
@@ -11,31 +9,8 @@ export {
   type EgressAuthorityConfiguration,
 } from "./installation-fields.ts";
 
-export async function installEgressAuthority(
-  controller: Pick<OpenClawController, "selectedDriver" | "createCredentialProxy">,
-  owner: InstalledDriver | undefined,
-  pluginRequests?: EgressAuthorityConfiguration,
-): Promise<CredentialProxyBinding | undefined> {
-  const requests = pluginRequests && (await bindManagedPluginRequestAuthority(pluginRequests));
-  try {
-    const exchange = owner && (await installExchange(controller, owner));
-    if (!requests) {
-      return exchange;
-    }
-    return {
-      close: async () => {
-        requests.close();
-        await exchange?.close();
-      },
-    };
-  } catch (error) {
-    requests?.close();
-    throw error;
-  }
-}
-
 /** Give the installed transport one exchange owner, bound before it accepts any request. */
-async function installExchange(
+export async function installEgressAuthority(
   controller: Pick<OpenClawController, "selectedDriver" | "createCredentialProxy">,
   owner: InstalledDriver,
 ): Promise<CredentialProxyBinding | undefined> {

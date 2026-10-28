@@ -1,23 +1,64 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
-import { createManagedPluginRequestAuthority } from "../../apps/controller/src/drivers/egress-proxy/managed-plugin-requests.ts";
+import { fileURLToPath } from "node:url";
+import { startPluginRequestGuard } from "../../apps/controller/src/plugin-request-guard.ts";
 import {
   managedGoogleInstall,
   managedPluginMiddleware,
+  managedPluginMiddlewareAudience,
   managedPluginMiddlewareImplementation,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
-import { grpc, invoke, openShellOnlineWire, token } from "../helpers/openshell-online-wire.mjs";
+import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import {
+  grpc,
+  invoke,
+  openShellMiddlewareClient,
+  token,
+} from "../helpers/openshell-online-wire.mjs";
+
+test("the standalone guard refuses startup without supervisor trust settings", () => {
+  const entry = fileURLToPath(
+    new URL("../../apps/controller/src/plugin-request-guard.ts", import.meta.url),
+  );
+  const result = spawnSync(process.execPath, [entry], {
+    env: { OCC_PLUGIN_REQUEST_AUTHORITY_PORT: "9444" },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /pluginRequestGuard.issuer must be/);
+});
 
 test("the signed OpenShell request guard intersects the source envelope with the pinned gog operations", async (t) => {
-  const { client, keys } = await openShellOnlineWire(
-    t,
-    managedPluginMiddleware,
-    {},
-    ({ identity }) => createManagedPluginRequestAuthority(identity),
+  const { directory, caBundle } = await harnessTlsFixture(t);
+  const keys = generateKeyPairSync("ed25519");
+  const issuerPublicKeyPath = join(directory, "issuer.pub");
+  await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
+  const reservation = await reservePort();
+  t.after(reservation.release);
+  await bindReservedPortInProcess(reservation);
+  const guard = await startPluginRequestGuard(
+    {
+      OCC_PLUGIN_REQUEST_AUTHORITY_PORT: String(reservation.port),
+      OCC_PLUGIN_REQUEST_AUTHORITY_ISSUER: "https://gateway.example.test",
+      OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID: "gateway-key",
+    },
+    {
+      certificatePath: join(directory, "server.pem"),
+      privateKeyPath: join(directory, "server.key"),
+      issuerPublicKeyPath,
+    },
   );
+  t.after(guard.close);
+  await reservation.release();
+  const client = openShellMiddlewareClient(t, reservation.port, caBundle);
   const sandbox = "fixture-runtime-1";
-  const signed = token(keys, "supervisor", sandbox);
-  const gateway = token(keys, "gateway");
+  const signed = token(keys, "supervisor", sandbox, managedPluginMiddlewareAudience);
+  const gateway = token(keys, "gateway", undefined, managedPluginMiddlewareAudience);
   const context = { sandbox_id: sandbox, workspace: "default", request_id: "gmail-request-1" };
   const gmail = "https://www.googleapis.com/auth/gmail.readonly";
   const scopeConfig = (host: string, path: string, scope: string) => ({
@@ -67,11 +108,21 @@ test("the signed OpenShell request guard intersects the source envelope with the
     ],
   );
   assert.equal((await invoke(client, "ValidateConfig", request, gateway)).valid, true);
-  const stale = { ...request, config: { fields: { binding_id: { stringValue: "0".repeat(64) } } } };
+  const stale = {
+    ...request,
+    config: { fields: { ...config.fields, binding_id: { stringValue: "0".repeat(64) } } },
+  };
   assert.equal((await invoke(client, "ValidateConfig", stale, gateway)).valid, false);
   assert.equal(await evaluate(stale), 2);
-  assert.equal(await evaluate(request, token(keys, "supervisor", "other-runtime")), 2);
+  assert.equal(
+    await evaluate(
+      request,
+      token(keys, "supervisor", "other-runtime", managedPluginMiddlewareAudience),
+    ),
+    2,
+  );
   assert.equal(await evaluate(request, gateway), 2);
+  assert.equal(await evaluate(request, token(keys, "supervisor", sandbox, "other-middleware")), 2);
   assert.equal(await evaluate({ ...request, headers: [{ name: "user-agent", value: "gog" }] }), 1);
 
   const discovery = {
