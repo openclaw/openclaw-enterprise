@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { randomUUID } from "node:crypto";
 import { stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
