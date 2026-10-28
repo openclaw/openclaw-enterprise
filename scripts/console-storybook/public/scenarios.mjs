@@ -2368,6 +2368,35 @@ export const scenarios = {
       "Without a Driver capability descriptor, saved policies remain visible and policy controls stay disabled. The component does not assume policy support from the catalog.",
     gap: pluginPreviewGap,
   },
+  managedGoogleInstall: {
+    group: "Components/Plugins",
+    name: "Install Google Workspace",
+    component: "plugins",
+    pluginCapabilities: {
+      ...pluginCapabilities,
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
+    },
+    pluginCatalog: {
+      status: "ready",
+      entries: [
+        {
+          id: "occ-plugin:google@1.0.0",
+          name: "Google Workspace",
+          description:
+            "Install the pinned gog Google Workspace CLI on a dedicated OpenClaw worker using Kubernetes Compute.",
+          selectableWithoutTools: true,
+          tools: [],
+        },
+      ],
+    },
+    actions: [
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Google Workspace"]', click: true },
+    ],
+    description:
+      "Select the package for installation. The fixture simulates the catalog and does not deploy an Agent.",
+  },
   pluginsNativeLimited: {
     group: "Components/Plugins",
     name: "Native Driver with unsupported saved policy",

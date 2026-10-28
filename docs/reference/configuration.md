@@ -234,7 +234,8 @@ before OpenClaw's `personal` security preset;
 `agents.defaults.sandbox.mode: "off"`, as OpenClaw's sandbox cannot run in the
 OCE runtime; and, unless `tools.exec` sets `security` or `ask`,
 `tools.exec.mode: "full"` and, in that mode, `tools.exec.strictInlineEval: false`,
-as `corporate`'s approvals need a client OCE lacks. Other
+as `corporate`'s approvals need a client OCE lacks; an
+`agents.entries.<id>.tools.exec` with another policy keeps `corporate`'s `true`. Other
 unset settings keep the preset's defaults, such as
 `messages.queue.allowCollaborativeSteering: true`: a steered turn keeps its
 first requester's permissions.

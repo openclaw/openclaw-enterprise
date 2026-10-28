@@ -27,8 +27,13 @@ The [shared interface](../../../packages/contracts/src/index.ts) exposes:
 - `policyCapabilities`: supported default/tool enablement, approval modes, and
   reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.
   An empty reviewer array means explicit selection is unsupported at that scope.
+  For IDs marked `enablement_only` in `policyScopeByPlugin`, adding the plugin
+  sets `enabled: true`. The next deployment applies that selection.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
+- `validatePlacement(selections, harness, computeImplementation)` (optional): check
+  whether the selected packages can run on this Harness and Compute Driver. OCC
+  checks placement before saving selections and again when it admits deployment.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a

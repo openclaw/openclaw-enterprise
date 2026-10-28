@@ -3176,7 +3176,7 @@ export class OpenClawController {
       // Plugins the Plugin Driver cannot run in this Harness, as Agent save refuses them;
       // authorizeProvisioningRecord repeats this check for the stored record.
       if (plugins !== undefined && Object.keys(plugins).length > 0) {
-        this.validatePluginHarness(plugins, {
+        this.validatePluginPlacement(plugins, {
           id: resolveConfiguredHarnessId(configurationInput.values),
           mode: executionMode,
         });
@@ -10285,7 +10285,7 @@ export class OpenClawController {
       // Agent saves check the plugins against the Configuration they name, but a later
       // Configuration save does not know which Agents use it: check the admitted pair again.
       this.validatePluginConfiguration(pluginState?.plugins, admittedConfiguration);
-      this.validatePluginHarness(
+      this.validatePluginPlacement(
         pluginState?.plugins,
         revisionHarness,
         runtimeConfiguration !== undefined,
@@ -12144,7 +12144,7 @@ export class OpenClawController {
         normalizeAgentPluginApprovers(record.plan.pluginApprovers as PluginApprovers | undefined),
         "stored",
       );
-      this.validatePluginHarness(plugins, harness);
+      this.validatePluginPlacement(plugins, harness);
       const repositoryBindings = asRecord(record.plan)?.repositoryBindings;
       if (Array.isArray(repositoryBindings) && repositoryBindings.length > 0) {
         this.validateRepositoryBrokerNetworkProxy(harness, plugins, configuration, sandbox);
@@ -14199,7 +14199,7 @@ export class OpenClawController {
   // Compute runs a bundled Plugin Driver's runtime only in the Harness it supports, and its
   // preparation refuses any other pair after a dedicated deployment stopped the running
   // revision. Agent save, provisioning and deployment refuse the pair first (finding 2348).
-  private validatePluginHarness(
+  private validatePluginPlacement(
     plugins: PluginDesiredState | undefined,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
     hasRuntimeConfiguration = false,
@@ -14207,7 +14207,13 @@ export class OpenClawController {
     if (!hasRuntimeConfiguration && (plugins === undefined || Object.keys(plugins).length === 0)) {
       return;
     }
-    const required = pluginRuntimeHarnessRequirement(this.pluginDriver().implementation, harness);
+    const driver = this.pluginDriver();
+    driver.validatePlacement?.(
+      plugins ?? {},
+      harness,
+      this.selectedDriver("compute").implementation,
+    );
+    const required = pluginRuntimeHarnessRequirement(driver.implementation, harness);
     if (required !== undefined) {
       if (hasRuntimeConfiguration) {
         throw new ConfigurationHarnessError(
@@ -14339,7 +14345,7 @@ export class OpenClawController {
       return;
     }
     const harness = Object.freeze({ ...approved, mode: agent.executionMode });
-    this.validatePluginHarness(agent.plugins, harness);
+    this.validatePluginPlacement(agent.plugins, harness);
     const values = this.agentRuntimeConfiguration(configuration.values, harness, compute, sandbox);
     // A Configuration that selects no model yet is a draft: the binding has nothing to deliver
     // to, so deployment refuses that pair and save does not.

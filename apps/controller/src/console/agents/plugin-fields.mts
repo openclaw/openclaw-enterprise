@@ -1,10 +1,10 @@
 import type {
+  InstallationCapabilities,
   PluginApprovalMode,
   PluginApprovers,
   PluginCatalogEntry,
   PluginCatalogPage,
   PluginDesiredSelection,
-  PluginPolicyCapabilities,
   PluginReviewer,
   PluginToolCatalogEntry,
   PluginToolPolicy,
@@ -43,7 +43,7 @@ export interface ApproverFieldOptions {
 export interface PluginFieldsOptions {
   input: HTMLTextAreaElement;
   catalog?: PluginFieldCatalog | null;
-  capabilities?: PluginPolicyCapabilities | null;
+  capabilities?: NonNullable<InstallationCapabilities["pluginPolicies"]> | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
   onCancelDiscovery?: (() => void) | null;
   onLoadTools?: ((id: string) => void) | null;
@@ -348,7 +348,11 @@ export function createPluginFields({
     rememberExpandedTools();
     configuredOnly = value;
     search.value = tabState().query;
-    if (value) {
+    // The local catalog supplies the package name on Configured.
+    if (
+      value &&
+      !(catalog?.canLoad && capabilities?.driver?.implementation === "occ/openclaw-plugin")
+    ) {
       onCancelDiscovery?.();
     }
     render();
@@ -834,6 +838,9 @@ export function createPluginFields({
             ),
           ),
         );
+      }
+      const enablementOnly = capabilities?.policyScopeByPlugin?.[entry.id] === "enablement_only";
+      if (selected && !enablementOnly) {
         const defaults = selected.toolDefaults ?? {};
         const writeDefault: WritePolicy = (key, value) => writeToolPolicy(entry.id, key, value);
         const fields = toolPolicyFields(
@@ -930,7 +937,7 @@ export function createPluginFields({
             ),
           );
         }
-      } else {
+      } else if (!selected) {
         const add = button(`Add ${entry.name}`, () =>
           update((all) => {
             all[entry.id] = { enabled: true };
@@ -947,24 +954,40 @@ export function createPluginFields({
       }
       // An override can outlive the tool in the Driver catalog. Show its saved ID in either case.
       type Tool = Omit<PluginToolCatalogEntry, "ownerId"> & { ownerId?: string };
-      const tools = new Map<string, Tool>((entry.tools ?? []).map((tool) => [tool.id, tool]));
-      for (const id of Object.keys(selected?.tools ?? {})) {
-        if (!tools.has(id)) {
-          tools.set(id, { id, name: id });
+      const tools = new Map<string, Tool>();
+      if (!enablementOnly) {
+        for (const tool of entry.tools ?? []) {
+          tools.set(tool.id, tool);
         }
+        for (const id of Object.keys(selected?.tools ?? {})) {
+          if (!tools.has(id)) {
+            tools.set(id, { id, name: id });
+          }
+        }
+      }
+      if (enablementOnly) {
+        details.append(
+          element(
+            "p",
+            { className: "hint" },
+            "Enable or disable the whole plugin on the next deployment.",
+          ),
+        );
       }
       if (entry.toolStatus === "loading") {
         details.append(
           element("p", { className: "hint plugin-loading", role: "status" }, "Loading tools…"),
         );
-      } else if (entry.tools === null) {
-        details.append(
-          element(
-            "p",
-            { className: "hint" },
-            "Tool list unavailable. Existing tool overrides are preserved; this does not mean the plugin has no tools.",
-          ),
-        );
+      } else if (entry.tools === null && (!enablementOnly || entry.remoteId)) {
+        if (!enablementOnly) {
+          details.append(
+            element(
+              "p",
+              { className: "hint" },
+              "Tool list unavailable. Existing tool overrides are preserved; this does not mean the plugin has no tools.",
+            ),
+          );
+        }
         if (entry.selectableWithoutTools && entry.toolStatus === "loaded") {
           details.append(
             element(
@@ -991,7 +1014,7 @@ export function createPluginFields({
           );
           details.append(load);
         }
-      } else if (tools.size === 0) {
+      } else if (!enablementOnly && tools.size === 0) {
         details.append(element("p", { className: "hint" }, "No tools listed for this plugin."));
       }
       if (entry.toolError) {
@@ -1225,7 +1248,10 @@ export function createPluginFields({
     },
     // `unread` says the capabilities read failed, so nothing is known about Installation support;
     // the owner shows why (finding 2538).
-    setCapabilities(value: PluginPolicyCapabilities | null, unread = false) {
+    setCapabilities(
+      value: NonNullable<InstallationCapabilities["pluginPolicies"]> | null,
+      unread = false,
+    ) {
       capabilities = value;
       capabilitiesUnread = value === null && unread;
       render();

@@ -13,6 +13,8 @@ and supported controls before saving nonempty selections. Startup runs
 
 ## Current support
 
+Dedicated OpenClaw on Kubernetes supports [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json). Its only policy, `plugins[id].enabled`, controls the Gateway skill and the pinned `gog` command on the worker at deployment. Installation requires no Google account.
+
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
 existing native execution path without a review step. Diffs rejects

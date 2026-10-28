@@ -213,6 +213,38 @@ references. Follow [Build and publish production images](../../docs/guides/deplo
 for the controller and runtime build commands, registry publishing, and digest
 configuration.
 
+## Review the managed Google plugin pin
+
+The [managed Google release](../../apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json)
+links Peter Steinberger's [gog skill on ClawHub](https://clawhub.ai/steipete/skills/gog)
+to its reviewed `SKILL.md` bytes at an immutable OpenClaw commit.
+When updating the pin, check the publisher, read the selected version, and compare
+its file digest with the manifest from the repository root.
+
+```bash
+manifest=apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json
+clawhub inspect "$(jq -r .clawhub.skill "$manifest")" \
+  --version "$(jq -r .clawhub.version "$manifest")" --files --json |
+  jq -e --arg sha "$(jq -r .clawhub.skillSha256 "$manifest")" \
+    'any(.version.files[]; .path == "SKILL.md" and .sha256 == $sha)'
+```
+
+The build verifies the upstream skill pin, the packaged `oce-google` instructions, the
+[gog CLI archive](https://github.com/openclaw/gogcli/releases/tag/v0.46.0) for the
+image architecture, and the executable’s checksum and reported version. The binary
+lives under `/usr/local/lib/oce/plugins/google/bin`, outside the image’s default PATH.
+
+A selected dedicated OpenClaw worker verifies the bundled release and binary before
+enrollment, then adds that directory to its PATH. The Gateway verifies the bundled
+skill and adds it to native skill discovery. OpenClaw’s usual precedence applies if
+the workspace contains another skill with the same name. Run `gog --version` in the
+worker to check the installation.
+
+OCE grants its workspace node read access to the selected skill. If you supply a
+custom file-transfer policy for that node, allow reads of
+`/usr/local/lib/oce/plugins/google/skills`, its `oce-google` directory and
+`oce-google/SKILL.md`.
+
 ## Select a storage-split test image
 
 Build Gateway and Harness images from this same pinned distribution, record each

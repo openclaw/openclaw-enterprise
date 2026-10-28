@@ -1262,6 +1262,42 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       );
     }
   }
+  // An Agent entry's own exec policy replaces the filled mode, but OpenClaw resolves its
+  // strictInlineEval as the entry's value, else the top-level one (finding 2788). Under corporate,
+  // such an entry keeps the preset's `true`, so its inline programs still wait for an approval;
+  // an entry in mode "full", or with its own value, keeps what it sets. The personal preset's
+  // value is the filled `false`, so nothing is added there.
+  // The main entry's exec policy, and whether a corporate deployment adds the preset's `true`.
+  for (const [name, exec, corporateKeeps] of [
+    ["mode allowlist", { mode: "allowlist" }, true],
+    ["legacy security", { security: "allowlist" }, true],
+    ["mode full", { mode: "full" }, false],
+    ["its own value", { mode: "ask", strictInlineEval: false }, false],
+  ]) {
+    for (const preset of ["corporate", "personal"]) {
+      const values = {
+        ...configuration.values,
+        security: { preset },
+        agents: {
+          ...configuration.values.agents,
+          entries: {
+            main: {
+              model: "openai/gpt-4.1",
+              models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+              tools: { exec },
+            },
+          },
+        },
+      };
+      const revision = await deploy(values, "embedded");
+      assert.equal(revision.configuration.tools.exec.strictInlineEval, false, `${preset}: ${name}`);
+      assert.deepEqual(
+        revision.configuration.agents.entries.main.tools.exec,
+        preset === "corporate" && corporateKeeps ? { ...exec, strictInlineEval: true } : exec,
+        `${preset}: ${name}`,
+      );
+    }
+  }
   // Like the preset, admission fills only unset settings. A value of the wrong type, or a
   // non-object on the path, stays for the Gateway's own validation, which refuses it at startup,
   // so it cannot loosen the setting.

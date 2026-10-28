@@ -774,6 +774,8 @@ export interface PluginToolCatalogEntry {
 }
 
 export interface PluginPolicyCapabilities {
+  /** An entry limits this plugin to its master switch. Unlisted plugins use the Driver defaults. */
+  readonly policyScopeByPlugin?: Readonly<Record<string, "enablement_only">>;
   readonly approvers?: {
     readonly agent: boolean;
     readonly plugin: boolean;
@@ -2126,6 +2128,12 @@ export interface PluginDriver extends Driver {
   validateAgentConfiguration?(
     selections: PluginDesiredState,
     configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void;
+  /** Refuses a selection the Agent's Harness and the Installation's Compute cannot deliver. */
+  validatePlacement?(
+    selections: PluginDesiredState,
+    harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+    computeImplementation: string,
   ): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
   /** Pre-Agent discovery defaults to requiring a transient credential. Results are not persisted. */
