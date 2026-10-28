@@ -4921,7 +4921,7 @@ function prepareNativeGit(git) {
     { mode: 0o700, flag: "wx" });
 }
 
-function startReleasedNativeWorker(git) {
+async function startReleasedNativeWorker(git) {
 const authenticationFailure = probeOpenClawAuthenticationFailure();
 if (authenticationFailure !== undefined) {
   holdFailedAuthentication("model-probe", authenticationFailure.code, authenticationFailure.cause);
@@ -4982,7 +4982,6 @@ const doctorEnv = {
   OPENCLAW_NO_AUTO_UPDATE: "1",
   ...(nodeEnv.NODE_EXTRA_CA_CERTS === undefined ? {} : { NODE_EXTRA_CA_CERTS: nodeEnv.NODE_EXTRA_CA_CERTS }),
 };
-(async () => {
 if (!nodeStateCurrent && !(await migrateOpenClawState(state, outdatedNodeDatabases, doctorEnv))) {
   holdStartupFailure("state-migration", "UNAVAILABLE");
   return;
@@ -5019,22 +5018,18 @@ child.on("exit", (code, signal) => {
   if (git) rmSync(git.directory, { recursive: true, force: true });
   process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
 });
-})().catch((error) => {
-  if (git) {
-    holdStartupFailure("repository-git-route", "UNAVAILABLE");
-    return;
-  }
+}
+}
+function nativeWorkerStartupFailed(error) {
   console.error(error);
   process.exit(1);
-});
-}
 }
 const nativeEnrollment = process.env.OPENCLAW_NATIVE_EGRESS_ENROLLMENT;
 const protectedStartup = nativeEnrollment !== undefined ||
   process.env.OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID !== undefined ||
   process.env.OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY !== undefined;
 if (!protectedStartup) {
-  startReleasedNativeWorker();
+  void startReleasedNativeWorker().catch(nativeWorkerStartupFailed);
 } else {
   let enrollment;
   try { enrollment = JSON.parse(nativeEnrollment); } catch {}
@@ -5049,15 +5044,26 @@ if (!protectedStartup) {
   if (valid) {
     waitForHarnessEgressEnrollment(enrollment).then(() => {
       delete process.env.OPENCLAW_NATIVE_EGRESS_ENROLLMENT;
-      try {
-        // Native drops Git environment settings in its child workers. Carry the
-        // same challenge-based helper and scope as Codex through this private shim.
-        if (git) prepareNativeGit(git);
-        startReleasedNativeWorker(git);
-      } catch {
-        holdStartupFailure("repository-git-route", "UNAVAILABLE");
+      if (git) {
+        try {
+          // Native drops Git environment settings in its child workers. Carry the
+          // same challenge-based helper and scope as Codex through this private shim.
+          prepareNativeGit(git);
+        } catch {
+          holdStartupFailure("repository-git-route", "UNAVAILABLE");
+          return;
+        }
       }
-    }, () => holdFailedAuthentication("egress-enrollment", "UNAVAILABLE"));
+      return startReleasedNativeWorker(git);
+    }, () => holdFailedAuthentication("egress-enrollment", "UNAVAILABLE")).catch((error) => {
+      if (git) {
+        // The one-use Git release is already spent, but this failure belongs to
+        // native worker configuration or connection, not Git shim installation.
+        holdStartupFailure("native-worker-startup", "UNAVAILABLE");
+      } else {
+        nativeWorkerStartupFailed(error);
+      }
+    });
   }
 }
 `;

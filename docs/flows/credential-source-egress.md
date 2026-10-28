@@ -127,19 +127,17 @@ replacements need fresh challenges. At 180 seconds it fails closed. Enrollment
 neither resolves credentials nor retries requests. Reconciliation can repeat checks;
 [Harness-only restart recovery remains manual](../reference/credential-sources/protected-inference.md#installation-configuration).
 
-For the v6 GitHub installation preview, `NATIVE_WORKER_ENTRYPOINT`
-(`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`) holds
-node connection until signed release. Sandbox checks
-`OPENCLAW_NATIVE_EGRESS_ENROLLMENT` against admission and still verifies the
-Sandbox ID after the ACK. `ProtectedExecutionDriver.enroll` rechecks policy,
-recipient and Pod identity; Compute requires node enrollment and exposure withdrawal.
+For the v6 preview, `NATIVE_WORKER_ENTRYPOINT`
+(`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`) waits
+for signed release. Sandbox matches enrollment to admission and checks its ID
+after the ACK. `ProtectedExecutionDriver.enroll` verifies policy, recipient and
+Pod identity; Compute requires node enrollment and exposure withdrawal.
 
-The PVC-mounted, read-only `/usr/local/bin/git` launcher delegates to a `TMPDIR`
-shim using Codex's scoped credential helper and the worker's `NODE_EXTRA_CA_CERTS`
-(Sandbox egress trust plus Gateway CA). The supervisor retains real credentials.
-The Agent can change both files; no other principal may execute them.
-Alias, trust-file and scope validation precedes release. Setup failures hold
-`repository-git-route` / `UNAVAILABLE`.
+The read-only PVC launcher `/usr/local/bin/git` delegates to a `TMPDIR` shim
+with Codex's scoped helper and `NODE_EXTRA_CA_CERTS` (Sandbox egress and Gateway
+CAs). The supervisor retains credentials. Both files are Agent-writable; no other
+principal may execute them. Git inputs are checked before release. Git validation/setup holds `repository-git-route`;
+other released-worker failures hold `native-worker-startup`, both `UNAVAILABLE`.
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -340,6 +338,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-28 04:11: Distinguish Git setup from native startup failures. (agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88 - efc0e4d30)
 
 - 2026-10-28 02:29: Describe native Git preflight, scoped authentication and Agent-owned launcher limits. (agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88 - 16280371d6e87e2353866ca5070e3a4926616e1f)
 

@@ -277,7 +277,12 @@
       "path": "tests/conformance/runtime-probe-cpu-counter.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
+      "path": "tests/conformance/runtime-gateway-state-migration.test.mjs",
+      "expectedTests": [
+        "Native preview holds Git setup failures separately from other post-release startup failures",
+        "Native worker without Git retains fatal startup errors without a repository label",
+        "Native preview connects after release when both Git and worker setup succeed"
+      ]
     },
     {
       "path": "tests/conformance/node-test-summary.test.mjs"
