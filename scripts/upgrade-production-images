@@ -1039,6 +1039,13 @@ fi
 # needed. An accepted write whose response was lost must not be repeated.
 helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/current-helm-status.json"
 helm_state=$(jq -er '.info.status' "$evidence_dir/current-helm-status.json")
+case "$helm_state" in
+  deployed | failed) ;;
+  *) die "Helm reports $helm_state; resolve the in-progress or unknown release before resuming." ;;
+esac
+if [[ ! -f "$evidence_dir/helm-started" && "$helm_state" != deployed ]]; then
+  die "the Helm release changed before this upgrade started; investigate before continuing."
+fi
 helm get values "$release" "${helm_args[@]}" --output yaml >"$evidence_dir/current-live-values.yaml"
 matches_yaml "$values" "$evidence_dir/before-values.yaml" ||
   matches_yaml "$values" "$candidate_values" || die "protected Helm values changed outside this upgrade."
@@ -1061,13 +1068,6 @@ matches_yaml "$evidence_dir/current-live-installation.yaml" "$evidence_dir/befor
   matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation" ||
   die "the live Installation Secret changed outside this upgrade."
 
-case "$helm_state" in
-  deployed | failed) ;;
-  *) die "Helm reports $helm_state; resolve the in-progress or unknown release before resuming." ;;
-esac
-if [[ ! -f "$evidence_dir/helm-started" && "$helm_state" != deployed ]]; then
-  die "the Helm release changed before this upgrade started; investigate before continuing."
-fi
 if [[ ! -f "$evidence_dir/helm-started" ]]; then
   jq -e --slurpfile before "$evidence_dir/before-helm-status.json" \
     '.version == $before[0].version' "$evidence_dir/current-helm-status.json" >/dev/null ||

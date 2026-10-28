@@ -242,7 +242,14 @@ fi
   await writeCommand(
     bin,
     "helm",
-    `if [[ "$*" == *'get values'* ]]; then
+    `printf 'helm %s\\n' "$*" >>"$COMMAND_LOG"
+if [[ "$1" == status ]]; then
+  state=deployed
+  if [[ -n "\${CURRENT_HELM_EVIDENCE:-}" && -f "$CURRENT_HELM_EVIDENCE/prepared" ]]; then
+    state="$CURRENT_HELM_STATE"
+  fi
+  printf '{"info":{"status":"%s"},"version":1}\\n' "$state"
+elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == template ]]; then
   printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
@@ -258,7 +265,7 @@ fi
   exit 0
 fi
 case "$*" in
-  *'.info.status'*) printf 'deployed\\n' ;;
+  *'.info.status'*) node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).info.status' "\${!#}" ;;
   *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
   *'.installationId == '*) exit 0 ;;
@@ -342,6 +349,43 @@ esac
 `,
     { interpreter: "bash" },
   );
+
+  // Preparation sees a deployed baseline; the common live reread sees a state
+  // that must stop the attempt before another sensitive read or mutation.
+  for (const [state, refusal] of [
+    [
+      "pending-upgrade",
+      /Helm reports pending-upgrade; resolve the in-progress or unknown release/u,
+    ],
+    ["failed", /the Helm release changed before this upgrade started/u],
+  ]) {
+    await t.test(`current Helm status ${state} refuses before further reads`, async () => {
+      const evidence = join(directory, `status-${state}`);
+      await assert.rejects(
+        execute(upgradeScript, upgradeArguments(evidence, ["controller"]), {
+          cwd: repository,
+          env: {
+            ...environment,
+            COMMAND_LOG: commandLog,
+            CURRENT_HELM_EVIDENCE: evidence,
+            CURRENT_HELM_STATE: state,
+            OBSERVED_CONTROLLER_IMAGE: controllerImage,
+          },
+        }),
+        refusal,
+      );
+      assert.equal(
+        JSON.parse(await readFile(join(evidence, "current-helm-status.json"), "utf8")).info.status,
+        state,
+      );
+      assert.match(
+        await readFile(commandLog, "utf8"),
+        /helm status [^\n]* --output json\n$/u,
+        "no values, Secret, or mutating command may follow the refused current status",
+      );
+      await rm(commandLog);
+    });
+  }
 
   // A controller release changes only the Helm-owned image. It must not replace
   // the Installation Secret, request fleet inventory, or create Agent revisions.

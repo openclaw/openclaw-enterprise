@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-10-28"
-last_updated_session: "authoring-run/bf262f39-fa9d-4e70-94e1-e2fc516234e9"
+last_updated_session: "authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a"
 ---
 
 # Production image upgrade flow
@@ -148,16 +148,16 @@ edits per the
 
 ### 2. Reconcile a prior attempt
 
-`scripts/upgrade-production-images:506`
+`scripts/upgrade-production-images:1040`
 
-Every attempt rereads Helm status, values, and the Installation Secret. Only
-recorded baseline or candidate values are accepted; Secret UID, Installation
-annotation, and other data must match the baseline. Resume requires a prepared
-record; otherwise inspect evidence and remaining preflight resources. It binds
+Reconciliation rejects ineligible Helm states before reading values or the
+Installation Secret. Values must match the recorded baseline or candidate;
+Secret UID, Installation annotation, and other data must match the baseline.
+Resume requires a prepared record; otherwise inspect evidence and remaining
+preflight resources. It binds
 kubeconfig contents, inputs, OCC URL, scripts, flow, chart, and pair evidence,
 requalifies the pair, and rejects changed eligible nodes. Candidates must match
-saved reviewed inputs, which the helper applies. Unexpected drift or an
-in-progress Helm release stops execution.
+saved reviewed inputs, which the helper applies. Unexpected drift stops execution.
 
 If a previously started Helm release is deployed at a newer version with the
 candidate values, the script continues without repeating Helm. Otherwise it
@@ -331,6 +331,7 @@ Agents or Secrets.
 
 ## Changelog
 
+- 2026-10-28 18:11: Check Helm status before reconciliation reads. (authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a - 541cc3f43bdfb09615ecee0cfb79c533e6a0b56c)
 - 2026-10-28 21:01: Check API themes before writer quiescence. (authoring-run/bf262f39-fa9d-4e70-94e1-e2fc516234e9 - 304fcfb169bc8403794e8562a08b1e3ee4cc23ac)
 
 - 2026-10-28 06:40: Check every revision Pod, not only the gateway, after Doctor. (fix-2755)
