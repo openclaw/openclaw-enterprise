@@ -8,7 +8,7 @@ last_updated_session: authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4
 
 ## Overview
 
-Console lists approved repositories; deployment freezes grants. Prepared native sessions reach
+The Console lists approved repositories; deployment freezes grants. Prepared native sessions reach
 Compute-owned dedicated Codex without a Sandbox Driver. The opt-in
 [OpenShell path](../reference/repository-credentials/protected-openshell-git.md) gives the sandbox a
 placeholder: the worker delivers prepared material to the provider and checks each signed
@@ -257,7 +257,7 @@ rewrites canonical HTTPS hosts to their gateway origin. The scoped helper checks
 generation and deadline before supplying the bearer. `OCE_REPOSITORY_REF` disambiguates
 bindings, not destinations. Local identity, hooks, aliases, overrides and other helpers
 remain available; there is no whole-command preflight or egress confinement.
-See [routing limits](../reference/repository-credentials.md#client-routing-and-limits).
+See the [routing limits](../reference/repository-credentials.md#client-routing-and-limits).
 `pushRefAllowlist` selects image-owned hooks.
 `apps/controller/src/drivers/repo/github/credentials/client/hook-dispatch.ts:checkPush`
 checks every destination ref and rejects the whole push before updates, though discovery may

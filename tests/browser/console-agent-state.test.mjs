@@ -35,6 +35,7 @@ import {
   expectDeploymentOutcome,
   expectVersionRecord,
   openFailureDetails,
+  showDeploymentTab,
 } from "./console-deployment-activity-helpers.mjs";
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -110,7 +111,11 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
   );
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1(?: ·|$)/ })
+    .waitFor({ state: "attached" });
   const activity = await expectDeploymentOutcome(page, "In progress");
   const record = await expectVersionRecord(page, "In progress");
   await record.getByText(NO_PERSISTED_STARTUP_FAILURE, { exact: true }).waitFor();
@@ -163,7 +168,11 @@ test("Deployment activity follows pending work until it records a result", async
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1(?: ·|$)/ })
+    .waitFor({ state: "attached" });
   await expectDeploymentOutcome(page, "In progress");
   await expectVersionRecord(page, "In progress");
 
@@ -173,7 +182,10 @@ test("Deployment activity follows pending work until it records a result", async
   await openFailureDetails(page);
   await expectDeploymentOutcome(page, "Failed", { folded: false });
   await expectVersionRecord(page, "Failed");
-  await page.getByText("v1 · Failed", { exact: true }).waitFor();
+  await page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .getByText("v1 · Failed", { exact: true })
+    .waitFor();
 
   // A recorded result ends the follow-up reads.
   const readsAtResult = statusReads;
@@ -206,7 +218,11 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1(?: ·|$)/ })
+    .waitFor({ state: "attached" });
   // The failure's card says nothing of the cleanup, so the details it would fold stay open and
   // show it without the reader opening them, even when the record lands after the page showed.
   await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
@@ -278,10 +294,17 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
     fixture,
     detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
   );
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1(?: ·|$)/ })
+    .waitFor({ state: "attached" });
   const activity = await expectDeploymentOutcome(page, "In progress");
   await activity.getByText("Waiting for the runtime to become ready (attempt 1).").waitFor();
-  await page.getByText("v1 · In progress", { exact: true }).waitFor();
+  await page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .getByText("v1 · In progress", { exact: true })
+    .waitFor();
   await page.evaluate(() => {
     globalThis.summaryRewrites = [];
     const observer = new globalThis.MutationObserver((records) => {
@@ -326,7 +349,11 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url.pathname + url.search);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1(?: ·|$)/ })
+    .waitFor({ state: "attached" });
   const activity = await expectDeploymentOutcome(page, "In progress");
   const panel = await activity.elementHandle();
   // The Console caches the Agent view for Back only if its reads finished before it was left.
@@ -392,7 +419,12 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
   );
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1(?: ·|$)/ })
+    .waitFor({ state: "attached" });
+  await showDeploymentTab(page);
   const observations = page.locator(".version-diagnostics");
   await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
   await observations.getByText("gateway / authentication").waitFor();
@@ -401,6 +433,7 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
     .getByText(diagnosticsRecordedFailure("RUNTIME_AUTHENTICATION_FAILED"))
     .waitFor();
   // The failed record does not make the selected version a "Failed version": it is current.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   assert.equal(
     await page.locator(".version-selection-notice").textContent(),
     "Current version · read-only admitted snapshot.",
@@ -456,6 +489,7 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
     fixture,
     detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
   );
+  await showDeploymentTab(page);
   const observations = page.locator(".version-diagnostics");
   const run = observations.getByRole("button", { name: "Run diagnostics for this version" });
   const waiting = observations.getByText("Waiting for diagnostic results…");
@@ -533,7 +567,10 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
   await page.keyboard.press("Enter");
   try {
     await held.requested;
-    await page.getByRole("heading", { name: "Version v1" }).click();
+    await page
+      .getByRole("region", { name: "Agent state at a glance" })
+      .getByText("Selected for service", { exact: true })
+      .click();
     assert.equal(await onPage(), true);
     await page.clock.runFor(250);
     await waiting.waitFor();
@@ -603,7 +640,12 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   );
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1(?: ·|$)/ })
+    .waitFor({ state: "attached" });
+  await showDeploymentTab(page);
   const observations = page.locator(".version-diagnostics");
   await observations.getByText(/gateway checks cover only the Slack channel/).waitFor();
   await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
@@ -684,15 +726,15 @@ test("Agent detail hides sharing instead of showing an error to non-administrato
   const configuration = page.getByRole("tab", { name: "Configuration", selected: true });
   await configuration.waitFor();
   assert.equal(await page.getByRole("tab", { name: "Access" }).count(), 0);
-  // The arrow keys skip the hidden tab: End and wrapping stop at Policy denials.
+  // The arrow keys skip the hidden Access tab: End and wrapping stop at Deployment.
   const focused = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
   await configuration.focus();
   await page.keyboard.press("End");
-  assert.equal(await focused(), "Policy denials");
+  assert.equal(await focused(), "Deployment");
   await page.keyboard.press("ArrowRight");
   assert.equal(await focused(), "Configuration");
   await page.keyboard.press("ArrowLeft");
-  assert.equal(await focused(), "Policy denials");
+  assert.equal(await focused(), "Deployment");
 });
 
 // The API audits each refused read as an authorization denial, one nobody attempted. A member's
@@ -1557,7 +1599,12 @@ test("An unknown Installation access answer keeps the Access tab", async (t) => 
     fixture,
     detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
   );
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1(?: ·|$)/ })
+    .waitFor({ state: "attached" });
+  await showDeploymentTab(page);
   const evidence = page.locator(".version-evidence");
   await evidence.waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).click();
@@ -1782,7 +1829,11 @@ test("Agent detail reports a failed dedicated replacement as probably not servin
 
   const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1(?: ·|$)/ })
+    .waitFor({ state: "attached" });
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("May be offline", { exact: true }).waitFor();
   await page
@@ -1814,7 +1865,11 @@ test("Agent detail reports a failed selected version as probably not serving", a
 
   const url = detailUrl(fixture, namespace.id, agent.id, selected.revision.id, "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Version v2" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v2(?: ·|$)/ })
+    .waitFor({ state: "attached" });
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("May be offline", { exact: true }).waitFor();
   await page
@@ -2153,15 +2208,21 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
   };
   for (const c of neutralDeployments) {
     await page.goto(urls.get(c.agent).href);
-    await page.getByRole("heading", { name: "Version v1" }).waitFor();
+    await page
+      .getByLabel("Viewing version", { exact: true })
+      .getByRole("option", { selected: true })
+      .filter({ hasText: /^v1(?: ·|$)/ })
+      .waitFor({ state: "attached" });
     await expectNeutral(c, c.error.code);
     // A neutral record is not a failure, so the version's notice does not call it failed. The
     // superseded v1 is not current (the hidden v2 is), so it is history.
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     assert.equal(
       (await page.locator(".version-selection-notice").textContent()).split(" ·")[0],
       c.newerHidden ? "Historical version" : "Current version",
     );
     // Diagnostics do not ask the reader to resolve a neutral record first.
+    await showDeploymentTab(page);
     const observations = page.locator(".version-diagnostics");
     await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
     await observations

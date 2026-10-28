@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join, relative } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -52,13 +53,12 @@ test("a native path diagnostic cannot acquire caller-supplied public text", () =
     assert.throws(
       () => rejectNativeRepositoryPath(variant),
       (error) => {
-        if (!(error instanceof Error) || !("details" in error) || !Array.isArray(error.details)) {
-          return false;
-        }
-        assert.equal(error.details.length, 1);
-        assert.equal(Reflect.set(error.details[0], "message", "caller-marker"), false);
-        assert.equal(Reflect.set(error, "details", []), false);
-        assert.equal(Reflect.set(error.details, "0", {}), false);
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.equal(error.error.details.length, 1);
+        assert.equal(Reflect.set(error.error.details[0], "message", "caller-marker"), false);
+        assert.equal(Reflect.set(error.error, "details", []), false);
+        assert.equal(Reflect.set(error.error.details, "0", {}), false);
+        assert.equal(Reflect.set(error, "error", { details: [] }), false);
         return true;
       },
     );
@@ -110,6 +110,19 @@ async function fixture(t: TestContext) {
     maximumDurationSeconds: 600,
     repositories: [
       {
+        repositoryRef: "other-project",
+        repositoryId: "790",
+        repository: "example/other-project",
+        namespaces: [
+          {
+            namespaceId,
+            profiles: ["git-write"],
+            transport: "git-only",
+            pushRefAllowlist: ["refs/heads/other"],
+          },
+        ],
+      },
+      {
         repositoryRef: "project",
         repositoryId: "789",
         repository: "example/project",
@@ -160,13 +173,14 @@ async function fixture(t: TestContext) {
   });
   async function serve(factory: RepositoryServiceFactory) {
     const service = createCredentialService({ config, factory, clock });
-    let opens = 0;
+    let preparedOpens = 0;
     const admissions = createControlAdmission(
       {
-        open(input, standing) {
-          opens++;
-          return service.open(input, standing);
+        prepareOpen(input) {
+          preparedOpens++;
+          return service.prepareOpen(input);
         },
+        open: service.open,
         status: service.status,
         close: service.close,
       },
@@ -198,7 +212,7 @@ async function fixture(t: TestContext) {
       admissions.dispose();
     };
     t.after(close);
-    return { close, service, opens: () => opens };
+    return { close, service, preparedOpens: () => preparedOpens };
   }
   async function attempt(protocol: 1 | 3 = 3) {
     const admissionId = `${Date.now()}-${randomUUID()}`;
@@ -273,11 +287,12 @@ test("legacy native selection fails before worker composition in every mode", as
 
 test("prepared sender opens through the actual control handler and binds durable authority", async (t) => {
   const f = await fixture(t);
-  await f.serve(f.prepared);
+  const server = await f.serve(f.prepared);
   const { input, wire } = await f.attempt();
   await f.sender.checkAdmissionReady(AbortSignal.timeout(3000));
   const opened = await f.sender.open(input, AbortSignal.timeout(3000));
   assert.equal(opened.kind, "created");
+  assert.equal(server.preparedOpens(), 1);
   if (opened.kind !== "created") {
     return;
   }
@@ -308,6 +323,82 @@ test("prepared sender opens through the actual control handler and binds durable
   );
 });
 
+test("prepared OPEN constructs only the selected route after its original reservation", async (t) => {
+  const f = await fixture(t);
+  let constructions = 0;
+  let materialCalls = 0;
+  await f.serve({
+    ...f.prepared,
+    createPrepared(...args: Parameters<typeof f.prepared.createPrepared>) {
+      constructions++;
+      const backend = f.prepared.createPrepared(...args);
+      return {
+        ...backend,
+        authorize(...authorizeArgs: Parameters<typeof backend.authorize>) {
+          materialCalls++;
+          return backend.authorize(...authorizeArgs);
+        },
+      };
+    },
+  });
+  const { input, wire } = await f.attempt();
+  await assert.rejects(
+    f.client.open(
+      { ...wire, expectedBinding: { ...wire.expectedBinding, grantId: "wrong" } },
+      input.admissionId,
+      AbortSignal.timeout(3000),
+    ),
+    { name: "RepositoryCredentialControlError" },
+  );
+  assert.equal(constructions, 0);
+  assert.equal(materialCalls, 0);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const originalTransact = f.state.transact;
+  const transact = originalTransact.bind(f.state);
+  let transactions = 0;
+  // Hold the real receipt listener at its State transaction, before it can reserve.
+  f.state.transact = async function (work) {
+    if (transactions++ === 0) {
+      entered.resolve();
+      await release.promise;
+    }
+    return transact(work);
+  };
+  const pending = f.client.open(wire, input.admissionId, AbortSignal.timeout(3000));
+  t.after(async () => {
+    f.state.transact = originalTransact;
+    release.resolve();
+    await pending.catch(() => {});
+  });
+  await entered.promise;
+  assert.equal(constructions, 0);
+  assert.equal(materialCalls, 0);
+  release.resolve();
+  const opened = await pending;
+  assert.equal(opened.kind, "created");
+  if (opened.kind !== "created") {
+    return;
+  }
+  assert.equal(constructions, 1);
+  assert.equal(materialCalls, 0);
+  assert.equal(transactions, 2);
+  assert.deepEqual(opened.result.client.pushRefAllowlist, ["refs/heads/review"]);
+  assert.deepEqual(opened.result.session.binding, wire.expectedBinding);
+  const receipt = await f.state.read((view) =>
+    view.repositorySessions.findBrokerReceipt(input.admissionId),
+  );
+  assert.equal(receipt?.state, "active");
+  assert.equal(receipt?.sessionId, opened.result.session.sessionId);
+  await f.client.close(opened.result.session.sessionId, AbortSignal.timeout(3000));
+  // Matching public fields cannot replace the exact one-use selection issued by the factory.
+  const selection = f.prepared.resolveBound!(wire);
+  const authority = { ...wire.expectedBinding, sessionId: randomUUID() };
+  assert.throws(() => f.prepared.createPrepared(authority, { ...selection }), /INVALID_BINDING/);
+  assert.deepEqual(f.prepared.createPrepared(authority, selection).binding, wire.expectedBinding);
+  assert.throws(() => f.prepared.createPrepared(authority, selection), /INVALID_BINDING/);
+});
+
 test("a development-token peer swapped after readiness cannot serve prepared OPEN", async (t) => {
   const f = await fixture(t);
   const first = await f.serve(f.prepared);
@@ -325,6 +416,7 @@ test("a development-token peer swapped after readiness cannot serve prepared OPE
   const current = await f.serve(factory);
   const { input } = await f.attempt();
   await assert.rejects(f.sender.open(input, AbortSignal.timeout(3000)), /request was rejected/);
+  assert.equal(current.preparedOpens(), 0);
   assert.equal(
     await f.state.read((view) => view.repositorySessions.findBrokerReceipt(input.admissionId)),
     undefined,
@@ -465,7 +557,7 @@ test("complete native configuration requires explicit selection and custody with
   const repository = {
     id: f.sender.id,
     configuration: { sessionDurationSeconds: 600 },
-    nativeSender: { controlSocket: f.config.gateway.controlSocket, publicCaPath },
+    nativeSender: { controlSocket: join(f.directory, "unstarted.sock"), publicCaPath },
     preparedGitHub: {
       custodyKeyPath: join(f.directory, "custody.key"),
       privateKeyPath: join(f.directory, "app.pem"),
@@ -487,9 +579,17 @@ test("complete native configuration requires explicit selection and custody with
       }),
     });
   };
+  // Loading validates configuration and CA material without connecting to the broker.
+  await assert.rejects(stat(repository.nativeSender.controlSocket), { code: "ENOENT" });
   for (const retained of [false, true]) {
     assert.ok((await load(retained))?.nativeRepositorySender);
   }
+  // A valid path does not make invalid CA material acceptable.
+  await writeFile(publicCaPath, "not a PEM certificate", { mode: 0o600 });
+  for (const retained of [false, true]) {
+    await assert.rejects(load(retained), { message: "invalid-public-ca" });
+  }
+  await writeFile(publicCaPath, rootCertificates[0]!, { mode: 0o600 });
   const protectedAccess = await composeRepositoryAccess({
     backend,
     selection: {
@@ -517,7 +617,7 @@ test("complete native configuration requires explicit selection and custody with
       `${valid}/`,
       `${valid}\n`,
       `${valid}\u0085`,
-      ...(field === "controlSocket" ? [overlongSocketPath] : []),
+      ...(field === "controlSocket" ? [overlongSocketPath, `${overlongSocketPath}/./socket`] : []),
     ].entries()) {
       configuration.repository = {
         ...repository,
@@ -526,6 +626,8 @@ test("complete native configuration requires explicit selection and custody with
       for (const retained of [false, true]) {
         await t.test(`${field} invalid case ${index + 1}, retained=${retained}`, async () => {
           await assert.rejects(load(retained), (error: unknown) => {
+            // Configuration consumers rely on the real class as well as public log fields.
+            assert.ok(error instanceof ConfigurationValidationError);
             const failure = startupFailureFields(error);
             assert.equal(failure.code, "DRIVER_CONFIGURATION_INVALID");
             assert.ok("details" in failure);
@@ -602,7 +704,7 @@ test("v1 unknown reserved result remains unresolved without a second acquisition
       /unavailable/,
     );
   }
-  assert.equal(server.opens(), 0);
+  assert.equal(server.preparedOpens(), 0);
   const receipt = await f.state.read((view) =>
     view.repositorySessions.findBrokerReceipt(input.admissionId),
   );

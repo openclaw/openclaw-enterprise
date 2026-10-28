@@ -234,7 +234,7 @@ export function createDeploymentRecovery(
       permissions?.configurationUpdate === true &&
       permissions.configurationSecretsOperate !== false;
     // Without them, the draft's only step is Deploy new version, which it builds only from a
-    // readable Configuration, so "Open version draft" waits for the same read (finding 1944).
+    // readable Configuration, so "Open draft" waits for the same read (finding 1944).
     const openDraftAllowed =
       guidance === "configuration" &&
       configurationAvailable &&
@@ -255,7 +255,7 @@ export function createDeploymentRecovery(
     const nextLabel =
       tab &&
       (canOpenConfiguration && !configurationEditable
-        ? "Open version draft"
+        ? "Open draft"
         : DEPLOYMENT_FAILURE_LINK_LABELS[tab]);
     const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;
     if (recoveryTarget !== actionsFor) {
@@ -277,7 +277,7 @@ export function createDeploymentRecovery(
   }
 
   // Another version's tabs have no reason to read the Configuration, so recovery reads it once
-  // before offering Deploy again or Open version draft. A denial is remembered like the draft's;
+  // before offering Deploy again or Open draft. A denial is remembered like the draft's;
   // any other failure leaves the links hidden for this page view. The draft's own read decides
   // there.
   function checkConfigurationReadable(configurationId: string) {

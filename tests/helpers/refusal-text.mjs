@@ -31,6 +31,10 @@ export const NAMESPACE_CREATE_DENIED =
   "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
 export const INSTALLATION_ADMINISTER_DENIED =
   "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
+// An Agent create or update whose gatewayManagedMode alone needs Installation administer names the
+// field (finding 2691).
+export const GATEWAY_MANAGED_MODE_DENIED =
+  "Not authorized: changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
   "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
@@ -210,9 +214,14 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
 // The Logs tab's refusals use the API's grant words for log text (finding 2599).
 export const LOG_TEXT_DENIED =
   "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
-// The status refusal names only status: the log pane names read_logs itself (finding D763).
+// The status refusal names only status: the log pane names read_logs itself (finding D763). It
+// names only the grant the caller's answers show missing (finding D753); unknown answers, both.
 export const RUNTIME_STATUS_DENIED =
   "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Ask an Installation administrator to grant them.";
+export const RUNTIME_STATUS_OPERATE_DENIED =
+  "Runtime status requires Agent operate on this Agent. Ask an Installation administrator to grant it.";
+export const RUNTIME_STATUS_VERSION_DENIED =
+  "Runtime status requires AgentRevision read on this version. Ask an Installation administrator to grant it.";
 // A version link the page cannot list may name a version that does not exist: the API answers
 // both alike, so the console says either may be true (finding D750).
 export const VERSION_UNAVAILABLE =
@@ -630,6 +639,14 @@ export const WITHDRAWAL_NO_ACTIVE_VERSION =
   "The Agent has no active version, so it has no credential withdrawals. Deploy the Agent first.";
 export const WITHDRAWAL_NOT_FOUND =
   "The Agent's active version has no withdrawal for this credential source: either the version does not use it, or no withdrawal was requested for it.";
+// Every per-Agent network policy answer on an Installation that selects no Sandbox Driver: the
+// policy view, validate, save, apply and turning editing on (D774).
+export const NO_SANDBOX_DRIVER_NETWORK_POLICY =
+  "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules.";
+// A policy denial that names only OpenShell's policy DNS placeholder address, with no record
+// of the host it stood for in the loaded log: the row proposes no rule (D771).
+export const PLACEHOLDER_DESTINATION =
+  "OpenShell logged only a placeholder address for this connection, and the record that names its hostname is not in the loaded log, so this denial proposes no rule. Add a rule for the hostname in Manage rules.";
 export const POLICY_RECOMMENDATIONS_NO_SANDBOX =
   "This version runs without a Sandbox, so it records no network denials to recommend policy from. Policy recommendations need an Agent deployed with a Sandbox Driver such as OpenShell.";
 export const DEVICE_LOGIN_NOT_CONFIGURED =

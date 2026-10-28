@@ -98,11 +98,17 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
 
   // Run real sources outside the checkout so installed workspace packages cannot
   // hide import failures in the host-run command used by First Agent Smoke.
+  // plain-text.ts and gateway-security-defaults.ts have no imports; first-agent loads the Name
+  // rule and the defaults deployment admission fills from them.
+  await mkdir(join(directory, "packages/contracts/src/api"), { recursive: true });
+  await mkdir(join(directory, "packages/occ/src"), { recursive: true });
   for (const path of [
     "package.json",
     "scripts/first-agent.mjs",
     "scripts/first-agent-database.mjs",
     "scripts/first-agent-model.mjs",
+    "packages/contracts/src/api/plain-text.ts",
+    "packages/occ/src/gateway-security-defaults.ts",
     "apps/controller/src",
   ]) {
     await cp(join(repository, path), join(directory, path), { recursive: true });
@@ -123,6 +129,29 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   assert.match(result.stdout, /Usage: node scripts\/first-agent\.mjs/);
   assert.match(result.stdout, /--control-ui/);
+});
+
+test("first-Agent applies the Name rule before local setup", () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  // A missing directory keeps a name that passes the rule from touching a real cluster.
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = "/tmp/oce-first-agent-name-rule-absent";
+  const run = (name) =>
+    spawnSync(process.execPath, [firstAgent, name], {
+      cwd: repository,
+      encoding: "utf8",
+      env,
+      timeout: 10_000,
+    });
+  const accepted = run("🙂".repeat(200));
+  assert.equal(accepted.status, 1);
+  assert.match(accepted.stderr, /Local Kubernetes state or its recorded key was not found/);
+  for (const name of ["🙂".repeat(201), "hello\u2028world", " padded"]) {
+    const refused = run(name);
+    assert.equal(refused.status, 1, name);
+    assert.match(refused.stderr, /line or paragraph separators/, name);
+    assert.doesNotMatch(refused.stderr, /Local Kubernetes state/, name);
+  }
 });
 
 test("first-Agent accepts current Compose-backed Kubernetes development state", async (t) => {
@@ -162,11 +191,24 @@ test("first-Agent requires dedicated Codex for OpenShell before external calls",
 });
 
 test("first-Agent recognizes the prior OpenShell PAT policy only on an identified revision", () => {
-  const values = (sandbox, approvalsReviewer = "user") => ({
+  const record = {
+    name: "first-agent",
+    harness: "codex",
+    sandboxDriver: "openshell",
+    authMethod: "codex_pat",
+  };
+  const settings = (sandbox, approvalsReviewer = "user") => ({
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
-  const configured = values("read-only");
-  const record = { harness: "codex", sandboxDriver: "openshell", authMethod: "codex_pat" };
+  // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
+  // the Gateway security defaults the Configuration leaves unset.
+  const values = (sandbox, approvalsReviewer) => ({
+    ...settings(sandbox, approvalsReviewer),
+    agents: { entries: { main: { identity: { name: record.name } } } },
+    messages: { queue: { allowCollaborativeSteering: false } },
+    tools: { exec: { applyPatch: { workspaceOnly: true } } },
+  });
+  const configured = settings("read-only");
   const matches = (snapshot, priorRevisionId) =>
     firstAgentRevisionValuesMatch(snapshot, configured, record, "rev_saved", priorRevisionId);
 
@@ -196,8 +238,19 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     false,
     "the historical exception must retain unrelated configuration drift checks",
   );
+  const beforeDefaults = {
+    ...settings("danger-full-access"),
+    agents: { entries: { main: { identity: { name: record.name } } } },
+  };
+  assert.equal(matches(beforeDefaults, "rev_saved"), true, "a saved revision from before the fill");
+  assert.equal(matches(beforeDefaults), false, "a new deployment carries the defaults");
+  assert.equal(
+    matches({ ...values("danger-full-access"), messages: { queue: {} } }),
+    false,
+    "a missing default is drift",
+  );
   assert.deepEqual(prior, values("workspace-write"), "reading never rewrites a frozen revision");
-  assert.deepEqual(configured, values("read-only"), "reading never rewrites configured settings");
+  assert.deepEqual(configured, settings("read-only"), "reading never rewrites configured settings");
 });
 
 test("first-Agent flags a prior OpenShell PAT revision and points at --replace-key", () => {
@@ -437,4 +490,32 @@ test("first-Agent refuses an unrecognized saved record without calling it old", 
     await run({ ...current, harness: "codex" }),
     /recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs/,
   );
+});
+
+test("first-Agent does not take the next flag as the prompt or harness", () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = "/tmp/oce-first-agent-prompt-flag-absent";
+  const run = (args) =>
+    spawnSync(process.execPath, [firstAgent, ...args], {
+      cwd: repository,
+      encoding: "utf8",
+      env,
+      timeout: 10_000,
+    });
+  const promptFlag = run(["MyAgent", "--prompt", "--replace-key"]);
+  assert.equal(promptFlag.status, 1);
+  assert.match(promptFlag.stderr, /--prompt requires text/);
+  assert.doesNotMatch(promptFlag.stderr, /Local Kubernetes state/);
+  const controlFlag = run(["MyAgent", "--prompt", "--control-ui"]);
+  assert.equal(controlFlag.status, 1);
+  assert.match(controlFlag.stderr, /--prompt requires text/);
+  const harnessFlag = run(["MyAgent", "--harness", "--prompt", "hello"]);
+  assert.equal(harnessFlag.status, 1);
+  assert.match(harnessFlag.stderr, /--harness requires openclaw or codex/);
+  assert.doesNotMatch(harnessFlag.stderr, /Local Kubernetes state/);
+  const kept = run(["MyAgent", "--prompt", "hello", "--replace-key"]);
+  assert.equal(kept.status, 1);
+  assert.match(kept.stderr, /Local Kubernetes state or its recorded key was not found/);
+  assert.doesNotMatch(kept.stderr, /--prompt requires text/);
 });

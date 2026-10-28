@@ -15,6 +15,7 @@
     "tests/integration/postgres-backend-ownership.test.mjs",
     "tests/integration/postgres-restart-recovery.test.mjs",
     "tests/integration/postgres-agent-deletion-audit.test.mjs",
+    "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.mjs",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
@@ -35,6 +36,7 @@
     "tests/integration/postgres-prepared-token-service.test.ts",
     "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
+    "tests/integration/postgres-prepared-receipt-restart.test.ts",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
     "tests/integration/postgres-protected-git-recipient-custody.test.ts",
     "tests/integration/postgres-prepared-standing-removal.test.ts",
@@ -51,7 +53,8 @@
     "tests/integration/postgres-standing-execution.test.ts",
     "tests/integration/postgres-standing-session-worker.test.ts",
     "tests/integration/postgres-standing-expiry-authority.test.ts",
-    "tests/integration/credential-proxy-withdrawal.test.ts"
+    "tests/integration/credential-proxy-withdrawal.test.ts",
+    "tests/integration/postgres-egress-policy-transaction.test.ts"
   ],
   "files": [
     {
@@ -200,6 +203,12 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
+      "expectedTests": [
+        "an Installation admin controls Gateway managed mode and a deployer applies the saved setting"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-agent-runtime-logs.test.mjs",
       "expectedTests": [
         "runtime log views and downloads persist audit rows before the read and fail closed without them"
@@ -295,6 +304,12 @@
       "path": "tests/integration/postgres-prepared-repository-git-broker.test.mjs"
     },
     {
+      "path": "tests/integration/postgres-prepared-receipt-restart.test.ts",
+      "expectedTests": [
+        "original prepared exchange preserves expiry and committed disposal across receipt authority restart"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-prepared-standing-expiry.test.ts",
       "expectedTests": [
         "prepared standing Git retirement preserves the skew boundary",
@@ -318,13 +333,20 @@
       "path": "tests/integration/postgres-prepared-standing-removal.test.ts",
       "expectedTests": [
         "standing removal orders prepared material and request authorization (removal first)",
-        "standing removal orders prepared material and request authorization (use first)"
+        "standing removal orders prepared material and request authorization (use first)",
+        "an admitted standing prepared broker uses an already-issued send permit and denies the next request"
       ]
     },
     {
       "path": "tests/integration/postgres-prepared-github-git-use.test.mjs",
       "expectedTests": [
         "OpenShell material delivery reads only an existing live revision token without issuing or authorizing use"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-prepared-git-route-selection.test.ts",
+      "expectedTests": [
+        "prepared Git keeps the reserved route and rechecks a withdrawn grant before origin I/O"
       ]
     },
     {
@@ -468,6 +490,46 @@
         "ordinary revision authorization distinguishes State unavailable",
         "ordinary revision authorization distinguishes IAM unavailable",
         "ordinary revision authorization distinguishes backend unavailable"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-egress-policy-transaction.test.ts",
+      "expectedTests": [
+        "memory: static policy transaction - revoke first",
+        "memory: static policy transaction - permit first",
+        "memory: static policy transaction - lost commit reply",
+        "memory: no material policy transaction - revoke first",
+        "memory: no material policy transaction - permit first",
+        "memory: no material policy transaction - lost commit reply",
+        "postgres: static policy transaction - revoke first",
+        "postgres: static policy transaction - permit first",
+        "postgres: static policy transaction - lost commit reply",
+        "postgres: no material policy transaction - revoke first",
+        "postgres: no material policy transaction - permit first",
+        "postgres: no material policy transaction - lost commit reply",
+        "postgres: supported revoke waits for the final authorization transaction",
+        "postgres: native send reads policy after a pending withdrawal commits",
+        "directory: fresh final allow through authenticated exchange",
+        "directory: fresh final deny through authenticated exchange",
+        "directory: fresh final unavailable through authenticated exchange",
+        "callback: fresh final allow through authenticated exchange",
+        "callback: fresh final deny through authenticated exchange",
+        "callback: fresh final unavailable through authenticated exchange",
+        "memory: no material slow final runtime verification precedes the short send window",
+        "memory: no material slow final runtime verification does not block DELETE",
+        "postgres: static slow final runtime verification precedes the short send window",
+        "postgres: static slow final runtime verification does not block DELETE",
+        "postgres: external directory withdrawal after final read can race receipt commit",
+        "a short send window expiring after receipt commit cannot be renewed or replayed",
+        "final runtime verification false preserves refusal and audit meaning",
+        "final runtime verification unavailable preserves refusal and audit meaning",
+        "final runtime verification unknown preserves refusal and audit meaning",
+        "Compute placement ignores a resolver's own call through authenticated exchange",
+        "final placement binds the original Compute receiver",
+        "final placement binds the original Compute method",
+        "final placement binds the original Credential Proxy method",
+        "authorization throw before mint fences a retained callback",
+        "authorization throw after mint fences a retained callback"
       ]
     }
   ]

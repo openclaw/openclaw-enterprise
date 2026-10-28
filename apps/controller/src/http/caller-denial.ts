@@ -49,18 +49,28 @@ export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's 
  *   so an unknown ID and one the caller cannot read get the same answer.
  * - `qualifier` adds why the grant matters here: it is checked on the Agent's current Harness
  *   authentication even by an update that replaces it (finding D763), or native admin is off on
- *   this Installation, so the grant alone would not open it (finding D762).
+ *   this Installation, so the grant alone would not open it (finding D762). For
+ *   `gateway_managed_mode` the text names the one field that needs Installation administer
+ *   (finding 2691).
  */
 export function callerDenialMessage(
   authorization: { readonly action: PermissionAction; readonly resource: ResourceRef },
   requested: (value: string) => boolean = () => false,
-  qualifier?: "current_harness_auth" | "native_admin_off" | "administrator_restricted",
+  qualifier?:
+    | "current_harness_auth"
+    | "native_admin_off"
+    | "gateway_managed_mode"
+    | "administrator_restricted",
 ): string {
   const { action, resource } = authorization;
   const kind = KIND_LABELS[resource.kind] ?? resource.kind;
   const named = (id: string | undefined) =>
     id !== undefined && SHOWN_ID.test(id) && requested(id) ? id : undefined;
   if (resource.kind === "installation") {
+    if (qualifier === "gateway_managed_mode") {
+      // Only this field of an Agent create or update needs the grant (finding 2691).
+      return `${NAMED_DENIAL_PREFIX} changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.`;
+    }
     return action === "administer"
       ? `${NAMED_DENIAL_PREFIX} this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.`
       : `${NAMED_DENIAL_PREFIX} this needs Installation ${action}. ${ASK}`;

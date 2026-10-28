@@ -89,7 +89,7 @@ ordered version history and at most one selected version, identified by
 readiness. See [Agent revisions](../../guides/topics/agent-revisions.md).
 
 The Agent revision records the source `configurationId`, `configurationKind`, and
-`configurationGeneration`, its complete saved native `configuration`
+`configurationGeneration`, [`gatewayManagedMode`](../agent-native-admin.md#gateway-managed-mode), its complete saved native `configuration`
 document, the approved Harness identity/version/mode, selected Compute identity,
 nullable `backendId`, and `harnessAuth` with its resolved internal source snapshot.
 The auth snapshot contains no credential bytes; public Agent revisions omit private
@@ -105,6 +105,11 @@ therefore records the source generation and the effective document after that
 transformation. Its SandboxDriver selection and the Agent's stable service
 principal remain internal; the current HTTP Agent revision schema omits them.
 See [SandboxDriver](../drivers/sandbox.md).
+
+After its checks pass, deployment saves the Agent `name` as the sole roster
+entry's `identity.name`, under `agents.entries.main` when the roster is omitted.
+The native admin UI shows it, up to 50 characters, instead of `Assistant`. OCC
+keeps a name the Configuration sets and does not name entries of a larger roster.
 
 The bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy` requires a
 `ready` Namespace, exact-Agent `deploy`, exact
@@ -286,8 +291,7 @@ finished. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the immutable
-Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
+Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
 Agent revision nor calls destructive version retirement. Repeated stop requests
 converge safely, and one Agent's stop does not affect siblings.
 

@@ -49,12 +49,14 @@ export class AuthorizationDeniedError extends Error {
 /**
  * The caller's own denial where the named grant needs a reason to make sense: an Agent update
  * checks the grant on the Agent's current Harness authentication even when it replaces it
- * (finding D763), and native admin is off on this Installation, so the grant alone would not
- * open it (finding D762). It keeps the wrapped denial's evidence, grant and checked principal,
- * so its audit record is the same; HTTP adds only the reason to the caller's denial text.
+ * (finding D763), native admin is off on this Installation, so the grant alone would not
+ * open it (finding D762), and only the request's gatewayManagedMode needs Installation
+ * administer, so the denial names that field (finding 2691). It keeps the wrapped denial's
+ * evidence, grant and checked principal, so its audit record is the same; HTTP adds only the
+ * reason to the caller's denial text.
  */
 export class QualifiedAuthorizationDeniedError extends AuthorizationDeniedError {
-  readonly qualifier: "current_harness_auth" | "native_admin_off";
+  readonly qualifier: "current_harness_auth" | "native_admin_off" | "gateway_managed_mode";
 
   constructor(
     denial: AuthorizationDeniedError,

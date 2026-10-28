@@ -493,7 +493,7 @@ test(
         name: `${label}-${randomUUID()}`,
         configurationId: configuration.data.id,
         ...(runtimeImage === undefined
-          ? {}
+          ? { gatewayManagedMode: false }
           : {
               initialWorkspaceFiles: {
                 "USER.md": `Initial ${label} user directives\n`,

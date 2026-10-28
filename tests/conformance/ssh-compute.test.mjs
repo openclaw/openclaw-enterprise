@@ -71,6 +71,7 @@ function revision(driver, number = 1, agentId = "agent-ssh-1", configuration = {
     namespaceId: tenant.id,
     agentId,
     revision: number,
+    gatewayManagedMode: false,
     backendId: null,
     harnessAuth: { method: "runtime" },
     configurationId: `configuration-${agentId}`,
@@ -1095,12 +1096,21 @@ test("SSH activation keeps its own failure first when the lifecycle cleanup also
   assertCleanupFailure(error, /snapshot|ownership/i, [/lifecycle hook beforeWorkloadStop failed/]);
 });
 
-test("SSH revisions fail closed on unbound identities, unsupported topology, sandbox and Secret delivery", async (t) => {
+test("SSH revisions fail closed on invalid identities and unsupported workload features", async (t) => {
   const f = await fixture(t);
   const rev = revision(f.driver);
   await assert.rejects(f.driver.prepareRevision(rev), /bound Namespace and Agent/);
   await f.driver.ensureNamespace(tenant);
   bind(f.driver, rev);
+  const managed = { ...rev, gatewayManagedMode: true };
+  const unsupportedManaged = {
+    name: "ConfigurationHarnessError",
+    message: "Agent setting gatewayManagedMode is not supported on SSH Compute.",
+  };
+  const beforeManagedMode = f.calls.length;
+  await assert.rejects(f.driver.prepareRevision(managed), unsupportedManaged);
+  await assert.rejects(f.driver.activateRevision(managed), unsupportedManaged);
+  assert.equal(f.calls.length, beforeManagedMode);
   for (const harnessAuth of [undefined, { method: "runtime", source: {} }]) {
     await assert.rejects(f.driver.prepareRevision({ ...rev, harnessAuth }), /operator-managed/);
   }

@@ -5,7 +5,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 
 ## Start the profile
 
-Install Node.js 24+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
+Install Node.js 24.22.1+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
 kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
@@ -183,8 +183,8 @@ to other host users. The helper preserves the default kubeconfig and context.
 For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
 changing the API port alone leaves PostgreSQL on port 55432. Each Agent Gateway
-requests 1792 MiB with a 3 GiB limit, and each dedicated Codex Harness requests
-768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 2.5 GiB; size
+requests 2560 MiB with a 4 GiB limit, and each dedicated Codex Harness requests
+768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB; size
 the local engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 

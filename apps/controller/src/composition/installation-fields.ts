@@ -1,5 +1,6 @@
 // Shared Installation value validation. File loading, environment access and
 // Driver binding remain in their owning composition modules.
+import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
@@ -105,8 +106,10 @@ export function rejectNativeRepositoryPath(
     default:
       throw new Error("Invalid native repository diagnostic.");
   }
-  const error = new InstallationFieldError([Object.freeze(detail)]);
-  Object.freeze(error.details);
+  // Startup consumers rely on configuration-error identity as well as safe details.
+  const error = new ConfigurationValidationError([Object.freeze(detail)]);
+  Object.freeze(error.error.details);
+  Object.freeze(error.error);
   throw Object.freeze(error);
 }
 

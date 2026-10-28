@@ -16,6 +16,7 @@ import {
   createKubernetesInstallationConfiguration,
   kubectlArguments as buildKubectlArguments,
   kubernetesHash as hash,
+  productionGatewayMemoryLimit,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
 import {
@@ -247,7 +248,8 @@ test(
         cluster: `production-tui-${suffix}`,
       });
       // The native TUI runs as a second OpenClaw process inside the gateway container.
-      configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
+      configuration.drivers.compute.configuration.resources.gateway.limits.memory =
+        productionGatewayMemoryLimit;
       await writeFile(join(directory, "installation.json"), JSON.stringify(configuration), {
         mode: 0o600,
       });

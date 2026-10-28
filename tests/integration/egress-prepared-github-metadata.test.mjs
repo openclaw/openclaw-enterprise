@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts";
+import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
@@ -18,12 +18,10 @@ import {
   fixtureAppId,
 } from "../fixtures/repository-credentials/github.mjs";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import {
-  createGitHubPreparationOwner,
-  preparationIssuerAuthority,
-  createGitHubWarmReader,
-  createGitHubKeyOwner,
-} from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
+import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts";
+import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/grants.ts";
+import { createGitHubWarmReader } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-reader.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 
 // Real source/Agent/binding/deployment APIs, IAM, protected forwarder, preparation owner,
 // scoped GitHub issuance, HTTPS GET and actual last trailer. The test plays the enrolled supervisor and the store is in-memory;
@@ -197,6 +195,32 @@ test("consented protected repository read uses only exact, already prepared meta
     "committed",
   );
   assert.equal(gh.issuesOfTokens.length, 1);
+
+  // A replacement grant callback must not participate in an already resolved exchange,
+  // even when it would return the same authorized grant.
+  const providers = f.egress.sourceControl.providers;
+  const providerIndex = providers.findIndex(
+    (provider) => provider.ref.id === githubMetadataProvider.ref.id,
+  );
+  const registered = providers[providerIndex];
+  const selected = { ...registered };
+  providers[providerIndex] = selected;
+  try {
+    const captured = captureMetadata(f);
+    const { ready } = await f.resolve(captured);
+    assert.ok(ready);
+    let replacementCalls = 0;
+    selected.normalizeGrant = function (...args) {
+      replacementCalls += 1;
+      return Reflect.apply(registered.normalizeGrant, this, args);
+    };
+    const result = await f.authorize(f.permitRequest(captured, ready));
+    assert.ok(result.refused);
+    assert.equal(result.allowed, undefined);
+    assert.equal(replacementCalls, 0);
+  } finally {
+    providers[providerIndex] = registered;
+  }
 
   // The registry lowercases the repository; GitHub answers with its own spelling, and the
   // response releases the admitted name (finding 2239). Another name is never released.

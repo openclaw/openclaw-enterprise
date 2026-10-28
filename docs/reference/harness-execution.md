@@ -274,7 +274,7 @@ explains exact ordering and failure handling.
 Ordinary thread resume permits an OpenClaw-owned remote connection after
 ownership and non-running-thread checks. Manual adoption requires local stdio
 and an OpenClaw-owned Codex home
-([runtime checks](https://github.com/openclaw/openclaw/blob/f8386bc7df0a6c9eda7a28ae81943c5c06a414ff/extensions/codex/src/app-server/thread-lifecycle-adoption.ts#L174-L264)).
+([runtime checks](https://github.com/openclaw/openclaw/blob/9cc4450e9d79a993a51dc6fa362468f46c6f1819/extensions/codex/src/app-server/thread-lifecycle-adoption.ts#L187-L300)).
 
 Retained Gateway state and Harness rollouts do not guarantee session recovery
 or continuation of interrupted turns. OCE's end-to-end dedicated restart

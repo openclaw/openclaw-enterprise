@@ -1284,6 +1284,7 @@ test("production embedded replacements preserve their active Service across fail
     configurationId: `cfg_production-${harness.mode}-cutover`,
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       createHarnessConfiguration(harness.id, "gpt-4.1"),

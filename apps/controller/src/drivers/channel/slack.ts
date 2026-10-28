@@ -419,7 +419,7 @@ export class SlackChannelDriver implements ChannelDriver {
         }
       }
       const nextCursor = asRecord(reply.response_metadata)?.next_cursor;
-      if (nextCursor !== undefined && typeof nextCursor !== "string") {
+      if (nextCursor != null && typeof nextCursor !== "string") {
         throw new ChannelDirectoryError("invalid_response");
       }
       cursor = nextCursor ?? "";

@@ -9,10 +9,12 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import {
   CredentialProxy,
+  STREAM_LEASE_RECHECK_MS,
   type EgressAuthorityPorts,
 } from "../../packages/occ/src/credential-proxy.ts";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import { deferred } from "../helpers/deferred.ts";
 import { syntheticDispatchFixture } from "../helpers/static-egress.mjs";
 
 async function exchange(t: TestContext, key: string | undefined) {
@@ -61,19 +63,16 @@ async function exchange(t: TestContext, key: string | undefined) {
   };
   let captured: CapturedEgressUse | undefined;
   let check = ports.check;
+  const begin = receipts.begin.bind(receipts);
+  receipts.begin = async (sender, attempt) => {
+    const begun = await begin(sender, attempt);
+    afterBegin?.();
+    return begun;
+  };
   const proxy = new CredentialProxy({
     ...ports,
     installation: async () => installation,
-    receipts: {
-      begin: async (sender, attempt) => {
-        const begun = await receipts.begin(sender, attempt);
-        afterBegin?.();
-        return begun;
-      },
-      authorize: (...args) => receipts.authorize(...args),
-      record: (...args) => receipts.record(...args),
-      observe: (...args) => receipts.observe(...args),
-    },
+    receipts,
     check: (...args) => {
       checks += 1;
       return check(...args);
@@ -272,6 +271,46 @@ test("exchange renewal preserves progress while bounded by original peer expiry"
   assert.equal(await e.claim(), undefined);
 });
 
+test("exchange bounds unavailable stream policy checks without extending authorization", async (t) => {
+  for (const previouslyRenewed of [false, true]) {
+    await t.test(
+      previouslyRenewed ? "after a successful renewal" : "on first renewal",
+      async (t) => {
+        const e = await exchange(t, "key-a");
+        const ready = await e.ready();
+        assert.equal((await e.send(ready)).kind, "allow");
+        const authorizedDeadline = previouslyRenewed
+          ? (await e.renew())?.renewBy
+          : e.f.request.deadlineAt;
+        assert.ok(authorizedDeadline);
+        if (previouslyRenewed) {
+          e.f.advance(STREAM_LEASE_RECHECK_MS);
+        }
+        e.setCheck(async () => ({ kind: "unavailable", code: "authority" }));
+        const checksBeforeOutage = e.checks;
+        for (let bytes = 1; bytes <= 8; bytes += 1) {
+          assert.equal((await e.renew(bytes))?.renewBy, authorizedDeadline);
+        }
+        assert.equal(e.checks - checksBeforeOutage, 1, "progress cannot amplify an outage");
+
+        e.setCheck(e.check);
+        e.f.advance(STREAM_LEASE_RECHECK_MS - 1);
+        assert.equal((await e.renew(9))?.renewBy, authorizedDeadline);
+        assert.equal(e.checks - checksBeforeOutage, 1);
+        e.f.advance(1);
+        assert.equal((await e.renew(10))?.renewBy, e.pinned.expiresAt);
+        assert.equal(e.checks - checksBeforeOutage, 2, "authority recovery is checked on progress");
+
+        // The retry cadence never suppresses the final decision to release bytes.
+        e.setCheck(async () => ({ kind: "denied", code: "scope_mismatch" }));
+        assert.equal(await e.claim(), ready.handle);
+        assert.equal(await e.protect(ready.handle), undefined);
+        assert.equal(e.checks - checksBeforeOutage, 3);
+      },
+    );
+  }
+});
+
 test("exchange renewal respects a shorter fresh peer expiry", async (t) => {
   for (const caller of ["claim", "renew"] as const) {
     for (const elapsed of [2999, 3000, 3001]) {
@@ -442,14 +481,6 @@ test("exchange send snapshots authenticated peers across receipt reservation", a
     }
   }
 });
-
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 test("exchange reserves simultaneous response phases without discarding the winner", async (t) => {
   for (const first of ["claim", "renew"] as const) {

@@ -454,12 +454,14 @@ test("first draft deployment provisions generated credentials and later revision
 
 test("Kubernetes without managed runtime credentials admits a draft deployment", async () => {
   const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
-  const { namespace, agent } = await fixture.bootstrapAgent();
+  const { agent, agentPath } = await fixture.bootstrapAgent();
+  // This credential-admission fixture has no Gateway runtime to apply managed mode.
+  const updated = await fixture.request("PATCH", agentPath, {
+    body: { configurationId: agent.configurationId, gatewayManagedMode: false },
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
 
-  const admitted = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
+  const admitted = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
   assert.equal(admitted.data.revision, 1);
 });

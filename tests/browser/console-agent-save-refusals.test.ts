@@ -674,6 +674,10 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
   );
   await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
+    await page
+      .getByRole("tablist", { name: "Workspace file", exact: true })
+      .getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) })
+      .click();
     await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
     const editor = page.getByLabel(name, { exact: true });
     assert.equal(await editor.inputValue(), `# ${name}\n`);
@@ -707,7 +711,7 @@ const STOP_REFUSED = stopRefused("this Agent");
 async function expectOperateControls(page: Page, allowed: boolean) {
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRow.waitFor({ state: allowed ? "visible" : "hidden" });
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Deployment", exact: true }).click();
   const run = page.getByRole("button", { name: "Run diagnostics for this version", exact: true });
   await run.waitFor();
   const denial = page.getByText(DIAGNOSTICS_DENIED, { exact: true });
@@ -780,7 +784,8 @@ async function operateScenario(t: TestContext, name: string) {
       if (answered) {
         await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
         for (const file of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
-          await page.getByText(`${file} loaded.`, { exact: true }).waitFor();
+          // All files load before retention, including the editors hidden by the picker.
+          await page.getByText(`${file} loaded.`, { exact: true }).waitFor({ state: "attached" });
         }
       }
     },
@@ -915,7 +920,9 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
     const preview = reply === "an incomplete preview";
     const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "policy");
     await login(page, fixture, url.href);
-    await page.getByRole("button", { name: "Remove Network rules 1", exact: true }).click();
+    await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+    await page.getByLabel("Actions for network rule 1", { exact: true }).click();
+    await page.getByRole("button", { name: "Remove rule", exact: true }).click();
     const refresh = page.getByRole("button", { name: "Refresh policy", exact: true });
 
     // The operator removes the grant. Let the controller validate or commit that removal, then
@@ -942,7 +949,10 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
         .getByRole("alert")
         .filter({ hasText: "could not read the validated rules" })
         .waitFor();
-      assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 0);
+      assert.equal(
+        await page.getByRole("button", { name: "Save for later", exact: true }).count(),
+        0,
+      );
       assert.equal(pathRequests(requests, "PUT", base).length, 0);
       assert.equal(await review.isEnabled(), true);
     } else {
@@ -971,7 +981,7 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
       assert.equal(await alert.isVisible(), true, "a pre-save policy read cannot resolve the save");
       assert.equal(await review.count(), 0);
       assert.equal(
-        await page.getByRole("button", { name: "Apply saved policy to current revision" }).count(),
+        await page.getByRole("button", { name: /^(Apply saved rules|Retry application)$/ }).count(),
         0,
       );
       await refresh.click();

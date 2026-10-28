@@ -7,10 +7,10 @@ idiomatic_version_file_enable_tools = ["pnpm"]
 
 [tools]
 # Keep CI-covered pins aligned with the workflow Node version and setup-tools.sh.
-node = "24.16.0"
+node = "24.22.1"
 python = "3.14.7"
-go = "1.27.1"
-gh = "2.100.0"
+go = "1.27.3"
+gh = "2.103.2"
 actionlint = "1.7.7"
 helm = "3.19.2"
 k3d = "5.8.3"

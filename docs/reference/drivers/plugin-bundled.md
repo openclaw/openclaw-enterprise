@@ -151,6 +151,8 @@ owned by `diffs`; adding another entry requires verified package and tool
 identities. Ambiguous global tool names or partial denials that would also deny
 an allowed sibling are rejected.
 
+Dedicated deployments also enforce the [Gateway tool policy](../configuration.md#gateway-tool-policy).
+
 The Codex app default also applies to actions added later; it does not require a
 tool inventory. `write_actions` asks for review when the native action lacks
 `readOnlyHint: true`, including when the hint is missing. Omitting
@@ -279,8 +281,8 @@ settings. It refreshes the native registry, reapplies the requested policy to it
 private writable configuration, and checks plugin ID, package name,
 runtime/install version, recorded integrity, and that the runtime source resolves
 within the resolved install path. This requires an OpenClaw runtime that supports
-`--no-enable`; the currently pinned `2026.9.1` image must be updated before this
-preparation path can ship. There is no fallback to installation that changes policy.
+`--no-enable`. Unsupported runtimes fail preparation; installation cannot
+fall back to changing policy.
 Identity, integrity, or effective-policy verification failure prevents the
 replacement gateway from starting. A confirmed installation rejection can instead
 disable that optional selection and produce a warning. The previous revision

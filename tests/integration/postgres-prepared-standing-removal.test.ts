@@ -1,7 +1,27 @@
 import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
+import { channel } from "node:diagnostics_channel";
+import { once } from "node:events";
+import type { ClientRequest } from "node:http";
+import { dirname, join } from "node:path";
+import type { TLSSocket } from "node:tls";
+import { Worker } from "node:worker_threads";
+import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
+import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/credentials/receipt-client.ts";
+import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
+import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import {
+  controlRequest,
+  createLoopbackServiceConfiguration,
+  gatewayRequest,
+} from "../fixtures/repository-credentials/service.mjs";
+import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
 import test from "node:test";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
+import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 
 for (const first of ["removal", "use"] as const) {
@@ -130,3 +150,221 @@ for (const first of ["removal", "use"] as const) {
     },
   );
 }
+
+test(
+  "an admitted standing prepared broker uses an already-issued send permit and denies the next request",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const resources = createTestResourceScope(t);
+    let useSocket = "";
+    const fixtureOptions = {
+      standingApproval: true,
+      openBroker(input: { socketPath: string }) {
+        useSocket = input.socketPath;
+      },
+    };
+    const f = await fixture(resources, fixtureOptions);
+    const approval = f.approval!;
+    const { namespaceId, agentId } = f.revision;
+    const revisionId = f.revision.id;
+    const key = { namespaceId, agentId, revisionId };
+    // Close the helper's synthetic first session. Its replacement opens and binds on the real control socket.
+    await disposeBrokerSession(f);
+    const executionId = randomUUID();
+    const fingerprint = createHash("sha256").update(executionId).digest("hex");
+    await f.state.transact((u) =>
+      u.repositorySessions.recordStandingExecution(key, { executionId, fingerprint }),
+    );
+    const admissionId = Date.now() + "-" + randomUUID();
+    const input = {
+      namespaceId,
+      repositoryRef: f.binding.repositoryRef,
+      profile: f.binding.profile,
+      durationSeconds: 3600,
+      deadlineWallMs: f.deadlineWallMs,
+      expectedBinding: f.binding.grant,
+      preparedOnly: true as const,
+    };
+    await f.state.transact((u) =>
+      u.repositorySessions.createAttempt(
+        sessionAttempt(f.revision, {
+          ...key,
+          admissionId,
+          durationSeconds: input.durationSeconds,
+          brokerProtocol: 3,
+        }),
+      ),
+    );
+    const controlSocket = join(dirname(useSocket), "control.sock");
+    const receipt = await startRepositoryReceiptServer({
+      state: f.state,
+      controlSocket,
+      driverId: f.revision.repositoryCredentials.driver.id,
+      implementation: "github",
+      backendId: f.registry.backendId,
+    });
+    resources.after(() => receipt.close());
+    let firstGitAuthorization = "";
+    let lastGitAuthorization = "";
+    let originRequests = 0;
+    const originOptions = {
+      tls: f.gh.tls,
+      authorize(auth: string | undefined, boundary: "git") {
+        if (!auth) {
+          return false;
+        }
+        firstGitAuthorization ||= auth;
+        lastGitAuthorization = auth;
+        return f.gh.authorize(auth, boundary);
+      },
+      observeRequest() {
+        originRequests++;
+      },
+    };
+    const origin = await startGitSmartHttpFixture(t, originOptions);
+    const gitOrigin = origin.origin;
+    const base = await createLoopbackServiceConfiguration(resources);
+    const config = { ...base, gateway: { ...base.gateway, controlSocket } };
+    const clock = createSystemClock();
+    const factory = createPreparedGitHubRegistryFactory({
+      registry: f.registry,
+      socketPath: useSocket,
+      clock,
+      gatewayOrigin: config.gateway.publicOrigin,
+      gitOrigin,
+      limits: config.limits,
+    });
+    const { listeners } = await startServiceListeners(resources, {
+      config,
+      factory,
+      clock,
+      tls: f.gh.tls,
+      upstreamOrigins: [gitOrigin],
+      log: undefined,
+      providerQueue: undefined,
+    });
+    const opened = await controlRequest(
+      controlSocket,
+      "POST",
+      "/v1/sessions",
+      { ...input, durableAdmission: true },
+      { "x-admission-id": admissionId },
+    );
+    assert.equal(opened.status, 201);
+    const sessionId = opened.body.session.sessionId;
+    await f.state.transact(async (u) =>
+      assert.ok(
+        await u.repositorySessions.advanceAttempt({
+          admissionId,
+          expectedPhase: "opening",
+          phase: "open",
+          sessionId,
+          updatedAt: new Date().toISOString(),
+        }),
+      ),
+    );
+    const row = await f.state.read((v) => v.repositorySessions.findBrokerReceipt(admissionId));
+    assert.ok(row?.state === "active" && row.sessionId === sessionId && row.generation);
+    const decision = new RepositoryReceiptClient(controlSocket, row.generation);
+    const authorize = () => decision.authorizeStanding(admissionId, sessionId, input);
+    await authorize();
+    const refusal = { message: "RECEIPT_UNAVAILABLE" };
+    await assert.rejects(decision.authorizeStanding(admissionId, randomUUID(), input), refusal);
+    await assert.rejects(
+      decision.authorizeStanding(admissionId, sessionId, {
+        ...input,
+        expectedBinding: { ...input.expectedBinding, grantId: randomUUID() },
+      }),
+      refusal,
+    );
+    await assert.rejects(
+      new RepositoryReceiptClient(controlSocket, randomUUID()).authorizeStanding(
+        admissionId,
+        sessionId,
+        input,
+      ),
+      refusal,
+    );
+    const uses = async () =>
+      (
+        await f.pool.query(
+          "SELECT count(*)::int AS n FROM occ.prepared_repository_git_uses WHERE admission_id=$1",
+          [admissionId],
+        )
+      ).rows[0].n;
+    const get = () =>
+      gatewayRequest(
+        { config, listeners, tls: f.gh.tls, opened: opened.body },
+        "/fixture/repository.git/info/refs?service=git-upload-pack",
+        {
+          headers: {
+            authorization:
+              "Basic " + Buffer.from("gateway-session:" + opened.body.bearer).toString("base64"),
+          },
+        },
+      );
+    await prepare(f);
+    assert.equal((await get()).status, 200);
+    assert.equal(originRequests, 1);
+    assert.equal(await uses(), 1);
+    // Wait for client-side certificate verification, and hold the same JavaScript stack before
+    // the sender can flush headers. The separate worker commits through the actual State owner.
+    const shared = new SharedArrayBuffer(4);
+    const outcome = new Int32Array(shared);
+    const worker = new Worker(
+      new URL("../fixtures/prepared-standing-withdraw-worker.ts", import.meta.url),
+      { workerData: { approval, admissionId, shared } },
+    );
+    resources.after(() => worker.terminate());
+    assert.deepEqual(await once(worker, "message"), ["ready"]);
+    const workerExit = once(worker, "exit");
+    let observedGate = 0;
+    let verifiedBeforeWrite = false;
+    let withdrawalCommittedBeforeWrite = false;
+    const created = channel("http.client.request.created");
+    const observe = (event: unknown) => {
+      const { request } = event as { request: ClientRequest };
+      request.once("socket", (socket: TLSSocket) => {
+        socket.once("secureConnect", () => {
+          if (socket.remotePort !== Number(new URL(gitOrigin).port)) {
+            return;
+          }
+          observedGate++;
+          verifiedBeforeWrite = socket.authorized && !request.headersSent && originRequests === 1;
+          worker.postMessage("withdraw");
+          Atomics.wait(outcome, 0, 0, 2500);
+          withdrawalCommittedBeforeWrite = Atomics.load(outcome, 0) === 1 && !request.headersSent;
+        });
+      });
+    };
+    created.subscribe(observe);
+    let pendingStatus;
+    try {
+      pendingStatus = (await get()).status;
+    } finally {
+      created.unsubscribe(observe);
+    }
+    assert.equal(observedGate, 1);
+    assert.equal(verifiedBeforeWrite, true);
+    assert.equal(withdrawalCommittedBeforeWrite, true);
+    assert.deepEqual(await workerExit, [0]);
+    assert.equal(pendingStatus, 200);
+    await assert.rejects(authorize(), refusal);
+    assert.equal(originRequests, 2);
+    const freshStatus = (await get()).status;
+    assert.equal(freshStatus, 503);
+    assert.equal(originRequests, 2);
+    assert.equal(await uses(), 2);
+    assert.ok(
+      firstGitAuthorization === lastGitAuthorization,
+      "the same prepared token authenticates both requests",
+    );
+    const secret = Buffer.from(firstGitAuthorization.slice(6), "base64").toString().split(":")[1];
+    const providerStatus = await f.providerStatus(secret);
+    assert.equal(providerStatus, 200);
+    assert.equal(f.gh.issuesOfTokens.length, 1);
+    t.diagnostic(
+      `standing admission=${opened.status}; verified TLS gates=${observedGate}; origin requests=${originRequests}; committed uses=${await uses()}; pending=${pendingStatus}; fresh=${freshStatus}; provider=${providerStatus}; issuances=${f.gh.issuesOfTokens.length}`,
+    );
+  },
+);

@@ -169,6 +169,24 @@ test("credential source boundary rejects new raw capabilities in the real source
 
   const cases = [
     [
+      "repository parser cannot construct arbitrary configuration diagnostics",
+      'import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";',
+      /unreviewed runtime import/,
+      installation,
+    ],
+    [
+      "shared fields reject adjacent contract symbols",
+      'import { requireConfiguration } from "@openclaw-enterprise/contracts";',
+      /unreviewed shared field validation/,
+      sharedFields,
+    ],
+    [
+      "shared fields cannot re-export the configuration error constructor",
+      "export { ConfigurationValidationError };",
+      /raw I\/O binding cannot be re-exported/,
+      sharedFields,
+    ],
+    [
       "repository parser cannot construct arbitrary public field errors",
       'import { InstallationFieldError } from "../../../composition/installation-fields.ts";',
       /unreviewed shared field validation/,

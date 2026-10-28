@@ -35,6 +35,7 @@ const sourceExtensions = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", 
 // Adding an I/O owner or member requires security review; see the owning test guide.
 const reviewedImports = {
   [sharedConfigurationFields]: {
+    "@openclaw-enterprise/contracts": ["ConfigurationValidationError"],
     "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
     "node:path": ["isAbsolute"],
   },

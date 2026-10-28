@@ -31,6 +31,22 @@ await writeFile(
   }),
   { mode: 0o600 },
 );
+// One deadline, set by the test from its own exec timeout, bounds the whole proof.
+// Each CLI call and wait may use what is left of it. A `gateway call` boots the
+// OpenClaw CLI beside the Gateway and the node's own boot, and on a CPU-contended CI
+// runner one took over its former fixed 30 s (finding 2673). A hang still fails
+// before the test's exec timeout, naming the call.
+const budgetMs = Number(process.env.WORKSPACE_PROOF_BUDGET_MS);
+assert.ok(Number.isSafeInteger(budgetMs) && budgetMs > 0, "WORKSPACE_PROOF_BUDGET_MS is required.");
+const deadline = Date.now() + budgetMs;
+let slowestCallMs = 0;
+function remainingMs(step) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new Error(`The workspace node proof used its ${budgetMs} ms before ${step}.`);
+  }
+  return remaining;
+}
 const nodeEnvironment = {
   PATH: process.env.PATH,
   HOME: "/home/node",
@@ -42,10 +58,12 @@ await execute(
   [cli, "setup", "--baseline", "--workspace", "/home/node/workspace", "--json"],
   {
     env: nodeEnvironment,
-    timeout: 60_000,
+    timeout: remainingMs("setup"),
   },
 );
 async function call(method, params = {}) {
+  const startedAt = Date.now();
+  const timeout = remainingMs(method);
   const { stdout } = await execute(
     process.execPath,
     [
@@ -61,8 +79,16 @@ async function call(method, params = {}) {
       JSON.stringify(params),
       "--json",
     ],
-    { timeout: 30_000, maxBuffer: 1_000_000 },
-  );
+    { timeout, maxBuffer: 1_000_000 },
+  ).catch((error) => {
+    if (error.killed) {
+      throw new Error(`gateway call ${method} did not return within the ${timeout} ms left.`, {
+        cause: error,
+      });
+    }
+    throw error;
+  });
+  slowestCallMs = Math.max(slowestCallMs, Date.now() - startedAt);
   return JSON.parse(stdout);
 }
 const setup = await call("device.pair.setupCode", {
@@ -83,7 +109,7 @@ async function stop() {
   clearTimeout(killTimer);
 }
 async function waitForDisconnect(nodeId) {
-  for (let attempt = 0; attempt < 20; attempt++) {
+  while (Date.now() < deadline) {
     const result = await call("node.list");
     if (!result.nodes.some((item) => item.nodeId === nodeId && item.connected)) {
       return;
@@ -96,7 +122,7 @@ async function waitForDisconnect(nodeId) {
 // delivery-uncertain, hello-ok, confirmed), so wait for the confirmation.
 async function waitForConfirmedSetup(nodeId) {
   let status;
-  for (let attempt = 0; attempt < 20; attempt++) {
+  while (Date.now() < deadline) {
     status = await call("device.pair.setupStatus", { setupId: setup.setupId });
     if (status.completion) {
       assert.equal(status.completion.deviceId, nodeId);
@@ -110,7 +136,7 @@ async function waitForConfirmedSetup(nodeId) {
   throw new Error(`Setup completion was never confirmed: ${JSON.stringify(status)}`);
 }
 async function waitForNode(expectedId) {
-  for (let attempt = 0; attempt < 20; attempt++) {
+  while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`Node exited: ${childLog}`);
     }
@@ -170,7 +196,12 @@ try {
   const reconnected = await call("device.pair.setupStatus", { setupId: setup.setupId });
   assert.deepEqual(reconnected.completion, completion);
   console.log(
-    JSON.stringify({ commands, sameIdentityAfterRestart: true, singleBootstrapCompletion: true }),
+    JSON.stringify({
+      commands,
+      sameIdentityAfterRestart: true,
+      singleBootstrapCompletion: true,
+      slowestCallMs,
+    }),
   );
 } finally {
   await stop();

@@ -262,7 +262,11 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
   // Once read is granted, the page Refresh shows the version: the tab does not keep the denial.
   fixture.policy.restrictions.length = 0;
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1/ })
+    .waitFor({ state: "attached" });
   assert.equal(await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).count(), 0);
 });
 
@@ -313,12 +317,12 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
   assert.equal(await page.getByText(/does not exist/).count(), 0);
   // The older page is still unread, so the list is incomplete.
   assert.equal(
-    await page.getByRole("button", { name: "Show older versions", exact: true }).count(),
+    await page.getByRole("button", { name: "Load older versions", exact: true }).count(),
     paged ? 1 : 0,
   );
 
   // The draft entry says the same: the accepted deployment, not v1's failure, and Stop stays.
-  await page.getByRole("button", { name: "Open version draft", exact: true }).click();
+  await page.getByRole("button", { name: "Open draft", exact: true }).click();
   await page.waitForURL(/revision=draft/);
   // The URL changes before the draft page replaces the version page.
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();

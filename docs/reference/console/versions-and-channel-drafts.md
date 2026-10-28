@@ -17,7 +17,7 @@ Backdrop clicks or Escape close the topmost channel, Secret, or plugin editor:
 discard channel edits, clear Secret inputs, retain plugin selections.
 Pending channel saves and Secret creation block dismissal.
 
-**Create new version** edits Configuration JSON and channels; **Plugins** and
+**Open draft** edits Configuration JSON and channels; **Plugins** and
 **Credentials** edit Agent selections and authentication. Plugin browsing
 requires exact Agent `read`/`update` and a catalog-capable Driver. The curated
 catalog needs no Secret. Hosted browsing reads bound `codex_pat` server-side and
@@ -33,8 +33,13 @@ saving and deployment until you can [reload the saved settings](../../guides/con
 
 **Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
-binding, but API permissions and topology checks still apply. **Selected version** shows `activeRevisionId`, a selected pointer, not serving health.
-**Deployment details** follows the newest readable deployment. Routine completion
+binding, but API permissions and topology checks still apply. **Selected for service** shows `activeRevisionId`, a selected pointer, not serving health.
+**Viewing version** chooses the draft or a saved version without deploying it.
+**Load older versions** adds the next page and keeps the viewed version.
+**Deployment** contains the newest readable deployment activity, the viewed
+version's record, and diagnostics. These panels keep polling across tabs.
+Pending work, startup warnings, and incomplete cleanup also show an attention
+message with a link above the tabs. **Deployment details** follows the newest readable deployment. Routine completion
 starts folded; pending work, warnings, and cleanup are expanded. When the page shows
 before the first record arrives (a read slower than about 2 s), that record fills the
 folded row instead, and the summary above shows its outcome; cleanup and warnings still
@@ -74,8 +79,7 @@ it or it was deleted, with the ID in the tooltip. **No Secret
 bound** means no binding. Values are never read, and metadata does not prove
 credential validity.
 
-AgentRevision snapshots cannot be edited, rolled back, or redeployed. **Create
-new version** and **Edit current Configuration** open the saved draft without
+AgentRevision snapshots cannot be edited, rolled back, or redeployed. **Open draft** and **Edit current Configuration** open the saved draft without
 changing the viewed snapshot; **Deploy new version** admits it as another
 immutable version. Admission, recorded activation, and `activeRevisionId` are
 separate facts, and startup evidence does not establish live gateway health; see the

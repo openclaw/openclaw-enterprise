@@ -45,6 +45,14 @@ export const staticTokenCapabilityPolicy = Object.freeze({
   "read-only": "static-token-route-bounded-read-only-graphql-v1",
 });
 
+/** Static tokens allow read-only GraphQL only when configured and outside git-read. */
+export function staticTokenGraphqlPolicy(
+  profile: GitHubTokenProfile,
+  allowGraphql: boolean,
+): "read-only" | "deny" {
+  return profile !== "git-read" && allowGraphql ? "read-only" : "deny";
+}
+
 export function permissionsForProfile(
   profile: GitHubTokenProfile,
 ): Readonly<Record<string, string>> {

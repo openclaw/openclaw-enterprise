@@ -100,6 +100,8 @@ operation was not authorized.`
   for each source in `credentialSources`. At
   deployment the Agent’s own service principal also needs `secret:operate` on each
   bound Secret and `credential_source:operate` on each source.
+- Creating an Agent with [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode)
+  off or changing the setting also requires `installation:administer`.
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
   [updating a credential source](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid)
   also requires `secret:operate` on each Secret it reads.

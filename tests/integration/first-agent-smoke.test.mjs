@@ -485,7 +485,12 @@ const bakeInput = {
   smokeRuntimeTag: "127.0.0.1:5000/oce-smoke/runtime:0123456789abcdef0123456789abcdef01234567",
   context: "/work/runtime-trust",
   providerContext: "/work/provider-image",
-  nodeRuntimeBaseImage: `docker.io/library/node:24-bookworm-slim@sha256:${"a".repeat(64)}`,
+  nodeRuntimeBaseImage: `docker.io/library/node:24.22.1-bookworm-slim@sha256:${"a".repeat(64)}`,
+  openclawSource: {
+    commit: "b".repeat(40),
+    sourceArchiveSha256: "c".repeat(64),
+    buildTimestamp: "2026-01-02T03:04:05Z",
+  },
   registryAddress: "172.17.0.3:5000",
   caches: (role) => [`cache-${role}`],
 };
@@ -498,6 +503,14 @@ test("the smoke bake only pushes the controller and runtime images, and loads th
   assert.deepEqual(target["smoke-runtime"].output, [pushOutput("runtime")]);
   assert.deepEqual(target["smoke-controller"].labels, {
     "org.opencontainers.image.revision": bakeInput.revision,
+  });
+  // The upstream source identity must remain distinct from the OCE revision.
+  assert.deepEqual(target["smoke-runtime-base"].args, {
+    OPENCLAW_COMMIT: bakeInput.openclawSource.commit,
+    OPENCLAW_SOURCE_SHA256: bakeInput.openclawSource.sourceArchiveSha256,
+    OPENCLAW_BUILD_TIMESTAMP: bakeInput.openclawSource.buildTimestamp,
+    OCC_BUILD_REVISION: bakeInput.revision,
+    SOURCE_DATE_EPOCH: "0",
   });
   assert.deepEqual(target["smoke-provider"], {
     context: "/work/provider-image",
@@ -594,7 +607,7 @@ test("the provider image is the runtime's pinned Node base with only the runtime
   );
   assert.match(
     runtimeNodeBaseImage(dockerfile),
-    /^docker\.io\/library\/node:24-[^@]+@sha256:[a-f0-9]{64}$/,
+    /^docker\.io\/library\/node:24\.22\.1-bookworm-slim@sha256:[a-f0-9]{64}$/,
   );
   assert.throws(
     () => runtimeNodeBaseImage("ARG NODE_RUNTIME_BASE_IMAGE=node:24-bookworm-slim\n"),

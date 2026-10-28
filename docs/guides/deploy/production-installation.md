@@ -38,15 +38,15 @@ or build these images for your registry:
 | Controller | Root [`Dockerfile`](../../../Dockerfile), target `runtime`                                                     | API, worker, migration, and bootstrap       |
 | Runtime    | [`deploy/runtime/Dockerfile`](../../../deploy/runtime/Dockerfile), assembling pinned OpenClaw source and Codex | Gateways and Agents (one image serves both) |
 
-With Buildx and push access, set your registry, repository, and node platform.
-The base image follows the [runtime recipe](../../../deploy/runtime/README.md).
+Select your registry, repository, and platform. Buildx uses the [runtime recipe's](../../../deploy/runtime/README.md) reviewed CI base.
 
 Authenticate the builder with `docker login <registry-host>` and approved
 credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
 
-Run this push in a fresh Bash shell; on failure, stop and retain the metadata.
-The standard runtime packages Slack and Codex; use it for both slots unless you
-have separately verified a gateway/Codex pair. Installing packages at gateway
+In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
+Stop on failure; retain metadata.
+Use the standard Slack/Codex runtime for both slots unless you separately verified
+another gateway/Codex pair. Installing packages at gateway
 startup is unsupported.
 
 ```bash
@@ -54,8 +54,8 @@ startup is unsupported.
 export OCC_IMAGE_REGISTRY="${OCC_IMAGE_REGISTRY:-registry.example.com}"
 export OCC_IMAGE_REPOSITORY="${OCC_IMAGE_REPOSITORY:-$OCC_IMAGE_REGISTRY/your-team/openclaw-enterprise}"
 export OCC_IMAGE_PLATFORM="${OCC_IMAGE_PLATFORM:-linux/amd64}"
-export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0'
 if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
+  NODE_BASE_IMAGE="$(yq -p=json -e -r '.prepare.defaultEnv.NODE_BASE_IMAGE' scripts/ci/test-suites/images-packaging.json)" &&
   OCC_IMAGE_TAG="$(git rev-parse HEAD)" &&
   OCC_IMAGE_METADATA="$(mktemp -d)" &&
   export OCC_IMAGE_TAG &&
@@ -66,6 +66,7 @@ if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
     --label "org.opencontainers.image.revision=$OCC_IMAGE_TAG" \
     -t "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG" . &&
   docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" \
+    "${openclaw_build_args[@]}" \
     --metadata-file "$OCC_IMAGE_METADATA/runtime.json" \
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
     --build-arg OCC_BUILD_REVISION="$OCC_IMAGE_TAG" \
@@ -116,7 +117,7 @@ Kubernetes older than 1.35 is unsupported; the API and worker emit
 ### Recommended: generate profile configuration
 
 Choose `openclaw` or `codex` from the [profile options](installation-profiles.md#choose-a-profile).
-Generation requires Node.js 24+ on the operator host (and `pnpm install` with
+Generation requires Node.js 24.22.1+ on the operator host (and `pnpm install` with
 native admin). Manual YAML does not, but
 the later Agent transport-provisioning example does; without Node, provision
 transports in the console.

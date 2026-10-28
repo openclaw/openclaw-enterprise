@@ -89,6 +89,25 @@ func Down(ctx context.Context, opts Options) error {
 		if err := r.cleanup(ctx, state, true); err != nil {
 			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: %w", directory, err)
 		}
+		// k3d can report successful cluster deletion after only warning that
+		// its image volume could not be removed. Check the recorded endpoint
+		// even when the cluster was already absent on this attempt.
+		imageVolume := "k3d-" + state.Cluster + "-images"
+		volumes, err := r.output(ctx, r.engine, "volume", "ls", "--filter", "label=k3d.cluster="+state.Cluster, "--format", "{{.Name}}")
+		if err != nil {
+			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: cannot confirm k3d image volume absence for %s: %w; "+
+				"check access to the recorded %s endpoint %s; retry occ dev down with the same Kubernetes settings and state directory",
+				directory, imageVolume, err, r.engine, state.DockerHost)
+		}
+		for _, volume := range strings.Fields(string(volumes)) {
+			if volume == imageVolume {
+				// Down does not remove the volume itself; tell the operator how to finish.
+				return fmt.Errorf("cleanup incomplete; preserving %s for recovery: k3d image volume %s remains; "+
+					"select the recorded %s endpoint %s, verify label k3d.cluster=%s and that the volume is unused before removing it there; "+
+					"retry occ dev down with the same Kubernetes settings and state directory",
+					directory, imageVolume, r.engine, state.DockerHost, state.Cluster)
+			}
+		}
 		if err := os.RemoveAll(directory); err != nil {
 			return err
 		}

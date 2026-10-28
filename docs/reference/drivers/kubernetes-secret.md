@@ -180,7 +180,7 @@ the exact Secret grant through the Namespace IAM policy API before a
 Secret-backed deployment is admitted.
 
 Deployment freezes the normalized bindings and selected Secret Driver ID in the
-immutable AgentRevision. It does not snapshot backend locators or value bytes.
+AgentRevision. It does not snapshot backend locators or value bytes.
 The API authorizes the deploying actor and the consuming Agent service principal,
 then asks the selected Secret Driver to validate the backend during admission.
 The worker rechecks the actor and Agent service principal before resolving

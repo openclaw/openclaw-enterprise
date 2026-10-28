@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createServer, request as httpRequest } from "node:http";
 import test from "node:test";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -19,6 +21,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 const accessToken = "at-plugin-discovery-private-fixture";
 const pluginId = "codex-plugin:knowledge@openai-remote";
@@ -51,6 +54,7 @@ async function createFixture(
     supported = true,
     secretDriver = createTestSecretDriver(),
     logger,
+    onSend,
     credentialGatewayDriver,
     sandboxDriver,
   } = {},
@@ -62,6 +66,7 @@ async function createFixture(
     auditSink,
     secretDriver,
     logger,
+    onSend,
     credentialGatewayDriver,
     sandboxDriver,
   });
@@ -242,6 +247,130 @@ test("Plugin discovery requires exact Namespace Agent-create permission before D
   assert.equal(absent.status, 404);
   assert.deepEqual(fixture.calls, []);
 });
+
+test(
+  "Hosted plugin discovery honors client disconnects during IAM reads",
+  { timeout: 30_000 },
+  async (t) => {
+    const completions = new WeakMap();
+    const fixture = await createFixture(t, {
+      onSend: async (request) => {
+        completions.get(request.raw)?.();
+      },
+    });
+    const driver = new CodexPluginDriver();
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver("plugin", driver.id);
+    const saved = await createSavedAgent(fixture);
+    const headers = authenticatedHeaders(await fixture.signIn(), {
+      "content-type": "application/json",
+    });
+
+    const identity = "/api/accounts/v1/user-auth-credential/whoami";
+    const list = "/backend-api/ps/plugins/list";
+    const detail = `/backend-api/ps/plugins/${remoteId}`;
+    const payloads = {
+      [identity]: { chatgpt_account_id: "fixture", chatgpt_account_is_fedramp: false },
+      [list]: { plugins: [], pagination: { next_page_token: null } },
+      [detail]: {
+        id: remoteId,
+        name: "knowledge",
+        scope: "GLOBAL",
+        status: "ENABLED",
+        installation_policy: "AVAILABLE",
+        release: { app_ids: [], skills: [{ name: "knowledge" }], mcp_servers: [], interface: {} },
+      },
+    };
+    const received = [];
+    const port = await listen(
+      t,
+      createServer((request, response) => {
+        const { pathname } = new URL(request.url, "http://localhost");
+        received.push(pathname);
+        response.writeHead(Object.hasOwn(payloads, pathname) ? 200 : 404, {
+          "content-type": "application/json",
+        });
+        response.end(JSON.stringify(payloads[pathname] ?? {}));
+      }),
+    );
+    const fetch = globalThis.fetch;
+    // Redirect only provider transport. The bundled Driver still performs identity and catalog reads.
+    t.mock.method(globalThis, "fetch", (url, init) => {
+      const target = new URL(url);
+      assert.ok(["https://auth.openai.com", "https://chatgpt.com"].includes(target.origin));
+      return fetch(`http://127.0.0.1:${port}${target.pathname}${target.search}`, init);
+    });
+
+    for (const [scope, base, credential] of [
+      ["create", fixture.path, { accessToken }],
+      ["saved", saved.path, {}],
+    ]) {
+      for (const [operation, path, body, providerPath] of [
+        ["list", base, credential, list],
+        ["details", `${base}/details`, { ...credential, pluginId: remoteId }, detail],
+      ]) {
+        for (const [method, disconnect] of [
+          ["lookupIdentity", false],
+          ["lookupIdentity", true],
+          ["authorize", true],
+        ]) {
+          await t.test(
+            `${scope} ${operation} ${disconnect ? "disconnected" : "connected"} during ${method}`,
+            async (t) => {
+              const start = received.length;
+              const evaluated = Promise.withResolvers();
+              const resume = Promise.withResolvers();
+              const evaluate = fixture.iamDriver[method].bind(fixture.iamDriver);
+              // Hold a real IAM result in the pre-handler or inside OCC, after the POST is consumed.
+              t.mock.method(fixture.iamDriver, method, async (input) => {
+                const decision = await evaluate(input);
+                evaluated.resolve(decision);
+                await resume.promise;
+                return decision;
+              });
+              t.after(() => resume.resolve());
+              const incoming = once(fixture.app.server, "request");
+              const client = httpRequest(fixture.origin + path, {
+                method: "POST",
+                headers,
+                agent: false,
+              });
+              const result = once(client, disconnect ? "error" : "response");
+              client.end(JSON.stringify(body));
+              const [raw, response] = await incoming;
+              const completed = Promise.withResolvers();
+              completions.set(raw, completed.resolve);
+              const decision = await evaluated.promise;
+              if (method === "lookupIdentity") {
+                assert.equal(decision.id, fixture.policy.identities[0].id);
+              } else {
+                assert.equal(decision.allowed, true);
+              }
+              assert.equal(raw.readableEnded, true);
+              assert.equal(raw.complete, true);
+              if (disconnect) {
+                const closed = once(response, "close");
+                client.destroy();
+                await closed;
+                assert.equal(response.writableEnded, false);
+              }
+              resume.resolve();
+              // Wait for this route's send hook, so zero requests cannot be a slow provider call.
+              const [[reply]] = await Promise.all([result, completed.promise]);
+              if (disconnect) {
+                assert.equal(reply.code, "ECONNRESET");
+              } else {
+                assert.equal(reply.statusCode, 200);
+                reply.resume();
+              }
+              assert.deepEqual(received.slice(start), disconnect ? [] : [identity, providerPath]);
+            },
+          );
+        }
+      }
+    }
+  },
+);
 
 test("Plugin discovery validates bounded credential and identity input before Driver I/O", async (t) => {
   const logs = [];

@@ -80,7 +80,9 @@ connection and outage handling. Transport loss during release rejects the
 snapshot; the error listener stays attached until release returns. Metrics
 follow finalization independently of logging.
 
-### 2. Commit API admission and the durable work record
+<span id="2-commit-api-admission-and-the-durable-work-record" class="anchor-alias"></span>
+
+### 2. Save the admission decision and queue the operation
 
 `apps/controller/src/http/agents.ts:createAgentHandlers`,
 `packages/occ/src/index.ts:OpenClawController`,
@@ -97,8 +99,8 @@ reauthorizing or relabeling. Audit
 failure rolls back the version, desired runtime state and queued work; an
 unknown PostgreSQL commit outcome remains unknown and is not retried.
 
-The queue freezes actor, Namespace owner, lifecycle target, and exact Agent and
-immutable Agent revision for version work. Agent lifecycle work identifies its
+For work on an Agent revision, the queue records the original actor, Namespace
+owner, lifecycle target, Agent ID, and revision ID. Agent lifecycle work identifies its
 Agent and `stopped` or `deleted` target without a version. Reusing an idempotency
 key with a different actor, owner, or target is rejected. The API returns accepted
 state before the worker invokes Compute.

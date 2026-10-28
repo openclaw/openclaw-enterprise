@@ -254,7 +254,7 @@ for (const moveToSidebar of [false, true]) {
       running: true,
     });
     await openAgent(page, "Header Agent");
-    const action = page.locator(".page-header").getByRole("button", { name: "Create new version" });
+    const action = page.locator(".page-header").getByRole("button", { name: "Open draft" });
     const sidebar = page.getByRole("link", NAMESPACES);
     await action.focus();
     assert.equal(await hasFocus(action), true);
@@ -563,15 +563,12 @@ for (const c of [
     ],
   },
   {
-    title: "Create new version keeps the Agent page until the draft's overview reveals",
+    title: "Open draft keeps the Agent page until the draft's overview reveals",
     namespace: "Draft reveal",
     agents: ["Draft Agent"],
     prepare: (page) => openAgent(page, "Draft Agent"),
     enter: (page) =>
-      page
-        .locator(".content .page-header")
-        .getByRole("button", { name: "Create new version" })
-        .click(),
+      page.locator(".content .page-header").getByRole("button", { name: "Open draft" }).click(),
     revision: /revision=draft/,
     frames: [
       "agents | Draft Agent | selector | Agent",
