@@ -1366,6 +1366,7 @@ while IFS= read -r target; do
   json_fields "$target" namespace_id=namespaceId agent_id=agentId execution_mode=executionMode
   output="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").json"
   deployment_id=$(jq -er '.id' "$output")
+  # shellcheck disable=SC2154 # json_fields assigns execution_mode.
   jq -cn --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
     --arg executionMode "$execution_mode" --arg deploymentId "$deployment_id" \
     '{namespaceId: $namespaceId, agentId: $agentId, executionMode: $executionMode, deploymentId: $deploymentId}' \
@@ -1723,6 +1724,7 @@ while IFS= read -r target; do
       pod_change="could not be compared with its Ready state"
     [[ -n "$pod_change" ]] || continue
     pod_changed=1
+    # shellcheck disable=SC2154 # json_fields assigns pod_role.
     warn "Agent $agent_id's $pod_role Pod $pod_namespace/$pod_name $pod_change after it became Ready for OpenClaw Doctor."
   done <<<"$ready_pods"
 done <"$doctor_targets"
