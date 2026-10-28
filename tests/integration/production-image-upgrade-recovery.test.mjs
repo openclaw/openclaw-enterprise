@@ -760,6 +760,19 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       out(`${free === "unlimited" ? "max" : limit}\n${used}\nanon 1\ninactive_file ${cache}\n`);
     } else if (args.includes("exec") && args.includes("doctor")) {
       log(`doctor ${args.slice(args.indexOf("--") + 1).join(" ")}`);
+      // Kubernetes evicts, replaces or restarts the gateway while Doctor runs, as node memory
+      // pressure did on a production-shaped cluster (finding 2736). Doctor then passes, or
+      // fails as a fault below says.
+      if (state.afterDoctor) {
+        Object.assign(state, state.afterDoctor);
+        delete state.afterDoctor;
+        save();
+      }
+      // The kubelet ended the gateway Pod while Doctor ran (an eviction): the exec stream
+      // ends with the kill, and the container did not restart.
+      if (take("doctor-evicted")) {
+        return fail(137, "command terminated with exit code 137");
+      }
       if (take("doctor-error")) {
         return fail(1, "command terminated with exit code 1");
       }
@@ -798,13 +811,6 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       if (state.doctorSpanMs) {
         await new Promise((resolve) => setTimeout(resolve, state.doctorSpanMs));
         log("doctor-end");
-      }
-      // Doctor passes, and then Kubernetes evicts, replaces or restarts the gateway, as
-      // node memory pressure did on a production-shaped cluster (finding 2736).
-      if (state.afterDoctor) {
-        Object.assign(state, state.afterDoctor);
-        delete state.afterDoctor;
-        save();
       }
       out("{}");
     } else if (args.includes("exec")) {
@@ -1986,6 +1992,24 @@ test("a gateway changed after a passing Doctor fails the upgrade and resume chec
     targets.map((target) => target.gatewayName),
     ["gateway-2"],
   );
+  // An eviction while Doctor runs kills Doctor (exit 137) without a container restart. The
+  // failure must still name the eviction, so it is not read as a Doctor or memory problem.
+  const killed = await fixture(t, { agent: true });
+  const killedState = await killed.state();
+  killedState.afterDoctor = { revisionPods: [evicted, replacement] };
+  await writeFile(join(killed.directory, "state.json"), JSON.stringify(killedState));
+  await killed.failNext("doctor-evicted");
+  const failure = await killed.run().then(
+    () => assert.fail("a Doctor killed by an eviction must stop the upgrade"),
+    (stopped) => stopped,
+  );
+  assert.match(failure.stderr, /OpenClaw Doctor was killed \(exit 137\)/);
+  assert.match(
+    failure.stderr,
+    /Agent agt_test's gateway Pod tenant\/gateway was evicted \(phase Failed\) after it became Ready for OpenClaw Doctor\./,
+  );
+  assert.match(failure.stderr, /OpenClaw Doctor failed for at least one replacement gateway/);
+  assert.doesNotMatch(failure.stdout, /Upgraded/);
 });
 
 // Doctors in several gateways on one node can together exhaust its memory, so they run

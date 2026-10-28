@@ -1599,13 +1599,13 @@ if ((target_count > 0)); then
   done <"$doctor_targets"
 fi
 [[ -z "$doctor_timeout" ]] || die "$doctor_timeout"
-((doctor_failed == 0)) ||
-  die "OpenClaw Doctor failed for at least one replacement gateway; inspect $evidence_dir/status/*.doctor.error."
 
 # Doctor passing proves little if a gateway it checked was then evicted, replaced or
 # restarted, for example under node memory pressure (finding 2736). After the last
 # Doctor, every checked gateway must still be the same Pod, Running and Ready, with
-# the restart count it had when it became Ready.
+# the restart count it had when it became Ready. This also runs after a failed Doctor:
+# an eviction kills Doctor (exit 137) without a container restart, and only this
+# check names it.
 gateway_changed=0
 while IFS= read -r target; do
   agent_id=$(jq -r '.agentId' <<<"$target")
@@ -1616,6 +1616,8 @@ while IFS= read -r target; do
   gateway_changed=1
   warn "Agent $agent_id's gateway Pod $(jq -r '.gatewayNamespace' <<<"$target")/$(jq -r '.gatewayName' <<<"$target") $gateway_change after it became Ready for OpenClaw Doctor."
 done <"$doctor_targets"
+((doctor_failed == 0)) ||
+  die "OpenClaw Doctor failed for at least one replacement gateway; inspect $evidence_dir/status/*.doctor.error."
 ((gateway_changed == 0)) ||
   die "at least one Agent's gateway did not stay on the same Ready Pod without restarts through OpenClaw Doctor, so the upgrade is not complete. Wait until each named Agent's gateway is Ready, then repeat the command with --resume and the same evidence directory; the resume runs Doctor again in the current gateway without new deployments."
 
