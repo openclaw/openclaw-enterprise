@@ -135,11 +135,9 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-Deployment revalidates selections and Configuration, records the Driver and
-policy-only plugin map in an Agent revision, and queues it. Native app mapping,
-release metadata, and configuration resolve later.
+Deployment revalidates the Configuration and selections, snapshots the Driver and plugin policies in an Agent revision, and queues it. Startup resolves native metadata.
 
-For [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json), the selection includes the package version. Kubernetes passes the release digest to both roles. The Gateway verifies the install-check skill, and the dedicated worker verifies `gog` before enrollment.
+For [managed packages](../../apps/controller/plugins/README.md), Kubernetes passes the selected release digest to both roles. The Gateway verifies the skill. The dedicated worker verifies `gog` or `oce-slack-search` before enrollment.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -364,6 +362,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 20:43: Include Slack Search in dedicated worker installation. (authoring-run/6fc0e9f4-f1a5-482d-95c6-676c48821328 - c4d98ab574f2671896c2ccfce3ee458753f78a35)
 
 - 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)
 

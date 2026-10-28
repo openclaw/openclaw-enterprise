@@ -9052,7 +9052,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   assert.equal(deploy.body.error.message, noRoute);
 });
 
-test("saved-Agent discovery offers the Google package only where Agent save admits it", async () => {
+test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {
   // Finding 2787: the Plugin Driver's catalog takes no Agent, so OCC checks each entry against
   // the Agent's Harness and the Installation's Compute, as Agent save does.
   const sandbox = {
@@ -9077,7 +9077,7 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   const driver = new OCCPluginDriver();
   controller.fixture.controller.registerDriver(driver);
   controller.fixture.controller.selectDriver("plugin", driver.id);
-  const packageId = "occ-plugin:google@1.0.0";
+  const packageId = "occ-plugin:slack-search@1.0.0";
   const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       name: "Discovery Agent",
@@ -9102,7 +9102,7 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
 
   // A dedicated OpenClaw Agent on Kubernetes Compute is offered the package and may save it.
   const offered = await discoverAndSave();
-  assert.deepEqual(offered.ids, [packageId]);
+  assert.deepEqual(offered.ids, ["occ-plugin:google@1.0.0", packageId]);
   assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
   assert.equal(offered.details.data.id, packageId);
   assert.equal(offered.save.status, 200, JSON.stringify(offered.save.body));
@@ -9121,10 +9121,7 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   const codexOffer = await discoverAndSave();
   assert.deepEqual(codexOffer.ids, []);
   assertApiError(codexOffer.save, 400, "INVALID_REQUEST");
-  assert.match(
-    codexOffer.save.body.error.message,
-    /Google Workspace requires a dedicated OpenClaw/,
-  );
+  assert.match(codexOffer.save.body.error.message, /Slack Search requires a dedicated OpenClaw/);
   assertApiError(codexOffer.details, 400, "INVALID_REQUEST");
   assert.equal(codexOffer.details.body.error.message, codexOffer.save.body.error.message);
 
@@ -9146,10 +9143,7 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   const computeOffer = await discoverAndSave();
   assert.deepEqual(computeOffer.ids, []);
   assertApiError(computeOffer.save, 400, "INVALID_REQUEST");
-  assert.equal(
-    computeOffer.save.body.error.message,
-    "Google Workspace requires Kubernetes Compute.",
-  );
+  assert.equal(computeOffer.save.body.error.message, "Slack Search requires Kubernetes Compute.");
   assertApiError(computeOffer.details, 400, "INVALID_REQUEST");
   assert.equal(computeOffer.details.body.error.message, computeOffer.save.body.error.message);
 });

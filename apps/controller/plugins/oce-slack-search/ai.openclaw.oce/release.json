@@ -1,0 +1,37 @@
+{
+  "release": "slack-search-install-v1",
+  "placement": {
+    "harnessId": "openclaw",
+    "mode": "dedicated",
+    "computeImplementations": ["occ/kubernetes", "kubernetes-local"]
+  },
+  "capabilities": { "gateway": ["skill"], "harness": ["cli"] },
+  "credentials": {
+    "account": {
+      "label": "Slack user account",
+      "issuer": "https://slack.com",
+      "requiredScopes": ["search:read.public"],
+      "delivery": { "role": "harness", "env": "SLACK_SEARCH_TOKEN", "presentation": "bearer" },
+      "requests": [
+        {
+          "method": "POST",
+          "url": "https://slack.com/api/assistant.search.context",
+          "bodySchema": {
+            "type": "object",
+            "required": ["query", "channel_types", "content_types"],
+            "additionalProperties": false,
+            "properties": {
+              "query": { "type": "string", "minLength": 1 },
+              "channel_types": { "const": ["public_channel"] },
+              "content_types": { "const": ["messages"] }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "skill": "oce-slack-search",
+  "skillSha256": "f5de24beb2f6cb66db1115ff2c044f4e0ae413e4b760fb9c15bbb76599e9e1a8",
+  "executable": "oce-slack-search",
+  "executableSha256": "173545984477e2de9ec57b6b4e74163a8de5ff16f941d2fac193ae34834adb32"
+}

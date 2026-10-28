@@ -1,5 +1,8 @@
 {
   "name": "oce-managed",
   "owner": { "name": "OpenClaw Enterprise" },
-  "plugins": [{ "name": "oce-google-workspace", "source": "./oce-google-workspace" }]
+  "plugins": [
+    { "name": "oce-google-workspace", "source": "./oce-google-workspace" },
+    { "name": "oce-slack-search", "source": "./oce-slack-search" }
+  ]
 }

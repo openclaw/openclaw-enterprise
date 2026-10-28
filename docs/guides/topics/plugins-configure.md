@@ -11,8 +11,9 @@ Codex Agents use a different catalog and approval policy; see
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
-**Google Workspace**, add it, and save. Deploy a new version and run `gog --version`
-on the worker.
+**Slack Search** or **Google Workspace**, add it, and save. Deploy a new version.
+On the worker, run `oce-slack-search --help` for Slack or `gog --version` for Google.
+Both commands verify installation without an account.
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
 The CLI example below uses Diffs.

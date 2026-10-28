@@ -183,14 +183,23 @@ test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => 
   });
 });
 
-test("dedicated OpenClaw offers the pinned Google package and refuses credential attachment", async () => {
+test("dedicated OpenClaw admits one managed installation and refuses credential attachment", async () => {
   const driver = new OCCPluginDriver();
   const dedicated = context("dedicated");
-  const [google] = await driver.listCatalog({
+  const [google, slack] = await driver.listCatalog({
     ...dedicated,
     harness: { ...dedicated.harness, id: "openclaw" },
   });
   assert.equal(google.id, "occ-plugin:google@1.0.0");
+  assert.equal(slack.id, "occ-plugin:slack-search@1.0.0");
+  assert.equal(driver.policyCapabilities.policyScopeByPlugin[slack.id], "enablement_only");
+  assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
+  driver.validatePolicies({ [slack.id]: { enabled: false } });
+  assert.throws(
+    () =>
+      driver.validatePolicies({ [google.id]: { enabled: true }, [slack.id]: { enabled: true } }),
+    /must be the only plugin selected/,
+  );
   driver.validatePolicies({ [google.id]: { enabled: true } });
   assert.throws(
     () => driver.validatePolicies({ ...occSelection(), [google.id]: { enabled: true } }),

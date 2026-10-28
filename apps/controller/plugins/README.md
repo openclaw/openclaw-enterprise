@@ -4,26 +4,16 @@ The [OCE marketplace index](./marketplace.json) lists packages by name and relat
 Each package has a [plugin.json](./oce-google-workspace/plugin.json) at its root. The
 `ai.openclaw.oce` extension points to the release that OCE deploys.
 
-```text
-plugins/
-├── marketplace.json
-└── oce-google-workspace/
-    ├── plugin.json
-    ├── skills/oce-google/SKILL.md
-    └── ai.openclaw.oce/release.json
-```
+- [Google Workspace](./oce-google-workspace/ai.openclaw.oce/release.json) pins the ClawHub skill and Linux `gog` binaries.
+- [Slack Search](./oce-slack-search/ai.openclaw.oce/release.json) pins the OCE worker command and its Gateway skill. Its account slot declares the public-channel message search request. Slack documents the user scope and app eligibility in its [Real-time Search API guide](https://docs.slack.dev/apis/web-api/real-time-search-api/).
 
-The [release](./oce-google-workspace/ai.openclaw.oce/release.json) declares a Gateway
-skill and a dedicated OpenClaw worker CLI. It pins the ClawHub skill and the Linux
-CLI artifacts independently. The bundled Plugin Driver registers this version as
-`occ-plugin:google@1.0.0`. Publish changed release bytes under a new package version
-so existing Agent selections continue to identify the reviewed release.
+The Plugin Driver registers each package by version. Publish changed release bytes under a new version so existing Agent selections continue to identify the reviewed release.
 
 The package’s OCE extension declares `policyScope: "enablement_only"`. The Plugin Driver advertises this scope for the versioned plugin ID so the Console can render the same enable switch as a Codex plugin before catalog discovery completes. OCC refuses tool approvals, reviewers, and per-tool overrides for the CLI.
 
-The release also declares the `account` credential slot for a future binding. It names
-`gog`’s environment variable and lists the exact HTTPS requests that may use the
-account. The public discovery request takes no credential. The installer reads the
+Each release declares the `account` credential slot for a future binding. It names
+the worker environment variable and lists the HTTPS requests that may use the
+account. Google’s public discovery request takes no credential. The installer reads the
 package without binding this slot. A binding implementation must give the Harness
 an opaque placeholder and check its request against the release before substituting
 a bearer at egress. An absent binding grants no credentialed route.
