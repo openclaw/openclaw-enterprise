@@ -1102,35 +1102,48 @@ function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string
   }`;
 }
 
-// Records this store copied itself and found to be plain data (objects, arrays, primitives):
-// deeply frozen and referenced by nothing outside the store, so every later snapshot can share
-// them instead of copying them again. A record holding a Map, Set, Date or other object that
-// deepFreeze cannot freeze is copied on every snapshot, as before.
+// Records that are plain data (objects, arrays, primitives) and frozen all the way down, so
+// every later snapshot can share them instead of copying them again. A record holding a Map,
+// Set, Date or other object that deepFreeze cannot freeze is copied on every snapshot, as before.
 const sharedRecords = new WeakSet<object>();
 
-// `seen` stops at a cycle (structuredClone keeps one), whose objects are checked once.
-function isPlainData(value: unknown, seen = new Set<object>()): boolean {
+// `seen` stops at a cycle (structuredClone keeps one), whose objects are checked once. With
+// `frozen`, every object must also be frozen already.
+function isPlainData(value: unknown, frozen = false, seen = new Set<object>()): boolean {
   if (typeof value !== "object" || value === null || seen.has(value)) {
     return true;
   }
   seen.add(value);
+  if (frozen && !Object.isFrozen(value)) {
+    return false;
+  }
   const prototype = Object.getPrototypeOf(value);
   return (
     (Array.isArray(value) || prototype === Object.prototype || prototype === null) &&
-    Object.values(value).every((entry) => isPlainData(entry, seen))
+    Object.values(value).every((entry) => isPlainData(entry, frozen, seen))
   );
 }
 
 // A snapshot's copy of one stored record. Before this, every read and every transaction
 // structuredCloned the whole store, audit log included, so a long test's reads grew with
-// everything it had written. A record is frozen once copied, so sharing it keeps each
-// snapshot isolated: transactions replace records, they cannot change one in place.
+// everything it had written. A shared record is frozen, so sharing it keeps each snapshot
+// isolated: transactions replace records, they cannot change one in place.
 function storedCopy<T>(value: T): Readonly<T> {
-  if (typeof value === "object" && value !== null && sharedRecords.has(value)) {
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  if (sharedRecords.has(value)) {
+    return value;
+  }
+  // A write stores its own `immutableCopy` (see `repositories`). Share that record as it is:
+  // a read's snapshot is discarded, so a record copied only there was copied again by every
+  // read until the next transaction (finding 2781: 0.5 s per request for 4 large Presets).
+  if (isPlainData(value, true)) {
+    sharedRecords.add(value);
     return value;
   }
   const copy = immutableCopy(value);
-  if (typeof copy === "object" && copy !== null && isPlainData(copy)) {
+  if (isPlainData(copy)) {
     sharedRecords.add(copy);
   }
   return copy;
