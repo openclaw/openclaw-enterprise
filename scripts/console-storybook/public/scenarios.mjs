@@ -2382,9 +2382,10 @@ export const scenarios = {
     actions: [
       click("Configure plugins"),
       { selector: 'button[aria-label="Google Workspace"]', click: true },
+      click("Add Google Workspace"),
     ],
     description:
-      "Select the package for installation. The fixture simulates the catalog and does not deploy an Agent.",
+      "Toggle Enable plugin. Compare the Plugin policies, Driver policy, and Tools sections. Each shows which settings Google Workspace supports. This fixture simulates the catalog.",
   },
   pluginsNativeLimited: {
     group: "Components/Plugins",

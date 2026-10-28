@@ -62,9 +62,23 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  async function checkPolicySupport(pluginName) {
+    const policies = dialog.getByRole("group", { name: "Plugin policies" });
+    for (const label of ["tools enabled by default", "require approval for", "default reviewer"]) {
+      const field = policies.getByRole("combobox", { name: `${pluginName} ${label}`, exact: true });
+      assert.equal(await field.isDisabled(), true);
+      assert.equal(await field.locator("option:checked").textContent(), "Not supported");
+    }
+    await dialog
+      .getByRole("group", { name: "Driver policy" })
+      .getByText(/driver-specific settings are not supported/i)
+      .waitFor();
+    await dialog.getByRole("heading", { name: "Tools", exact: true }).waitFor();
+    await dialog.getByText(/per-tool policies are not supported/i).waitFor();
+  }
   await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
   await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
-  assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
+  await checkPolicySupport("Google Workspace");
   async function save(enabled) {
     await dialog.getByRole("button", { name: "Done", exact: true }).click();
     const saved = page.waitForResponse(
@@ -86,7 +100,7 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   await dialog.getByRole("button", { name: id, exact: true }).click();
   const enabled = dialog.getByLabel(`Enable ${id}`, { exact: true });
   assert.equal(await enabled.isChecked(), true);
-  assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
+  await checkPolicySupport(id);
   assert.equal(await dialog.getByLabel(/plugin approvers mode/).count(), 0);
   assert.equal(await dialog.getByLabel("Filter tools").count(), 0);
   await enabled.uncheck();
