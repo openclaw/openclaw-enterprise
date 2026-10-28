@@ -56,7 +56,17 @@ test("the steering help says what the Gateway does with another participant's me
   assert.equal(off(corporate), refused);
   assert.equal(off(fallback("reject")), refused);
   assert.equal(off(fallback("queue", corporate)), queued);
-  assert.match(steering.help({}), /^On: while a turn runs/);
+  assert.match(steering.help({}), /^On: while a turn runs, another Gateway participant/);
+  for (const values of [{}, corporate]) {
+    assert.match(
+      steering.help(values),
+      /Participants are channel users or local operators with distinct Gateway identities\./,
+    );
+    assert.match(
+      steering.help(values),
+      /OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users\./,
+    );
+  }
 });
 
 test("a toggle writes only its own setting and removes it again at the default", () => {

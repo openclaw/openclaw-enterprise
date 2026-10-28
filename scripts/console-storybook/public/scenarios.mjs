@@ -4471,7 +4471,7 @@ export const scenarios = {
     description:
       "The Configuration tab shows the Gateway collaboration and safety settings a deployment runs with. By default, other participants can steer a running turn, and apply_patch changes files only in the workspace.",
     steps: [
-      "Read each toggle's state and where it comes from: Default: on.",
+      "Read each toggle's state and where it comes from: Default: on. Check that steering help distinguishes channel users and local operators from OCE users who share one Gateway identity.",
       "Turn on Strict mode. The Configuration JSON opens with both locked-down values written, and focus stays on Strict mode.",
       "Turn steering back on. Its value leaves the JSON and Strict mode turns off. Cancel, or Save Configuration and deploy a new version.",
     ],

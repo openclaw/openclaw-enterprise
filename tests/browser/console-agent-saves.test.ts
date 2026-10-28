@@ -282,12 +282,20 @@ test("collaboration and safety toggles stage their settings in the Configuration
   // The steering help says what Off does for this document: under the corporate preset the
   // Gateway refuses another participant's message instead of queuing it.
   const steeringHint = page.locator("#gateway-safety-collaborative-steering-hint");
+  const sharedIdentityHelp =
+    "OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users.";
+  assert.match(
+    (await steeringHint.textContent()) ?? "",
+    /Participants are channel users or local operators with distinct Gateway identities\./,
+  );
+  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
   assert.match(
     (await steeringHint.textContent()) ?? "",
     /Off: their message runs as a separate turn after it\.$/,
   );
   await json.fill(JSON.stringify({ ...strictValues, security: { preset: "corporate" } }));
   await steeringHint.filter({ hasText: "Off: the Gateway refuses their message" }).waitFor();
+  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
   await json.fill("{");
   await page
     .getByText("Correct the Configuration JSON to change these settings.", { exact: true })

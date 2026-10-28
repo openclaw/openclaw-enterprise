@@ -23,7 +23,7 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     path: ["messages", "queue", "allowCollaborativeSteering"],
     label: "Other participants can steer a running turn",
     help: (values) =>
-      `On: while a turn runs, another person in the conversation can add guidance to it. The turn keeps the identity and permissions of the person who started it, even when the person steering has fewer. ${steeringOffHelp(values)}`,
+      `On: while a turn runs, another Gateway participant in the conversation can add guidance to it. The turn keeps the identity and permissions of the participant who started it, even when the participant steering has fewer. Participants are channel users or local operators with distinct Gateway identities. OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users. ${steeringOffHelp(values)}`,
     strict: false,
     preset: { personal: true, corporate: false },
   },
