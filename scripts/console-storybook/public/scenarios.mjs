@@ -5018,12 +5018,23 @@ export const scenarios = {
     deployed: true,
     candidateDeploymentStatus: "running",
     candidateActivates: true,
+    // Keep the automatic full reread visible long enough to inspect its quiet presentation.
+    rules: [
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        delayMs: 2500,
+        once: true,
+      },
+    ],
     description:
       "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
     steps: [
       'On arrival the notice begins "Deploying version" and Selected for service reads v6.',
       "Before the status poll lands, focus Viewing version without changing its v7 selection.",
-      'Within about 5 s the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
+      'After the next poll and its delayed overview reread, the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
+      "Reset. Open Deployment and hover Refresh deployment before the next poll. Keep the pointer still: completion and the delayed overview reread preserve the hover fill without marking the button busy.",
+      "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
     ],
   },
   deploymentCompletesRereadFails: {

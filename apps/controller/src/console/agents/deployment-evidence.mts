@@ -300,7 +300,7 @@ export function createDeploymentStatusPanel(
     "Refresh deployment",
     () => {
       if (loading && polling) {
-        // A quiet poll is reading: refresh once it lands.
+        // A quiet read is in flight: refresh once it lands.
         refreshQueued = true;
         refresh.setAttribute("aria-disabled", "true");
         return;
@@ -319,7 +319,7 @@ export function createDeploymentStatusPanel(
   );
   let previousEvidence: string | undefined;
   let loading = false;
-  // A quiet poll leaves Refresh alone, unless the reader presses it during the poll.
+  // Quiet polls and their overview rereads leave Refresh alone until the reader presses it.
   let polling = false;
   let refreshQueued = false;
   let record: Deployment | null = null;
@@ -448,8 +448,10 @@ export function createDeploymentStatusPanel(
             !deploymentPending(record?.status))
         ) {
           // A recorded result can change the current version; reread it once.
+          // Only a queued user refresh makes this full reread visible as manual work.
+          const quiet = !refreshQueued;
           refreshQueued = false;
-          void loadStatus(true);
+          void loadStatus(true, quiet);
         } else {
           schedulePoll();
         }

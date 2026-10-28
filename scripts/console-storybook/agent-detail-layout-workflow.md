@@ -33,3 +33,7 @@ simulated API state; they do not prove persistence or live runtime behavior.
    missing file shows **Missing** in the tabs and phone picker. The browser
    regression also checks that a later missing-file response clears a previous
    **Needs attention** indicator.
+7. Open **Pages / Agent detail / New version in progress, then current**. Follow
+   its reset steps to check **Refresh deployment** with a stationary pointer
+   through completion and the delayed overview reread. Repeat with a click during
+   that reread: busy feedback is immediate and only one user refresh follows.
