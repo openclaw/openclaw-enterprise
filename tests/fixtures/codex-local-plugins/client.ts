@@ -114,7 +114,7 @@ async function verifyPreparation(
   );
   assert.equal((await detail("excluded")).plugin.summary.installed, false);
   assert.equal((await detail("excluded")).plugin.summary.enabled, false);
-  for (const entries of [{ "selected@oce-fixture": { enabled: false } }, {}]) {
+  async function writePlugins(entries: Record<string, { enabled: boolean }>) {
     await rpc("config/batchWrite", {
       edits: [
         {
@@ -125,6 +125,27 @@ async function verifyPreparation(
       ],
       reloadUserConfig: true,
     });
+  }
+  for (const entries of [{ "selected@oce-fixture": { enabled: false } }, {}]) {
+    // Each denial must remove an active skill, including omission after disable.
+    await writePlugins({ "selected@oce-fixture": { enabled: true } });
+    assert.deepEqual(
+      (await skills()).map((skill) => [skill.pluginId, skill.enabled]),
+      [["selected@oce-fixture", true]],
+      "selected skill must be active before each denial",
+    );
+    await writePlugins(entries);
+    const effective = await rpc<{
+      config: { plugins: Record<string, { enabled?: boolean | null } | null> };
+    }>("config/read", {});
+    assert.equal(effective.config.plugins._default?.enabled, false);
+    const enabled = effective.config.plugins["selected@oce-fixture"]?.enabled;
+    if ("selected@oce-fixture" in entries) {
+      assert.equal(enabled, false);
+    } else {
+      // Native config may serialize an absent optional field as null.
+      assert.equal(enabled ?? null, null, "omission must remove explicit enablement");
+    }
     assert.deepEqual(await skills(), [], "disabled and omitted selections must not load");
   }
 }
