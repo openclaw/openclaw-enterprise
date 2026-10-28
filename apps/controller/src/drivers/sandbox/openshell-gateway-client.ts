@@ -191,6 +191,15 @@ export interface OpenShellProviderProfile {
     readonly authStyle: string;
     readonly headerName: string;
     readonly stablePlaceholder?: boolean;
+    readonly tokenGrant?: {
+      readonly assertion_source?: "PROVIDER_CREDENTIAL_ASSERTION_SOURCE_KUBERNETES_PROJECTED_TOKEN";
+      readonly token_endpoint: string;
+      readonly audience: string;
+      readonly jwt_svid_audience: string;
+      readonly client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+      readonly grant_type: "PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_CLIENT_CREDENTIALS";
+      readonly cache_ttl: { readonly seconds: string; readonly nanos: number };
+    };
     readonly refresh?: OpenShellProfileCredentialRefresh;
   }[];
   readonly files?: readonly {
@@ -291,6 +300,11 @@ export interface OpenShellSandboxProviderStatus {
   readonly reason?: string;
   readonly receipt?: {
     readonly receiptId?: string;
+    readonly mutationId?: string;
+    readonly detachedFrom?: Pick<
+      OpenShellProviderDesiredIdentity,
+      "providerId" | "attachmentEpoch" | "sandboxId"
+    >;
     readonly kind?: string;
     readonly provider: string;
     readonly workspace: string;
@@ -415,6 +429,12 @@ export interface OpenShellGatewayClient
     signal: AbortSignal,
   ): Promise<boolean>;
   getSandboxConfig?(workspace: string, sandbox: string, signal: AbortSignal): Promise<RecordValue>;
+  advanceJointReduction?(
+    workspace: string,
+    sandbox: string,
+    command: RecordValue | undefined,
+    signal: AbortSignal,
+  ): Promise<RecordValue>;
   getSandboxPolicyStatus?(
     workspace: string,
     sandbox: string,
@@ -595,6 +615,7 @@ export interface OpenShellGatewayClient
 }
 
 type OpenShellMethod =
+  | "AdvanceJointReduction"
   | "GetSandboxConfig"
   | "ListSandboxes"
   | "ListWorkspaceMembers"
@@ -844,7 +865,7 @@ function providerResponse(value: unknown, operation: string): OpenShellProviderR
   });
 }
 
-function profileMessage(profile: OpenShellProviderProfile): RecordValue {
+export function openShellProfileMessage(profile: OpenShellProviderProfile): RecordValue {
   return {
     id: profile.id,
     display_name: profile.displayName,
@@ -855,6 +876,7 @@ function profileMessage(profile: OpenShellProviderProfile): RecordValue {
       required: credential.required,
       auth_style: credential.authStyle,
       header_name: credential.headerName,
+      ...(credential.tokenGrant && { token_grant: credential.tokenGrant }),
       ...(credential.stablePlaceholder === undefined
         ? {}
         : { stable_placeholder: credential.stablePlaceholder }),
@@ -1579,6 +1601,19 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     );
   }
 
+  async advanceJointReduction(
+    workspace: string,
+    sandbox: string,
+    command: RecordValue | undefined,
+    signal: AbortSignal,
+  ): Promise<RecordValue> {
+    return this.unary(
+      "AdvanceJointReduction",
+      { workspace_scope: { workspace }, sandbox, ...(command && { command }) },
+      signal,
+    );
+  }
+
   async getSandboxPolicyStatus(
     workspace: string,
     sandbox: string,
@@ -2021,7 +2056,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     const response = await this.unary(
       "ImportProviderProfiles",
       {
-        profiles: [{ profile: profileMessage(profile), source: "openclaw-enterprise" }],
+        profiles: [{ profile: openShellProfileMessage(profile), source: "openclaw-enterprise" }],
         workspace_scope: { workspace },
         request_id: randomUUID(),
       },
@@ -2043,7 +2078,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       "UpdateProviderProfiles",
       {
         id: profile.id,
-        profile: { profile: profileMessage(profile), source: "openclaw-enterprise" },
+        profile: { profile: openShellProfileMessage(profile), source: "openclaw-enterprise" },
         expected_resource_version: expectedResourceVersion,
         workspace_scope: { workspace },
         request_id: randomUUID(),
@@ -2385,6 +2420,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     const operation = asRecord(status.operation);
     const receipt = asRecord(status.receipt);
     const desired = asRecord(receipt?.desired);
+    const from = asRecord(receipt?.detached_from);
     const observed = asRecord(status.observed);
     const text = (value: unknown): string => (typeof value === "string" ? value : "");
     return Object.freeze({
@@ -2402,6 +2438,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
             receipt: Object.freeze({
               ...(typeof receipt.receipt_id === "string" && {
                 receiptId: text(receipt.receipt_id),
+              }),
+              ...(typeof receipt.mutation_id === "string" && { mutationId: receipt.mutation_id }),
+              ...(from && {
+                detachedFrom: {
+                  sandboxId: text(from.sandbox_id),
+                  providerId: text(from.provider_id),
+                  attachmentEpoch: text(from.attachment_epoch),
+                },
               }),
               ...(typeof receipt.kind === "string" && { kind: text(receipt.kind) }),
               provider: text(receipt.provider),

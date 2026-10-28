@@ -44,6 +44,7 @@ export async function fixture(
     sessionLifetimeMs = 3_600_000,
     standingApproval = false,
     installationAccess = false,
+    grantGeneration = /** @type {number | undefined} */ (undefined),
     tokenLifetimeMs = /** @type {number | undefined} */ (undefined),
     /** The first owner's clock argument; undefined starts it as the worker does. */
     ownerClock = /** @type {import("../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts").Clock | undefined} */ (
@@ -88,7 +89,14 @@ export async function fixture(
     ...(installationAccess && {
       installationAccess: {
         repositoryRef: "team-install",
-        namespaces: [{ namespaceId, accessMode: "installation" }],
+        namespaces: [
+          {
+            namespaceId,
+            accessMode: "installation",
+            ...(grantGeneration && { grantGeneration }),
+            ...(standingApproval && { allowStandingApproval: true }),
+          },
+        ],
       },
     }),
     repositories: [
@@ -111,10 +119,11 @@ export async function fixture(
       },
     ],
   });
+  const standingInstallation = standingApproval && installationAccess;
   const binding = resolveGitHubRepositoryBinding(registry, {
     namespaceId,
-    repositoryRef,
-    profile: "git-write",
+    repositoryRef: standingInstallation ? registry.installationAccess.repositoryRef : repositoryRef,
+    profile: standingInstallation ? "github-installation" : "git-write",
   });
   const driver = { id: driverId, implementation: "github" };
   await ensurePostgresAgentBootstrap(t, {
@@ -177,7 +186,7 @@ export async function fixture(
     await state.transact((u) => u.revisions.createRevision(revision));
   }
   const attempt = sessionAttempt(revision, {
-    repositoryRef,
+    repositoryRef: binding.repositoryRef,
     durationSeconds: 3600,
     brokerProtocol: 3,
   });

@@ -1,4 +1,4 @@
-import { GitHubRepositoryPolicy } from "../policy.ts";
+import { resolveGitHubRepositoryBinding, validateGitHubRepositoryRegistry } from "./registry.ts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { UnixRepositoryCredentialControlClient } from "../../../../backends/repository-credentials/control-client.ts";
 import { GitHubNativeRepositorySender } from "../driver.ts";
@@ -47,11 +47,14 @@ async function main() {
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
   const backend = { id: backendId, drivers: { repo: "compatibility-probe" }, client };
   const driver = new GitHubNativeRepositorySender(backend, {});
-  const policy = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 60 });
-  const binding = policy.resolve({
-    namespaceId,
-    bindings: [{ repositoryRef: "compatibility-probe", profile: "git-write" }],
-  }).bindings[0]!;
+  const binding = resolveGitHubRepositoryBinding(
+    validateGitHubRepositoryRegistry(registry, backendId),
+    {
+      namespaceId,
+      repositoryRef: "compatibility-probe",
+      profile: "git-write",
+    },
+  );
   const deadlineWallMs = Date.now() + 60_000;
   const input = {
     namespaceId,

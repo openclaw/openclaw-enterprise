@@ -26,6 +26,7 @@ import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts"
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
+  repositoryApprovalFingerprint,
   InMemoryPlatformState,
   DriverConfigurationRegistry,
   CredentialProxyRepositoryOnlyError,
@@ -118,6 +119,7 @@ function repositorySandbox(registry, id = "repository-admission-openshell") {
               {},
               createGitHubRepositoryDeliveryResolver(
                 validateGitHubRepositoryRegistry(registry, backendId),
+                repositoryApprovalFingerprint,
               ),
             ),
           }),
@@ -243,6 +245,7 @@ function repositoryDriver(registry, Driver = GitHubRepositoryPolicy) {
     },
     validateGitHubRepositoryRegistry(registry, backendId),
     { sessionDurationSeconds: 600 },
+    repositoryApprovalFingerprint,
   );
 }
 
@@ -1755,6 +1758,7 @@ async function protectedOpenShellComposition(
       { protectedExecution: true },
       createGitHubRepositoryDeliveryResolver(
         validateGitHubRepositoryRegistry(f.registry, backendId),
+        repositoryApprovalFingerprint,
       ),
     );
   const proxy = new OpenShellCredentialProxyDriver(options, {

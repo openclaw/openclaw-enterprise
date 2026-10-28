@@ -1,3 +1,5 @@
+export const jointWorkspaceProfile = "codex-workspace-pat-with-git-v2";
+
 /** Ordered enforced profile. Earlier installation exchanges did not pin a complete response. */
 export const openShellExchangeCapabilities = Object.freeze([
   "openshell.supervisor-middleware.http-credential-access.v1",

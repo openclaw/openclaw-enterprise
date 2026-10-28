@@ -11,6 +11,7 @@ import type {
   PreparedGitHubUseResponse,
   RepositoryRevisionState,
   DriverRegistrationRef,
+  EgressInstallation,
   ProtectedRepositoryGitAuthority,
   ProtectedRepositoryGitMaterial,
   RepositoryGitInstallationFence,
@@ -35,6 +36,7 @@ import {
   registeredGitSelection,
   openShellGitRecipientEvidence,
   openShellPreviewEnded,
+  openShellJointGitEnded,
   registeredGitRecipientEvidence,
   type RepositoryGitRecipientEvidence,
   repositoryGitAdmissionEnded,
@@ -158,7 +160,8 @@ function sessionQuery(proxy: Recipient): string {
     proxy
       ? `s.broker_protocol=2 AND s.session_id IS NOT NULL
     AND rev.admitted_spec #>> '{execution_admission,version}' =
-      CASE WHEN p.installation #>> '{plan,policyReductionVersion}' = '2' THEN '7'
+      CASE WHEN p.installation #>> '{plan,policyReductionVersion}' IN ('2','3')
+        THEN CASE WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '8' ELSE '7' END
         WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5'
         WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'request-hook-observed' THEN '6'
         ELSE '4' END
@@ -393,7 +396,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     const ended = !this.proxy
       ? `NOT ${live}`
       : this.proxy.evidence === openShellGitRecipientEvidence
-        ? `(${repositoryGitAdmissionEnded} OR ${openShellPreviewEnded})`
+        ? `(${repositoryGitAdmissionEnded} OR ${openShellPreviewEnded} OR ${openShellJointGitEnded})`
         : repositoryGitAdmissionEnded;
     const { sources, foreign } = await this.transaction(async (c) => {
       // Denial doesn't depend on this cleanup. Keep attempts, including unknown issuance, for recovery.
@@ -556,26 +559,62 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       }
       return this.transaction(async (c) => {
         const revisionId = installation.plan.execution.revisionId;
-        const same = `p.revision_id=$1 AND p.installation=$2::jsonb
-          AND p.installation#>'{plan,driver}' = ${selectedRepositoryGitDriver}`;
-        const values = [revisionId, JSON.stringify(installation)];
-        // Keep the Driver's independent GET equal to the committed Compute release.
+        // The admission and Git delivery remain immutable. Only an independently
+        // confirmed reduction changes the effective policy; a proposed subset cannot.
         const released = await c.query(
-          `SELECT FROM occ.egress_installations p WHERE ${same}
+          `SELECT p.installation, COALESCE((
+             SELECT policy_observed FROM occ.credential_delivery_reductions reduction
+             WHERE reduction.revision_id=p.revision_id AND policy_observed IS NOT NULL
+             ORDER BY (policy_observed #>> '{plan,generation}')::bigint DESC LIMIT 1
+           ), p.installation) AS effective
+           FROM occ.egress_installations p
+           JOIN occ.agent_revisions rev ON rev.id=p.revision_id
+           WHERE p.revision_id=$1 AND p.installation#>'{plan,driver}'=${selectedRepositoryGitDriver}
+           AND p.installation->'plan'=rev.admitted_spec->'egress_plan'
            AND p.installation#>>'{enforcement,authorityScope}'='execution'
            AND ${validRecipient} AND ${registeredGitSelection}`,
-          values,
+          [revisionId],
         );
         if (released.rowCount !== 1) {
           return;
         }
+        const { installation: original, effective } = released.rows[0] as {
+          installation: EgressInstallation;
+          effective: EgressInstallation;
+        };
+        if (!isDeepStrictEqual(installation, effective)) {
+          return;
+        }
+        if (!isDeepStrictEqual(original, effective)) {
+          if (
+            original.plan.policyReductionVersion !== 2 ||
+            !isDeepStrictEqual(
+              {
+                ...effective,
+                plan: {
+                  ...effective.plan,
+                  generation: original.plan.generation,
+                  routes: original.plan.routes,
+                },
+                enforcement: {
+                  ...effective.enforcement,
+                  configurationId: original.enforcement.configurationId,
+                  policyHash: original.enforcement.policyHash,
+                },
+              },
+              original,
+            )
+          ) {
+            return;
+          }
+        }
         const fence = await new CredentialDeliveries(c).observe(
-          { ...installation.plan.execution, bindingId: installation.plan.execution.executionId },
-          { transport: repositoryGitDeliveryTransport, installation },
+          { ...original.plan.execution, bindingId: original.plan.execution.executionId },
+          { transport: repositoryGitDeliveryTransport, installation: original },
           this.deliveryWorker,
         );
         if (fence !== undefined) {
-          return { revisionId, fence, observed: installation };
+          return { revisionId, fence, observed: original };
         }
       });
     },
@@ -655,12 +694,24 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   async readRecipientMaterial(
     revisionId: string,
     signal: AbortSignal,
+    install: RepositoryGitInstallationFence,
+    scope: "github-installation",
+    mode: "online-request",
+    identityOnly: true,
+  ): Promise<
+    Omit<ProtectedGitHubInstallationMaterial, "value"> | RepositoryGitMaterialAbsence | undefined
+  >;
+  async readRecipientMaterial(
+    revisionId: string,
+    signal: AbortSignal,
     install?: RepositoryGitInstallationFence,
     scope?: "github-installation",
     mode: Authorization = null,
+    identityOnly = false,
   ): Promise<
     | ProtectedRepositoryGitMaterial
     | ProtectedGitHubInstallationMaterial
+    | Omit<ProtectedGitHubInstallationMaterial, "value">
     | RepositoryGitMaterialAbsence
     | undefined
   > {
@@ -707,7 +758,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         ) {
           return unprepared;
         }
-        const material = await this.tokens.readWarm(c, source);
+        const releasable = identityOnly ? undefined : await this.tokens.readWarm(c, source);
+        const material = identityOnly ? await this.inspectWarmVersion(c, source) : releasable;
         if (!material) {
           return unprepared;
         }
@@ -716,7 +768,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         if (signal.aborted || !(Date.now() < until)) {
           return unprepared;
         }
-        bytes = material.open();
+        bytes = releasable?.open();
         return {
           expiresAt: new Date(until).toISOString(),
           preparationAttemptId,
@@ -741,6 +793,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       signal.throwIfAborted();
       if (!result || "absent" in result) {
         return result;
+      }
+      if (identityOnly && "scope" in result && result.scope === "github-installation") {
+        return Date.now() < Date.parse(result.expiresAt) ? result : unprepared;
       }
       if (!bytes || Date.now() >= Date.parse(result.expiresAt)) {
         return unprepared;

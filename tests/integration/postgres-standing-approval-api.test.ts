@@ -123,6 +123,7 @@ test(
         },
         validateGitHubRepositoryRegistry(input),
         { sessionDurationSeconds: 3600 },
+        repositoryApprovalFingerprint,
       );
       const computeDriver = {
         ...compute,

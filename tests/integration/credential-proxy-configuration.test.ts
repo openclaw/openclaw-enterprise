@@ -14,7 +14,10 @@ import { DriverConfigurationRegistry } from "../../packages/occ/src/index.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
+import {
+  jointWorkspaceProfile,
+  openShellExchangeCapabilities,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import {
   OpenShellCredentialProxyDriver,
   openShellEgressConfiguration,
@@ -335,5 +338,78 @@ test("OpenShell discovery and policy use the installed configuration after calle
   executionCapable = false;
   await assert.rejects(proxy.sourceControl.assertAvailable(t.signal), {
     name: "CredentialProxyRepositoryOnlyError",
+  });
+
+  await t.test("joint discovery freezes both distinct installed names", async (t) => {
+    const installedNames = [jointWorkspaceProfile, "installed-repository"];
+    let names = [...installedNames];
+    t.mock.method(gatewayClient, "getGatewayInfo", async () => ({
+      extensions: names
+        .map((configured_name, index) => ({
+          configured_name,
+          kind: 4,
+          protocol_major: 1,
+          implementation_name:
+            index === 0 ? "oce/static-egress" : "oce/online-request-authorization",
+          implementation_version: "1",
+          required_capabilities:
+            index === 0
+              ? openShellExchangeCapabilities
+              : ["openshell.supervisor-middleware.contract"],
+          supported_capabilities:
+            index === 0
+              ? openShellExchangeCapabilities
+              : ["openshell.supervisor-middleware.contract"],
+        }))
+        .filter((row) => row.configured_name !== ""),
+    }));
+    const jointOptions = {
+      middlewareName: jointWorkspaceProfile,
+      repositoryMiddlewareName: "installed-repository",
+      authorityScope: "execution" as const,
+    };
+    const jointProxy = new OpenShellCredentialProxyDriver(jointOptions, {
+      id: "joint-proxy",
+      backend: {
+        id: "openshell",
+        drivers: {},
+        client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient }),
+      },
+      sandbox,
+      exchangeAuthority: {
+        host: "127.0.0.1",
+        port: 1,
+        certificatePath: "not-read-during-discovery",
+        privateKeyPath: "not-read-during-discovery",
+        issuerPublicKeyPath: "not-read-during-discovery",
+        issuer: "https://gateway.example.test",
+        audience: "online-authorizer",
+        keyId: "gateway-key",
+      },
+      bindRepositoryGit: async () => assert.fail("Discovery must not bind Git"),
+    });
+    jointOptions.middlewareName = "replacement-model";
+    jointOptions.repositoryMiddlewareName = "replacement-repository";
+    await jointProxy.sourceControl.assertAvailable(t.signal);
+    assert.equal(
+      await repositoryGitAuthorization(jointProxy.sourceControl, t.signal, "github_installation"),
+      "online-request",
+      "the installed pair remains authoritative after both caller names change",
+    );
+    for (names of [
+      ["replacement-model", "replacement-repository"],
+      ["replacement-model", installedNames[1]!],
+      [installedNames[0]!, "replacement-repository"],
+      [installedNames[0]!],
+      ["", installedNames[1]!],
+      [],
+    ]) {
+      for (const profile of [undefined, "github_installation"] as const) {
+        await assert.rejects(jointProxy.sourceControl.assertAvailable(t.signal, profile), {
+          name: "DependencyUnavailableError",
+          message: "Joint access requires both authenticated middleware registrations.",
+        });
+      }
+    }
   });
 });

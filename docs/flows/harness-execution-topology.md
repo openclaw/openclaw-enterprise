@@ -169,18 +169,19 @@ For provider-owned Harnesses, `providerHarnessReady` requires exactly one nonter
 
 `apps/controller/src/worker.ts:ControllerWorker`
 
-`requiresStoppedPredecessors` stops all predecessors, including Gateways, and
-waits for Pod termination. Redeployment interrupts service but preserves both PVCs;
-retry or a new version recovers failures. Recorded stops prevent repeats; a returning
-predecessor makes its successor unready. Stops retry after one, two, four, then more
-claim leases. Failed preparation or preparing or activating the predecessor clears
-its record. New exclusive versions supersede old reconciliation and maintenance
-without rollback; see [production version stages](../reference/drivers/compute.md#production-revision-stages).
-For dedicated Codex API-key auth, `pluginRuntimeSnapshot` in
+`requiresStoppedPredecessors` stops predecessors, including Gateways, and awaits
+Pod termination. Redeployment interrupts service, preserves both PVCs and recovers
+on retry or replacement. Recorded stops prevent repeats. Returning predecessors
+block successor readiness. Stops retry after one, two, four, then more claim leases.
+Failed preparation or predecessor preparation/activation clears the record.
+New exclusive versions supersede reconciliation and maintenance without rollback.
+See [production version stages](../reference/drivers/compute.md#production-revision-stages).
+
+For dedicated Codex API-key authentication, `pluginRuntimeSnapshot` in
 `apps/controller/src/drivers/compute/kubernetes/index.ts` selects the bound model
 source endpoint before `runtime.codexModelBaseUrl`.
 `apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` normalizes either.
-`pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
+`apps/controller/src/drivers/compute/plugin-runtime.ts:pluginRuntimeConfigMapData`
 writes the HTTPS Responses endpoint/provider pair to the manifest and `config.toml`.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
 uses CLI overrides because the probe ignores user configuration. Account login and
@@ -188,18 +189,21 @@ other Harnesses keep their endpoints; only the Harness holds model credentials.
 
 For admitted inference, Kubernetes Compute records launch behavior in new protected
 dedicated Codex revisions. The authentication probe and app-server disable unbounded
-native connection retries, avoiding indefinite reconnects. Stored revisions retain
-original commands.
+native connection retries. `KubernetesComputeDriver.admitRevision` records the
+[stored binding](../reference/drivers/compute-admission.md#stored-launch-bindings)
+`codex-launch:v2:` without changing grants or the execution schema.
+`pluginRuntimeSnapshot` selects marker ordering and workspace login. Login and probe
+timeouts kill native Codex. `OpenShellSandboxDriver.provisionHarness` checks ownership
+and content. Unprefixed Codex revisions keep known payloads matching their wrapper,
+retry policy and workspace-node setting; stored revisions retain original commands.
 
-For custom endpoints, `gatewayConfigurationDocument` uses
-`apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
-to clone the admitted document and qualify chat selections checked by
-`configuration-rules.ts:rewriteModelSelections`, including allowlists,
-primary/fallback objects and catalog IDs. It drops the `openai` source provider block. Selections
-enter the projected catalog; aliases and omitted selectors retain their meaning.
-Full refs preserve native ID namespaces, including `codex/`. OpenClaw separates
-the explicit provider for thread start, resume and turns; the Harness probe keeps
-the native ID.
+For custom endpoints, `gatewayConfigurationDocument` calls
+`apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`.
+It clones the admitted document, drops the `openai` provider, and projects selections
+from `configuration-rules.ts:rewriteModelSelections`: allowlists, primary/fallback
+objects and catalog IDs. Aliases and omitted selectors keep their meaning.
+Full references preserve native namespaces, including `codex/`. OpenClaw separates
+the provider at thread start, resume and turns. The Harness probe keeps the native ID.
 
 Kubelet probes private `/readyz`: Gateway plugin status and native `/startupz`
 and `/readyz`, Codex plugin state and authenticated app-server WebSocket, or
@@ -312,6 +316,12 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 ## Changelog
 
 - 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
+
+- 2026-10-24 20:23: Trace historical Sandbox command adoption. (authoring-run/83180569-5492-4f4e-8217-a4c86ce5b6f1 - 4c5d92fcf7804fa906e3b6658010cf57f8acd2c4)
+
+- 2026-10-24 13:59: Record native timeouts and exact unversioned Sandbox adoption. (authoring-run/64430236-3432-4c29-84b6-f4a45d409064 - 108782a40ca54702400bf7fb2c09168e15bce566)
+
+- 2026-10-24 07:10: Describe native Codex startup order and preserve existing Sandbox commands. (authoring-run/f0f87daa-3c51-4559-b105-23c8c3d6084b - 5ad11ff5e27b16d83e0560d8ca35f1233d48d2af)
 
 - 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
 

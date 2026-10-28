@@ -3,10 +3,15 @@ import type {
   EgressRequest,
   EgressResponse,
   EgressOperation,
+  EgressRoute,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
-import { validChatRequest, validResponsesRequest } from "./openai-responses.ts";
+import {
+  validChatRequest,
+  validResponsesRequest,
+  validNativePatResponsesRequest,
+} from "./openai-responses.ts";
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
 import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
 
@@ -138,6 +143,49 @@ function protectedResponse(
   }
 }
 
+/** Share framing and model checks while keeping native metadata profile-scoped. */
+export function classifyOpenAiRequest(
+  route: EgressRoute,
+  request: EgressRequest,
+  profile: "platform" | "codex-workspace" = "platform",
+): EgressOperation | undefined {
+  let url: URL;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return undefined;
+  }
+  if (
+    url.href !== request.url ||
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    request.method !== route.method ||
+    url.origin !== route.origin ||
+    url.pathname !== route.path
+  ) {
+    return undefined;
+  }
+  const body = jsonRequest(request);
+  if (
+    !body ||
+    typeof body.model !== "string" ||
+    route.binding.grant.kind !== "inference" ||
+    route.binding.grant.providerTools !== "none" ||
+    !route.binding.grant.models.includes(body.model)
+  ) {
+    return undefined;
+  }
+  const valid = route.path.endsWith("/responses")
+    ? profile === "codex-workspace"
+      ? validNativePatResponsesRequest
+      : validResponsesRequest
+    : validChatRequest;
+  return valid(body) ? { kind: "inference", action: "generate", model: body.model } : undefined;
+}
+
 /** Bounded inference with Harness-local tools and complete finite Responses SSE custody. */
 export const openAiStaticProvider: CredentialProviderDefinition =
   Object.freeze<CredentialProviderDefinition>({
@@ -186,39 +234,7 @@ export const openAiStaticProvider: CredentialProviderDefinition =
         }),
       );
     },
-    classify(route, request) {
-      let url: URL;
-      try {
-        url = new URL(request.url);
-      } catch {
-        return undefined;
-      }
-      if (
-        url.href !== request.url ||
-        url.protocol !== "https:" ||
-        url.username ||
-        url.password ||
-        url.search ||
-        url.hash ||
-        request.method !== route.method ||
-        url.origin !== route.origin ||
-        url.pathname !== route.path
-      ) {
-        return undefined;
-      }
-      const body = jsonRequest(request);
-      if (
-        !body ||
-        typeof body.model !== "string" ||
-        route.binding.grant.kind !== "inference" ||
-        route.binding.grant.providerTools !== "none" ||
-        !route.binding.grant.models.includes(body.model)
-      ) {
-        return undefined;
-      }
-      const valid = route.path.endsWith("/responses") ? validResponsesRequest : validChatRequest;
-      return valid(body) ? { kind: "inference", action: "generate", model: body.model } : undefined;
-    },
+    classify: (route, request) => classifyOpenAiRequest(route, request),
     inject(value) {
       if (value.length < 8 || value.length > 8192 || /[^\x21-\x7e]/.test(value)) {
         throw new Error("Static inference credential format is unsupported.");

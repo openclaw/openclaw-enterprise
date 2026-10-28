@@ -11,7 +11,11 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { request } from "node:https";
 import { dirname, join } from "node:path";
-import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/index.ts";
+import {
+  repositoryApprovalFingerprint,
+  DependencyUnavailableError,
+  ScopeViolationError,
+} from "../../packages/occ/src/index.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
@@ -23,7 +27,12 @@ function driverFor(registry, socket, sessionDurationSeconds = 3600, publicCa) {
     drivers: { repo: "repository-credentials" },
   };
   return {
-    policy: new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds }),
+    policy: new GitHubRepositoryPolicy(
+      backend,
+      registry,
+      { sessionDurationSeconds },
+      repositoryApprovalFingerprint,
+    ),
     sender: new GitHubNativeRepositorySender(backend, {
       ...(publicCa === undefined ? {} : { publicCa }),
     }),

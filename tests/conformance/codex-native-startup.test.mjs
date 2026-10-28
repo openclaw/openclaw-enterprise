@@ -4,6 +4,7 @@ import vm from "node:vm";
 import { CODEX_FAILURE_OUTPUT_CLASS_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
 import {
+  assertWorkspaceProviderUrl,
   checkCodexStartup,
   createCodexStartup,
   login,
@@ -41,6 +42,22 @@ const probeAuthenticationFailure = { ...probeFailure(), code: "AUTHENTICATION_FA
 const errorEvent = (message) => ({ type: "error", message });
 const failedTurn = (message) => ({ type: "turn.failed", error: { message } });
 
+test("workspace URL evidence requires the single canonical CLI override", () => {
+  const key = "model_providers.oce-codex-workspace.base_url";
+  const correct = key + '="https://chatgpt.com/backend-api/codex"';
+  const lookalike = key + '="https://chatgpt.com.attacker.invalid/backend-api/codex"';
+  assertWorkspaceProviderUrl(["-c", correct]);
+  for (const args of [
+    ["-c", lookalike],
+    ["-c", correct.replace('/codex"', '/codex.attacker"')],
+    ["--model", correct],
+    ["-c", correct, "-c", lookalike],
+    ["-c", correct, "--config=" + lookalike],
+  ]) {
+    assert.throws(() => assertWorkspaceProviderUrl(args), assert.AssertionError);
+  }
+});
+
 // Component conformance: scripted native output, real generated entrypoint and status handler.
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {
   const started = { type: "turn.started" };
@@ -58,6 +75,43 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   );
   const completedTurn = (...events) => [started, ...events, assistant, completed];
   const scenarios = [
+    {
+      name: "workspace PAT native runner consumes generated startup and preserves the gate",
+      protectedInference: "signed",
+      providerPat: true,
+      workspacePat: true,
+      events: completedTurn(),
+      nativeRunner(command, args) {
+        assert.equal(command, "codex");
+        if (args.includes("login")) {
+          return { status: 0 };
+        }
+        assert.ok(args.includes("exec"));
+        assertWorkspaceProviderUrl(args);
+        return { status: 0, stdout: completedTurn().map(JSON.stringify).join("\n") };
+      },
+      expect: ready,
+    },
+    {
+      name: "workspace PAT native refusal consumes startup without restoring stale readiness",
+      protectedInference: "signed",
+      providerPat: true,
+      workspacePat: true,
+      events: completedTurn(),
+      nativeRunner(_command, args) {
+        return args.includes("login")
+          ? { status: 0 }
+          : {
+              status: 1,
+              stdout: JSON.stringify({
+                type: "turn.failed",
+                error: { message: "incompatible policy" },
+              }),
+              stderr: "incompatible policy",
+            };
+      },
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }),
+    },
     {
       name: "protected profile without enrollment refuses before any native process",
       protectedInference: "missing",

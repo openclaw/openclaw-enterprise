@@ -1,3 +1,4 @@
+import { jointWorkspaceProfile } from "./openshell-exchange-capabilities.ts";
 import type {
   Backend,
   CredentialProxyBinding,
@@ -16,12 +17,15 @@ import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./op
 import {
   OpenShellGitRuntime,
   type OpenShellGitRuntimeConfiguration,
+  type JointGitMaterialReceipt,
 } from "./openshell-git-runtime.ts";
 
 export interface OpenShellRepositoryTransport {
   readonly evidence: typeof openShellGitRecipientEvidence;
   bind(
-    owner: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>>,
+    owner: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> & {
+      readonly readOpenShellReceipt?: JointGitMaterialReceipt;
+    },
     pool: PostgresPool,
     emit?: (event: Readonly<Record<string, unknown>>) => void,
   ): Promise<CredentialProxyBinding>;
@@ -61,8 +65,16 @@ export function createOpenShellCapabilities(input: {
     configuration &&
     resolveDelivery &&
     new OpenShellGitRuntime(
-      { ...configuration, ...(input.proxy && { protectedExecution: true }) },
+      {
+        ...configuration,
+        ...(input.proxy && { protectedExecution: true }),
+        ...(input.proxy?.configuration.middlewareName === jointWorkspaceProfile && {
+          jointProfile: jointWorkspaceProfile,
+        }),
+      },
       resolveDelivery,
+      (ctx, installation) =>
+        proxy?.verifyInstallation?.(ctx, installation) ?? Promise.resolve(false),
     );
   const sandbox = input.createSandbox(
     { ...input.sandbox.configuration, ...(input.proxy && { egress: input.proxy.configuration }) },
@@ -90,7 +102,7 @@ export function createOpenShellCapabilities(input: {
   const repositoryTransport: OpenShellRepositoryTransport | undefined = git && {
     evidence: openShellGitRecipientEvidence,
     async bind(owner, pool, emit) {
-      const routes = git.connectRouteStore(pool, emit);
+      const routes = git.connectRouteStore(pool, emit, owner.readOpenShellReceipt);
       if (git.configuration.protectedExecution) {
         if (!owner.protectedGit || !proxy?.bindRepositoryGit) {
           throw new Error("Missing the selected Driver's protected repository Git authority.");

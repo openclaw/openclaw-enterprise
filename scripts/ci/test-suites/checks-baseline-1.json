@@ -13,6 +13,7 @@
     "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
     "tests/conformance/codex-native-startup.test.mjs",
+    "tests/conformance/codex-launch-compat.test.ts",
     "tests/conformance/occ-api-security.test.mjs",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
@@ -119,7 +120,9 @@
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
+    "tests/integration/openshell-joint-provision-gateway.test.ts",
     "tests/integration/protected-driver-registration.test.ts",
+    "tests/integration/protected-codex-pat.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
@@ -472,6 +475,9 @@
       "path": "tests/conformance/codex-native-startup.test.mjs"
     },
     {
+      "path": "tests/conformance/codex-launch-compat.test.ts"
+    },
+    {
       "path": "tests/conformance/split-layout-tenants.test.mjs"
     },
     {
@@ -591,12 +597,23 @@
       ]
     },
     {
+      "path": "tests/integration/openshell-joint-provision-gateway.test.ts",
+      "expectedTests": [
+        "joint provisioning binds both uncached token grants and refuses replaced Gateway identities",
+        "joint token issuer releases each approved destination once to its enrolled supervisor",
+        "one Sandbox's obsolete Pod read cannot revoke another Sandbox or its newly observed supervisor"
+      ]
+    },
+    {
       "path": "tests/integration/protected-driver-registration.test.ts",
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
         "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
         "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
+    },
+    {
+      "path": "tests/integration/protected-codex-pat.test.ts"
     },
     {
       "path": "tests/integration/credential-policy-recovery.test.ts",

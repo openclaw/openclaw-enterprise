@@ -1079,6 +1079,7 @@
               "testing/repository-credentials",
               "flows/agent-presets",
               "flows/credential-source-egress",
+              "flows/joint-model-git-admission",
               "testing/static-egress",
               "testing/protected-repository-custody",
               "reference/sandbox-policies",

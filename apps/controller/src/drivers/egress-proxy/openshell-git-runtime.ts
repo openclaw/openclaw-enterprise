@@ -1,12 +1,28 @@
+import {
+  OpenShellJointGitIssuer,
+  type JointGitIssuerTrust,
+} from "../credential-gateway/openshell-joint-git-issuer.ts";
+import {
+  JointGitSupervisorPods,
+  JointGitRecipientChangedError,
+  observeJointGit,
+  verifyJointProfile,
+  isJointGitProvider,
+  provisionJointGit,
+  type PreparedJointGit,
+} from "./openshell-joint-git-provision.ts";
+import { jointWorkspaceProfile } from "./openshell-exchange-capabilities.ts";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 import { githubInstallationProfile } from "@openclaw-enterprise/contracts";
 import type {
   AgentRevision,
   ProtectedGitHubInstallationMaterial,
+  RepositoryGitInstallationFence,
   ProtectedRepositoryGitAuthority,
   ProtectedRepositoryGitMaterial,
   ProxyRevisionContext,
@@ -80,10 +96,21 @@ export interface OpenShellGitRuntimeConfiguration {
   readonly registrationName: string;
   /** Selected with the paired Sandbox and Credential Proxy, never inferred on an old revision. */
   readonly protectedExecution?: true;
+  readonly jointProfile?: typeof jointWorkspaceProfile;
+  readonly tokenEndpoint?: string;
+  readonly tokenTrust?: JointGitIssuerTrust;
   /** Dedicated 0.1.5 gateway, only operator-controlled writers, no other workspace member. */
   readonly observedHookPreviewWorkspace?: string;
   readonly authority: EgressAuthorityConfiguration;
 }
+export type JointGitMaterialReceipt = (
+  route: RepositoryGitInstallationFence,
+  signal: AbortSignal,
+) => Promise<
+  | Omit<ProtectedGitHubInstallationMaterial, "value">
+  | { readonly absent: "withdrawn" | "unprepared" }
+  | undefined
+>;
 type GitOwner = Awaited<ReturnType<typeof startPreparedGitHubGitOwner>>;
 type ReadMaterial = GitOwner["readOpenShellMaterial"];
 type MaterialReader = {
@@ -412,6 +439,28 @@ function isIpAddressHost(host: string): boolean {
  * whose result was lost.
  */
 export class OpenShellGitRuntime {
+  private jointReceipt: JointGitMaterialReceipt | undefined;
+  private jointIssuer?: OpenShellJointGitIssuer;
+  private issuerServer?: Awaited<ReturnType<OpenShellJointGitIssuer["listen"]>>;
+  private readonly jointPods = new JointGitSupervisorPods();
+  private readonly jointEntries = new Map<
+    string,
+    {
+      readonly revision: Readonly<AgentRevision>;
+      readonly operation: Promise<PreparedJointGit>;
+      readonly stop: AbortController;
+      fence: number;
+      namespace?: ProxyRevisionContext["namespace"];
+      pod: (sandboxId: string, signal: AbortSignal) => ReturnType<JointGitSupervisorPods["read"]>;
+      admittedPod?: string;
+      releaseObserved?: boolean;
+      observed?: {
+        sandboxId: string;
+        podUid: string;
+        wiring: Awaited<ReturnType<typeof observeJointGit>>;
+      };
+    }
+  >();
   private readonly entries = new Map<string, Promise<Entry>>();
   private readonly states = new Map<string, EntryState>();
   /** Bootstrap reservations this worker never sent and could not yet cancel, by revision. */
@@ -429,12 +478,287 @@ export class OpenShellGitRuntime {
   private server?: ReturnType<typeof createOpenShellOnlineGitAuthority>;
   readonly configuration: OpenShellGitRuntimeConfiguration;
   private readonly resolveDelivery: RepositoryGitDeliveryResolver;
+  private readonly verifyJoint:
+    | ((
+        context: ProxyRevisionContext,
+        installation: import("@openclaw-enterprise/contracts").EgressInstallation,
+      ) => Promise<boolean>)
+    | undefined;
   constructor(
     configuration: OpenShellGitRuntimeConfiguration,
     resolveDelivery: RepositoryGitDeliveryResolver,
+    verifyJoint?: (
+      context: ProxyRevisionContext,
+      installation: import("@openclaw-enterprise/contracts").EgressInstallation,
+    ) => Promise<boolean>,
   ) {
     this.configuration = configuration;
+    this.verifyJoint = verifyJoint;
     this.resolveDelivery = resolveDelivery;
+  }
+
+  private jointTransport(tokenEndpoint: string) {
+    const trust = this.configuration.tokenTrust;
+    return {
+      tokenEndpoint,
+      projectedAssertion:
+        !!trust &&
+        "assertionSource" in trust &&
+        trust.assertionSource === "kubernetes-projected-token",
+    };
+  }
+
+  async prepareJoint(
+    revision: Readonly<AgentRevision>,
+    client: OpenShellGatewayClient,
+    workspace: string,
+    sandbox: string,
+    others: readonly string[],
+    signal: AbortSignal,
+    namespace: ProxyRevisionContext["namespace"],
+    pod: (sandboxId: string, signal: AbortSignal) => Promise<string | undefined>,
+    committed?: import("@openclaw-enterprise/contracts").EgressInstallation,
+  ) {
+    const plan = revision.egressPlan;
+    const state = revision.repositoryCredentials;
+    const endpoint = this.configuration.tokenEndpoint;
+    const store = this.routes;
+    const scope = this.resolveDelivery(revision);
+    if (
+      this.configuration.jointProfile !== jointWorkspaceProfile ||
+      !this.configuration.protectedExecution ||
+      !store?.recordJoint ||
+      !this.jointIssuer ||
+      !this.verifyJoint ||
+      !this.owner ||
+      this.stopped.signal.aborted ||
+      !endpoint ||
+      revision.executionAdmission.version !== 8 ||
+      !plan ||
+      plan.generation !== 1 ||
+      plan.policyReductionVersion !== 3 ||
+      plan.routes.length !== 5 ||
+      plan.repositoryGitAuthorization !== "online-request" ||
+      plan.harnessCredentialSource ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated" ||
+      !state ||
+      state.bindings.length !== 1 ||
+      state.bindings[0]?.profile !== githubInstallationProfile ||
+      !scope.jointGrant ||
+      !scope.delivery.installationId ||
+      (state.deadlineWallMs <= Date.now() && !(committed && state.standingApprovalId)) ||
+      !isDeepStrictEqual(scope.binding, state.bindings[0]) ||
+      !isDeepStrictEqual(state, plan.repositoryGit) ||
+      others.length
+    ) {
+      throw new Error(
+        "Joint Git requires its current installation grant and selected token issuer.",
+      );
+    }
+    const live = async (lifetime: AbortSignal) => {
+      if (
+        (await store.owns(revision.id, this.jointEntries.get(revision.id)?.fence ?? 1)) !== true ||
+        this.stopped.signal.aborted ||
+        lifetime.aborted ||
+        (state.deadlineWallMs <= Date.now() && !(committed && state.standingApprovalId)) ||
+        !isDeepStrictEqual(this.resolveDelivery(revision), scope)
+      ) {
+        throw new Error("Joint Git provisioning no longer owns this revision.");
+      }
+    };
+    const observe = (id: string, sig: AbortSignal) =>
+      this.jointPods.read(namespace.name, id, pod, sig);
+    let found = this.jointEntries.get(revision.id);
+    if (!found) {
+      const stop = new AbortController();
+      const lifetime = AbortSignal.any([signal, this.stopped.signal, stop.signal]);
+      const id = plan.execution.executionId;
+      const operation = (async () => {
+        const box = await client.getSandbox({ workspace, name: sandbox }, lifetime);
+        const workspaceId = await this.gateway(client, workspace, lifetime);
+        const providerInput = {
+          revisionId: revision.id,
+          client,
+          workspace,
+          workspaceId,
+          sandbox,
+          bindingId: id,
+          installationId: scope.delivery.installationId!,
+          grant: scope.jointGrant!,
+          ...this.jointTransport(endpoint),
+          signal: lifetime,
+        };
+        if (committed) {
+          if (
+            !box ||
+            box.id !== committed.sandboxId ||
+            !committed.plan.repositoryGit ||
+            !(await this.verifyJoint!(
+              { revision, namespace, plan: committed.plan, signal: lifetime },
+              committed,
+            ))
+          ) {
+            throw new Error("Recorded joint installation is not current.");
+          }
+          const saved = await store.claimJoint?.(revision.id, committed, this.instance);
+          const local = this.jointEntries.get(revision.id);
+          if (
+            !saved ||
+            !local ||
+            !isDeepStrictEqual(saved.desired.grant, scope.jointGrant) ||
+            (await observe(box.id, lifetime))?.uid !== saved.observed.podUid
+          ) {
+            throw new Error("Joint custody cannot be recovered.");
+          }
+          local.fence = saved.fence;
+          local.observed = saved.observed;
+          local.admittedPod = saved.observed.podUid;
+          return provisionJointGit({ ...providerInput, restore: saved.desired.recipients });
+        }
+        if (box) {
+          throw new Error("Joint Git cannot adopt a pre-existing Sandbox for initial enrollment.");
+        }
+        await store.open(
+          {
+            revisionId: revision.id,
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            workspace,
+            sandbox,
+            bindingId: id,
+          },
+          this.instance,
+        );
+        const entry = await provisionJointGit({
+          ...providerInput,
+          beforeWrite: () => live(lifetime),
+        });
+        if (!(await store.recordJoint!(entry))) {
+          throw new Error("Joint Git provider creation was not recorded.");
+        }
+        return entry;
+      })();
+      found = { revision, operation, stop, namespace, pod: observe, fence: 1 };
+      this.jointEntries.set(revision.id, found);
+    }
+    const entry = await found.operation;
+    const lifetime = AbortSignal.any([signal, found.stop.signal, this.stopped.signal]);
+    if (
+      entry.client !== client ||
+      entry.workspace !== workspace ||
+      entry.sandbox !== sandbox ||
+      !isDeepStrictEqual(found.revision, revision)
+    ) {
+      throw new Error("Joint Git owner changed.");
+    }
+    await live(lifetime);
+    return {
+      providers: entry.recipients.map((r) => r.providerName),
+      existingSandboxId: found.observed?.sandboxId,
+      complete: async (box: OpenShellSandboxResponse, runtimeProvider: string) => {
+        const wiring = await observeJointGit(entry, box, runtimeProvider, lifetime);
+        await live(lifetime);
+        const observation = await observe(box.id!, lifetime);
+        const uid = observation?.uid;
+        if (!uid || (found.admittedPod && found.admittedPod !== uid)) {
+          throw new Error("Joint Git supervisor is not current.");
+        }
+        found.admittedPod = uid;
+        const next = { sandboxId: box.id!, podUid: uid, wiring };
+        if (found.observed && !isDeepStrictEqual(found.observed, next)) {
+          throw new Error("Joint Git execution changed.");
+        }
+        if (!found.observed) {
+          if (!(await store.recordJoint!(entry, next))) {
+            throw new Error("Joint Git attachment was not recorded.");
+          }
+          found.observed = next;
+        }
+        if (observation.lifetime.aborted) {
+          throw new Error("Joint Git supervisor is not current.");
+        }
+        return wiring;
+      },
+    };
+  }
+
+  private async jointTarget(identity: OpenShellOnlineGitIdentity, signal: AbortSignal) {
+    for (const e of this.jointEntries.values()) {
+      if (
+        e.stop.signal.aborted ||
+        this.stopped.signal.aborted ||
+        signal.aborted ||
+        !e.namespace ||
+        !e.observed ||
+        e.observed.sandboxId !== identity.sandboxId ||
+        e.revision.egressPlan?.execution.executionId !== identity.bindingId
+      ) {
+        continue;
+      }
+      const entry = await e.operation;
+      if (identity.workspace !== entry.workspace) {
+        continue;
+      }
+      const installation = await this.routes?.jointInstallation?.(
+        e.revision.id,
+        e.observed,
+        e.fence,
+      );
+      if (
+        !installation?.plan.repositoryGit ||
+        !this.verifyJoint ||
+        !isDeepStrictEqual(this.resolveDelivery(e.revision).jointGrant, entry.grant) ||
+        !(await this.verifyJoint(
+          { namespace: e.namespace, revision: e.revision, plan: installation.plan, signal },
+          installation,
+        ))
+      ) {
+        return;
+      }
+      const pod = await e.pod(identity.sandboxId, signal);
+      const podUid = pod?.uid;
+      if (
+        !podUid ||
+        (e.admittedPod && e.admittedPod !== podUid) ||
+        signal.aborted ||
+        e.stop.signal.aborted
+      ) {
+        return;
+      }
+      e.admittedPod = podUid;
+      e.releaseObserved = true;
+      return {
+        entry,
+        podUid,
+        lifetime: AbortSignal.any([pod.lifetime, e.stop.signal, this.stopped.signal]),
+        route: { revisionId: e.revision.id, fence: e.fence, observed: e.observed },
+      };
+    }
+  }
+  private async jointMaterial(identity: OpenShellOnlineGitIdentity, signal: AbortSignal) {
+    const t = await this.jointTarget(identity, signal);
+    if (!t || !this.owner) {
+      return;
+    }
+    const m = await this.owner.readOpenShellMaterial(
+      t.entry.revisionId,
+      signal,
+      t.route,
+      githubInstallationProfile,
+    );
+    if (
+      !m ||
+      !("scope" in m) ||
+      m.grantId !== t.entry.grant.id ||
+      Date.parse(m.expiresAt) <= Date.now() ||
+      signal.aborted ||
+      t.lifetime.aborted ||
+      this.stopped.signal.aborted
+    ) {
+      return;
+    }
+    return { t, m };
   }
 
   private scope(revision: Readonly<AgentRevision>) {
@@ -469,6 +793,151 @@ export class OpenShellGitRuntime {
       throw new Error("OpenShell Git delivery does not match the admitted binding.");
     }
     return scope;
+  }
+
+  async verifyJointExecution(
+    context: Parameters<SandboxRepositoryAccess["verifyExecution"]>[0],
+    location: JointExecutionLocation,
+  ) {
+    const { revision, namespace } = context;
+    const { client, workspace, sandbox } = location;
+    const local = this.jointEntries.get(revision.id);
+    const signal = AbortSignal.any([
+      context.signal,
+      this.stopped.signal,
+      ...(local ? [local.stop.signal] : []),
+    ]);
+    const store = this.routes;
+    if (
+      this.configuration.jointProfile !== jointWorkspaceProfile ||
+      !this.verifyJoint ||
+      !this.configuration.tokenEndpoint ||
+      !store?.standingJoint ||
+      revision.executionAdmission.version !== 8 ||
+      !revision.repositoryCredentials?.standingApprovalId ||
+      signal.aborted
+    ) {
+      return;
+    }
+    const saved = await store.standingJoint(revision);
+    if (
+      !saved ||
+      saved.workspace !== workspace ||
+      saved.sandbox !== sandbox ||
+      !saved.installation.plan.repositoryGit ||
+      !isDeepStrictEqual(saved.original.plan, revision.egressPlan)
+    ) {
+      return;
+    }
+    // Only the original admitting worker may establish the first standing witness. A cold
+    // read confirms an existing witness without acquiring the route or opening a session.
+    if (local) {
+      if (
+        saved.worker !== this.instance ||
+        saved.fence !== local.fence ||
+        !isDeepStrictEqual(local.observed, saved.observed) ||
+        !isDeepStrictEqual(local.revision, revision)
+      ) {
+        return;
+      }
+    }
+    if (
+      !saved.executionFingerprint &&
+      (!local || saved.fence !== 1 || saved.installation.plan.generation !== 1)
+    ) {
+      return;
+    }
+    const scope = this.resolveDelivery(revision);
+    const grant = scope.jointGrant;
+    const original = saved.original.enforcement;
+    const current = saved.installation.enforcement;
+    const key = original.peerKeyId;
+    const signer =
+      saved.installation.plan.generation === 1
+        ? current.peerKeyId
+        : asRecord(current.joint?.ownerEvidence.withdrawal)?.predecessorKey;
+    if (
+      !key ||
+      signer !== key ||
+      !original.joint ||
+      !isDeepStrictEqual(current.joint?.git, original.joint.git) ||
+      !grant ||
+      !scope.delivery.installationId ||
+      !isDeepStrictEqual(grant, saved.desired.grant) ||
+      !isDeepStrictEqual(scope.binding, revision.repositoryCredentials.bindings[0]) ||
+      saved.desired.recipients.length !== 2 ||
+      !(await this.verifyJoint(
+        { namespace, revision, plan: saved.installation.plan, signal },
+        saved.installation,
+      ))
+    ) {
+      return;
+    }
+    const entry = local
+      ? await local.operation
+      : await provisionJointGit({
+          revisionId: revision.id,
+          client,
+          workspace,
+          sandbox,
+          workspaceId: await this.gateway(client, workspace, signal),
+          bindingId: saved.original.plan.execution.executionId,
+          installationId: scope.delivery.installationId,
+          grant,
+          ...this.jointTransport(this.configuration.tokenEndpoint),
+          restore: saved.desired.recipients,
+          signal,
+        });
+    const box = await client.getSandbox({ workspace, name: sandbox }, signal);
+    if (
+      !box ||
+      box.id !== saved.observed.sandboxId ||
+      entry.workspace !== workspace ||
+      entry.sandbox !== sandbox ||
+      !isDeepStrictEqual(
+        entry.recipients.map(({ profile: _, ...r }) => r),
+        saved.desired.recipients,
+      ) ||
+      !isDeepStrictEqual(
+        await observeJointGit(entry, box, saved.observed.wiring.runtimeProvider, signal),
+        saved.observed.wiring,
+      )
+    ) {
+      return;
+    }
+    const pod = await this.jointPods.read(namespace.name, box.id, location.supervisor, signal);
+    if (!pod || pod.uid !== saved.observed.podUid) {
+      return;
+    }
+    // The original release fixes the signer and authenticated provider rules across a
+    // model-only withdrawal. The Git route additionally pins the Pod and provider versions.
+    const fingerprint = sha256Hex(
+      JSON.stringify([
+        revision.id,
+        workspace,
+        box.id,
+        pod.uid,
+        key,
+        original.configurationId,
+        original.joint.git.recipient,
+        saved.desired.recipients.map((r) => [
+          r.host,
+          r.providerId,
+          r.resourceVersion,
+          r.profileVersion,
+        ]),
+      ]),
+    );
+    if (
+      (saved.executionFingerprint && saved.executionFingerprint !== fingerprint) ||
+      !isDeepStrictEqual(await store.standingJoint(revision), saved) ||
+      !isDeepStrictEqual(this.resolveDelivery(revision), scope) ||
+      signal.aborted ||
+      pod.lifetime.aborted
+    ) {
+      return;
+    }
+    return { executionId: revision.id, fingerprint };
   }
 
   /** A read of the same running installation. Only normal reconciliation may adopt one. */
@@ -1343,6 +1812,43 @@ export class OpenShellGitRuntime {
     attached: readonly string[],
     signal: AbortSignal,
   ): Promise<void> {
+    if (revision.egressPlan?.policyReductionVersion === 3) {
+      const entry = await this.jointEntries.get(revision.id)?.operation;
+      if (
+        !entry ||
+        entry.client !== client ||
+        entry.workspace !== workspace ||
+        entry.sandbox !== sandbox
+      ) {
+        return;
+      }
+      if (await client.getSandbox({ workspace, name: sandbox }, signal)) {
+        throw new Error("Joint Git cleanup requires the original Sandbox to be absent.");
+      }
+      for (const r of entry.recipients) {
+        const provider = await client.getProvider(workspace, r.providerName, signal);
+        if (provider) {
+          if (
+            provider.id !== r.providerId ||
+            provider.resourceVersion !== r.resourceVersion ||
+            !isJointGitProvider(provider, workspace, r.profile)
+          ) {
+            throw new Error("Joint Git cleanup refused a changed provider.");
+          }
+          await client.deleteProvider(workspace, r.providerName, signal);
+        }
+        const profile = await client.getProviderProfile(workspace, r.profile.id, signal);
+        if (profile) {
+          if (
+            (await verifyJointProfile(client, workspace, r.profile, signal)) !== r.profileVersion
+          ) {
+            throw new Error("Joint Git cleanup refused a changed profile.");
+          }
+          await client.deleteProviderProfile(workspace, r.profile.id, signal);
+        }
+      }
+      return;
+    }
     let delivery: OpenShellPreparedGitDelivery | undefined;
     try {
       delivery = this.scope(revision).delivery;
@@ -1368,6 +1874,7 @@ export class OpenShellGitRuntime {
   }
 
   withdraw(revisionId: string): void {
+    this.jointEntries.get(revisionId)?.stop.abort();
     // Keep the tombstone to prevent adoption/recreation under the same execution identity,
     // in this process and, through the store, in any later one. The entry itself is dropped
     // once its Sandbox is gone; its reason stays.
@@ -1382,6 +1889,11 @@ export class OpenShellGitRuntime {
   }
 
   withdrawNamespace(namespaceId: string): void {
+    for (const e of this.jointEntries.values()) {
+      if (e.revision.namespaceId === namespaceId) {
+        e.stop.abort();
+      }
+    }
     for (const pending of this.entries.values()) {
       void pending.then(
         (entry) => {
@@ -1416,6 +1928,16 @@ export class OpenShellGitRuntime {
    * a deployment never reports success over a route that cannot open (findings 2136, 2139).
    */
   route(revisionId: string): OpenShellGitRouteState {
+    const joint = this.jointEntries.get(revisionId);
+    if (joint) {
+      if (joint.stop.signal.aborted) {
+        return { state: "blocked", reason: "withdrawn" };
+      }
+      return {
+        state: "pending",
+        reason: joint.releaseObserved ? "awaiting_material" : "unverified",
+      };
+    }
     const state = this.states.get(revisionId);
     if (state === undefined) {
       return { state: "none" };
@@ -2002,6 +2524,38 @@ export class OpenShellGitRuntime {
     if (!this.owner || this.stopped.signal.aborted || signal.aborted) {
       return;
     }
+    if (this.configuration.jointProfile) {
+      const t = await this.jointTarget(identity, signal);
+      const m = t && (await this.jointReceipt?.(t.route, signal));
+      if (
+        !t ||
+        !m ||
+        "absent" in m ||
+        m.grantId !== t.entry.grant.id ||
+        t.lifetime.aborted ||
+        signal.aborted ||
+        this.stopped.signal.aborted
+      ) {
+        return;
+      }
+
+      return {
+        ...identity,
+        executionId: t.entry.revisionId,
+        podLifetime: t.lifetime,
+        scope: m.scope,
+        installationId: m.installationId,
+        sessionId: m.sessionId,
+        providerInstanceId: m.providerInstanceId,
+        grantId: m.grantId,
+        apiOrigin: m.apiOrigin,
+        installed: {
+          route: t.route,
+          preparationAttemptId: m.preparationAttemptId,
+          materialVersion: m.materialVersion,
+        },
+      };
+    }
     let reason = "no_binding";
     let denied: Entry | undefined;
     for (const pending of this.entries.values()) {
@@ -2148,7 +2702,12 @@ export class OpenShellGitRuntime {
   }
 
   /** Composition supplies this Driver's store. Neither the pool nor this store is a sender port. */
-  connectRouteStore(pool: PostgresPool, emit?: OpenShellGitRuntimeEmit): OpenShellGitRouteStore {
+  connectRouteStore(
+    pool: PostgresPool,
+    emit?: OpenShellGitRuntimeEmit,
+    receipt?: JointGitMaterialReceipt,
+  ): OpenShellGitRouteStore {
+    this.jointReceipt = receipt;
     this.routes = new PostgresOpenShellGitRouteStore(pool);
     this.emit = emit;
     return this.routes;
@@ -2224,11 +2783,89 @@ export class OpenShellGitRuntime {
       ...("authorizeOnlineRequest" in owner
         ? { authorizeOnlineRequest: owner.authorizeOnlineRequest }
         : { approve: owner.authorizeOpenShellRequest }),
+      ...(this.configuration.jointProfile && {
+        permit: async (
+          identity: OpenShellOnlineGitIdentity,
+          host: "github.com" | "api.github.com",
+          binding: OpenShellOnlineGitBinding,
+          until: number,
+          signal: AbortSignal,
+        ) => {
+          const t = await this.jointTarget(identity, signal);
+          if (
+            !t ||
+            binding.scope !== githubInstallationProfile ||
+            !binding.podLifetime ||
+            binding.podLifetime.aborted ||
+            t.lifetime.aborted ||
+            !isDeepStrictEqual(binding.installed.route, t.route) ||
+            Date.now() >= until ||
+            signal.aborted
+          ) {
+            return false;
+          }
+          const current = async (sig: AbortSignal) => {
+            const next = await this.jointTarget(identity, sig);
+            const receipt = next && (await this.jointReceipt?.(next.route, sig));
+            return (
+              !!receipt &&
+              !("absent" in receipt) &&
+              receipt.grantId === binding.grantId &&
+              receipt.sessionId === binding.sessionId &&
+              receipt.preparationAttemptId === binding.installed.preparationAttemptId &&
+              receipt.materialVersion === binding.installed.materialVersion &&
+              !sig.aborted &&
+              !!next &&
+              next.entry === t.entry &&
+              next.podUid === t.podUid &&
+              isDeepStrictEqual(next.route, t.route) &&
+              !this.stopped.signal.aborted
+            );
+          };
+          return (
+            this.jointIssuer?.permit({
+              ...identity,
+              host,
+              until,
+              podUid: t.podUid,
+              sandboxName: t.entry.sandbox,
+              lifetime: binding.podLifetime,
+              current,
+              read: async (sig: AbortSignal) => {
+                const v = await this.jointMaterial(identity, sig);
+                if (
+                  v?.m.preparationAttemptId === binding.installed.preparationAttemptId &&
+                  v.m.materialVersion === binding.installed.materialVersion &&
+                  v.m.sessionId === binding.sessionId &&
+                  v.m.grantId === binding.grantId
+                ) {
+                  return v.m;
+                }
+              },
+            }) === true
+          );
+        },
+      }),
       onDeny: (denial) => {
         this.emit?.({ event: "worker.openshell-git-denied", ...denial });
       },
     });
     try {
+      if (this.configuration.jointProfile) {
+        const { tokenEndpoint, tokenTrust } = this.configuration;
+        if (
+          !tokenEndpoint ||
+          !tokenTrust ||
+          Number(new URL(tokenEndpoint).port || 443) === config.port
+        ) {
+          throw new Error("Joint Git requires a separate authenticated token issuer listener.");
+        }
+        this.jointIssuer = new OpenShellJointGitIssuer(tokenEndpoint, tokenTrust);
+        this.issuerServer = await this.jointIssuer.listen(config.host, {
+          key: privateKey,
+          cert: certificate,
+        });
+      }
       await bindOpenShellEgressAuthority(
         this.server,
         `${config.host.includes(":") ? `[${config.host}]` : config.host}:${config.port}`,
@@ -2236,6 +2873,7 @@ export class OpenShellGitRuntime {
         privateKey,
       );
     } catch (error) {
+      this.issuerServer?.close();
       this.server.forceShutdown();
       this.owner = undefined;
       throw error;
@@ -2244,6 +2882,26 @@ export class OpenShellGitRuntime {
     }
     const tick = () => {
       this.running = (async () => {
+        for (const e of this.jointEntries.values()) {
+          if (!e.observed || e.stop.signal.aborted) {
+            continue;
+          }
+          try {
+            const entry = await e.operation;
+            const current = await this.jointTarget(
+              {
+                bindingId: entry.bindingId,
+                workspace: entry.workspace,
+                sandboxId: e.observed.sandboxId,
+                requestId: "",
+              },
+              AbortSignal.any([this.stopped.signal, e.stop.signal, AbortSignal.timeout(5000)]),
+            );
+            e.releaseObserved = !!current;
+          } catch {
+            e.releaseObserved = false;
+          }
+        }
         for (const pending of this.entries.values()) {
           const entry = await pending.catch(() => undefined);
           if (entry) {
@@ -2263,12 +2921,22 @@ export class OpenShellGitRuntime {
     this.stopped.abort();
     clearTimeout(this.timer);
     this.server?.forceShutdown();
+    this.issuerServer?.close();
+    this.jointEntries.clear();
+    this.jointPods.clear();
     await this.running;
     this.owner = undefined;
     this.entries.clear();
     this.states.clear();
     this.unsentBootstraps.clear();
   }
+}
+
+interface JointExecutionLocation {
+  readonly client: OpenShellGatewayClient;
+  readonly workspace: string;
+  readonly sandbox: string;
+  readonly supervisor: (id: string, signal: AbortSignal) => Promise<string | undefined>;
 }
 
 interface StandingGitExecution {
@@ -2283,14 +2951,29 @@ export function openShellRepositoryAccess(
   git: OpenShellGitRuntime,
   standing: (
     context: Parameters<SandboxRepositoryAccess["verifyExecution"]>[0],
-  ) => StandingGitExecution | undefined,
+  ) => StandingGitExecution | JointExecutionLocation | undefined,
 ): SandboxRepositoryAccess {
   return {
-    verifyExecution: (context) =>
-      git.verifyExecution(context.revision, context.signal, async () => standing(context)),
+    verifyExecution: (context) => {
+      if (context.revision.egressPlan?.policyReductionVersion === 3) {
+        const location = standing(context);
+        return location && "supervisor" in location
+          ? git.verifyJointExecution(context, location).catch((error: unknown) => {
+              if (!(error instanceof JointGitRecipientChangedError)) {
+                throw error;
+              }
+              return undefined;
+            })
+          : Promise.resolve(undefined);
+      }
+      return git.verifyExecution(context.revision, context.signal, async () => {
+        const location = standing(context);
+        return location && "continuity" in location ? location : undefined;
+      });
+    },
     retireExpired: async (context) => {
       const owner = await standing(context);
-      return owner
+      return owner && "continuity" in owner
         ? git.retireExpiredRepositoryAccess(
             context.revision,
             owner.client,

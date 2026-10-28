@@ -40,7 +40,7 @@ export function createKubernetesAuthenticationOptionsSchema(): JSONSchema {
 export function validateKubernetesAuthentication(
   value: unknown,
   validationFailure: (message: string, path: string) => Error,
-): void {
+): KubernetesAuthentication {
   const authentication = asRecord(value);
   if (authentication === undefined) {
     throw validationFailure("Explicit Kubernetes authentication is required.", "/authentication");
@@ -52,7 +52,7 @@ export function validateKubernetesAuthentication(
         "/authentication",
       );
     }
-    return;
+    return { mode: "inCluster" };
   }
   if (authentication.mode !== "kubeconfig") {
     throw validationFailure(
@@ -89,4 +89,5 @@ export function validateKubernetesAuthentication(
       "/authentication/context",
     );
   }
+  return { mode: "kubeconfig", context: authentication.context, kubeconfigPath: path };
 }

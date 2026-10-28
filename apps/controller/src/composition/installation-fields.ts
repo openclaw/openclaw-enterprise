@@ -2,6 +2,8 @@
 // Driver binding remain in their owning composition modules.
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
+import type { JointGitIssuerTrust } from "../drivers/credential-gateway/openshell-joint-git-issuer.ts";
+import type { KubernetesAuthentication } from "../drivers/kubernetes/authentication.ts";
 
 export type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -292,14 +294,122 @@ export function requireChartListener(
 export function openShellRepositoryConfiguration(
   input: unknown,
   mode: "development" | "production",
+  parseAuthentication: (value: ConfigurationRecord) => KubernetesAuthentication,
 ) {
   if (input === undefined) {
     return undefined;
   }
   const value = object(input, "repository.openShell");
-  closed(value, ["registrationName", "authority"], "repository.openShell");
+  closed(
+    value,
+    ["registrationName", "authority", "tokenEndpoint", "tokenTrust"],
+    "repository.openShell",
+  );
+  let tokenTrust: JointGitIssuerTrust | undefined;
+  if (value.tokenTrust !== undefined || value.tokenEndpoint !== undefined) {
+    const trust = object(value.tokenTrust, "repository.openShell.tokenTrust");
+    const endpoint = new URL(nonempty(value.tokenEndpoint, "repository.openShell.tokenEndpoint"));
+    if (
+      endpoint.protocol !== "https:" ||
+      endpoint.pathname !== "/token/git" ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.hash ||
+      endpoint.search ||
+      endpoint.href !== value.tokenEndpoint
+    ) {
+      throw new Error("Invalid Git Token Service URL.");
+    }
+    if (trust.assertionSource === "kubernetes-projected-token") {
+      closed(
+        trust,
+        [
+          "assertionSource",
+          "clusterIssuer",
+          "namespace",
+          "gatewayId",
+          "supervisorImageDigest",
+          "supervisorServiceAccountName",
+          "authentication",
+        ],
+        "repository.openShell.tokenTrust",
+      );
+      const clusterIssuer = nonempty(
+        trust.clusterIssuer,
+        "repository.openShell.tokenTrust.clusterIssuer",
+      );
+      const issuer = new URL(clusterIssuer);
+      if (
+        issuer.protocol !== "https:" ||
+        issuer.username ||
+        issuer.password ||
+        issuer.hash ||
+        issuer.search ||
+        (issuer.href !== clusterIssuer && issuer.origin !== clusterIssuer)
+      ) {
+        throw new Error("Invalid projected token issuer.");
+      }
+      const dns = (field: string) => {
+        const v = nonempty(trust[field], "repository.openShell.tokenTrust." + field);
+        if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(v)) {
+          throw new Error("Invalid Git supervisor identity configuration.");
+        }
+        return v;
+      };
+      const digest = nonempty(
+        trust.supervisorImageDigest,
+        "repository.openShell.tokenTrust.supervisorImageDigest",
+      );
+      if (!/^sha256:[a-f0-9]{64}$/.test(digest)) {
+        throw new Error("Invalid supervisor image digest.");
+      }
+      const auth = object(trust.authentication, "repository.openShell.tokenTrust.authentication");
+      const authentication = parseAuthentication(auth);
+      tokenTrust = {
+        assertionSource: trust.assertionSource,
+        clusterIssuer,
+        namespace: dns("namespace"),
+        gatewayId: dns("gatewayId"),
+        supervisorServiceAccountName: dns("supervisorServiceAccountName"),
+        supervisorImageDigest: digest,
+        authentication,
+      };
+    } else {
+      closed(
+        trust,
+        ["bundlePath", "subjectPrefix", "algorithm"],
+        "repository.openShell.tokenTrust",
+      );
+      const bundlePath = nonempty(trust.bundlePath, "repository.openShell.tokenTrust.bundlePath");
+      const subjectPrefix = nonempty(
+        trust.subjectPrefix,
+        "repository.openShell.tokenTrust.subjectPrefix",
+      );
+      const url = new URL(subjectPrefix);
+      const algorithm = trust.algorithm;
+      if (
+        !isAbsolute(bundlePath) ||
+        url.protocol !== "spiffe:" ||
+        !url.hostname ||
+        !url.pathname.endsWith("/") ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash ||
+        url.href !== subjectPrefix ||
+        (algorithm !== "RS256" && algorithm !== "ES256" && algorithm !== "EdDSA")
+      ) {
+        throw new Error("Invalid joint Git issuer trust or endpoint.");
+      }
+      tokenTrust = Object.freeze({ bundlePath, subjectPrefix, algorithm });
+    }
+  }
   return {
+    ...(tokenTrust && { tokenTrust }),
     registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
+    ...(value.tokenEndpoint !== undefined && {
+      tokenEndpoint: nonempty(value.tokenEndpoint, "repository.openShell.tokenEndpoint"),
+    }),
     authority: egressAuthorityConfiguration(
       value.authority,
       mode,

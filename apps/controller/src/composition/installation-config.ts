@@ -1,5 +1,6 @@
 import {
   openShellProxyConfiguration,
+  openShellRepositoryConfiguration,
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
 import {
@@ -62,6 +63,7 @@ import {
   type CredentialProxyCapacity,
   type NativeWorkerSupport,
   resolveCredentialProxyCapacity,
+  repositoryApprovalFingerprint,
   type OpenClawController,
   DriverConfigurationRegistry,
   type PostgresPlatformState,
@@ -697,6 +699,7 @@ export async function loadInstallationConfiguration(options: {
   const repositoryConfiguration = githubRepositoryConfiguration(
     configuration.repository,
     options.mode,
+    openShellRepositoryConfiguration,
   );
   const repoSelection =
     repositoryConfiguration &&
@@ -793,6 +796,31 @@ export async function loadInstallationConfiguration(options: {
     environment,
     chartListeners.openshellGit,
   );
+
+  const chartGitToken = environment.OCC_OPENSHELL_GIT_TOKEN_ENDPOINT;
+  if (chartGitToken !== undefined) {
+    const receipt = repositoryTransportConfiguration;
+    const selected =
+      proxySelection?.configuration.middlewareName === "codex-workspace-pat-with-git-v2";
+    if (
+      (chartGitToken === "disabled" && selected) ||
+      (chartGitToken !== "disabled" &&
+        (!selected ||
+          receipt?.tokenEndpoint !== chartGitToken ||
+          !receipt.tokenTrust ||
+          environment.OCC_OPENSHELL_GIT_TOKEN_ASSERTION_SOURCE !==
+            ("assertionSource" in receipt.tokenTrust
+              ? receipt.tokenTrust.assertionSource
+              : "spiffe-jwt-svid") ||
+          (receipt?.tokenTrust &&
+            "bundlePath" in receipt.tokenTrust &&
+            receipt.tokenTrust.bundlePath !== "/etc/openclaw/openshell-git/jwt-bundle.json")))
+    ) {
+      throw new Error(
+        "The joint Git issuer endpoint and assertion trust must match Helm openshellGit.jointTokenIssuer.",
+      );
+    }
+  }
 
   const backends = backendConfiguration(
     configuration.backend,
@@ -1114,6 +1142,7 @@ export async function loadInstallationConfiguration(options: {
                 configuration: { ...repoSelection.configuration, ...nativeRepositorySelection },
               }
             : repoSelection,
+          fingerprint: repositoryApprovalFingerprint,
           protectedGit: repositoryDeliveryMode === "protected",
           configuration: repositoryConfiguration,
         });

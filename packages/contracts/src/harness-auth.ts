@@ -1,6 +1,7 @@
 import { immutableCopy } from "@openclaw-enterprise/utils";
-import { Check } from "typebox/value";
+import { Check, Equal } from "typebox/value";
 import { HarnessAuthBindingSchema } from "./api/common.ts";
+import type { CredentialProxyDriver, CredentialProviderDefinition } from "./credential-proxy.ts";
 import type {
   HarnessAuthBinding,
   HarnessAuthSnapshot,
@@ -48,4 +49,31 @@ export function harnessAuthBindingFromSnapshot(snapshot: HarnessAuthSnapshot): H
     return { method: snapshot.method, sourceId: snapshot.sourceId };
   }
   return { method: snapshot.method };
+}
+
+/** Resolve only the exact admitted Proxy provider and enforced sender; ambiguity fails closed. */
+export function proxyHarnessAuthProvider(
+  driver: CredentialProxyDriver | undefined,
+  auth: Extract<HarnessAuthSnapshot, { method: "credential_source" }>,
+): CredentialProviderDefinition | undefined {
+  if (!driver || auth.credentialProxyId !== driver.id || !auth.egress) {
+    return undefined;
+  }
+  const control = driver.sourceControl;
+  if (
+    !Equal(control.backend, auth.egress.key.backend) ||
+    !Equal(control.sender, auth.egress.sender) ||
+    !Equal(control.resolver, auth.egress.resolver)
+  ) {
+    return undefined;
+  }
+  const providers = control.providers.filter(
+    (provider) => provider.sourceType.type === auth.sourceType,
+  );
+  const provider = providers.length === 1 ? providers[0] : undefined;
+  return provider?.sourceOwnership === "proxy" &&
+    Equal(provider.ref, auth.egress.key.provider) &&
+    provider.sourceType.harnessAuth?.loginMode === auth.loginMode
+    ? provider
+    : undefined;
 }

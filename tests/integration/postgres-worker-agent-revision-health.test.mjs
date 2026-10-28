@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -568,9 +569,14 @@ test(
     const sender = new GitHubNativeRepositorySender(repositoryBackend, {
       publicCa: credentials.tls.ca,
     });
-    const driver = new GitHubRepositoryPolicy(repositoryBackend, credentials.registry, {
-      sessionDurationSeconds: 60,
-    });
+    const driver = new GitHubRepositoryPolicy(
+      repositoryBackend,
+      credentials.registry,
+      {
+        sessionDurationSeconds: 60,
+      },
+      repositoryApprovalFingerprint,
+    );
     const receiptServer = await startRepositoryReceiptServer({
       state: fixture.state,
       controlSocket: credentials.config.gateway.controlSocket,

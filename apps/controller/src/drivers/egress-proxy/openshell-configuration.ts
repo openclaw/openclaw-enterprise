@@ -4,13 +4,23 @@ import {
   nonempty,
   object,
   egressAuthorityConfiguration,
+  openShellRepositoryConfiguration as parseRepositoryFields,
   InstallationFieldError,
   type InstallationFieldDetail,
 } from "../../composition/installation-fields.ts";
+import { validateKubernetesAuthentication } from "../kubernetes/authentication.ts";
 import { preparedGitHubConfiguration } from "../repo/github/credentials/prepared-configuration.ts";
+import { jointWorkspaceProfile } from "./openshell-exchange-capabilities.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
-export { openShellRepositoryConfiguration } from "../../composition/installation-fields.ts";
+export function openShellRepositoryConfiguration(
+  input: unknown,
+  mode: "development" | "production",
+) {
+  return parseRepositoryFields(input, mode, (auth) =>
+    validateKubernetesAuthentication(auth, (reason) => new Error(reason)),
+  );
+}
 
 /** The adapter selects its discovery profile from its own repository transport configuration. */
 export function openShellProxyConfiguration(
@@ -19,6 +29,43 @@ export function openShellProxyConfiguration(
   repository: OpenShellGitRuntimeConfiguration | undefined,
 ) {
   const egress = object(input, "drivers.credential_proxy.configuration");
+  if (egress.middlewareName === jointWorkspaceProfile) {
+    closed(
+      egress,
+      ["middlewareName", "authorityScope", "authority"],
+      "drivers.credential_proxy.configuration",
+    );
+    if (
+      !repository ||
+      egress.authorityScope !== "execution" ||
+      repository.registrationName === jointWorkspaceProfile ||
+      repository.observedHookPreviewWorkspace
+    ) {
+      throw new Error(
+        "Joint workspace access requires a distinct protected repository registration.",
+      );
+    }
+    const authority = egressAuthorityConfiguration(
+      egress.authority,
+      mode,
+      "drivers.credential_proxy.configuration.authority",
+    );
+    if (
+      authority.audience === repository.authority.audience ||
+      (authority.port === repository.authority.port && authority.host === repository.authority.host)
+    ) {
+      throw new Error("Joint workspace access requires distinct model and repository authorities.");
+    }
+    return {
+      repository,
+      authority,
+      policy: {
+        middlewareName: jointWorkspaceProfile,
+        authorityScope: "execution",
+        repositoryMiddlewareName: repository.registrationName,
+      },
+    };
+  }
   if (repository) {
     closed(egress, ["observedHookPreviewWorkspace"], "drivers.credential_proxy.configuration");
     const preview =

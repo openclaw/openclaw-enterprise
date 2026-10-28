@@ -1,3 +1,4 @@
+import { verifiedSourceIdentityMatches } from "@openclaw-enterprise/contracts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
@@ -430,6 +431,8 @@ export interface CredentialSourceReadRepository {
 export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
 
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
+  readPolicyEffect: import("../ports/credential-policy-reduction.ts").CredentialPolicyReductionUnitOfWork["credentialSources"]["readPolicyEffect"];
+  comparePolicyEffect: import("../ports/credential-policy-reduction.ts").CredentialPolicyReductionUnitOfWork["credentialSources"]["comparePolicyEffect"];
   rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
   recordEgressInstallation(installation: EgressInstallation): Promise<void>;
   saveCredentialPolicyReduction(
@@ -622,10 +625,18 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
       return normalizeHarnessAuthBinding(value) !== null;
     }
     if (value.method === "credential_source") {
+      if (value.credentialProxyId !== undefined) {
+        assertProtectedEgressSource(value.egress, namespaceId, value.sourceId);
+      }
       return (
         normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
-        Object.keys(value).length === 5 &&
-        isNonEmptyString(value.credentialGatewayId) &&
+        (value.credentialProxyId === undefined
+          ? Object.keys(value).length === 5 &&
+            isNonEmptyString(value.credentialGatewayId) &&
+            value.egress === undefined
+          : Object.keys(value).length === 6 &&
+            isNonEmptyString(value.credentialProxyId) &&
+            value.credentialGatewayId === undefined) &&
         isNonEmptyString(value.sourceType) &&
         (value.loginMode === "api_key" ||
           value.loginMode === "codex_pat" ||
@@ -1045,6 +1056,10 @@ interface PlatformSnapshot {
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
+  readonly credentialPolicyEffects: Map<
+    string,
+    import("@openclaw-enterprise/contracts").CredentialPolicyEffect
+  >;
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
@@ -1156,6 +1171,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     egressInstallations: new Map(
       Array.from(snapshot.egressInstallations, ([key, value]) => [key, storedCopy(value)]),
     ),
+    credentialPolicyEffects: new Map(snapshot.credentialPolicyEffects),
     credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
     credentialWithdrawals: new Map(
       Array.from(snapshot.credentialWithdrawals, ([key, withdrawal]) => [
@@ -1452,7 +1468,11 @@ function assertProtectedEgressSource(
   const secret = value?.secret;
   if (
     !common ||
-    Object.keys(value).length !== 9 ||
+    Object.keys(value).length !== (value.verifiedIdentity === undefined ? 9 : 10) ||
+    (value.verifiedIdentity !== undefined &&
+      !verifiedSourceIdentityMatches(
+        value as unknown as import("@openclaw-enterprise/contracts").StaticEgressSource,
+      )) ||
     value.schemaVersion !== 1 ||
     value.adoption !== "live" ||
     value.retention !== "none" ||
@@ -2084,6 +2104,23 @@ function repositories(
       original,
     );
   const credentialSources: CredentialSourceRepository = {
+    readPolicyEffect: async (ns, revision, step) =>
+      snapshot.credentialPolicyEffects.get(JSON.stringify([ns, revision, step])),
+    comparePolicyEffect: async (ns, revision, step, prior, next) => {
+      const key = JSON.stringify([ns, revision, step]);
+      if (
+        !isDeepStrictEqual(snapshot.credentialPolicyEffects.get(key), prior) ||
+        (prior
+          ? !next.receipt ||
+            prior.receipt ||
+            !isDeepStrictEqual({ ...prior, receipt: next.receipt }, next)
+          : next.receipt)
+      ) {
+        return false;
+      }
+      snapshot.credentialPolicyEffects.set(key, immutableCopy(next));
+      return true;
+    },
     listCredentialPolicyReductions: async (namespaceId, revisionId) =>
       [...snapshot.credentialPolicyReductions.values()].filter(
         ({ request }) =>
@@ -3730,6 +3767,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     presets: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),
+    credentialPolicyEffects: new Map(),
     credentialPolicyReductions: new Map(),
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),

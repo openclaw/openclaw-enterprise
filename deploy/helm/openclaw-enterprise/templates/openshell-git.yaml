@@ -1,13 +1,39 @@
-{{- if .Values.openshellGit.enabled }}
 {{- $git := .Values.openshellGit }}
-{{- if .Values.egressAuthority.enabled }}
-{{- fail "openshellGit cannot be combined with egressAuthority" }}
+{{- $issuer := $git.jointTokenIssuer }}
+{{- $model := .Values.egressAuthority }}
+{{- if not (kindIs "bool" $issuer.enabled) }}
+{{- fail "openshellGit.jointTokenIssuer.enabled must be a boolean" }}
+{{- end }}
+{{- if and $issuer.enabled (not (and $git.enabled $model.enabled)) }}
+{{- fail "openshellGit.jointTokenIssuer.enabled requires both openshellGit.enabled and egressAuthority.enabled" }}
+{{- end }}
+{{- if $git.enabled }}
+{{- if and $model.enabled (not $issuer.enabled) }}
+{{- fail "openshellGit cannot be combined with egressAuthority without explicit openshellGit.jointTokenIssuer.enabled" }}
 {{- end }}
 {{- include "openclaw.validateResourceName" (dict "label" "openshellGit.tlsSecretName" "value" (required "openshellGit.tlsSecretName is required" $git.tlsSecretName)) }}
 {{- include "openclaw.validateResourceName" (dict "label" "openshellGit.issuerPublicKeyConfigMapName" "value" (required "openshellGit.issuerPublicKeyConfigMapName is required" $git.issuerPublicKeyConfigMapName)) }}
 {{- $port := include "openclaw.positiveSafeInteger" (dict "name" "openshellGit.port" "value" $git.port "port" true) | int }}
 {{- if or (lt $port 1024) (gt $port 65535) (eq $port 8443) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
 {{- fail "openshellGit.port must be an unprivileged TCP port distinct from repository and metrics listeners" }}
+{{- end }}
+{{- if $issuer.enabled }}
+{{- if not (has $issuer.assertionSource (list "spiffe-jwt-svid" "kubernetes-projected-token")) }}
+{{- fail "openshellGit.jointTokenIssuer.assertionSource must select SPIFFE JWT-SVID or Kubernetes projected token trust" }}
+{{- end }}
+{{- if eq $issuer.assertionSource "spiffe-jwt-svid" }}
+{{- include "openclaw.validateResourceName" (dict "label" "openshellGit.jointTokenIssuer.bundleConfigMapName" "value" (required "openshellGit.jointTokenIssuer.bundleConfigMapName is required" $issuer.bundleConfigMapName)) }}
+{{- else if $issuer.bundleConfigMapName }}
+{{- fail "projected Git issuer does not use a SPIFFE bundleConfigMapName" }}
+{{- end }}
+{{- $token := include "openclaw.positiveSafeInteger" (dict "name" "openshellGit.jointTokenIssuer.port" "value" $issuer.port "port" true) | int }}
+{{- $modelPort := int $model.port }}
+{{- if or (eq $modelPort $port) (eq $modelPort $token) (eq $port $token) }}
+{{- fail "joint model authority, OpenShell Git middleware and Git token issuer require three distinct ports" }}
+{{- end }}
+{{- if or (lt $token 1024) (gt $token 65535) (eq $token 8443) (and .Values.metrics.enabled (eq $token (int .Values.metrics.port))) }}
+{{- fail "openshellGit.jointTokenIssuer.port must be an unprivileged TCP port distinct from repository and metrics listeners" }}
+{{- end }}
 {{- end }}
 {{- if or (not (kindIs "slice" $git.clients)) (not $git.clients) }}
 {{- fail "openshellGit.clients must select trusted supervisor callers" }}
@@ -21,7 +47,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: openclaw-enterprise-openshell-git
+  name: {{ include "openclaw.openshellGit.serviceName" . }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "worker") | nindent 4 }}
 spec:
@@ -35,6 +61,12 @@ spec:
       port: {{ $port }}
       targetPort: openshell-git
       protocol: TCP
+    {{- if $issuer.enabled }}
+    - name: git-token-https
+      port: {{ $issuer.port }}
+      targetPort: {{ $issuer.port }}
+      protocol: TCP
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -53,4 +85,8 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $port }}
+        {{- if $issuer.enabled }}
+        - protocol: TCP
+          port: {{ $issuer.port }}
+        {{- end }}
 {{- end }}

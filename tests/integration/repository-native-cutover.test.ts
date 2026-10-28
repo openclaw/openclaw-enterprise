@@ -29,7 +29,10 @@ import { createGitHubStaticTokenOwner } from "../../apps/controller/src/drivers/
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import type { RepositoryServiceFactory } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
 import type { RepositoryCredentialBoundSessionInput } from "../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
-import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import {
+  repositoryApprovalFingerprint,
+  InMemoryPlatformState,
+} from "../../packages/occ/src/index.ts";
 import {
   seedSessionRevision,
   sessionAttempt,
@@ -85,7 +88,12 @@ async function fixture(t: TestContext) {
   });
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
   const backend = { id: registry.backendId, drivers: { repo: "repository-credentials" }, client };
-  const policy = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 600 });
+  const policy = new GitHubRepositoryPolicy(
+    backend,
+    registry,
+    { sessionDurationSeconds: 600 },
+    repositoryApprovalFingerprint,
+  );
   const binding = policy.resolve({
     namespaceId,
     bindings: [{ repositoryRef: "project", profile: "git-write" }],

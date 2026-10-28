@@ -1,3 +1,4 @@
+import { proxyHarnessAuthProvider } from "@openclaw-enterprise/contracts";
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
@@ -8,6 +9,8 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   harnessEgressEnrollment,
+  isModelInferenceGrant,
+  isWorkspaceInferenceGrant,
   COMPUTE_RELEASE_PUBLIC_KEY,
   computeReleasePublicKey,
   signComputeExecutionRelease,
@@ -209,6 +212,7 @@ import {
 import { managedGatewayConfiguration, validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
+import { PROTECTED_EGRESS_MARKER } from "../codex-workspace-client.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
 import {
@@ -250,6 +254,10 @@ import {
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
+  CURRENT_AGENT_RUNTIME_ENTRYPOINT,
+  CURRENT_AGENT_WITH_NODE_ENTRYPOINT,
+  LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
@@ -573,6 +581,7 @@ interface GatewayConfigurationSnapshot {
   readonly nativeWorkerNodeId?: string;
 }
 
+const CODEX_LAUNCH_V2 = "codex-launch:v2:";
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
 
 interface PluginRuntimeSnapshot {
@@ -1085,8 +1094,11 @@ function prepareHarnessAuth(
     // ordinary model clients construct their request; the authority replaces its header.
     if (resolvedAuth.source.egress !== undefined) {
       environment.push({
-        name: harnessModelAuthentication(configuration).environmentName,
-        value: "oce-protected-egress",
+        name:
+          harness.id === "codex" && resolvedAuth.loginMode === "codex_pat"
+            ? CODEX_ACCESS_TOKEN
+            : harnessModelAuthentication(configuration).environmentName,
+        value: PROTECTED_EGRESS_MARKER,
       });
     }
     // The paired Sandbox supplies the credential environment; no Secret is projected here.
@@ -4603,8 +4615,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       // The paired Sandbox injects the credential, so this path never projects a model Secret.
       if (
         this.sandboxDriver === undefined ||
-        this.credentialGatewayDriver === undefined ||
-        auth.credentialGatewayId !== this.credentialGatewayDriver.id ||
+        (auth.credentialProxyId !== undefined
+          ? !proxyHarnessAuthProvider(this.proxyDriver, auth)
+          : this.credentialGatewayDriver === undefined ||
+            auth.credentialGatewayId !== this.credentialGatewayDriver.id) ||
         credentialSourceType?.type !== auth.sourceType ||
         credentialSourceType.harnessAuth?.loginMode !== auth.loginMode ||
         credentialSourceType.harnessAuth.modelProvider !== "openai" ||
@@ -7047,6 +7061,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 namespace: sandboxContext.namespace,
                 revision,
                 plan: currentEgressInstallation?.plan ?? revision.egressPlan,
+                ...(context?.policyEffects && { policyEffects: context.policyEffects }),
+                ...(context?.jointAdmissionCurrent && {
+                  jointAdmissionCurrent: context.jointAdmissionCurrent,
+                }),
                 signal: sandboxContext.signal,
               };
         if (
@@ -7080,6 +7098,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
               );
         const requirements = {
           ...renderedRequirements,
+          ...(currentEgressInstallation?.plan.policyReductionVersion === 3 && {
+            currentEgressInstallation,
+          }),
           ...(proxyWiring === undefined ? {} : { proxyWiring }),
           environment: [
             ...renderedRequirements.environment,
@@ -11150,6 +11171,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.harnessAuth.method !== "credential_source") {
       return undefined;
     }
+    if (revision.harnessAuth.credentialProxyId !== undefined) {
+      const provider = proxyHarnessAuthProvider(this.proxyDriver, revision.harnessAuth);
+      if (!provider) {
+        throw new OwnershipFailure("The admitted Harness provider is unavailable.");
+      }
+      return provider.sourceType;
+    }
     const sourceType = revision.harnessAuth.sourceType;
     const catalog = await this.requireCredentialGateway().listSourceTypes({
       signal: this.operationSignal(),
@@ -11175,17 +11203,44 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.harnessAuth.method !== "credential_source") {
       return [];
     }
-    const sourceId = revision.harnessAuth.sourceId;
+    const { sourceId, loginMode, sourceType } = revision.harnessAuth;
     const attachment = attachments.find((entry) => entry.sourceId === sourceId);
-    // Protected sources belong to the Credential Proxy, never the legacy Gateway.
+    // Proxy-adopted sources receive no Credential Gateway attachment.
     if (source?.egress !== undefined) {
+      const plan = revision.egressPlan;
+      const control = this.proxyDriver?.sourceControl;
+      const provider =
+        revision.harnessAuth.credentialProxyId !== undefined
+          ? proxyHarnessAuthProvider(this.proxyDriver, revision.harnessAuth)
+          : control?.providers.find((entry) =>
+              isDeepStrictEqual(entry.ref, source.egress!.key.provider),
+            );
+      const workspacePat =
+        revision.harness.id === "codex" &&
+        revision.harness.mode === "dedicated" &&
+        loginMode === "codex_pat" &&
+        sourceType === "codex-pat" &&
+        source.namespaceId === revision.namespaceId &&
+        credentialSourceMatchesSnapshot(source, revision.harnessAuth) &&
+        provider?.sourceType.type === source.type &&
+        provider.sourceType.harnessAuth?.loginMode === "codex_pat" &&
+        provider.sourceType.harnessAuth.modelProvider === "openai" &&
+        source.egress.key.namespaceId === revision.namespaceId &&
+        source.egress.key.source.id === source.id &&
+        source.egress.key.installationId === plan?.execution.installationId &&
+        isDeepStrictEqual(source.egress.key.backend, control?.backend) &&
+        isDeepStrictEqual(source.egress.sender, control?.sender) &&
+        isDeepStrictEqual(source.egress.resolver, control?.resolver);
       if (
         source.id !== sourceId ||
         revision.executionAdmission.mode !== "protected" ||
-        revision.harnessAuth.loginMode !== "api_key" ||
         attachment !== undefined ||
-        !revision.egressPlan?.routes.some((route) =>
-          isDeepStrictEqual(route.binding.source, source.egress!.key),
+        !plan?.routes.some(
+          ({ binding }) =>
+            isDeepStrictEqual(binding.source, source.egress!.key) &&
+            (loginMode === "api_key"
+              ? !isWorkspaceInferenceGrant(binding.grant)
+              : workspacePat && isWorkspaceInferenceGrant(binding.grant)),
         )
       ) {
         throw new OwnershipFailure(
@@ -13927,13 +13982,33 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision.egressPlan !== undefined &&
       Boolean(harnessEgressEnrollment(revision.egressPlan).inference) &&
       revision.egressPlan.routes.every(
-        ({ binding: { grant } }) => grant.kind !== "inference" || grant.providerTools === "none",
+        ({ binding: { grant } }) => !isModelInferenceGrant(grant) || grant.providerTools === "none",
       )
     );
   }
 
+  private codexLaunchCandidate(revision: Readonly<AgentRevision>): boolean {
+    return (
+      this.options.runtime !== undefined &&
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated"
+    );
+  }
+
+  // The wrapper versions launch bytes only. Its payload keeps the original grant binding.
+  private computeAdmission(revision: Readonly<AgentRevision>): string | undefined {
+    const admission = revision.compute.admission;
+    if (!admission?.startsWith(CODEX_LAUNCH_V2)) {
+      return admission;
+    }
+    if (!this.codexLaunchCandidate(revision)) {
+      throw new ConfigurationFailure("AgentRevision Compute launch binding is invalid.");
+    }
+    return admission.slice(CODEX_LAUNCH_V2.length) || undefined;
+  }
+
   private hasProtectedCodexAdmission(revision: AgentRevision): boolean {
-    if (revision.compute.admission !== PROTECTED_CODEX_NO_CONNECTION_RETRY) {
+    if (this.computeAdmission(revision) !== PROTECTED_CODEX_NO_CONNECTION_RETRY) {
       return false;
     }
     if (!this.protectedCodexInference(revision)) {
@@ -13946,30 +14021,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     this.validateGatewayManagedMode(revision);
     // A launch fact, not an authorization grant. Never infer it for stored revisions:
     // older workers must refuse the new command and older Sandboxes keep their exact command.
-    if (this.protectedCodexInference(revision)) {
-      return PROTECTED_CODEX_NO_CONNECTION_RETRY;
-    }
-    return this.publicGithubReadCandidate(revision) === undefined
-      ? undefined
-      : this.publicGithubReadAdmission();
+    const admission = this.protectedCodexInference(revision)
+      ? PROTECTED_CODEX_NO_CONNECTION_RETRY
+      : this.publicGithubReadCandidate(revision) === undefined
+        ? undefined
+        : this.publicGithubReadAdmission();
+    return this.codexLaunchCandidate(revision) ? CODEX_LAUNCH_V2 + (admission ?? "") : admission;
   }
 
   private publicGithubReadForRevision(revision: AgentRevision) {
     if (
-      revision.compute.admission !== undefined &&
+      this.computeAdmission(revision) !== undefined &&
       !this.hasProtectedCodexAdmission(revision) &&
       !this.hasPublicGithubReadAdmission(revision)
     ) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const admission = this.publicGithubReadAdmission();
-    return admission !== undefined && revision.compute.admission === admission
+    return admission !== undefined && this.computeAdmission(revision) === admission
       ? this.publicGithubReadCandidate(revision)
       : undefined;
   }
 
   private hasPublicGithubReadAdmission(revision: AgentRevision): boolean {
-    return /^public-github-read:v1:[a-f0-9]{64}$/.test(revision.compute.admission ?? "");
+    return /^public-github-read:v1:[a-f0-9]{64}$/.test(this.computeAdmission(revision) ?? "");
   }
 
   private async revokeUnavailablePublicGithubRead(
@@ -14117,13 +14192,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       return undefined;
     }
     const protectedCodex = this.hasProtectedCodexAdmission(revision);
+    const currentLaunch = revision.compute.admission?.startsWith(CODEX_LAUNCH_V2) === true;
+    if (runtime.kind === "codex" && runtime.nativePat && !currentLaunch) {
+      throw new ConfigurationFailure(
+        "Native workspace authentication requires its Compute launch binding.",
+      );
+    }
     return {
       name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       runtime,
-      entrypoint: protectedCodex ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
-      workspaceEntrypoint: protectedCodex
-        ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
-        : AGENT_WITH_NODE_ENTRYPOINT,
+      entrypoint: currentLaunch
+        ? protectedCodex
+          ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT
+          : CURRENT_AGENT_RUNTIME_ENTRYPOINT
+        : protectedCodex
+          ? LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT
+          : AGENT_RUNTIME_ENTRYPOINT,
+      workspaceEntrypoint: currentLaunch
+        ? protectedCodex
+          ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+          : CURRENT_AGENT_WITH_NODE_ENTRYPOINT
+        : protectedCodex
+          ? LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+          : AGENT_WITH_NODE_ENTRYPOINT,
     };
   }
 
@@ -15087,6 +15178,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         source.id !== snapshot.sourceId ||
         source.namespaceId !== revision.namespaceId ||
         !credentialSourceMatchesSnapshot(source, snapshot) ||
+        (snapshot.credentialProxyId !== undefined &&
+          !proxyHarnessAuthProvider(this.proxyDriver, snapshot)) ||
+        (source.egress === undefined &&
+          revision.egressPlan?.routes.some(
+            (route) => route.binding.source.source.id === source.id,
+          )) ||
         source.state !== "ready"
       ) {
         throw new OwnershipFailure("Harness credential source does not match the admitted source.");

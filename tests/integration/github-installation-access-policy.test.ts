@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, verify } from "node:crypto";
 import test from "node:test";
@@ -51,6 +52,7 @@ function driver(options: unknown) {
     { id: registration.backendId, drivers: { repo: "repo" }, client: undefined },
     registry(options),
     { sessionDurationSeconds: 600 },
+    repositoryApprovalFingerprint,
   );
 }
 

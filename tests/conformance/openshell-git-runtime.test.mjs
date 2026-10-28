@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { randomUUID } from "node:crypto";
@@ -2102,7 +2103,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
     }
     const cold = new OpenShellGitRuntime(
       f.runtime.configuration,
-      createGitHubRepositoryDeliveryResolver(registry),
+      createGitHubRepositoryDeliveryResolver(registry, repositoryApprovalFingerprint),
     );
     cold.routes = store;
     cold.owner = f.owner;
@@ -2220,7 +2221,10 @@ test("an admitted preview rotates at its new fence only in the original worker",
     },
     registry.backendId,
   );
-  const resolve = createGitHubRepositoryDeliveryResolver(previewRegistry);
+  const resolve = createGitHubRepositoryDeliveryResolver(
+    previewRegistry,
+    repositoryApprovalFingerprint,
+  );
   const f = fixture({ store: routeStore(), resolveDelivery: resolve });
   const binding = resolveGitHubRepositoryBinding(previewRegistry, {
     namespaceId: "namespace-a",

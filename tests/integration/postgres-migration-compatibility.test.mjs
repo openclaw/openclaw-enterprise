@@ -1990,6 +1990,9 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [63, "preGatewayManagedMode"],
+      [64, "preProxyHarnessAuth"],
+      [65, "preCredentialDeliveryTargetIndex"],
+      [66, "preJointCredentialPolicyReduction"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2426,6 +2429,10 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preGatewayManagedMode"],
+      [64, "preProxyHarnessAuth"],
+      [65, "preCredentialDeliveryTargetIndex"],
+      [66, "preJointCredentialPolicyReduction"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2623,6 +2630,10 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preGatewayManagedMode"],
+      [64, "preProxyHarnessAuth"],
+      [65, "preCredentialDeliveryTargetIndex"],
+      [66, "preJointCredentialPolicyReduction"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2642,8 +2653,13 @@ test(
         // 0057 replaces the Harness validator, so reject that function replacement.
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
         // Fail the common reduction grant after admission backfill and repository authority.
-        // All three pending receipts, schema changes and main-row annotations roll back.
+        // All pending receipts, schema changes and main-row annotations roll back.
+        // 0064 adds gateway columns; 0065 replaces the Harness validator.
+        // 0066 changes the delivery index; 0067 changes custody checks.
         const rollbackTag = [
+          [65, "ALTER TABLE"],
+          [64, "CREATE FUNCTION"],
+          [63, "ALTER TABLE"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
@@ -2717,13 +2733,17 @@ test(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
     assert.deepEqual(
-      manifest.entries.slice(58, 63).map(({ tag }) => tag),
+      manifest.entries.slice(58, 67).map(({ tag }) => tag),
       [
         "0059_administrator_sandbox_policy_grants",
         "0060_credential_proxy_admission",
         "0061_repository_credential_authority",
         "0062_credential_delivery_custody",
         "0063_prepared_attempt_settlement",
+        "0064_gateway_managed_mode",
+        "0065_proxy_harness_auth",
+        "0066_credential_delivery_target_index",
+        "0067_joint_policy_reduction",
       ],
     );
     await seedCanonicalData(db, { preset: true, computeAdmission: true });
@@ -2801,7 +2821,11 @@ test(
     // A valid first and last receipt cannot vouch for the interior 0061 receipt.
     // Start each fault from accepted history so rejection cannot pass merely because
     // a retired preview hash was already unsupported.
-    const middle = completed.receipts.at(-3);
+    const middleIndex = manifest.entries.findIndex(
+      ({ tag }) => tag === "0061_repository_credential_authority",
+    );
+    assert.ok(middleIndex > 0 && middleIndex < completed.receipts.length - 1);
+    const middle = completed.receipts[middleIndex];
     for (const [label, sql] of [
       ["changed interior hash", "UPDATE drizzle.__drizzle_migrations SET hash=$2 WHERE id=$1"],
       [
@@ -2908,6 +2932,33 @@ test(
         }
         await assertHistoryRefused(db);
       });
+    }
+    for (const count of [1, 2, 3]) {
+      void context.test(
+        `private feature suffix with ${count} receipts is refused`,
+        async (child) => {
+          const db = await historyDatabase(child, fixture, "featuresuffix", { prefix: 63 });
+          // Only synthetic receipt rows are injected. Never replay or relabel a real
+          // feature database: its original 0064..0066 omit public gateway history.
+          const suffix = manifest.entries.slice(64, 64 + count);
+          for (const entry of suffix) {
+            await db.migrator.query(
+              "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES($1,$2)",
+              [entry.sha256, entry.when - 1],
+            );
+          }
+          const receipts = await historyReceipts(db.migrator);
+          assert.equal(receipts.length, 63 + count);
+          assert.deepEqual(
+            receipts.slice(63).map(({ hash, created_at }) => [hash, Number(created_at)]),
+            suffix.map(({ sha256, when }) => [sha256, when - 1]),
+          );
+          await assertHistoryRefused(
+            db,
+            /applied receipts differ from canonical history; pre-merge preview histories are unsupported/,
+          );
+        },
+      );
     }
     void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");

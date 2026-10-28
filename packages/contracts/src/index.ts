@@ -1,3 +1,5 @@
+export { verifiedSourceIdentityMatches } from "./credential-proxy.ts";
+import { Equal } from "typebox/value";
 import type {
   CredentialPolicyWithdrawalOptions,
   ExecutionAdmission,
@@ -11,7 +13,12 @@ import type {
 } from "./credential-proxy.ts";
 
 export type {
+  JointGitProvision,
+  CredentialPolicyEffects,
+  CredentialPolicyEffect,
   CredentialPolicyReduction,
+  JointPolicyCondition,
+  JointGrantIdentity,
   CredentialPolicyObservation,
   CredentialPolicyReducer,
   CredentialPolicyWithdrawalOptions,
@@ -19,11 +26,13 @@ export type {
   EgressSourceKey,
   ExecutionAdmission,
   StaticEgressSource,
+  VerifiedSourceIdentity,
   CredentialReadLifetime,
   CredentialInputRead,
   VersionedSecretValue,
   EgressExecution,
   InferenceGrant,
+  WorkspaceInferenceGrant,
   EgressBinding,
   EgressRoute,
   ProxyPlan,
@@ -628,7 +637,10 @@ export type CredentialSourceSnapshot = {
 /** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
 export function credentialSourceMatchesSnapshot(
   source: CredentialSource,
-  snapshot: CredentialSourceSnapshot | undefined,
+  snapshot:
+    | CredentialSourceSnapshot
+    | Extract<HarnessAuthSnapshot, { method: "credential_source" }>
+    | undefined,
 ): boolean {
   if (!snapshot || source.id !== snapshot.sourceId || source.type !== snapshot.sourceType) {
     return false;
@@ -640,7 +652,9 @@ export function credentialSourceMatchesSnapshot(
       );
     case "credential_proxy":
       return (
-        snapshot.credentialGatewayId === undefined && snapshot.credentialProxyId === source.driverId
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === source.driverId &&
+        (!("method" in snapshot) || Equal(snapshot.egress, source.egress))
       );
     default:
       return false;
@@ -690,13 +704,23 @@ export type HarnessAuthSnapshot =
         readonly credentialIssued: boolean;
       };
     }
-  | {
+  | ({
       readonly method: "credential_source";
       readonly sourceId: string;
-      readonly credentialGatewayId: string;
       readonly sourceType: string;
       readonly loginMode: CredentialSourceLoginMode;
-    };
+    } & (
+      | {
+          readonly credentialGatewayId: string;
+          readonly credentialProxyId?: never;
+          readonly egress?: never;
+        }
+      | {
+          readonly credentialProxyId: string;
+          readonly credentialGatewayId?: never;
+          readonly egress: ProtectedEgressSource;
+        }
+    ));
 
 /** Authoritative delivery references, resolved again at dispatch; never secret values. */
 export type ResolvedHarnessAuth =
@@ -710,6 +734,10 @@ export type ResolvedHarnessAuth =
 
 export interface ComputeRevisionContext {
   /** Worker persists only an authenticated receipt for this admitted plan. */
+  readonly policyEffects?: import("./credential-proxy.ts").CredentialPolicyEffects;
+  readonly jointAdmissionCurrent?: NonNullable<
+    import("./credential-proxy.ts").ProxyRevisionContext["jointAdmissionCurrent"]
+  >;
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
   /** A fresh read of the still-authorized revision and its exact committed installation. */
   readonly currentEgressInstallation?: () => Promise<EgressInstallation | undefined>;
@@ -1489,6 +1517,7 @@ export interface HarnessWorkloadRequirements {
   readonly files: readonly SandboxWorkloadFile[];
   /** Credential Gateway attachments the paired Sandbox must consume in full. */
   readonly credentialAttachments: readonly CredentialSourceAttachment[];
+  readonly currentEgressInstallation?: EgressInstallation;
   readonly proxyWiring?: ProxyWiring;
   readonly labels: Readonly<Record<string, string>>;
 }
@@ -2584,6 +2613,7 @@ export {
   harnessAuthBindingFromSnapshot,
   isSecretHarnessAuth,
   isServiceAccountHarnessAuth,
+  proxyHarnessAuthProvider,
 } from "./harness-auth.ts";
 
 export type {

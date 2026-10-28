@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -520,6 +521,7 @@ function repositoryPolicyDriver(
     },
     registry,
     { sessionDurationSeconds: 600 },
+    repositoryApprovalFingerprint,
   );
 }
 

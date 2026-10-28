@@ -75,6 +75,8 @@ export function bindPlatformUnitOfWork(
       "markCredentialSourceDeleting",
       "markCredentialSourceReady",
       "replaceCredentialSourceSecrets",
+      "readPolicyEffect",
+      "comparePolicyEffect",
       "recordEgressInstallation",
       "saveCredentialPolicyReduction",
       "rejectEgressMaterial",

@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { createServer, globalAgent } from "node:https";
+import { connect } from "node:tls";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { staticEgressFixture, unary } from "../helpers/static-egress.mjs";
 
 test("the TLS exchange refuses missing, invalid, expired and gateway identity before challenge", async (t) => {
@@ -201,6 +206,81 @@ test("A resolves, authorizes and receives the protected actual reply on its acce
   assert.equal(returned.response.status, 200);
   assert.equal(returned.response.response_complete, true);
   assert.doesNotMatch(returned.response.body.toString(), /Bearer/);
+});
+
+test("the signed installation exchange admits only the provider's exact catalog query", async (t) => {
+  const path = "/backend-api/codex/models";
+  const query = "client_version=0.163.0";
+  const workspace = "fixture-workspace";
+  const tls = await selfSigned(await temporaryDirectory(t, "workspace-catalog-issuer-"), {
+    subjectAltName: "DNS:auth.openai.com",
+  });
+  const port = await listen(
+    t,
+    createServer(tls, (request, response) => {
+      assert.equal(request.method, "GET");
+      assert.equal(request.url, "/api/accounts/v1/user-auth-credential/whoami");
+      assert.equal(request.headers.authorization, "Bearer synthetic-key-initial");
+      response
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ chatgpt_account_id: workspace, chatgpt_account_is_fedramp: false }));
+    }),
+  );
+  const originalConnect = globalAgent.createConnection;
+  t.mock.method(globalAgent, "createConnection", function (options, callback) {
+    if (options.host === "auth.openai.com") {
+      return connect(
+        { ...options, host: "127.0.0.1", port, servername: options.host, ca: tls.cert },
+        callback,
+      );
+    }
+    assert.equal(options.host, "127.0.0.1");
+    return originalConnect.call(globalAgent, options, callback);
+  });
+  const f = await staticEgressFixture(t, {
+    workspaceExchange: true,
+    proxyDriverId: "sandbox-openshell",
+  });
+  const capture = (changed = {}) => {
+    const captured = f.capture();
+    Object.assign(captured.request, {
+      target: {
+        scheme: "https",
+        host: "chatgpt.com",
+        port: 443,
+        method: "GET",
+        path,
+        query,
+        ...changed,
+      },
+      headers: [{ name: "chatgpt-account-id", value: workspace }],
+      body: Buffer.alloc(0),
+    });
+    return captured;
+  };
+  const reads = f.secretReads;
+  const catalog = capture();
+  const { ready } = await f.resolve(catalog);
+  assert.ok(ready, "the exact version in the signed query selects the catalog");
+  assert.equal(f.secretReads, reads + 1, "resolution reads the admitted material");
+  assert.ok((await f.authorize(f.permitRequest(catalog, ready))).allowed);
+  assert.equal(f.secretReads, reads + 2, "the send permit rechecks the material version");
+  for (const changed of [
+    { query: "client_version=0.163.1" },
+    { query: query + "&" + query },
+    { query: "?" + query },
+    { query: query + "#" },
+    { query: "client_version=%30.163.0" },
+    { query: "client_version=%" },
+    { path: path + "?" + query, query: "" },
+    { host: "another.example" },
+  ]) {
+    const denied = await f.beginExchange();
+    denied.stream.write(denied.opening(capture(changed)));
+    assert.ok((await denied.next()).resolved.refused);
+    await assert.rejects(denied.next(), /exchange ended without another message/);
+  }
+  assert.equal(f.secretReads, reads + 2, "refused requests receive no material");
 });
 
 // The supervisor reports stream progress on the same exchange; the lease carries the

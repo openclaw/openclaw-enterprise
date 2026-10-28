@@ -1,3 +1,13 @@
+import { randomUUID } from "node:crypto";
+import {
+  jointCondition,
+  jointOwnerEvidence,
+  jointSourcePolicy,
+  liveJointFence,
+  jointSuccessor,
+  readJointEnforcement,
+  sameJointPredecessor,
+} from "./openshell-joint-policy.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
@@ -24,6 +34,7 @@ import {
   CredentialProxyAdmissionError,
   CredentialProxyRepositoryOnlyError,
   DependencyUnavailableError,
+  isReducedCredentialPlan,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RetryLaterError,
@@ -36,8 +47,11 @@ import {
 } from "../sandbox/openshell-gateway-errors.ts";
 import {
   advertisesOpenShellExecutionProfile,
+  jointWorkspaceProfile,
   openShellExchangeCapabilities as capabilities,
 } from "./openshell-exchange-capabilities.ts";
+import { codexWorkspaceRoutes, codexWorkspaceProviderRef } from "./codex-workspace-provider.ts";
+import { verifiedCodexWorkspaceProvider } from "./codex-workspace-identity.ts";
 import { openAiStaticProvider } from "./openai-provider.ts";
 
 /** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
@@ -186,6 +200,23 @@ function enforcementEvidence(
   };
 }
 
+// The controller can run on a different architecture from the dedicated Harness.
+// Match the two canonical ELF paths in the pinned runtime package, never its npm launcher.
+const codexPackageRoot =
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2";
+const workspaceBinaries = [
+  {
+    path:
+      codexPackageRoot +
+      "-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+  },
+  {
+    path:
+      codexPackageRoot +
+      "-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+  },
+];
+
 /** Nonsecret, exact routing consumed and independently checked by the paired Sandbox. */
 export function openShellEgressConfiguration(
   plan: ProxyPlan,
@@ -195,16 +226,69 @@ export function openShellEgressConfiguration(
     throw new Error("The protected execution permits at most one binding.");
   }
   requireConfiguration(OpenShellCredentialProxyDriver, options);
+  const workspace = plan.routes.some(
+    ({ binding }) =>
+      binding.grant.kind === "workspace_inference" ||
+      binding.source.provider.id === codexWorkspaceProviderRef.id,
+  );
+  const joint = options.middlewareName === jointWorkspaceProfile;
+  if (
+    joint &&
+    (plan.policyReductionVersion !== 3 ||
+      !options.repositoryMiddlewareName ||
+      options.repositoryMiddlewareName === options.middlewareName ||
+      plan.repositoryGitAuthorization !== "online-request" ||
+      plan.harnessCredentialSource ||
+      (plan.repositoryGit &&
+        repositoryGitDeliveryProfile(plan.repositoryGit) !== "github_installation") ||
+      (plan.generation === 1
+        ? !plan.repositoryGit || !workspace
+        : plan.generation !== 2 || !!plan.repositoryGit === workspace))
+  ) {
+    throw new DependencyUnavailableError(
+      "The joint workspace sender requires its admitted model and installation grants.",
+    );
+  }
+  if (workspace) {
+    const binding = plan.routes[0]!.binding;
+    if (
+      (!joint &&
+        (options.middlewareName !== codexWorkspaceProviderRef.id ||
+          options.repositoryMiddlewareName !== undefined ||
+          plan.repositoryGit !== undefined ||
+          plan.repositoryGitAuthorization !== undefined)) ||
+      plan.harnessCredentialSource !== undefined ||
+      binding.source.installationId !== plan.execution.installationId ||
+      binding.source.namespaceId !== plan.execution.namespaceId ||
+      binding.grant.kind !== "workspace_inference" ||
+      !isDeepStrictEqual(binding.source.provider, codexWorkspaceProviderRef) ||
+      !isDeepStrictEqual(binding.execution, plan.execution) ||
+      !isDeepStrictEqual(plan.routes, codexWorkspaceRoutes(binding))
+    ) {
+      throw new DependencyUnavailableError(
+        "The bundled workspace sender requires its exact model-only plan and registration.",
+      );
+    }
+  }
   const hosts = [...new Set(plan.routes.map((route) => new URL(route.origin).hostname))];
   // Keep the authority installed for a zero-route plan. The selector names no
   // reachable rule: network_policies below remains empty, never a wildcard.
   if (!hosts.length) {
     hosts.push("deny-egress.invalid");
   }
-  if (hosts.length !== 1 || !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(hosts[0]!)) {
+  if (!workspace && (hosts.length !== 1 || !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(hosts[0]!))) {
     throw new Error("Protected egress requires one literal host.");
   }
-  if (plan.repositoryGit) {
+  const gitMiddleware = () => {
+    const value = openShellGitMiddleware(
+      options.repositoryMiddlewareName!,
+      plan.execution.executionId,
+    );
+    return joint
+      ? { "oce-prepared-git": { ...value["oce-prepared-git"], require_execution_admission: true } }
+      : value;
+  };
+  if (plan.repositoryGit && !workspace) {
     if (plan.routes.length || !options.repositoryMiddlewareName) {
       throw new DependencyUnavailableError(
         "This Credential Proxy cannot install the admitted repository plan.",
@@ -214,10 +298,7 @@ export function openShellEgressConfiguration(
     // authority, broad Git network rule or second credential-bearing sender accompanies it.
     return immutableCopy({
       network_policies: {},
-      network_middlewares: openShellGitMiddleware(
-        options.repositoryMiddlewareName,
-        plan.execution.executionId,
-      ),
+      network_middlewares: gitMiddleware(),
     });
   }
   return immutableCopy({
@@ -228,13 +309,16 @@ export function openShellEgressConfiguration(
           `oce-egress-${index}`,
           {
             name: `oce-egress-${index}`,
+            ...(workspace && { binaries: workspaceBinaries }),
             endpoints: [
               {
                 host: origin.hostname,
                 ports: [Number(origin.port || 443)],
                 protocol: "rest",
                 enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-                access: "NETWORK_ACCESS_PRESET_FULL",
+                ...(workspace
+                  ? { rules: [{ allow: { method: route.method, path: route.path } }] }
+                  : { access: "NETWORK_ACCESS_PRESET_FULL" }),
                 path: route.path,
               },
             ],
@@ -243,6 +327,7 @@ export function openShellEgressConfiguration(
       }),
     ),
     network_middlewares: {
+      ...(plan.repositoryGit && joint && gitMiddleware()),
       "oce-egress": {
         name: "oce-egress",
         middleware: options.middlewareName,
@@ -260,6 +345,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly implementation = "openshell";
   readonly id: string;
   readonly sourceControl: CredentialSourceControl;
+  readonly policyReduction?: NonNullable<CredentialProxyDriver["policyReduction"]>;
   readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
   readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
   private readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
@@ -329,18 +415,339 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (selection.bindRepositoryGit) {
       this.bindRepositoryGit = selection.bindRepositoryGit;
     }
+    this.options = immutableCopy(options);
     const exchange = selection.exchangeAuthority;
+    const joint = this.options.middlewareName === jointWorkspaceProfile;
+    const workspace = joint || this.options.middlewareName === codexWorkspaceProviderRef.id;
+    if (
+      (joint &&
+        (!this.options.repositoryMiddlewareName ||
+          this.options.repositoryMiddlewareName === this.options.middlewareName ||
+          !selection.bindRepositoryGit ||
+          this.options.observedHookPreviewWorkspace)) ||
+      (workspace && (!exchange || (!joint && this.options.repositoryMiddlewareName)))
+    ) {
+      throw new Error("The workspace registration requires its dedicated installation exchange.");
+    }
     if (exchange) {
       this.bindExchange = (createProxy) =>
         bindOpenShellExchange(exchange, this.sourceControl.sender, createProxy);
     }
-    if (options.observedHookPreviewWorkspace && selection.previewEnforcement) {
+    if (this.options.observedHookPreviewWorkspace && selection.previewEnforcement) {
       this.previewEnforcement = selection.previewEnforcement;
     }
     this.id = selection.id;
     this.backend = selection.backend;
     this.sandbox = selection.sandbox;
-    this.options = immutableCopy(options);
+    if (joint) {
+      this.policyReduction = {
+        version: 3,
+        assertAvailable: async (signal) => {
+          await this.sourceControl.assertAvailable(signal, "github_installation");
+        },
+        prepare: async (context, expected, retained) => {
+          if (!(await this.verifyInstallation(context, expected))) {
+            return undefined;
+          }
+          return jointCondition(expected, retained);
+        },
+        apply: async (context, request, retainedCurrent) => {
+          const old = request.expected;
+          const condition = jointCondition(old, request.retained);
+          if (
+            !condition ||
+            !isDeepStrictEqual(condition, request.condition) ||
+            !(await this.verifyInstallation(context, old))
+          ) {
+            return;
+          }
+          const observed = await this.loadedPolicy(context, old.sandboxId);
+          if (!observed) {
+            return;
+          }
+          const rpc = observed.client.advanceJointReduction?.bind(observed.client);
+          const live = await rpc?.(observed.workspace, observed.name, undefined, context.signal);
+          const current = asRecord(live?.current);
+          if (
+            !current ||
+            !sameJointPredecessor(current, old) ||
+            live?.pending ||
+            live?.fence ||
+            live?.joint_authority_verified !== true ||
+            live?.credential_installed !== true
+          ) {
+            return;
+          }
+          if (!retainedCurrent || !(await retainedCurrent())) {
+            return;
+          }
+          context.signal.throwIfAborted();
+          await rpc!(
+            observed.workspace,
+            observed.name,
+            {
+              ...current,
+              action: request.retained.repositoryGit ? "fence-model" : "fence-git",
+              operation_id: request.operationId,
+              policy: { ...asRecord(current.policy), effective_policy: condition.remainingPolicy },
+            },
+            context.signal,
+          );
+        },
+        advance: async (context, request, retainedCurrent) => {
+          const effects = context.policyEffects;
+          const old = request.expected;
+          const signal = context.signal;
+          if (!effects) {
+            return;
+          }
+          const observed = await this.loadedPolicy(context, old.sandboxId, true);
+          if (!observed) {
+            return;
+          }
+          const { client, workspace, name, existing, status } = observed;
+          const rpc = client.advanceJointReduction?.bind(client);
+          const fence =
+            rpc && liveJointFence(await rpc(workspace, name, undefined, signal), request);
+          if (
+            !fence ||
+            existing.mainProcessInstanceId !== fence.j.processInstanceId ||
+            !existing.resourceVersion
+          ) {
+            return;
+          }
+          const { cmd, j, condition } = fence;
+          const expectedProviders = [
+            ...(j.runtimeProvider ? [j.runtimeProvider] : []),
+            ...j.recipients.map((r) => r.provider_name),
+          ];
+          const finalSource = jointSourcePolicy(
+            condition.remainingPolicy,
+            j.recipients,
+            j.runtimeProvider,
+          );
+          const oldSource = jointSourcePolicy(j.effectivePolicy, j.recipients, j.runtimeProvider);
+          const revision = asRecord(status.revision);
+          if (
+            !finalSource ||
+            !oldSource ||
+            !revision ||
+            status.active_version !== revision.version ||
+            ![2, "POLICY_STATUS_LOADED"].includes(revision.status as string | number)
+          ) {
+            return;
+          }
+          const prefix = request.operationId + ":";
+          const identity = (data: unknown) =>
+            sha256Hex(JSON.stringify(wirePolicy([request.operationId, fence.receipt, data])));
+          const reserve = async (step: string, id: string) => {
+            const state = {
+              requestId: randomUUID(),
+              identity: id,
+              expectedVersion: existing.resourceVersion!,
+            };
+            if (!(await effects.compare(prefix + step, undefined, state))) {
+              return;
+            }
+            const stillFenced = liveJointFence(
+              await rpc!(workspace, name, undefined, signal),
+              request,
+            );
+            if (
+              !stillFenced ||
+              !isDeepStrictEqual(stillFenced.receipt, fence.receipt) ||
+              !(await retainedCurrent())
+            ) {
+              return;
+            }
+            signal.throwIfAborted();
+            return state;
+          };
+          const detached: string[] = [];
+          if (!request.retained.repositoryGit) {
+            let epoch = j.recipients[0]!.attachment_epoch;
+            for (const [i, leg] of j.recipients.entries()) {
+              const step = "detach-" + i;
+              const id = identity([leg, epoch]);
+              const row = await effects.read(prefix + step);
+              if (!row) {
+                if (
+                  revision.version !== old.plan.generation ||
+                  !isDeepStrictEqual(wirePolicy(revision.policy), wirePolicy(oldSource)) ||
+                  existing.spec?.provider_attachment_epoch !== epoch ||
+                  !isDeepStrictEqual(existing.spec?.providers, expectedProviders)
+                ) {
+                  return;
+                }
+                const state = await reserve(step, id);
+                if (!state) {
+                  return;
+                }
+                const result = await client.detachSandboxProvider(
+                  workspace,
+                  name,
+                  leg.provider_name,
+                  signal,
+                  { expectedResourceVersion: state.expectedVersion, requestId: state.requestId },
+                );
+                if (result?.detached === true && result.receiptId) {
+                  await effects.compare(prefix + step, state, {
+                    ...state,
+                    receipt: result.receiptId,
+                  });
+                }
+                return;
+              }
+              if (row.identity !== id || !row.receipt || detached.includes(row.receipt)) {
+                return;
+              }
+              const nextEpoch = await this.detachedEpoch(observed, leg, epoch, row.receipt, signal);
+              if (!nextEpoch) {
+                return;
+              }
+              detached.push(row.receipt);
+              epoch = nextEpoch;
+              expectedProviders.splice(expectedProviders.indexOf(leg.provider_name), 1);
+            }
+            if (existing.spec?.provider_attachment_epoch !== epoch) {
+              return;
+            }
+          } else if (
+            existing.spec?.provider_attachment_epoch !== j.recipients[0]!.attachment_epoch
+          ) {
+            return;
+          }
+          if (!isDeepStrictEqual(existing.spec?.providers, expectedProviders)) {
+            return;
+          }
+          const updateId = identity([detached, finalSource]);
+          const write = await effects.read(prefix + "policy");
+          if (!write) {
+            if (
+              revision.version !== old.plan.generation ||
+              !isDeepStrictEqual(wirePolicy(revision.policy), wirePolicy(oldSource)) ||
+              !client.updatePolicy
+            ) {
+              return;
+            }
+            const state = await reserve("policy", updateId);
+            if (!state) {
+              return;
+            }
+            await client.updatePolicy(
+              {
+                workspace,
+                sandbox: name,
+                policy: finalSource,
+                requestId: state.requestId,
+                expectedResourceVersion: state.expectedVersion,
+              },
+              signal,
+            );
+            await effects.compare(prefix + "policy", state, { ...state, receipt: state.requestId });
+            return;
+          }
+          if (
+            write.identity !== updateId ||
+            write.receipt !== write.requestId ||
+            revision.version !== request.retained.generation ||
+            !isDeepStrictEqual(wirePolicy(revision.policy), wirePolicy(finalSource))
+          ) {
+            return;
+          }
+          const { challenge: _challenge, ...original } = cmd;
+          const successor = {
+            ...original,
+            action: request.retained.repositoryGit ? "retain-git" : "successor",
+            fence_receipt: fence.receipt,
+            detach_receipt_ids: detached,
+          };
+          if (
+            (await effects.read(prefix + "successor")) ||
+            !(await reserve("successor", identity(successor)))
+          ) {
+            return;
+          }
+          await rpc!(workspace, name, successor, signal);
+        },
+        observe: async (context, request) => {
+          const observed = await this.loadedPolicy(context, request.expected.sandboxId, true);
+          if (!observed) {
+            return undefined;
+          }
+          const reply = await observed.client.advanceJointReduction?.(
+            observed.workspace,
+            observed.name,
+            undefined,
+            context.signal,
+          );
+          const journal = context.policyEffects;
+          if (!journal) {
+            return undefined;
+          }
+          const prefix = request.operationId + ":";
+          const state = await journal.read(prefix + "successor");
+          const fence = asRecord(reply?.fence);
+          const last = asRecord(reply?.last_result);
+          const cmd = asRecord(last?.command);
+          const original = asRecord(fence?.command);
+          if (!state || !cmd || !original || !fence) {
+            return undefined;
+          }
+          const receipts: string[] = [];
+          let epoch: string | undefined;
+          if (!request.retained.repositoryGit) {
+            const j = jointOwnerEvidence(request.expected.enforcement);
+            if (!j) {
+              return undefined;
+            }
+            epoch = j.recipients[0]!.attachment_epoch;
+            for (const [index, leg] of j.recipients.entries()) {
+              const step = await journal.read(prefix + "detach-" + index);
+              if (!step?.receipt) {
+                return undefined;
+              }
+              epoch = await this.detachedEpoch(observed, leg, epoch, step.receipt, context.signal);
+              if (!epoch) {
+                return undefined;
+              }
+              receipts.push(step.receipt);
+            }
+          }
+          const outcome = jointSuccessor(reply, request, observed.existing, observed.status, epoch);
+          if (!outcome) {
+            return undefined;
+          }
+          const { challenge: _challenge, ...body } = original;
+          const dispatched = {
+            ...body,
+            action: cmd.action,
+            fence_receipt: fence.receipt,
+            detach_receipt_ids: receipts,
+          };
+          if (
+            !isDeepStrictEqual(receipts, cmd.detach_receipt_ids ?? []) ||
+            state.identity !==
+              sha256Hex(
+                JSON.stringify(wirePolicy([request.operationId, fence.receipt, dispatched])),
+              )
+          ) {
+            return undefined;
+          }
+          // A lost successor acknowledgement can be reconciled from the authenticated
+          // original result. The already-reserved command is never dispatched again.
+          const receipt = sha256Hex(JSON.stringify(wirePolicy(last)));
+          if (
+            state.receipt
+              ? state.receipt !== receipt
+              : !(await journal.compare(prefix + "successor", state, { ...state, receipt }))
+          ) {
+            return undefined;
+          }
+          return outcome;
+        },
+      };
+    }
     this.sourceControl = Object.freeze({
       backend: { id: selection.backend.id, generation: 1 },
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
@@ -348,10 +755,20 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       providers: [
         openAiStaticProvider,
         credentialFreeMetadataProvider,
+        ...(workspace ? [verifiedCodexWorkspaceProvider] : []),
         ...(selection.preparedProviders ?? []),
       ],
       assertAvailable: async (signal: AbortSignal, profile?: RepositoryGitDeliveryProfile) => {
-        this.assertRepositoryGitProfileAvailable(profile);
+        if (joint) {
+          if (profile !== undefined && profile !== "github_installation") {
+            throw new RepositoryGitSenderUnqualifiedError();
+          }
+        }
+        // Independent modes keep their original release gate. The joint profile also
+        // requires positive authenticated admission from both selected senders.
+        if (!joint) {
+          this.assertRepositoryGitProfileAvailable(profile);
+        }
         const client = this.backend.client.clientForNamespace("");
         if (!client.getGatewayInfo) {
           throw new DependencyUnavailableError(
@@ -361,18 +778,62 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         const info = await client.getGatewayInfo(signal);
         const extensions = info.extensions;
         const git = profile === "repository_git" || profile === "github_installation";
+        if (joint) {
+          const registered = (name: string) =>
+            (Array.isArray(extensions) ? extensions : []).filter(
+              (value) => asRecord(value)?.configured_name === name,
+            );
+          const model = registered(this.options.middlewareName);
+          const repo = registered(this.options.repositoryMiddlewareName!);
+          const exact = (rows: typeof model, identity: string) => {
+            const row = asRecord(rows[0]);
+            return (
+              rows.length === 1 &&
+              row?.implementation_name === identity &&
+              row.implementation_version === "1" &&
+              row.protocol_major === 1 &&
+              [4, "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE"].includes(row.kind as string | number)
+            );
+          };
+          const modelRow = asRecord(model[0]);
+          const gitRow = asRecord(repo[0]);
+          if (
+            !client.advanceJointReduction ||
+            !exact(model, "oce/static-egress") ||
+            !advertisesOpenShellExecutionProfile(modelRow?.required_capabilities) ||
+            !advertisesOpenShellExecutionProfile(modelRow?.supported_capabilities) ||
+            !exact(repo, "oce/online-request-authorization") ||
+            ![gitRow?.required_capabilities, gitRow?.supported_capabilities].every(
+              (value) =>
+                Array.isArray(value) && value.includes("openshell.supervisor-middleware.contract"),
+            )
+          ) {
+            throw new DependencyUnavailableError(
+              "Joint access requires both authenticated middleware registrations.",
+            );
+          }
+          return profile === "github_installation"
+            ? { profile, authorization: "online-request" as const }
+            : undefined;
+        }
         const registration = git
           ? this.options.repositoryMiddlewareName
           : this.options.middlewareName;
         if (
           !registration ||
           !Array.isArray(extensions) ||
+          (workspace &&
+            extensions.filter((value) => asRecord(value)?.configured_name === registration)
+              .length !== 1) ||
           !extensions.some((value) => {
             const item = asRecord(value);
             return (
               item?.configured_name === registration &&
               (item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" || item.kind === 4) &&
               item.protocol_major === 1 &&
+              (!workspace ||
+                (item.implementation_name === "oce/static-egress" &&
+                  item.implementation_version === "1")) &&
               (git ||
                 (advertisesOpenShellExecutionProfile(item.required_capabilities) &&
                   advertisesOpenShellExecutionProfile(item.supported_capabilities)))
@@ -515,7 +976,16 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         "The installed egress source policy differs from its admitted policy.",
       );
     }
-    const enforcement = await observed.enforcement();
+    const enforcement =
+      this.options.middlewareName === jointWorkspaceProfile
+        ? await this.jointEnforcement(
+            context,
+            observed,
+            prepared.configuration,
+            undefined,
+            prepared.jointGit,
+          )
+        : await observed.enforcement();
     return enforcement === undefined
       ? undefined
       : immutableCopy({
@@ -543,15 +1013,163 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
     // Compare the same live registration, effective configuration and recipient. In the
     // observed preview this is a fresh observation, not a stock lock against operator changes.
-    const observed = await this.loadedPolicy(context, installation.sandboxId);
+    const reducedJoint =
+      this.options.middlewareName === jointWorkspaceProfile && context.plan.generation > 1;
+    const observed = await this.loadedPolicy(context, installation.sandboxId, reducedJoint);
+    if (this.options.middlewareName === jointWorkspaceProfile) {
+      if (!observed || !installation.enforcement.joint) {
+        return false;
+      }
+      return isDeepStrictEqual(
+        await this.jointEnforcement(context, observed, undefined, installation),
+        installation.enforcement,
+      );
+    }
     return isDeepStrictEqual(await observed?.enforcement(), installation.enforcement);
   }
 
-  private async loadedPolicy(context: ProxyRevisionContext, expectedSandboxId?: string) {
-    await this.sourceControl.assertAvailable(
-      context.signal,
-      repositoryGitDeliveryProfile(context.plan.repositoryGit),
+  private async detachedEpoch(
+    observed: NonNullable<Awaited<ReturnType<OpenShellCredentialProxyDriver["loadedPolicy"]>>>,
+    leg: { readonly provider_name: string; readonly provider_id: string },
+    epoch: string,
+    receiptId: string,
+    signal: AbortSignal,
+  ) {
+    const { client, workspace, name, sandboxId } = observed;
+    const { receipt } = await client.getSandboxProviderStatus(
+      workspace,
+      name,
+      leg.provider_name,
+      signal,
+      receiptId,
     );
+    const desired = receipt?.desired;
+    const from = receipt?.detachedFrom;
+    if (
+      receipt?.receiptId === receiptId &&
+      receipt.provider === leg.provider_name &&
+      receipt.workspace === workspace &&
+      receipt.kind === "PROVIDER_MUTATION_KIND_DETACH" &&
+      from?.providerId === leg.provider_id &&
+      from.sandboxId === sandboxId &&
+      from.attachmentEpoch === epoch &&
+      desired?.sandboxId === sandboxId &&
+      desired.attachmentEpoch &&
+      desired.attachmentEpoch !== epoch &&
+      desired.attachmentEpoch === receipt.mutationId
+    ) {
+      return desired.attachmentEpoch;
+    }
+  }
+
+  private async jointEnforcement(
+    context: ProxyRevisionContext,
+    observed: NonNullable<Awaited<ReturnType<OpenShellCredentialProxyDriver["loadedPolicy"]>>>,
+    source?: Readonly<Record<string, unknown>>,
+    installed?: EgressInstallation,
+    provision?: ProxyWiring["jointGit"],
+  ) {
+    const reply = await observed.client.advanceJointReduction?.(
+      observed.workspace,
+      observed.name,
+      undefined,
+      context.signal,
+    );
+    if (installed) {
+      return readJointEnforcement(
+        context,
+        observed.existing,
+        observed.status,
+        reply,
+        undefined,
+        installed,
+      );
+    }
+    const effects = context.policyEffects;
+    const current = asRecord(reply?.current);
+    if (!effects || !provision || !source || !current || !context.jointAdmissionCurrent) {
+      return;
+    }
+    const awaiting = reply?.joint_authority_verified !== true;
+    const enforcement = readJointEnforcement(
+      context,
+      observed.existing,
+      observed.status,
+      reply,
+      source,
+      undefined,
+      provision,
+      awaiting ? "prepare-admit" : "installed",
+    );
+    if (!enforcement?.joint || !enforcement.peerKeyId) {
+      return;
+    }
+    const command = {
+      ...current,
+      action: "admit",
+      model_grant: enforcement.joint.model,
+      git_grant: enforcement.joint.git,
+    };
+    // Persist identity before dispatch. A later cold read can consume only the original
+    // authenticated receipt, even if the operator replaces a session on the same Sandbox.
+    const identity = sha256Hex(JSON.stringify(wirePolicy(command)));
+    const prior = await effects.read("admit");
+    if (prior && prior.identity !== identity) {
+      return;
+    }
+    if (!(await context.jointAdmissionCurrent(provision.grant))) {
+      return;
+    }
+    if (awaiting) {
+      if (
+        !prior &&
+        (await effects.compare("admit", undefined, {
+          requestId: randomUUID(),
+          expectedVersion: String(context.plan.generation),
+          identity,
+        }))
+      ) {
+        if (!(await context.jointAdmissionCurrent(provision.grant))) {
+          return;
+        }
+        context.signal.throwIfAborted();
+        await observed.client.advanceJointReduction!(
+          observed.workspace,
+          observed.name,
+          command,
+          context.signal,
+        );
+      }
+      return;
+    }
+    const last = asRecord(reply?.last_result);
+    if (
+      !prior ||
+      last?.applied !== true ||
+      !isDeepStrictEqual(wirePolicy(last.command), wirePolicy(command))
+    ) {
+      return;
+    }
+    if (
+      !prior.receipt &&
+      !(await effects.compare("admit", prior, { ...prior, receipt: identity }))
+    ) {
+      return;
+    }
+    return enforcement;
+  }
+
+  private async loadedPolicy(
+    context: ProxyRevisionContext,
+    expectedSandboxId?: string,
+    recovery = false,
+  ) {
+    if (!recovery) {
+      await this.sourceControl.assertAvailable(
+        context.signal,
+        repositoryGitDeliveryProfile(context.plan.repositoryGit),
+      );
+    }
     const ref = this.sandbox.harnessResource!(context);
     const client = this.backend.client.clientForNamespace(ref.namespaceName);
     const workspace = openShellWorkspaceName(context.namespace);
@@ -572,6 +1190,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const sandboxId = existing.id;
     return {
       status,
+      client,
+      workspace,
+      name,
+      existing,
       sandboxId,
       enforcement: () =>
         context.plan.repositoryGit
@@ -639,7 +1261,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
 
   private assertPlan(context: ProxyRevisionContext): void {
     if (
-      !isDeepStrictEqual(context.plan, context.revision.egressPlan) ||
+      (!isDeepStrictEqual(context.plan, context.revision.egressPlan) &&
+        !(
+          this.options.middlewareName === jointWorkspaceProfile &&
+          isReducedCredentialPlan(context.revision.egressPlan, context.plan)
+        )) ||
       context.plan.egressDriverId !== this.id ||
       context.plan.sandboxDriverId !== this.sandbox.id ||
       context.plan.execution.namespaceId !== context.namespace.id ||

@@ -9,7 +9,10 @@ import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import {
+  repositoryApprovalFingerprint,
+  InMemoryPlatformState,
+} from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "./console-app.mjs";
 
 /** Real Console/API/Drivers with passive storage, but no cluster or external providers. */
@@ -214,6 +217,7 @@ export async function createConsoleRepositoryLaunchFixture(
       provider.id,
     ),
     { sessionDurationSeconds: 600 },
+    repositoryApprovalFingerprint,
   );
   fixture.controller.registerDriver(repo);
   fixture.controller.selectDriver("repo", repo.id);

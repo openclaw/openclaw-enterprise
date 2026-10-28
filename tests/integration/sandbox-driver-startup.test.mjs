@@ -27,6 +27,10 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
+  CURRENT_AGENT_WITH_NODE_ENTRYPOINT,
+  LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -316,13 +320,14 @@ function openShellDriver(gatewayClient, configuration) {
   );
 }
 
-/** A dedicated Codex revision on `driver`; `n` is the 12-digit tail of its ids. */
-function dedicatedRevision(driver, context, n) {
+/** A dedicated Harness revision on `driver`; `n` is the 12-digit tail of its ids. */
+function dedicatedRevision(driver, context, n, harnessId = "codex") {
   return {
     id: `rev_00000000-0000-4000-8000-${n}`,
     namespaceId: context.namespace.id,
     agentId: `agt_00000000-0000-4000-8000-${n}`,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: harnessId, version: "1.0.0", mode: "dedicated" },
+    compute: { id: "compute-kubernetes-local", implementation: "kubernetes-local" },
     sandboxDriverId: driver.id,
   };
 }
@@ -508,13 +513,7 @@ function runtimeSandboxFixture(
   } = {},
 ) {
   const context = namespaceContext();
-  const revision = {
-    id: "rev_00000000-0000-4000-8000-000000000003",
-    namespaceId: context.namespace.id,
-    agentId: "agt_00000000-0000-4000-8000-000000000003",
-    harness: { id: harnessId, version: "1.0.0", mode: "dedicated" },
-    sandboxDriverId: driver.id,
-  };
+  const revision = dedicatedRevision(driver, context, "000000000003", harnessId);
   const nodeSetup = {
     url: nodeSetupUrl(revision, context),
     bootstrapToken: "one-shot-node-setup",
@@ -1992,6 +1991,65 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
     /without exact AgentRevision ownership and content/,
   );
   assert.deepEqual(calls, [["getSandbox", name, calls[0][2]]]);
+
+  // The pre-private-state exception ended with the runtime update. Refuse its
+  // reconstructed predecessor while preserving separately pinned launch migrations.
+  const saved = sandboxes.get(name);
+  const prefix = saved.spec.command.slice(0, RUNTIME_WRAPPER_COMMAND.length + 1);
+  const admissions = [
+    [AGENT_WITH_NODE_ENTRYPOINT, undefined],
+    [LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT, "protected-codex-no-connection-retry:v1"],
+    [CURRENT_AGENT_WITH_NODE_ENTRYPOINT, "codex-launch:v2:"],
+    [
+      PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+      "codex-launch:v2:protected-codex-no-connection-retry:v1",
+    ],
+  ];
+  for (const [program, admission] of admissions) {
+    const previous = program.replace(
+      /mkdirSync\(state, \{ recursive: true, mode: 0o700 \}\);[\s\S]*?chmodSync\(state, 0o700\);/,
+      "mkdirSync(state, { recursive: true });",
+    );
+    assert.notEqual(previous, program, "the predecessor fixture must change state initialization");
+    const expected = nodeProgramArguments(program).slice(1);
+    const requestProgram = () =>
+      driver.provisionHarness({
+        ...context,
+        revision: { ...revision, compute: { ...revision.compute, admission } },
+        requirements: { ...codexRequirements(revision), command: harnessRuntimeCommand(program) },
+      });
+    // Removal of compatibility does not ban an old command requested byte-for-byte.
+    const exact = { ...saved, spec: { ...saved.spec, command: [...prefix, ...expected] } };
+    sandboxes.set(name, exact);
+    calls.length = 0;
+    assert.deepEqual(await requestProgram(), first);
+    assert.deepEqual(
+      calls.map(([method]) => method),
+      ["getSandbox", "getService"],
+    );
+    assert.equal(sandboxes.get(name), exact);
+    // Same-admission predecessors, unknown programs and other launch generations
+    // all fail before service lookup, creation or workspace initialization.
+    for (const observed of [previous, program + "\n0;", ...admissions.map(([other]) => other)]) {
+      const parts = nodeProgramArguments(observed).slice(1);
+      if (JSON.stringify(parts) === JSON.stringify(expected)) {
+        continue;
+      }
+      const stored = { ...saved, spec: { ...saved.spec, command: [...prefix, ...parts] } };
+      sandboxes.set(name, stored);
+      calls.length = 0;
+      await assert.rejects(requestProgram(), /exact AgentRevision ownership and content/);
+      assert.deepEqual(calls, [["getSandbox", name, calls[0][2]]]);
+      assert.equal(sandboxes.get(name), stored);
+    }
+  }
+  sandboxes.set(name, saved);
+  calls.length = 0;
+  assert.deepEqual(await provision(), first);
+  assert.deepEqual(
+    calls.map(([method]) => method),
+    ["getSandbox", "getService"],
+  );
 
   // ALREADY_EXISTS (a create that outlived its 24 h replay record) adopts this revision's Sandbox.
   sandboxes.clear();
@@ -6572,20 +6630,28 @@ test(
           sandboxDriverId: sandbox.id,
           egressDriverId: proxy.id,
         };
-        const rev = {
-          ...revision,
-          id: revisionId,
-          harnessAuth: auth,
-          egressPlan: plan,
-          executionAdmission: { version: 5, mode: "protected" },
-        };
+        const compute = protectedGit.computeDriver;
+        function admitRevision(egressPlan) {
+          const draft = {
+            ...revision,
+            id: egressPlan.execution.revisionId,
+            servicePrincipalId: egressPlan.execution.servicePrincipalId,
+            compute: { id: compute.id, implementation: compute.implementation },
+            harnessAuth: auth,
+            egressPlan,
+            executionAdmission: { version: 5, mode: "protected" },
+          };
+          compute.validateExecutionAdmission(draft, owner);
+          draft.compute.admission = compute.admitRevision(draft);
+          return draft;
+        }
+        const rev = admitRevision(plan);
         const ctx = { ...context, plan, revision: rev };
-        protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
         assert.equal(
-          protectedGit.computeDriver.admitRevision(rev),
-          "protected-codex-no-connection-retry:v1",
+          rev.compute.admission,
+          "codex-launch:v2:protected-codex-no-connection-retry:v1",
         );
-        protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
+        compute.validateRepositoryCredentials(rev.harness, sandbox.id);
         // Compute's preparation refuses the profile too, so a revision admitted before this check
         // fails with the code instead of waiting at enrollment (finding 2199). The Sandbox's own
         // v5 checks stay covered with the wiring a qualified sender would prepare: what
@@ -6980,7 +7046,7 @@ test(
               executionId: randomUUID().replaceAll("-", ""),
             },
           };
-          const withdrawnRev = { ...rev, id: withdrawnId, egressPlan: withdrawnPlan };
+          const withdrawnRev = admitRevision(withdrawnPlan);
           const withdrawnCtx = { ...context, plan: withdrawnPlan, revision: withdrawnRev };
           const withdrawnRequired = structuredClone({
             ...requirements,

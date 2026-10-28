@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -186,7 +187,7 @@ test(
           protectedExecution: true,
           authority: {} as EgressAuthorityConfiguration,
         },
-        createGitHubRepositoryDeliveryResolver(registry),
+        createGitHubRepositoryDeliveryResolver(registry, repositoryApprovalFingerprint),
       );
       r["routes"] = routes;
       r["owner"] = onlineOwner;

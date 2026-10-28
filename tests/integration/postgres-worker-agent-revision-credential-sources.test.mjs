@@ -4,6 +4,7 @@ import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
+  repositoryApprovalFingerprint,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   ResourceStateConflictError,
@@ -3066,7 +3067,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     function releaseRuntime() {
       const git = new OpenShellGitRuntime(
         { registrationName, authority: {} },
-        createGitHubRepositoryDeliveryResolver(registry),
+        createGitHubRepositoryDeliveryResolver(registry, repositoryApprovalFingerprint),
       );
       // The authority has a real TLS socket; only custody and the external installation are doubles.
       git.routes = routes;

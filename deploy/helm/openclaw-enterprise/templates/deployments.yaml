@@ -101,6 +101,12 @@ spec:
                   name: {{ $.Values.openshellGit.issuerPublicKeyConfigMapName | quote }}
                   items:
                     - {key: gateway-public.pem, path: gateway-public.pem}
+              {{- if and $.Values.openshellGit.jointTokenIssuer.enabled (eq $.Values.openshellGit.jointTokenIssuer.assertionSource "spiffe-jwt-svid") }}
+              - configMap:
+                  name: {{ $.Values.openshellGit.jointTokenIssuer.bundleConfigMapName | quote }}
+                  items:
+                    - {key: jwt-bundle.json, path: jwt-bundle.json}
+              {{- end }}
         {{- end }}
         {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
         - name: console-theme
@@ -600,6 +606,10 @@ spec:
             {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
             - name: openshell-git
               containerPort: {{ $.Values.openshellGit.port }}
+            {{- if $.Values.openshellGit.jointTokenIssuer.enabled }}
+            - name: git-token-https
+              containerPort: {{ $.Values.openshellGit.jointTokenIssuer.port }}
+            {{- end }}
             {{- end }}
             {{- if $.Values.metrics.enabled }}
             - name: metrics

@@ -56,6 +56,8 @@ export type OpenShellOnlineGitBinding =
       readonly scope: "github-installation";
       readonly installationId: string;
       readonly apiOrigin: string;
+      /** Worker Pod observation that must survive signed authorization for a joint permit. */
+      readonly podLifetime?: AbortSignal;
     });
 
 type Use = PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest;
@@ -65,6 +67,13 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
   "authorize"
 > & {
   /** This branch can only refuse the reserved pre-material challenge, never authorize Git. */
+  readonly permit?: (
+    identity: OpenShellOnlineGitIdentity,
+    host: "github.com" | "api.github.com",
+    binding: OpenShellOnlineGitBinding,
+    until: number,
+    signal: AbortSignal,
+  ) => Promise<boolean>;
   readonly previewDenial?: (request: OpenShellOnlineHttpRequest) => string | undefined;
   /** Resolve exactly one live admitted workspace/execution from the authenticated sandbox and
    * binding. Require a never-reused sandbox identity dedicated to that execution. Recheck
@@ -575,7 +584,7 @@ export function createOpenShellOnlineGitAuthority(
         sessionId,
         providerInstanceId,
         grantId,
-        exchangeId: randomUUID(),
+        exchangeId: options.permit ? requestId : randomUUID(),
         requestDigestSha256,
         deadlineAt: request.deadlineAt,
       };
@@ -621,6 +630,21 @@ export function createOpenShellOnlineGitAuthority(
           ) {
             // The RPC owner checks this exact authority deadline at its final allow callback.
             // A supervisor that has received the allow may finish the request after withdrawal.
+            if (options.permit) {
+              const host = request.target.host;
+              if (
+                (host !== "github.com" && host !== "api.github.com") ||
+                !(await options.permit(
+                  { bindingId, workspace, sandboxId, requestId },
+                  host,
+                  binding,
+                  Date.parse(result.replyBy),
+                  signal,
+                ))
+              ) {
+                return deny("approval_denied", selected.operation);
+              }
+            }
             return { kind: "allow", replyBy: result.replyBy };
           } else {
             allowed = false;

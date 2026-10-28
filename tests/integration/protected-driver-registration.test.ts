@@ -29,7 +29,11 @@ import type {
   Namespace,
   SandboxHarnessStatusContext,
 } from "../../packages/contracts/src/index.ts";
-import { InstalledDriver, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  repositoryApprovalFingerprint,
+  InstalledDriver,
+  OpenClawController,
+} from "../../packages/occ/src/index.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
@@ -425,7 +429,7 @@ function repositoryDeliveryFixture() {
 
 test("Repo normalizes exact repository and installation delivery without granting standing approval", () => {
   const { registry, revision, binding } = repositoryDeliveryFixture();
-  const resolve = createGitHubRepositoryDeliveryResolver(registry);
+  const resolve = createGitHubRepositoryDeliveryResolver(registry, repositoryApprovalFingerprint);
   assert.deepEqual(resolve(revision), {
     binding,
     delivery: { repository: "example/application" },
@@ -445,7 +449,10 @@ test("Repo normalizes exact repository and installation delivery without grantin
   assert.deepEqual(resolve(standing), resolve(revision));
   // Removing the approval policy does not change the finite grant's identity.
   const { allowStandingApprovals: _standing, ...finiteRegistry } = registry;
-  const noStanding = createGitHubRepositoryDeliveryResolver(finiteRegistry);
+  const noStanding = createGitHubRepositoryDeliveryResolver(
+    finiteRegistry,
+    repositoryApprovalFingerprint,
+  );
   assert.deepEqual(noStanding(revision), resolve(revision));
   assert.throws(() => noStanding(standing), /Standing repository policy is unavailable/);
   for (const changed of [
@@ -470,7 +477,8 @@ test("Repo normalizes exact repository and installation delivery without grantin
     })),
   });
   assert.throws(
-    () => createGitHubRepositoryDeliveryResolver(changedRef)(revision),
+    () =>
+      createGitHubRepositoryDeliveryResolver(changedRef, repositoryApprovalFingerprint)(revision),
     /current exact registry grant/,
   );
   const installation = resolveGitHubRepositoryBinding(registry, {
@@ -538,7 +546,10 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
       },
     },
     repository: {
-      resolveDelivery: createGitHubRepositoryDeliveryResolver(registry),
+      resolveDelivery: createGitHubRepositoryDeliveryResolver(
+        registry,
+        repositoryApprovalFingerprint,
+      ),
       configuration: {
         registrationName: "oce-prepared-git",
         authority: {} as OpenShellGitRuntime["configuration"]["authority"],
@@ -553,7 +564,10 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
 });
 
 test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
-  const resolve = createGitHubRepositoryDeliveryResolver(runtimeRegistry);
+  const resolve = createGitHubRepositoryDeliveryResolver(
+    runtimeRegistry,
+    repositoryApprovalFingerprint,
+  );
   let changed = false;
   const f = openShellGitRuntimeFixture({
     resolveDelivery: (revision) => {

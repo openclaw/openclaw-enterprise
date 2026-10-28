@@ -7,6 +7,7 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
+  repositoryApprovalFingerprint,
   ConfigurationHarnessError,
   PostgresPlatformState,
   ProvisioningSecretDriverError,
@@ -966,6 +967,7 @@ function provisioningRepositoryPolicy(namespaceId, profiles, installationAccess 
       ],
     },
     { sessionDurationSeconds: 600 },
+    repositoryApprovalFingerprint,
   );
 }
 

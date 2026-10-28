@@ -905,6 +905,10 @@ capabilities:
 {{- $raw -}}
 {{- end -}}
 
+{{- define "openclaw.openshellGit.serviceName" -}}
+openclaw-enterprise-openshell-git
+{{- end -}}
+
 {{/* Each listener the chart routes through a Service: its port, or disabled. API and worker
      startup and the upgrade check refuse an Installation listener on another port, not on
      all addresses, without the chart listener (finding 2213), or naming TLS or issuer files
@@ -914,6 +918,32 @@ capabilities:
 - name: {{ $listener.name }}
   value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
 {{- end }}
+{{- $issuer := .Values.openshellGit.jointTokenIssuer }}
+{{- $tokenEndpoint := "disabled" }}
+{{- if $issuer.enabled }}
+{{- $hostname := printf "%s.%s.svc" (include "openclaw.openshellGit.serviceName" .) .Release.Namespace }}
+{{- /* A release upgraded with --reuse-values has no clusterDomain in its old defaults. */}}
+{{- $domain := get $issuer "clusterDomain" }}
+{{- $label := "openshellGit.jointTokenIssuer.clusterDomain" }}
+{{- include "openclaw.requireString" (dict "label" $label "value" $domain) }}
+{{- if $domain }}
+{{- include "openclaw.validateResourceName" (dict "label" $label "value" $domain) }}
+{{- range $part := splitList "." $domain }}
+{{- if gt (len $part) 63 }}
+{{- fail (printf "%s must contain DNS labels of at most 63 characters" $label) }}
+{{- end }}
+{{- end }}
+{{- $hostname = printf "%s.%s" $hostname $domain }}
+{{- if or (gt (len $hostname) 253) (regexMatch "\\.(0x[0-9a-f]*|[0-9]+)$" $hostname) }}
+{{- fail (printf "%s must form an issuer Service hostname of at most 253 characters without a numeric or 0x final label" $label) }}
+{{- end }}
+{{- end }}
+{{- $tokenEndpoint = printf "https://%s:%v/token/git" $hostname $issuer.port }}
+- name: OCC_OPENSHELL_GIT_TOKEN_ASSERTION_SOURCE
+  value: {{ $issuer.assertionSource | quote }}
+{{- end }}
+- name: OCC_OPENSHELL_GIT_TOKEN_ENDPOINT
+  value: {{ $tokenEndpoint | quote }}
 {{- end -}}
 
 {{/* Reject obvious quantity syntax errors; Kubernetes owns full quantity validation.

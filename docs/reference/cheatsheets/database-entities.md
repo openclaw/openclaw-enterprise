@@ -150,6 +150,12 @@ Records which Credential Gateway or Credential Proxy admitted each source. The c
 - `state`
 - `created_at`
 
+### `credential_policy_effects`
+
+Stores one conditional command for a revision and step. OCC reserves `request_id`,
+the identity digest and expected resource version before dispatch. Only the original
+receipt can be added. The rows disappear when the owning revision is deleted.
+
 ### `egress_installations`
 
 Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement
