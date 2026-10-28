@@ -5,7 +5,9 @@ package occdev
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,6 +46,26 @@ func TestDownImageVolumeRecovery(t *testing.T) {
 					}
 					if want == "cannot confirm k3d image volume absence" && err != nil && strings.Contains(err.Error(), " remains") {
 						t.Errorf("unconfirmed volume reported present: %v", err)
+					}
+					if err != nil && (tc.volume == "present" || tc.volume == "unconfirmed") {
+						// Check the advice separately from the wrapped OS error and paths.
+						detail := strings.TrimPrefix(err.Error(), "cleanup incomplete; preserving "+directory+" for recovery: ")
+						_, advice, _ := strings.Cut(detail, "; ")
+						if !strings.Contains(advice, tc.engine+" endpoint unix:///recorded-engine.sock") || strings.Contains(advice, "volume rm") {
+							t.Errorf("recovery advice lacks recorded endpoint context or includes a removal command: %s", advice)
+						}
+						if tc.volume == "present" && !strings.Contains(advice, "k3d.cluster=occ-dev-recorded ") {
+							t.Errorf("recovery advice lacks exact cluster ownership: %s", advice)
+						}
+						if tc.volume == "unconfirmed" {
+							var exitError *exec.ExitError
+							if !errors.As(err, &exitError) || exitError.ExitCode() != 8 {
+								t.Errorf("inspection error was not preserved: %v", err)
+							}
+							if strings.Contains(advice, "remov") {
+								t.Errorf("unconfirmed inspection advises removal: %s", advice)
+							}
+						}
 					}
 					if output.Len() != 0 {
 						t.Errorf("premature output: %q", output.String())
