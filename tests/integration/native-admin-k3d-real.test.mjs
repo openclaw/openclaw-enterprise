@@ -362,7 +362,7 @@ async function assertServiceWorkerRegistrationBlockedByCsp(page) {
 }
 
 async function openNativeAdminConsole(page, nativeOrigin) {
-  const link = page.getByRole("link", { name: "Open admin console", exact: true });
+  const link = page.getByRole("link", { name: "Open Agent UI", exact: true });
   const root = new URL("/", nativeOrigin).href;
   assert.equal(await link.getAttribute("href"), root);
   const [nativePage] = await Promise.all([page.waitForEvent("popup"), link.click()]);
@@ -371,7 +371,7 @@ async function openNativeAdminConsole(page, nativeOrigin) {
   const documentUrl = await nativePage.evaluate(
     () => performance.getEntriesByType("navigation")[0]?.name,
   );
-  assert.equal(documentUrl, root, "Open admin console must load the native root document");
+  assert.equal(documentUrl, root, "Open Agent UI must load the native root document");
   assert.equal(new URL(nativePage.url()).origin, nativeOrigin);
   assert.equal(await nativePage.evaluate(() => globalThis.window.opener === null), true);
   return nativePage;
