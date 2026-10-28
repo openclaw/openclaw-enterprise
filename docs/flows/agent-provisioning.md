@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-10-25
-last_updated_session: fix-postland-1025b
+updated: 2026-10-26
+last_updated_session: create-deployment-superseded
 ---
 
 # Agent provisioning flow
@@ -33,6 +33,7 @@ graph TD
   Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe saved version"]
   Observe -->|Pending| Observe
   Observe -->|Activated| UI["<b>Agent deployment view</b><br/>Open existing version"]
+  Observe -->|Superseded| Superseded["<b>Create stays open</b><br/>Newer deployment took over"]
   Observe -->|Failed| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
   Claim -->|Failure| Failed["<b>Retain outputs</b><br/>Retry known failures"]
   Failed -->|Uncertain write| Recovery["<b>Recovery required</b><br/>Do not repeat blindly"]
@@ -42,7 +43,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI operation
-  class Failed,Recovery,Terminal condition
+  class Failed,Recovery,Terminal,Superseded condition
 ```
 
 ## Execution Trace
@@ -117,7 +118,9 @@ wait and waits one second between status reads, spending it on details such as a
 at the next poll. Admission, status and retry report the stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
 `meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
-If the first deployment fails, correct the cause and deploy again; after a Stop, deploy when ready.
+If a newer deployment takes over, Create explains what happened without a retry or a link:
+the job identifies only the deployment that ended. For a failure, follow the linked version's
+recovery guidance. After a Stop, deploy when ready.
 Reconciliation owns startup and activation; later versions use Deploy.
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { backendFixtures, createConsoleAppFixture } from "./console-app.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
@@ -101,17 +100,6 @@ export async function protectedSourceFixture(t, { githubMetadata = false, ...opt
     return controller;
   }
 
-  /** The HTTP answer the API gives for what `work` throws. */
-  async function answer(work) {
-    try {
-      await work();
-    } catch (error) {
-      const { status, code, message } = requestFailure(error);
-      return { status, code, message };
-    }
-    assert.fail("the request must be refused");
-  }
-
   /** A dedicated Agent whose deletion has started: the worker never runs here, so it stays. */
   async function deletingAgent(name) {
     const created = await f.request("POST", `/namespaces/${namespaceId}/agents`, {
@@ -163,7 +151,6 @@ export async function protectedSourceFixture(t, { githubMetadata = false, ...opt
     administratorId,
     path,
     restart,
-    answer,
     deletingAgent,
     embeddedAgent,
     deploy: (controller, agentId) =>

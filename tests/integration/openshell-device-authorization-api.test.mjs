@@ -12,7 +12,8 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { DEVICE_LOGIN_FAILED, sentIdHidden } from "../helpers/refusal-text.mjs";
+import { DEVICE_LOGIN_FAILED } from "../helpers/refusal-text.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 
 function jwt(payload) {
   return `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;
@@ -299,20 +300,10 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   ]);
   const readerSession = await fixture.signIn(reader.credentials);
   const sessionId = interrupted.data.session.id;
-  const answers = [];
-  for (const id of [sessionId, `${sessionId.slice(0, sessionId.indexOf("_"))}_${randomUUID()}`]) {
-    const denied = await fixture.request("POST", `${path}/${id}/poll`, {
-      session: readerSession,
-      body: {},
-    });
-    answers.push({
-      status: denied.status,
-      code: denied.body.error.code,
-      message: sentIdHidden(denied.body.error.message, id),
-    });
-  }
-  assert.equal(answers[0].status, 403, JSON.stringify(answers[0]));
-  assert.deepEqual(answers[1], answers[0]);
+  await assertSameAnswer(
+    (id) => fixture.request("POST", `${path}/${id}/poll`, { session: readerSession, body: {} }),
+    [sessionId, `${sessionId.slice(0, sessionId.indexOf("_"))}_${randomUUID()}`],
+  );
   assert.equal(exchanges, 2);
   const failedRecord = await fixture.controller.transact((unit) =>
     unit.secrets.findSecret(namespace.id, interrupted.data.session.id),

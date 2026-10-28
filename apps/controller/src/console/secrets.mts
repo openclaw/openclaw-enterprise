@@ -9,6 +9,8 @@ import {
   askAdministratorTo,
   SECRET_CREATE_DENIED,
   SECRET_DELETE_DENIED,
+  SECRET_LINK_UNLISTED,
+  secretLinkUnlistedForAdministrator,
   SECRET_READ_DENIED,
   SECRET_UPDATE_DENIED,
 } from "./agents/access-reasons.mjs";
@@ -32,7 +34,35 @@ import { namespaceNameProblem, type NamespacePageContext } from "./namespaces.mj
 import type { createNavigation } from "./navigation.mjs";
 
 type SecretSummary = Pick<SecretMetadata, "id" | "name">;
-type SecretDetail = SecretSummary & { consumers: SecretConsumers };
+type SecretDetail = SecretSummary & {
+  consumers: SecretConsumers;
+  // The read's advisory answer; a missing field is unknown and keeps the action.
+  callerPermissions: { update?: boolean; delete?: boolean };
+  // Agent names by ID from the readable Agent list; null when that read failed.
+  agentNames: ReadonlyMap<string, string> | null;
+};
+
+function callerPermissions(value: unknown) {
+  const fields = responseFields(value);
+  return {
+    ...(typeof fields.update === "boolean" ? { update: fields.update } : {}),
+    ...(typeof fields.delete === "boolean" ? { delete: fields.delete } : {}),
+  };
+}
+
+function agentNames(value: unknown): ReadonlyMap<string, string> | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const names = new Map<string, string>();
+  for (const item of value) {
+    const { id, name } = responseFields(item);
+    if (typeof id === "string" && typeof name === "string" && name) {
+      names.set(id, name);
+    }
+  }
+  return names;
+}
 
 function secretSummary(value: unknown, expectedId?: string): SecretSummary {
   const { id, name } = responseFields(value);
@@ -158,6 +188,8 @@ export function renderSecrets(
     sorted(items: readonly SecretSummary[]): SecretSummary[];
     pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
     permissions?: Static<typeof NamespaceCallerPermissionsResponse>["data"] | null;
+    // A listed Secret to open, from the `secret` parameter an Agent page's link sets.
+    openSecretId?: string | null;
   },
 ) {
   const path = `/namespaces/${encodeURIComponent(context.namespaceId)}/secrets`;
@@ -382,12 +414,30 @@ export function renderSecrets(
         return;
       }
       const secret = secretSummary(detail, item.id);
-      const { consumers } = responseFields(detail);
+      const fields = responseFields(detail);
+      const { consumers } = fields;
       // Incomplete or unrecognized consumer metadata cannot establish that deletion is safe.
       if (!hasConsumerDetails(consumers)) {
         throw new Error("Invalid Secret detail");
       }
-      renderDetail(current, { ...secret, consumers });
+      // Consumers name the Agents the caller may read; the readable Agent list gives their names,
+      // and audits nothing it leaves out (finding D761). A failed list read keeps the IDs.
+      const names = consumers.agents.length
+        ? agentNames(
+            await context
+              .request(`/namespaces/${encodeURIComponent(context.namespaceId)}/agents`)
+              .catch(() => null),
+          )
+        : new Map<string, string>();
+      if (!isOpen(current) || version !== readVersion) {
+        return;
+      }
+      renderDetail(current, {
+        ...secret,
+        consumers,
+        callerPermissions: callerPermissions(fields.callerPermissions),
+        agentNames: names,
+      });
     } catch (cause) {
       if (!isOpen(current) || version !== readVersion) {
         return;
@@ -436,10 +486,21 @@ export function renderSecrets(
             if (label !== "Agents") {
               return element("li", { className: "resource-id" }, id);
             }
+            const name = detail.agentNames?.get(id);
+            if (detail.agentNames && name === undefined) {
+              // The Secret read lists only Agents the caller may read; one the list leaves out
+              // was deleted or changed access since.
+              return element(
+                "li",
+                {},
+                "An Agent you cannot read ",
+                element("span", { className: "resource-id" }, id),
+              );
+            }
             const link = element(
               "a",
               { href: context.pageUrl(`agents/${id}`, context.namespaceId) },
-              id,
+              name ?? id,
             );
             link.addEventListener("click", (event) => {
               if (
@@ -455,7 +516,9 @@ export function renderSecrets(
               closeModal();
               context.navigate(`agents/${id}`, context.namespaceId);
             });
-            return element("li", { className: "resource-id" }, link);
+            return name === undefined
+              ? element("li", { className: "resource-id" }, link)
+              : element("li", {}, link, " ", element("span", { className: "resource-id" }, id));
           }),
         ),
       );
@@ -484,16 +547,41 @@ export function renderSecrets(
     current.body.append(
       element(
         "p",
-        {},
+        referenced ? { id: "secret-delete-blocked" } : {},
         referenced
           ? "Deletion is blocked while references remain. Remove them from their owning resources first."
           : "No current consumers were found. Deletion checks references again.",
       ),
     );
+    // The read's advisory answer disables what the API would refuse, with the reason, instead of
+    // refusing a replacement after the value is typed (finding D761). Gating only: the API still
+    // authorizes each write, and an unknown answer keeps the action.
+    const replaceDenied = detail.callerPermissions.update === false;
+    const deleteDenied = detail.callerPermissions.delete === false;
+    if (replaceDenied) {
+      current.body.append(
+        element("p", { className: "muted", id: "secret-replace-denied" }, SECRET_UPDATE_DENIED),
+      );
+    }
+    if (deleteDenied) {
+      current.body.append(
+        element("p", { className: "muted", id: "secret-delete-denied" }, SECRET_DELETE_DENIED),
+      );
+    }
     const replace = button("Replace value", () => editValue(detail));
-    replace.disabled = !ready;
+    replace.disabled = !ready || replaceDenied;
+    if (replaceDenied) {
+      replace.setAttribute("aria-describedby", "secret-replace-denied");
+    }
     const remove = button("Delete Secret", () => confirmDelete(detail), { tone: "danger" });
-    remove.disabled = referenced;
+    remove.disabled = referenced || deleteDenied;
+    const deleteReasons = [
+      ...(referenced ? ["secret-delete-blocked"] : []),
+      ...(deleteDenied ? ["secret-delete-denied"] : []),
+    ];
+    if (deleteReasons.length) {
+      remove.setAttribute("aria-describedby", deleteReasons.join(" "));
+    }
     current.actions.append(replace, remove);
   }
 
@@ -788,4 +876,18 @@ export function renderSecrets(
   }
 
   renderList();
+  // An Agent page links a bound Secret here, with its metadata and consumers open (finding D757).
+  // A Secret the list leaves out opens nothing, and says why without reading it: the caller may
+  // not read it, or it does not exist (finding D761).
+  const linked = items.find((item) => item.id === context.openSecretId);
+  if (linked) {
+    void openDetail(linked);
+  } else if (context.openSecretId) {
+    // An administrator is the one the member text sends the reader to, so she gets no ask.
+    const unlisted =
+      context.permissions?.installation?.administer === true
+        ? secretLinkUnlistedForAdministrator(context.openSecretId)
+        : SECRET_LINK_UNLISTED;
+    list.before(statusBlock("warning", null, unlisted, [], { role: "status" }));
+  }
 }

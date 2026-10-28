@@ -18,6 +18,7 @@ import {
   waitForEnabled,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { submitCreateAgent } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
@@ -195,14 +196,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal(discovery.body.credentialSource.kind, "credential_source");
   await page.getByLabel("Agent name", { exact: true }).fill("OAuth Agent");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-  const created = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname === `/namespaces/${namespace.id}/agents`,
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const createResponse = await created;
-  assert.equal(createResponse.status(), 201, await createResponse.text());
+  await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
   await page.getByRole("heading", { name: "OAuth Agent", exact: true }).waitFor();
   const creation = requests.find(
     (request) => request.method === "POST" && request.path === `/namespaces/${namespace.id}/agents`,
@@ -460,7 +454,9 @@ test("Codex sign-in can retry a refused start but cannot repeat one with an unre
   await waitForSettledFetches(page, beginPath, 2);
   assert.equal(await start.isDisabled(), true, "a login may already exist");
   await page
-    .getByText(/may have started.*until an administrator investigates the pending attempt/i)
+    .getByText(
+      /may have started.*until an Installation administrator investigates the pending attempt/i,
+    )
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Cancel login" }).isVisible(), false);
 

@@ -138,7 +138,7 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 `create.mts:grantConfigurationSecretAccess` grants exact Secret `operate` for final
 same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
 rereads grants without duplication. Grants are Installation administration: a session
-whose `/observability` probe was refused sends no IAM request and names the administrator
+known not to administer the Installation sends no IAM request and names the administrator
 step, and a member's refused grant offers no retry. After a refused Installation read, a
 failed permission read offers **Retry permission check**, which rereads only that answer. Failed Agent writes retain Configuration ID
 and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts

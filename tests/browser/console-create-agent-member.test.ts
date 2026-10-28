@@ -29,7 +29,9 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
 import {
+  ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,
+  CONFIGURATION_CREATE_REFUSED,
   GENERIC_DENIAL,
   SECRET_CREATE_DENIED,
   NEW_SECRET_OPERATE_DENIED,
@@ -173,10 +175,13 @@ test("a member with Agent create completes the default Preset path without Insta
       `POST /namespaces/${namespace.id}/agents 201`,
     ],
   );
-  // The session's /observability read already found Installation administration refused, so the
-  // form sends no IAM read the API is certain to refuse and audit as a denial, and offers no
-  // retry of it (finding 2109).
-  assert.ok(answers.includes("GET /observability 403"), answers.join("\n"));
+  // The Namespace permission answer already said the member does not administer the
+  // Installation, so the session sends no probe and the form no IAM read the API is certain to
+  // refuse and audit as a denial, and offers no retry of it (findings 2109, 2620).
+  assert.deepEqual(
+    answers.filter((answer) => answer.startsWith("GET /observability ")),
+    [],
+  );
   assert.deepEqual(
     answers.filter((answer) => answer.includes("/iam/")),
     [],
@@ -368,12 +373,23 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
   const { page } = await newPage(t, fixture);
   const answers = apiResponses(page, fixture.origin);
   // The session never learns whether this account administers the Installation, so the form
-  // tries the grant.
+  // tries the grant: the page's permission answer and the probe both fail. The form's own
+  // permission retry then allows Agent create, but answers only for this Namespace.
   await page.route(`${fixture.origin}/observability`, unavailable);
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/permissions`, unavailable, {
+    times: 1,
+  });
   const rolesPath = `${fixture.origin}/namespaces/${namespace.id}/iam/roles`;
   await page.route(rolesPath, unavailable);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
   await fillDefaultPreset(page, secret, "Member Agent");
+  const retryPermissions = page.getByRole("button", {
+    name: "Retry permission check",
+    exact: true,
+  });
+  await waitForEnabled(retryPermissions);
+  await retryPermissions.click();
+  await retryPermissions.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   // An outage is not a refusal: the grant is unconfirmed and can be retried (finding 2113).
   await page.getByRole("alert").filter({ hasText: CREDENTIAL_ACCESS_UNCONFIRMED }).waitFor();
@@ -402,7 +418,7 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
 });
 
 const ADMINISTRATOR_GRANT_REQUEST = "req_00000000-0000-4000-8000-000000002543";
-const ADMINISTRATOR_GRANT_REFUSED = `${CREDENTIAL_ACCESS_UNCONFIRMED} Access denied. You do not have permission for this operation. Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets. Request ID: ${ADMINISTRATOR_GRANT_REQUEST}`;
+const ADMINISTRATOR_GRANT_REFUSED = `${CREDENTIAL_ACCESS_UNCONFIRMED} ${ADMINISTRATOR_ACCESS_DENIED} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets. Request ID: ${ADMINISTRATOR_GRANT_REQUEST}`;
 
 test("an administrator's refused credential grant keeps the retry and the API's answer", async (t) => {
   const { fixture, namespace, secret } = await setup(t);
@@ -488,8 +504,7 @@ test("a member's refused Configuration create and empty Secret list name the acc
   await page
     .getByRole("alert")
     .filter({
-      hasText:
-        "You do not have permission to create this Agent's Configuration. It needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator to create this Agent.",
+      hasText: CONFIGURATION_CREATE_REFUSED,
     })
     .waitFor();
 

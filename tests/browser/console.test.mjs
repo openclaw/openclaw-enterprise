@@ -6,6 +6,7 @@ import test from "node:test";
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../../apps/controller/src/admission/admission-verifier.ts";
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   describePendingBrowserRequests,
   noteBrowserEvent,
@@ -34,6 +35,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
+  NO_READABLE_NAMESPACES,
   NAMESPACE_UNAVAILABLE,
   WORKSPACE_FILES_UNAVAILABLE,
   SIGN_IN_UNAVAILABLE,
@@ -524,21 +526,19 @@ test("console shows the external observability link only to Installation adminis
   // then opens the Console again instead of the login form.
   await page.waitForURL(/\/console\/login$/);
   // Restore the administrator's answer as an expiry would leave it: it belongs to another
-  // session owner, so the next sign-in must probe (a reused answer sends no probe below).
+  // session owner, so the next sign-in must not reuse it (a reused answer shows the link below).
   await page.evaluate((answer) => {
     globalThis.sessionStorage.setItem("occ.console.installationAccess", answer);
   }, adminAnswer);
-  // The shell renders before the probe is answered, so wait for the denial itself.
-  const limitedProbe = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/observability",
-  );
   await login(page, fixture, "/console/", limited.credentials);
-  assert.equal((await limitedProbe).status(), 403);
   // The limited user reads no Agents. The empty list renders only after the page applied the
-  // denied probe, so the link checks below see the settled shell, not the loading one.
+  // Installation-access answer, so the link checks below see the settled shell, not the loading
+  // one. The Namespace permission answer says she does not administer the Installation, so she is
+  // not probed: the API would audit the probe's 403 as a denial (finding D45).
   await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
-  // A denied read is audited, so navigation must not repeat it.
+  assert.equal(probes, 1);
+  // Navigation does not probe either.
   await page.getByRole("link", { name: "Namespaces" }).click();
   await page.getByRole("list", { name: "Namespaces" }).getByText("Observability access").waitFor();
   const namespacesRead = page.waitForResponse(
@@ -548,16 +548,18 @@ test("console shows the external observability link only to Installation adminis
   await namespacesRead;
   await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
-  assert.equal(probes, 2);
-  // A reload in the same tab reuses the settled answer for this session owner.
+  assert.equal(probes, 1);
+  // Nor does a reload in the same tab.
   await page.reload();
   await page.getByRole("heading", { name: "No Agents are shared with you", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
-  assert.equal(probes, 2);
+  assert.equal(probes, 1);
 });
 
-test("a navigation while the Installation-access probe is answered does not ask again", async (t) => {
-  // The API audits every denied probe, so the Console must not repeat one it already sent.
+// The API audits every denied probe, so the Console must not repeat one it already sent. A
+// navigation's page load first asks the permission answer, then probes: the earlier probe can
+// still be pending at that point, or settle while the permission answer is read.
+async function navigateDuringInstallationAccessProbe(t, { settleFirst }) {
   let answered = 0;
   const fixture = await createConsoleAppFixture(t, {
     observabilityUrl: "https://metrics.example.test/d/operations",
@@ -585,6 +587,19 @@ test("a navigation while the Installation-access probe is answered does not ask 
     });
   });
   const { page } = await newPage(t, fixture);
+  // The permission answer that would rule out administration fails, so the Console probes. With
+  // settleFirst, the navigation's answer is held until the first probe has settled.
+  let permissionReads = 0;
+  const navigationAsked = deferred();
+  const probeSettled = deferred();
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/permissions`, async (route) => {
+    permissionReads += 1;
+    if (settleFirst && permissionReads === 2) {
+      navigationAsked.resolve();
+      await probeSettled.promise;
+    }
+    await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
+  });
   // The API has answered (and audited) the probe; its response reaches the page only later.
   const probe = await holdRoute(t, page, "**/observability", (route, response) =>
     route.fulfill({ response }),
@@ -593,11 +608,25 @@ test("a navigation while the Installation-access probe is answered does not ask 
   await probe.waitForRelease();
   await page.getByRole("link", { name: "Namespaces" }).click();
   await page.waitForURL(/\/console\/namespaces/);
-  probe.release();
+  if (settleFirst) {
+    await navigationAsked.promise;
+    probe.release();
+    // The Console keeps a settled answer for the tab in session storage.
+    await page.waitForFunction(() => sessionStorage.getItem("occ.console.installationAccess"));
+    probeSettled.resolve();
+  } else {
+    probe.release();
+  }
   await page.getByRole("list", { name: "Namespaces" }).getByText("Probe access").waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(answered, 1);
-});
+}
+
+test("a navigation while the Installation-access probe is answered does not ask again", (t) =>
+  navigateDuringInstallationAccessProbe(t, { settleFirst: false }));
+
+test("a probe that settles while the next page reads its permission answer is not sent again", (t) =>
+  navigateDuringInstallationAccessProbe(t, { settleFirst: true }));
 
 test("console ignores stale collection successes and errors while switching Namespaces", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -675,7 +704,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
   for (const [path, title, text, selected] of [
     [
       "/console/agents",
-      "No readable Namespaces",
+      NO_READABLE_NAMESPACES,
       "Ask an Installation administrator to create a Namespace or to give you access to one, then Refresh.",
       "None",
     ],
@@ -1294,6 +1323,12 @@ test("console retained views clear after session expiry and exact Agent denial",
     .waitFor();
   // Retry would repeat the refusal; the header's Refresh checks access again (finding 2549).
   assert.equal(await page.locator(".state-panel").getByRole("button").count(), 0);
+  // The request ID is kept for whoever traces the denial, behind a disclosure, so it is not read
+  // as part of the reason (finding D770).
+  const deniedPanel = page.locator(".state-panel");
+  assert.doesNotMatch(await deniedPanel.innerText(), /Request ID/);
+  await deniedPanel.getByText("Request details", { exact: true }).click();
+  assert.match(await deniedPanel.locator("details .request-id").innerText(), /^Request ID: \S+$/);
   await expectNoText(page, /Configuration draft|Selected revision/, () => waitForIdleFetches(page));
 });
 
@@ -1505,9 +1540,116 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
 const GOOGLE_EXCHANGE_REFUSED =
   "Could not finish signing in with Google. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with Google to start again.";
 const GOOGLE_PROVIDER_GONE =
-  "Could not finish signing in with Google. Google sign-in is no longer available on this Installation. Use another sign-in method, or ask an administrator.";
+  "Could not finish signing in with Google. Google sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.";
 const UNTRUSTED_ORIGIN_SIGN_IN =
   "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
+
+const UNCONFIRMED_PASSWORD_SIGN_IN =
+  "Could not confirm whether sign-in completed. Reload the page to check your session before trying your password again.";
+
+for (const [lossPoint, afterHeaders] of [
+  ["before response headers", false],
+  ["after response headers", true],
+]) {
+  test(`an accepted password sign-in interrupted ${lossPoint} asks to check the session`, async (t) => {
+    const signInPath = "/api/auth/sign-in/email";
+    let observing = false;
+    let submissions = 0;
+    let acceptedStatus;
+    let cookieIssued = false;
+    let interruptedReply;
+    const fixture = await createConsoleAppFixture(t, {
+      async onSend(request, reply, payload) {
+        if (!observing || request.method !== "POST" || request.url !== signInPath) {
+          // Give the before-headers case a fresh connection for its password submission.
+          if (!afterHeaders) {
+            reply.header("connection", "close");
+          }
+          return payload;
+        }
+        submissions += 1;
+        if (submissions !== 1) {
+          return payload;
+        }
+        acceptedStatus = reply.statusCode;
+        if (acceptedStatus !== 200) {
+          return payload;
+        }
+        const headers = reply.getHeaders();
+        cookieIssued = headers["set-cookie"] !== undefined;
+        reply.hijack();
+        if (afterHeaders) {
+          // The Controller accepted the request. Deliver its real headers and a body
+          // prefix, then keep the socket open until the browser observes the 200.
+          assert.equal(typeof payload, "string");
+          reply.raw.writeHead(reply.statusCode, {
+            ...headers,
+            "content-length": Buffer.byteLength(payload),
+          });
+          reply.raw.write(payload.slice(0, 1));
+          interruptedReply = reply.raw;
+        } else {
+          reply.raw.destroy();
+        }
+        return payload;
+      },
+    });
+    t.after(() => interruptedReply?.destroy());
+    await fixture.bootstrap();
+    const { page } = await newPage(t, fixture);
+    let browserSubmissions = 0;
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === signInPath) {
+        browserSubmissions += 1;
+      }
+    });
+    await page.goto(`${fixture.origin}/console/login`);
+    await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+    await page.getByLabel("Password").fill(fixture.credentials.password);
+    const sessionsBefore = fixture.memoryDatabase.session.length;
+    const isSignIn = (event) => new URL(event.url()).pathname === signInPath;
+    const observed = afterHeaders
+      ? page.waitForResponse(isSignIn)
+      : page.waitForEvent("requestfailed", isSignIn);
+    observing = true;
+    await page.getByRole("button", { name: "Sign in" }).click();
+    const result = await observed;
+    assert.equal(acceptedStatus, 200, "the real Controller must accept the password");
+    assert.equal(cookieIssued, true, "the accepted sign-in must issue a cookie");
+    assert.equal(fixture.memoryDatabase.session.length, sessionsBefore + 1);
+    const createdSession = fixture.memoryDatabase.session.at(-1);
+    if (afterHeaders) {
+      assert.equal(result.status(), 200);
+      assert.ok(Number((await result.allHeaders())["content-length"]) > 1);
+      interruptedReply.destroy();
+    } else {
+      assert.equal(await result.response(), null);
+    }
+    const feedback = page.locator('form [role="alert"]');
+    await feedback.filter({ hasText: /\S/ }).waitFor();
+    assert.equal(await feedback.textContent(), UNCONFIRMED_PASSWORD_SIGN_IN);
+    assert.equal(browserSubmissions, 1);
+    assert.equal(submissions, 1);
+
+    const checkingSession = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/auth/session",
+    );
+    await page.reload();
+    const sessionResponse = await checkingSession;
+    assert.equal(sessionResponse.status(), 200);
+    const { data: session } = await sessionResponse.json();
+    if (afterHeaders) {
+      assert.equal(session?.authenticated, true);
+      assert.ok(session.user.id === createdSession.userId, "reload must find the accepted session");
+      await page.waitForURL(/\/console\/agents(?:[/?#]|$)/);
+    } else {
+      assert.equal(session, null, "the browser received no session cookie");
+      await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+    }
+    assert.equal(browserSubmissions, 1, "checking the session must not resubmit the password");
+    assert.equal(submissions, 1, "the Controller must receive only one password submission");
+  });
+}
 
 // Each failure says what happened and what to do; a rate limit, an outage or the origin
 // check never reads as a wrong password or a refused identity (finding 2535).
@@ -1531,6 +1673,13 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
     await page.getByText(expected, { exact: true }).waitFor();
   };
   await page.goto(`${fixture.origin}/console/login`);
+
+  const wrongPassword = page.waitForResponse((response) =>
+    response.url().endsWith("/api/auth/sign-in/email"),
+  );
+  const refusedPassword = signIn("Could not sign in. Check your email and password.");
+  assert.equal((await wrongPassword).status(), 401);
+  await refusedPassword;
 
   // The real API refuses a sign-in sent from another Origin before it reads the password.
   // The browser keeps its own Origin, so the request is resent from the test with another.
@@ -1560,7 +1709,7 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
       outage,
       "Sign-in is temporarily unavailable because a service it depends on did not answer. Try again shortly. If it continues, ask an operator.",
     ],
-    [null, "Could not reach the sign-in service. Check your connection, then try again."],
+    [null, UNCONFIRMED_PASSWORD_SIGN_IN],
   ]) {
     await page.route("**/api/auth/sign-in/email", (route) =>
       response === null ? route.abort("connectionrefused") : route.fulfill(response),
@@ -1670,7 +1819,7 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   assert.equal(refused.status(), 403);
   await page
     .getByText(
-      "Could not finish signing in with Acme SSO. Acme SSO sign-in is no longer available on this Installation. Use another sign-in method, or ask an administrator.",
+      "Could not finish signing in with Acme SSO. Acme SSO sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.",
       { exact: true },
     )
     .waitFor();
@@ -1705,18 +1854,18 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
   const cases = [
     [
       "membership",
-      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access or use your password.",
-      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access.",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access or use your password.",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access.",
     ],
     [
       "membership-unavailable",
       "Could not check your GitHub organization membership. Try again later or use your password.",
-      "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+      "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an Installation administrator.",
     ],
     [
       "toString",
       "Could not sign in with GitHub. Try again or use your password.",
-      "Could not sign in with GitHub. Try again, or ask an administrator to attach your GitHub identity to your account.",
+      "Could not sign in with GitHub. Try again, or ask an Installation administrator to attach your GitHub identity to your account.",
     ],
   ];
   for (const [reason, withPassword, recoveryOnly] of cases) {
@@ -1815,7 +1964,7 @@ test("a provider outage says sign-in is unavailable, not to get attached", async
       [true, `${label} sign-in is unavailable right now. Try again later or use your password.`],
       [
         false,
-        `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`,
+        `${label} sign-in is unavailable right now. Try again later. If you are an Installation administrator, use Recovery sign-in.`,
       ],
     ]) {
       password = available;
@@ -1868,7 +2017,7 @@ test("recovery-only password sign-in keeps the form behind Recovery sign-in", as
   // Without a password to fall back on, the provider error points to an administrator.
   await page
     .getByText(
-      "Could not sign in with GitHub. Try again, or ask an administrator to attach your GitHub identity to your account.",
+      "Could not sign in with GitHub. Try again, or ask an Installation administrator to attach your GitHub identity to your account.",
     )
     .waitFor();
   assert.equal(await page.getByLabel("Password").isVisible(), false);
@@ -2371,7 +2520,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
     effect: "deny",
   });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
+  await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
   await page.getByText("Create a Namespace to get started.", { exact: true }).waitFor();
   await waitForEnabled(page.getByRole("button", { name: "Create Namespace", exact: true }));
   assert.equal(await page.getByRole("combobox").count(), 0);

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  DEPLOYED_VERSION_UNREADABLE,
   deployAcceptedVersionUnreadable,
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   MODEL_CREDENTIAL_REJECTED_REPLACED,
@@ -12,15 +14,23 @@ import {
   requestedVersionUnavailable,
   VERSION_READ_DENIED,
   VERSION_UNAVAILABLE,
+  VERSION_READ_DENIED_HEADING,
+  READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
+  authorizationDenials,
+  denyRevisionRead,
   detailUrl,
   login,
   nativeValues,
   newPage,
   routeFailedDeployment,
+  routeOneVersionPerPage,
   shortId,
+  stopAgentButton,
+  trackSettledFetches,
+  waitForIdleFetches,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -55,7 +65,7 @@ test("a version link the page cannot list says the version may not exist", async
     .getByText(requestedVersionUnavailable(shortId(madeUp)), { exact: true })
     .waitFor();
   assert.equal(await page.getByText(/after each deployment/).count(), 0);
-  assert.equal(await page.getByText("You cannot read this version").count(), 0);
+  assert.equal(await page.getByText(VERSION_READ_DENIED_HEADING).count(), 0);
 });
 
 test("a version link stays hedged when the reader can read no version", async (t) => {
@@ -110,14 +120,7 @@ test("a listed version the reader can no longer read is not called possibly miss
       // The list has shown v2; the grant is revoked before v2's own read.
       await listed;
       if (!fixture.policy.restrictions.some((item) => item.id === `deny-read-${next.id}`)) {
-        fixture.policy.restrictions.push({
-          id: `deny-read-${next.id}`,
-          namespaceId: namespace.id,
-          resourceKind: "agent_revision",
-          resourceId: next.id,
-          action: "read",
-          effect: "deny",
-        });
+        denyRevisionRead(fixture, namespace, next);
       }
       await route.continue();
     },
@@ -129,7 +132,7 @@ test("a listed version the reader can no longer read is not called possibly miss
     detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"),
     reader.credentials,
   );
-  await page.getByRole("heading", { name: "You cannot read this version" }).waitFor();
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   assert.equal(await page.getByText("Version not found or not shared").count(), 0);
 });
 
@@ -301,7 +304,8 @@ test("a rejected credential's record stops alerting once the Agent binds another
 // version her read does not cover: the policy denies it before the console reads it, as when an
 // administrator grants read on each version after it exists (docs/guides/topics/iam.md).
 async function deployWithoutVersionRead(t, name) {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, name);
+  const auditSink = new InMemoryAuditSink();
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, name, { auditSink });
   const agent = await fixture.createAgent(namespace.id, name, nativeValues("accepted"), {
     harnessAuth: { method: "runtime" },
   });
@@ -319,34 +323,24 @@ async function deployWithoutVersionRead(t, name) {
       const body = await response.json();
       const id = body.data?.id ?? body.id;
       deployed.push(id);
-      fixture.policy.restrictions.push({
-        id: `deny-read-${id}`,
-        namespaceId: namespace.id,
-        resourceKind: "agent_revision",
-        resourceId: id,
-        action: "read",
-        effect: "deny",
-      });
+      denyRevisionRead(fixture, namespace, { id });
       await route.fulfill({ response });
     },
   );
-  return { fixture, namespace, agent, deployer, page, deployed };
+  // Each refused version read is audited as a denial the member never attempted (finding D758).
+  const versionReadDenials = () => authorizationDenials(auditSink, "openclaw.agent_revisions.read");
+  return { fixture, namespace, agent, deployer, page, deployed, versionReadDenials };
 }
-
-const stopButton = (page) =>
-  page
-    .getByRole("region", { name: "Stop Agent", exact: true })
-    .getByRole("button", { name: "Stop Agent", exact: true });
 
 // The version a member just deployed exists: the API accepted it. #3721's hedge for edited links
 // ("does not exist or your access does not include it", with Retry) told her otherwise (finding
 // D751). A refused version is settled, so its panel offers no Retry or request ID; the page
-// Refresh checks access again (finding D753).
+// Refresh checks access again (finding D753). The version list, which audits nothing it leaves
+// out, already shows she cannot read it, so the page never reads it (finding D758).
 test("a member's own deploy of a version she cannot read is accepted, not possibly missing", async (t) => {
-  const { fixture, namespace, agent, deployer, page, deployed } = await deployWithoutVersionRead(
-    t,
-    "Accepted unreadable",
-  );
+  const { fixture, namespace, agent, deployer, page, deployed, versionReadDenials } =
+    await deployWithoutVersionRead(t, "Accepted unreadable");
+  await trackSettledFetches(page);
   await login(
     page,
     fixture,
@@ -360,33 +354,55 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
     .locator(".agent-status-line")
     .getByText(deployAcceptedVersionUnreadable(shortId(id)), { exact: true })
     .waitFor();
+  // The summary card says the same as after a redeploy, not "None. No readable deployments."
+  // (finding D755).
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("Deployment accepted", { exact: true }).waitFor();
+  await summary.getByText(DEPLOYED_VERSION_UNREADABLE, { exact: true }).waitFor();
+  assert.equal(await summary.getByText("No readable deployments.").count(), 0);
   const panel = page.locator(".state-panel");
-  await panel.getByRole("heading", { name: "You cannot read this version" }).waitFor();
+  await panel.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   await panel.getByText(VERSION_READ_DENIED, { exact: true }).waitFor();
   assert.equal(await panel.getByRole("button", { name: "Retry" }).count(), 0);
   assert.equal(await panel.getByText(/^Request ID/).count(), 0);
   assert.equal(await page.getByText(/does not exist/).count(), 0);
   assert.equal(await page.getByText("Viewed version unavailable").count(), 0);
   // Nothing readable says what runs, so Stop stays: the API answers if nothing does.
-  await stopButton(page).waitFor();
+  await stopAgentButton(page).waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(versionReadDenials(), []);
+
+  // The page Refresh checks the version list again, which still leaves the version out. The
+  // rebuilt page replaces the panel.
+  const shownPanel = await panel.elementHandle();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await shownPanel.waitForElementState("hidden");
+  await panel.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
+  await page
+    .locator(".agent-status-line")
+    .getByText(deployAcceptedVersionUnreadable(shortId(id)), { exact: true })
+    .waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(versionReadDenials(), []);
 
   // Once read is granted, the page Refresh shows the version: the tab does not keep the denial.
   fixture.policy.restrictions.length = 0;
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
-  assert.equal(
-    await page.getByRole("heading", { name: "You cannot read this version" }).count(),
-    0,
-  );
+  await page
+    .getByLabel("Viewing version", { exact: true })
+    .getByRole("option", { selected: true })
+    .filter({ hasText: /^v1/ })
+    .waitFor({ state: "attached" });
+  assert.equal(await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING }).count(), 0);
 });
 
 // After a failed first deployment the member deploys again. The failure is the newest version she
 // can read, but the version she just deployed is newer: the page leads with the accepted
 // deployment instead of the old failure, and keeps Stop for it (findings D751, D691).
-test("a redeploy the member cannot read leads with the accepted deployment and keeps Stop", async (t) => {
+async function redeployUnreadable(t, name, { paged = false } = {}) {
   const { fixture, namespace, agent, deployer, page, deployed } = await deployWithoutVersionRead(
     t,
-    "Redeploy unreadable",
+    name,
   );
   const first = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedDeployment(page, fixture, {
@@ -394,6 +410,10 @@ test("a redeploy the member cannot read leads with the accepted deployment and k
     agentId: agent.id,
     deploymentId: first.id,
   });
+  if (paged) {
+    // The first page lists v1 and says older versions exist; nothing here loads the older page.
+    await routeOneVersionPerPage(page, fixture, namespace, agent);
+  }
   await login(
     page,
     fixture,
@@ -403,7 +423,7 @@ test("a redeploy the member cannot read leads with the accepted deployment and k
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.waitFor();
   // A failed first deployment leaves nothing to stop (finding D691).
-  assert.equal(await stopButton(page).count(), 0);
+  assert.equal(await stopAgentButton(page).count(), 0);
 
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
@@ -416,22 +436,36 @@ test("a redeploy the member cannot read leads with the accepted deployment and k
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("Deployment accepted", { exact: true }).waitFor();
   await summary
-    .getByText("You cannot read the version you deployed. v1 (Failed) is older.")
+    .getByText(`${DEPLOYED_VERSION_UNREADABLE} v1 (Failed) is older.`, { exact: true })
     .waitFor();
-  await stopButton(page).waitFor();
+  await stopAgentButton(page).waitFor();
   assert.equal(await recovery.count(), 0);
   assert.equal(await page.getByText(/does not exist/).count(), 0);
+  // The older page is still unread, so the list is incomplete.
+  assert.equal(
+    await page.getByRole("button", { name: "Load older versions", exact: true }).count(),
+    paged ? 1 : 0,
+  );
 
   // The draft entry says the same: the accepted deployment, not v1's failure, and Stop stays.
-  await page.getByRole("button", { name: "Open version draft", exact: true }).click();
+  await page.getByRole("button", { name: "Open draft", exact: true }).click();
   await page.waitForURL(/revision=draft/);
   // The URL changes before the draft page replaces the version page.
-  await page.getByText(/^Version draft · read-only with your access/).waitFor();
+  await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   await page
     .locator(".agent-status-line")
     .getByText(deployAcceptedVersionUnreadable(shortId(id)), { exact: true })
     .waitFor();
   await summary.getByText("Deployment accepted", { exact: true }).waitFor();
-  await stopButton(page).waitFor();
+  await stopAgentButton(page).waitFor();
   assert.equal(await recovery.count(), 0);
-});
+}
+
+test("a redeploy the member cannot read leads with the accepted deployment and keeps Stop", (t) =>
+  redeployUnreadable(t, "Redeploy unreadable"));
+
+// An Agent with more than one page of versions (the API lists 50 per page). The accepted version
+// is newer than every listed one, so it cannot be on an older page that is not loaded yet: the
+// page still leads with it and keeps Stop (finding 2615).
+test("a redeploy the member cannot read leads with the accepted deployment with an older page of versions", (t) =>
+  redeployUnreadable(t, "Redeploy unreadable paged", { paged: true }));

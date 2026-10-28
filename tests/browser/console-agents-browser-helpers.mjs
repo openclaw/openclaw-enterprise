@@ -8,13 +8,18 @@ import { chromium, request as playwrightRequest } from "playwright";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
+import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
 } from "../../packages/occ/src/state/controller-work.ts";
+
+// Shared with the API tests, which drive the same fixture without a browser.
+export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
 
 // What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
 // persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read
@@ -61,21 +66,6 @@ export const AGENT_READ = [
   ["read", "configuration"],
 ];
 
-// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
-// grant or revoke after sign-in: State reads the policy on each request.
-function memberRole(fixture, label) {
-  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
-  assert.ok(role, `member ${label} has a Role`);
-  return role;
-}
-
-/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
-export function grantMember(fixture, label, grants) {
-  memberRole(fixture, label).permissions.push(
-    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
-  );
-}
-
 /**
  * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
  * Returns a function that restores the grants the Role held before.
@@ -93,6 +83,27 @@ export function revokeAdministratorGrant(fixture, grant) {
   const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
   assert.ok(role, "the fixture's administrator has a Role");
   return revokeRoleGrant(role, "the administrator", grant);
+}
+
+/**
+ * Binds the Installation administrator Role the fixture seeds to `principal`, as another
+ * administrator grants Installation administration while that account is signed in. Returns a
+ * function that removes that binding again, as another administrator revokes it.
+ */
+export function grantInstallationAdministration(fixture, principal) {
+  const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
+  assert.ok(role, "the fixture's administrator has a Role");
+  const binding = fixture.policy.bindings.find(({ roleId }) => roleId === role.id);
+  assert.ok(binding, "the fixture's administrator holds the Role through a binding");
+  const granted = {
+    ...binding,
+    id: `installation-administrator-${principal.id}`,
+    subjectId: principal.id,
+  };
+  fixture.policy.bindings.push(granted);
+  return () => {
+    fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(granted), 1);
+  };
 }
 
 function revokeRoleGrant(role, holder, [action, resourceKind]) {
@@ -549,6 +560,15 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
   );
 }
 
+// The Agent page builds its tab while the view is still held back (display: none) for its first
+// reads, and a picker's Secret list can load before the view is shown (findings 2034, 2626). A
+// test that measures layout waits through this, not waitForInputValue alone: a hidden field
+// measures 0 x 0.
+export async function waitForShownInputValue(locator, expected, timeoutMs = 10_000) {
+  await waitForInputValue(locator, expected, timeoutMs);
+  await locator.waitFor({ state: "visible", timeout: timeoutMs });
+}
+
 // A control becomes enabled when the page state behind it settles, which can be a task or more
 // after the text a test waits for (finding 2116). A test that expects a control to be usable
 // waits through this; one isEnabled() read can see the earlier state. A check that a control is
@@ -994,6 +1014,69 @@ export async function routeFailedDeployment(
   );
   return error;
 }
+
+// One readable version per history page: the first page lists the newest readable version.
+// `olderRead`, when given, is told of each older-page request and answers when it resolves.
+export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRead) {
+  const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  return page.route(
+    (url) => url.origin === fixture.origin && url.pathname === revisionsPath,
+    async (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      if (cursor === "older-page") {
+        await olderRead?.();
+      }
+      const response = await route.fetch({ url: `${fixture.origin}${revisionsPath}` });
+      const body = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          data: cursor === "older-page" ? body.data.slice(1) : body.data.slice(0, 1),
+          meta: { ...body.meta, nextCursor: cursor === "older-page" ? null : "older-page" },
+        },
+      });
+    },
+  );
+}
+
+// The Agent page's "Viewing version" chooser in `scope`, a page or a locator.
+export const versionChooser = (scope) => scope.getByLabel("Viewing version", { exact: true });
+
+// Version `n`'s chooser label: "vN" alone or "vN · <outcome>".
+const versionName = (n) => new RegExp(`^v${n}(?: ·|$)`);
+
+// Version `n`'s option in the chooser.
+export const versionOption = (scope, n) =>
+  versionChooser(scope).getByRole("option", { name: versionName(n) });
+
+// Waits until the chooser has a selected version, or until version `n` is the selected one.
+export function waitForChosenVersion(scope, n) {
+  const chosen =
+    n === undefined
+      ? versionChooser(scope).locator("option:checked")
+      : versionChooser(scope)
+          .getByRole("option", { selected: true })
+          .filter({ hasText: versionName(n) });
+  return chosen.waitFor({ state: "attached" });
+}
+
+// Denies AgentRevision read on one version, as an administrator's per-version restriction does.
+// State reads the policy on each request, so it applies from the next read on. Its id is
+// `deny-read-<revision id>`: console-next-steps looks it up to deny only once.
+export function denyRevisionRead(fixture, namespace, revision) {
+  restrict(fixture.policy, "read", "agent_revision", {
+    id: `deny-read-${revision.id}`,
+    namespaceId: namespace.id,
+    resourceId: revision.id,
+  });
+}
+
+// The Stop Agent button in its row on the Agent page.
+export const stopAgentButton = (page) =>
+  page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button", { name: "Stop Agent", exact: true });
 
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
 function contrastRatio(a, b) {

@@ -134,7 +134,16 @@ func TestMissingCommandsPointAtWhatOCCOffers(t *testing.T) {
 		{[]string{"device-login"}, `unknown command "device-login" for "occ". ` + signIn},
 		{[]string{"whoami"}, `unknown command "whoami" for "occ". ` + signIn},
 		{[]string{"configuration", "list"}, `unknown command "list" for "occ configuration". occ has no configuration list; the CONFIGURATION column of "occ agent list" shows each Agent's Configuration ID.`},
-		// Anything else keeps cobra's text.
+		// A one-letter typo of a subcommand gets a suggestion (finding D765).
+		{[]string{"agent", "lst"}, `unknown command "lst" for "occ agent"; did you mean "occ agent list"?`},
+		{[]string{"secrets"}, `unknown command "secrets" for "occ"; did you mean "occ secret"?`},
+		{[]string{"agent", "gat"}, `unknown command "gat" for "occ agent"; did you mean "occ agent get"?`},
+		// A prefix suggests only the one command it starts, and only from two characters.
+		{[]string{"agent", "revi"}, `unknown command "revi" for "occ agent"; did you mean "occ agent revisions"?`},
+		{[]string{"agent", "de"}, `unknown command "de" for "occ agent"`},
+		{[]string{"agent", "u"}, `unknown command "u" for "occ agent"`},
+		{[]string{"agent", ""}, `unknown command "" for "occ agent"`},
+		// Anything else keeps cobra's text: "lst" is two edits from "get".
 		{[]string{"configuration", "lst"}, `unknown command "lst" for "occ configuration"`},
 	} {
 		out, _, err := runHelp(t, test.args...)
@@ -216,6 +225,9 @@ func TestStopOnAnAgentThatNeverRanSaysNothingRuns(t *testing.T) {
 		{"never ran", stopped, "notice: No version is running, so there is nothing to stop. Run " + deploy + " to start the Agent.\n"},
 		// A first deployment in progress has no active revision yet, but it runs.
 		{"first deploy", `{"id":"` + testAgentID + `","desiredRuntimeState":"running"}`, "notice: stop requested; run " + deploy + " to start the Agent again\n"},
+		// A second stop while the first still shuts down says so (finding D765).
+		// The earlier stop may still run or may have failed, so the notice claims neither.
+		{"stopping", `{"id":"` + testAgentID + `","desiredRuntimeState":"stopped","activeRevisionId":"` + testRevision1ID + `"}`, "notice: a stop of Agent " + testAgentID + ` was already requested and has not finished; run "occ --namespace ` + testNamespaceID + ` agent get ` + testAgentID + `" to see its state, or ` + deploy + " to start it again\n"},
 		// A caller who cannot read the Agent learns nothing from the read.
 		{"unreadable", `raw:403 {"error":{"code":"FORBIDDEN","message":"Not authorized: this needs Agent read on Agent ` + testAgentID + `."}}`, "notice: stop requested; run " + deploy + " to start the Agent again\n"},
 	} {
@@ -242,5 +254,95 @@ func TestLogsFollowSaysAccessChangedAfterARefusalMidFollow(t *testing.T) {
 	}
 	if !strings.Contains(out, "ready") {
 		t.Fatalf("stdout = %q, want the line read before the refusal", out)
+	}
+}
+
+// Finding D765: argument-count refusals name the IDs the command takes and the
+// next step instead of cobra's "accepts between 1 and 1 arg(s), received 2".
+func TestArgumentCountRefusalsNameTheExpectedIDs(t *testing.T) {
+	inNamespace := "occ --namespace " + testNamespaceID
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"agent", "runtime", testAgentID, testRevision1ID}, "occ agent runtime takes one Agent ID but got 2 arguments; pass the revision with --revision"},
+		{[]string{"agent", "logs", testAgentID, testRevision1ID, "--source", "gateway"}, "occ agent logs takes one Agent ID but got 2 arguments; pass the revision with --revision"},
+		{[]string{"agent", "get", testAgentID, testAgentID}, "occ agent get takes one Agent ID but got 2 arguments"},
+		{[]string{"agent", "get"}, `occ agent get takes one Agent ID but got none; run "` + inNamespace + ` agent list" to find the Agent ID`},
+		{[]string{"agent", "credential-withdrawal", "request", testAgentID}, `occ agent credential-withdrawal request takes an Agent ID and a credential source ID but got 1 argument; run "` + inNamespace + ` credential-source list" to find the credential source ID`},
+		{[]string{"agent", "deployment-status", testAgentID, testRevision1ID, testRevision1ID}, "occ agent deployment-status takes an Agent ID and an optional deployment ID but got 3 arguments"},
+		{[]string{"iam", "role", "get"}, "occ iam role get takes one Role ID but got none"},
+	} {
+		_, requested, err := runOCC(t, map[string]string{}, append([]string{"--namespace", testNamespaceID}, test.args...)...)
+		if err == nil || err.Error() != test.want {
+			t.Errorf("occ %v error = %v, want %q", test.args, err, test.want)
+		}
+		if len(requested) != 0 {
+			t.Errorf("occ %v requests = %v, want none", test.args, requested)
+		}
+	}
+}
+
+// Finding D765: an ID of the wrong kind is named as an ID, with the expected
+// prefix, instead of being told that OCC does not accept names.
+func TestWrongKindIDsNameTheExpectedPrefix(t *testing.T) {
+	inNamespace := "occ --namespace " + testNamespaceID
+	const configurationID = "cfg_77777777-7777-4777-8777-777777777777"
+	const unknownKindID = "crs_77777777-7777-4777-8777-777777777777"
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"credential-source", "get", unknownKindID}, wrongKindIDRefusal(unknownKindID, "", "credential source", "cs_", inNamespace+" credential-source list")},
+		{[]string{"agent", "get", configurationID}, wrongKindIDRefusal(configurationID, "a Configuration ID", "Agent", "agt_", inNamespace+" agent list")},
+		{[]string{"agent", "deployment-status", testAgentID, testAgentID}, wrongKindIDRefusal(testAgentID, "an Agent ID", "deployment", "rev_", inNamespace+" agent revisions AGENT_ID")},
+		// A name keeps the name refusal.
+		{[]string{"agent", "get", "crs_agent"}, nameNotIDRefusal("crs_agent", "Agent", "agt_", inNamespace+" agent list")},
+	} {
+		_, requested, err := runOCC(t, map[string]string{}, append([]string{"--namespace", testNamespaceID}, test.args...)...)
+		if err == nil || err.Error() != test.want {
+			t.Errorf("occ %v error = %v, want %q", test.args, err, test.want)
+		}
+		if len(requested) != 0 {
+			t.Errorf("occ %v requests = %v, want none", test.args, requested)
+		}
+	}
+}
+
+// Finding D765: a refused connection names the endpoint and the plain cause,
+// not the Go request and dial text.
+func TestUnreachableEndpointNamesTheURLAndTheCause(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closed := server.URL
+	server.Close()
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	_, _, err := runHelp(t, "--url", closed, "--service-key-file", keyFile, "installation", "get")
+	if want := "cannot connect to OCC at " + closed + " (connection refused). Check OCC_URL (or --url)."; err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
+// Finding D765: with no Namespace selected, a Namespace-scoped key file offers
+// the Namespace it records; the offer is local and sends no request.
+func TestMissingNamespaceOffersTheKeyFileNamespace(t *testing.T) {
+	t.Setenv("OCC_NAMESPACE", "")
+	for _, test := range []struct {
+		name, key, want string
+	}{
+		{"namespace key", `{"data":{"key":"test-key","namespaceId":"` + testNamespaceID + `"}}`, "set OCC_NAMESPACE or pass --namespace; this service key works only in Namespace " + testNamespaceID + ", so pass --namespace " + testNamespaceID},
+		{"installation key", `{"data":{"key":"test-key","namespaceId":null}}`, "set OCC_NAMESPACE or pass --namespace"},
+		// A value that is not a Namespace ID is never printed.
+		{"edited key", `{"data":{"key":"test-key","namespaceId":"ns_\u001b[31m"}}`, "set OCC_NAMESPACE or pass --namespace"},
+	} {
+		fake := &fakeOCC{responses: map[string]string{}}
+		server := httptest.NewServer(fake)
+		_, _, err := runHelp(t, "--url", server.URL, "--service-key-file", writeKeyFile(t, test.key), "agent", "list")
+		server.Close()
+		if err == nil || err.Error() != test.want {
+			t.Errorf("%s: error = %v, want %q", test.name, err, test.want)
+		}
+		if len(fake.requested) != 0 {
+			t.Errorf("%s: requests = %v, want none", test.name, fake.requested)
+		}
 	}
 }

@@ -39,6 +39,9 @@ import {
   routeInstallationWithoutProvisioning,
   runProvisioningPolls,
   waitForProvisioningFailure,
+  submitCreateAgent,
+  routeProvisioningJob,
+  provisioningJob,
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -318,13 +321,7 @@ test("A refused provisioning request reads the Secret answer again", async (t) =
   await model.press("Tab");
   // Secret operate is revoked after the key is staged: the real admission refuses the request.
   revokeAdministratorGrant(fixture, ["operate", "secret"]);
-  const refused = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal((await refused).status(), 403);
+  await submitCreateAgent(page, fixture, namespace.id, { path: "agents/provision", status: 403 });
   // The field reads the answer again and now lists the key disabled with the reason.
   await operateDeniedSecretOption(page, "API key Secret", secret);
   assert.equal(pathRequests(requests, "GET", answerPath).length, 2);
@@ -409,13 +406,9 @@ test("The pinned runtime lets the Console request dedicated OpenClaw provisionin
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  const sent = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent" }).click();
-  const response = await sent;
+  const response = await submitCreateAgent(page, fixture, namespace.id, {
+    path: "agents/provision",
+  });
   // This fixture has no transactional provisioning queue. The request reaches
   // the real provisioning route; admission and deployment have separate coverage.
   assert.equal(response.status(), 503);
@@ -504,13 +497,9 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   const submitWith = async (botToken) => {
     values.channels.slack.botToken = botToken;
     await configuration.fill(JSON.stringify(values, null, 2));
-    const sent = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
-        response.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: "Create Agent" }).click();
-    const response = await sent;
+    const response = await submitCreateAgent(page, fixture, namespace.id, {
+      path: "agents/provision",
+    });
     assert.equal(response.status(), 400, botToken);
     return (await response.json()).error;
   };
@@ -618,12 +607,9 @@ test("Credential Gateway creation registers the same model source for both dedic
       await page
         .getByText("Credential Source is ready. Select Create Agent to continue.", { exact: true })
         .waitFor();
-      const sent = page.waitForResponse(
-        (response) =>
-          response.request().method() === "POST" && response.url().endsWith("/agents/provision"),
-      );
-      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-      const response = await sent;
+      const response = await submitCreateAgent(page, fixture, namespace.id, {
+        path: "agents/provision",
+      });
       assert.equal(response.status(), 503); // This fixture has no durable provisioning queue.
       const payload = response.request().postDataJSON();
       assert.deepEqual(payload.harnessAuth, {
@@ -758,12 +744,9 @@ test("Credential registration recovers a ready source after a same-name retry co
     await page.getByRole("button", { name: "Remove failed credential registration" }).isVisible(),
     false,
   );
-  const provision = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/agents/provision") && response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await provision;
+  const response = await submitCreateAgent(page, fixture, namespace.id, {
+    path: "agents/provision",
+  });
   assert.equal(response.status(), 503); // The fixture has no durable provisioning queue.
   assert.deepEqual(response.request().postDataJSON().harnessAuth, {
     method: "credential_source",
@@ -847,12 +830,9 @@ test("Credential registration removal preserves the safety fence and retries the
       { exact: true },
     )
     .waitFor();
-  const retry = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/agents/provision") && response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await retry;
+  const response = await submitCreateAgent(page, fixture, namespace.id, {
+    path: "agents/provision",
+  });
   assert.equal(response.status(), 503); // The fixture has no durable provisioning queue.
   assert.deepEqual(response.request().postDataJSON().harnessAuth, {
     method: "credential_source",
@@ -1038,7 +1018,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
 const DEDICATED_SANDBOX_REFUSAL =
   "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
 const NO_OPENCLAW_MODE =
-  "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
+  "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
 
 // Saves a Preset whose template holds `agent` and the Configuration nativeValues(`marker`).
 async function savePreset(fixture, namespace, name, agent, marker) {
@@ -1136,7 +1116,7 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   await alert.waitFor();
   assert.equal(
     await alert.textContent(),
-    "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw.",
+    "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw.",
   );
   assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "dedicated");
   assert.match(
@@ -1582,18 +1562,13 @@ test("Create Agent trims placement advice when the Sandbox Driver refuses Embedd
   await page.getByLabel("Agent name").fill("sandboxed-codex");
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await enterManualModel(page, `model-secret-${randomUUID()}`, "gpt-5.1");
-  const refused = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await assertPlacementRequirement(page, await refused);
+  const refused = await submitCreateAgent(page, fixture, namespace.id, { path: "agents/validate" });
+  await assertPlacementRequirement(page, refused);
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), false);
 });
 
 const SANDBOX_DRIVER_OUTAGE =
-  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an Installation administrator if it persists.";
 
 test("During a Sandbox Driver outage, Create Agent says Agents are unavailable for now, not that the driver cannot run OpenClaw", async (t) => {
   // Agent save and deploy answer a retryable 503 for every harness in this state, so the copy must
@@ -1670,13 +1645,7 @@ test("Without a Sandbox Driver, the same Create Agent steps save an Embedded Ope
       .count(),
     0,
   );
-  const saved = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal((await saved).status(), 201);
+  await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
   const writes = writesSinceFill();
   assert.equal(configurationPostRequests(writes, namespace.id).length, 1);
   assert.equal(agentPostRequests(writes, namespace.id).length, 1);
@@ -1902,7 +1871,7 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
   for (const [openclaw, text] of [
     [
       { executionModes: [] },
-      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
+      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an Installation administrator, or start without a Preset.",
     ],
     // A setting refusal names the setting as the API words it (finding 2373), but not its "Select
     // Codex" advice: the Preset locks the harness to OpenClaw (finding 2392).
@@ -1914,11 +1883,11 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
             "Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
         },
       },
-      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
+      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw. Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. This Preset's operator-managed credentials require OpenClaw. Ask an Installation administrator, or start without a Preset.",
     ],
     [
       { executionModes: ["dedicated"] },
-      "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset.",
+      "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an Installation administrator, or start without a Preset.",
     ],
     // An outage needs time, not a different Preset (finding 1624).
     [{ executionModes: [], sandboxDriverUnavailable: true }, SANDBOX_DRIVER_OUTAGE],
@@ -2029,7 +1998,7 @@ test("Operator-managed Preset credentials without a mode keep Embedded when the 
   await alert.waitFor();
   assert.equal(
     await alert.textContent(),
-    "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset.",
+    "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an Installation administrator, or start without a Preset.",
   );
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
 });
@@ -2185,58 +2154,21 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
       body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
     }),
   );
-  const updatedAt = new Date().toISOString();
+  const work = provisioningJob(namespace.id, "work_quota_denied");
+  const { url, updatedAt, job, failed } = work;
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
-  const url = `/namespaces/${namespace.id}/agents/provision/work_quota_denied`;
-  let clientRequestId;
   const agentId = "agt_00000000-0000-4000-8000-00000000b637";
   const revisionId = "rev_00000000-0000-4000-8000-00000000b637";
-  const job = (status, extra = {}) => ({
-    workId: "work_quota_denied",
-    status,
-    phase: "configuration",
-    attemptCount: 1,
-    updatedAt,
-    url,
-    ...extra,
-  });
   const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
-    clientRequestId = route.request().postDataJSON().requestId;
-    return route.fulfill({
-      status: 202,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: { provisioning: { ...job("queued"), requestId: clientRequestId } },
-        meta,
-      }),
-    });
-  });
   // Create Agent reads the handed-off deployment three times before the job fails.
   const reads = [
     job("running"),
     job("running", handedOff),
     job("running", handedOff),
     job("running", handedOff),
-    job("failed", {
-      ...handedOff,
-      error: {
-        code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
-        message: "Agent provisioning could not complete.",
-      },
-    }),
+    failed(handedOff),
   ];
-  let read = 0;
-  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_quota_denied`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: { ...reads[Math.min(read++, reads.length - 1)], requestId: clientRequestId },
-        meta,
-      }),
-    }),
-  );
+  const served = await routeProvisioningJob(page, work, reads);
   // The first deployment read names the quota; every later one is denied.
   let deploymentReads = 0;
   await page.route(
@@ -2311,7 +2243,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     reads.length,
   );
   await waitForProvisioningFailure(page);
-  assert.equal(read, reads.length);
+  assert.equal(served.reads, reads.length);
   assert.equal(deploymentReads, 3);
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
     "Provisioning request accepted.",

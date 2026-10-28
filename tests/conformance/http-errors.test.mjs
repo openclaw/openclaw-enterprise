@@ -37,6 +37,8 @@ import {
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialProxyAdmissionError,
+  CredentialSourceRegistrationConfigError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DedicatedOpenClawSandboxError,
@@ -64,6 +66,7 @@ import {
   RepositoryGitSenderUnqualifiedError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RetryLaterError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
@@ -71,20 +74,33 @@ import {
   SecretBindingValidationError,
   SecretStorageDriverError,
   SecretValueError,
+  ServiceAccountBackendBindingError,
   ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
+  StoredCredentialSourceConfigError,
 } from "../../packages/occ/src/index.ts";
 import {
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
+  AUTHORIZATION_HEADER_REFUSED,
   callerDenied,
   CONSOLE_ACCESS_DENIED,
+  CREDENTIAL_GATEWAY_NOT_CONFIGURED,
+  CREDENTIAL_REQUIRED,
+  CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   namespaceListDenied,
+  PREVIEW_GATEWAY_VERSION,
+  PROXY_REGISTRATION_UNAVAILABLE,
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
+  runtimeLogSourceUnavailable,
+  SERVICE_ACCOUNT_BACKEND_MISMATCH,
+  SERVICE_ACCOUNT_NO_BACKEND_BINDING,
+  serviceKeyOutsideNamespace,
+  storedCredentialSourceConfig,
 } from "../helpers/refusal-text.mjs";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
@@ -210,7 +226,7 @@ const cases = [
     {
       status: 409,
       code: "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
-      message: new CredentialGatewayNotConfiguredError().message,
+      message: CREDENTIAL_GATEWAY_NOT_CONFIGURED,
     },
   ],
   [
@@ -270,7 +286,7 @@ const cases = [
       status: 409,
       code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
       message:
-        "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+        "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An Installation administrator must configure it and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
     },
   ],
   [
@@ -280,7 +296,7 @@ const cases = [
       status: 409,
       code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
       message:
-        "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+        "ChatGPT Harness authentication needs an issued access-token credential, and this Installation has no ChatGPT Backend to issue one. An Installation administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
     },
   ],
   [
@@ -291,6 +307,54 @@ const cases = [
       code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
       message:
         "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+    },
+  ],
+  [
+    "a service-account binding without the Agent's ChatGPT Backend names the fix",
+    new ServiceAccountBackendBindingError("noBinding"),
+    { status: 409, code: "RESOURCE_CONFLICT", message: SERVICE_ACCOUNT_NO_BACKEND_BINDING },
+  ],
+  [
+    "a service-account credential from another ChatGPT Backend names the fix",
+    new ServiceAccountBackendBindingError("mismatch"),
+    { status: 409, code: "RESOURCE_CONFLICT", message: SERVICE_ACCOUNT_BACKEND_MISMATCH },
+  ],
+  [
+    "installation-wide access without the OpenShell Proxy preview names the setting",
+    new CredentialProxyAdmissionError("installationPreview"),
+    { status: 409, code: "RESOURCE_CONFLICT", message: CREDENTIAL_PROXY_INSTALLATION_PREVIEW },
+  ],
+  [
+    "an OpenShell gateway without the Proxy's middleware names the operator fix",
+    new RetryLaterError("proxyRegistration"),
+    { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: PROXY_REGISTRATION_UNAVAILABLE },
+  ],
+  [
+    "the observed-hook preview on another OpenShell gateway version names the operator fix",
+    new RetryLaterError("previewGatewayVersion"),
+    { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: PREVIEW_GATEWAY_VERSION },
+  ],
+  [
+    "a stored credential source that breaks a later Gateway rule names the replacement",
+    new StoredCredentialSourceConfigError("token_url"),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message: storedCredentialSourceConfig("token_url"),
+    },
+  ],
+  [
+    "a config value refused at Gateway registration names its field",
+    new CredentialSourceRegistrationConfigError(
+      "token_url",
+      "The oauth2-client-credentials token_url host must not be a Kubernetes Pod name or a name in the OpenShell gateway's namespace.",
+    ),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        "The oauth2-client-credentials token_url host must not be a Kubernetes Pod name or a name in the OpenShell gateway's namespace.",
+      details: [{ path: "/config/token_url", code: "INVALID_VALUE" }],
     },
   ],
   [
@@ -734,7 +798,7 @@ const cases = [
       400,
       "The requested Pod is not a current Pod of this Agent version and source.",
     ],
-    ["RUNTIME_LOGS_SOURCE_UNAVAILABLE", 400, "This Agent version has no such runtime log source."],
+    ["RUNTIME_LOGS_SOURCE_UNAVAILABLE", 400, runtimeLogSourceUnavailable("such")],
     [
       "RUNTIME_LOGS_RATE_LIMITED",
       429,
@@ -761,6 +825,15 @@ const cases = [
     new RuntimeLogsError(code),
     { status, code, message },
   ]),
+  [
+    "a runtime log source the version does not have names it and each source's versions",
+    new RuntimeLogsError("RUNTIME_LOGS_SOURCE_UNAVAILABLE", undefined, "sandbox"),
+    {
+      status: 400,
+      code: "RUNTIME_LOGS_SOURCE_UNAVAILABLE",
+      message: runtimeLogSourceUnavailable("sandbox"),
+    },
+  ],
   [
     "a runtime log cursor from another view",
     new RuntimeLogsError("RUNTIME_LOGS_CURSOR_INVALID"),
@@ -875,12 +948,12 @@ const cases = [
   [
     "a 401 admission failure",
     admissionFailure({ statusCode: 401 }),
-    {
-      status: 401,
-      code: "UNAUTHENTICATED",
-      message:
-        "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Send service API keys in the x-api-key header; Authorization bearer tokens are not accepted.",
-    },
+    { status: 401, code: "UNAUTHENTICATED", message: CREDENTIAL_REQUIRED },
+  ],
+  [
+    "a 401 admission failure of a request that sent an Authorization header",
+    admissionFailure({ statusCode: 401, reason: "authorization_header" }),
+    { status: 401, code: "UNAUTHENTICATED", message: AUTHORIZATION_HEADER_REFUSED },
   ],
   [
     "a refused admission boundary",
@@ -1572,8 +1645,8 @@ test("an Agent principal denial names a bound resource only when the caller sent
     answer(source, false).message,
     agentPrincipalDenied(
       `Agent ${agentId}`,
-      "one of its bound credential sources",
-      "credential source operate",
+      "one of its bound CredentialSources",
+      "CredentialSource operate",
     ),
   );
   // An ID outside the plain shape is never echoed, even when the caller may read it.
@@ -1673,7 +1746,7 @@ test("the console shows a named denial unless the view names the grant itself", 
   const denial = (serverMessage) => ({ status: 403, code: "FORBIDDEN", serverMessage });
   assert.equal(message(denial(named)), named);
   assert.equal(message(denial(GENERIC_DENIAL)), CONSOLE_ACCESS_DENIED);
-  assert.equal(message(denial("The admitted Namespace does not match.")), CONSOLE_ACCESS_DENIED);
+  assert.equal(message(denial(serviceKeyOutsideNamespace("ns_1"))), CONSOLE_ACCESS_DENIED);
   const need = namespaceListNeed("Secrets");
   assert.equal(message(denial(named), false, need), namespaceListDenied("Secrets"));
   assert.equal(message({ ...denial(named), refusal: "View refusal." }), "View refusal.");

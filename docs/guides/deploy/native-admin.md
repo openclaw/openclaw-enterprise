@@ -16,7 +16,7 @@ Agent into native admin access:
    route. Include the returned port; do not construct or reuse another Agent's
    origin. An `unsupported` response can include the origin. If the Agent has no
    selected version, resolve that first.
-3. Use **Create new version** → **Configuration** → **Edit Configuration** to
+3. Use **Open draft** → **Configuration** → **Edit Configuration** to
    merge the documented native policy and origin into the existing JSON. Review
    other Agents that share the Configuration: they use its new values on their
    next deployment. Preserve existing origins, gateway settings, and Secret
@@ -272,7 +272,7 @@ the same file and verify its contents are retained.
 
 ## Tests
 
-Open the console, choose a running Agent with a selected version, and verify the **Gateway administration** section on its detail page reports available for an administrator. Select **Open admin console** and confirm the Agent host loads in a new tab without native-admin exchange, bootstrap, callback, or Agent-specific session-cookie requests.
+Open the console, choose a running Agent with a selected version, and verify **Open Agent UI** is enabled for an administrator. Its description names the version selected for service. Select **Open Agent UI** and confirm the Agent host loads in a new tab without native-admin exchange, bootstrap, callback, or Agent-specific session-cookie requests.
 
 Full runtime proof still requires a real browser test that loads native assets through OCC, reconnects native WebSocket traffic, verifies the OCE session cookie never reaches the native gateway, and performs a reversible native admin edit against a disposable Agent.
 
@@ -305,7 +305,7 @@ the OCE login.
 If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
 may have expired, or your access may have changed. If OCE asks you to sign in,
 it checks your access again and returns you to that Agent’s detail page. Select
-**Open admin console** to continue. With an older runtime, open the Agent root
+**Open Agent UI** to continue. With an older runtime, open the Agent root
 or its console page to start the same recovery.
 
 If expiry coincides with controller restarts, check persistent session storage

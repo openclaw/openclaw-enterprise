@@ -209,7 +209,8 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   t.after(() => {
     process.env.PATH = path;
   });
-  const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({});
+  const { requestCodexTurnFromGatewayPod, readCodexThreadFromGatewayPod } =
+    createOpenShellKubernetesFixture({});
 
   for (const event of [
     "late result",
@@ -357,6 +358,52 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     }
     assert.deepEqual(attempts, [1], event);
   }
+
+  await t.test("thread reads ignore unrelated notifications without starting work", async () => {
+    const thread = { id: "requested-thread", turns: [] };
+    const methods = [];
+    peer.once("connection", (socket) => {
+      socket.on("message", (data) => {
+        const { method, id, params } = JSON.parse(data);
+        methods.push(method);
+        const send = (message) => socket.send(JSON.stringify(message));
+        if (method === "initialize") {
+          return send({ id, result: {} });
+        }
+        if (method === "initialized") {
+          return;
+        }
+        assert.equal(method, "thread/read");
+        assert.deepEqual(params, { threadId: thread.id, includeTurns: true });
+        // Other clients can execute work while this client only reads a saved thread.
+        send({
+          method: "item/started",
+          params: {
+            threadId: "other-thread",
+            turnId: "other-turn",
+            item: {
+              id: "other-command",
+              type: "commandExecution",
+              command: "echo unrelated",
+              status: "inProgress",
+            },
+          },
+        });
+        send({
+          method: "turn/completed",
+          params: { threadId: "other-thread", turn: { id: "other-turn", status: "completed" } },
+        });
+        send({ id, result: { thread } });
+      });
+    });
+    const actual = await readCodexThreadFromGatewayPod({
+      namespace: "fixture",
+      gatewayPod: "fixture",
+      threadId: thread.id,
+    });
+    assert.deepEqual(actual, thread);
+    assert.deepEqual(methods, ["initialize", "initialized", "thread/read"]);
+  });
 });
 
 test("OpenShell probe waits for a command that outlives its turn up to the fixture's bound", async (t) => {

@@ -2,16 +2,21 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import {
   agentPrincipalDenied,
   callerDenied,
   createDenied,
+  createRestricted,
+  currentHarnessAuthDenied,
   INSTALLATION_ADMINISTER_DENIED,
   NAMESPACE_CREATE_DENIED,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 type Body = Record<string, unknown> | undefined;
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -115,13 +120,9 @@ test("a caller's own denial names the missing grant without disclosing what the 
     ["read", "namespace"],
     ["read", "agent"],
   ]);
-  fixture.policy.restrictions.push({
-    id: "deny-restricted-agent-read",
+  restrict(fixture.policy, "read", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: restricted.id,
-    action: "read",
-    effect: "deny",
   });
   const restrictedPath = `${agents}/${restricted.id}`;
   const byRestriction = await refusal("GET", restrictedPath, undefined, readerSession);
@@ -271,4 +272,227 @@ test("an Agent principal's deploy refusal names its bound Secret only to a calle
     ["read", "agent"],
   ]);
   assert.equal(named, agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${secretId}`));
+});
+
+// Finding 2614: saving a Configuration or credential source without new bindings checks Secret
+// operate on the bindings it already stores. The binding is part of that record, so the caller's
+// own denial names the bound Secret only when the caller may read both the Secret and the record.
+// With Secret read alone, the text would tell a caller that a record it cannot read binds that
+// Secret. The allow or deny decision is unchanged; only the text differs.
+test("a stored binding's denial names its Secret only to a caller who may read the record that binds it", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  // The Credential Gateway is a test double; HTTP, IAM and OCC admission stay real.
+  const gateway = {
+    id: "caller-denial-gateway",
+    capability: "credential_gateway",
+    implementation: "test-ready-gateway",
+    validateSourceConfig() {},
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+    async registerSource() {
+      return { state: "ready" };
+    },
+    async sourceStatus() {
+      return { state: "ready" };
+    },
+    ...Object.fromEntries(
+      [
+        "updateSource",
+        "rotateSource",
+        "removeSource",
+        "attachForRevision",
+        "attachmentStatus",
+        "withdraw",
+      ].map((name) => [
+        name,
+        async () => {
+          throw new Error(`${name} is not exercised: the save is refused first`);
+        },
+      ]),
+    ),
+  };
+  fixture.controller.registerDriver(gateway);
+  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const namespace = await fixture.createNamespace("Stored binding denials", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Bound token", "synthetic-bound-token");
+  const configuration = await fixture.createConfiguration(
+    namespace.id,
+    {},
+    { secretBindings: { EXTERNAL_API_TOKEN: { source: secret.ref, delivery: { type: "env" } } } },
+  );
+  const sources = `/namespaces/${namespace.id}/credential-sources`;
+  const source = await fixture.request("POST", sources, {
+    body: { name: "bound-source", type: "openai", secrets: { api_key: secret.ref } },
+  });
+  assert.equal(source.status, 201, JSON.stringify(source.body));
+
+  // Each save sends no Secret ID: the denied Secret comes from the stored record.
+  const cases = [
+    {
+      label: "configuration",
+      path: `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      body: { values: {} },
+      kind: "configuration",
+    },
+    {
+      label: "credential-source",
+      path: `${sources}/${source.data.id}`,
+      body: {},
+      kind: "credential_source",
+    },
+  ] as const;
+  for (const { label, path, body, kind } of cases) {
+    const refusal = async (suffix: string, grants: Grants) => {
+      const session = await memberSession(fixture, `${label}-${suffix}`, namespace.id, [
+        ["read", "namespace"],
+        ["update", kind],
+        ["read", "secret"],
+        ...grants,
+      ]);
+      const response = await fixture.request("PATCH", path, { session, body });
+      assertApiError(response, 403, "FORBIDDEN", `${label} ${suffix}`);
+      return response.body.error.message as string;
+    };
+    // Secret read without read on the record: the caller cannot already see the binding.
+    assert.equal(
+      await refusal("secret-read", []),
+      callerDenied("Secret operate", "a Secret this request uses"),
+      label,
+    );
+    // Read on both: the caller can already see the Secret and that this record binds it.
+    assert.equal(
+      await refusal("secret-and-record-read", [["read", kind]]),
+      callerDenied("Secret operate", `Secret ${secret.id}`),
+      label,
+    );
+    // Without update on the record, the stored-binding check never runs: the caller who reads
+    // both gets one denial for this record and for an ID that names none (finding 2624).
+    const reader = await memberSession(fixture, `${label}-reader`, namespace.id, [
+      ["read", "namespace"],
+      ["read", kind],
+      ["read", "secret"],
+    ]);
+    const recordId = path.split("/").at(-1) as string;
+    const collection = path.slice(0, -recordId.length);
+    await assertSameAnswer(
+      (id: string) => fixture.request("PATCH", `${collection}${id}`, { session: reader, body }),
+      [recordId, `${recordId.split("_")[0]}_${randomUUID()}`],
+      { label },
+    );
+  }
+});
+
+// Every Agent update checks the caller's grant on the Agent's current Harness authentication,
+// even an update that replaces it, so a member cannot swap out a credential she may not use. Her
+// denial says that this is the current one (finding D763), and names its Secret only when she may
+// read it and the Agent.
+test("an Agent update's denial on the current Harness authentication says every update checks it", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Current Harness authentication", {
+    ready: true,
+  });
+  const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+  const agent = await fixture.createAgent(namespace.id, "Harness Agent", values);
+  const current = agent.harnessAuth.source.id;
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "replacement-model-key",
+    `synthetic-replacement-${randomUUID()}`,
+  );
+  const editor: Grants = [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["update", "agent"],
+    ["read", "configuration"],
+  ];
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const replace = { method: "api_key", source: replacement.ref };
+  const cases: readonly [string, Grants, string][] = [
+    ["unread", editor, "a Secret this request uses"],
+    ["read", [...editor, ["read", "secret"]], `Secret ${current}`],
+  ];
+  for (const [label, grants, target] of cases) {
+    const session = await memberSession(fixture, `harness-${label}`, namespace.id, grants);
+    // A plain save and a save that replaces the credential get the same denial.
+    for (const body of [
+      { configurationId: agent.configurationId },
+      { configurationId: agent.configurationId, harnessAuth: replace },
+    ]) {
+      const response = await fixture.request("PATCH", path, { session, body });
+      assertApiError(response, 403, "FORBIDDEN", label);
+      assert.equal(
+        response.body.error.message,
+        currentHarnessAuthDenied("Secret operate", target),
+        label,
+      );
+    }
+  }
+});
+
+// A deny Restriction overrides every grant, administration included, and administration cannot
+// lift it. An Installation administrator it refuses is told so, as the console says (finding
+// D769): her own Namespace permission answer already shows administration without Agent create,
+// which only a Restriction causes. A member refused the same create keeps the plain text, which
+// never tells a Restriction from a missing grant.
+test("a create a Restriction denies names it only to an Installation administrator", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Restricted creation", { ready: true });
+  const configuration = await fixture.createConfiguration(
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const secret = await fixture.createSecret(
+    namespace.id,
+    "restricted-model-key",
+    `synthetic-restricted-${randomUUID()}`,
+  );
+  const member = await memberSession(fixture, "restricted-member", namespace.id, [
+    ["read", "namespace"],
+  ]);
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
+  const path = `/namespaces/${namespace.id}/agents`;
+  const body = {
+    name: "Refused Agent",
+    configurationId: configuration.id,
+    harnessAuth: { method: "api_key", source: secret.ref },
+  };
+  const firstEvent = auditSink.events.length;
+
+  const administrator = await fixture.request("POST", path, { body });
+  assertApiError(administrator, 403, "FORBIDDEN", "administrator");
+  assert.equal(administrator.body.error.message, createRestricted("Agent", namespace.id));
+  const refused = await fixture.request("POST", path, { session: member, body });
+  assertApiError(refused, 403, "FORBIDDEN", "member");
+  assert.equal(refused.body.error.message, createDenied("Agent", namespace.id));
+  // Checking administration is not audited: each refused create records its one denial.
+  assert.deepEqual(
+    auditSink.events
+      .slice(firstEvent)
+      .map((event) => [
+        event.kind,
+        event.authorization?.action,
+        event.authorization?.resource.kind,
+      ]),
+    [
+      ["authorization_denial", "create", "agent"],
+      ["authorization_denial", "create", "agent"],
+    ],
+  );
+
+  // Without the Restriction the administrator creates the Agent: the text followed the rule.
+  fixture.policy.restrictions.pop();
+  assert.equal((await fixture.request("POST", path, { body })).status, 201);
 });

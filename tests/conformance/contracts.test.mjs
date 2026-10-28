@@ -9,6 +9,7 @@ import vm from "node:vm";
 
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
@@ -29,6 +30,7 @@ import {
   validateRuntimeFailureEvidence,
 } from "../../packages/occ/src/state/controller-work.ts";
 import {
+  assertConfigurationSchema,
   validateConfiguration,
   requireConfiguration,
   CONFIGURATION_KINDS,
@@ -492,6 +494,7 @@ test("only a codex_pat Harness binding names a ServiceAccount source, and only e
 // evidence from inside its Sandbox, where Agent code can answer in its place.
 
 const runtimeSources = [
+  "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts",
   "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
   "../../apps/controller/src/drivers/compute/runtime-startup.ts",
 ];
@@ -572,6 +575,7 @@ test("every check and code a runtime entrypoint publishes is recorded as publish
   for (const program of [
     GATEWAY_RUNTIME_ENTRYPOINT,
     AGENT_RUNTIME_ENTRYPOINT,
+    AGENT_WITH_NODE_ENTRYPOINT,
     NATIVE_WORKER_ENTRYPOINT,
   ]) {
     assert.deepEqual(injectedRuntimeList(program, "RUNTIME_DIAGNOSTIC_CODES"), [
@@ -589,7 +593,7 @@ test("every check and code a runtime entrypoint publishes is recorded as publish
   const text = await runtimeSourceText();
   const held = [
     ...text.matchAll(
-      /(?:publishRuntimeFailure|holdFailedAuthentication|serveHeldRuntimeFailureToTransportPeer)\(\s*"([^"]+)"(?:,\s*"([^"]+)")?/gu,
+      /(?:publishRuntimeFailure|holdFailedAuthentication|holdStartupFailure|serveHeldRuntimeFailureToTransportPeer)\(\s*"([^"]+)"(?:,\s*"([^"]+)")?/gu,
     ),
     ...text.matchAll(/function holdFailedAuthentication\(check = "([^"]+)", code = "([^"]+)"/gu),
   ];
@@ -1012,6 +1016,22 @@ test("configuration diagnostics collapse extra-field noise without accepting fal
     assert.equal(result.success, false);
     assert.equal(result.error.details[0].message, "Configuration does not satisfy boolean.");
   }
+});
+
+// Schema checks are cached per process by full JSON text: a schema that passed once and
+// then changes must be checked again, never admitted by object identity.
+test("a Driver configuration schema that changes after a passing check is checked again", () => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: { endpoint: { type: "string" } },
+  };
+  assertConfigurationSchema(schema);
+  assertConfigurationSchema(schema);
+  schema.properties.endpoint.type = "not-a-schema-type";
+  assert.throws(() => assertConfigurationSchema(schema), /Unsupported Driver configuration schema/);
+  schema.properties.endpoint.type = "string";
+  assertConfigurationSchema(schema);
 });
 
 test("configuration admission retains original values while isolating semantic callback references", () => {

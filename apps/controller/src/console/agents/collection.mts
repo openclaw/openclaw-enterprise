@@ -14,7 +14,7 @@ import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
 import { credentialRejectedAsk } from "./deployment-recovery.mjs";
 import {
-  AGENT_CREATE_DENIED,
+  agentCreateDenied,
   AGENT_DELETE_DENIED,
   AGENT_STOP_DENIED,
   deleteRefused,
@@ -192,22 +192,14 @@ export function renderAgentList(context: AgentListContext) {
   // Agents whose last row action had a conflicting or unconfirmed outcome. Their actions stay
   // disabled until Refresh rereads the list, so the console never repeats an uncertain write.
   const unsettled = new Set<string>();
-  // Each row's latest deployment outcome, once its read shows one. With no version selected, a
-  // failed one leaves nothing to stop, as on Agent detail (finding 2385), and one queued or in
-  // progress makes the row's Stop dialog say it cancels that deployment (finding D691). A row
-  // without one (no visible deployment, or a failed read) keeps Stop: the API answers.
+  // Keep the latest readable outcome for the Stop confirmation copy. It cannot establish
+  // whether newer work exists: a queued deployment may be hidden by revision read permissions.
   const latestDeployments = new Map<string, string>();
-  const failedFirst = (item: AgentRead) =>
-    !item.activeRevisionId && latestDeployments.get(item.id) === "failed";
   function setLatestDeployment(item: AgentRead, outcome: string | null) {
-    const before = failedFirst(item);
     if (outcome) {
       latestDeployments.set(item.id, outcome);
     } else {
       latestDeployments.delete(item.id);
-    }
-    if (failedFirst(item) !== before) {
-      updateRowActions(item.id);
     }
   }
   const rowControls = new Map<
@@ -230,6 +222,8 @@ export function renderAgentList(context: AgentListContext) {
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.agents?.create === false;
+  // An administrator a Restriction keeps from creating still reads every Agent here (finding D759).
+  const sharedOnly = createDenied && context.permissions?.installation?.administer !== true;
   // A Namespace that is not ready names its status here, so the first sign is never a refused
   // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
   let notReady = namespaceCreation(context.namespace);
@@ -272,7 +266,7 @@ export function renderAgentList(context: AgentListContext) {
           element(
             "p",
             { className: "muted", role: "status", id: "agents-create-denied" },
-            AGENT_CREATE_DENIED,
+            agentCreateDenied(context.permissions),
           ),
         ]
       : []),
@@ -407,8 +401,7 @@ export function renderAgentList(context: AgentListContext) {
           return;
         }
         const neutral = neutralDeploymentOutcome(result.status);
-        // Each read decides again: a retained list rereads on resume, and a first deployment
-        // retried since then (queued or deploying) keeps Stop, as on Agent detail (finding 2580).
+        // A retained list rereads on resume so the confirmation uses the latest readable outcome.
         setLatestDeployment(item, deploymentOutcome(result.status));
         const failure =
           !neutral && result.status.status === "failed"
@@ -698,9 +691,9 @@ export function renderAgentList(context: AgentListContext) {
     // A deleting Agent keeps its retry and status controls on its detail page.
     const available = item.status !== "deleting" && !unsettled.has(item.id);
     const stopped = item.desiredRuntimeState === "stopped";
-    // New Agents start stopped with no version, and a first deployment that failed selects none,
-    // so there is nothing to stop yet; Agent detail shows no Stop control then either.
-    const neverStarted = !item.activeRevisionId && (stopped || failedFirst(item));
+    // A failed readable deployment can hide a newer queued one. Agent operate is sufficient
+    // to stop that work, even with no selected version.
+    const neverStarted = stopped && !item.activeRevisionId;
     const allowed = permissions.get(item.id);
     const canStop = neverStarted || allowed?.operate !== false;
     const canDelete = allowed?.delete !== false;
@@ -820,7 +813,7 @@ export function renderAgentList(context: AgentListContext) {
             {},
             query
               ? "No matching Agents"
-              : createDenied
+              : sharedOnly
                 ? "No Agents are shared with you"
                 : "No Agents yet",
           ),
@@ -832,7 +825,9 @@ export function renderAgentList(context: AgentListContext) {
               : createDenied
                 ? // Under the note above: say what the reader can expect, not invite creating
                   // (finding 1521).
-                  "Agents in this Namespace that are shared with you appear here."
+                  sharedOnly
+                  ? "Agents in this Namespace that are shared with you appear here."
+                  : "Agents in this Namespace appear here."
                 : notReady?.blocked
                   ? context.namespace?.status === "provisioning" && !notReady.missing
                     ? "You can create Agents here once this Namespace is ready."

@@ -4,7 +4,8 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { button, element, statusBlock } from "../dom.mjs";
-import { namespacePath } from "./list.mjs";
+import { notIncluded } from "./access-reasons.mjs";
+import { namedRefusal, namespacePath } from "./list.mjs";
 
 const USER_ID = /^[UW][A-Z0-9]{1,31}$/;
 const CHANNEL_ID = /^[CG][A-Z0-9]{1,31}$/;
@@ -126,7 +127,15 @@ function lookupError(error: ReturnType<typeof requestFailure>, cause: unknown) {
   };
   const reason = error.code ? reasons[error.code] : undefined;
   if (error.status === 403) {
-    return "You need access to this Agent or Configuration and permission to use its selected Slack bot Secret.";
+    // The lookup checks Secret operate on the bot Secret, and Agent update (or Agent create on a
+    // new Agent), so the API's named grant wins; without one, the Secret's grant is named.
+    return (
+      namedRefusal("Slack lookup", cause) ??
+      notIncluded(
+        "looking up Slack people and channels with the selected Slack bot Secret",
+        "Secret operate on it",
+      )
+    );
   }
   if (error.status === 501) {
     return "Slack directory lookup is unavailable. Ask your operator to configure the API channel directory proxy, or enter exact IDs.";

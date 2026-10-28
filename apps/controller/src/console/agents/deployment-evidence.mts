@@ -290,6 +290,7 @@ interface DeploymentActivity {
   outcome: Outcome | null;
   record: Deployment | null;
   readFailed: boolean;
+  readError: unknown;
   transientFailure: boolean;
   overviewUnavailable: boolean;
 }
@@ -310,7 +311,7 @@ export function createDeploymentStatusPanel(
     "Refresh deployment",
     () => {
       if (loading && polling) {
-        // A quiet poll is reading: refresh once it lands.
+        // A quiet read is in flight: refresh once it lands.
         refreshQueued = true;
         refresh.setAttribute("aria-disabled", "true");
         return;
@@ -329,7 +330,7 @@ export function createDeploymentStatusPanel(
   );
   let previousEvidence: string | undefined;
   let loading = false;
-  // A quiet poll leaves Refresh alone, unless the reader presses it during the poll.
+  // Quiet polls and their overview rereads leave Refresh alone until the reader presses it.
   let polling = false;
   let refreshQueued = false;
   let record: Deployment | null = null;
@@ -442,14 +443,38 @@ export function createDeploymentStatusPanel(
     } finally {
       if (context.isCurrent()) {
         loading = false;
+        // Revealing a final refusal can push the next focused control off screen.
+        // Keep it visible only if the reader could see it before the poll completed.
+        const focused = document.activeElement;
+        const position =
+          poll &&
+          error &&
+          !transientReadError(error) &&
+          !details.open &&
+          focused instanceof HTMLElement &&
+          section.parentElement?.contains(focused)
+            ? focused.getBoundingClientRect()
+            : null;
         render();
         onStatusChange({
           outcome: record ? deploymentOutcome(record) : null,
           record,
           readFailed: error !== null,
+          readError: error,
           transientFailure: error !== null && transientReadError(error),
           overviewUnavailable,
         });
+        if (
+          position &&
+          position.height > 0 &&
+          position.top >= 0 &&
+          position.bottom <= window.innerHeight &&
+          details.open &&
+          focused instanceof HTMLElement &&
+          document.activeElement === focused
+        ) {
+          focused.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+        }
         if (
           refreshQueued ||
           (poll &&
@@ -458,8 +483,10 @@ export function createDeploymentStatusPanel(
             !deploymentPending(record?.status))
         ) {
           // A recorded result can change the current version; reread it once.
+          // Only a queued user refresh makes this full reread visible as manual work.
+          const quiet = !refreshQueued;
           refreshQueued = false;
-          void loadStatus(true);
+          void loadStatus(true, quiet);
         } else {
           schedulePoll();
         }
@@ -546,16 +573,40 @@ export function createDeploymentStatusPanel(
     }
     const outcome = record ? deploymentOutcome(record) : null;
     const { cleanup, warnings } = record ?? {};
-    const evidence = [outcome, cleanup?.status, warnings?.length, overviewUnavailable].join("/");
-    if (evidence !== previousEvidence) {
+    const readState = error ? (transientReadError(error) ? "transient" : "refused") : "read";
+    const evidence = [
+      outcome,
+      cleanup?.status,
+      warnings?.length,
+      overviewUnavailable,
+      readState,
+    ].join("/");
+    const readerRefresh = !polling;
+    if (evidence !== previousEvidence || (readerRefresh && error)) {
       const late = previousEvidence === undefined && pageShown();
-      details.open = Boolean(
-        previousEvidence !== undefined ||
-        (outcome !== "succeeded" && !late) ||
-        overviewUnavailable ||
-        cleanup ||
-        warnings?.length,
-      );
+      // Routine polls preserve the reader's disclosure choice, including recovery from a
+      // failed read. A terminal result or explicit failed refresh still reveals its notice.
+      const quietProgress =
+        previousEvidence !== undefined &&
+        polling &&
+        !overviewUnavailable &&
+        (error
+          ? readState === "transient"
+          : deploymentPending(outcome) && cleanup?.status !== "failed" && !warnings?.length);
+      if (!quietProgress) {
+        if (readState === "refused" && !details.open) {
+          reservedHeight = null;
+          heightObserver?.disconnect();
+          content.style.removeProperty("min-height");
+        }
+        details.open = Boolean(
+          previousEvidence !== undefined ||
+          (outcome !== "succeeded" && !late) ||
+          overviewUnavailable ||
+          cleanup ||
+          warnings?.length,
+        );
+      }
       previousEvidence = evidence;
     }
     patchChildren(content, [
@@ -587,7 +638,9 @@ export function createDeploymentStatusPanel(
   // details keep the tallest height they have shown. Once it settles the space is given back in
   // the same render as the outcome, so a finished deploy leaves no empty card (finding 2369).
   function reserveHeight() {
-    const pending = deploymentPending(record?.status) || deploymentPending(record?.cleanup?.status);
+    const pendingRecord = error && transientReadError(error) ? lastRecord : record;
+    const pending =
+      deploymentPending(pendingRecord?.status) || deploymentPending(pendingRecord?.cleanup?.status);
     if (pending) {
       if (reservedHeight === null) {
         reservedHeight = 0;
@@ -605,7 +658,7 @@ export function createDeploymentStatusPanel(
   // taken only on a render lost the first Queued height and the details shrank for In progress
   // (finding 2456). The observer also measures once the panel is shown, before that frame paints.
   function holdHeight() {
-    if (reservedHeight === null) {
+    if (reservedHeight === null || !section.isConnected || !details.open) {
       return;
     }
     const height = content.getBoundingClientRect().height;
@@ -621,7 +674,7 @@ export function createDeploymentStatusPanel(
 }
 
 // With shared, Deployment activity is reading this version's record, so the panel waits for
-// show() instead of reading it again; release() reads here if that read fails (finding 1417).
+// show() instead of reading it again; an initial transient failure can fall back to its own read.
 export function createVersionDeploymentEvidence(
   context: DeploymentContext,
   path: string,
@@ -631,10 +684,12 @@ export function createVersionDeploymentEvidence(
     operateAllowed,
     isCurrentVersion,
     onRecord,
+    hasVisibleReadError = () => false,
   }: {
     shared: boolean;
     operateAllowed: Promise<boolean | undefined>;
     isCurrentVersion: () => boolean;
+    hasVisibleReadError?: (cause: unknown) => boolean;
     // Each record this panel shows, read here or handed over by the page.
     onRecord: (record: Deployment) => void;
   },
@@ -672,7 +727,7 @@ export function createVersionDeploymentEvidence(
     render();
     try {
       const next = await readDeployment(context, path, revisionId);
-      if (started === generation) {
+      if (context.isCurrent() && started === generation) {
         status = next;
       }
     } catch (cause) {
@@ -688,7 +743,7 @@ export function createVersionDeploymentEvidence(
         error = cause;
       }
     } finally {
-      if (context.isCurrent()) {
+      if (context.isCurrent() && started === generation) {
         loading = false;
         render();
         diagnostics.render();
@@ -707,11 +762,36 @@ export function createVersionDeploymentEvidence(
     awaitingShared = false;
     clearTimeout(sharedTimer);
     generation += 1;
+    loading = false;
     status = next;
     error = null;
     render();
     diagnostics.render();
     onRecord(next);
+  }
+
+  // A shared failure supersedes older successes, including an in-flight manual read.
+  function fail(cause: unknown) {
+    if (!context.isCurrent()) {
+      return;
+    }
+    if (requestFailure(cause).status === 401) {
+      context.onExpired();
+      return;
+    }
+    const fallback = awaitingShared && transientReadError(cause);
+    awaitingShared = false;
+    clearTimeout(sharedTimer);
+    generation += 1;
+    status = null;
+    error = cause;
+    const reading = loading;
+    loading = false;
+    render();
+    diagnostics.render();
+    if (fallback && !reading) {
+      void load();
+    }
   }
 
   // Deployment activity hands each 5 s poll's record to show(): rewrite only what changed
@@ -725,45 +805,69 @@ export function createVersionDeploymentEvidence(
         button(loading ? "Refreshing…" : "Refresh record", () => void load(), {
           tone: "ghost",
           size: "sm",
-          disabled: loading,
+          ...(loading ? { "aria-disabled": "true" } : {}),
         }),
       ),
-      error
-        ? statusBlock("danger", null, message(error))
-        : status
-          ? element(
-              "div",
-              {},
-              element("p", {}, `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}`),
-              failureShownAbove && deploymentOutcome(status) === "failed"
-                ? element(
-                    "p",
-                    { className: "muted deployment-failure-above" },
-                    "The error and its next step are at the top of this page.",
-                  )
-                : deploymentResult(status, context),
-              status.warnings?.length
-                ? element(
-                    "div",
-                    { className: "hint" },
-                    element("p", {}, "Startup warnings:"),
-                    element(
-                      "ul",
-                      {},
-                      ...status.warnings.map((warning) =>
-                        element("li", {}, pluginWarningText(warning)),
-                      ),
-                    ),
-                  )
-                : null,
-            )
-          : // Reserve both rows so the first record does not move the version tabs below.
-            element(
-              "div",
-              {},
-              element("p", {}, "Recorded outcome: Loading…"),
-              element("p", { className: "muted" }, "Reading this version’s deployment record."),
+      element(
+        "div",
+        { className: "version-deployment-result" },
+        element(
+          "div",
+          {},
+          error
+            ? statusBlock("danger", null, message(error), [], {
+                role: hasVisibleReadError(error) ? null : "alert",
+              })
+            : status
+              ? element(
+                  "div",
+                  {},
+                  element("p", {}, `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}`),
+                  failureShownAbove && deploymentOutcome(status) === "failed"
+                    ? element(
+                        "p",
+                        { className: "muted deployment-failure-above" },
+                        "The error and its next step are at the top of this page.",
+                      )
+                    : deploymentResult(status, context),
+                  status.warnings?.length
+                    ? element(
+                        "div",
+                        { className: "hint" },
+                        element("p", {}, "Startup warnings:"),
+                        element(
+                          "ul",
+                          {},
+                          ...status.warnings.map((warning) =>
+                            element("li", {}, pluginWarningText(warning)),
+                          ),
+                        ),
+                      )
+                    : null,
+                )
+              : // Reserve both rows so the first record does not move the version tabs below.
+                element(
+                  "div",
+                  {},
+                  element("p", {}, "Recorded outcome: Loading…"),
+                  element("p", { className: "muted" }, "Reading this version’s deployment record."),
+                ),
+        ),
+        // Reserve wrapped error space without duplicating accessible text or alerts.
+        ...[403, 404, 503].map((status) =>
+          element(
+            "div",
+            { className: "version-deployment-error-size", "aria-hidden": "true" },
+            statusBlock(
+              "danger",
+              null,
+              element("span", { "data-message": message({ status }) }),
+              [],
+              { role: null },
             ),
+          ),
+        ),
+      ),
     ]);
   }
 
@@ -787,6 +891,8 @@ export function createVersionDeploymentEvidence(
   return {
     panels: [section, diagnostics.section],
     show,
+    fail,
+    render,
     release,
     setFailureShownAbove,
     // The page calls this when what its failureText answers changes.

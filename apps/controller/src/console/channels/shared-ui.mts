@@ -44,6 +44,8 @@ interface ChannelDraft {
 export interface ChannelDrawerContext extends SlackDirectoryContext {
   drafts?: Drafts;
   baseline?: string;
+  // The selected Namespace when readable: bound Secret summaries check its Secret list first.
+  namespace?: { id: string } | undefined;
   operatorId?: string;
   installationAdmin?: boolean;
   agentName?: string | (() => string);
@@ -265,9 +267,11 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
     status.label === "Not configured" ? `Configure ${provider.name}` : `Edit ${provider.name}`;
   // The setup step asks for Secret bindings; once each one is bound it is done (finding 2438).
   // A read-only view (a version snapshot, or a draft the caller cannot edit) offers no setup
-  // step, so it shows none (finding 2455).
+  // step, so it shows none (finding 2455). An Embedded Agent cannot have channels, so it has no
+  // setup step either: the card says why instead (finding D708).
   const setupShown =
     !state.readOnly &&
+    !disabledByMode &&
     (provider.secretBindings.length === 0 ||
       provider.secretBindings.some(
         (binding) => !state.drawerContext.secretBindings?.[binding.key]?.source,

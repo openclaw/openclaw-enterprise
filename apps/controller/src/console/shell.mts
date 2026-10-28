@@ -161,6 +161,8 @@ export function createShell({
   let namespaces: readonly Namespace[] = [];
   let namespaceId: string | null = null;
   let observabilityUrl: string | null = null;
+  // The shown shell's Observability link, if any.
+  let observabilityLink: HTMLAnchorElement | null = null;
   let menuControls: ReturnType<typeof createAccountMenus> | null = null;
   let drawerControls: {
     shell: HTMLElement;
@@ -603,20 +605,20 @@ export function createShell({
       });
       nav.append(link);
     }
+    observabilityLink = null;
     if (session && observabilityUrl) {
-      nav.append(
-        element(
-          "a",
-          {
-            href: observabilityUrl,
-            target: "_blank",
-            rel: "noopener noreferrer",
-          },
-          element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
-          "Observability",
-          externalLinkIcon(),
-        ),
+      observabilityLink = element(
+        "a",
+        {
+          href: observabilityUrl,
+          target: "_blank",
+          rel: "noopener noreferrer",
+        },
+        element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
+        "Observability",
+        externalLinkIcon(),
       );
+      nav.append(observabilityLink);
     }
     const revision =
       document.querySelector<HTMLMetaElement>('meta[name="occ-build-revision"]')?.content ?? "";
@@ -819,24 +821,18 @@ export function createShell({
     return { view, refresh, diagnostics, scopeSelector, actions };
   }
 
-  // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
-  // Other links (Observability) keep the href comparison.
-  function isSameControl(candidate: Element, node: Element) {
+  function sameControl(node: Element, root: HTMLElement) {
+    // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
+    // Other links (Observability) keep the href comparison.
     const nav = node.getAttribute("data-nav");
     return (
-      candidate.localName === node.localName &&
-      candidate.className === node.className &&
-      (nav
-        ? candidate.getAttribute("data-nav") === nav
-        : candidate.getAttribute("href") === node.getAttribute("href")) &&
-      candidate.textContent === node.textContent
-    );
-  }
-
-  function sameControl(node: Element, root: HTMLElement) {
-    return (
-      [...root.querySelectorAll<HTMLElement>(node.localName)].find((candidate) =>
-        isSameControl(candidate, node),
+      [...root.querySelectorAll<HTMLElement>(node.localName)].find(
+        (candidate) =>
+          candidate.className === node.className &&
+          (nav
+            ? candidate.getAttribute("data-nav") === nav
+            : candidate.getAttribute("href") === node.getAttribute("href")) &&
+          candidate.textContent === node.textContent,
       ) ?? null
     );
   }
@@ -966,34 +962,41 @@ export function createShell({
       }
     }
   });
-  // Each render of a load replaces the shell (the held page, "Loading…", then the page). A press
-  // on a sidebar, top bar or page header control that a render replaces before the release gets
-  // no click on its replacement: the browser drops the click or sends it to an ancestor, so the
-  // control's handler never runs (finding 2505). A release on that control in the shown shell
-  // activates it instead. Taps send their mouse events together on release, so only a held mouse
-  // press can straddle a render.
-  const shellControls =
-    ".sidebar a[href], .sidebar button, .topbar button, .page-header a[href], .page-header button";
-  let pressedControl: Element | null = null;
-  let activatedOnRelease: Element | null = null;
-  document.addEventListener(
+  // A load render can replace a pressed primary navigation link before release, so the browser
+  // cannot dispatch its click to that link. Activate only its replacement in the shown sidebar.
+  const primaryNavLink = ".sidebar .nav a[data-nav]";
+  let pressedLink: HTMLAnchorElement | null = null;
+  app.addEventListener(
     "mousedown",
     (event) => {
-      pressedControl =
-        event.button === 0 && event.target instanceof Element
-          ? event.target.closest(shellControls)
+      pressedLink =
+        event.isTrusted &&
+        event.button === 0 &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.target instanceof Element
+          ? event.target.closest<HTMLAnchorElement>(primaryNavLink)
           : null;
     },
     { capture: true },
   );
-  document.addEventListener("mouseup", (event) => {
-    const pressed = pressedControl;
-    pressedControl = null;
+  app.addEventListener("mouseleave", () => {
+    pressedLink = null;
+  });
+  app.addEventListener("mouseup", (event) => {
+    const pressed = pressedLink;
+    pressedLink = null;
+    const sidebar = drawerControls?.sidebar;
     const released =
-      event.target instanceof Element ? event.target.closest<HTMLElement>(shellControls) : null;
+      event.target instanceof Element
+        ? event.target.closest<HTMLAnchorElement>(primaryNavLink)
+        : null;
     if (
       !pressed ||
       pressed.isConnected ||
+      !sidebar ||
       !released ||
       !event.isTrusted ||
       event.button !== 0 ||
@@ -1001,31 +1004,20 @@ export function createShell({
       event.ctrlKey ||
       event.shiftKey ||
       event.altKey ||
-      !isSameControl(released, pressed)
+      sameControl(pressed, sidebar) !== released
     ) {
       return;
     }
-    // A browser that still sends this release's click to the control must not activate it twice.
-    activatedOnRelease = released;
-    setTimeout(() => {
-      activatedOnRelease = null;
-    });
+    const suppressDuplicate = (click: MouseEvent) => {
+      if (click.isTrusted) {
+        click.preventDefault();
+        click.stopImmediatePropagation();
+      }
+    };
+    released.addEventListener("click", suppressDuplicate, true);
+    setTimeout(() => released.removeEventListener("click", suppressDuplicate, true));
     released.click();
   });
-  document.addEventListener(
-    "click",
-    (event) => {
-      if (
-        event.isTrusted &&
-        event.target instanceof Node &&
-        activatedOnRelease?.contains(event.target)
-      ) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-      }
-    },
-    { capture: true },
-  );
   document.addEventListener("keydown", (event) => {
     if (!drawerControls?.shell.classList.contains("drawer-open")) {
       return;
@@ -1086,6 +1078,13 @@ export function createShell({
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);
+    },
+    // The shown page learned that the caller does not administer the Installation, whose
+    // administrators alone get the link (finding D760).
+    dropObservabilityLink() {
+      observabilityUrl = null;
+      observabilityLink?.remove();
+      observabilityLink = null;
     },
     setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;

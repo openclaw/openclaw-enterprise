@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -292,8 +293,30 @@ func parseOrigin(value string) (*url.URL, error) {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return nil, fmt.Errorf("OCC URL must use http or https")
 	}
-	if parsed.Opaque != "" || parsed.User != nil || parsed.Hostname() == "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	if parsed.Opaque != "" || parsed.Hostname() == "" {
 		return nil, fmt.Errorf("OCC URL must be an origin without credentials, a path, a query, or a fragment")
+	}
+	// Name what to drop and the origin to use instead (finding D765). The
+	// credentials, query and fragment are never echoed: they may hold secrets.
+	var extra []string
+	if parsed.User != nil {
+		extra = append(extra, "credentials")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		extra = append(extra, fmt.Sprintf("the path %q", parsed.EscapedPath()))
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery {
+		extra = append(extra, "a query")
+	}
+	if parsed.Fragment != "" {
+		extra = append(extra, "a fragment")
+	}
+	if len(extra) > 0 {
+		origin := parsed.Scheme + "://" + parsed.Host
+		return nil, fmt.Errorf(
+			"OCC URL must be an origin without credentials, a path, a query, or a fragment; it has %s. Set OCC_URL (or --url) to %s if that origin serves the OCC API",
+			strings.Join(extra, " and "), origin,
+		)
 	}
 	parsed.Path = ""
 	parsed.RawPath = ""
@@ -336,7 +359,30 @@ func (client *Client) transportError(err error) error {
 	if errors.As(err, &verification) || errors.As(err, &invalid) {
 		return fmt.Errorf("OCC operation failed: the OCC endpoint's certificate could not be verified: %w", err)
 	}
+	// A failed connection names the endpoint and the plain cause instead of the
+	// Go request and dial text (finding D765).
+	var dial *net.OpError
+	if errors.As(err, &dial) && dial.Op == "dial" {
+		return fmt.Errorf("cannot connect to OCC at %s (%s). Check OCC_URL (or --url).", client.baseURL, dialCause(dial))
+	}
 	return fmt.Errorf("OCC operation failed: %w", err)
+}
+
+// dialCause is the innermost text of a dial error, such as "connection refused"
+// or "no such host", without the operation and address prefixes.
+func dialCause(dial *net.OpError) string {
+	var dnsErr *net.DNSError
+	if errors.As(dial.Err, &dnsErr) {
+		return dnsErr.Err
+	}
+	cause := dial.Err
+	for {
+		next := errors.Unwrap(cause)
+		if next == nil {
+			return cause.Error()
+		}
+		cause = next
+	}
 }
 
 func (client *Client) apiError(status int, header http.Header, body []byte) error {
@@ -409,6 +455,17 @@ func readServiceKey(path string) (serviceKey, error) {
 	var namespace string
 	_ = json.Unmarshal(envelope.Data.NamespaceID, &namespace)
 	return serviceKey{key: key, namespace: namespace, file: path}, nil
+}
+
+// ServiceKeyNamespace returns the Namespace ID a service-key file records for
+// its key, or "" when the file is unreadable or records none. It is local
+// display metadata, not an authorization source, and makes no request.
+func ServiceKeyNamespace(path string) string {
+	key, err := readServiceKey(path)
+	if err != nil {
+		return ""
+	}
+	return key.namespace
 }
 
 func httpTransport(caBundle string) (*http.Transport, error) {
