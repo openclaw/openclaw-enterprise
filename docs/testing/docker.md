@@ -4,8 +4,8 @@
 
 Run Compose startup, container image, and Helm checks. Use [Kubernetes](kubernetes.md)
 for an authenticated Agent journey: the Docker Compute Driver rejects Agent
-harness authentication bindings, so the retained real Agent model and TUI tests
-fail at admission.
+harness authentication bindings, so no Docker test deploys an Agent or makes a
+model call.
 
 ## Verify Compose startup
 
@@ -62,9 +62,13 @@ seconds and does not prove provider compatibility.
 
 ## Docker Compose development test environment
 
-`tests/integration/docker-compute-real.test.mjs` retains real-runtime scenarios
-for future Driver work; `pnpm podman:test` selects Podman. Selected Agent cases
-currently fail at admission; unselected cases skip. The inputs are
+`tests/integration/docker-compute-real.test.mjs` starts the Compose stack and
+checks the bootstrap service key, API authentication denials, Namespace networks
+and empty-Namespace deletion. It also checks that OCC refuses a Harness
+authentication binding and an Agent deployment without one (409). Model turns
+return when Docker Compute supports Harness authentication, a Compute Driver
+contract change. The workspace setup cases call the Driver directly.
+`pnpm podman:test` selects Podman; unselected cases skip. The inputs are
 `OCC_TEST_DOCKER_COMPUTE_REAL` or `OCC_TEST_PODMAN_COMPUTE_REAL`,
 `OCC_DOCKER_GATEWAY_IMAGE`, `OCC_DOCKER_AGENT_IMAGE` (or shared
 `OCC_DOCKER_RUNTIME_IMAGE`), `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL` and
