@@ -826,15 +826,29 @@ export function createPluginFields({
             selection.enabled = enabled.checked;
           }),
         );
+        const actionsId = `${input.id}-plugin-actions`;
         details.append(
           element(
             "div",
             { className: "plugin-controls" },
             element("label", { className: "plugin-toggle" }, enabled, "Enable plugin"),
-            button(`Remove ${entry.name}`, () =>
-              update((all) => {
-                delete all[entry.id];
-              }),
+            element(
+              "button",
+              {
+                type: "button",
+                className: "button button--sm plugin-actions-trigger",
+                popovertarget: actionsId,
+              },
+              "More actions",
+            ),
+            element(
+              "div",
+              { id: actionsId, className: "menu plugin-actions", popover: "auto" },
+              button(`Remove ${entry.name}`, () =>
+                update((all) => {
+                  delete all[entry.id];
+                }),
+              ),
             ),
           ),
         );
