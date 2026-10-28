@@ -265,8 +265,8 @@ test(
     const { containerName } = await startGateway(false);
     const environment = await gatewayProcessEnvironment(containerName);
     assert.ok(environment.includes("OPENCLAW_CONFIG_READONLY=1"));
-    // The mount is read-only even though the deployed revision has managed mode off.
-    assert.ok(!environment.some((entry) => entry.startsWith("OPENCLAW_CONFIG_READONLY_NOTICE=")));
+    // With managed mode off, the independently read-only mount keeps the operator's guidance.
+    assert.ok(environment.includes("OPENCLAW_CONFIG_READONLY_NOTICE=Inherited from the image"));
     // The wrapper caps V8's semi-space for the Gateway (finding 2700) and keeps the
     // operator's options after it, so an operator's own flag still wins.
     assert.ok(
