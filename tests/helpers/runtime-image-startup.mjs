@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
+import { availableParallelism, loadavg } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
@@ -513,6 +514,142 @@ export function jsonLogEntries(output) {
       }
     })
     .filter((entry) => entry !== undefined);
+}
+
+// Merges a container's newest `lines` log lines from both streams in time order, newest last,
+// and keeps at most `limit` characters from the end. A whole `docker logs` read in an error
+// spends the 600 characters CI shows, and the 16 KiB its diagnostics keep, on the oldest
+// lines: across a container restart those are the previous run's (finding 2784).
+export async function containerLogTail(containerName, { lines = 200, limit = 8 * 1024 } = {}) {
+  const logs = await runDocker([
+    "logs",
+    "--timestamps",
+    "--tail",
+    String(lines),
+    containerName,
+  ]).catch((error) => error);
+  const merged = ["stdout", "stderr"].flatMap((stream) =>
+    String(logs[stream] ?? "")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => {
+        const [, stamp = "", text = line] = /^(\S+) (.*)$/.exec(line) ?? [];
+        // RFC 3339 with up to 9 fraction digits: pad them so the strings sort as times.
+        const time = stamp.replace(/(?:\.(\d+))?Z$/, (_, digits = "") => {
+          return `.${digits.padEnd(9, "0")}Z`;
+        });
+        return { time, text: `${stamp} ${stream}: ${text}` };
+      }),
+  );
+  merged.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+  const text = merged.map((line) => line.text).join("\n");
+  if (logs instanceof Error) {
+    return `${logs.message.split("\n")[0]}\n${failureTail(text, limit)}`;
+  }
+  return failureTail(text, limit);
+}
+
+// Probed inside the container by gatewayReadinessReport: the wrapper's /readyz (Compute's
+// readiness), its plugin and runtime status, and the native OpenClaw /startupz and /readyz
+// that the wrapper's readiness also requires. Each answer keeps its status, time and the
+// status fields readiness depends on, else the start of its body; a failed request keeps its
+// error code.
+const gatewayReadinessProbe = `(async () => {
+  const limit = 300;
+  // The status fields readiness depends on, kept whole when the body is cut.
+  const keys = ["phase", "startupId", "successfulPluginIds", "failures", "runtimeFailure", "workspaceNodeFailure"];
+  const statusPort = process.env.OPENCLAW_RUNTIME_STATUS_PORT ?? process.env.OPENCLAW_PLUGIN_STATUS_PORT;
+  const gatewayPort = process.env.OPENCLAW_GATEWAY_PORT;
+  const read = async (port, path) => {
+    if (!port) return { error: "no port" };
+    const started = Date.now();
+    try {
+      const response = await fetch("http://127.0.0.1:" + port + path, { signal: AbortSignal.timeout(5000), redirect: "manual" });
+      const body = await response.text();
+      let fields;
+      try {
+        const json = JSON.parse(body);
+        fields = Object.fromEntries(keys.filter((key) => json?.[key] !== undefined).map((key) => [key, json[key]]));
+      } catch {}
+      const shown = fields !== undefined && Object.keys(fields).length > 0
+        ? { fields }
+        : { body: body.length > limit ? body.slice(0, limit) + "..." : body };
+      return { status: response.status, ms: Date.now() - started, ...shown };
+    } catch (error) {
+      return { error: String(error?.cause?.code ?? error?.cause?.message ?? error?.code ?? error?.message ?? error), ms: Date.now() - started };
+    }
+  };
+  const [wrapperReady, plugin, runtime, nativeStartup, nativeReady] = await Promise.all([
+    read(statusPort, "/readyz"),
+    read(statusPort, "/openclaw/plugin-runtime/status"),
+    read(statusPort, "/openclaw/runtime/status"),
+    read(gatewayPort, "/startupz"),
+    read(gatewayPort, "/readyz"),
+  ]);
+  console.log(JSON.stringify({ wrapperReady, plugin, runtime, nativeStartup, nativeReady }));
+})();`;
+
+function answerSummary(answer) {
+  if (answer === undefined) {
+    return "unread";
+  }
+  return answer.error === undefined ? `${answer.status}` : `error ${answer.error}`;
+}
+
+// A bounded account of why a Gateway is not ready, read when a readiness wait times out.
+// `headline` fits in the 600 characters of a failure that CI's job log shows; `detail` adds
+// each probe's answer, the container state and the wrapper's startup phases since the
+// container last started. The test process's load average tells contention from a stall.
+export async function gatewayReadinessReport(containerName) {
+  const inspect = await runDocker(["inspect", containerName])
+    .then(({ stdout }) => JSON.parse(stdout)[0].State)
+    .catch((error) => ({ error: error.message.split("\n")[0] }));
+  const probe = await runDocker(["exec", containerName, "node", "-e", gatewayReadinessProbe], {
+    timeout: 30_000 * imageSmokeTimeoutMultiplier,
+  })
+    .then(({ stdout }) => JSON.parse(stdout.trim().split("\n").at(-1)))
+    .catch((error) => ({ error: error.message.split("\n")[0].slice(0, 300) }));
+  const phaseLogs =
+    typeof inspect.StartedAt === "string"
+      ? await runDocker(["logs", "--since", inspect.StartedAt, containerName]).catch(
+          (error) => error,
+        )
+      : {};
+  const phases = jsonLogEntries(commandOutput(phaseLogs))
+    .filter((entry) => entry?.event === "runtime.startup_phase")
+    .map(
+      (entry) =>
+        `${entry.phase}:${entry.outcome}${entry.code ? ` ${entry.code}` : ""} ${entry.ms}/${entry.sinceStartMs} ms`,
+    );
+  const plugin = probe.plugin?.fields;
+  const runtime = probe.runtime?.fields;
+  const pluginFailures = (plugin?.failures ?? []).map((failure) => failure.code).join(",");
+  const runtimeFailure = runtime?.runtimeFailure
+    ? `${runtime.runtimeFailure.check}/${runtime.runtimeFailure.code}`
+    : "none";
+  const container =
+    inspect.error === undefined
+      ? `${inspect.Status}, started ${Math.round((Date.now() - Date.parse(inspect.StartedAt)) / 1000)} s ago, exit ${inspect.ExitCode}, OOMKilled ${inspect.OOMKilled}`
+      : inspect.error;
+  const load = loadavg()
+    .map((value) => value.toFixed(1))
+    .join("/");
+  const headline = [
+    probe.error === undefined
+      ? `wrapper /readyz ${answerSummary(probe.wrapperReady)}`
+      : `status probe failed: ${probe.error}`,
+    `plugin phase ${plugin?.phase ?? answerSummary(probe.plugin)}${pluginFailures ? ` (failures ${pluginFailures})` : ""}`,
+    `runtime failure ${probe.runtime?.status === 200 ? runtimeFailure : answerSummary(probe.runtime)}`,
+    `native /startupz ${answerSummary(probe.nativeStartup)}, /readyz ${answerSummary(probe.nativeReady)}`,
+    `last phase ${phases.at(-1) ?? "none"}`,
+    `container ${container}`,
+    `test host load ${load} on ${availableParallelism()} CPUs`,
+  ].join("; ");
+  const detail = [
+    `status probe: ${JSON.stringify(probe)}`,
+    `wrapper phases since start (duration/since start): ${phases.slice(-16).join(", ") || "none"}`,
+  ].join("\n");
+  return { headline, detail };
 }
 
 // A new volume owned by the Gateway user, for mounting at `mountPath` (the

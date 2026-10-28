@@ -4,7 +4,11 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
-import { ConfigurationHarnessError, GatewayPasswordValueError } from "./errors.ts";
+import {
+  agentEntryMessage,
+  ConfigurationHarnessError,
+  GatewayPasswordValueError,
+} from "./errors.ts";
 
 /**
  * The Codex session approval policy setting. The pinned OpenClaw Gateway (openclaw/openclaw
@@ -218,6 +222,76 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
+const OPENCLAW_SANDBOX_UNSUPPORTED =
+  "OCE runs each Agent in its own isolated runtime and does not support OpenClaw's sandbox";
+
+// Each OpenClaw sandbox setting OCE refuses: its path for every Agent, which an Agent's entry
+// (`agents.entries.<id>.<setting>`) overrides, the setting, and the values OCE accepts.
+const OPENCLAW_SANDBOX_SETTINGS: readonly (readonly [
+  readonly string[],
+  readonly string[],
+  readonly string[],
+  string,
+])[] = [
+  [["agents", "defaults"], ["sandbox", "mode"], ["off"], '"off"'],
+  [[], ["tools", "exec", "host"], ["auto", "gateway", "node"], '"auto", "gateway" or "node"'],
+];
+
+/**
+ * Refuses OpenClaw's own sandbox, which the pinned OpenClaw runs in Docker or another backend the
+ * OCE runtime does not have:
+ * - An `agents.defaults.sandbox.mode`, or an `agents.entries.<id>.sandbox.mode` (which overrides
+ *   it for that Agent), other than "off": the Gateway starts and then fails every turn (finding
+ *   2767). Deployment admission fills "off" when unset (gateway-security-defaults.ts), so a
+ *   `security.preset` that turns the sandbox on still deploys a working Agent.
+ * - A `tools.exec.host`, or an `agents.entries.<id>.tools.exec.host`, other than "auto",
+ *   "gateway" or "node": "sandbox" fails every shell command (finding 2773).
+ * Configuration save runs it with the other content rules; Agent save and deploy admission run it
+ * on the stored Configuration. On a Preset save (`options`), a value that waits on an unfilled
+ * variable is checked once filled if its written text can still spell an accepted value.
+ */
+export function refuseOpenClawSandbox(
+  values: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): void {
+  const entries = Object.entries(asRecord(asRecord(values.agents)?.entries) ?? {});
+  for (const [defaults, setting, accepted, acceptedText] of OPENCLAW_SANDBOX_SETTINGS) {
+    const requirement = `must be ${acceptedText} or unset: ${OPENCLAW_SANDBOX_UNSUPPORTED}`;
+    // Every Agent's setting (no Agent ID), then each Agent's entry.
+    const scopes: (readonly [string | undefined, readonly string[]])[] = [
+      [undefined, [...defaults, ...setting]],
+      ...entries.map(([id]) => [id, ["agents", "entries", id, ...setting]] as const),
+    ];
+    for (const [id, path] of scopes) {
+      let parent: Record<string, unknown> | undefined = values;
+      for (const key of path.slice(0, -1)) {
+        parent = asRecord(parent?.[key]);
+      }
+      const name = path.at(-1)!;
+      if (parent === undefined || !Object.hasOwn(parent, name)) {
+        continue;
+      }
+      const literals = options?.unresolved?.(path);
+      const type = options?.unresolvedType?.(path);
+      const allowed =
+        literals === undefined
+          ? accepted.includes(parent[name] as string)
+          : (type === undefined || type === "string") &&
+            accepted.some((value) => canSpell(literals, value));
+      if (!allowed) {
+        throw new ConfigurationHarnessError(
+          id === undefined
+            ? `Configuration setting ${path.join(".")} ${requirement}.`
+            : agentEntryMessage(
+                id,
+                (entry) => `Configuration setting ${entry}.${setting.join(".")} ${requirement}.`,
+              ),
+        );
+      }
+    }
+  }
+}
+
 // `${NAME}`, or an object naming a source and an id (OpenClaw's SecretRef).
 function isCredentialReference(value: unknown): boolean {
   if (typeof value === "string") {
@@ -237,6 +311,7 @@ function isCredentialReference(value: unknown): boolean {
  *   would; every Compute Driver accepts only an environment reference there.
  * - The workspace bootstrap settings (validateWorkspaceBootstrapSettings).
  * - Settings the pinned OpenClaw retired (refuseRetiredOpenClawSettings).
+ * - OpenClaw's own sandbox (refuseOpenClawSandbox).
  */
 export function validateConfigurationSettings(
   values: OpenClawConfigurationDocument,
@@ -251,6 +326,7 @@ export function validateConfigurationSettings(
   refuseLiteralGatewayPassword(values);
   validateWorkspaceBootstrapSettings(values, options);
   refuseRetiredOpenClawSettings(values);
+  refuseOpenClawSandbox(values, options);
 }
 
 /**

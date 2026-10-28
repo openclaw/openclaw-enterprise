@@ -9,7 +9,8 @@
   },
   "types": "./src/index.ts",
   "files": [
-    "src"
+    "src",
+    "plugins"
   ],
   "scripts": {
     "build": "tsc --build tsconfig.json --pretty false",

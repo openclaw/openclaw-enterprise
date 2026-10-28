@@ -14,12 +14,13 @@ and generated CSS. API, session, credential, and runtime state remain simulated.
    and keyboard focus, then navigate to an Agent.
 2. Open Desktop and Mobile. Operate navigation and the mobile drawer; verify the
    full name remains accessible. The operator’s logo has no added outline: it
-   renders at 20 × 20 px in navigation and 40 × 40 px at sign-in. In Long Name,
+   fits within 48 × 48 px in navigation, preserving its aspect ratio, and
+   40 × 40 px at sign-in. In Long Name,
    the drawer wraps the full name. The phone’s top bar truncates it with an
    ellipsis so the menu and account controls stay reachable.
 3. Compare **Pages/Secrets → Mobile**: the bundled 48 × 38 px mascot has a white
    outline on navy and dims with the header when a sheet opens. With forced
-   colors active, navigation uses the original 20 × 20 px artwork instead.
+   colors active, navigation uses the original artwork within the same 48 × 48 px limit.
    **Pages/Sign in** also keeps the original artwork, at 40 × 40 px.
 4. Inspect Empty, Denied, Loading, Missing Credentials, and Public Error for text
    readability, visible status labels, and consistent branding.

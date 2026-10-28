@@ -482,6 +482,8 @@ test("Docker development Gateway migrates an older agent database before startin
     ],
   );
   assert.equal(outcome.spawned[0].env.OPENCLAW_CONFIG_READONLY, "1");
+  // As on Kubernetes, the update opt-out covers Doctor as well as the Gateway.
+  assert.equal(outcome.spawned[0].env.OPENCLAW_NO_AUTO_UPDATE, "1");
   // Doctor reads the configuration document written before it, not its environment copy.
   assert.deepEqual(outcome.events, ["write", "spawn:doctor", "spawn:gateway"]);
   assert.equal(outcome.spawned[0].env.OPENCLAW_CONFIG_JSON, undefined);

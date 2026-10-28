@@ -1783,6 +1783,7 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   });
   await pluginEnabled.check();
   await dialog.getByRole("button", { name: removedPluginId, exact: true }).click();
+  await dialog.getByRole("button", { name: "More actions", exact: true }).click();
   await dialog.getByRole("button", { name: `Remove ${removedPluginId}`, exact: true }).click();
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   assert.equal(await dialog.isVisible(), false);

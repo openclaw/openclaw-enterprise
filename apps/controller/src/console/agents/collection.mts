@@ -9,15 +9,18 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
+import { resourceActionIcon } from "../resource-actions.mjs";
 import { button, element, setText, statusBlock, requestIdLine } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
+import { credentialRejectedAsk } from "./deployment-recovery.mjs";
 import {
   agentCreateDenied,
   AGENT_DELETE_DENIED,
   AGENT_STOP_DENIED,
-  askForGrant,
+  deleteRefused,
   notIncluded,
+  stopRefused,
 } from "./access-reasons.mjs";
 import {
   type AgentNavigation,
@@ -57,45 +60,6 @@ interface AgentListContext extends AgentNavigation {
       rereadOnResume?: true;
     },
   ): Promise<unknown>;
-}
-
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-
-// Stroke icons on a 24-unit grid: a square for Stop and a trash can for Delete.
-const ACTION_ICONS = {
-  stop: [["rect", { x: 6, y: 6, width: 12, height: 12, rx: 1.5 }]],
-  delete: [
-    ["path", { d: "M4 7h16" }],
-    ["path", { d: "M10 11v6M14 11v6" }],
-    ["path", { d: "M6 7l1 13h10l1-13" }],
-    ["path", { d: "M9 7V4h6v3" }],
-  ],
-} as const;
-
-function actionIcon(name: RowAction) {
-  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
-  const attributes = {
-    class: "action-icon",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    "stroke-width": 2,
-    "stroke-linecap": "round",
-    "stroke-linejoin": "round",
-    "aria-hidden": "true",
-    focusable: "false",
-  };
-  for (const [key, value] of Object.entries(attributes)) {
-    svg.setAttribute(key, String(value));
-  }
-  for (const [tag, shapeAttributes] of ACTION_ICONS[name]) {
-    const shape = document.createElementNS(SVG_NAMESPACE, tag);
-    for (const [key, value] of Object.entries(shapeAttributes)) {
-      shape.setAttribute(key, String(value));
-    }
-    svg.append(shape);
-  }
-  return svg;
 }
 
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
@@ -211,6 +175,8 @@ export function renderAgentList(context: AgentListContext) {
   // row's icon before confirmation; a failed read keeps the usual path, and the API still
   // authorizes every write.
   const permissionReads = new Set<string>();
+  // Each row's permission answer as it settles (null when it failed), for text that depends on it.
+  const permissionAnswers = new Map<string, Promise<AgentPermissions | null>>();
   const permissions = new Map<string, AgentPermissions>();
   type RestrictDialog = (id: string, answer: AgentPermissions) => void;
   let restrictOpenDialog: RestrictDialog | null = null;
@@ -290,7 +256,18 @@ export function renderAgentList(context: AgentListContext) {
           `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
           rowRead,
         )) as AgentDeploymentStatusWire;
-        return { revision: latest, status };
+        // A rejected model credential is worded for the caller, as on the Agent's page (finding
+        // D752), so that row waits for its permission answer.
+        const code = status.status === "failed" ? status.error?.code : undefined;
+        const credentialAsk =
+          code === "RUNTIME_AUTHENTICATION_FAILED"
+            ? credentialRejectedAsk(
+                code,
+                "harnessAuth" in item ? item.harnessAuth : undefined,
+                await permissionAnswers.get(item.id),
+              )
+            : undefined;
+        return { revision: latest, status, credentialAsk };
       }),
     };
   }
@@ -390,7 +367,7 @@ export function renderAgentList(context: AgentListContext) {
         setLatestDeployment(item, deploymentOutcome(result.status));
         const failure =
           !neutral && result.status.status === "failed"
-            ? (result.status.error?.message ?? "Deployment failed.")
+            ? (result.credentialAsk ?? result.status.error?.message ?? "Deployment failed.")
             : null;
         // A long failure fits one line; its title and the Agent page give the whole text.
         fill(
@@ -486,12 +463,18 @@ export function renderAgentList(context: AgentListContext) {
       return;
     }
     permissionReads.add(item.id);
-    void context.request(`${agentRequestPath(item.id)}/permissions`, rowRead).then(
-      (result) => {
+    const read = context
+      .request(`${agentRequestPath(item.id)}/permissions`, rowRead)
+      .then((result) => result as AgentPermissions);
+    permissionAnswers.set(
+      item.id,
+      read.catch(() => null),
+    );
+    void read.then(
+      (answer) => {
         if (!context.isCurrent()) {
           return;
         }
-        const answer = result as AgentPermissions;
         const previous = permissions.get(item.id);
         permissions.set(item.id, answer);
         if (restricts(answer) || restricts(previous)) {
@@ -514,10 +497,7 @@ export function renderAgentList(context: AgentListContext) {
     }
     let text;
     if (error.status === 403) {
-      text =
-        kind === "stop"
-          ? `You do not have permission to stop ${item.name}. ${askForGrant("Agent operate on it")}`
-          : `You do not have permission to delete ${item.name}. ${askForGrant("Agent delete on it")}`;
+      text = kind === "stop" ? stopRefused(item.name) : deleteRefused(item.name);
     } else if (error.status === 400 || error.status === 429) {
       text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true })}`;
     } else {
@@ -708,7 +688,7 @@ export function renderAgentList(context: AgentListContext) {
     const stop = neverStarted
       ? null
       : button(
-          actionIcon("stop"),
+          resourceActionIcon("stop"),
           (event) => confirmAction(item, "stop", event.currentTarget as HTMLButtonElement),
           {
             className: "icon-button",
@@ -720,7 +700,7 @@ export function renderAgentList(context: AgentListContext) {
           },
         );
     const remove = button(
-      actionIcon("delete"),
+      resourceActionIcon("delete"),
       (event) => confirmAction(item, "delete", event.currentTarget as HTMLButtonElement),
       {
         className: "icon-button",
@@ -748,7 +728,7 @@ export function renderAgentList(context: AgentListContext) {
     return [
       element(
         "div",
-        { className: "agent-row-actions" },
+        { className: "resource-row-actions" },
         actions.stop ?? element("span", { className: "icon-button-spacer" }),
         actions.delete,
       ),

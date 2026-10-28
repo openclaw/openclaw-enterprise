@@ -148,7 +148,7 @@ async function standInChart(file, policy) {
     .join("");
 }
 
-// Starts the preflight Pod's container once with its Secret volumes and literal
+// Starts the preflight Pod's container once with its Secret/ConfigMap volumes and literal
 // environment. Other cluster inputs (Secret-backed env, CA and token volumes) are
 // not provided; chart cases point Compute at the test's Kubernetes API through an
 // explicit kubeconfig instead of the Pod's service account. The container runs in
@@ -169,15 +169,24 @@ async function runPreflight(root, cwd, state, pod) {
   for (const mount of container.volumeMounts ?? []) {
     const volume = pod.spec.volumes.find((item) => item.name === mount.name);
     const secret = volume?.secret && state.preflight.secrets[volume.secret.secretName];
-    if (!secret) {
+    const configMap = volume?.configMap && state.themeConfigMaps[volume.configMap.name];
+    const data = secret?.data ?? configMap?.data;
+    if (!data) {
       continue;
     }
     const directory = join(work, mount.name);
     // The script runs under umask 077; the image's unprivileged user must still read the mount.
     mkdirSync(directory);
     chmodSync(directory, 0o755);
-    for (const item of volume.secret.items) {
-      writeFileSync(join(directory, item.path), Buffer.from(secret.data[item.key], "base64"));
+    const items =
+      volume.secret?.items ??
+      volume.configMap?.items ??
+      Object.keys(data).map((key) => ({ key, path: key }));
+    for (const item of items) {
+      writeFileSync(
+        join(directory, item.path),
+        secret ? Buffer.from(data[item.key], "base64") : data[item.key],
+      );
       chmodSync(join(directory, item.path), 0o644);
     }
     mounts.push([directory, mount.mountPath]);
@@ -1229,6 +1238,7 @@ async function fixture(
   const state = {
     realChart: Boolean(chart),
     startupCheck: Boolean(chart),
+    themeConfigMaps: chart?.configMaps ?? {},
     kubeconfig: api?.kubeconfig ?? null,
     preflightResults,
     preflightPolicy,
@@ -2754,6 +2764,74 @@ async function assertStoppedBeforeWriters(f) {
   assert.deepEqual(state.preflight.networkpolicies, {});
   return state;
 }
+
+test("the image-upgrade startup preflight validates the API's mounted theme before stopping writers", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  for (const [name, theme, failure] of [
+    [
+      "valid",
+      { schemaVersion: 1, displayName: "Example Console", colors: { accent: "#2457C5" } },
+      null,
+    ],
+    [
+      "invalid color",
+      { schemaVersion: 1, colors: { accent: "blue" } },
+      /colors must use supported roles/,
+    ],
+    [
+      "missing image",
+      { schemaVersion: 1, logo: "missing.png" },
+      /cannot read the configured bundle/,
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const themeName = "console-theme-reviewed";
+      const f = await fixture(t, {
+        controllerOnly: true,
+        chart: {
+          values: (values) => ({
+            ...values,
+            api: { ...values.api, consoleTheme: { configMapName: themeName } },
+          }),
+          installation: (installation) => installation,
+          configMaps: { [themeName]: { data: { "theme.json": JSON.stringify(theme) } } },
+        },
+      });
+      // Helm renders the real theme mount. The generated Pod command runs real source
+      // loaders against actual files; only external cluster command protocols are fixtures.
+      if (failure) {
+        await assert.rejects(
+          f.run("--preflight-only"),
+          (error) =>
+            /the selected controller image cannot start the api with the candidate Installation:/.test(
+              error.stderr,
+            ) &&
+            /No OCC writer was stopped/.test(error.stderr) &&
+            failure.test(error.stderr),
+        );
+        const state = await assertStoppedBeforeWriters(f);
+        assert.deepEqual(state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(), [
+          "networkpolicy.networking.k8s.io",
+          "pod",
+          "pod",
+          "secret",
+        ]);
+        assert.match(await readFile(join(f.evidence, "preflight-api.log"), "utf8"), failure);
+        assert.match(
+          await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
+          /installation-startup-ready/,
+        );
+      } else {
+        const result = await f.run("--preflight-only");
+        assert.match(result.stdout, /preflight/i);
+        await assertStoppedBeforeWriters(f);
+      }
+    });
+  }
+});
 
 // The 2026-09-28 release example offered DevDay Presets through presets.files; later
 // images no longer ship those files (finding 436). The selected controller image must

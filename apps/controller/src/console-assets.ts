@@ -47,6 +47,8 @@ const CONSOLE_ASSETS = new Map([
       "navigation.mts",
       "shell.mts",
       "namespaces.mts",
+      "namespace-deletion.mts",
+      "resource-actions.mts",
       "secrets.mts",
       "runtime-images.mts",
       "agents/list.mts",

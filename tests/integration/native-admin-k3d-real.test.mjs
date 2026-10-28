@@ -474,8 +474,15 @@ async function assertManagedNativeConfigWriteRejected(page, nativeOrigin, topolo
     },
   };
   await editor.fill(serializeConfig(parsed));
+  // The pinned Gateway includes the policy identifier in the save status's accessible name.
+  const retryReadOnlySave = page
+    .locator("openclaw-settings-save-indicator")
+    .getByRole("status", { name: /\bOPENCLAW_CONFIG_READONLY\b/ })
+    .getByRole("button", { name: "Retry", exact: true })
+    .first();
+  await retryReadOnlySave.waitFor({ state: "hidden" });
   await page.locator(".config-raw-actions button.primary").first().click();
-  await page.getByText("Config is externally managed", { exact: false }).first().waitFor();
+  await retryReadOnlySave.waitFor();
   assert.equal(await readRuntimeAccent(topology), originalAccent);
 }
 

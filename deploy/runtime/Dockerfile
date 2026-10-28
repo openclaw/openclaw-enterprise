@@ -327,6 +327,17 @@ RUN --mount=type=secret,id=build-ca,required=false \
     XDG_STATE_HOME="$gh_state" /usr/local/bin/gh --version | grep '^gh version 2.103.2 '; \
     rm -rf "$gh_state"
 
+COPY apps/controller/plugins/oce-google-workspace/skills/ /usr/local/lib/oce/plugins/google/skills/
+COPY apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json /usr/local/lib/oce/plugins/google/release.json
+
+RUN --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,source=deploy/runtime/google/install-gog.mts,target=/tmp/install-gog.mts \
+    --mount=type=bind,source=scripts/ci/download-pinned.sh,target=/tmp/download-pinned.sh \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    mkdir -p /usr/local/lib/oce/plugins/google/bin; \
+    node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
+
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.

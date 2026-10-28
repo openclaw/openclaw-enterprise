@@ -46,6 +46,7 @@ import {
   reviewedCodexSeccompSecurityOptions,
   assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
@@ -1287,17 +1288,15 @@ try {
     await runRepositoryMaterialInitProbe(materialVolumeName, descriptor);
 
     await runDocker(["network", "create", "--driver", "bridge", networkName]);
+    // The container runs the shared relay's own source, so a clean single-use upstream close
+    // still delivers bytes queued for the slower sandbox proxy (finding 2186).
     const forwarder = String.raw`
 const net = require("node:net");
 const targetHost = process.argv[1];
 const targetPort = Number(process.argv[2]);
+${relaySockets}
 const server = net.createServer((client) => {
-  const upstream = net.connect(targetPort, targetHost);
-  client.on("error", () => upstream.destroy());
-  client.on("close", () => upstream.destroy());
-  upstream.on("error", () => client.destroy());
-  upstream.on("close", () => client.destroy());
-  client.pipe(upstream).pipe(client);
+  relaySockets(client, net.connect(targetPort, targetHost));
 });
 server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
 `;

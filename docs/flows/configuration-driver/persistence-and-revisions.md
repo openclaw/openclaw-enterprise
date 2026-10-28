@@ -126,7 +126,14 @@ frozen copy before Configuration Driver validation and Harness selection. The
 stored reusable Configuration and its generation remain unchanged.
 [`admitGatewaySecurityDefaults`](../../../packages/occ/src/gateway-security-defaults.ts)
 then fills `tools.exec.applyPatch.workspaceOnly`, which OpenClaw's `personal` security preset
-would loosen; other unset settings keep the preset's defaults
+would loosen, `agents.defaults.sandbox.mode: "off"`, which its `corporate` preset would turn
+on although the OCE runtime cannot run OpenClaw's sandbox (an explicit other mode, or a
+`tools.exec.host: "sandbox"`, is refused at save and here), and `tools.exec.mode: "full"` when
+`tools.exec` sets no mode, security or ask, where `corporate` would fill `ask`, which needs an
+approval client OCE does not have, then `tools.exec.strictInlineEval: false` beside mode `full`
+and no security or ask, where `corporate`'s `true` needs that client for each inline program
+(under `corporate`, an Agent entry with its own non-`full` exec policy keeps that `true`, since it
+would otherwise inherit the filled `false`); other unset settings keep the preset's defaults
 ([reference](../../reference/configuration.md#agent-references-and-immutable-versions)). Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and

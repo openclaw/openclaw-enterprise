@@ -225,6 +225,8 @@ interface RequiredPermission {
     | "selected_secret"
     | "iam_binding_target"
     | "provisioning_work"
+    | "gateway_managed_mode_disabled"
+    | "gateway_managed_mode_changed"
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
@@ -753,20 +755,34 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
+  const creatingAgent =
+    operation.operationId === "createAgent" || operation.operationId === "validateAgentCreate";
   if (
     operation.operationId === "provisionAgent" ||
-    operation.operationId === "createAgent" ||
+    creatingAgent ||
     operation.operationId === "updateAgent" ||
     operation.operationId === "deployAgent"
   ) {
-    return [
+    const permissions: RequiredPermission[] = [
       {
         ...permission,
         scope:
-          operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
-            ? "namespace"
-            : "requested",
+          creatingAgent || operation.operationId === "provisionAgent" ? "namespace" : "requested",
       },
+    ];
+    if (creatingAgent || operation.operationId === "updateAgent") {
+      permissions.push({
+        action: "administer",
+        resourceKind: "installation",
+        scope: "installation",
+        condition: creatingAgent ? "gateway_managed_mode_disabled" : "gateway_managed_mode_changed",
+      });
+    }
+    if (operation.operationId === "validateAgentCreate") {
+      return permissions;
+    }
+    return [
+      ...permissions,
       ...(operation.operationId === "provisionAgent"
         ? [
             {
@@ -996,6 +1012,12 @@ function permissionDescription(
       }
       if (condition === "existing_namespace") {
         return `Requires ${action} permission on the ${name} when selecting an existing Kubernetes namespace.`;
+      }
+      if (condition === "gateway_managed_mode_disabled") {
+        return `Requires ${action} permission on the ${name} when gatewayManagedMode is set to false.`;
+      }
+      if (condition === "gateway_managed_mode_changed") {
+        return `Requires ${action} permission on the ${name} when the request changes the Agent's saved gatewayManagedMode setting.`;
       }
       if (condition === "selected_secret") {
         return `Requires ${action} permission on the exact same-Namespace ${name} when a Secret reference is supplied.`;
@@ -2228,17 +2250,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "getNamespaceCallerPermissions") {
       await controller.getNamespace(context.actorId, namespaceId);
-      // Each creation target matches operationTarget() for createAgent and createSecret, and
-      // the Installation target matches requireInstallationAdmin. The console reads this answer
+      // Targets match Namespace deletion, operationTarget() for creation, and
+      // requireInstallationAdmin. The console reads this answer
       // instead of an Installation-only read, which the API audits when it is refused.
-      const [agentCreate, secretCreate, installationAdminister] = await Promise.all([
-        ...(["agent", "secret"] as const).map((kind) =>
-          callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
-        ),
-        callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
-      ]);
+      const [namespaceDelete, agentCreate, secretCreate, installationAdminister] =
+        await Promise.all([
+          callerMay(context.actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
+          ...(["agent", "secret"] as const).map((kind) =>
+            callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
+          ),
+          callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
+        ]);
       reply.send({
         data: {
+          delete: namespaceDelete,
           agents: { create: agentCreate },
           secrets: { create: secretCreate },
           installation: { administer: installationAdminister },

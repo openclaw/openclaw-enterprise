@@ -75,6 +75,11 @@ export class RequestFailure extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: readonly ErrorDetail[];
+  remainingResources?: readonly {
+    kind: string;
+    count: number;
+    ids: readonly string[];
+  }[];
 
   constructor(status: number, code: string, message: string, details?: readonly ErrorDetail[]) {
     super(message);
@@ -178,6 +183,9 @@ export function canonicalFailure(reply: FastifyReply, error: RequestFailure): vo
       // Some messages come from Drivers or name submitted values; none may break the cap.
       message: capped(error.message),
       ...(error.details === undefined ? {} : { details: error.details }),
+      ...(error.remainingResources === undefined
+        ? {}
+        : { remainingResources: error.remainingResources }),
     },
     meta: { requestId: reply.request.id },
   });
@@ -852,7 +860,13 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(409, "NAMESPACE_NOT_READY", "The requested Namespace is not ready.");
   }
   if (error instanceof NamespaceNotEmptyError) {
-    return failure(409, "NAMESPACE_NOT_EMPTY", namespaceNotEmptyMessage(error));
+    const result = failure(409, "NAMESPACE_NOT_EMPTY", namespaceNotEmptyMessage(error));
+    result.remainingResources = error.contents.slice(0, 7).map((kind) => ({
+      kind,
+      count: error.ids[kind]?.length ?? 0,
+      ids: (error.ids[kind] ?? []).slice(0, 20),
+    }));
+    return result;
   }
   if (error instanceof AgentDeletingError) {
     return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");

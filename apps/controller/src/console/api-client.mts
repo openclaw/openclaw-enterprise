@@ -53,6 +53,7 @@ export interface ConsoleApiError extends Error {
   detailPaths?: string[];
   retryAfterSeconds?: number;
   requestId?: string;
+  remainingResources?: { kind: string; count: number; ids: string[] }[];
 }
 
 // Responses are untrusted JSON. Check each field before exposing it on an error.
@@ -186,6 +187,23 @@ export function createApiClient({
       const code = problem.code;
       if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {
         error.code = code;
+      }
+      if (code === "NAMESPACE_NOT_EMPTY" && Array.isArray(problem.remainingResources)) {
+        error.remainingResources = problem.remainingResources.slice(0, 7).flatMap((entry) => {
+          const { kind, count, ids } = responseFields(entry);
+          return typeof kind === "string" &&
+            kind.length <= 64 &&
+            typeof count === "number" &&
+            Number.isSafeInteger(count) &&
+            count >= 0 &&
+            Array.isArray(ids) &&
+            ids.length <= 20 &&
+            ids.every(
+              (id): id is string => typeof id === "string" && /^[a-z]+_[0-9a-f-]{36}$/.test(id),
+            )
+            ? [{ kind, count, ids }]
+            : [];
+        });
       }
       // The API's own sentence, for views that show it instead of a generic status text.
       const serverMessage = problem.message;

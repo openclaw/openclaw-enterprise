@@ -16,7 +16,10 @@ import {
 } from "../../scripts/ci/openshell.mjs";
 import { withEnvironment } from "../helpers/environment.mjs";
 import { prependPath } from "../helpers/fake-commands.mjs";
-import { observeSandboxProbe } from "../helpers/k3d-failure-diagnostics.mjs";
+import {
+  assertGatewayPolicyRunSucceeded,
+  observeSandboxProbe,
+} from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -41,6 +44,61 @@ function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
     context: `k3d-${name}`,
   };
 }
+
+test("a failed protected update reports its stored job state without disclosing Gateway text", async (t) => {
+  const attempt = "cross-agent-session-target";
+  const before = { id: "job-1", sessionTarget: "isolated", payload: { message: "private job" } };
+  const runId = "7f397a07-2e4a-49b1-bb45-d2db87fc4032";
+  const failed = { runId, status: "error", endedAt: 42, error: "private provider detail" };
+  for (const [jobState, current, terminal, metadata] of [
+    ["unchanged", structuredClone(before), failed, "errorText=present"],
+    [
+      "changed",
+      { ...before, sessionTarget: "private target" },
+      { ...failed, stopReason: "private stop reason", terminalReply: { text: "private reply" } },
+      "errorText=present, stopReason=other",
+    ],
+    [
+      "unavailable",
+      undefined,
+      {
+        runId,
+        status: "timeout",
+        stopReason: "timeout",
+        timeoutPhase: "provider",
+        providerStarted: true,
+      },
+      "stopReason=timeout, timeoutPhase=provider, providerStarted=true",
+    ],
+  ]) {
+    const requests = [];
+    const client = {
+      async request(...args) {
+        requests.push(args);
+        if (!current) {
+          throw new Error("private read failure");
+        }
+        return current;
+      },
+    };
+    await assert.rejects(
+      assertGatewayPolicyRunSucceeded(client, terminal, { attempt, before }),
+      (error) => {
+        assert.equal(error.actual, terminal.status);
+        assert.equal(
+          error.message.split("\n")[0],
+          `Gateway policy run ${runId} must succeed (attempt=${attempt}, job=${jobState}, ${metadata})`,
+        );
+        assert.doesNotMatch(error.message, /private/);
+        return true;
+      },
+    );
+    assert.deepEqual(requests, [["cron.get", { id: before.id }, { timeoutMs: 3_000 }]]);
+  }
+  const request = t.mock.fn();
+  await assertGatewayPolicyRunSucceeded({ request }, { runId, status: "ok" }, { attempt, before });
+  assert.equal(request.mock.callCount(), 0);
+});
 
 test("kubectl asset selection supports the pinned OpenShell CI host platforms", () => {
   assert.equal(selectKubectlAsset("darwin", "arm64").name, "kubectl-darwin-arm64");

@@ -117,6 +117,8 @@ export async function createTenantReaderFixture({
                     agent: "agt",
                     agent_revision: "rev",
                     secret: "sec",
+                    preset: "pre",
+                    service_account: "sa",
                   }[kind];
                   return `${prefix}_00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
                 },

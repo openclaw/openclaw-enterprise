@@ -1694,7 +1694,10 @@ test("Agent detail saves plugin changes for the next revision without changing a
 
   // A catalog entry is not a Configured selection after removal. Restoring the
   // original draft through its supported JSON editor must not revive stale UI.
-  await dialog.getByRole("button", { name: "Remove Calendar", exact: true }).click();
+  const removeCalendar = dialog.getByRole("button", { name: "Remove Calendar", exact: true });
+  assert.equal(await removeCalendar.isVisible(), false);
+  await dialog.getByRole("button", { name: "More actions", exact: true }).click();
+  await removeCalendar.click();
   assert.equal(await dialog.getByRole("heading", { name: "Calendar", exact: true }).count(), 0);
   await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
   await dialog.getByRole("heading", { name: "Calendar", exact: true }).waitFor();

@@ -189,6 +189,7 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
+import { managedGoogleInstall } from "../../plugin/managed-catalog.ts";
 import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
@@ -11358,7 +11359,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (pluginRuntime === undefined) {
       return [];
     }
-    const data = pluginRuntimeConfigMapData(pluginRuntime.runtime);
+    const { runtime } = pluginRuntime;
+    if (
+      runtime.kind === "openclaw" &&
+      Object.keys(runtime.selections).length === 1 &&
+      Object.hasOwn(runtime.selections, managedGoogleInstall.id)
+    ) {
+      return []; // The Google package is already in the image.
+    }
+    const data = pluginRuntimeConfigMapData(runtime);
     const environment = new Map([
       [PLUGIN_RUNTIME_MANIFEST, PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT],
       [PLUGIN_RUNTIME_CODEX_CONFIG, PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT],
@@ -15817,6 +15826,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         variables.push({
           name: "OPENCLAW_NATIVE_WORKER_PROFILE",
           value: configuration.nativeWorkerProfile,
+        });
+      }
+    }
+    // The native worker consumes only the image release digest. Its Sandbox needs no plugin files.
+    if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
+      const selection = pluginRuntime.runtime.selections[managedGoogleInstall.id];
+      if (selection !== undefined && role === "gateway") {
+        variables.push({
+          name: "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID",
+          value: managedGoogleInstall.id,
+        });
+      }
+      if (selection?.enabled) {
+        variables.push({
+          name: "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256",
+          value: managedGoogleInstall.releaseSha256,
         });
       }
     }

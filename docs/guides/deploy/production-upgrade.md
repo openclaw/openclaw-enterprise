@@ -244,6 +244,7 @@ worker Pods on the selected controller image, built from the rendered chart (sam
 environment, mounts and service account), with the candidate Installation in a
 temporary Secret and, when the rendered chart includes its dependency-egress
 policy, the chart's API and worker dependency egress in a temporary NetworkPolicy.
+The API Pod also checks its configured Console theme, including referenced images.
 Each loads the Installation, Drivers and `presets.files`, then
 runs the bundled Kubernetes Compute Driver's preflight as startup does, without
 opening the database. Each then checks the stored Installation name, which the

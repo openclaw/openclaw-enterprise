@@ -15,6 +15,12 @@ import {
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import {
+  GATEWAY_SECURITY_DEFAULTS,
+  withGatewaySecurityDefaults,
+  withSetting,
+} from "../helpers/admitted-configuration.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.mjs");
@@ -201,12 +207,12 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
   // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
-  // the Gateway security default the Configuration leaves unset (apply_patch in the workspace).
-  const values = (sandbox, approvalsReviewer) => ({
-    ...settings(sandbox, approvalsReviewer),
-    agents: { entries: { main: { identity: { name: record.name } } } },
-    tools: { exec: { applyPatch: { workspaceOnly: true } } },
-  });
+  // the Gateway security defaults the Configuration leaves unset (all of them unless given).
+  const values = (sandbox, approvalsReviewer, defaults) =>
+    withGatewaySecurityDefaults(
+      servedAs(settings(sandbox, approvalsReviewer), record.name),
+      defaults,
+    );
   const configured = settings("read-only");
   const matches = (snapshot, priorRevisionId) =>
     firstAgentRevisionValuesMatch(snapshot, configured, record, "rev_saved", priorRevisionId);
@@ -237,17 +243,23 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     false,
     "the historical exception must retain unrelated configuration drift checks",
   );
-  const beforeDefaults = {
-    ...settings("danger-full-access"),
-    agents: { entries: { main: { identity: { name: record.name } } } },
-  };
-  assert.equal(matches(beforeDefaults, "rev_saved"), true, "a saved revision from before the fill");
-  assert.equal(matches(beforeDefaults), false, "a new deployment carries the defaults");
-  assert.equal(
-    matches({ ...values("danger-full-access"), tools: { exec: { applyPatch: {} } } }),
-    false,
-    "a missing default is drift",
-  );
+  // Each admission fill landed separately, so a saved revision can lack any subset of the
+  // defaults (finding 2770). Only the identified prior revision gets them filled before comparing.
+  for (let mask = 0; mask < 2 ** GATEWAY_SECURITY_DEFAULTS.length - 1; mask += 1) {
+    const filled = GATEWAY_SECURITY_DEFAULTS.filter((_, index) => mask & (1 << index));
+    const snapshot = values("danger-full-access", undefined, filled);
+    const missing = `without ${GATEWAY_SECURITY_DEFAULTS.filter((row) => !filled.includes(row))
+      .map(({ path }) => path.join("."))
+      .join(", ")}`;
+    assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision ${missing}`);
+    assert.equal(matches(snapshot, "rev_other"), false, `another revision ${missing}`);
+    assert.equal(matches(snapshot), false, `a new deployment ${missing}`);
+  }
+  // The fill keeps explicit values, so a prior revision with another value is still drift.
+  for (const { path, explicit } of GATEWAY_SECURITY_DEFAULTS) {
+    const snapshot = withSetting(values("danger-full-access"), path, explicit);
+    assert.equal(matches(snapshot, "rev_saved"), false, `an explicit ${path.join(".")}`);
+  }
   assert.equal(
     matches({
       ...values("danger-full-access"),

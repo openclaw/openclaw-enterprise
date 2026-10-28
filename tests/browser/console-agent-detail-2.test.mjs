@@ -76,6 +76,7 @@ import {
   BOUND_SECRET_UNLISTED,
   notIncluded,
   deleteRefused,
+  NAMESPACE_UNAVAILABLE,
   tooManyRequestsIn,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
@@ -1859,7 +1860,7 @@ for (const kind of ["agent", "configuration", "namespace"]) {
       .waitFor();
     if (kind === "namespace") {
       // The page listed this Namespace earlier in the sign-in, so access was lost (finding 2550).
-      await page.getByText(/^This Namespace is missing or you no longer have access/).waitFor();
+      await page.getByText(new RegExp(`^${RegExp.escape(NAMESPACE_UNAVAILABLE)}`)).waitFor();
     }
     await expectNoText(page, /Configuration draft|Open draft|Revoked revision Agent/, () =>
       waitForIdleFetches(page),

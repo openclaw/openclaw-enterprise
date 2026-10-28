@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-26
-last_updated_session: authoring-run/dc13892f-22e2-4838-b5d7-a716768e7243
+updated: 2026-10-27
+last_updated_session: authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1
 ---
 
 # Agent Plugin Deployment Flow
@@ -74,7 +74,8 @@ Missing or non-ready explicitly selected CredentialSources return `409 RESOURCE_
 Unsupported discovery reads no credential.
 
 Saved-Agent discovery requires an active dedicated Agent and caller `read` and
-`update`. Bound Secrets use [`SecretDriver.withValue`](../reference/drivers/secret.md).
+`update`. It lists only plugins that Agent save admits for this Agent; details for
+others return the save refusal. Bound Secrets use [`SecretDriver.withValue`](../reference/drivers/secret.md).
 Bound and explicitly supplied CredentialSources use Credential Gateway `withSourceToken`,
 which may refresh tokens and return account metadata. Bound credential callbacks
 recheck binding and caller and Agent `operate` grants. Missing or non-ready
@@ -137,6 +138,8 @@ Installation uses `GET /installation`; Agent editors use
 Deployment revalidates selections and Configuration, records the Driver and
 policy-only plugin map in an Agent revision, and queues it. Native app mapping,
 release metadata, and configuration resolve later.
+
+For [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json), the selection includes the package version. Kubernetes passes the release digest to both roles. The Gateway verifies the install-check skill, and the dedicated worker verifies `gog` before enrollment.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -362,14 +365,12 @@ establish starvation.
 
 ## Changelog
 
+- 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)
+
 - 2026-10-27 15:00: Repeat a stop signal that OpenClaw ignored during an in-place restart (finding 2711). (fix-2711-gateway-stop)
 
 - 2026-10-27 03:30: Check the Gateway tool policy at Configuration save and for embedded Agents on every Compute, not on maintenance passes (findings 2688, 2689, 2694, 2695). (fix-2688-policy)
 
 - 2026-10-26 20:21: Stop hosted reads on disconnect and clarify credential checks and catalog results. (authoring-run/dc13892f-22e2-4838-b5d7-a716768e7243 - cbad284a4d3d5f567e96e6c3dbb3fc5e7b86b14e)
-
-- 2026-10-18 03:00: Check the primary model's `tools.byProvider` deny lists and a sole entry's `alsoAllow` under a profile (findings 1855, 1857). (lows-1018c)
-
-- 2026-10-18 02:20: Check roster entries' `tools.deny` in the OpenClaw Driver's selection check (finding 1848). (lows-1018b - 628ee9fbf)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

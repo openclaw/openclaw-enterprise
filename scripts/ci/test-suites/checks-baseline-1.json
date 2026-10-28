@@ -125,7 +125,8 @@
     "tests/integration/egress-installation-exchange.test.mjs",
     "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.mjs",
-    "tests/integration/refusal-answers.test.mjs"
+    "tests/integration/refusal-answers.test.mjs",
+    "tests/integration/namespace-deletion-console-api.test.ts"
   ],
   "files": [
     {
@@ -630,6 +631,9 @@
     },
     {
       "path": "tests/integration/refusal-answers.test.mjs"
+    },
+    {
+      "path": "tests/integration/namespace-deletion-console-api.test.ts"
     }
   ]
 }
