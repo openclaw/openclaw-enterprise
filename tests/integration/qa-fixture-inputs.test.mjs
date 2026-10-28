@@ -2741,6 +2741,41 @@ test("native tool evidence reads compressed rows, prompt snapshots and command e
         /still invoked automations/,
       );
     }
+    // A completed run cannot supply missing IDs or substitute another tool's mirror pair.
+    const unidentified = { ...call, content: [{ ...call.content[0], id: undefined }] };
+    write(prompt, unidentified, { ...result, toolCallId: undefined }, finalizer);
+    await assert.rejects(codex.assertSessionToolCallEvidence({}, evidence), /terminal/);
+    await assert.rejects(codex.assertNoSessionToolCallEvidence({}, absence), /completed/);
+
+    const other = {
+      ...call,
+      content: [{ ...call.content[0], id: "other", name: "other" }],
+      __openclaw: mirror(`${prefix}:tool:other:call`),
+    };
+    const otherResult = {
+      ...result,
+      toolCallId: "other",
+      toolName: "other",
+      __openclaw: mirror(`${prefix}:tool:other:result`),
+    };
+    const wrongResult = { ...result, __openclaw: mirror(`${prefix}:tool:wrong:result`) };
+    write(prompt, other, otherResult, call, wrongResult, continuation);
+    await assert.rejects(codex.assertSessionToolCallEvidence({}, evidence), /terminal/);
+    await codex.assertNoSessionToolCallEvidence({}, absence);
+    write(
+      prompt,
+      other,
+      otherResult,
+      call,
+      {
+        ...wrongResult,
+        isError: true,
+        content: [{ type: "text", text: "user rejected MCP tool call" }],
+      },
+      continuation,
+    );
+    await assert.rejects(codex.assertSessionToolDeniedEvidence({}, evidence), /owned terminal/);
+
     for (const rows of [
       [
         prompt,

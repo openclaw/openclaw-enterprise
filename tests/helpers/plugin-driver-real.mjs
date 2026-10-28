@@ -802,7 +802,8 @@ const sessionEvidenceScript = String.raw`
           } else if (row.role === "toolResult" &&
               prefixForToolMirrorIdentity(row.mirrorIdentity, ":result") === sourcePrefix) {
             const callIdentity = row.mirrorIdentity.slice(0, -":result".length) + ":call";
-            if (callsByMirror.get(callIdentity)?.includes(row.toolCallId)) {
+            if (typeof row.toolCallId === "string" && row.toolCallId.trim() &&
+                callsByMirror.get(callIdentity)?.includes(row.toolCallId)) {
               sourceTurn.gatewayRunCompletion = completion;
               break;
             }
@@ -921,6 +922,20 @@ export function automaticReviewerErrored(results) {
 
 function completedCodexRun(turn) {
   return turn?.promptSeen && (turn.terminalAssistantSeen || turn.gatewayRunCompletion);
+}
+
+// For a later reply, a different valid pair can establish that the run completed.
+// It cannot establish which tool produced the result we are reporting.
+function completedCodexToolPair(turn, call, result) {
+  return (
+    completedCodexRun(turn) &&
+    (turn.terminalAssistantSeen ||
+      (typeof call.id === "string" &&
+        call.id.trim().length > 0 &&
+        result.toolCallId === call.id &&
+        call.seq < result.seq &&
+        result.mirrorIdentity === call.mirrorIdentity.slice(0, -":call".length) + ":result"))
+  );
 }
 
 function codexToolTurnPrefix(identity, suffix) {
@@ -1841,7 +1856,7 @@ export function createNativePluginAssertions({
       );
       codexTurn = evidence.codexTurns.find((candidate) => candidate.turnPrefix === callPrefix);
       assert.ok(
-        completedCodexRun(codexTurn) &&
+        completedCodexToolPair(codexTurn, matched, result) &&
           codexTurn.toolCallMirrorSeen &&
           codexTurn.toolResultMirrorSeen,
         `${options.sessionKey} Codex run must include a native prompt and tool call/result plus an owned terminal reply: ${JSON.stringify(
@@ -1920,7 +1935,9 @@ export function createNativePluginAssertions({
       );
       const turn = evidence.codexTurns.find((value) => value.turnPrefix === prefix);
       assert.ok(
-        completedCodexRun(turn) && turn.toolCallMirrorSeen && turn.toolResultMirrorSeen,
+        completedCodexToolPair(turn, evidence.calls[0], evidence.results[0]) &&
+          turn.toolCallMirrorSeen &&
+          turn.toolResultMirrorSeen,
         `${options.sessionKey} denied Codex run must include a native prompt and tool call/result plus an owned terminal reply: ${JSON.stringify(
           {
             runtime: evidence.runtime,
