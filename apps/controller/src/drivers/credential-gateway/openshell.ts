@@ -29,7 +29,12 @@ import {
 } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
-import { managedCredentialBinding, managedGoogleInstall } from "../plugin/managed-catalog.ts";
+import {
+  googleAttachmentConflict,
+  managedCredentialBinding,
+  managedGoogleInstall,
+  managedSlotAcceptsSource,
+} from "../plugin/managed-catalog.ts";
 
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
 
@@ -1100,12 +1105,19 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const binding = managedCredentialBinding(context.revision.plugins?.plugins);
-    if (binding) {
-      const source = context.sources.find(({ id }) => id === binding.sourceId);
-      const binaries =
-        source?.type === "oauth2-refresh-token" &&
-        requiredToolBinaries(this.options, source.config.binary);
-      if (!binaries || binaries.length !== 1 || binaries[0] !== managedGoogleInstall.binaryPath) {
+    const selected = context.sources.find(({ id }) => id === binding?.sourceId);
+    if (binding && selected) {
+      if (!managedSlotAcceptsSource(binding.credential, selected)) {
+        throw new ScopeViolationError(
+          "The attached Google account does not match the reviewed credential slot.",
+        );
+      }
+      const conflict = googleAttachmentConflict(selected, context.sources);
+      if (conflict) {
+        throw new ScopeViolationError(conflict);
+      }
+      const binaries = requiredToolBinaries(this.options, selected.config.binary);
+      if (binaries.length !== 1 || binaries[0] !== managedGoogleInstall.binaryPath) {
         throw new ScopeViolationError(
           "The bound Google account must grant only the pinned Google executable. Set binary on this OAuth2 source when its installation allows other tools.",
         );
@@ -1179,6 +1191,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         Object.freeze({
           sourceId: source.id,
           ref: name,
+          ...(source.id === binding?.sourceId && {
+            requestScope: {
+              ...bearerTokenEndpoint(source.config),
+              scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),
+            },
+          }),
           ...(source.type === CODEX_OAUTH_TYPE
             ? {
                 externalChatgptAuth: {

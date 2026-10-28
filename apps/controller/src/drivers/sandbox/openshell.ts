@@ -18,13 +18,13 @@ import {
 import {
   assertPluginNetworkInspection,
   assertPluginRequestPolicy,
-  googleRequestPolicy,
+  googleRequestPolicyFromSandbox,
   managedGoogleCredentialEnvironment,
   openShellPluginPolicy,
   verifyPluginRequestGuard,
   verifyManagedPluginRegistration,
 } from "./openshell-plugin-policy.ts";
-import { managedCredentialBinding } from "../plugin/managed-catalog.ts";
+import { managedCredentialBinding, managedGoogleInstall } from "../plugin/managed-catalog.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import {
   AGENT_POLICY_PREFIX,
@@ -3341,7 +3341,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           WORKSPACE_NODE_SETUP_ENVIRONMENT,
           WORKSPACE_NODE_CA_ENVIRONMENT,
           managedGoogleCredentialEnvironment,
-          ...(plugin ? [plugin.environment] : []),
+          ...(!codex
+            ? Object.values(managedGoogleInstall.credentials).map((slot) => slot.delivery.env)
+            : []),
           // Only the attached provider supplies its identity-bound credential alias.
           // A static placeholder would survive withdrawal and shadow its absence.
           ...(context.requirements.loginMode === "chatgptAuthTokens" ? ["CODEX_ACCESS_TOKEN"] : []),
@@ -3490,8 +3492,28 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       }
     }
-    // Adopt only this revision's own live Sandbox, with its Harness service in place.
-    verifyExistingSandbox(existing, { ...create, requestId: requestIds[0]! });
+    // DetachSandboxProvider removes the provider, but keeps the Sandbox's original launch
+    // environment and policy. A replacement is created above without either plugin setting.
+    let expectedSpec = create.spec;
+    if (!plugin && managedCredentialBinding(context.revision.plugins?.plugins)) {
+      const previous = googleRequestPolicyFromSandbox(existing.spec?.policy);
+      if (previous) {
+        expectedSpec = {
+          ...expectedSpec,
+          environment: {
+            ...expectedSpec.environment,
+            [managedGoogleCredentialEnvironment]: previous.environment,
+          },
+          policy: {
+            ...expectedSpec.policy,
+            network_middlewares: previous.middlewares,
+            network_policies: { ...expectedSpec.policy.network_policies, ...previous.networks },
+          },
+        };
+      }
+    }
+    // Exact provider equality also verifies that a withdrawn provider is absent.
+    verifyExistingSandbox(existing, { ...create, spec: expectedSpec, requestId: requestIds[0]! });
     if (existing.phase === "SANDBOX_PHASE_DELETING" || existing.phase === 4) {
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell Sandbox ${sandbox.resourceName} is being deleted; it can be created again once deletion finishes.`,
@@ -4370,9 +4392,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Missing policy baseline.");
     }
     const candidate = openShellPolicyCandidate(baseline, input.snapshot);
-    const binding = managedCredentialBinding(context.revision.plugins?.plugins);
-    if (binding) {
-      assertPluginRequestPolicy(candidate, googleRequestPolicy(binding.credential));
+    const plugin = googleRequestPolicyFromSandbox(baseline);
+    if (plugin) {
+      assertPluginRequestPolicy(candidate, plugin);
+    } else {
+      const binding = managedCredentialBinding(context.revision.plugins?.plugins);
+      if (
+        binding &&
+        Array.isArray(sandbox.spec?.providers) &&
+        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+      ) {
+        throw new SandboxNetworkPolicyConflictError(
+          "The attached Google account requires its admitted request guard.",
+        );
+      }
     }
     await client.updatePolicy(
       {

@@ -21,12 +21,12 @@ so existing Agent selections continue to identify the reviewed release.
 
 The package’s OCE extension declares `policyScope: "enablement_only"`. The Plugin Driver advertises this scope for the versioned plugin ID so the Console can render the same enable switch as a Codex plugin before catalog discovery completes. OCC refuses tool approvals, reviewers, and per-tool overrides for the CLI.
 
-The release also declares the `account` credential slot for a future binding. It names
-`gog`’s environment variable and lists the exact HTTPS requests that may use the
-account. The public discovery request takes no credential. The installer reads the
-package without binding this slot. A binding implementation must give the Harness
-an opaque placeholder and check its request against the release before substituting
-a bearer at egress. An absent binding grants no credentialed route.
+The optional `account` slot refers to a credential attached to the Agent.
+OpenShell supplies the worker with a placeholder. The request guard checks the
+[pinned operation map](./oce-google-workspace/ai.openclaw.oce/operations.json) and the source’s host, path and scope limits before
+OpenShell substitutes the bearer. The Agent can also attach credentials for use
+outside the plugin. The [operator guide](../../../docs/guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+describes registration and verification. See the [operation map generator](../../../scripts/google-operation-map/README.md) for coverage and regeneration.
 
 The package follows the Agent Plugins JSON schema and keeps skills beside the manifest.
 For the packaging conventions, see the [OpenAI plugin structure](https://developers.openai.com/plugins/build/plugins#plugin-structure)

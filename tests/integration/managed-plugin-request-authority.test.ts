@@ -8,7 +8,7 @@ import {
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { grpc, invoke, openShellOnlineWire, token } from "../helpers/openshell-online-wire.mjs";
 
-test("the signed OpenShell request stage admits only the bundled Gmail operation and public discovery", async (t) => {
+test("the signed OpenShell request guard intersects the source envelope with the pinned gog operations", async (t) => {
   const { client, keys } = await openShellOnlineWire(
     t,
     managedPluginMiddleware,
@@ -19,7 +19,14 @@ test("the signed OpenShell request stage admits only the bundled Gmail operation
   const signed = token(keys, "supervisor", sandbox);
   const gateway = token(keys, "gateway");
   const context = { sandbox_id: sandbox, workspace: "default", request_id: "gmail-request-1" };
-  const config = { fields: { binding_id: { stringValue: managedGoogleInstall.releaseSha256 } } };
+  const gmail = "https://www.googleapis.com/auth/gmail.readonly";
+  const scopeConfig = (host: string, path: string, scope: string) => ({
+    fields: {
+      binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
+      request_scope: { stringValue: JSON.stringify({ host, port: 443, path, scopes: [scope] }) },
+    },
+  });
+  const config = scopeConfig("gmail.googleapis.com", "/gmail/v1/users/me/messages", gmail);
   const target = {
     scheme: "https",
     host: "gmail.googleapis.com",
@@ -74,6 +81,219 @@ test("the signed OpenShell request stage admits only the bundled Gmail operation
     query: "",
   };
   assert.equal(await evaluate({ ...request, target: discovery }), 1);
+  const fallback = { ...target, path: "/$discovery/rest", query: "version=v1" };
+  assert.equal(await evaluate({ ...request, target: fallback }), 1);
+  assert.equal(await evaluate({ ...request, target: { ...fallback, query: "version=v2" } }), 2);
+  assert.equal(
+    await evaluate({
+      ...request,
+      config: scopeConfig(target.host, "/**", gmail),
+      target: fallback,
+    }),
+    2,
+    "a public Discovery fallback cannot receive a bearer from an overlapping source",
+  );
+  assert.equal(
+    await evaluate({
+      ...request,
+      target: { ...discovery, path: "/discovery/v1/apis", query: "preferred=true" },
+    }),
+    1,
+  );
+  for (const query of [
+    "",
+    "maxResults=2",
+    "q=is%3Aunread&maxResults=10",
+    "labelIds=INBOX&labelIds=STARRED",
+  ]) {
+    assert.equal(await evaluate({ ...request, target: { ...target, query } }), 1, query);
+  }
+  const get = { ...target, path: target.path + "/abc", query: "format=full" };
+  assert.equal(
+    await evaluate({ ...request, target: get }),
+    2,
+    "source still authorizes only the collection",
+  );
+  const subtree = scopeConfig(target.host, "/gmail/v1/users/me/**", gmail);
+  assert.equal(await evaluate({ ...request, config: subtree, target: get }), 1);
+  const metadataScope = scopeConfig(
+    target.host,
+    "/gmail/v1/users/me/**",
+    "https://www.googleapis.com/auth/gmail.metadata",
+  );
+  assert.equal(await evaluate({ ...request, config: metadataScope, target: get }), 2);
+  assert.equal(
+    await evaluate({
+      ...request,
+      config: metadataScope,
+      target: { ...get, query: "format=metadata" },
+    }),
+    1,
+  );
+  assert.equal(
+    await evaluate({
+      ...request,
+      config: metadataScope,
+      target: { ...target, query: "q=is%3Aunread" },
+    }),
+    2,
+  );
+  const json = (value: unknown) => ({
+    body: Buffer.from(JSON.stringify(value)),
+    headers: [{ name: "content-type", value: "application/json" }],
+  });
+  const freebusy = {
+    ...request,
+    config: scopeConfig(
+      "www.googleapis.com",
+      "/calendar/v3/freeBusy",
+      "https://www.googleapis.com/auth/calendar.readonly",
+    ),
+    target: {
+      ...target,
+      host: "www.googleapis.com",
+      path: "/calendar/v3/freeBusy",
+      method: "POST",
+      query: "",
+    },
+    ...json({
+      timeMin: "2025-01-01T00:00:00Z",
+      timeMax: "2025-01-02T00:00:00Z",
+      items: [{ id: "primary" }],
+    }),
+  };
+  assert.equal(await evaluate(freebusy), 1, "read-authorized POST");
+  assert.equal(
+    await evaluate({ ...freebusy, ...json({ items: [{ id: "primary", unreviewed: true }] }) }),
+    2,
+  );
+  const batch = {
+    ...request,
+    config: scopeConfig(
+      "sheets.googleapis.com",
+      "/v4/**",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ),
+    target: {
+      ...target,
+      host: "sheets.googleapis.com",
+      path: "/v4/spreadsheets/id:batchUpdate",
+      method: "POST",
+      query: "",
+    },
+  };
+  assert.equal(
+    await evaluate({
+      ...batch,
+      ...json({ requests: [{ addSheet: { properties: { title: "Test" } } }] }),
+    }),
+    1,
+  );
+  assert.equal(await evaluate({ ...batch, ...json({ requests: [{ unknownAction: {} }] }) }), 2);
+  assert.equal(
+    await evaluate({
+      ...batch,
+      ...json({ requests: [{ addSheet: {}, deleteSheet: { sheetId: 1 } }] }),
+    }),
+    2,
+  );
+  const cells = {
+    ...batch,
+    target: {
+      ...batch.target,
+      method: "PUT",
+      path: "/v4/spreadsheets/id/values/Sheet1!A1%3AD1",
+      query: "valueInputOption=RAW",
+    },
+  };
+  assert.equal(
+    await evaluate({ ...cells, ...json({ values: [["hello", 2, true, null]] }) }),
+    1,
+    "gog sheets update",
+  );
+  assert.equal(await evaluate({ ...cells, ...json({ values: [[{ unreviewed: true }]] }) }), 2);
+  const drive = {
+    ...request,
+    target: {
+      ...target,
+      host: "www.googleapis.com",
+      path: "/drive/v3/files/my-file",
+      query: "fields=id,name",
+    },
+    config: scopeConfig(
+      "www.googleapis.com",
+      "/drive/v3/**",
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ),
+  };
+  assert.equal(await evaluate(drive), 1, "Drive metadata");
+  const download = { ...drive, target: { ...drive.target, query: "alt=media" } };
+  assert.equal(await evaluate(download), 2, "metadata grant cannot fetch file bytes");
+  assert.equal(
+    await evaluate({
+      ...download,
+      config: scopeConfig(
+        "www.googleapis.com",
+        "/drive/v3/**",
+        "https://www.googleapis.com/auth/drive.readonly",
+      ),
+    }),
+    1,
+  );
+  assert.equal(
+    await evaluate({
+      ...drive,
+      target: { ...drive.target, path: "/drive/v3/files/generateIds", query: "" },
+    }),
+    2,
+    "reserved RPC cannot match the generic file ID route",
+  );
+  const exp = {
+    ...drive.target,
+    path: "/drive/v3/files/doc/export",
+    query: "mimeType=application%2Fpdf&alt=media",
+  };
+  assert.equal(
+    await evaluate({ ...drive, target: exp }),
+    2,
+    "metadata scope cannot export content",
+  );
+  assert.equal(
+    await evaluate({
+      ...drive,
+      config: scopeConfig(
+        "www.googleapis.com",
+        "/drive/v3/**",
+        "https://www.googleapis.com/auth/drive.readonly",
+      ),
+      target: exp,
+    }),
+    1,
+  );
+  const keep = {
+    ...target,
+    host: "keep.googleapis.com",
+    path: "/v1/notes/note/attachments/file",
+    query: "mimeType=image%2Fpng&alt=media",
+  };
+  assert.equal(
+    await evaluate({
+      ...request,
+      config: scopeConfig(keep.host, "/v1/**", "https://www.googleapis.com/auth/keep.readonly"),
+      target: keep,
+    }),
+    1,
+  );
+  const sheetsRead = scopeConfig(
+    "sheets.googleapis.com",
+    "/v4/**",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+  );
+  assert.equal(
+    await evaluate({ ...cells, config: sheetsRead, ...json({ values: [["hello"]] }) }),
+    2,
+    "read-only scope refuses write",
+  );
   for (const denied of [
     { ...request, target: { ...target, method: "POST" } },
     { ...request, target: { ...target, host: discovery.host } },
@@ -81,12 +301,12 @@ test("the signed OpenShell request stage admits only the bundled Gmail operation
     { ...request, target: { ...target, scheme: "http" } },
     { ...request, target: { ...target, port: 444 } },
     { ...request, target: { ...discovery, query: "key=unexpected" } },
+    { ...request, config: subtree, target: { ...get, path: target.path + "/%2e%2e%2fsend" } },
     ...[
-      "",
-      "maxResults=2",
+      "maxResults=bad",
       "maxResults=1&maxResults=1",
       "maxResults=1&extra=x",
-      "maxResults=%31",
+      "access_token=injected",
       "maxResults=1&",
     ].map((query) => ({ ...request, target: { ...target, query } })),
     { ...request, body: Buffer.from("{}") },

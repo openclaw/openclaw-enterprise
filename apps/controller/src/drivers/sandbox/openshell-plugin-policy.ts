@@ -7,6 +7,12 @@ import {
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
 } from "./openshell-gateway-client.ts";
+import {
+  eligibleGoogleOperations,
+  googleDiscoveryRequests,
+  googleScopeFromString,
+  type GoogleRequestScope,
+} from "../plugin/google-operations.ts";
 import { wirePolicy } from "../egress-proxy/openshell-wire-policy.ts";
 import {
   managedCredentialBinding,
@@ -14,7 +20,6 @@ import {
   managedPluginMiddleware,
   managedPluginMiddlewareAudience,
   managedPluginMiddlewareImplementation,
-  type ManagedCredentialSlot,
 } from "../plugin/managed-catalog.ts";
 
 export const managedGoogleCredentialEnvironment = "OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV";
@@ -66,8 +71,16 @@ export function openShellPluginPolicy(
   }
   const model =
     revision.harnessAuth?.method === "credential_source" && revision.harnessAuth.sourceId;
-  const expected = [binding.sourceId, ...(model ? [model] : [])];
   const attachments = requirements.credentialAttachments;
+  const selected = attachments.find(({ sourceId }) => sourceId === binding.sourceId);
+  // Compute verifies every resolved source has an attachment. Its dispatch input omits
+  // withdrawn non-model sources even though the immutable revision still lists them.
+  if (
+    !selected &&
+    revision.credentialSources?.some(({ sourceId }) => sourceId === binding.sourceId)
+  ) {
+    return undefined;
+  }
   if (
     revision.plugins?.driver.implementation !== "occ/openclaw-plugin" ||
     revision.harness.id !== "openclaw" ||
@@ -78,10 +91,9 @@ export function openShellPluginPolicy(
     installationProviders.length ||
     !endpoint ||
     model === binding.sourceId ||
-    attachments.length !== expected.length ||
-    !expected.every((id) =>
-      attachments.some((a) => a.sourceId === id && a.ref === openShellProviderName(id)),
-    )
+    selected?.ref !== openShellProviderName(binding.sourceId) ||
+    (model &&
+      !attachments.some((a) => a.sourceId === model && a.ref === openShellProviderName(model)))
   ) {
     unsupported(
       "This Google account requires its selected OpenShell provider, the dedicated OpenClaw worker and the registered OCE plugin request guard.",
@@ -89,7 +101,10 @@ export function openShellPluginPolicy(
   }
   // The ready source authorizes a single host and path. Verify the Gateway actually composed
   // that provider without extra destinations or binaries, even on adoption.
-  const target = new URL(binding.credential.requests[0]!.url);
+  const scope = attachments.find((item) => item.sourceId === binding.sourceId)?.requestScope;
+  if (!scope) {
+    unsupported("The managed Google account requires its admitted endpoint and OAuth scopes.");
+  }
   const provider = "_provider_" + openShellProviderName(binding.sourceId).replaceAll("-", "_");
   const providerRule = {
     name: provider,
@@ -97,61 +112,95 @@ export function openShellPluginPolicy(
     endpoints: [
       {
         ...openShellProfileEndpoint({
-          host: target.hostname,
-          port: Number(target.port || 443),
-          path: target.pathname,
+          host: scope.host,
+          port: scope.port,
+          path: scope.path,
           protocol: "rest",
         }),
         provider_credentialed: true,
       },
     ],
   };
-  return { ...googleRequestPolicy(binding.credential), endpoint, providerRule };
+  return { ...googleRequestPolicy(scope), endpoint, providerRule };
 }
 
-export function googleRequestPolicy(credential: ManagedCredentialSlot) {
-  const requests = [...credential.requests, ...managedGoogleInstall.publicRequests];
-  const hosts = [...new Set(requests.map(({ url }) => new URL(url).hostname))];
+// Both the authenticated supervisor and OCE see this field. It contains only the source's
+// permitted destination and requested scopes, never a credential or a caller-selected policy.
+export function googleRequestPolicy(scope: GoogleRequestScope) {
+  const entries = eligibleGoogleOperations(scope);
+  if (!entries.length) {
+    unsupported("The Google account has no admitted plugin operations.");
+  }
+  const discovery = googleDiscoveryRequests(scope, entries);
+  const hosts = [...new Set([scope.host, ...discovery.map((r) => r.host)])];
   const middlewares = {
     [managedPluginMiddleware]: {
       name: managedPluginMiddleware,
       middleware: managedPluginMiddleware,
-      config: { fields: { binding_id: { stringValue: managedGoogleInstall.releaseSha256 } } },
+      config: {
+        fields: {
+          binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
+          request_scope: { stringValue: JSON.stringify(scope) },
+        },
+      },
       on_error: "fail_closed",
       endpoints: { include: hosts },
       order: 2_147_483_647,
     },
   };
+  const allows = new Map<string, Map<string, { method: string; path: string }>>();
+  function permit(host: string, method: string, path: string) {
+    const rules = allows.get(host) ?? new Map();
+    rules.set(method + " " + path, { method, path });
+    allows.set(host, rules);
+  }
+  for (const [, op] of entries) {
+    const literal = op.path.split("{")[0]!;
+    const inside =
+      scope.path === "/**" ||
+      (scope.path.endsWith("/**") && literal.startsWith(scope.path.slice(0, -2)));
+    const path = inside ? op.path.replace(/\{\+?\w+\}/g, "*") : scope.path;
+    permit(scope.host, op.method, path);
+  }
+  for (const { host, path } of discovery) {
+    permit(host, "GET", path);
+  }
   const name = "oce-google-requests";
   const networks = {
     [name]: {
       name,
       binaries: [{ path: managedGoogleInstall.binaryPath }],
-      endpoints: requests.map((request) => {
-        const url = new URL(request.url);
-        return {
-          host: url.hostname,
-          ports: [Number(url.port || 443)],
-          protocol: "rest",
-          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-          rules: [
-            {
-              allow: {
-                method: request.method,
-                path: url.pathname,
-                ...(request.query && {
-                  query: Object.fromEntries(
-                    Object.entries(request.query).map(([k, v]) => [k, { glob: v }]),
-                  ),
-                }),
-              },
-            },
-          ],
-        };
-      }),
+      endpoints: [...allows].map(([host, rules]) => ({
+        host,
+        ports: [443],
+        protocol: "rest",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        rules: [...rules.values()].map((allow) => ({ allow })),
+      })),
     },
   };
-  return { hosts, middlewares, networks, environment: credential.delivery.env };
+  return {
+    hosts,
+    middlewares,
+    networks,
+    environment: managedGoogleInstall.credentials.account!.delivery.env,
+  };
+}
+
+export function googleRequestPolicyFromSandbox(policy: unknown) {
+  const middlewares = asRecord(asRecord(policy)?.network_middlewares);
+  if (!middlewares || !Object.hasOwn(middlewares, managedPluginMiddleware)) {
+    return undefined;
+  }
+  const middleware = asRecord(middlewares[managedPluginMiddleware]);
+  const fields = asRecord(asRecord(middleware?.config)?.fields);
+  const scope = googleScopeFromString(asRecord(fields?.request_scope)?.stringValue);
+  if (!scope || asRecord(fields?.binding_id)?.stringValue !== managedGoogleInstall.releaseSha256) {
+    unsupported("OpenShell has a stale or malformed Google account request guard.");
+  }
+  const expected = googleRequestPolicy(scope);
+  assertPluginRequestPolicy(policy, expected);
+  return expected;
 }
 
 // An IP (including numeric URL spellings), overlapping wildcard or TLS-pass-through grant can
@@ -232,6 +281,23 @@ export function verifyPluginRequestGuard(
   }
   assertPluginRequestPolicy(config.policy, expected);
   const routes = asRecord(asRecord(config.policy)?.network_policies);
+  for (const [name, value] of Object.entries(routes ?? {})) {
+    if (name === expected.providerRule.name) {
+      continue;
+    }
+    const endpoints = asRecord(value)?.endpoints;
+    if (
+      Array.isArray(endpoints) &&
+      endpoints.some((entry) => {
+        const ep = asRecord(entry);
+        return ep?.provider_credentialed === true && expected.hosts.includes(String(ep.host));
+      })
+    ) {
+      unsupported(
+        "Another credential provider uses a guarded Google host. Configure distinct destinations for independent credentials.",
+      );
+    }
+  }
   if (
     !isDeepStrictEqual(
       wirePolicy(routes?.[expected.providerRule.name]),

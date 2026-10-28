@@ -1830,6 +1830,13 @@ export interface ExternalChatgptAuth {
 export interface CredentialSourceAttachment {
   readonly sourceId: string;
   readonly ref: string;
+  /** Non-secret limits of the attached OAuth provider for a Sandbox request guard. */
+  readonly requestScope?: {
+    readonly host: string;
+    readonly port: number;
+    readonly path: string;
+    readonly scopes: readonly string[];
+  };
   /** External Codex authentication carries no refresh token into the workload. */
   readonly externalChatgptAuth?: ExternalChatgptAuth;
 }

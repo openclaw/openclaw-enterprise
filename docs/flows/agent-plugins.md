@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-27
-last_updated_session: 01a169f0-a851-7b81-8e83-ff597893aa21
+updated: 2026-10-28
+last_updated_session: authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded
 ---
 
 # Agent Plugin Deployment Flow
@@ -139,7 +139,7 @@ Deployment revalidates selections and Configuration, records the Driver and
 policy-only plugin map in an Agent revision, and queues it. Native app mapping,
 release metadata, and configuration resolve later.
 
-For Google Workspace the Agent pins its account and release digest. The Gateway loads the skill. OpenShell verifies the worker’s request against the release before substituting the bearer. [Source and worker flow](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+For Google Workspace, the selection references one Agent credential and pins the release digest. The Gateway loads the skill. At deployment, the Sandbox applies the selected source’s destination and OAuth scope limits. OpenShell sends the worker’s HTTP request to the operation guard before substituting the bearer. Withdrawal detaches the source from the affected revision. Worker recovery keeps its other attachments. [Source and worker flow](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -365,14 +365,10 @@ establish starvation.
 
 ## Changelog
 
+- 2026-10-28 20:30: Trace independent credential attachment, Google request authorization and recovery after withdrawal. (authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded - dbe0d78a)
+
 - 2026-10-27 17:55: Trace the Google account binding and the worker’s guarded request. (01a169f0-a851-7b81-8e83-ff597893aa21)
 
 - 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)
-
-- 2026-10-27 15:00: Repeat a stop signal that OpenClaw ignored during an in-place restart (finding 2711). (fix-2711-gateway-stop)
-
-- 2026-10-27 03:30: Check the Gateway tool policy at Configuration save and for embedded Agents on every Compute, not on maintenance passes (findings 2688, 2689, 2694, 2695). (fix-2688-policy)
-
-- 2026-10-26 20:21: Stop hosted reads on disconnect and clarify credential checks and catalog results. (authoring-run/dc13892f-22e2-4838-b5d7-a716768e7243 - cbad284a4d3d5f567e96e6c3dbb3fc5e7b86b14e)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

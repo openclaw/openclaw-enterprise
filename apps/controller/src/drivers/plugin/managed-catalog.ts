@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type {
   CredentialSource,
@@ -7,24 +6,22 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import {
+  eligibleGoogleOperations,
+  googleDiscoveryRequests,
+  googleRequestScope,
+  googleRelease as release,
+  googleReleaseSha256,
+} from "./google-operations.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 
 const httpsEndpoint = Type.String({ pattern: "^https://[a-z0-9.-]+/[a-zA-Z0-9/._~-]+$" });
-const request = Type.Object(
-  {
-    method: Type.Literal("GET"),
-    url: httpsEndpoint,
-    query: Type.Optional(Type.Record(Type.String({ pattern: "^[a-zA-Z0-9_-]+$" }), Type.String())),
-  },
-  { additionalProperties: false },
-);
 const credentialSlot = Type.Object(
   {
     label: Type.String({ minLength: 1 }),
     issuer: Type.String({ pattern: "^https://[a-z0-9.-]+$" }),
     tokenEndpoint: httpsEndpoint,
-    requiredScopes: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, uniqueItems: true }),
     delivery: Type.Object(
       {
         role: Type.Literal("harness"),
@@ -33,11 +30,9 @@ const credentialSlot = Type.Object(
       },
       { additionalProperties: false },
     ),
-    requests: Type.Array(request, { minItems: 1 }),
   },
   { additionalProperties: false },
 );
-export type ManagedRequest = Type.Static<typeof request>;
 export type ManagedCredentialSlot = Type.Static<typeof credentialSlot>;
 export const managedPluginMiddleware = "oce-plugin-requests";
 export const managedPluginMiddlewareImplementation = "oce/managed-plugin-requests";
@@ -58,11 +53,8 @@ if (
 ) {
   throw new Error("Invalid bundled Google Workspace package.");
 }
-const bytes = readFileSync(new URL(extension.release, directory));
-const release = asRecord(JSON.parse(bytes.toString("utf8")));
 const placement = asRecord(release?.placement);
 const credentials = release?.credentials;
-const publicRequests = release?.publicRequests;
 const computeImplementations = placement?.computeImplementations;
 if (
   !isNonEmptyString(placement?.harnessId) ||
@@ -77,7 +69,6 @@ if (
     }),
     credentials,
   ) ||
-  !Check(Type.Array(request), publicRequests) ||
   !isNonEmptyString(release?.executable) ||
   !/^[a-z][a-z0-9-]*$/.test(release.executable)
 ) {
@@ -89,9 +80,8 @@ export const managedGoogleInstall = {
   policyScope,
   placement: { harnessId: placement.harnessId, mode: placement.mode, computeImplementations },
   credentials,
-  publicRequests,
   binaryPath: `/usr/local/lib/oce/plugins/google/bin/${release.executable}`,
-  releaseSha256: createHash("sha256").update(bytes).digest("hex"),
+  releaseSha256: googleReleaseSha256,
 } as const;
 
 /** A selection holds references only. Installation without an account remains valid. */
@@ -139,9 +129,22 @@ export function requireManagedCredentialRuntime(
   }
 }
 
-function acceptsSource(slot: ManagedCredentialSlot, source: CredentialSource): boolean {
+function googleSourceScope(source: CredentialSource) {
   const config = source.config;
-  const scopes = config.scope?.split(" ") ?? [];
+  return googleRequestScope({
+    host: config.host,
+    port: Number(config.port ?? 443),
+    path: config.path ?? "/**",
+    scopes: config.scope?.split(" ") ?? [],
+  });
+}
+
+export function managedSlotAcceptsSource(
+  slot: ManagedCredentialSlot,
+  source: CredentialSource,
+): boolean {
+  const config = source.config;
+  const scope = googleSourceScope(source);
   return (
     source.state === "ready" &&
     source.ownerCapability === "credential_gateway" &&
@@ -150,13 +153,30 @@ function acceptsSource(slot: ManagedCredentialSlot, source: CredentialSource): b
     config.token_url === slot.tokenEndpoint &&
     config.env_var === slot.delivery.env &&
     (config.binary === undefined || config.binary === managedGoogleInstall.binaryPath) &&
-    (config.port ?? "443") === "443" &&
-    slot.requiredScopes.every((scope) => scopes.includes(scope)) &&
-    slot.requests.every(({ url }) => {
-      const target = new URL(url);
-      return config.host === target.hostname && config.path === target.pathname;
-    })
+    scope !== undefined &&
+    eligibleGoogleOperations(scope).length > 0
   );
+}
+
+/** OpenShell selects middleware by destination host, so even a disjoint path cannot
+ * bypass its guard for an independently authorized source on the same host. */
+export function googleAttachmentConflict(
+  selected: CredentialSource,
+  sources: readonly CredentialSource[],
+) {
+  const scope = googleSourceScope(selected);
+  if (!scope) {
+    return undefined;
+  }
+  const hosts = new Set([scope.host, ...googleDiscoveryRequests(scope).map((r) => r.host)]);
+  const conflict = sources.find(
+    (s) =>
+      s.id !== selected.id &&
+      (s.config.env_var === selected.config.env_var || hosts.has(s.config.host ?? "")),
+  );
+  if (conflict) {
+    return "This Google plugin binding conflicts with another attached credential's placeholder or guarded Google host. Use non-overlapping credential routes and distinct placeholder names, or clear the plugin binding.";
+  }
 }
 
 export const managedPluginCredentials = {
@@ -167,42 +187,35 @@ export const managedPluginCredentials = {
       id,
       label: slot.label,
       sources: sources
-        .filter((source) => acceptsSource(slot, source))
+        .filter((source) => managedSlotAcceptsSource(slot, source))
         .map(({ id, name }) => ({ id, name })),
     }));
   },
-  validate: managedCredentialSources,
-};
-
-/** A saved Google account is eligible for the picker. Only the selected account's
- * provider is attached to this dedicated OpenClaw revision, including on redeploy or removal. */
-export function managedCredentialSources(
-  selections: PluginDesiredState | undefined,
-  sources: readonly CredentialSource[],
-  modelSourceId?: string,
-) {
-  const binding = managedCredentialBinding(selections);
-  const active = sources.filter(
-    (source) =>
-      source.id === binding?.sourceId ||
-      !Object.values(managedGoogleInstall.credentials).some((slot) => acceptsSource(slot, source)),
-  );
-  if (!binding) {
-    return active;
-  }
-  const tools = active.filter((source) => source.id !== modelSourceId);
-  const source = tools[0];
-  if (
-    tools.length !== 1 ||
-    source?.id !== binding.sourceId ||
-    !acceptsSource(binding.credential, source)
+  validate(
+    selections: PluginDesiredState,
+    sources: readonly CredentialSource[],
+    modelSourceId?: string,
   ) {
-    throw new ConfigurationHarnessError(
-      "Select a ready Google account already bound to this Agent with the release’s token endpoint, scope, exact API path, and placeholder variable. This release supports one tool credential.",
-    );
-  }
-  return active;
-}
+    const binding = managedCredentialBinding(selections);
+    if (!binding) {
+      return;
+    }
+    const source = sources.find(({ id }) => id === binding.sourceId);
+    if (
+      !source ||
+      source.id === modelSourceId ||
+      !managedSlotAcceptsSource(binding.credential, source)
+    ) {
+      throw new ConfigurationHarnessError(
+        "Select a ready Google account attached to this Agent that matches the reviewed plugin credential slot.",
+      );
+    }
+    const conflict = googleAttachmentConflict(source, sources);
+    if (conflict) {
+      throw new ConfigurationHarnessError(conflict);
+    }
+  },
+};
 
 export const googlePackage = {
   id: managedGoogleInstall.id,

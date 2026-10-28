@@ -106,17 +106,16 @@ to use an ambient token.
 
 ## Enable Google Workspace requests from a dedicated worker
 
-For a dedicated OpenClaw Agent on Kubernetes, OpenShell checks each request
-with the OCE API before resolving the worker's placeholder. The Agent
-revision's Google provider covers Gmail. Discovery is public.
+For dedicated OpenClaw on Kubernetes, the request guard checks the pinned
+operation map and the selected source’s host, path and OAuth scopes before
+OpenShell substitutes the bearer. Discovery uses public routes.
 
-The Google source must allow only `/usr/local/lib/oce/plugins/google/bin/gog`.
-If the installation allows other tools, set the source's `config.binary` to
-that path. OpenShell also matches process ancestors. Helpers launched by
-`gog` pass the same HTTP checks.
+Set the source’s `config.binary` to `/usr/local/lib/oce/plugins/google/bin/gog`
+when the installation allows other executables. OpenShell applies the same HTTP
+checks to helpers launched by `gog`.
 
-Enable the API listener with the TLS and public-key Secrets and peer selectors
-described above. Use the Gateway's `gateway_id` and the contents of its `kid_path`.
+Enable the API listener using the TLS and public-key Secrets and peer selectors
+above. Use the Gateway’s `gateway_id` and the key ID from its `kid_path`.
 
 ```yaml
 egressAuthority:
@@ -145,13 +144,16 @@ max_payload_bytes = 4194304
 timeout = "2s"
 ```
 
-Restart the Gateway once the listener serves authenticated `Describe`. OCE checks
-the negotiated implementation and package digest before creating the worker. Set
-`drivers.sandbox.configuration.gateway.managedPluginMiddleware` to
-the exact `grpc_endpoint` URL above in the OCE Installation. Select the ready Google
-credential, save, and deploy. At a controlled upstream, verify
-the exact `GET /gmail/v1/users/me/messages?maxResults=1` receives the bearer,
-discovery receives none, and an extra query parameter produces no request.
+Restart the Gateway after the listener serves authenticated `Describe`. Set
+`drivers.sandbox.configuration.gateway.managedPluginMiddleware` to the same
+`grpc_endpoint`. Select the account, save, and deploy.
+
+For Gmail, configure `gmail.googleapis.com`, `/gmail/v1/users/me/messages` and
+`gmail.readonly`. At a controlled upstream, verify that listing IDs receives the
+bearer and fetching an individual message produces no request. To allow more
+mapped Gmail operations, explicitly configure a subtree such as `/gmail/v1/users/me/**`.
+[Withdraw the source](../reference/credential-sources/withdrawal.md) to stop its use
+by the running version.
 
 <a id="register-authorize-and-deploy-a-static-source"></a>
 <a id="register%2C-authorize%2C-and-deploy-a-static-source"></a>

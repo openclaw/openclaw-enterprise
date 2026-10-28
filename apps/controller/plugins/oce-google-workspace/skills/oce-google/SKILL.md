@@ -1,18 +1,23 @@
 ---
 name: oce-google
-description: Check the Google Workspace CLI or list one Gmail message reference on the dedicated worker.
+description: Use the managed Google Workspace CLI on the dedicated worker.
 ---
 
 # Google Workspace CLI
 
-Run `gog --version` on the dedicated worker to check the installation.
+Run `gog` on the dedicated worker. Use `gog schema <command>` to inspect a
+command’s arguments, and `--json --no-input` for scriptable output.
 
-If the user asks for a Gmail message and has attached a Google account to this
-plugin, run this command on the worker. It returns up to one message ID and thread
-ID. An empty list means the account has no matching messages.
+For a Gmail account authorized to list message references, use this command.
 
 ```sh
-gog --no-input --json --readonly api call gmail v1 gmail.users.messages.list --params '{"userId":"me","maxResults":1}'
+gog --json --no-input api call gmail v1 gmail.users.messages.list --params '{"userId":"me","maxResults":10}'
 ```
 
-If no account is attached, ask the user to select one in the Agent’s plugin settings.
+An empty list means Google found no matching messages. Commands such as
+`gog gmail messages search` may also need permission to read labels and message
+metadata. Request message bodies only when the task needs them.
+
+OCE supplies the selected account to the worker. If a request is denied,
+report the operation to the user so they can check the account’s allowed API
+destination and OAuth scopes in OCE.

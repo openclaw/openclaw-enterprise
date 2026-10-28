@@ -9288,8 +9288,8 @@ test("non-model credential sources resolved at dispatch must match the revision'
     );
   }
 
-  // Keep both ready accounts bound to the Agent. Only the account named in this
-  // release reaches OpenShell, and clearing the plugin removes both providers.
+  // Plugin selection references an Agent credential. Compute always passes every
+  // active source to its owner, including when a selected source has been withdrawn.
   const accounts = [first, second].map((tool) => ({
     ...tool,
     type: "oauth2-refresh-token",
@@ -9324,11 +9324,11 @@ test("non-model credential sources resolved at dispatch must match the revision'
       },
     },
   };
-  assert.deepEqual(driver.credentialSourcesForRevision(bound, context), [accounts[1]]);
-  assert.deepEqual(driver.credentialSourcesForRevision(native, context), []);
-  assert.throws(
-    () => driver.credentialSourcesForRevision(bound, { credentialSources: [accounts[0]] }),
-    /Select a ready Google account/,
+  assert.deepEqual(driver.credentialSourcesForRevision(bound, context), accounts);
+  assert.deepEqual(driver.credentialSourcesForRevision(native, context), accounts);
+  assert.deepEqual(
+    driver.credentialSourcesForRevision(bound, { credentialSources: [accounts[0]] }),
+    [accounts[0]],
   );
 });
 

@@ -119,12 +119,20 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
         "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
       assert.deepEqual(JSON.parse((await worker(undefined, [], [marker])).stdout.trim()), {
         code: "ENOENT",
+        markerVisible: "present",
       });
       assert.deepEqual(JSON.parse((await worker(expected)).stdout.trim()), {
         version: "v" + version,
       });
       const bound = "OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV=GOG_ACCESS_TOKEN";
       assert.deepEqual(JSON.parse((await worker(expected, [], [marker])).stdout), {
+        version: "v" + version,
+        markerVisible: "present",
+      });
+      assert.deepEqual(JSON.parse((await worker(expected, [], [bound])).stdout), {
+        version: "v" + version,
+      });
+      assert.deepEqual(JSON.parse((await worker(expected, [], ["GOG_ACCESS_TOKEN=raw"])).stdout), {
         version: "v" + version,
       });
       assert.deepEqual(JSON.parse((await worker(expected, [], [bound, marker])).stdout), {

@@ -4739,12 +4739,16 @@ let nodeStateCurrent = outdatedNodeDatabases.length === 0;
 const googleRelease = installedGoogleRelease();
 const googleAlias = ${JSON.stringify(googleAccountEnv)};
 const googleCredentialEnv = process.env.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV;
+const googleMarker = process.env[googleAlias];
+const scopedGoogleMarker = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(googleMarker ?? "")?.[1] === googleAlias;
 if (googleCredentialEnv !== undefined && (
   googleCredentialEnv !== googleAlias ||
   googleRelease?.credentials?.account?.delivery?.env !== googleCredentialEnv ||
-  /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(process.env[googleAlias] ?? "")?.[1] !== googleAlias
+  (googleMarker !== undefined && !scopedGoogleMarker)
 )) throw new Error("The selected Google account requires its scoped OpenShell credential placeholder.");
-if (googleCredentialEnv === undefined) delete process.env[googleAlias];
+// OpenShell supplies a scoped marker for an attached provider, including an independent
+// Agent credential. A withdrawn provider stops supplying it when this container restarts.
+if (!scopedGoogleMarker) delete process.env[googleAlias];
 const googleBin = "/usr/local/lib/oce/plugins/google/bin";
 const enableGoogleCli = googleRelease?.capabilities.harness.includes("cli");
 if (enableGoogleCli) {

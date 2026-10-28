@@ -83,7 +83,9 @@ export interface OpenShellOnlineAuthorityOptions {
   ) => Promise<OpenShellOnlineDecision>;
   readonly budgetMs?: number;
   /** Advertise this fixed REST-only release for pre-create verification. Refuse upgrades and other bindings. */
-  readonly httpOnlyRelease?: OpenShellHttpOnlyRelease;
+  readonly httpOnlyRelease?: OpenShellHttpOnlyRelease & {
+    readonly validateBindingConfig?: (config: string) => boolean;
+  };
 }
 
 /** Stock v0.1.4's normalized pre-credential view. Omitted headers and original framing
@@ -91,6 +93,7 @@ export interface OpenShellOnlineAuthorityOptions {
 export interface OpenShellOnlineHttpRequest {
   readonly sandboxId: string;
   readonly bindingId: string;
+  readonly bindingConfig?: string;
   readonly requestId: string;
   readonly workspace: string;
   readonly target: {
@@ -126,10 +129,12 @@ function httpRequestView(
   request: Wire,
   sandboxId: string,
   deadlineAt: string,
+  scoped: boolean,
 ): OpenShellOnlineHttpRequest | undefined {
   const context = record(request.context);
   const target = record(request.target);
-  const id = bindingId(request.config);
+  const id = bindingId(request.config, scoped);
+  const config = record(record(record(request.config).fields).request_scope).stringValue;
   const body = request.body ?? new Uint8Array();
   const rawHeaders = request.headers ?? [];
   const query = target.query ?? "";
@@ -186,6 +191,7 @@ function httpRequestView(
   return {
     sandboxId,
     bindingId: id,
+    ...(typeof config === "string" && { bindingConfig: config }),
     requestId: context.request_id,
     workspace: context.workspace,
     target: {
@@ -206,13 +212,28 @@ function httpRequestView(
 export function createOpenShellOnlineHttpAuthority(
   options: OpenShellOnlineHttpAuthorityOptions,
 ): Server {
-  return createAuthority(options, httpRequestView);
+  return createAuthority(options, (request, sandbox, deadline) =>
+    httpRequestView(
+      request,
+      sandbox,
+      deadline,
+      options.httpOnlyRelease?.validateBindingConfig !== undefined,
+    ),
+  );
 }
 
-function bindingId(config: unknown): string | undefined {
+function bindingId(config: unknown, scoped = false): string | undefined {
   const fields = record(record(config).fields);
   const value = record(fields.binding_id);
-  return Object.keys(fields).length === 1 &&
+  const scope = record(fields.request_scope);
+  const validFields =
+    Object.keys(fields).length === 1 ||
+    (scoped &&
+      Object.keys(fields).length === 2 &&
+      scope.kind === "stringValue" &&
+      typeof scope.stringValue === "string" &&
+      scope.stringValue.length <= 16384);
+  return validFields &&
     Object.keys(value).every((key) => key === "stringValue" || key === "kind") &&
     value.kind === "stringValue" &&
     boundedId(value.stringValue)
@@ -308,8 +329,11 @@ function createAuthority<T>(
       identity.sandbox_id === undefined) ||
     supervisor(identity) !== undefined;
   const acceptedBinding = (config: unknown) => {
-    const id = bindingId(config);
+    const validate = options.httpOnlyRelease?.validateBindingConfig;
+    const id = bindingId(config, validate !== undefined);
+    const scope = record(record(record(config).fields).request_scope).stringValue;
     return (
+      (validate ? typeof scope === "string" && validate(scope) : scope === undefined) &&
       id !== undefined &&
       (options.httpOnlyRelease === undefined || options.httpOnlyRelease.releaseSha256 === id)
     );

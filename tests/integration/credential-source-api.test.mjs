@@ -242,7 +242,7 @@ async function fixture(
       const stored = {
         id: "cs_" + randomUUID(),
         namespaceId: namespace.id,
-        name: "stored",
+        name: `Stored ${type}`,
         type,
         config: type === "openai" ? config : toolConfig(type, config),
         secrets:
@@ -311,6 +311,17 @@ test("the saved Agent picker and binding use the granted source and the same rev
     f.controller.registerDriver(driver);
     f.controller.selectDriver(driver.capability, driver.id);
   }
+  const { stored: other } = await f.seedStoredRecord("bearer-token", {
+    host: "tools.example.test",
+    path: "/lookup",
+    env_var: "LOOKUP_TOKEN",
+  });
+  const { stored: sameHost } = await f.seedStoredRecord("oauth2-client-credentials", {
+    host: "gmail.googleapis.com",
+    port: "8443",
+    path: "/different-path",
+    env_var: "ANOTHER_TOKEN",
+  });
   const agent = await f.createAgent(
     f.namespace.id,
     "Google Agent",
@@ -318,7 +329,7 @@ test("the saved Agent picker and binding use the granted source and the same rev
     {
       harnessAuth: null,
       executionMode: "dedicated",
-      credentialSources: [{ sourceId: google.id }],
+      credentialSources: [{ sourceId: google.id }, { sourceId: other.id }],
     },
   );
   const path = `/namespaces/${f.namespace.id}/agents/${agent.id}`;
@@ -333,16 +344,18 @@ test("the saved Agent picker and binding use the granted source and the same rev
     },
   });
   assert.equal(role.status, 201, JSON.stringify(role.body));
-  const grant = await f.request("POST", `${iam}/access-bindings`, {
-    body: {
-      subjectKind: "identity",
-      subjectId: agent.servicePrincipalId,
-      roleId: role.data.id,
-      resourceKind: "credential_source",
-      resourceId: google.id,
-    },
-  });
-  assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  for (const source of [google, other, sameHost]) {
+    const grant = await f.request("POST", `${iam}/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: role.data.id,
+        resourceKind: "credential_source",
+        resourceId: source.id,
+      },
+    });
+    assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  }
   const [slot] = await slots();
   assert.deepEqual(slot.sources, [{ id: google.id, name: google.name }]);
   const save = (sourceId, releaseSha256) =>
@@ -379,6 +392,22 @@ test("the saved Agent picker and binding use the granted source and the same rev
     releaseSha256: slot.releaseSha256,
     credentials: { account: google.id },
   });
+  const conflicting = await f.request("PATCH", path, {
+    body: {
+      configurationId: agent.configurationId,
+      credentialSources: [google, other, sameHost].map(({ id }) => ({ sourceId: id })),
+    },
+  });
+  assert.equal(conflicting.status, 400, JSON.stringify(conflicting.body));
+  assert.match(conflicting.body.error.message, /another attached credential.*guarded Google host/);
+  const clear = await f.request("PATCH", path, {
+    body: {
+      configurationId: agent.configurationId,
+      plugins: { [slot.pluginId]: { enabled: false } },
+    },
+  });
+  assert.equal(clear.status, 200, JSON.stringify(clear.body));
+  assert.deepEqual(clear.data.credentialSources, [{ sourceId: google.id }, { sourceId: other.id }]);
 });
 test("Installation discovery serializes OpenShell model authentication and refresh source metadata", async (t) => {
   const f = await fixture(t, { toolSources: true });

@@ -1105,7 +1105,18 @@ test("a selected Google account uses its exact provider and a signed, fail-close
       },
     },
   };
-  requirements.credentialAttachments = [{ sourceId, ref: openShellProviderName(sourceId) }];
+  const requestScope = {
+    host: "gmail.googleapis.com",
+    port: 443,
+    path: "/gmail/v1/users/me/messages",
+    scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+  };
+  requirements.credentialAttachments = [
+    { sourceId, ref: openShellProviderName(sourceId), requestScope },
+  ];
+  const otherId = "cs_00000000-0000-4000-8000-000000000006";
+  const other = { sourceId: otherId, ref: openShellProviderName(otherId) };
+  requirements.credentialAttachments.push(other);
   const provision = () => driver.provisionHarness({ ...context, revision, requirements });
   let created;
   let observedGuard = true;
@@ -1125,6 +1136,11 @@ test("a selected Google account uses its exact provider and a signed, fail-close
         provider_credentialed: true,
       },
     ],
+  };
+  const independentProvider = {
+    name: "_provider_independent",
+    binaries: [{ path: "/usr/bin/curl" }],
+    endpoints: [{ host: "independent.example", ports: [8443], provider_credentialed: true }],
   };
   client.createSandbox = async ({ name, workspace, labels, annotations, spec }) => {
     created = { name, workspace, labels, annotations, spec, serviceUrls: {} };
@@ -1146,7 +1162,11 @@ test("a selected Google account uses its exact provider and a signed, fail-close
     ],
     policy: {
       ...created.spec.policy,
-      network_policies: { ...created.spec.policy.network_policies, [provider]: providerRule },
+      network_policies: {
+        ...created.spec.policy.network_policies,
+        [provider]: providerRule,
+        [independentProvider.name]: independentProvider,
+      },
       ...(!observedGuard && { network_middlewares: {} }),
     },
   });
@@ -1192,9 +1212,14 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   assert.deepEqual(rule.endpoints[0].rules[0].allow, {
     method: "GET",
     path: "/gmail/v1/users/me/messages",
-    query: { maxResults: { glob: "1" } },
   });
-  assert.equal(rule.endpoints[1].rules[0].allow.path, "/discovery/v1/apis/gmail/v1/rest");
+  assert.deepEqual(
+    rule.endpoints[1].rules.map(({ allow }) => allow.path),
+    ["/discovery/v1/apis", "/discovery/v1/apis/gmail/v1/rest"],
+  );
+  independentProvider.endpoints[0].host = "gmail.googleapis.com";
+  await assert.rejects(provision, /Another credential provider uses a guarded Google host/);
+  independentProvider.endpoints[0].host = "independent.example";
   providerRule.endpoints[0].path = "/**";
   await assert.rejects(provision, /exact Google provider route/);
   providerRule.endpoints[0].path = "/gmail/v1/users/me/messages";
@@ -1203,6 +1228,28 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   endpoint = configuration.gateway.managedPluginMiddleware;
   observedGuard = false;
   await assert.rejects(provision, /has not admitted.*request guard/);
+  observedGuard = true;
+
+  // The worker dispatches the same admitted revision without the withdrawn tool source.
+  revision.credentialSources = [
+    { sourceId, credentialGatewayId: "openshell", sourceType: "oauth2-refresh-token" },
+    { sourceId: otherId, credentialGatewayId: "openshell", sourceType: "bearer-token" },
+  ];
+  requirements.credentialAttachments = [other];
+  await assert.rejects(provision, /exact AgentRevision ownership and content/);
+  // OpenShell's detach removes the provider from a standing Sandbox. Its immutable launch
+  // environment and policy still describe the original request. It can be safely adopted.
+  created.spec.providers = created.spec.providers.filter(
+    (ref) => ref !== openShellProviderName(sourceId),
+  );
+  await provision();
+  created = undefined;
+  await provision();
+  assert.ok(created.spec.providers.includes(other.ref));
+  assert.ok(!created.spec.providers.includes(openShellProviderName(sourceId)));
+  assert.equal(created.spec.environment.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV, undefined);
+  assert.equal(created.spec.policy.network_middlewares?.[registration], undefined);
+  assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
 });
 
 test("OpenShell provisions native OpenClaw without exposing an inbound Harness service", async () => {
@@ -4451,6 +4498,7 @@ function credentialGatewayOverProviders({
     type: "openai",
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: driver.id,
     state: "ready",
   });
@@ -4803,6 +4851,7 @@ test("Google requires an OAuth source whose effective binary list is exactly the
     host: "gmail.googleapis.com",
     path: "/gmail/v1/users/me/messages",
     token_url: "https://oauth2.googleapis.com/token",
+    scope: "https://www.googleapis.com/auth/gmail.readonly",
     client_id: "test-client",
     env_var: "GOG_ACCESS_TOKEN",
   };
@@ -4852,7 +4901,16 @@ test("Google requires an OAuth source whose effective binary list is exactly the
       await assert.rejects(f.driver.attachForRevision(attachment), /has not negotiated/);
       Object.assign(service, negotiatedGoogleGuard());
       assert.deepEqual(await f.driver.attachForRevision(attachment), [
-        { sourceId, ref: openShellProviderName(sourceId) },
+        {
+          sourceId,
+          ref: openShellProviderName(sourceId),
+          requestScope: {
+            host: "gmail.googleapis.com",
+            port: 443,
+            path: "/gmail/v1/users/me/messages",
+            scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+          },
+        },
       ]);
     } else {
       await assert.rejects(
