@@ -4,188 +4,166 @@ implementation_status: Not implemented
 author: kevinlin-openai
 ---
 
-# Proposal: Codex plugin startup through a Sandbox transport
+# Proposal: Prepare Codex plugins before accepting native requests
 
-## Summary
+## Decision and observed problem
 
-Extend the Sandbox-provided Harness transport so a dedicated Codex Agent can
-install selected plugins without receiving the Gateway's reusable transport
-secret. Use a temporary native stdio process for plugin preparation. Before
-serving turns, register only the verifier of the Gateway's existing per-start
-credential through an authenticated startup endpoint. The Gateway verifies the
-serving native process before it becomes ready.
+Keep OpenShell's existing bearer-passthrough WebSocket and verifier-only
+provisioning. Add a trusted Harness startup gate that prepares and checks every
+selected plugin on the final native process before forwarding client requests.
+Require a real native initialization result for provider readiness. Do not add
+credential registration or a separate control API.
 
-The first caller is a Slack request that reads a specified repository file
-through the GitHub app, reads an issue through the Linear app, and returns both
-facts in the original Slack thread. The apps retain their account authorization
-and selected tool policies. This proposal does not enable protected Git delivery.
+On the existing development profile, a dedicated Codex Agent completed a real
+model turn. Selecting the existing Codex Plugin Driver allowed managed GitHub
+and Linear selections to save and deployment to queue. The worker then failed
+with `SANDBOX_HARNESS_UNSUPPORTED`. This was reproduced with product source
+`c4d98ab574f2`, OpenClaw `762a2fe60cc3`, Codex `0.163.0-alpha.2`, and OpenShell
+`0.1.5`. The first profile also needed the Plugin Driver selected explicitly.
 
-## Current behavior and scope
+The [OpenShell admission check](../../apps/controller/src/drivers/sandbox/openshell.ts)
+rejects nonempty selections. The existing
+[runtime launcher](../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts)
+needs a raw base token for local plugin preparation and ordinary Compute's
+per-start authentication. OpenShell provisions only its verifier. Removing the
+rejection alone does not connect these paths.
 
-The [OpenShell runtime provider](../../docs/reference/drivers/openshell-sandbox/harness-providers.md)
-delivers a transport verifier and nonsecret runtime files. It rejects selected
-plugins. Native plugin startup instead needs the Gateway's base token for local
-administration, status authentication, and per-start transport derivation. See
-[runtime startup](../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts)
-and [OpenShell admission](../../apps/controller/src/drivers/sandbox/openshell.ts).
-Removing the admission check cannot connect these protocols.
+An empty managed selection map is not a workaround: the production renderer
+turns native app/plugin features off. A real native catalog read with that
+configuration returned no marketplaces. Upstream native bridge configuration
+does not establish equivalent OCE managed selection and readiness guarantees.
 
-[RFC-0016](0016-sandbox-credential-injection/index.md) explicitly excluded this
-transport work. [RFC-0014](0014-plugin-policy-enforcement.md) owns plugin policy
-semantics. This proposal extends transport behavior without changing those
-semantics, account grants, or the PluginDriver catalog contract.
+The initial proposal used stdio preparation and verifier registration. Source
+review and the live reproduction support the smaller gate described here.
+[RFC-0016](0016-sandbox-credential-injection/index.md) excluded this transport
+work. [RFC-0014](0014-plugin-policy-enforcement.md) continues to own plugin policy.
 
-Goals are successful selected-plugin startup, authenticated readiness, rejection
-of a previous process's transport credential after restart, and complete cleanup
-through the existing Agent lifecycle. Provider-owned plugin failure remains fatal.
-Ordinary Kubernetes plugin transport retains its current behavior.
+## Scope
 
-Production qualification, protected Git, new platform resources, organization
-policy changes, external Driver loading, and credential refresh protocols are
-outside this change. Development evidence does not qualify EKS or the shared
-OpenShell management/service port for production.
+The supported caller is the normal managed Agent deployment and conversation
+workflow. The first proof is one Slack request whose Codex Agent reads an
+authorized GitHub repository file and Linear issue or project, then replies in
+the original thread with verifiable facts.
 
-## Ownership and contract
+Keep account grants, app approval rules, source-scoped credential injection,
+TLS verification, Landlock, and network restrictions. Every selected plugin must
+succeed on this provider path. Ordinary Compute retains its existing best-effort
+handling, private status, and per-start HMAC authentication.
 
-The Sandbox Driver owns exposure, public CA trust, provider identity, adoption,
-and removal. A typed capability on `SandboxHarnessEndpoint` identifies the
-authenticated startup protocol and its HTTPS control endpoint. It contains no
-credential, executable, or operator-selected forwarding target.
+Protected Git, new platform resources, account-policy expansion, production
+qualification, and EKS deployment are outside this change. Successful development
+proof does not qualify the shared OpenShell management/service listener.
 
-Compute owns the transport secret and supplies a domain-separated startup-control
-verifier in Harness requirements. Compute and the Agent Gateway derive the matching control
-bearer from the existing base secret and Agent revision ID. The control bearer
-permits status and verifier registration only; it cannot authenticate a native
-app-server connection. Runtime providers contain only its SHA-256 verifier.
-Compute consumes this capability without an OpenShell-specific branch in OCC.
+## Owners and interfaces
 
-The existing trusted Harness launcher owns plugin preparation and the native
-child process. A small HTTP/WebSocket front door owns control authentication
-and forwarding to one fixed loopback native endpoint. It does not retain the
-base secret or introduce a persistent local native bearer. Compute registers and verifies candidate transport before Gateway cutover.
-The Gateway supervisor repeats readback at cutover and registers replacement
-processes during same-revision restart. Both callers derive the same verifier,
-so their concurrent identical registrations are idempotent.
+The Sandbox Driver declares that its Harness prepares selected plugins before
+native initialization. Compute consumes this capability instead of applying the
+ordinary peer-status/HMAC protocol to that provider. Missing capability continues
+to refuse selected plugins; do not silently infer support from an endpoint.
 
-## Startup protocol
+The existing trusted Harness launcher owns one native child and its startup gate.
+The Sandbox Driver owns exposure, public CA trust, adoption, and cleanup. Compute
+owns candidate preparation and activation; Gateway configuration contains the
+full immutable selection map because partial provider startup is forbidden.
+OCC gains no provider-specific branch.
 
-1. The Harness creates a fresh startup ID and clears readiness before accepting
-   any request. It restores the saved managed configuration and starts a temporary
-   Codex app-server over stdio. Existing installation, app ownership, tool identity,
-   authentication, and policy checks run through that private transport. The
-   launcher closes stdio, terminates and reaps the preparation process, and
-   confirms that no bootstrap server or administrative channel survives before
-   starting the serving process.
-2. Authenticated status reports `awaiting_transport`, with the Agent revision ID,
-   startup ID, configuration identity, and complete plugin outcomes. This state
-   cannot serve turns. Missing apps, unknown policy, or preparation failure reports
-   failure rather than dropping a selected plugin.
-3. Before first deployment or candidate cutover, Compute reads this status
-   through the Sandbox Driver. It computes the existing per-start HMAC bearer from its base secret, revision
-   ID, and the reported startup ID. It sends only that bearer's SHA-256 verifier
-   to the authenticated registration endpoint.
-4. Registration must name the current revision, startup, and configuration. Accept
-   one verifier for that startup. An exact duplicate is idempotent; a different
-   verifier, stale startup, or mismatched configuration fails. Registration cannot
-   supply a URL, port, command, configuration edit, or other operation. Status
-   includes the registration state and accepted verifier digest. A conflicting
-   request cannot replace that verifier or restart the native child.
-5. The launcher starts the serving native app-server on loopback with that
-   verifier. It reports native availability separately from Gateway readiness.
-   The front door rejects WebSocket upgrades before this state, then forwards
-   their bearer authentication unchanged. Native Codex checks the verifier.
-6. Compute authenticates and verifies the serving native process through the
-   Sandbox contract before permitting candidate cutover. The Gateway then connects
-   with the same derived bearer and rechecks the loaded policy, selected plugins,
-   and app mapping. After starting its ordinary native Gateway, its supervisor
-   rereads authenticated Harness status before publishing readiness. The report
-   identifies its own startup separately from the verified Harness startup,
-   configuration, and plugin outcomes. Compute compares these with the current
-   provider observation before activation. Temporary-process readback alone does
-   not establish final-process readiness.
+The native child listens on one fixed loopback endpoint, distinct from the
+exposed gate, with its existing SHA-256 bearer verifier. Failure to start that
+child is fatal; never discover and adopt an unrelated listener. Loopback access
+still requires native authentication.
 
-Compute prepares the candidate while the serving predecessor retains its Gateway
-endpoint. Candidate preparation must not depend on redirecting that Gateway.
-For a same-revision Harness restart, registration occurs before the Gateway
-supervisor's ready wait. Both rules prevent a circular wait.
+## Startup and credential lifetime
 
-## Security, failure, and restart
+1. The launcher authenticates the model as today, starts the final native child,
+   and opens the existing provider endpoint through the gate. Its state is
+   unprepared. An absent or incorrect bearer fails before any installation or
+   local native connection.
+2. The first correctly authenticated WebSocket owns preparation. Accept its
+   WebSocket upgrade within the pinned client's ten-second handshake budget,
+   but forward no application frame. Buffer at most four messages and 64 KiB
+   until preparation finishes; reject overflow. Admit at most sixteen clients.
+3. Use the owning connection's credential only for existing local native RPCs.
+   Run the production installation, app/tool ownership, configuration, and
+   reviewer checks against this same final child. Every selected plugin must
+   pass. Preserve a preparation deadline of at most sixty seconds and bound
+   individual RPCs within it.
+4. After successful preparation, forward each client's original initialization
+   request and relay the real native response. Do not synthesize initialization
+   success or leak bootstrap responses, notifications, or approvals to clients.
+   Forwarding remains restricted to the fixed native child, with backpressure,
+   message limits, and socket cleanup.
+5. Compute requires successful native initialization before reporting serving.
+   A WebSocket `101` alone now means authenticated connection acceptance on this
+   capability, not readiness. Keep handshake-only protected-Git checks outside
+   this supported combination.
 
-Authenticate every exported status and registration request. Use the existing
-public CA projection with certificate and hostname verification. Permit only the
-Gateway and existing authorized control-plane consumers. Do not expose private
-unauthenticated status routes. Do not forward the control credential to Codex.
-Reject control bodies above 4 KiB, apply a 10-second request deadline, and allow
-at most one registration in progress per startup. Reject unknown fields.
+The bearer already crosses the existing passthrough route during native
+WebSocket authentication. This change lets the trusted launcher use that
+in-flight credential for preparation. It does not provision a bearer through
+provider files, process environments, or disk. Parameterize the local RPC client;
+never temporarily put the credential into environment variables. Do not log
+headers, bodies, native auth files, or credential-bearing exceptions. Release
+credential references after preparation settles; this is not a secure-erasure
+claim for JavaScript memory.
 
-The base and derived native transport credentials are not provisioned into
-Harness environments, runtime-provider files, or disk. The trusted Gateway
-retains its required credentials. The derived bearer crosses the verified
-WebSocket path as required by native authentication.
-Authorization headers, registration bodies, and native auth files must never
-enter logs or diagnostics. The front door forwards only to its fixed local
-server, with bounded buffers and connection cleanup; it is not a general proxy.
+Exactly one connection owns preparation for a native-process generation. Other
+authenticated clients wait within the fixed limits; they cannot replace the
+owner or run concurrent installers. If the owner disconnects before preparation
+commits, stop preparation, close waiting clients, and terminate and reap that
+native generation. Closing its administrative socket alone is insufficient:
+an interrupted installation could otherwise finish a late write. Restart must
+restore managed configuration and revalidate any retained package state.
 
-On Harness restart, discard registration and generate a new startup ID before
-opening the listener. Old transport credentials must fail immediately. The
-Gateway's existing peer-change handler closes its old serving path, repeats
-registration and final-process checks, then restarts its native Gateway. A
-Gateway-only restart may adopt the current startup only after authentication and
-readback. Conflicting registrations fail closed.
+## Readiness, failure, and recovery
 
-Preparation failure or native exit stops readiness and closes transport. If
-remote final-policy validation fails, Compute withholds activation and retires
-the failed candidate through the existing lifecycle; the Gateway closes its
-serving path. Closing a client connection alone does not close the listener. An uncertain registration is resolved by authenticated status; the
-caller never guesses which verifier is active. Deletion removes the Sandbox
-before runtime providers through the existing cleanup owner.
+Give the control-plane native initialization check a deadline that includes the
+preparation budget. The pinned Gateway already distinguishes WebSocket upgrade
+from native initialization; its startup budget can still be shortened by the
+caller's remaining turn budget. A timeout cancels that attempt rather than
+bypassing preparation or becoming a plugin-policy denial.
 
-The Credential Gateway must support only the native plugin catalog, bundle, and
-app routes actually required by the selected runtime. Account grants and native
-managed policy still apply. Do not replace source-scoped credential injection
-with a raw PAT in the Harness, or broaden filesystem/network policy without
-source-backed requirements and negative checks.
+Remove the ordinary private plugin-status wait only when the provider declares
+this capability. Compute must be able to initiate candidate preparation before
+Gateway readiness depends on it. Keep candidate cutover in its existing owner;
+do not redirect a serving predecessor merely to obtain a bootstrap credential.
 
-This protocol does not establish new protection against arbitrary same-identity
-process-memory access or hostile runtime replacement. Those guarantees belong
-to the managed-runtime and Sandbox boundaries. Their limitations remain explicit.
+On preparation failure, the gate serves the existing authenticated runtime
+failure document and refuses application traffic. Do not start a second
+held-failure listener on the same port. GitHub authentication required, for
+example, remains fatal even when Linear is ready.
 
-## Delivery and verification
+Bind preparation success to the actual native child. Its exit synchronously
+closes forwarded sockets and clears readiness. A restart repeats all preparation
+before forwarding a stale Gateway's request. This provider guarantee is
+**no request reaches an unprepared replacement**. Ordinary Compute keeps its
+separate guarantee that an earlier startup credential cannot reconnect.
+Deletion retains the existing Sandbox-before-provider cleanup ordering.
 
-Submit this RFC before implementing the Driver behavior. Add a separate
-implementation plan for transport, native plugin startup, policy/network wiring,
-and real workflow proof. Update the owning runtime flow and current references
-with implementation; keep this proposal marked unimplemented until then.
+## Verification and delivery
 
-Required integration evidence includes:
+[PR #3985](https://github.com/openclaw/openclaw-enterprise/pull/3985) was submitted
+before product implementation. The
+[implementation plan](../plans/0024-openshell-codex-plugin-transport.md) tracks
+code, current documentation, and required proof. This RFC remains Proposed and
+unimplemented until delivery evidence is recorded.
 
-- Real native stdio preparation and serving-process readback through the regular
-  Agent deployment caller, including unavailable apps and conflicting policy.
-- Wrong, absent, stale, and cross-revision control authentication; conflicting
-  registration; wrong TLS trust; native exit; and Gateway/Harness restarts.
-- Candidate redeployment while its predecessor keeps serving, including candidate
-  failure that preserves the predecessor and identical concurrent registrations.
-- Rejection of the old bearer before new startup readiness, with policy checks
-  repeated for the replacement process.
-- Model-command attempts to discover transport bearers or connect without
-  authorization, while preserving Landlock and default-deny networking.
-- One real Slack request reaching the OpenShell-backed Codex Agent, both app
-  reads by that Agent, and a correct reply in the original thread. Capture image
-  digests, resource/turn/tool identities, sanitized results, and the permalink.
+Extend the real Agent QA workflow and verify:
 
-No implementation or live selected-plugin proof is claimed by this RFC.
+- Wrong/missing authentication causes no preparation; direct loopback access
+  without the bearer fails.
+- A fast WebSocket upgrade does not establish readiness. Delayed native
+  initialization succeeds only after actual plugin/policy checks.
+- Failed or partly successful installation never serves. Concurrent probes
+  have one owner, and an owner's disconnect cannot leave late writes or a
+  surviving native generation.
+- Native exit during verification invalidates readiness. An immediate Slack
+  reconnect after restart cannot execute before replacement preparation.
+- Candidate preparation and Gateway-only restart preserve existing lifecycle
+  ownership and the final-process verification boundary.
+- The actual pinned OpenShell and native clients complete the same-Agent
+  Slack/GitHub/Linear chain. Record source/image identities, resource and
+  turn/tool identities, sanitized results, and the Slack permalink.
 
-## Alternatives
-
-Giving the Harness the base transport token would undo the existing separation.
-A persistent random loopback bearer introduces a new secret-protection boundary
-inside a same-identity workload. Neither is selected.
-
-Compute could sign verifier releases through its existing protected-egress
-enrollment. The proposed direct registration instead reuses the existing
-transport secret and avoids a new signer dependency. Allowing only the serving
-Gateway to register would deadlock candidate preparation; Compute must prepare
-candidates while the predecessor keeps serving.
-
-Keeping the current refusal is correct until the complete protocol and required
-integration evidence exist.
+Native installation metadata is not an app read. Catalog availability is not an
+app connection. Missing credentials remain a proof gap, not permission to
+replace the dependency with a fake or broaden access.
