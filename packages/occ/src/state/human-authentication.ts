@@ -637,9 +637,14 @@ export class PostgresHumanAuthentication {
     const email = attempt.email ?? trustedExternalAccountEmail(providerId, subject);
     const emailVerified = attempt.emailVerified === true;
     return this.state.transact(async (unit) => {
+      // A plain read, deliberately without FOR UPDATE: every other account path locks
+      // the user first and the account second (snapshotExternal, session issuance), and
+      // taking the account lock first inverts that order, deadlocking (40P01) against the
+      // concurrent session issuance of the very enrolment this race resolves. The insert
+      // below and its unique constraints arbitrate concurrent enrolments instead.
       const [attached] = await this.query(
         unit,
-        `SELECT user_id FROM occ.account WHERE provider_id = $1 AND account_id = $2 AND identity_only FOR UPDATE`,
+        `SELECT user_id FROM occ.account WHERE provider_id = $1 AND account_id = $2 AND identity_only`,
         [providerId, subject],
       );
       if (attached !== undefined) {
