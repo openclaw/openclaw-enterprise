@@ -1335,6 +1335,7 @@ Get the singleton Installation
 | `data.capabilities.pluginPolicies.driver.id` | `string` | Yes | min length: 1 |
 | `data.capabilities.pluginPolicies.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.capabilities.pluginPolicies.driverPolicySchema` | `object<string, any>` | Yes | — |
+| `data.capabilities.pluginPolicies.policyScopeByPlugin` | `object<string, "enablement_only">` | No | — |
 | `data.capabilities.pluginPolicies.toolDefaults` | `object` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults.enabled` | `boolean` | Yes | — |
@@ -1432,6 +1433,7 @@ Bootstrap the singleton Installation
 | `data.capabilities.pluginPolicies.driver.id` | `string` | Yes | min length: 1 |
 | `data.capabilities.pluginPolicies.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.capabilities.pluginPolicies.driverPolicySchema` | `object<string, any>` | Yes | — |
+| `data.capabilities.pluginPolicies.policyScopeByPlugin` | `object<string, "enablement_only">` | No | — |
 | `data.capabilities.pluginPolicies.toolDefaults` | `object` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults.enabled` | `boolean` | Yes | — |
@@ -3775,6 +3777,7 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.driver.id` | `string` | Yes | min length: 1 |
 | `data.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.driverPolicySchema` | `object<string, any>` | Yes | — |
+| `data.policyScopeByPlugin` | `object<string, "enablement_only">` | No | — |
 | `data.toolDefaults` | `object` | Yes | — |
 | `data.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.toolDefaults.enabled` | `boolean` | Yes | — |

@@ -366,6 +366,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    policyScopeByPlugin: { [managedGoogleInstall.id]: managedGoogleInstall.policyScope },
     approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },

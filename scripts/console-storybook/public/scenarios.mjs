@@ -2364,6 +2364,7 @@ export const scenarios = {
     pluginCapabilities: {
       ...pluginCapabilities,
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
     },
     pluginCatalog: {
       status: "ready",

@@ -19,6 +19,8 @@ CLI artifacts independently. The bundled Plugin Driver registers this version as
 `occ-plugin:google@1.0.0`. Publish changed release bytes under a new package version
 so existing Agent selections continue to identify the reviewed release.
 
+The package’s OCE extension declares `policyScope: "enablement_only"`. The Plugin Driver advertises this scope for the versioned plugin ID so the Console can render the same enable switch as a Codex plugin before catalog discovery completes. OCC refuses tool approvals, reviewers, and per-tool overrides for the CLI.
+
 The release also declares the `account` credential slot for a future binding. It names
 `gog`’s environment variable and lists the exact HTTPS requests that may use the
 account. The public discovery request takes no credential. The installer reads the

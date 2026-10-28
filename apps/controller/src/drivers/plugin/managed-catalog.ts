@@ -47,7 +47,9 @@ export const managedPluginMiddlewareAudience = `urn:openshell:extension:middlewa
 const directory = new URL("../../../plugins/oce-google-workspace/", import.meta.url);
 const pkg = asRecord(JSON.parse(readFileSync(new URL("plugin.json", directory), "utf8")));
 const extension = asRecord(asRecord(pkg?.extensions)?.["ai.openclaw.oce"]);
+const policyScope = extension?.policyScope;
 if (
+  policyScope !== "enablement_only" ||
   extension?.release !== "./ai.openclaw.oce/release.json" ||
   !isNonEmptyString(extension.id) ||
   !isNonEmptyString(extension.displayName) ||
@@ -84,12 +86,13 @@ if (
 
 export const managedGoogleInstall = {
   id: `${extension.id}@${pkg.version}`,
+  policyScope,
   placement: { harnessId: placement.harnessId, mode: placement.mode, computeImplementations },
   credentials,
   publicRequests,
   binaryPath: `/usr/local/lib/oce/plugins/google/bin/${release.executable}`,
   releaseSha256: createHash("sha256").update(bytes).digest("hex"),
-};
+} as const;
 
 /** A selection holds references only. Installation without an account remains valid. */
 export function managedCredentialBinding(selections: PluginDesiredState | undefined) {

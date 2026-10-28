@@ -41,7 +41,7 @@ import {
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
 
-test("A dedicated OpenClaw Agent can save the Google Workspace package without a connection", async (t) => {
+test("A dedicated OpenClaw Agent can enable and disable Google Workspace without a connection", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Package installation", { ready: true });
@@ -57,6 +57,7 @@ test("A dedicated OpenClaw Agent can save the Google Workspace package without a
     harnessAuth: null,
   });
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const id = "occ-plugin:google@1.0.0";
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
@@ -68,20 +69,33 @@ test("A dedicated OpenClaw Agent can save the Google Workspace package without a
     .getByRole("option", { name: "Install without an account" })
     .waitFor({ state: "attached" });
   assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
-  await dialog.getByRole("button", { name: "Done", exact: true }).click();
-  const saved = page.waitForResponse(
-    (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
-  );
-  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
-  assert.equal((await saved).status(), 200);
-  assert.deepEqual((await fixture.request("GET", path)).data.plugins, {
-    "occ-plugin:google@1.0.0": { enabled: true },
-  });
-  await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
+  async function save(enabled) {
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    const saved = page.waitForResponse(
+      (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
+    );
+    await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+    assert.equal((await saved).status(), 200);
+    assert.deepEqual((await fixture.request("GET", path)).data.plugins, { [id]: { enabled } });
+    await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
+  }
+  await save(true);
+
+  // Reopen the saved selection before its catalog entry (including the tool list) has arrived.
+  const catalog = await holdRequests(t, page, `**${path}/plugins`, { method: "POST" });
+  await page.reload();
+  await catalog.requested;
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
-  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
-  assert.equal(await dialog.getByLabel("Enable Google Workspace").isChecked(), true);
+  await dialog.getByRole("button", { name: id, exact: true }).click();
+  const enabled = dialog.getByLabel(`Enable ${id}`, { exact: true });
+  assert.equal(await enabled.isChecked(), true);
+  assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
+  assert.equal(await dialog.getByLabel(/plugin approvers mode/).count(), 0);
+  assert.equal(await dialog.getByLabel("Filter tools").count(), 0);
+  await enabled.uncheck();
+  await save(false);
+  catalog.release();
 });
 
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
