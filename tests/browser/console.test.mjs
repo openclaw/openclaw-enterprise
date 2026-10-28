@@ -75,16 +75,34 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
     ),
     "#2457C5",
   );
+  assert.deepEqual(
+    await page
+      .locator(".brand img")
+      .boundingBox()
+      .then(({ width, height }) => ({ width, height })),
+    { width: 40, height: 40 },
+  );
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  assert.deepEqual(
+    await page
+      .locator(".sidebar .brand img")
+      .boundingBox()
+      .then(({ width, height }) => ({ width, height })),
+    { width: 48, height: 48 },
+  );
   await page.getByText("Theme assistant", { exact: true }).click();
   await page.getByRole("heading", { name: "Theme assistant", exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator(".topbar .brand-name").textContent(), "Example Agents");
   const logo = await page.locator(".topbar .brand img").evaluate((node) => {
-    const { width, filter } = globalThis.getComputedStyle(node);
-    return { width, filter };
+    const { width, height, filter } = globalThis.getComputedStyle(node);
+    return { width, height, filter };
   });
-  assert.deepEqual(logo, { width: "20px", filter: "none" }, "the theme logo keeps its own artwork");
+  assert.deepEqual(
+    logo,
+    { width: "48px", height: "48px", filter: "none" },
+    "the theme logo keeps its own artwork",
+  );
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   await page.locator(".sidebar nav").waitFor({ state: "visible" });
   await page.keyboard.press("Escape");

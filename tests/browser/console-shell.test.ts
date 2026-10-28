@@ -154,10 +154,10 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   assert.equal(Math.round((await visibleBox(topbar)).height), 56);
   assert.equal(await topbar.locator(".brand").textContent(), "OpenClaw Enterprise");
   const mark = topbar.locator(".brand img");
-  const inverse = { path: "/console/oce-mascot-inverse.png", width: 48, height: 38 };
+  const inverse = { path: "/console/oce-mascot-inverse.png", width: 48, height: 48 };
   await waitForMark(mark, inverse);
   await page.emulateMedia({ forcedColors: "active" });
-  await waitForMark(mark, { path: "/console/oce-mascot.png", width: 20, height: 20 });
+  await waitForMark(mark, { path: "/console/oce-mascot.png", width: 48, height: 48 });
   await page.emulateMedia({ forcedColors: "none" });
   await waitForMark(mark, inverse);
   const header = await page

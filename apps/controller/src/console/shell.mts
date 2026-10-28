@@ -35,7 +35,7 @@ export function brandContents(placement: "navigation" | "sign-in") {
   const mascot = "/console/oce-mascot.png";
   const src =
     document.querySelector<HTMLMetaElement>('meta[name="occ-console-logo"]')?.content ?? mascot;
-  const size = placement === "navigation" ? "20" : "40";
+  const size = placement === "navigation" ? "48" : "40";
   const image = element("img", { src, alt: "", width: size, height: size });
   const logo =
     placement === "navigation" && src === mascot

@@ -650,17 +650,20 @@ p {
 .runtime-debug h2 {
   color: inherit;
 }
-/* The inverse mascot has its contour in the artwork. In forced colours, picture uses the
-   original mark at the same size as an operator-supplied logo. */
+/* Navigation logos share a 48 px limit. Contain preserves wide artwork when max-width
+   constrains it; narrow artwork uses its natural aspect ratio. */
+.sidebar .brand img,
+.topbar .brand img {
+  width: auto;
+  height: 48px;
+  max-width: 48px;
+}
+/* The inverse mascot has its contour in the artwork. Forced colours use the original mark. */
 .brand-mascot {
   display: flex;
   flex: none;
 }
 @media (forced-colors: none) {
-  .brand-mascot img {
-    width: 48px;
-    height: 38px;
-  }
   .brand:has(.brand-mascot) {
     gap: var(--space-1);
   }
