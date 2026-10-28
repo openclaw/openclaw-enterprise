@@ -481,9 +481,15 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         status: "Success",
         message: "private-delete-response-marker",
       });
-    } else if (resource?.startsWith("pod/") && args.includes("get") && state.revisionPods) {
-      // The revision's Pods after a scripted eviction or replacement: a read by name
-      // finds a Pod that still exists, ended or not, as the Kubernetes API does.
+    } else if (
+      resource?.startsWith("pod/") &&
+      args.includes("get") &&
+      state.revisionPods &&
+      !(resource.slice("pod/".length) in state.preflight.pods)
+    ) {
+      // The revision's Pods, as scripted (a dedicated Agent's two) or after an eviction or
+      // replacement: a read by name finds a Pod that still exists, ended or not, as the
+      // Kubernetes API does. The startup preflight's Pods are read below.
       const pod = state.revisionPods.find((item) => "pod/" + item.metadata.name === resource);
       if (!pod) {
         return fail(1, `Error from server (NotFound): pods "${resource.slice(4)}" not found`);
