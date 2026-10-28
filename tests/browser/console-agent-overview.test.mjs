@@ -40,6 +40,9 @@ import {
   settledView,
   takeLayoutShifts,
   trackSettledFetches,
+  versionChooser,
+  versionOption,
+  waitForChosenVersion,
   waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
@@ -345,10 +348,7 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const rail = page.locator(".revision-selector");
-  await rail
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { name: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await versionOption(rail, 1).waitFor({ state: "attached" });
   // A second deploy makes v2 the latest version, whose record is the one the list reads.
   await fixture.deployAgent(namespace.id, agent.id);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -356,17 +356,8 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
     .locator("option")
     .filter({ hasText: /^v2(?: ·|$)/ })
     .waitFor({ state: "attached" });
-  await rail
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { name: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
-  assert.equal(
-    await rail
-      .getByLabel("Viewing version", { exact: true })
-      .getByRole("option", { name: /^v1(?: ·|$)/ })
-      .textContent(),
-    "v1 · Failed",
-  );
+  await versionOption(rail, 1).waitFor({ state: "attached" });
+  assert.equal(await versionOption(rail, 1).textContent(), "v1 · Failed");
 
   await page.reload();
   await rail
@@ -380,10 +371,7 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
       v1RecordReads.push(request.url());
     }
   });
-  await rail
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { name: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await versionOption(rail, 1).waitFor({ state: "attached" });
   assert.deepEqual(v1RecordReads, []);
   // Hold v1's record until v1's page and its notice show. The record that lands then must
   // relabel the notice at once: no later poll rerenders it (finding 2407).
@@ -399,7 +387,7 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
       }),
     },
   );
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(first.id);
+  await versionChooser(page).selectOption(first.id);
   await record.requested;
   // The shell keeps the old draft inert until this version reveals. Check the new page,
   // rather than matching both notices during that handoff.
@@ -411,10 +399,7 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
     await page.locator(".version-selection-notice").textContent(),
     "Failed version · read-only admitted snapshot. Its deployment did not complete.",
   );
-  await rail
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { name: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await versionOption(rail, 1).waitFor({ state: "attached" });
 });
 
 // A deployment that a newer version or a Stop ended is listed as failed, the status its record
@@ -446,11 +431,8 @@ for (const [code, outcome] of [
     assert.equal(await v1.textContent(), "v1");
     assert.equal(await v1.textContent(), "v1");
 
-    await page.getByLabel("Viewing version", { exact: true }).selectOption(first.id);
-    await page
-      .getByLabel("Viewing version", { exact: true })
-      .locator("option:checked")
-      .waitFor({ state: "attached" });
+    await versionChooser(page).selectOption(first.id);
+    await waitForChosenVersion(page);
     await expectVersionRecord(page, outcome);
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     assert.equal(
@@ -630,10 +612,7 @@ test("A failed first version's page says nothing runs and offers one Open draft"
     fixture,
     detailUrl(fixture, namespace.id, agent.id, failed.id, "configuration"),
   );
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .locator("option:checked")
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page);
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
   await summary.getByText("v1 · Failed", { exact: true }).waitFor();
   const liveServing = summary.locator(".stat").filter({ hasText: "Live serving" });
@@ -653,7 +632,7 @@ test("A failed first version's page says nothing runs and offers one Open draft"
   );
   // The header holds the action; the Versions list names the draft as one of its entries.
   assert.equal(await page.getByRole("button", { name: "Open draft", exact: true }).count(), 1);
-  await page.getByLabel("Viewing version", { exact: true }).selectOption("draft");
+  await versionChooser(page).selectOption("draft");
   await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
   await liveServing.getByText("Not running", { exact: true }).waitFor();
 });
@@ -1048,7 +1027,7 @@ test("A failed version raises no recovery while the current version is on no loa
   assert.equal(await page.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   assert.equal(await page.getByRole("link", { name: "Open Configuration" }).count(), 0);
 
-  const chooser = page.getByLabel("Viewing version", { exact: true });
+  const chooser = versionChooser(page);
   await chooser.focus();
   await page.keyboard.press("Tab");
   const older = page.getByRole("button", { name: "Load older versions", exact: true });
@@ -1095,7 +1074,7 @@ test("Load older versions preserves the viewed version and returns focus to its 
     fixture,
     detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration"),
   );
-  const chooser = page.getByLabel("Viewing version", { exact: true });
+  const chooser = versionChooser(page);
   await chooser.waitFor();
   assert.equal(await chooser.inputValue(), first.revision.id);
   const older = page.getByRole("button", { name: "Load older versions", exact: true });
@@ -1851,10 +1830,7 @@ test("opening the Logs tab by URL does not move the page", async (t) => {
     // A full load, so no recent input excuses a shift.
     await page.goto(detailUrl(fixture, namespace.id, agent.id, active.revision.id, "logs").href);
     await page.getByText("startup line 29", { exact: false }).waitFor();
-    await page
-      .getByLabel("Viewing version", { exact: true })
-      .locator("option:checked")
-      .waitFor({ state: "attached" });
+    await waitForChosenVersion(page);
     await page.evaluate(() => globalThis.document.fonts.ready);
     // The slow status read and every other read have landed and painted.
     await waitForIdleFetches(page);
@@ -1901,10 +1877,7 @@ test("opening the Logs tab by click does not move the cards below it", async (t)
       fixture,
       detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
     );
-    await page
-      .getByLabel("Viewing version", { exact: true })
-      .locator("option:checked")
-      .waitFor({ state: "attached" });
+    await waitForChosenVersion(page);
     await page.getByRole("button", { name: "Stop Agent" }).waitFor();
     await page.evaluate(() => globalThis.document.fonts.ready);
     // A reader scrolls the tabs into view, then selects Logs once the page is still.
@@ -2699,10 +2672,7 @@ test("A recovery link left before its page opens does not scroll a later visit",
   await page.goBack();
   await page.waitForURL((url) => url.searchParams.get("revision") === active.revision.id);
   agentRead.release();
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .locator("option:checked")
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page);
   await settled.waitFor();
 
   await page.locator(".agent-toolbar-actions").getByRole("button", { name: "Open draft" }).click();
@@ -2734,13 +2704,10 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
     detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
   );
   const settled = page.locator('.content [aria-live="polite"][aria-busy="false"]');
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .locator("option:checked")
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page);
   await settled.waitFor();
   // Visit the draft through the page's own control, so leaving it retains its view.
-  await page.getByLabel("Viewing version", { exact: true }).selectOption("draft");
+  await versionChooser(page).selectOption("draft");
   await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
   await settled.waitFor();
   await waitForIdleFetches(page);
@@ -2748,11 +2715,8 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
     globalThis.document.querySelector('.content [aria-live="polite"]').dataset.retainedTag =
       "draft";
   });
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(revision.id);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .locator("option:checked")
-    .waitFor({ state: "attached" });
+  await versionChooser(page).selectOption(revision.id);
+  await waitForChosenVersion(page);
   await settled.waitFor();
   await page.evaluate(() => globalThis.scrollTo(0, 0));
   await page
@@ -2803,10 +2767,7 @@ for (const viewport of [
       fixture,
       detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
     );
-    await page
-      .getByLabel("Viewing version", { exact: true })
-      .locator("option:checked")
-      .waitFor({ state: "attached" });
+    await waitForChosenVersion(page);
     const summary = page.getByRole("region", { name: "Agent state at a glance" });
     await summary.getByText("May be offline", { exact: true }).waitFor();
 
@@ -2978,10 +2939,7 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
     fixture,
     detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
   );
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .locator("option:checked")
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page);
   await page.getByText("Current version · read-only admitted snapshot.", { exact: true }).waitFor();
   const tabNames = () => page.getByRole("tab").allTextContents();
   assert.deepEqual(await tabNames(), [
@@ -3336,16 +3294,13 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   const draft = page.getByRole("heading", { name: "Configuration draft" });
   await draft.waitFor();
   const draftUrl = page.url();
-  await page.getByLabel("Viewing version", { exact: true }).selectOption(
+  await versionChooser(page).selectOption(
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v1(?: ·|$)/ })
       .getAttribute("value"),
   );
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .locator("option:checked")
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "access");
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
@@ -3392,10 +3347,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   await draft.waitFor();
   await page.goForward();
   await page.waitForURL(configurationUrl);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .locator("option:checked")
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page);
   await page.goForward();
   await page.waitForURL(accessUrl);
   await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
@@ -3531,7 +3483,7 @@ test("Version picker retains selection and focus while deployment outcomes chang
   );
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
   await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
-  const chooser = page.getByLabel("Viewing version", { exact: true });
+  const chooser = versionChooser(page);
   const latestOption = chooser.locator("option").filter({ hasText: /^v3(?: ·|$)/ });
   await latestOption.filter({ hasText: "Queued" }).waitFor({ state: "attached" });
   await chooser.focus();

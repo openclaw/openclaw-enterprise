@@ -41,6 +41,7 @@ import {
   REPOSITORY_EDITS_PENDING,
   RESOURCE_NOT_FOUND,
 } from "../helpers/refusal-text.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 // Unsaved drafts survive a refused Create and a failed Namespace read, and a pending save holds
 // every way off the page (findings 1934, 1935, 1937). The rules that keep untouched forms and
@@ -81,22 +82,6 @@ async function failNextNamespacesRead(page) {
     failed.resolve();
   });
   return failed.promise;
-}
-
-function revokeNamespace(fixture, namespace, id) {
-  fixture.policy.restrictions.push({
-    id,
-    namespaceId: namespace.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
-}
-
-function restoreNamespace(fixture, id) {
-  const index = fixture.policy.restrictions.findIndex((restriction) => restriction.id === id);
-  assert.notEqual(index, -1);
-  fixture.policy.restrictions.splice(index, 1);
 }
 
 async function startDefaultPreset(page) {
@@ -275,7 +260,7 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   await settled(page);
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
   assert.equal(await asksBeforeUnload(page), true);
-  revokeNamespace(fixture, namespace, "drafts-kept-revoke");
+  const revoked = restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   await sidebarLink(page, "Namespaces").click();
   await heading(page, "Namespaces").waitFor();
   await settled(page);
@@ -283,7 +268,7 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   assert.equal(await page.getByText("Kept drafts", { exact: true }).count(), 0);
   assert.equal(await asksBeforeUnload(page), false);
 
-  restoreNamespace(fixture, "drafts-kept-revoke");
+  liftRestriction(fixture.policy, revoked);
   await sidebarLink(page, "Agents").click();
   await settled(page);
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
@@ -1001,13 +986,7 @@ test("a repository-scoped Agent refusal keeps no draft", async (t) => {
       const response = await route.fetch();
       if (deny) {
         deny = false;
-        fixture.policy.restrictions.push({
-          id: "guard-agent-create",
-          namespaceId: namespace.id,
-          resourceKind: "agent",
-          action: "create",
-          effect: "deny",
-        });
+        restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
       }
       await route.fulfill({ response });
     },

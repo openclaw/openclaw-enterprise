@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -12,10 +11,10 @@ import {
   denyRevisionRead,
   detailUrl,
   expireSessions,
-  hasFocus,
-  holdRequests,
   grantInstallationAdministration,
   grantMember,
+  hasFocus,
+  holdRequests,
   login,
   loginThroughForm,
   nativeValues,
@@ -23,10 +22,11 @@ import {
   nonAuthWriteRequests,
   persistedDeploymentError,
   recordLayoutShifts,
-  takeLayoutShifts,
-  trackSettledFetches,
   shortId,
   stopAgentButton,
+  takeLayoutShifts,
+  trackSettledFetches,
+  waitForChosenVersion,
   waitForEnabled,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -62,6 +62,7 @@ import {
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 function deploymentBody(
   namespaceId,
@@ -111,11 +112,7 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
   );
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 1);
   const activity = await expectDeploymentOutcome(page, "In progress");
   const record = await expectVersionRecord(page, "In progress");
   await record.getByText(NO_PERSISTED_STARTUP_FAILURE, { exact: true }).waitFor();
@@ -168,11 +165,7 @@ test("Deployment activity follows pending work until it records a result", async
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 1);
   await expectDeploymentOutcome(page, "In progress");
   await expectVersionRecord(page, "In progress");
 
@@ -218,11 +211,7 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 1);
   // The failure's card says nothing of the cleanup, so the details it would fold stay open and
   // show it without the reader opening them, even when the record lands after the page showed.
   await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
@@ -294,11 +283,7 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
     fixture,
     detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
   );
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 1);
   const activity = await expectDeploymentOutcome(page, "In progress");
   await activity.getByText("Waiting for the runtime to become ready (attempt 1).").waitFor();
   await page
@@ -349,11 +334,7 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url.pathname + url.search);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 1);
   const activity = await expectDeploymentOutcome(page, "In progress");
   const panel = await activity.elementHandle();
   // The Console caches the Agent view for Back only if its reads finished before it was left.
@@ -419,11 +400,7 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
   );
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 1);
   await showDeploymentTab(page);
   const observations = page.locator(".version-diagnostics");
   await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
@@ -640,11 +617,7 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   );
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 1);
   await showDeploymentTab(page);
   const observations = page.locator(".version-diagnostics");
   await observations.getByText(/gateway checks cover only the Slack channel/).waitFor();
@@ -741,9 +714,8 @@ test("Agent detail hides sharing instead of showing an error to non-administrato
 // page loads therefore send no Installation-administration probe, and her Agent detail reads no
 // sharing policy; an administrator's session still asks both (finding D45).
 test("Only an administrator's session probes Installation administration and reads sharing policy", async (t) => {
-  const auditSink = new InMemoryAuditSink();
   const url = "https://metrics.example.test/d/operations";
-  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Audited access", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Audited Agent", nativeValues("x"));
@@ -754,7 +726,8 @@ test("Only an administrator's session probes Installation administration and rea
     requests
       .filter(({ path }) => path === "/observability" || path.includes("/iam/"))
       .map(({ method, path }) => `${method} ${path}`);
-  const adminDenials = () => authorizationDenials(auditSink, /^openclaw\.(observability|iam)\./);
+  const adminDenials = () =>
+    authorizationDenials(fixture.auditSink, /^openclaw\.(observability|iam)\./);
 
   const { page: member } = await newPage(t, fixture);
   await trackSettledFetches(member);
@@ -798,8 +771,7 @@ test("Only an administrator's session probes Installation administration and rea
 // which the API audits as a denial nobody attempted. An administrator still reads it, without
 // the list read (finding 2623).
 test("A member's Agent detail reads no bound Secret her Secret list leaves out", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Bound Secrets", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Bound model key", "hidden-model");
@@ -813,7 +785,7 @@ test("A member's Agent detail reads no bound Secret her Secret list leaves out",
   const secretReads = (requests) => requests.filter(({ path }) => path === secretPath);
   const listReads = (requests) =>
     requests.filter(({ path }) => path === `/namespaces/${namespace.id}/secrets`);
-  const secretDenials = () => authorizationDenials(auditSink, /^openclaw\.secrets\./);
+  const secretDenials = () => authorizationDenials(fixture.auditSink, /^openclaw\.secrets\./);
 
   const { page: member } = await newPage(t, fixture);
   await trackSettledFetches(member);
@@ -843,8 +815,7 @@ test("A member's Agent detail reads no bound Secret her Secret list leaves out",
 // gets no link, which would only open a refusal the API audits; the Credentials field says why
 // its name is unavailable, as the Configuration tab does.
 test("Credentials links a readable bound Secret to the Secrets page and explains an unreadable one", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Secret links", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Linked model key", "hidden-model");
@@ -867,7 +838,7 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   await waitForIdleFetches(member);
   assert.equal(await metadataLink(member).count(), 0);
   assert.equal(await member.getByText(BOUND_SECRET_METADATA, { exact: true }).count(), 0);
-  assert.deepEqual(authorizationDenials(auditSink, /^openclaw\.secrets\./), []);
+  assert.deepEqual(authorizationDenials(fixture.auditSink, /^openclaw\.secrets\./), []);
   // With Secret read, the same member's disabled field names the bound metadata and links it.
   grantMember(fixture, "link-reader", [["read", "secret"]]);
   await member.reload();
@@ -961,14 +932,13 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
 // refusal without reading Backends, which the API audits as a denial nobody attempted, on each
 // page load; an administrator still reads them.
 test("Only an administrator's Backends page reads Backends", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Backends access", { ready: true });
   const reader = await fixture.createNamespaceMember("backends-reader", namespace.id, AGENT_READ);
   const backendsPage = `/console/backends?namespace=${namespace.id}`;
   const backendsReads = (requests) => requests.filter(({ path }) => path === "/backends");
-  const backendsDenials = () => authorizationDenials(auditSink, /^openclaw\.backends\./);
+  const backendsDenials = () => authorizationDenials(fixture.auditSink, /^openclaw\.backends\./);
 
   const { page: member } = await newPage(t, fixture);
   await trackSettledFetches(member);
@@ -1006,19 +976,12 @@ test("Only an administrator's Backends page reads Backends", async (t) => {
 // Observability link, Settings' Installation Driver configuration and an Agent's Access tab, on
 // the first page load and after a reload.
 test("A Restriction on Agent create leaves an administrator's Installation pages", async (t) => {
-  const auditSink = new InMemoryAuditSink();
   const url = "https://metrics.example.test/d/operations";
-  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Create restricted", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Restricted Agent", nativeValues("x"));
-  fixture.policy.restrictions.push({
-    id: "deny-agent-create-here",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const backendsRead = () =>
@@ -1059,7 +1022,7 @@ test("A Restriction on Agent create leaves an administrator's Installation pages
   await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
   await page.getByRole("status").getByText(AGENT_CREATE_RESTRICTED, { exact: true }).waitFor();
   assert.deepEqual(
-    authorizationDenials(auditSink, /^openclaw\.(observability|backends|iam)\./),
+    authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends|iam)\./),
     [],
   );
 });
@@ -1070,8 +1033,7 @@ test("A Restriction on Agent create leaves an administrator's Installation pages
 // no permission answer to ask, so its one probe is refused and kept for the tab; Refresh probes
 // once more.
 test("Refresh and reload on the Backends refusal check Installation administration again", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Administered later", { ready: true });
   const memberGrants = [
@@ -1115,7 +1077,7 @@ test("Refresh and reload on the Backends refusal check Installation administrati
   }
   // Only the outsider's first probe was refused; no Backends read was.
   assert.deepEqual(
-    authorizationDenials(auditSink, /^openclaw\.(observability|backends)\./).map(
+    authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends)\./).map(
       (event) => event.action,
     ),
     ["openclaw.observability.read"],
@@ -1129,9 +1091,8 @@ test("Refresh and reload on the Backends refusal check Installation administrati
 // reload depends on the tab's stored answer, a Refresh on the in-memory one. A grant in between
 // reaches the console at Refresh, as before.
 test("A Backends refusal after administration is revoked is read and audited once", async (t) => {
-  const auditSink = new InMemoryAuditSink();
   const url = "https://metrics.example.test/d/operations";
-  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Revoked later", { ready: true });
   const account = await fixture.createNamespaceMember("revoked-administrator", namespace.id, [
@@ -1193,7 +1154,7 @@ test("A Backends refusal after administration is revoked is read and audited onc
   }
   // One audited refusal per revocation.
   assert.deepEqual(
-    authorizationDenials(auditSink, /^openclaw\.(observability|backends)\./).map(
+    authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends)\./).map(
       (event) => event.action,
     ),
     ["openclaw.backends.list", "openclaw.backends.list"],
@@ -1219,9 +1180,8 @@ async function waitForDriverSchemas(page) {
 // one such read to an administrator: the permission answer, which audits nothing, still says she
 // administers, so nothing settles.
 test("Installation-administration reads after a revoke are refused and audited once", async (t) => {
-  const auditSink = new InMemoryAuditSink();
   const url = "https://metrics.example.test/d/operations";
-  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Revoked mid-session", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Revoked model key", "hidden-model");
@@ -1239,7 +1199,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   const unlisted = page.getByText(BOUND_SECRET_UNLISTED, { exact: true });
   const adminDenials = () =>
     authorizationDenials(
-      auditSink,
+      fixture.auditSink,
       /^openclaw\.(observability|backends|iam|secrets|installation)\./,
     );
   const settingsUrl = `${fixture.origin}/console/settings?namespace=${namespace.id}`;
@@ -1330,13 +1290,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   await page.goto(agentUrl);
   await named.waitFor();
   assert.equal(await observability.getAttribute("href"), url);
-  fixture.policy.restrictions.push({
-    id: "deny-secret-read-here",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    action: "read",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "read", "secret", { namespaceId: namespace.id });
   await page.reload();
   await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
   await waitForIdleFetches(page);
@@ -1358,9 +1312,8 @@ test("Installation-administration reads after a revoke are refused and audited o
 // first administration read is audited and the rest are refused unsent, and Back sends none of
 // them again.
 test("Back to a kept Agent page after a revoke sends no more audited administration reads", async (t) => {
-  const auditSink = new InMemoryAuditSink();
   const url = "https://metrics.example.test/d/operations";
-  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Revoked before Back", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Kept model key", "hidden-model");
@@ -1373,7 +1326,7 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
   const observability = page.getByRole("link", { name: "Observability", exact: true });
   const adminDenials = () =>
     authorizationDenials(
-      auditSink,
+      fixture.auditSink,
       /^openclaw\.(observability|backends|iam|secrets|installation)\./,
     );
   const accessUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
@@ -1423,9 +1376,8 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
 // answer that would confirm her administration fails (here a 503). A failed answer is unknown, not
 // a refusal: she keeps the Observability link and the Access tab, and the next page load asks again.
 test("A failed permission answer after a Restriction refusal keeps an administrator's answer", async (t) => {
-  const auditSink = new InMemoryAuditSink();
   const url = "https://metrics.example.test/d/operations";
-  const fixture = await createConsoleAppFixture(t, { auditSink, observabilityUrl: url });
+  const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Permission outage", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Restricted model key", "hidden-model");
@@ -1439,13 +1391,7 @@ test("A failed permission answer after a Restriction refusal keeps an administra
   await page.getByRole("heading", { name: "Installation Driver configuration" }).waitFor();
   assert.equal(await observability.getAttribute("href"), url);
 
-  fixture.policy.restrictions.push({
-    id: "deny-secret-read-outage",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    action: "read",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "read", "secret", { namespaceId: namespace.id });
   const permissionsPath = `/namespaces/${namespace.id}/permissions`;
   const isPermissions = (address) => new URL(address).pathname === permissionsPath;
   await page.route(isPermissions, (route) =>
@@ -1470,7 +1416,7 @@ test("A failed permission answer after a Restriction refusal keeps an administra
   assert.equal(await page.getByRole("tab", { name: "Access", exact: true }).count(), 1);
   assert.deepEqual(
     authorizationDenials(
-      auditSink,
+      fixture.auditSink,
       /^openclaw\.(observability|backends|iam|secrets|installation)\./,
     ).map((event) => event.action),
     ["openclaw.secrets.read"],
@@ -1484,9 +1430,7 @@ test("A failed permission answer after a Restriction refusal keeps an administra
 // sent from the next one: one audited refusal, as when she stays. Signing out at the same point
 // sends nothing either.
 test("Reads waiting behind a pending administration read end with their page", async (t) => {
-  const auditSink = new InMemoryAuditSink();
   const fixture = await createConsoleAppFixture(t, {
-    auditSink,
     observabilityUrl: "https://metrics.example.test/d/operations",
   });
   await fixture.bootstrap();
@@ -1502,7 +1446,7 @@ test("Reads waiting behind a pending administration read end with their page", a
   // Sharing policy and a bound Secret by ID: the reads only an administrator's page sends.
   const administrationPath = (path) => /\/iam\/|\/secrets\/sec_/.test(path);
   const adminDenials = () =>
-    authorizationDenials(auditSink, /^openclaw\.(observability|backends|iam|secrets)\./);
+    authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends|iam|secrets)\./);
   const accessUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
   const sidebarLink = (name) => page.locator("nav").getByRole("link", { name, exact: true });
 
@@ -1599,11 +1543,7 @@ test("An unknown Installation access answer keeps the Access tab", async (t) => 
     fixture,
     detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
   );
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 1);
   await showDeploymentTab(page);
   const evidence = page.locator(".version-evidence");
   await evidence.waitFor();
@@ -1829,11 +1769,7 @@ test("Agent detail reports a failed dedicated replacement as probably not servin
 
   const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
   await login(page, fixture, url);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v1(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 1);
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("May be offline", { exact: true }).waitFor();
   await page
@@ -1865,11 +1801,7 @@ test("Agent detail reports a failed selected version as probably not serving", a
 
   const url = detailUrl(fixture, namespace.id, agent.id, selected.revision.id, "configuration");
   await login(page, fixture, url);
-  await page
-    .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
-    .filter({ hasText: /^v2(?: ·|$)/ })
-    .waitFor({ state: "attached" });
+  await waitForChosenVersion(page, 2);
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("May be offline", { exact: true }).waitFor();
   await page
@@ -2208,11 +2140,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
   };
   for (const c of neutralDeployments) {
     await page.goto(urls.get(c.agent).href);
-    await page
-      .getByLabel("Viewing version", { exact: true })
-      .getByRole("option", { selected: true })
-      .filter({ hasText: /^v1(?: ·|$)/ })
-      .waitFor({ state: "attached" });
+    await waitForChosenVersion(page, 1);
     await expectNeutral(c, c.error.code);
     // A neutral record is not a failure, so the version's notice does not call it failed. The
     // superseded v1 is not current (the hidden v2 is), so it is history.
