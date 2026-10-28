@@ -2592,6 +2592,10 @@ export const scenarios = {
     ],
     description:
       "The create form opens the same modal before an Agent exists. The default simulated Secret name follows the current Agent name.",
+    steps: [
+      "Enter a synthetic value, then click the gray backdrop. Only Create Secret closes; the Slack editor stays open.",
+      "Open Create new Secret again and confirm Value is empty. Press Escape, then cancel the Slack editor without creating an Agent.",
+    ],
   },
   createSecretRequiredFields: {
     group: "Pages/Create Agent",
@@ -6901,15 +6905,17 @@ export const scenarios = {
     name: "Slack create Secret modal",
     path: `${draft}&tab=channels`,
     slack: true,
+    agentName: "Research " + "engineering ".repeat(15) + "review team",
     actions: [
       click("Edit Slack"),
       { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
     ],
     description:
-      "Create new Secret opens a modal with an editable Agent-prefixed Name, a fixed Slack binding key, and a masked Secret value. Values are simulated and never read back.",
+      "A long Agent name produces a shortened, editable Secret Name that retains the Slack bot token purpose. Creation uses only the simulated service.",
     steps: [
-      "Enter a dummy value, then click the gray backdrop. Only Create Secret closes; the Slack editor stays open.",
-      "Open Create new Secret again and confirm Value is empty. Close it, then click the backdrop again to dismiss the Slack editor.",
+      "Inspect Name before editing: it contains an ellipsis, ends with Slack bot token, and fits the 200-character limit.",
+      "Replace Name with Walkthrough Slack bot token and enter synthetic-demo-token as Value. Select Create Secret.",
+      "Confirm Create Secret closes and Walkthrough Slack bot token is selected in the Slack editor. The binding is staged until you save the editor.",
     ],
   },
   slackDuplicateSecret: {
