@@ -338,10 +338,8 @@ RUN --mount=type=secret,id=build-ca,required=false \
     mkdir -p /usr/local/lib/oce/plugins/google/bin; \
     node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
 
-COPY apps/controller/plugins/oce-slack-search/skills/ /usr/local/lib/oce/plugins/slack/skills/
-COPY apps/controller/plugins/oce-slack-search/ai.openclaw.oce/release.json /usr/local/lib/oce/plugins/slack/release.json
-COPY --chmod=0755 apps/controller/plugins/oce-slack-search/bin/oce-slack-search.ts /usr/local/lib/oce/plugins/slack/bin/oce-slack-search.ts
-RUN ln -s oce-slack-search.ts /usr/local/lib/oce/plugins/slack/bin/oce-slack-search
+COPY apps/controller/plugins/oce-slack/mcp.json /usr/local/lib/oce/plugins/slack/mcp.json
+COPY apps/controller/plugins/oce-slack/ai.openclaw.oce/release.json /usr/local/lib/oce/plugins/slack/release.json
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/

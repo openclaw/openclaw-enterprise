@@ -1,15 +1,16 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "oce-slack-search",
+  "name": "oce-slack",
   "version": "1.0.0",
-  "description": "Install the Slack public-channel search command on a dedicated OpenClaw worker. Connecting a Slack user account is a separate step.",
+  "description": "Configure Slack’s hosted MCP server for public-channel search on a dedicated OpenClaw worker.",
   "author": { "name": "OpenClaw Enterprise" },
+  "homepage": "https://docs.slack.dev/ai/slack-mcp-server/",
   "repository": "https://github.com/openclaw/openclaw-enterprise",
   "license": "MIT",
   "extensions": {
     "ai.openclaw.oce": {
-      "id": "occ-plugin:slack-search",
-      "displayName": "Slack Search",
+      "id": "occ-plugin:slack",
+      "displayName": "Slack",
       "policyScope": "enablement_only",
       "release": "./ai.openclaw.oce/release.json"
     }

@@ -49,5 +49,5 @@ function loadManagedInstall(packageName: string, runtimeName: string) {
 }
 
 export const managedGoogleInstall = loadManagedInstall("oce-google-workspace", "google");
-export const managedSlackInstall = loadManagedInstall("oce-slack-search", "slack");
+export const managedSlackInstall = loadManagedInstall("oce-slack", "slack");
 export const managedInstalls = [managedGoogleInstall, managedSlackInstall] as const;

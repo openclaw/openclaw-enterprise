@@ -3,6 +3,6 @@
   "owner": { "name": "OpenClaw Enterprise" },
   "plugins": [
     { "name": "oce-google-workspace", "source": "./oce-google-workspace" },
-    { "name": "oce-slack-search", "source": "./oce-slack-search" }
+    { "name": "oce-slack", "source": "./oce-slack" }
   ]
 }

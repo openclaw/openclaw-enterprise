@@ -35,28 +35,8 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
 
-const google = {
-  install: managedGoogleInstall,
-  name: "Google",
-  executable: "gog",
-  package: "oce-google-workspace",
-  skill: "oce-google",
-};
-const slack = {
-  install: managedSlackInstall,
-  name: "Slack",
-  executable: "oce-slack-search",
-  package: "oce-slack-search",
-  skill: "oce-slack-search",
-};
-
-async function startManagedGateway(
-  t,
-  { install: { id, releaseSha256 }, name },
-  enabled,
-  workspaceNodeId,
-) {
-  const prefix = `OPENCLAW_MANAGED_${name.toUpperCase()}`;
+async function startGoogleGateway(t, enabled, workspaceNodeId) {
+  const { id, releaseSha256 } = managedGoogleInstall;
   const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
   const manifest = { kind: "openclaw", selections: { [id]: { enabled } } };
   return runGatewaySmoke(t, "openclaw", {
@@ -67,36 +47,21 @@ async function startManagedGateway(
     extraEnvironment: [
       ...(workspaceNodeId ? ["OPENCLAW_WORKSPACE_NODE_ID=" + workspaceNodeId] : []),
       "OPENCLAW_PLUGIN_RUNTIME_JSON=" + JSON.stringify({ manifest }),
-      prefix + "_PLUGIN_ID=" + id,
-      ...(enabled ? [prefix + "_RELEASE_SHA256=" + releaseSha256] : []),
+      "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID=" + id,
+      ...(enabled ? ["OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + releaseSha256] : []),
     ],
   });
 }
 
-function testManagedPluginInstallation(pkg) {
-  const { name, install, executable } = pkg;
-  const root = "/usr/local/lib/oce/plugins/" + name.toLowerCase();
-  test(
-    `the dedicated worker launches the pinned ${executable} on PATH only for the selected release`,
-    imageTestOptions,
-    async () => {
-      const releaseFile = new URL(
-        `../../apps/controller/plugins/${pkg.package}/ai.openclaw.oce/release.json`,
-        import.meta.url,
-      );
-      const { version } = JSON.parse(await readFile(releaseFile, "utf8"));
-      const expected = install.releaseSha256;
-      // Exercise the production worker bootstrap in the real image. Substitute its model probe and
-      // enrollment peer; the child resolves and executes the installed binary with the actual launch env.
-      const probe = `const r = require("node:child_process").spawnSync(${JSON.stringify(executable)}, [${JSON.stringify(name === "Google" ? "--version" : "--help")}], {encoding:"utf8"});
-console.log(JSON.stringify(r.error ? {code:r.error.code} : {output:r.stdout.trim()}));
-process.exit(r.error ? 0 : r.status);`;
-      const launch = `
+// Run the production worker bootstrap with its packaged files and child environment. The child
+// inspects the installed plugin in place of enrolling; the model probe uses a fixture.
+function runManagedWorker(plugin, childArgs, digest, mounts = []) {
+  const launch = `
 const cp = require("node:child_process"), realSpawn = cp.spawn;
 cp.spawnSync = () => ({status:0,stdout:JSON.stringify({auth:{probes:{results:[{provider:"openai",model:"openai/test",source:"env",status:"ok"}]}}})});
 cp.spawn = (command, args, options) => {
   require("node:assert/strict").deepEqual(args.slice(0, 2), ["/app/openclaw.mjs", "connect"]);
-  return realSpawn(command, ["-e", ${JSON.stringify(probe)}], options);
+  return realSpawn(command, ${JSON.stringify(childArgs)}, options);
 };
 Object.assign(process.env, {
   HOME:"/tmp/home", TMPDIR:"/tmp/worker-tmp", OPENCLAW_WORKSPACE_DIR:"/tmp/workspace", OPENCLAW_NODE_STATE_DIR:"/tmp/node",
@@ -105,66 +70,117 @@ Object.assign(process.env, {
   TEST_MODEL_KEY:"fixture", OPENCLAW_HARNESS_PROBE_CONFIG:'{"agents":{"defaults":{"model":"openai/test"}}}'
 });
 ${NATIVE_WORKER_ENTRYPOINT}`;
-      const worker = (digest, mounts = []) =>
-        runDocker(
-          [
-            "run",
-            "--rm",
-            "-i",
-            "--network",
-            "none",
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--tmpfs",
-            "/tmp:mode=1777",
-            ...(digest === undefined
-              ? []
-              : ["-e", `OPENCLAW_MANAGED_${name.toUpperCase()}_RELEASE_SHA256=${digest}`]),
-            ...mounts,
-            "--entrypoint",
-            "node",
-            image,
-            // The default OpenShell policy permits image reads under /usr and /app. Exercise
-            // the bootstrap with those roots plus its writable fixture home under /tmp.
-            "--permission",
-            "--allow-fs-read=/usr",
-            "--allow-fs-read=/app",
-            "--allow-fs-read=/tmp",
-            "--allow-fs-write=/tmp",
-            "--allow-child-process",
-            "-",
-          ],
-          {},
-          launch,
-        );
-      assert.deepEqual(JSON.parse((await worker(undefined)).stdout.trim()), { code: "ENOENT" });
-      const { output } = JSON.parse((await worker(expected)).stdout.trim());
-      if (name === "Google") {
-        assert.equal(output.split(" ")[0], "v" + version);
-      } else {
-        assert.match(output, /^Usage: oce-slack-search /);
-      }
-      await assert.rejects(worker("0".repeat(64)), (error) =>
-        error.stderr.includes("image integrity check: " + root + "/release.json"),
+  return runDocker(
+    [
+      "run",
+      "--rm",
+      "-i",
+      "--network",
+      "none",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--tmpfs",
+      "/tmp:mode=1777",
+      ...(digest === undefined
+        ? []
+        : ["-e", `OPENCLAW_MANAGED_${plugin}_RELEASE_SHA256=${digest}`]),
+      ...mounts,
+      "--entrypoint",
+      "node",
+      image,
+      // The default OpenShell policy permits image reads under /usr and /app. Exercise
+      // the bootstrap with those roots plus its writable fixture home under /tmp.
+      "--permission",
+      "--allow-fs-read=/usr",
+      "--allow-fs-read=/app",
+      "--allow-fs-read=/tmp",
+      "--allow-fs-write=/tmp",
+      "--allow-child-process",
+      "-",
+    ],
+    {},
+    launch,
+  );
+}
+
+// Each case uses a private container and run-owned fixtures. Two run at a time.
+describe("runtime image native worker", { concurrency: 2 }, () => {
+  test(
+    "the dedicated worker launches the pinned gog on PATH only for the selected release",
+    imageTestOptions,
+    async () => {
+      const releaseFile = new URL(
+        "../../apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json",
+        import.meta.url,
       );
-      for (const file of [
-        root + "/bin/" + executable,
-        root + "/skills/" + pkg.skill + "/SKILL.md",
-      ]) {
-        await assert.rejects(
-          worker(expected, ["-v", fileURLToPath(releaseFile) + ":" + file + ":ro"]),
-          (error) => error.stderr.includes("image integrity check: " + file),
-        );
-      }
+      const { version } = JSON.parse(await readFile(releaseFile, "utf8"));
+      const expected = managedGoogleInstall.releaseSha256;
+      // Exercise the production worker bootstrap in the real image. Substitute its model probe and
+      // enrollment peer; the child resolves and executes the installed binary with the actual launch env.
+      const probe = `const r = require("node:child_process").spawnSync("gog", ["--version"], {encoding:"utf8"});
+console.log(JSON.stringify(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}));
+process.exit(r.error ? 0 : r.status);`;
+      const worker = (digest, mounts) => runManagedWorker("GOOGLE", ["-e", probe], digest, mounts);
+      assert.deepEqual(JSON.parse((await worker(undefined)).stdout.trim()), { code: "ENOENT" });
+      assert.deepEqual(JSON.parse((await worker(expected)).stdout.trim()), {
+        version: "v" + version,
+      });
+      await assert.rejects(worker("0".repeat(64)), (error) =>
+        /image integrity check: \/usr\/local\/lib\/oce\/plugins\/google\/release\.json/.test(
+          error.stderr,
+        ),
+      );
+      await assert.rejects(
+        worker(expected, [
+          "-v",
+          fileURLToPath(releaseFile) + ":/usr/local/lib/oce/plugins/google/bin/gog:ro",
+        ]),
+        (error) =>
+          /image integrity check: \/usr\/local\/lib\/oce\/plugins\/google\/bin\/gog/.test(
+            error.stderr,
+          ),
+      );
     },
   );
 
   test(
-    `the native Gateway discovers the selected ${name} installation instructions`,
+    "the dedicated worker configures Slack's hosted MCP server only for the selected release",
+    imageTestOptions,
+    async () => {
+      // Use the native CLI with the enrolling node's config. This inspects installation offline.
+      const inspect = (digest, mounts) =>
+        runManagedWorker(
+          "SLACK",
+          ["/app/openclaw.mjs", "config", "get", "nodeHost", "--json"],
+          digest,
+          mounts,
+        );
+      const { releaseSha256 } = managedSlackInstall;
+      assert.equal(JSON.parse((await inspect(undefined)).stdout).mcp?.servers?.slack, undefined);
+      const { mcp } = JSON.parse((await inspect(releaseSha256)).stdout);
+      assert.deepEqual(mcp.servers.slack, {
+        enabled: false,
+        transport: "streamable-http",
+        url: "https://mcp.slack.com/mcp",
+        toolFilter: { include: ["slack_search_public"] },
+      });
+      const mcpPath = "/usr/local/lib/oce/plugins/slack/mcp.json";
+      const replacement = fileURLToPath(
+        new URL("../../apps/controller/plugins/oce-slack/plugin.json", import.meta.url),
+      );
+      await assert.rejects(
+        inspect(releaseSha256, ["-v", replacement + ":" + mcpPath + ":ro"]),
+        (error) => error.stderr.includes("image integrity check: " + mcpPath),
+      );
+    },
+  );
+
+  test(
+    "the native Gateway discovers the selected Google installation instructions",
     imageTestOptions,
     async (t) => {
-      const { containerName } = await startManagedGateway(t, pkg, true);
+      const { containerName } = await startGoogleGateway(t, true);
       const { stdout } = await runDocker([
         "exec",
         "-e",
@@ -174,18 +190,15 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
         "/app/openclaw.mjs",
         "skills",
         "info",
-        pkg.skill,
+        "oce-google",
         "--json",
       ]);
-      assert.equal(JSON.parse(stdout).filePath, root + "/skills/" + pkg.skill + "/SKILL.md");
+      assert.equal(
+        JSON.parse(stdout).filePath,
+        "/usr/local/lib/oce/plugins/google/skills/oce-google/SKILL.md",
+      );
     },
   );
-}
-
-// Each case uses a private container and run-owned fixtures. Two run at a time.
-describe("runtime image native worker", { concurrency: 2 }, () => {
-  testManagedPluginInstallation(google);
-  testManagedPluginInstallation(slack);
 
   test(
     "the node skill policy admits only the selected Google instructions",
@@ -196,7 +209,7 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
         "utf8",
       );
       for (const enabled of [false, true]) {
-        const { containerName } = await startManagedGateway(t, google, enabled, "a".repeat(64));
+        const { containerName } = await startGoogleGateway(t, enabled, "a".repeat(64));
         await runDocker(
           [
             "exec",

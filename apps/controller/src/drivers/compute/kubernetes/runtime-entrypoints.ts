@@ -4737,7 +4737,33 @@ const release = install?.release;
 const pluginBin = release?.capabilities.harness.includes("cli") ? join(install.root, "bin") : undefined;
 if (pluginBin) {
   const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
-  verifiedPluginFile(join(pluginBin, release.executable), release.executableSha256 ?? release.artifacts?.[architecture]?.binarySha256);
+  verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
+}
+
+// Node-host MCP eagerly discovers tools on startup. Stage the reviewed server until a user
+// connection can supply its scoped bearer through the worker's egress proxy.
+let nodeMcp;
+if (release?.capabilities.harness.includes("mcp")) {
+  const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
+  const manifest = JSON.parse(bytes);
+  const { server, tools } = release.credentials.account.mcp;
+  const endpoint = manifest.mcpServers[server];
+  if (
+    endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:" ||
+    !Array.isArray(tools) || tools.length === 0 || !tools.every((name) => typeof name === "string" && name.length > 0)
+  ) {
+    throw new Error("The managed MCP server declaration is invalid.");
+  }
+  nodeMcp = {
+    servers: {
+      [server]: {
+        enabled: false,
+        transport: endpoint.type,
+        url: endpoint.url,
+        toolFilter: { include: tools },
+      },
+    },
+  };
 }
 
 function nativeWorkerReady() {
@@ -4801,6 +4827,7 @@ writeFileSync(workerConfigPath, JSON.stringify({
     entries: { "file-transfer": { enabled: true } },
   },
   nodeHost: {
+    ...(nodeMcp && { mcp: nodeMcp }),
     workerRuns: {
       enabled: true,
       capacity: workerCapacity,

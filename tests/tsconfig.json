@@ -13,7 +13,6 @@
   "include": [
     "**/*.test.ts",
     "../deploy/runtime/google/install-gog.mts",
-    "../apps/controller/plugins/oce-slack-search/bin/oce-slack-search.ts",
     "../scripts/console-storybook/*.stories.ts",
     "../scripts/console/record-walkthrough.ts",
     "../packages/contracts/prepack.ts",

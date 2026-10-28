@@ -1,0 +1,23 @@
+{
+  "release": "slack-mcp-install-v1",
+  "placement": {
+    "harnessId": "openclaw",
+    "mode": "dedicated",
+    "computeImplementations": ["occ/kubernetes", "kubernetes-local"]
+  },
+  "capabilities": { "gateway": [], "harness": ["mcp"] },
+  "mcpServersSha256": "603e373ddecced71e6aa345b198ed1eed7750f2f26a68c63b666269a1d2cfe71",
+  "credentials": {
+    "account": {
+      "label": "Slack user account",
+      "issuer": "https://mcp.slack.com",
+      "requiredScopes": ["search:read.public"],
+      "delivery": { "role": "harness", "env": "SLACK_MCP_TOKEN", "presentation": "bearer" },
+      "mcp": {
+        "server": "slack",
+        "resource": "https://mcp.slack.com",
+        "tools": ["slack_search_public"]
+      }
+    }
+  }
+}

@@ -45,7 +45,6 @@
     "tests/integration/package-prepack.test.ts",
     "tests/integration/repository-credentials-restart.test.mjs",
     "tests/conformance/plugin-driver.test.mjs",
-    "tests/conformance/slack-search.test.ts",
     "tests/integration/ci-image-reconciliation.test.mjs",
     "tests/conformance/repository-runtime-material.test.mjs",
     "tests/integration/repository-credentials-server-timeout.test.mjs",
@@ -278,9 +277,6 @@
     },
     {
       "path": "tests/conformance/plugin-driver.test.mjs"
-    },
-    {
-      "path": "tests/conformance/slack-search.test.ts"
     },
     {
       "path": "tests/conformance/slack-channel-directory.test.mjs"

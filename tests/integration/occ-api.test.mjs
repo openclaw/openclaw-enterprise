@@ -9077,7 +9077,7 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   const driver = new OCCPluginDriver();
   controller.fixture.controller.registerDriver(driver);
   controller.fixture.controller.selectDriver("plugin", driver.id);
-  const packageId = "occ-plugin:slack-search@1.0.0";
+  const packageId = "occ-plugin:slack@1.0.0";
   const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       name: "Discovery Agent",
@@ -9121,7 +9121,7 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   const codexOffer = await discoverAndSave();
   assert.deepEqual(codexOffer.ids, []);
   assertApiError(codexOffer.save, 400, "INVALID_REQUEST");
-  assert.match(codexOffer.save.body.error.message, /Slack Search requires a dedicated OpenClaw/);
+  assert.match(codexOffer.save.body.error.message, /Slack requires a dedicated OpenClaw/);
   assertApiError(codexOffer.details, 400, "INVALID_REQUEST");
   assert.equal(codexOffer.details.body.error.message, codexOffer.save.body.error.message);
 
@@ -9143,7 +9143,7 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   const computeOffer = await discoverAndSave();
   assert.deepEqual(computeOffer.ids, []);
   assertApiError(computeOffer.save, 400, "INVALID_REQUEST");
-  assert.equal(computeOffer.save.body.error.message, "Slack Search requires Kubernetes Compute.");
+  assert.equal(computeOffer.save.body.error.message, "Slack requires Kubernetes Compute.");
   assertApiError(computeOffer.details, 400, "INVALID_REQUEST");
   assert.equal(computeOffer.details.body.error.message, computeOffer.save.body.error.message);
 });

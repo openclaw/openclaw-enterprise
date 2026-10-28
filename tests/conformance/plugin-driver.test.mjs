@@ -191,7 +191,7 @@ test("dedicated OpenClaw admits one managed installation and refuses credential 
     harness: { ...dedicated.harness, id: "openclaw" },
   });
   assert.equal(google.id, "occ-plugin:google@1.0.0");
-  assert.equal(slack.id, "occ-plugin:slack-search@1.0.0");
+  assert.equal(slack.id, "occ-plugin:slack@1.0.0");
   assert.equal(driver.policyCapabilities.policyScopeByPlugin[slack.id], "enablement_only");
   assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
   driver.validatePolicies({ [slack.id]: { enabled: false } });
