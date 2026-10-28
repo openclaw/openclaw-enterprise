@@ -51,7 +51,8 @@
       "path": "tests/integration/runtime-image-gateway-workspace.test.mjs",
       "expectedTests": [
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
-        "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace"
+        "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace",
+        "runtime image delivers a write-scoped run's Codex command approval to the reviewer and returns the verdict"
       ]
     },
     {
