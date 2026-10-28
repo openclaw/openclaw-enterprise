@@ -128,13 +128,13 @@ Cleanup validates ownership, deletes cluster/project/volumes, and retains partia
 
 ### 0.1. Read support and admit real Configuration
 
-`apps/controller/src/drivers/sandbox/openshell.ts:constructor` freezes
+`apps/controller/src/drivers/sandbox/openshell.ts:constructor` sets
 `supportsHarnessExecutionMode` from Installation settings.
 `packages/occ/src/index.ts:admitsOpenClawExecutionMode` reads that declaration
-with the native-worker and provisioning checks; it never calls `configureAgent`.
-The same check precedes real transforms in `agentRuntimeConfiguration` and
-provisioning writes. OCC preserves the Configuration and freezes validated
-results in the Agent revision. Status reads skip admission.
+with the native-worker and provisioning checks.
+Agent admission and provisioning writes check support before `configureAgent`
+transforms Configuration values. Deployment stores the validated result in the
+Agent revision. Provisioning status reads return stored work.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
@@ -383,6 +383,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 15:09: Clarify mode support and Configuration transformation wording. (01a183dc-eb11-7f33-9992-dec02cd989e3 - a06c28fe0e)
 
 - 2026-10-28 12:05: Separate static Harness mode reporting from real Configuration transformation. (01a183dc-eb11-7f33-9992-dec02cd989e3 - 07418d1980)
 

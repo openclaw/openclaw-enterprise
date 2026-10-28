@@ -1933,16 +1933,15 @@ export interface SandboxRepositoryAccess {
   isRouteBlockedError(error: unknown): boolean;
 }
 
-/** Static support for an OpenClaw mode; reasons name safe, actionable Installation settings. */
+/** OpenClaw mode support and an optional refusal caused by Installation settings. */
 export type HarnessExecutionModeSupport =
   | { readonly supported: true; readonly reason?: never }
   | { readonly supported: false; readonly reason?: string };
 
 export interface SandboxDriver extends Driver {
   /**
-   * OpenClaw mode support, fixed and deeply frozen at construction from Driver identity and
-   * Installation settings. This does not describe Codex or replace provisioning requirements.
-   * Refusal reasons must name a setting and corrective action, never private values or secrets.
+   * OpenClaw mode support, set in the constructor from Driver identity and Installation settings.
+   * Refusal reasons contain only the setting name and a corrective action.
    */
   readonly supportsHarnessExecutionMode: {
     readonly openclaw: Readonly<Record<HarnessExecutionMode, HarnessExecutionModeSupport>>;
@@ -2001,9 +2000,8 @@ export interface SandboxDriver extends Driver {
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void;
   /**
-   * Admit and transform real Agent Configuration for the resolved Harness. Installation reads
-   * use supportsHarnessExecutionMode instead. The result must preserve the selected runtime;
-   * OCC validates and freezes it in the Agent revision without changing the Configuration resource.
+   * Transform Agent Configuration values for the resolved Harness.
+   * OCC validates the result and stores it in the Agent revision.
    */
   configureAgent?(
     configuration: Readonly<OpenClawConfigurationDocument>,
