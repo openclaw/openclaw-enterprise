@@ -669,8 +669,15 @@ export function createDeploymentStatusPanel(
   }
 
   void loadStatus();
-  // The page calls rerender when what its failureText answers changes.
-  return Object.assign(section, { rerender: render });
+  // New permission or binding information can change a recorded failure's wording.
+  // It is not a user refresh of an unsuccessful read.
+  return Object.assign(section, {
+    rerender() {
+      if (record?.error) {
+        render();
+      }
+    },
+  });
 }
 
 // With shared, Deployment activity is reading this version's record, so the panel waits for
