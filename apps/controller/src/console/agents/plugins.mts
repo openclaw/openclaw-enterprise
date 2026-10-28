@@ -233,14 +233,15 @@ export function renderAgentPlugins(
       // A caller who may not update the Agent is not told to edit its selections (finding 2436).
       updateDenied
         ? "Plugin browsing needs Agent update access."
-        : apiKeyAuth
-          ? "Plugin browsing is unavailable with API-key authentication."
-          : !catalogCapabilityChecked
-            ? "Checking plugin catalog availability…"
-            : catalogCapabilityError
-              ? "Plugin browsing needs the plugin capabilities, which could not be read. Refresh this page, or edit existing plugin selections."
-              : !codex || openClawDriver
-                ? "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections."
+        : !catalogCapabilityChecked
+          ? "Checking plugin catalog availability…"
+          : catalogCapabilityError
+            ? "Plugin browsing needs the plugin capabilities, which could not be read. Refresh this page, or edit existing plugin selections."
+            : !codex || openClawDriver
+              ? "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections."
+              : // Only the Codex Plugin Driver's catalog depends on Codex auth (finding 2791).
+                apiKeyAuth
+                ? "Plugin browsing is unavailable with API-key authentication."
                 : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
