@@ -8,8 +8,9 @@ author: kevinlin-openai
 
 - **ID:** RFC-0024
 - **Created:** 2026-10-27
-- **Last updated:** 2026-10-27
+- **Last updated:** 2026-10-28
 - **RFC PR:** [#3907](https://github.com/openclaw/openclaw-enterprise/pull/3907)
+- **Implementation PR:** [#3909](https://github.com/openclaw/openclaw-enterprise/pull/3909)
 
 ## Decision and scope
 
@@ -68,6 +69,12 @@ enforcing managed requirements. OCE retains its existing execution admission,
 Sandbox, network, credential, and authorization boundaries. A definition that
 native requirements reject must fail readiness.
 
+This setting requires native managed policy to supply profile selection. With
+the pinned CLI, an API-key or unauthenticated app-server can initialize but
+reject configuration reads when definitions have no selected default. Such
+deployments must leave this setting unset unless native policy supplies that
+selection. This proposal adds no default-selection or authentication mechanism.
+
 Do not accept raw TOML, native configuration fragments, credentials, arbitrary
 filesystem grants, or corporate-specific defaults. Use neutral examples. Driver
 configuration is operator-owned and must not be merged into Agent-authored
@@ -105,10 +112,17 @@ The existing runtime artifact delivery limits still apply.
 
 ## Authentication probe
 
-The generated launcher writes the saved native configuration before authentication
-and the model probe. Remove `--ignore-user-config` from the probe so it can load
-that generated file from its Agent-owned `CODEX_HOME`. Keep its temporary working
-directory and temporary `HOME`; do not load an operator's home configuration.
+The generated launcher validates the runtime artifact and removes its prior
+generated `CODEX_HOME/config.toml` before login. After authentication succeeds,
+it writes the revision's saved configuration before the model probe and
+app-server. Native login must establish authentication before it can load
+managed policy; definitions without a local default can otherwise prevent
+login. Apply this order on restart too. Failed authentication still prevents
+the model probe and app-server from starting.
+
+Remove `--ignore-user-config` from the probe so it can load the generated file
+from its Agent-owned `CODEX_HOME`. Keep its temporary working directory and
+temporary `HOME`; do not load an operator's home configuration.
 
 Keep all other explicit guards: no approvals, ephemeral execution, ignored rules,
 no project instructions, disabled tools and integrations, read-only sandbox,
@@ -136,7 +150,9 @@ Required proof includes:
   Agent. Verify the saved profiles reach generated native configuration and
   remain unchanged after Driver configuration changes.
 - Verify native TOML parsing and preserve the probe's explicit restrictions,
-  endpoint, failure handling, and readiness conditions.
+  endpoint, failure handling, and readiness conditions. Cover fresh startup and
+  retained generated configuration, with authentication before configuration
+  installation and failed authentication preventing the model probe.
 - Run the actual emitted OCE probe with the authorized named service-account
   token and native CLI. Compare a baseline with no definitions against the fixed
   generated configuration. Keep tokens, private profile names, and raw diagnostic
