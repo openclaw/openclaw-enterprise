@@ -4996,6 +4996,7 @@ export const scenarios = {
     description:
       "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified. Deployment details keep Last recorded result, Reason and Since rows (not recorded yet), so the first result fills them in place.",
     steps: [
+      "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
       'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
     ],
   },
@@ -5072,6 +5073,7 @@ export const scenarios = {
     description:
       "One deployment status read fails while v7 is deploying. The notice keeps Deploying version rather than turning Historical, polling continues, and the next read records success and makes v7 current. The deployment, failure and activation are simulated.",
     steps: [
+      "Open Deployment before the first poll, choose folded or expanded details, and Tab to Run diagnostics for this version. The transient failure preserves that choice and the visible focused control; the selected record clears its old outcome and shows the error outside the fold. Reset to repeat the other choice. The later completion is a terminal result, not routine pending recovery.",
       'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment reads "v7 · Unavailable" and the notice still begins "Deploying version".',
       'Within about 10 s the notice begins "Current version" and Selected for service reads v7, with no "Historical version" in between.',
     ],
@@ -5797,6 +5799,10 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007",
         status: 503,
       },
+    ],
+    steps: [
+      "Fold Deployment details. The selected record still shows the read error outside the fold with one visible alert. Expand again: the activity owns that alert instead of announcing it twice.",
+      "Fold and press Refresh deployment. The same failed read opens the details again; this explicit action differs from a routine transient poll.",
     ],
     description:
       "The latest deployment record cannot be read. Version history and the selected version remain distinct from the status error.",

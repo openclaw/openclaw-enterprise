@@ -1858,6 +1858,23 @@ select:not([multiple])[size="1"] {
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
+/* Size the selected result for its wrapped generic failures as well as its record.
+   Actual errors remain in normal flow and can grow beyond these sizing copies. */
+.version-deployment-result {
+  display: grid;
+}
+.version-deployment-result > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.version-deployment-error-size {
+  visibility: hidden;
+  pointer-events: none;
+}
+.version-deployment-error-size [data-message]::before {
+  content: attr(data-message);
+}
+
 .deployment-heading,
 .agent-version-heading {
   display: flex;
@@ -2028,6 +2045,10 @@ select:not([multiple])[size="1"] {
 .agent-deployment-panels {
   display: grid;
   gap: var(--space-5);
+}
+.agent-deployment-panels :focus-visible {
+  /* Leave the keyboard outline visible when a refusal expands the panel. */
+  scroll-margin-block: var(--space-2);
 }
 .agent-deployment-panels > * {
   margin: 0;

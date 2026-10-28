@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-28
-last_updated_session: authoring-run/4573d808-e28c-4e0f-8c52-faacba26092a
+last_updated_session: fix-3285
 ---
 
 # Console Agent editing and runtime requests
@@ -67,36 +67,39 @@ The page reads Agent, readable versions, and current Configuration
 payload-decode failures into metadata plus `configurationReadError`; queries
 and operational reads remain strict. Drafts and versions decode independently.
 Navigation stays; unreadable drafts refuse editing and deployment without defaults.
-**Selected for service** uses `activeRevisionId`; **Viewing version** opens read-only
-details without activating it. Its picker includes the saved draft and loaded versions.
-**Load older versions** appends another page, keeps the viewed version, and returns focus
-to the picker when no more pages remain. **Deployment** contains the newest readable
-version's activity (`agents/deployment-evidence.mts`), the viewed version's record, and diagnostics.
-Hidden panels stay mounted and polling. The picker
-marks failed versions from listed `deploymentStatus` and `deploymentErrorCode`, surviving
-reloads; superseded or stopped endings stay unmarked.
-`detail.mts:renderTab` shows snapshot-read errors inside Deployment. Transient failures
-offer **Retry**, which rereads the same version on that tab.
-Routine completion folds. Pending work, startup warnings, and incomplete cleanup also
-show an attention message outside Deployment, linking to the affected version.
-Deployment recovery remains above the summary when a deployment fails.
-A first read after `FIRST_ACTIVITY_WAIT_MS` shows its outcome folded unless cleanup,
-warnings, or an overview error expand it. If an
-overview refresh fails, the page keeps the outcome and an attention notice outside Deployment.
+**Selected for service** uses `activeRevisionId`; **Viewing version** selects a draft
+or read-only version without activation. **Load older versions** appends pages,
+retains selection, and focuses the picker after the last page. The picker marks
+failures from `deploymentStatus` and `deploymentErrorCode` across reloads, excluding
+superseded/stopped outcomes.
 
-`agents/deployment-recovery.mts` shows API failure recovery.
-`deployment-failure-steps.ts`, served at `/console/deployment-failure-steps.mjs`, classifies
-codes as `deploy-again`, `logs` or `change`. Denied log-text or version reads hide Logs for this sign-in.
-**Open Configuration** requires Configuration `update`, bound Secret `operate`
-and no known read denial. Read-only **Open draft** and **Deploy again** (`deploy-again` codes)
-require `deploy` and readable Configuration; **Deploy again** focuses **Deploy new version**.
-Credentials recovery requires Agent saves. Hidden or unlisted current versions suppress recovery;
-viewed versions show results. Activity polls every `DEPLOYMENT_POLL_MS` through transient errors
-until completion, denial or a missing record, patching in place (`patchChildren`). Terminal polls
-quietly reread record, Agent and revisions. **Refresh deployment** acknowledges immediately,
-queuing one full reread behind quiet work. Pending deploys reserve initial result rows
-and retain their tallest height until settled.
-**Refresh record** preserves keyboard focus, ignores repeats while reading and never steals focus.
+**Deployment** mounts the newest readable activity, selected record, and diagnostics
+(`agents/deployment-evidence.mts`); polling continues across tabs.
+`detail.mts:renderTab` shows snapshot errors with **Retry** for transient failures.
+Routine completion starts folded. Late first reads after `FIRST_ACTIVITY_WAIT_MS`
+stay folded unless cleanup, warnings, or overview errors require expansion.
+Pending work, warnings, cleanup and failed overview refreshes retain attention
+outside Deployment; overview errors retain the recorded outcome.
+
+`createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` through transient
+errors until completion or refusal, patching in place. Pending polls and recovery
+preserve disclosure choice and measured height. Distinct refusal evidence and
+manual failed refreshes reveal errors. Terminal polls quietly reread record,
+Agent and revisions; **Refresh deployment** acknowledges immediately and queues
+one full reread behind quiet work. **Refresh record** retains focus and ignores
+repeats. `createVersionDeploymentEvidence.fail` clears the selected record and
+invalidates older reads; initial transient failures permit fallback. Reserved
+wrapped-error space protects diagnostics position. Disclosure/tab changes give
+one matching visible error the alert role.
+
+`agents/deployment-recovery.mts` places failure recovery above the summary;
+`deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
+Denied log/version reads hide Logs for this sign-in. **Open Configuration** requires
+Configuration `update`, bound Secret `operate`, and no known read denial.
+Read-only **Open draft** and **Deploy again** (`deploy-again`) require `deploy` and readable
+Configuration; the latter focuses **Deploy new version**. Credential recovery
+requires Agent saves. Hidden/unlisted current versions suppress recovery; viewed
+versions retain their results.
 **Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
@@ -317,6 +320,9 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Debugging and Verification
 
+- Run `node --test tests/browser/console-deployment-activity.test.ts` for
+  Controller-backed desktop/phone disclosure and refusal checks, not runtime proof.
+
 - A denied Secret list requires collection `read`; a missing menu entry may lack
   exact Secret `read`.
 - After a partial save, inspect Configuration, Secret metadata, and Agent IAM
@@ -337,6 +343,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 13:53: Keep the reader’s fold through routine polls and show failed record checks outside it. (fix-3285 - 14f6d94db)
 
 - 2026-10-28 11:48: Quiet refresh (uncommitted). (authoring-run/4573d808-e28c-4e0f-8c52-faacba26092a - 8b5bee3ef01644cf7731f68794fe87d6b4b1d265)
 

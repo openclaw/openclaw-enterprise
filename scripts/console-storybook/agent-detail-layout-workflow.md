@@ -37,3 +37,18 @@ simulated API state; they do not prove persistence or live runtime behavior.
    its reset steps to check **Refresh deployment** with a stationary pointer
    through completion and the delayed overview reread. Repeat with a click during
    that reread: busy feedback is immediate and only one user refresh follows.
+
+8. In **New version queued**, fold **Deployment details**, then Tab to **Run
+   diagnostics for this version**. Routine polls keep the fold and the visible
+   focused button in place. Repeat expanded, at desktop and phone widths.
+   In **New version in progress, one status read fails**, open Deployment before
+   the failed poll. The fold stays as chosen through the transient error; the
+   selected record shows the error outside it, with one visible alert. Completion
+   is a terminal result and can expand the details. In **Deployment activity
+   unavailable**, fold the error and press **Refresh deployment**: the repeated
+   error is revealed again.
+   These stories simulate responses. The real Controller browser regression in
+   `tests/browser/console-deployment-activity.test.ts` additionally checks queued →
+   503 → queued, queued → running, a final 403/404, and a delayed success delivered
+   after refusal. Run it for the actual controls and response envelopes; Storybook
+   is not proof of those Controller responses.

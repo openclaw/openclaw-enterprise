@@ -1686,6 +1686,7 @@ export async function renderAgentDetail(
       if (view.classList.contains("agent-detail-pending")) {
         view.classList.remove("agent-detail-pending");
       }
+      versionRecord?.render();
       scrollOnReveal?.();
       markRevealed();
     };
@@ -1774,6 +1775,7 @@ export async function renderAgentDetail(
   let latestRevisionResult: RevisionResult | null = null;
   let latestDeploymentStatus: DeploymentOutcome | null = null;
   let latestDeploymentUnavailable = false;
+  let latestDeploymentReadError: unknown = null;
   let latestDeploymentRecord: AgentDeploymentStatusWire | null = null;
   // Whether the newest version's panel last failed to refresh the Agent or its versions.
   let latestOverviewUnavailable = false;
@@ -2493,6 +2495,7 @@ export async function renderAgentDetail(
       latestDeploymentRecord = null;
       latestOverviewUnavailable = false;
       latestDeploymentUnavailable = false;
+      latestDeploymentReadError = null;
       // On first load the newest version's panel replaces the loading placeholder once its
       // first status read settles, in the same frame as the summary and status line, so the
       // page below moves once instead of once for an empty panel and again for the status.
@@ -2520,7 +2523,14 @@ export async function renderAgentDetail(
                 { status: "fulfilled", value: revisionsForPage(freshRevisions) },
                 snapshot,
               ),
-            ({ outcome: status, readFailed, record, overviewUnavailable, transientFailure }) => {
+            ({
+              outcome: status,
+              readFailed,
+              readError,
+              record,
+              overviewUnavailable,
+              transientFailure,
+            }) => {
               if (activityRevisionId !== mostRecent.id) {
                 return;
               }
@@ -2538,16 +2548,17 @@ export async function renderAgentDetail(
               }
               latestOverviewUnavailable = overviewUnavailable;
               latestDeploymentUnavailable = readFailed;
+              latestDeploymentReadError = readError;
               if (record?.error?.code === "RUNTIME_AUTHENTICATION_FAILED") {
                 void readLatestRevisionDetail(mostRecent);
               }
               latestDeploymentRecord = record;
               if (mostRecent.id === selected) {
-                // After a failed read, the version's record panel reads its record itself.
+                // Share success and failure only with this same selected version.
                 if (record) {
                   versionRecord?.show(record);
                 } else {
-                  versionRecord?.release();
+                  versionRecord?.fail(readError);
                 }
               }
               renderLatestDeployment();
@@ -2583,7 +2594,17 @@ export async function renderAgentDetail(
       if (!mostRecent || !firstLoad) {
         showPanel(nextPanel);
       }
+      nextPanel.addEventListener(
+        "toggle",
+        () => {
+          if (context.isCurrent() && activityPanel === nextPanel) {
+            versionRecord?.render();
+          }
+        },
+        true,
+      );
       activityRevisionId = mostRecent?.id ?? null;
+      versionRecord?.render();
     }
     renderLatestDeployment();
     return revisions;
@@ -2695,7 +2716,28 @@ export async function renderAgentDetail(
     }
     if ("revision" in found) {
       versionRecord = createVersionDeploymentEvidence(context, path, selected, {
-        shared: activityRevisionId === selected && !latestDeploymentUnavailable,
+        shared: activityRevisionId === selected,
+        hasVisibleReadError: (cause) => {
+          if (activityRevisionId !== selected || !latestDeploymentUnavailable) {
+            return false;
+          }
+          const primary = requestFailure(latestDeploymentReadError);
+          const selectedError = requestFailure(cause);
+          // An independent record read keeps its alert unless the same failure is visible above.
+          const sameFailure =
+            latestDeploymentReadError === cause ||
+            (primary.status !== undefined &&
+              primary.status === selectedError.status &&
+              primary.code === selectedError.code);
+          return (
+            sameFailure &&
+            Boolean(
+              activityPanel
+                .querySelector<HTMLElement>(".deployment-evidence-content > [role=alert]")
+                ?.checkVisibility({ visibilityProperty: true }),
+            )
+          );
+        },
         operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
         isCurrentVersion: () => currentRevisionId === selected,
         // After a reload only the latest record feeds the cache, so an earlier failed version
@@ -2713,6 +2755,8 @@ export async function renderAgentDetail(
       versionRecord.setFailureShownAbove(recoveryRevisionId === selected);
       if (latestDeploymentRecord?.deploymentId === selected) {
         versionRecord.show(latestDeploymentRecord);
+      } else if (activityRevisionId === selected && latestDeploymentUnavailable) {
+        versionRecord.fail(latestDeploymentReadError);
       }
       return {
         snapshot: found,
@@ -3758,6 +3802,7 @@ export async function renderAgentDetail(
     const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
     deploymentPanels.hidden = selectedTab !== "deployment";
+    versionRecord?.render();
     content.hidden = selectedTab === "deployment";
     pageDisclosure.hidden = selected !== "draft" && !["deployment", "access"].includes(selectedTab);
     deploymentAttention.hidden =
