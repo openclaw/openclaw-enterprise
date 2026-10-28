@@ -39,3 +39,8 @@ simulated API state; they do not prove persistence or live runtime behavior.
    confirmation, then Cancel. Check **Denied** still offers no Stop control.
    These stories do not prove revision filtering or Stop authorization; the mixed-history
    browser regression exercises those through the Controller and Native IAM.
+   Confirm Stop: its result replaces the action description, without repeating it.
+   On desktop, scroll to Stop and check that the sidebar stays at the viewport's
+   top edge. Capture scrolled states at viewport size, not with a full-page image:
+   a full-page image places sticky navigation at the current document scroll offset.
+   For a full-page overview, return to the top before capturing.

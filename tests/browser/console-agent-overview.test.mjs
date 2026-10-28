@@ -591,7 +591,7 @@ for (const surface of ["list", "detail"]) {
     if (surface === "detail") {
       await page
         .getByRole("region", { name: "Stop Agent", exact: true })
-        .getByText("Stops this Agent. The Agent stays and can be deployed again.", { exact: true })
+        .getByText("Stops this Agent without deleting its data.", { exact: true })
         .waitFor();
     }
     assert.equal(
@@ -599,6 +599,13 @@ for (const surface of ["list", "detail"]) {
       0,
     );
     await stop.click();
+    if (surface === "detail") {
+      // Stop is below the fold. Sticky navigation must stay at the viewport's edge,
+      // not move with the document as the operator opens the confirmation.
+      const sidebar = await page.locator(".sidebar").boundingBox();
+      assert.ok(Math.abs(sidebar.y) < 1);
+      assert.ok((await page.evaluate(() => globalThis.scrollY)) > 0);
+    }
     const dialog = page.getByRole("dialog", {
       name: surface === "list" ? `Stop ${agent.name}?` : "Stop this Agent?",
     });
@@ -617,6 +624,15 @@ for (const surface of ["list", "detail"]) {
     assert.equal(stoppedBody.data.id, agent.id);
     assert.equal(stoppedBody.data.desiredRuntimeState, "stopped");
     await dialog.waitFor({ state: "hidden" });
+    if (surface === "detail") {
+      const region = page.getByRole("region", { name: "Stop Agent", exact: true });
+      assert.equal(await region.locator(".danger-zone-text > p").isVisible(), false);
+      await region
+        .getByText("No version is selected. Deploy a new version to start this Agent.", {
+          exact: true,
+        })
+        .waitFor();
+    }
     assert.equal(
       requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length,
       1,

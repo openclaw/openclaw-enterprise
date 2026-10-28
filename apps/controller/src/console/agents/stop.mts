@@ -81,14 +81,15 @@ export function createAgentStop(
     const requested = state.agent.desiredRuntimeState === "stopped";
     // A failed readable deployment can hide newer queued work. As on the Agents list,
     // its outcome informs confirmation copy, not whether Agent-level Stop is available.
-    let summaryText = "Stops this Agent. The Agent stays and can be deployed again.";
+    let summaryText = "Stops this Agent without deleting its data.";
     if (cancelsFirstDeployment(state.agent, state.latestDeployment)) {
-      summaryText =
-        "Cancels the deployment in progress. The Agent stays and can be deployed again.";
+      summaryText = "Cancels this deployment without deleting Agent data.";
     } else if (state.agent.activeRevisionId || state.latestDeployment === "succeeded") {
-      summaryText = "Stops the running version. The Agent stays and can be deployed again.";
+      summaryText = "Stops the running version without deleting Agent data.";
     }
     setText(summary, summaryText);
+    // The result below replaces the action description once Stop has been requested.
+    setHidden(summary, requested);
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
     feedback.replaceChildren(
@@ -114,9 +115,9 @@ export function createAgentStop(
               null,
               // Initial drafts and completed stops both have no selected revision.
               state.agent.activeRevisionId
-                ? "Stop requested. This Agent will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down."
+                ? "Stop requested. Deploy a new version to restart. Runtime shutdown is not verified here."
                 : state.cancelledFirstDeployment
-                  ? "Stop requested. The deployment in progress is cancelled, and this Agent will not start until you deploy a new version."
+                  ? "Deployment cancelled. Deploy a new version to restart."
                   : "No version is selected. Deploy a new version to start this Agent.",
             ),
           ]
