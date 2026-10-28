@@ -9,14 +9,30 @@
   },
   "types": "./src/index.ts",
   "files": [
-    "src"
+    "prepack.ts",
+    "src",
+    "dist/**/*.js",
+    "dist/**/*.mjs",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.mts"
   ],
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
   "dependencies": {
     "@openclaw-enterprise/utils": "workspace:*",
     "typebox": "1.4.2"
   },
   "scripts": {
     "build": "tsc --build tsconfig.json --pretty false",
+    "prepack": "node prepack.ts",
     "typecheck": "tsc --build tsconfig.json --pretty false"
   }
 }

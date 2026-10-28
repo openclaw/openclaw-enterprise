@@ -269,18 +269,44 @@ function assertLowercaseHeaderName(name: unknown): void {
   }
 }
 
+// Escapes whose letters are syntax, not header-name characters: hex code points (decoded and
+// checked), Unicode properties, control letters, class escapes such as \S and \W, and group
+// names, which never match input.
+const PATTERN_SYNTAX =
+  /\\(?:u\{([0-9a-fA-F]+)\}|u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|[pP]\{[^}]*\}|k<[^>]*>|c[A-Za-z]|.)|\(\?<(?![=!])[^>]*>/gsu;
+
+// A pattern is matched against the lowercased name, so an uppercase letter it names (outside
+// escapes, including inside a character class or an inline (?i:) group) can never match one.
+// Write header-name patterns in lowercase: [a-z] already matches every name [A-Za-z] would.
+function assertLowercaseHeaderPattern(pattern: unknown): void {
+  if (typeof pattern !== "string") {
+    return;
+  }
+  const literals = pattern.replace(PATTERN_SYNTAX, (_escape, braced, unicode, hex) => {
+    const codePoint = Number.parseInt(braced ?? unicode ?? hex ?? "", 16);
+    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : "";
+  });
+  if (literals !== literals.toLowerCase()) {
+    throw new Error(`Route headers schemas must name headers in lowercase: ${pattern}`);
+  }
+}
+
 // Request header names arrive lowercased, but Fastify passes headers schemas unchanged to
-// custom compilers. Refuse a literal in another case rather than let it silently never match.
+// custom compilers. Refuse a literal or pattern in another case rather than let it silently
+// never match. $ref targets are not followed.
 function assertLowercaseHeaders(route: { schema?: unknown; httpPart?: unknown }): void {
   if (route.httpPart !== "headers") {
     return;
   }
-  for (const { properties, required, propertyNames } of sameInstanceSchemas(
+  for (const { properties, patternProperties, required, propertyNames } of sameInstanceSchemas(
     route.schema,
     "headers",
   )) {
     if (typeof properties === "object" && properties !== null) {
       Object.keys(properties).forEach(assertLowercaseHeaderName);
+    }
+    if (typeof patternProperties === "object" && patternProperties !== null) {
+      Object.keys(patternProperties).forEach(assertLowercaseHeaderPattern);
     }
     if (Array.isArray(required)) {
       required.forEach(assertLowercaseHeaderName);
@@ -290,6 +316,7 @@ function assertLowercaseHeaders(route: { schema?: unknown; httpPart?: unknown })
       if (Array.isArray(rule.enum)) {
         rule.enum.forEach(assertLowercaseHeaderName);
       }
+      assertLowercaseHeaderPattern(rule.pattern);
     }
   }
 }

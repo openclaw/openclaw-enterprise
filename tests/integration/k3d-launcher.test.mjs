@@ -64,6 +64,7 @@ async function runLauncher(
     inheritedBaseUrl = "",
     preparedModel,
     preparedBaseUrl,
+    namespaceListFailure = false,
   } = {},
 ) {
   const root = await temporaryDirectory(context, `oce-k3d-${engine}-launcher-`);
@@ -77,6 +78,7 @@ async function runLauncher(
   const prepareCount = join(root, "prepare-count");
   const imagePulls = join(root, "image-pulls");
   const clipboard = join(root, "clipboard");
+  const resetCalled = join(root, "reset-called");
   await mkdir(bin);
 
   await writeCommand(bin, "uname", `printf '${platform}\\n'\n`);
@@ -137,7 +139,12 @@ exit 90
     bin,
     "kubectl",
     `case "$*" in
-  *"get namespaces"*) exit 0 ;;
+  *"get namespaces"*)
+    if [ '${namespaceListFailure}' = true ]; then
+      printf 'namespace inventory unavailable\\n' >&2
+      exit 37
+    fi
+    exit 0 ;;
 esac
 exit 91
 `,
@@ -171,7 +178,7 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   printf '%s\n' '${preparedModel === undefined ? "" : `OCC_TEST_OPENAI_MODEL=${preparedModel}`}' '${preparedBaseUrl === undefined ? "" : `${selectedHarness === "openclaw" ? "OCC_TEST_OPENSHELL_MODEL_BASE_URL" : "OCC_TEST_CODEX_OPENAI_BASE_URL"}=${preparedBaseUrl}`}' >> '${join(state, "env")}'
   exit 0
 fi
-if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.mjs'; then exit 0; fi
+if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.mjs'; then touch '${resetCalled}'; exit 0; fi
 if printf '%s' "$*" | grep -q 'scripts/ci/cleanup.mjs'; then rm -f '${join(state, "state.json")}'; exit 0; fi
 node_args="$*"
 /usr/bin/env -i PATH=/usr/bin:/bin INVOCATION='${invocation}' NODE_ARGS="$node_args" DOCKER_HOST="\${DOCKER_HOST:-}" OCC_DOCKER_BIN="$OCC_DOCKER_BIN" PODMAN_COMPOSE_PROVIDER="\${PODMAN_COMPOSE_PROVIDER:-}" OCC_K3D_DEMO_STATE="\${OCC_K3D_DEMO_STATE:-}" OCC_K3D_HARNESS="\${OCC_K3D_HARNESS:-}" OPENSHELL_HARNESS="\${OCC_TEST_OPENSHELL_HARNESS:-}" /bin/sh -c 'printf "{\\"args\\":\\"%s\\",\\"dockerHost\\":\\"%s\\",\\"containerBin\\":\\"%s\\",\\"composeProvider\\":\\"%s\\",\\"demoState\\":\\"%s\\",\\"harness\\":\\"%s\\",\\"openShellHarness\\":\\"%s\\"}\\n" "$NODE_ARGS" "$DOCKER_HOST" "$OCC_DOCKER_BIN" "$PODMAN_COMPOSE_PROVIDER" "$OCC_K3D_DEMO_STATE" "$OCC_K3D_HARNESS" "$OPENSHELL_HARNESS" > "$INVOCATION"'
@@ -276,6 +283,15 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
       XDG_STATE_HOME: join(root, "state"),
       PATH: clipboardCommand === "pbcopy" ? `${bin}:/usr/bin:/bin` : `${bin}:/bin`,
     },
+  }).catch(async (error) => {
+    if (namespaceListFailure) {
+      await assert.rejects(access(resetCalled), { code: "ENOENT" });
+      await access(join(state, "env"));
+      await access(join(state, "state.json"));
+      await assert.rejects(access(join(state, "reset")), { code: "ENOENT" });
+      assert.doesNotMatch(error.stdout, /test state reset; cluster and images preserved/);
+    }
+    throw error;
   });
 
   if (staleDemo) {
@@ -437,6 +453,17 @@ test("k3d fails immediately without a model credential in non-interactive use", 
 test("k3d reset does not require a model credential", async (context) => {
   const output = await runLauncher(context, "docker", ["reset"], { apiKey: "" });
   assert.match(output, /test state reset; cluster and images preserved/);
+});
+
+test("k3d reset stops before the database reset when namespace enumeration fails", async (context) => {
+  await assert.rejects(
+    runLauncher(context, "docker", ["reset"], { apiKey: "", namespaceListFailure: true }),
+    (error) => {
+      assert.equal(error.code, 37);
+      assert.match(error.stderr, /namespace inventory unavailable/);
+      return true;
+    },
+  );
 });
 
 test("k3d reset removes a stale demo marker", async (context) => {

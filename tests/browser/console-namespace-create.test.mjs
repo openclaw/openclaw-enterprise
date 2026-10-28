@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.mjs";
 import {
   CONSOLE_NAMESPACE_CREATE_DENIED,
   NAMESPACE_NAME_CONFLICT,
@@ -46,8 +45,7 @@ const focusReturnsToOpener = (page) =>
   );
 
 test("create a Namespace from the console, then open its Agent workflow", async (t) => {
-  const audit = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
@@ -102,7 +100,7 @@ test("create a Namespace from the console, then open its Agent workflow", async 
   const created = listed.data.find((item) => item.name === "Support team");
   assert.equal(created.status, "provisioning");
   assert.ok(
-    audit
+    fixture.auditSink
       .list()
       .some(
         (event) =>
@@ -347,8 +345,7 @@ test("a creator who cannot read Namespaces is told so instead of offered Open Ag
 });
 
 test("a member is not invited to create, and a real IAM denial disables Create Namespace", async (t) => {
-  const audit = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const limited = await fixture.createAccountWithPolicy("namespace-member", () => {});
   const { page } = await newPage(t, fixture, {
@@ -415,7 +412,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
     ),
     false,
   );
-  assert.ok(authorizationDenials(audit, "openclaw.namespaces.create").length > 0);
+  assert.ok(authorizationDenials(fixture.auditSink, "openclaw.namespaces.create").length > 0);
 });
 
 // Creates a Namespace through the open page's dialog and returns its error alert, if any.
@@ -494,12 +491,7 @@ test("an unknown administrator answer keeps Create Namespace the primary action"
   assert.equal(await isPrimary(opener), true);
   // With no readable Namespace (the bootstrapped one is denied), the caller may be a member, so
   // the empty list still says who gives access (finding 2583).
-  fixture.policy.restrictions.push({
-    id: "deny-namespace-read",
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "read", "namespace");
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
   assert.equal(

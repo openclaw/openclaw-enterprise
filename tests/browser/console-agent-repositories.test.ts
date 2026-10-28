@@ -44,6 +44,7 @@ import {
   REPOSITORY_ACCESS_NOT_CONFIGURED,
   REPOSITORY_SETUP_ASK,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 test("Agent repository access labels target the right repository when references overlap", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
@@ -731,13 +732,7 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
     `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
     async (route) => {
       const response = await route.fetch();
-      fixture.policy.restrictions.push({
-        id: "deny-repository-plugin-create",
-        namespaceId: namespace.id,
-        resourceKind: "agent",
-        action: "create",
-        effect: "deny",
-      });
+      restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
       await route.fulfill({ response });
     },
     { times: 1 },
@@ -851,13 +846,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   // A known denial preserves edits and allows correction; it is not an uncertain write.
   await page.locator(".repository-profile-group .repository-customize summary").click();
   await page.locator("#repository-default-issues").check();
-  fixture.policy.restrictions.push({
-    id: "deny-repository-update",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "update",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "update", "agent", { namespaceId: namespace.id });
   await save.click();
   await page.getByText(AGENT_SAVE_DENIED, { exact: true }).waitFor();
   await waitForEnabled(save);

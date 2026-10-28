@@ -96,7 +96,7 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.163.0-alpha.2`                                                                                                 |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The source's package version is `2026.10.7`; it does not identify this custom
+The source's package version is `2026.10.8`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
@@ -125,8 +125,9 @@ requires registry access.
 
 [openclaw-source.json](openclaw-source.json) selects the OpenClaw commit, source
 archive checksum, and fixed upstream build timestamp. Update these values
-together when changing the selected source. The runtime Dockerfile has no source
-defaults: missing or invalid arguments, or arguments that differ from this
+together when changing the selected source; follow the
+[oce-cookbook pin-update recipe](../../.agents/skills/oce-cookbook/references/update-openclaw-pin.md).
+The runtime Dockerfile has no source defaults: missing or invalid arguments, or arguments that differ from this
 manifest, fail the build before the source archive download. Archive checksum
 verification remains required.
 
@@ -178,7 +179,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/97a1b4c07336db0c2f0eb52901118983490b7b1e/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/762a2fe60cc37cf6b8c9d05e61c329866e0d3f6f/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
@@ -306,6 +307,7 @@ OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-startup-termination.test.mjs \
     tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
+    tests/integration/runtime-image-gateway-retained-state.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs
 ```

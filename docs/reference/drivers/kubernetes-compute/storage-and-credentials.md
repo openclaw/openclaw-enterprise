@@ -185,9 +185,8 @@ After OCC accepts a newer version that requires earlier workloads to stop, the
 worker stops their reconciliation and maintenance;
 see the [Compute replacement contract](../compute.md#production-revision-stages).
 
-Existing RWX Harness or Gateway claims are rejected during reconciliation and
-final Agent deletion; follow the
-[upgrade prerequisite](../../../guides/deploy/upgrade-checklist.md#remove-legacy-rwx-workspaces).
+RWX Harness or Gateway claims are rejected during reconciliation and final
+Agent deletion.
 
 As with the Gateway claim, RWO does not fence writers on a partitioned node. Pod
 termination and the storage provider's safe detach/attach behavior remain

@@ -20,7 +20,7 @@ import {
   AGENT_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 
 // Reads a JSON-lines file; a file that does not exist yet has no rows. Children append
@@ -87,7 +87,7 @@ const pendingIdentityProbe = [
 async function startSupervisor(
   t,
   directory,
-  { child, stubs = [], env, entrypoint = AGENT_WITH_NODE_ENTRYPOINT },
+  { child, stubs = [], env, entrypoint = AGENT_WITH_NODE_ENTRYPOINT, statusReservation },
 ) {
   const eventsPath = join(directory, "events.jsonl");
   const childPath = join(directory, "child.cjs");
@@ -106,8 +106,11 @@ async function startSupervisor(
       .replace("\ninitializeRuntimeAssets();\n", "\n")
       .replace("\npublishAgentPluginSkillPath();\n", "\n"),
   ].join("\n");
-  // Launch through the same bounded program pieces the container receives.
-  const supervisor = spawn(process.execPath, ["-e", ...nodeProgramArguments(launch)], {
+  // Launch through the same bounded program pieces the container receives. A reserved
+  // status port stays held by the test until the supervisor's own listener answers; the
+  // preload lets that listener bind the held port.
+  const preload = statusReservation === undefined ? [] : reservedPortArgs(statusReservation);
+  const supervisor = spawn(process.execPath, [...preload, "-e", ...nodeProgramArguments(launch)], {
     env: {
       PATH: process.env.PATH,
       HOME: directory,
@@ -532,10 +535,14 @@ for (const topology of ["Compute-owned", "provider-owned"]) {
           },
         },
       };
-      const statusPort =
-        topology === "Compute-owned" ? await availablePort({ host: "0.0.0.0" }) : undefined;
+      // The supervisor binds its status port on every interface; hold it there.
+      const statusReservation =
+        topology === "Compute-owned" ? await reservePort({ host: "0.0.0.0" }) : undefined;
+      t.after(() => statusReservation?.release());
+      const statusPort = statusReservation?.port;
       const { supervisor, exited, waitFor, output } = await startSupervisor(t, directory, {
         entrypoint: NATIVE_WORKER_ENTRYPOINT,
+        statusReservation,
         child: [
           'const { appendFileSync } = require("node:fs");',
           "const [events, kind, args] = process.argv.slice(2);",
@@ -583,7 +590,18 @@ for (const topology of ["Compute-owned", "provider-owned"]) {
       );
       assert.equal((await stat(targetPath)).mode & 0o777, 0o600);
       if (statusPort !== undefined) {
-        assert.equal((await fetch(`http://127.0.0.1:${statusPort}/readyz`)).status, 503);
+        // A connection that reaches the reservation is reset; retry until the supervisor answers.
+        const ready = await waitFor(
+          "status port answered",
+          (status) => status !== undefined,
+          () =>
+            fetch(`http://127.0.0.1:${statusPort}/readyz`).then(
+              (response) => response.status,
+              () => undefined,
+            ),
+        );
+        await statusReservation.release();
+        assert.equal(ready, 503);
       }
       supervisor.kill("SIGTERM");
       assert.deepEqual(await exited, [0, null], output());
@@ -832,7 +850,10 @@ test(
     // workspace: the supervisor serves the hold there itself, so Compute fails the
     // revision with the check instead of waiting for its deadline (finding 2686).
     const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-held-"));
-    const port = await availablePort();
+    // The supervisor binds its status port on every interface; hold it there.
+    const statusReservation = await reservePort({ host: "0.0.0.0" });
+    t.after(() => statusReservation.release());
+    const { port } = statusReservation;
     const result = {
       ok: false,
       error: { type: "cli_error", message: `bad\n\u001b]0;title\u0007${"y".repeat(600)}` },
@@ -840,6 +861,7 @@ test(
     };
     const { supervisor, events, waitFor, output } = await startSupervisor(t, directory, {
       child: recordingChild,
+      statusReservation,
       stubs: setupStub(JSON.stringify(JSON.stringify(result, null, 2)), 1),
       env: {
         OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup",
@@ -857,11 +879,13 @@ test(
         return undefined;
       }
     };
+    // A connection that reaches the reservation is reset, which read() reports as no answer.
     const answer = await waitFor(
       "held status served",
       (served) => served?.status === 200,
       () => read("/openclaw/runtime/status"),
     );
+    await statusReservation.release();
     const status = JSON.parse(answer.body);
     const { checkedAt, ...failure } = status.runtimeFailure;
     assert.ok(!Number.isNaN(Date.parse(checkedAt)));

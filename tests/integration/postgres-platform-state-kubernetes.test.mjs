@@ -22,6 +22,7 @@ import {
   waitForNamespaceReady,
 } from "../helpers/postgres-platform-state.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
 
 // Revision lists return summaries, newest first (finding 1323), each with its deployment's
 // status. An activated revision's deployment is finishing or has finished, with no error.
@@ -290,7 +291,7 @@ stateCase(
       method: "api_key",
       source: first.data.harnessAuth.source,
     });
-    assert.deepEqual(revision.configuration, admitted(firstValues));
+    assert.deepEqual(revision.configuration, admitted(servedAs(firstValues, first.data.name)));
     assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
     assert.deepEqual(revision.compute, {
       id: "compute-kubernetes",
@@ -353,7 +354,7 @@ stateCase(
       configuration_id: revision.configurationId,
       configuration_kind: revision.configurationKind,
       configuration_generation: revision.configurationGeneration,
-      draft_spec: admitted(firstValues),
+      draft_spec: admitted(servedAs(firstValues, first.data.name)),
       harness_auth: {
         method: "api_key",
         source: first.data.harnessAuth.source,
@@ -724,7 +725,10 @@ stateCase(
       method: "api_key",
       source: primary.harnessAuth.source,
     });
-    assert.deepEqual(firstRevision.configuration, admitted(persistedConfigValues));
+    assert.deepEqual(
+      firstRevision.configuration,
+      admitted(servedAs(persistedConfigValues, primary.name)),
+    );
     assert.deepEqual(firstRevision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
     assert.deepEqual(firstRevision.compute, {
       id: "compute-kubernetes",
@@ -769,7 +773,10 @@ stateCase(
     assert.equal(secondRevision.configurationId, primaryConfiguration.id);
     assert.equal(secondRevision.configurationGeneration, 3);
     assert.deepEqual(secondRevision.harnessAuth, firstRevision.harnessAuth);
-    assert.deepEqual(secondRevision.configuration, admitted(replacementConfigValues));
+    assert.deepEqual(
+      secondRevision.configuration,
+      admitted(servedAs(replacementConfigValues, primary.name)),
+    );
 
     for (const [namespaceId, agent, revision] of [
       [namespaceA, primary, secondRevision],
@@ -831,7 +838,7 @@ stateCase(
       configuration_id: firstRevision.configurationId,
       configuration_kind: firstRevision.configurationKind,
       configuration_generation: firstRevision.configurationGeneration,
-      draft_spec: admitted(persistedConfigValues),
+      draft_spec: admitted(servedAs(persistedConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",
         source: primary.harnessAuth.source,
@@ -845,7 +852,7 @@ stateCase(
       configuration_id: secondRevision.configurationId,
       configuration_kind: secondRevision.configurationKind,
       configuration_generation: secondRevision.configurationGeneration,
-      draft_spec: admitted(replacementConfigValues),
+      draft_spec: admitted(servedAs(replacementConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",
         source: primary.harnessAuth.source,

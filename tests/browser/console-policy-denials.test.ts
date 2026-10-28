@@ -15,6 +15,7 @@ import {
   nextFrames,
   pathRequests,
 } from "./console-agents-browser-helpers.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const grants: SandboxNetworkGrant[] = ["one", "two", "three"].map((name) => ({
   id: `python-${name}`,
@@ -184,13 +185,9 @@ test("the Policy denials page controls policy editing and disabling preserves sa
 
   // Administration can be revoked after the page read. The real IAM refusal must remain
   // visible and focused on the page, with the saved editing setting unchanged.
-  fixture.policy.restrictions.push({
-    id: "deny-policy-editing-administration",
+  restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: agent.id,
-    action: "administer",
-    effect: "deny",
   });
   await enable.click();
   const alert = card.getByRole("alert");

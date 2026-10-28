@@ -155,6 +155,7 @@ jobs:
           if [[ "$IMAGE" == runtime ]]; then
             bash scripts/ci/setup-tools.sh k3d
             export PATH="$RUNNER_TEMP/bin:$PATH"
+            export OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY=1
           fi
           node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
       - name: Clean up runtime smoke resources

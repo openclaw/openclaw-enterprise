@@ -319,12 +319,13 @@ On success, the output directory contains:
 - `preflight.json`: rendered output paths, warnings, prerequisites, and next
   steps.
 
-After validating the CLI arguments, the renderer deletes these three files from
-the output directory before it reads the input. It keeps other files. If
-required input is missing or unsupported input is present, it writes
-`preflight.json` with `ok: false` and only the report path in `outputs`, leaves
-both YAML files absent, and exits nonzero. If the input JSON is unreadable or
-malformed, it exits without writing a preflight report.
+Use a separate input file. Symbolic or hard links to these outputs are also
+refused without changing existing files. An `input.json` can remain in the output directory.
+
+After these checks, the renderer clears the three outputs before reading input;
+other files stay. Invalid settings produce only `preflight.json` with `ok: false`
+and its path in `outputs`. Unreadable or malformed JSON produces no report.
+Both failures exit nonzero and leave no YAML outputs.
 
 ## Use rendered files
 

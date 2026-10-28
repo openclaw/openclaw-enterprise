@@ -5,6 +5,7 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import {
   apiRequests,
   fileBrowser,
@@ -465,7 +466,7 @@ test("the Agents list names a Namespace that left the list while it waited", asy
   set(null);
   await poll();
   const note = view.getByRole("status").filter({
-    hasText: "This Namespace is missing or you no longer have access. Choose another Namespace.",
+    hasText: `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`,
   });
   await note.waitFor();
   assert.deepEqual(await statusTone(note), WARNING);

@@ -1,10 +1,14 @@
+---
+kind: reference/driver
+---
+
 # ComputeDriver contract
 
 ## Overview
 
 `ComputeDriver` prepares and removes Namespace infrastructure and runs Agent
 revisions. OCC selects one Driver per Installation, authorizes operations, and
-stores immutable revision configurations. Compute owns gateway, workload
+saves the configuration used for each deployment. Compute owns gateway, workload
 identity, routing, activation, and readiness; its backend owns underlying
 resources. A selected [SandboxDriver](sandbox.md) can create a dedicated Harness
 workload.
@@ -184,7 +188,7 @@ fractional precision.
 Omitting `runtimeLogging` or setting it to `"platform"` uses the bundled
 [Harness logging policy](../harness-execution.md#runtime-logging). With `"driver"`,
 OCC preserves native logging after any Sandbox changes, validates it through
-ConfigurationDriver, and records it in the immutable revision. Compute must
+ConfigurationDriver, and records it in the Agent revision. Compute must
 apply that configuration and reject unsupported changes. The Driver operator owns
 log destinations, credentials, redaction, access, and delivery; the bundled
 Collector's privacy and export guarantees do not apply.
@@ -230,7 +234,7 @@ delete managed resources. See the [Driver loading flow](../../flows/driver-plugi
 ### Production revision stages
 
 OCC records the Compute identity, Harness placement, and Configuration in the
-immutable revision. Before dispatch, the worker checks that the selected Compute
+Agent revision. Before dispatch, the worker checks that the selected Compute
 still matches, [rechecks authorization](#iam), and resolves current credential references.
 By default, the previous route serves while the replacement prepares; activation
 checks that the selected Agent revision ID matches the expected ID, then switches the

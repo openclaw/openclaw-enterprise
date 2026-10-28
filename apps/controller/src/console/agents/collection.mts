@@ -12,12 +12,14 @@ import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { button, element, setText, statusBlock, requestIdLine } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
+import { credentialRejectedAsk } from "./deployment-recovery.mjs";
 import {
   agentCreateDenied,
   AGENT_DELETE_DENIED,
   AGENT_STOP_DENIED,
-  askForGrant,
+  deleteRefused,
   notIncluded,
+  stopRefused,
 } from "./access-reasons.mjs";
 import {
   type AgentNavigation,
@@ -190,22 +192,14 @@ export function renderAgentList(context: AgentListContext) {
   // Agents whose last row action had a conflicting or unconfirmed outcome. Their actions stay
   // disabled until Refresh rereads the list, so the console never repeats an uncertain write.
   const unsettled = new Set<string>();
-  // Each row's latest deployment outcome, once its read shows one. With no version selected, a
-  // failed one leaves nothing to stop, as on Agent detail (finding 2385), and one queued or in
-  // progress makes the row's Stop dialog say it cancels that deployment (finding D691). A row
-  // without one (no visible deployment, or a failed read) keeps Stop: the API answers.
+  // Keep the latest readable outcome for the Stop confirmation copy. It cannot establish
+  // whether newer work exists: a queued deployment may be hidden by revision read permissions.
   const latestDeployments = new Map<string, string>();
-  const failedFirst = (item: AgentRead) =>
-    !item.activeRevisionId && latestDeployments.get(item.id) === "failed";
   function setLatestDeployment(item: AgentRead, outcome: string | null) {
-    const before = failedFirst(item);
     if (outcome) {
       latestDeployments.set(item.id, outcome);
     } else {
       latestDeployments.delete(item.id);
-    }
-    if (failedFirst(item) !== before) {
-      updateRowActions(item.id);
     }
   }
   const rowControls = new Map<
@@ -219,6 +213,8 @@ export function renderAgentList(context: AgentListContext) {
   // row's icon before confirmation; a failed read keeps the usual path, and the API still
   // authorizes every write.
   const permissionReads = new Set<string>();
+  // Each row's permission answer as it settles (null when it failed), for text that depends on it.
+  const permissionAnswers = new Map<string, Promise<AgentPermissions | null>>();
   const permissions = new Map<string, AgentPermissions>();
   type RestrictDialog = (id: string, answer: AgentPermissions) => void;
   let restrictOpenDialog: RestrictDialog | null = null;
@@ -298,7 +294,18 @@ export function renderAgentList(context: AgentListContext) {
           `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
           rowRead,
         )) as AgentDeploymentStatusWire;
-        return { revision: latest, status };
+        // A rejected model credential is worded for the caller, as on the Agent's page (finding
+        // D752), so that row waits for its permission answer.
+        const code = status.status === "failed" ? status.error?.code : undefined;
+        const credentialAsk =
+          code === "RUNTIME_AUTHENTICATION_FAILED"
+            ? credentialRejectedAsk(
+                code,
+                "harnessAuth" in item ? item.harnessAuth : undefined,
+                await permissionAnswers.get(item.id),
+              )
+            : undefined;
+        return { revision: latest, status, credentialAsk };
       }),
     };
   }
@@ -394,12 +401,11 @@ export function renderAgentList(context: AgentListContext) {
           return;
         }
         const neutral = neutralDeploymentOutcome(result.status);
-        // Each read decides again: a retained list rereads on resume, and a first deployment
-        // retried since then (queued or deploying) keeps Stop, as on Agent detail (finding 2580).
+        // A retained list rereads on resume so the confirmation uses the latest readable outcome.
         setLatestDeployment(item, deploymentOutcome(result.status));
         const failure =
           !neutral && result.status.status === "failed"
-            ? (result.status.error?.message ?? "Deployment failed.")
+            ? (result.credentialAsk ?? result.status.error?.message ?? "Deployment failed.")
             : null;
         // A long failure fits one line; its title and the Agent page give the whole text.
         fill(
@@ -495,12 +501,18 @@ export function renderAgentList(context: AgentListContext) {
       return;
     }
     permissionReads.add(item.id);
-    void context.request(`${agentRequestPath(item.id)}/permissions`, rowRead).then(
-      (result) => {
+    const read = context
+      .request(`${agentRequestPath(item.id)}/permissions`, rowRead)
+      .then((result) => result as AgentPermissions);
+    permissionAnswers.set(
+      item.id,
+      read.catch(() => null),
+    );
+    void read.then(
+      (answer) => {
         if (!context.isCurrent()) {
           return;
         }
-        const answer = result as AgentPermissions;
         const previous = permissions.get(item.id);
         permissions.set(item.id, answer);
         if (restricts(answer) || restricts(previous)) {
@@ -523,10 +535,7 @@ export function renderAgentList(context: AgentListContext) {
     }
     let text;
     if (error.status === 403) {
-      text =
-        kind === "stop"
-          ? `You do not have permission to stop ${item.name}. ${askForGrant("Agent operate on it")}`
-          : `You do not have permission to delete ${item.name}. ${askForGrant("Agent delete on it")}`;
+      text = kind === "stop" ? stopRefused(item.name) : deleteRefused(item.name);
     } else if (error.status === 400 || error.status === 429) {
       text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true })}`;
     } else {
@@ -682,9 +691,9 @@ export function renderAgentList(context: AgentListContext) {
     // A deleting Agent keeps its retry and status controls on its detail page.
     const available = item.status !== "deleting" && !unsettled.has(item.id);
     const stopped = item.desiredRuntimeState === "stopped";
-    // New Agents start stopped with no version, and a first deployment that failed selects none,
-    // so there is nothing to stop yet; Agent detail shows no Stop control then either.
-    const neverStarted = !item.activeRevisionId && (stopped || failedFirst(item));
+    // A failed readable deployment can hide a newer queued one. Agent operate is sufficient
+    // to stop that work, even with no selected version.
+    const neverStarted = stopped && !item.activeRevisionId;
     const allowed = permissions.get(item.id);
     const canStop = neverStarted || allowed?.operate !== false;
     const canDelete = allowed?.delete !== false;

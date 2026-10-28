@@ -123,6 +123,11 @@ not build, download, or publish runtime images. Missing image references,
 unsupported Harness combinations, unavailable container-engine access, failed
 transport authentication, or unready containers fail closed.
 
+To upgrade OpenClaw, deploy the Agent with a different gateway image. As on
+Kubernetes, the gateway starts OpenClaw and its state migration with
+`OPENCLAW_NO_AUTO_UPDATE=1`: OpenClaw does not check for updates, send its
+installation count request, or install updates.
+
 Container image references must already resolve in the selected engine. The
 development Driver accepts tags as well as digests; production Kubernetes
 digest requirements do not imply that the local engine enforces immutable
@@ -187,8 +192,10 @@ published port cannot reach while the healthcheck on loopback passes: a
 
 The container implementation renders `gateway.auth.mode: password` when native
 Configuration omits the mode. Explicit `password` and `trusted-proxy` are supported.
-Only supported authentication fields and modes are admitted. These rules do not
-remove the harness-authentication admission limit above.
+Only supported authentication fields and modes are admitted: deployment refuses
+another mode, such as `token` or `none`, or an unsupported field, such as
+`gateway.auth.token`, with `409` before it stops the running revision. These rules
+do not remove the harness-authentication admission limit above.
 
 With password mode, omitting `gateway.auth.password` selects the managed
 `OPENCLAW_GATEWAY_PASSWORD` reference. An explicit reference to that variable also

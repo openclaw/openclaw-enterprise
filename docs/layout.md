@@ -188,8 +188,7 @@ architecture pages for every feature.
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling
 guides and inventories may remain directly under `docs/`; `docs/testing/` owns
-code verification and test setup. Reusable writing templates belong to the local
-technical-writing skill.
+code verification and test setup. The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
 
 The [documentation map](README.md) has six menus. **Getting Started**, **Topics**,
 **Integrations**, **Operate**, and **Reference** serve product users and operators;

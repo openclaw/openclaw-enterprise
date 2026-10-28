@@ -38,6 +38,8 @@ interface AdmissionRecord {
   unbound: boolean;
   saved: boolean;
   writing: Promise<void> | undefined;
+  // The disposal status first sent to the journal. A retry sends exactly this status.
+  publication?: SessionStatus;
   cancel(): void;
 }
 
@@ -145,7 +147,17 @@ export function createControlAdmission(
     }
     record.writing ??= (async () => {
       await record.ready;
-      await journal.dispose(id, record.input as RepositoryCredentialBoundSessionInput, status);
+      // Binding failure is known to precede this write. Once invoked, publication
+      // belongs to this original status even when its acknowledgement is lost.
+      // The request may never have reached the journal, so a retry sends the same
+      // status again: the journal accepts an identical disposal once and refuses
+      // any other, so the disposal is recorded exactly once.
+      record.publication ??= status;
+      await journal.dispose(
+        id,
+        record.input as RepositoryCredentialBoundSessionInput,
+        record.publication,
+      );
       record.saved = true;
     })().finally(() => {
       record.writing = undefined;
@@ -173,13 +185,18 @@ export function createControlAdmission(
     return id === undefined ? undefined : records.get(id)?.terminal;
   };
   const readStatus = async (sessionId: string) => {
+    const id = sessions.get(sessionId);
+    const record = id === undefined ? undefined : records.get(id);
+    // Join a pending disposal write, or send a disposal whose acknowledgement was
+    // lost again. A status read never publishes a first disposal.
+    if (id !== undefined && record?.publication !== undefined && !record.saved) {
+      await persist(id, record, record.publication);
+    } else if (record?.writing) {
+      await record.writing;
+    }
     const found = localStatus(sessionId);
-    if (found?.state === "DISPOSED") {
-      const id = sessions.get(sessionId);
-      const record = id === undefined ? undefined : records.get(id);
-      if (id !== undefined && record !== undefined) {
-        await persist(id, record, found);
-      }
+    if (record?.durable && found?.state === "DISPOSED" && !record.saved) {
+      throw new Error("RECEIPT_UNAVAILABLE");
     }
     if (found !== undefined) {
       return found;
@@ -403,6 +420,10 @@ export function createControlAdmission(
       }
       // Binding can outlive the session. Never hand out a bearer for a session
       // that reached cleanup while its durable admission was being recorded.
+      const terminal = localStatus(opened.session.sessionId);
+      if (terminal?.state === "DISPOSED") {
+        await persist(id, record, terminal);
+      }
       const current = await readStatus(opened.session.sessionId);
       if (!current) {
         throw new Error("RECEIPT_UNAVAILABLE");
@@ -591,12 +612,12 @@ export async function handleControl(
         return;
       }
       const id = (status ?? close)![1]!;
-      const found = await admissions.status(id);
+      const found = close ? await admissions.close(id) : await admissions.status(id);
       if (!found) {
         reply(response, 404, { error: "not-found" });
         return;
       }
-      reply(response, 200, close ? await admissions.close(id) : found);
+      reply(response, 200, found);
     }
   } catch (error) {
     if (!response.destroyed && !response.headersSent) {

@@ -43,6 +43,7 @@ interface Session {
   readonly admission: Admission;
   readonly logIdentity: SessionLogIdentity;
   state: SessionStatus["state"];
+  expiryObserved: boolean;
   readonly owned?: Readonly<{
     custody: CustodyOwner;
     lifecycle: LifecycleOwner;
@@ -93,12 +94,13 @@ export function createCredentialService(
     }
   }
 
+  function deadlineReached(session: Session) {
+    return (session.expiryObserved ||=
+      clock.monotonicNow() >= session.admission.deadlineMonoMs ||
+      clock.wallNow() >= session.admission.deadlineWallMs);
+  }
   function isOpen(session: Session) {
-    if (
-      session.state === "OPEN" &&
-      (clock.monotonicNow() >= session.admission.deadlineMonoMs ||
-        clock.wallNow() >= session.admission.deadlineWallMs)
-    ) {
+    if (session.state === "OPEN" && deadlineReached(session)) {
       close(session);
     }
     return session.state === "OPEN";
@@ -126,15 +128,19 @@ export function createCredentialService(
     }
     notifyShutdown();
   }
-  function snapshot(session: Session): SessionStatus {
-    isOpen(session);
+  function snapshot(session: Session, expire = true): SessionStatus {
+    if (expire) {
+      isOpen(session);
+    }
+    const state =
+      !expire && session.state === "OPEN" && deadlineReached(session) ? "CLOSED" : session.state;
     const records = [...(session.owned?.custody.records ?? [])];
     const unknown = [...(session.owned?.custody.reservations ?? [])].filter(
       (reservation) => reservation.unknown,
     ).length;
     return Object.freeze({
       sessionId: session.admission.authority.sessionId,
-      state: session.state,
+      state,
       deadlineWallMs: session.admission.deadlineWallMs,
       binding: session.admission.binding,
       activeUses: session.prepared
@@ -146,7 +152,7 @@ export function createCredentialService(
         revoked: session.owned?.lifecycle.counters.revoked ?? 0,
         expired: session.owned?.lifecycle.counters.expired ?? 0,
         uncertain: records.filter((record) => record.disposition === "uncertain").length + unknown,
-        auxiliaryPending: !(session.owned?.lifecycle.finalized ?? true) && session.state !== "OPEN",
+        auxiliaryPending: !(session.owned?.lifecycle.finalized ?? true) && state !== "OPEN",
       }),
     });
   }
@@ -373,6 +379,7 @@ export function createCredentialService(
           ...(prepared === undefined ? {} : { prepared }),
           ...(owned === undefined ? {} : { owned }),
           state: "OPEN",
+          expiryObserved: false,
           exchanges: new Set(),
           cancelDeadline: () => {},
         };
@@ -406,7 +413,7 @@ export function createCredentialService(
     },
     status(sessionId: string) {
       const session = sessions.get(sessionId);
-      return session && snapshot(session);
+      return session && snapshot(session, false);
     },
     close(sessionId: string) {
       const session = sessions.get(sessionId);
@@ -501,6 +508,7 @@ export function createCredentialService(
         send,
         {
           clock,
+          admitted: () => exchange.session.state === "OPEN" && !deadlineReached(exchange.session),
           finish: () => finish(exchange),
           cancel: () => cancel(exchange),
         },

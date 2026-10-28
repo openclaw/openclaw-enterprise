@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-26
-last_updated_session: fix-dogfood-r48
+updated: 2026-10-28
+last_updated_session: fix-3285
 ---
 
 # Console Agent editing and runtime requests
@@ -25,8 +25,8 @@ Trace Agent edits and credentials. See the
 graph TD
   subgraph Browser["Browser"]
     A["Read Agent or version"] -->|readable settings| B["Open detail action"]
-    A -->|unreadable settings| AE["Show metadata and warning"]
-    AE -->|refresh or browse versions| A
+    A -->|unreadable settings| AE["Show metadata and read error"]
+    AE -->|refresh, retry or browse versions| A
     B --> C["Edit draft or save credential bindings"]
     B --> P["Edit Agent plugin selections"]
     B --> Q["Deploy saved draft"]
@@ -60,39 +60,50 @@ graph TD
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
 The page reads Agent, readable versions, and current Configuration
-(`revision=draft`) or immutable Agent revision (`revision=<id>`).
+(`revision=draft`) or Agent revision (`revision=<id>`).
 `packages/occ/src/index.ts` uses `listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing` for browsing.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` turns
 payload-decode failures into metadata plus `configurationReadError`; queries
 and operational reads remain strict. Drafts and versions decode independently.
 Navigation stays; unreadable drafts refuse editing and deployment without defaults.
-**Selected version** uses `activeRevisionId`; **View version vN** opens read-only
-details without activating it. **Deployment activity** in `agents/deployment-evidence.mts`
-shows the newest readable version's recorded status, not live health. The Versions list
-marks failed versions from listed `deploymentStatus` and `deploymentErrorCode`, surviving
-reloads; superseded or stopped endings stay unmarked.
-Routine completion folds; pending work, read errors, warnings, and cleanup stay visible.
-A first read landing after the `FIRST_ACTIVITY_WAIT_MS` reveal shows its outcome with
-the details folded, unless cleanup, warnings, or an overview error open them. If an
-overview refresh cannot identify this Agent, the page keeps the outcome and says so.
+**Selected for service** uses `activeRevisionId`; **Viewing version** selects a draft
+or read-only version without activation. **Load older versions** appends pages,
+retains selection, and focuses the picker after the last page. The picker marks
+failures from `deploymentStatus` and `deploymentErrorCode` across reloads, excluding
+superseded/stopped outcomes.
 
-On failure, `agents/deployment-recovery.mts` shows the API's message, which names the next
-step. OCC's `deployment-failure-steps.ts` table, served at `/console/deployment-failure-steps.mjs`,
-gives each code's step kind: `deploy-again`, `logs` or `change`. It hides the Logs link if the
-caller was denied the log text or version during this sign-in. **Open Configuration** needs Configuration `update`,
-bound Secret `operate` and no known read denial. **Open version draft** (read-only Configuration) and
-**Deploy again** (`deploy-again` codes) need `deploy` and a readable Configuration; Deploy again focuses
-**Deploy new version**. Credentials recovery needs Agent saves. Hidden or unlisted
-current versions suppress recovery; viewed versions show results. Activity polls every
-`DEPLOYMENT_POLL_MS` through transient read errors until a result, denial, or missing
-record, patching in place (`patchChildren`); a new result rereads selection.
-**Refresh deployment** rereads both after any poll in flight. A pending deploy lists its
-result rows before the first attempt; the details keep their tallest height until it settles.
+**Deployment** mounts the newest readable activity, selected record, and diagnostics
+(`agents/deployment-evidence.mts`); polling continues across tabs.
+`detail.mts:renderTab` shows snapshot errors with **Retry** for transient failures.
+Routine completion starts folded. Late first reads after `FIRST_ACTIVITY_WAIT_MS`
+stay folded unless cleanup, warnings, or overview errors require expansion.
+Pending work, warnings, cleanup and failed overview refreshes retain attention
+outside Deployment; overview errors retain the recorded outcome.
+
+`createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` through transient
+errors until completion or refusal, patching in place. Pending polls, recovery and
+cleanup progress preserve disclosure choice and measured height. Distinct refusal evidence and
+manual failed refreshes reveal errors. Terminal polls quietly reread record,
+Agent and revisions; **Refresh deployment** acknowledges immediately and queues
+one full reread behind quiet work. **Refresh record** retains focus and ignores
+repeats. `createVersionDeploymentEvidence.fail` clears the selected record and
+invalidates older reads; initial transient failures permit fallback. Reserved
+wrapped-error space protects diagnostics position. Disclosure/tab changes give
+one matching visible error the alert role.
+
+`agents/deployment-recovery.mts` places failure recovery above the summary;
+`deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
+Denied log/version reads hide Logs for this sign-in. **Open Configuration** requires
+Configuration `update`, bound Secret `operate`, and no known read denial.
+Read-only **Open draft** and **Deploy again** (`deploy-again`) require `deploy` and readable
+Configuration; the latter focuses **Deploy new version**. Credential recovery
+requires Agent saves. Hidden/unlisted current versions suppress recovery; viewed
+versions retain their results.
 **Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
-**Create new version** opens the saved draft; **Deploy new version** admits its
+**Open draft** opens the saved draft; **Deploy new version** admits its
 Configuration/plugins. **Edit current Configuration** never copies historical
 values. Deploy stays disabled while the Secret permission answer names a bound
 Secret the caller may not `operate`, or counts one the caller may neither `read`
@@ -102,18 +113,17 @@ which would be audited (finding D758).
 
 **Edit Configuration** rereads the Agent and Configuration, then PATCHes only
 `{ values, expectedGeneration }`, preserving `secretBindings`. A changed ID or stale
-generation (including a `409` from a racing save) requires **Reload draft**.
+generation (also a racing save's `409`) requires **Reload draft**.
 A response not confirming the same Configuration and Namespace, a newer generation, and the
-sent values and bindings is an unknown outcome that needs a reload before another save.
+sent values and bindings is an unknown outcome; reload before saving again.
 A focused, disabled **Save Configuration** moves focus to **Checking Configuration…**.
-Success focuses **Edit Configuration** unless the reader moved focus during the save.
+Success focuses **Edit Configuration** unless the reader moved focus.
 
-**Enable gateway password access** sets `gateway.auth.password` to reference
-`OPENCLAW_GATEWAY_PASSWORD`, changing nothing else; **Cancel** discards it. Kubernetes
+**Enable gateway password access** and **Collaboration and safety**
+(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access sets `gateway.auth.password` to reference `OPENCLAW_GATEWAY_PASSWORD`, changing nothing else. Kubernetes
 `gatewayConfiguration` recognizes the reference; `deployment` supplies the password.
 
-Saves preserve scroll, focus and admitted snapshots. Rejected edits stay;
-an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
+Saves preserve scroll, focus and admitted snapshots. Rejected edits stay. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
 access, a Workspace file save Agent `operate`. Without Agent `update`, Configuration `read` or
 bound-source grants (`operate`, and `read` on a Harness ServiceAccount; the note names both),
@@ -160,7 +170,7 @@ Like Escape, cancellation discards channel drafts, clears Secret inputs, and
 retains plugin selections. Pending channel saves and Secret creation prevent dismissal.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
-only **Create new version** permits editing. The
+only **Open draft** permits editing. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
 
@@ -273,7 +283,7 @@ generic deploy `403` rereads the answer and names them in its alert. A caller wi
 requiring readable version history and an unchanged draft. API authorization and
 Driver compatibility remain authoritative.
 
-**Create new version** shows bound Slack Secrets without proving live health.
+**Open draft** shows bound Slack Secrets without proving live health.
 
 `OpenClawController.deployAgent` checks transport credentials before admission.
 Before the first version, Agent `read`/`operate` plus `deploy` authorize Compute
@@ -290,12 +300,14 @@ Only a confirmed grant or confirmed removal of its reference clears the pending 
 
 ### 6. Read and replace live workspace files
 
+`apps/controller/src/console/agents/workspace.mts:renderWorkspaceFiles`.
 Moved to [Agent workspace files](agent-workspace-files.md#6-read-and-replace-live-workspace-files).
 
 <span id="stop-agent"></span>
 
 ### 7. Request a stop and read back the Agent
 
+`apps/controller/src/console/agents/stop.mts:createAgentStop`.
 Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-and-read-back-the-agent).
 
 <span id="7-confirm-deletion-and-read-back-the-agent"></span>
@@ -303,9 +315,13 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-a
 
 ### 8. Confirm deletion and read back the Agent
 
+`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`.
 Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion-and-read-back-the-agent).
 
 ## Debugging and Verification
+
+- Run `node --test tests/browser/console-deployment-activity.test.ts` for
+  Controller-backed desktop/phone disclosure and refusal checks, not runtime proof.
 
 - A denied Secret list requires collection `read`; a missing menu entry may lack
   exact Secret `read`.
@@ -327,6 +343,16 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 13:53: Keep the reader’s fold through routine polls and show failed record checks outside it. (fix-3285 - 14f6d94db)
+
+- 2026-10-28 11:48: Quiet refresh (uncommitted). (authoring-run/4573d808-e28c-4e0f-8c52-faacba26092a - 8b5bee3ef01644cf7731f68794fe87d6b4b1d265)
+
+- 2026-10-28 10:57: Clarify keyboard focus during record refresh. (authoring-run/7832bcaa-29cd-4303-99ce-edf549ad55d6 - e7f7c242158627219f6ce9d398c5cc034d721f7e)
+
+- 2026-10-27 13:55: Document Deployment snapshot-read recovery; uncommitted changes. (authoring-run/99997d03-9533-4cff-b942-8fe773c472db - b1e6d83d1cde4741d6f0b857e30e473ec1f97a18)
+
+- 2026-10-27 09:30: Document the Agent detail version picker, Deployment tab, and direct Agent UI access. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 
 - 2026-10-25: Move step 6 (workspace files) to [its own trace](agent-workspace-files.md); move older entries to history. (finding 2488)
 

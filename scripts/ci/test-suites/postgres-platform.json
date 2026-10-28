@@ -36,6 +36,7 @@
     "tests/integration/postgres-prepared-token-service.test.ts",
     "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
+    "tests/integration/postgres-prepared-receipt-restart.test.ts",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
     "tests/integration/postgres-protected-git-recipient-custody.test.ts",
     "tests/integration/postgres-prepared-standing-removal.test.ts",
@@ -301,6 +302,12 @@
     },
     {
       "path": "tests/integration/postgres-prepared-repository-git-broker.test.mjs"
+    },
+    {
+      "path": "tests/integration/postgres-prepared-receipt-restart.test.ts",
+      "expectedTests": [
+        "original prepared exchange preserves expiry and committed disposal across receipt authority restart"
+      ]
     },
     {
       "path": "tests/integration/postgres-prepared-standing-expiry.test.ts",

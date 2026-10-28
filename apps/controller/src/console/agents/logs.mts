@@ -606,7 +606,7 @@ export function renderAgentLogs(
       !harnessDown
         ? ""
         : harnessPods.length === 0
-          ? "The Agent (Harness) has no Pod yet. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: see Deployment activity for why it has not started."
+          ? "No current Agent (Harness) Pod was reported. Check Deployment activity for the latest status."
           : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.",
     );
     const pod = selectedPod();

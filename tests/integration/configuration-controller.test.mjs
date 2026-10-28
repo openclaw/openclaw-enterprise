@@ -10,10 +10,7 @@ import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import {
-  admitLoggingConfiguration,
-  renderPresetTemplate,
-} from "../../packages/contracts/src/index.ts";
+import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
@@ -37,6 +34,13 @@ import {
   codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import {
+  OPENCLAW_SANDBOX_SETTINGS,
+  admittedConfiguration,
+  openClawSandboxRefusal,
+  withGatewaySecurityDefaults,
+} from "../helpers/admitted-configuration.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -267,7 +271,7 @@ function createOpenClawConfiguration() {
       defaults: { store: "teamstore" },
       credential_proxy: { enabled: true },
     },
-    agents: { defaults: { sandbox: { mode: "all" } } },
+    agents: { defaults: { sandbox: { mode: "off", scope: "agent" } } },
     plugins: {
       entries: {
         knowledge: {
@@ -1269,6 +1273,120 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
       },
     },
   });
+});
+
+test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE runtime cannot run", async () => {
+  // Finding 2767. The pinned OpenClaw runs sandboxed tools in Docker, which the OCE runtime does
+  // not have: a Configuration that turned the sandbox on saved and deployed, then failed every
+  // turn. Finding 2773: exec host "sandbox" sends shell commands to that sandbox, so each one
+  // failed. Every save path, Agent save and deployment run the rule, for the defaults and for one
+  // Agent's entry, which overrides them; configuration-occ.test.mjs proves each refused and
+  // accepted value.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-sandbox-integration", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Sandbox consumer",
+    secretName: "sandbox-key",
+  });
+  const [sandboxMode, execHost] = OPENCLAW_SANDBOX_SETTINGS;
+  const defaultsMode = openClawSandboxRefusal(sandboxMode, sandboxMode.path);
+  const defaultsHost = openClawSandboxRefusal(execHost, execHost.path);
+  const entryHost = openClawSandboxRefusal(execHost, [
+    "agents",
+    "entries",
+    "main",
+    ...execHost.entry,
+  ]);
+  const withSandbox = (sandbox) => ({
+    agents: { defaults: { ...runtimeDefaults, ...(sandbox === undefined ? {} : { sandbox }) } },
+  });
+  // The exec host for every Agent (top-level tools), and for one Agent's entry.
+  const withHost = (host, agentHost) => ({
+    agents: {
+      defaults: runtimeDefaults,
+      ...(agentHost === undefined
+        ? {}
+        : { entries: { main: { tools: { exec: { host: agentHost } } } } }),
+    },
+    ...(host === undefined ? {} : { tools: { exec: { host } } }),
+  });
+  // One setting for every Agent, the other on one Agent's entry.
+  for (const [values, message] of [
+    [withSandbox({ mode: "all", scope: "session" }), defaultsMode],
+    [withHost("gateway", "sandbox"), entryHost],
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+    assertRefused(await savePreset(context, { configuration: { values } }), message, {
+      label: "Preset save",
+    });
+  }
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(configurationDriver, agent.configurationId, withSandbox({ mode: "all" }));
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    defaultsMode,
+    { label: "Agent save" },
+  );
+  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
+  // Accepted values save, with the sandbox settings beside them.
+  await acceptedOnSave(context, {
+    agents: {
+      defaults: { ...runtimeDefaults, sandbox: { mode: "off", scope: "session" } },
+      entries: { main: { sandbox: { mode: "off" }, tools: { exec: { host: "node" } } } },
+    },
+    tools: { exec: { host: "auto" } },
+  });
+  // A Preset value that waits on a string variable is checked once filled when its written text
+  // can still spell "off"; a default fills it here, and a boolean variable never can.
+  const waiting = withSandbox({ mode: "{{ vars.mode }}" });
+  assertRefused(
+    await savePreset(context, {
+      variables: { mode: { type: "string", default: "all" } },
+      configuration: { values: waiting },
+    }),
+    defaultsMode,
+  );
+  const deferred = await savePreset(
+    context,
+    { variables: { mode: { type: "string" } }, configuration: { values: waiting } },
+    "Mode-deferred",
+  );
+  assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
+  assertRefused(
+    await savePreset(
+      context,
+      { variables: { mode: { type: "boolean" } }, configuration: { values: waiting } },
+      "Mode-boolean",
+    ),
+    defaultsMode,
+  );
+  // The exec host follows the same rule, for every Agent and for one Agent's entry.
+  for (const [values, message] of [
+    [withHost("{{ vars.host }}"), defaultsHost],
+    [withHost(undefined, "{{ vars.host }}"), entryHost],
+  ]) {
+    assertRefused(
+      await savePreset(context, {
+        variables: { host: { type: "string", default: "sandbox" } },
+        configuration: { values },
+      }),
+      message,
+    );
+  }
+  const deferredHost = await savePreset(
+    context,
+    {
+      variables: { host: { type: "string" } },
+      configuration: { values: withHost("{{ vars.host }}") },
+    },
+    "Host-deferred",
+  );
+  assert.equal(deferredHost.status, 201, JSON.stringify(deferredHost.body));
 });
 
 test("SSH and Docker Compute refuse at save and deployment a Gateway tool policy their embedded Gateway refuses", async () => {
@@ -2931,8 +3049,8 @@ for (const runtimeLogging of [undefined, "driver"]) {
     assert.deepEqual(
       deployed.body.data.configuration,
       runtimeLogging === "driver"
-        ? initialValues
-        : admitLoggingConfiguration(initialValues, "info"),
+        ? withGatewaySecurityDefaults(servedAs(initialValues, "Configuration consumer"))
+        : admittedConfiguration(servedAs(initialValues, "Configuration consumer")),
     );
 
     const source = await request(context.app, "GET", `${collection}/${configurationId}`);

@@ -16,7 +16,7 @@ import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
 import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,
@@ -878,13 +878,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     const [binding] = policy.bindings.splice(bindingIndex, 1);
     assert.equal((await request("GET", path, { headers })).status, 403);
     policy.bindings.push(binding);
-    policy.restrictions.push({
-      id: "deny-read",
-      namespaceId,
-      resourceKind: "namespace",
-      action: "read",
-      effect: "deny",
-    });
+    restrict(policy, "read", "namespace", { namespaceId });
     assert.equal((await request("GET", path, { headers })).status, 403);
     policy.restrictions.length = 0;
     assert.equal((await request("GET", path, { headers })).status, 200);
@@ -981,13 +975,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       for (const restricted of [false, true]) {
         if (restricted) {
           policy.bindings.push(adminBinding);
-          policy.restrictions.push({
-            id: "deny-service-key-management",
-            resourceKind: "installation",
-            resourceId: installationId,
-            action: "administer",
-            effect: "deny",
-          });
+          restrict(policy, "administer", "installation", { resourceId: installationId });
         }
         await assertServiceKeyManagementDenied(replacementHeaders, child, 403);
       }

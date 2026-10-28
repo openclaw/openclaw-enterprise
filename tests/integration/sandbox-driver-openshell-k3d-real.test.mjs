@@ -57,6 +57,7 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import {
+  assertGatewayPolicyRunSucceeded,
   observeSandboxProbe,
   tokenEchoDigest,
   tokenEchoReply,
@@ -7449,7 +7450,7 @@ test(
         timeoutMs,
       );
     };
-    const waitForRunCompletion = async (runId, deadline) => {
+    const waitForRunCompletion = async (runId, deadline, protectedUpdate) => {
       assert.ok(typeof runId === "string" && runId.length > 0);
       // A transcript terminal can precede accounting. The RPC-owned wait closes
       // only after dispatch publishes its completed result, including accounting.
@@ -7470,20 +7471,20 @@ test(
           ) {
             return undefined;
           }
-          assert.equal(outcome.status, "ok", `Gateway policy run ${runId} must succeed`);
+          await assertGatewayPolicyRunSucceeded(client, outcome, protectedUpdate);
           return outcome;
         },
         Math.max(0, deadline - Date.now()),
       );
     };
-    const turn = async (prompt, marker) => {
+    const turn = async (prompt, marker, protectedUpdate) => {
       const deadline = Date.now() + 600_000;
       const sent = await client.request("chat.send", {
         sessionKey,
         idempotencyKey: randomUUID(),
         message: `${prompt} End your reply with exactly ${marker}.`,
       });
-      await waitForRunCompletion(sent.runId, deadline);
+      await waitForRunCompletion(sent.runId, deadline, protectedUpdate);
       return waitForTurn(sessionKey, marker, Math.max(0, deadline - Date.now()));
     };
     const exists = async (pod, namespace, path) =>
@@ -7754,7 +7755,7 @@ test(
     const ordinaryBefore = await client.request("cron.get", { id: job.id });
     const updateProbes = [
       [
-        "cross-agent-session-target-denied",
+        "cross-agent-session-target",
         { sessionTarget: `session:agent:outside-${randomUUID()}:main` },
         "session target outside caller scope",
       ],
@@ -7763,18 +7764,19 @@ test(
     // schema omits command payloads; its invalid-input coverage remains source-only.
     if (selectedHarness === "openclaw") {
       updateProbes.unshift([
-        "command-conversion-denied",
+        "command-conversion",
         { payload: commandPayload },
         ["automation command payloads cannot be created or edited", "job.payload.kind:"],
       ]);
     }
-    for (const [kind, patch, resultPattern] of updateProbes) {
+    for (const [attempt, patch, resultPattern] of updateProbes) {
       const marker = `UPDATE-DENIED-${randomUUID()}`;
       const args = { action: "update", jobId: job.id, job: patch };
       const invocation = toolCallSpec("automations", args);
       await turn(
         invocation.prompt + " Report the returned error; do not retry or use another interface.",
         marker,
+        { attempt, before: ordinaryBefore },
       );
       const evidence = await native.assertSessionToolPolicyDeniedEvidence(topology.agent, {
         sessionKey,
@@ -7787,7 +7789,12 @@ test(
         await exists(topology.gatewayPod, topology.gatewayPlacement, commandPath),
         false,
       );
-      proof.modelTurns.push({ kind, ...evidence, jobId: job.id, unchangedAfterModel: true });
+      proof.modelTurns.push({
+        kind: `${attempt}-denied`,
+        ...evidence,
+        jobId: job.id,
+        unchangedAfterModel: true,
+      });
     }
 
     const childMarker = `CHILD-${randomUUID()}`;

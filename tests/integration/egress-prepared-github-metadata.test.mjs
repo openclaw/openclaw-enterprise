@@ -196,6 +196,32 @@ test("consented protected repository read uses only exact, already prepared meta
   );
   assert.equal(gh.issuesOfTokens.length, 1);
 
+  // A replacement grant callback must not participate in an already resolved exchange,
+  // even when it would return the same authorized grant.
+  const providers = f.egress.sourceControl.providers;
+  const providerIndex = providers.findIndex(
+    (provider) => provider.ref.id === githubMetadataProvider.ref.id,
+  );
+  const registered = providers[providerIndex];
+  const selected = { ...registered };
+  providers[providerIndex] = selected;
+  try {
+    const captured = captureMetadata(f);
+    const { ready } = await f.resolve(captured);
+    assert.ok(ready);
+    let replacementCalls = 0;
+    selected.normalizeGrant = function (...args) {
+      replacementCalls += 1;
+      return Reflect.apply(registered.normalizeGrant, this, args);
+    };
+    const result = await f.authorize(f.permitRequest(captured, ready));
+    assert.ok(result.refused);
+    assert.equal(result.allowed, undefined);
+    assert.equal(replacementCalls, 0);
+  } finally {
+    providers[providerIndex] = registered;
+  }
+
   // The registry lowercases the repository; GitHub answers with its own spelling, and the
   // response releases the admitted name (finding 2239). Another name is never released.
   for (const [block, spelled, released = true] of [

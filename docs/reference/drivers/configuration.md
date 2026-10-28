@@ -1,10 +1,14 @@
+---
+kind: reference/driver
+---
+
 # ConfigurationDriver contract
 
 ## Overview
 
 `ConfigurationDriver` stores native Agent configuration for a specific OpenClaw
 Namespace. OpenClaw Control Plane (OCC) assigns resource IDs, owns generations,
-authorizes requests, and creates immutable Agent revisions. The Driver owns
+authorizes requests, and creates Agent revisions. The Driver owns
 the storage representation; it does not deploy Agents or authorize callers.
 
 Trusted Installation YAML requires this capability. It defaults to bundled

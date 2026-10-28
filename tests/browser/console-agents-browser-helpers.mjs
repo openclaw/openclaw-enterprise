@@ -10,6 +10,7 @@ import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs"
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import {
@@ -1039,16 +1040,35 @@ export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRea
   );
 }
 
+// The Agent page's "Viewing version" chooser in `scope`, a page or a locator.
+export const versionChooser = (scope) => scope.getByLabel("Viewing version", { exact: true });
+
+// Version `n`'s chooser label: "vN" alone or "vN · <outcome>".
+const versionName = (n) => new RegExp(`^v${n}(?: ·|$)`);
+
+// Version `n`'s option in the chooser.
+export const versionOption = (scope, n) =>
+  versionChooser(scope).getByRole("option", { name: versionName(n) });
+
+// Waits until the chooser has a selected version, or until version `n` is the selected one.
+export function waitForChosenVersion(scope, n) {
+  const chosen =
+    n === undefined
+      ? versionChooser(scope).locator("option:checked")
+      : versionChooser(scope)
+          .getByRole("option", { selected: true })
+          .filter({ hasText: versionName(n) });
+  return chosen.waitFor({ state: "attached" });
+}
+
 // Denies AgentRevision read on one version, as an administrator's per-version restriction does.
-// State reads the policy on each request, so it applies from the next read on.
+// State reads the policy on each request, so it applies from the next read on. Its id is
+// `deny-read-<revision id>`: console-next-steps looks it up to deny only once.
 export function denyRevisionRead(fixture, namespace, revision) {
-  fixture.policy.restrictions.push({
+  restrict(fixture.policy, "read", "agent_revision", {
     id: `deny-read-${revision.id}`,
     namespaceId: namespace.id,
-    resourceKind: "agent_revision",
     resourceId: revision.id,
-    action: "read",
-    effect: "deny",
   });
 }
 

@@ -1,9 +1,13 @@
 # Credential sources
 
-A credential source is a named Namespace record that an Agent can bind by ID.
-OpenClaw Control Plane (OCC) records the Driver that owns it. The
-record contains configuration and any Secret references. The delivery
-mode determines who can read the underlying credential and when.
+A Secret holds a value, such as a GitHub App private key. A credential source
+records its Driver, configuration and Secret references in the Namespace. A
+`github-app-metadata` source names the key and repository for the read of
+`acme/widgets`.
+
+The Agent draft **binds** the source by ID. On deploy, OpenClaw Control Plane
+(OCC) saves the binding in an **Agent revision**. How the sender gets
+a credential depends on the source.
 
 | Delivery mode            | Who holds or reads the credential                                                                                                                                                                                                   |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -31,14 +35,24 @@ OpenShell is a development integration. See the
    referenced Secret. A protected metadata source also requires `agent:operate`
    on the active, dedicated Agent named by `config.agent_id` in that Namespace.
 
-For example, these registration fields identify a model key without including its value.
+For example, this source names the GitHub App, installation, repository and
+Agent. `"authority": "execution"` admits requests from processes throughout
+that execution. Replace the example IDs and Secret reference with your own.
 
 ```json
 {
-  "name": "openai-production",
-  "type": "openai",
+  "name": "widgets-metadata",
+  "type": "github-app-metadata",
+  "config": {
+    "app_id": "1001",
+    "installation_id": "2002",
+    "repository_id": "12345",
+    "repository": "acme/widgets",
+    "agent_id": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "authority": "execution"
+  },
   "secrets": {
-    "api_key": {
+    "private_key": {
       "kind": "secret",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
       "id": "sec_123e4567-e89b-42d3-a456-426614174000"
@@ -47,8 +61,8 @@ For example, these registration fields identify a model key without including it
 }
 ```
 
-Success returns `201` with a `cs_` source ID, binding `ref` and status. Use
-the returned ID in the Agent draft. Keep the `sec_` reference on the source.
+OCC returns `201` with a `cs_` source ID, binding `ref` and status. Use the
+`cs_` ID in the Agent draft. The `sec_` reference stays on the source.
 
 - `name` is unique within the Namespace.
 - `type` must be offered by the installation. With a Credential Proxy selected,
@@ -95,44 +109,41 @@ bound or deployed.
 
 ## Bind a source to an Agent
 
-List every source the Agent uses in its `credentialSources`, up to eight
-entries of `{ "sourceId": "cs_…" }`, on create or update. An update replaces the
-list, `[]` removes it, and a source cannot appear twice. Any catalog type can be
-listed.
+Set `credentialSources` to a list of up to eight distinct
+`{ "sourceId": "cs_…" }` entries. On update, the list replaces the draft's
+bindings. Omit it to keep them or send `[]` to remove them all.
 
-To have the Harness authenticate its model with a source, also set
-`harnessAuth` to `{ "method": "credential_source", "sourceId": "cs_…" }`. It
-names one listed entry whose catalog type has `harnessAuth`; it does not bind
-the source separately. A request that names an unlisted source, or removes the
-named source from the list, fails with `400` "The Harness credential source must
-be listed in the Agent's credentialSources." after the grant checks below.
+| When                       | Required source permissions                                                                                                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Create or update the Agent | The caller needs the corresponding `agent:create` or `agent:update` and `credential_source:operate` on each current and requested source, including removals.                              |
+| Deploy                     | The caller needs `agent:deploy`. Both the caller and the Agent service principal need `credential_source:operate` on each listed source. The worker checks both again before provisioning. |
+| Use a protected source     | OCC checks the Agent service principal's current `credential_source:operate` before it releases material and again before it authorizes the send.                                          |
 
-The caller needs permission to create or update the Agent and exact `credential_source:operate` on every current and requested
-source, including removals. OCC requires each requested source to be ready and
-its recorded owner to be selected. A newly registered protected metadata source records its Proxy
-owner. A Gateway source retains its Gateway owner even if a Proxy enforces a
-protected plan for it. Omitting the list leaves bindings unchanged. To remove an
-old binding after a Driver change, replace the list and change `harnessAuth` if
-necessary.
+[Grant the Agent service principal access to the source](authorization.md#manage-namespace-policy)
+with a Namespace IAM Role and AccessBinding. The Agent needs no permission on the
+underlying Secret. Each requested source must be ready and its recorded owner
+selected. Newly registered metadata sources belong to the Credential Proxy.
+A Gateway source retains its Gateway owner even when the Proxy enforces its plan.
 
-At deploy, both the actor and the Agent service principal need exact source
-`operate`. Grant the principal a [Namespace IAM Role and AccessBinding](authorization.md#manage-namespace-policy)
-for this source. The Agent needs no underlying Secret permission. The immutable
-Agent revision records the source ID, type and owning Driver ID. Its protected
-plan also fixes the execution, source generation, allowed operation and routes.
-The worker rechecks both principals before provisioning. For a protected
-request, OCC checks current Agent permission before material access and before send.
+Deployment with credential sources requires a selected Sandbox Driver. The revision records each source's
+ID, type and owning Driver ID. For the `widgets-metadata` example, the protected
+plan allows `GET /repos/acme/widgets` for that execution and source generation. Follow the
+[request to GitHub and its reply](../flows/credential-source-egress.md#follow-the-metadata-get).
+Cloning, pushing or creating a pull request requires a separately admitted
+[repository binding](repository-credentials.md).
 
-| What the workload may know                       | What it can do with it                                                                                                                                                         |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Source ID (`cs_…`) or Secret reference (`sec_…`) | Identify a record. The identifier alone conveys no permission to read a value or use the source.                                                                               |
-| OpenShell placeholder                            | Use eligible traffic from the configured Sandbox. The placeholder cannot authenticate directly to the provider.                                                                |
-| Native repository session bearer                 | Present delegated authority to the credential service within the live session's scope. A process that obtains it can use that authority subject to the service's other checks. |
+For **source-backed Harness authentication**, set `harnessAuth` to
+`{ "method": "credential_source", "sourceId": "cs_…" }`. Choose a listed
+Gateway source whose catalog type supports Harness authentication. Naming an
+unlisted source, or removing it while `harnessAuth` still names it, fails after the grant checks with `400`: "The Harness credential source must be listed in the Agent's credentialSources." When replacing a binding after a Driver change,
+update `harnessAuth` if it names the old source.
+[Binding and deployment trace](../flows/credential-source-lifecycle.md#4-bind-the-source-to-an-agent)
 
-Git clone, push and approved GitHub API operations use separately admitted
-[`repositoryBindings`](repository-credentials.md). Binding a metadata source for
-one repository does not grant Git or pull request access. To authenticate the Harness with a
-credential source, select a compatible Gateway source. Source-backed deployment requires a Sandbox. See the [binding and deployment trace](../flows/credential-source-lifecycle.md#4-bind-the-source-to-an-agent).
+| What the workload may know       | What it can do with it                                                                                    |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Source ID or Secret reference    | Identify a record. An ID conveys no permission to use a source or read a value.                           |
+| OpenShell placeholder            | Use eligible traffic from the configured Sandbox. The provider requires the real credential.              |
+| Native repository session bearer | Exercise delegated authority within the live session's scope, subject to the credential service's checks. |
 
 While a Credential Gateway is selected, deployment and guided provisioning reject
 `api_key` and `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`.

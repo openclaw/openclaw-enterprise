@@ -637,13 +637,44 @@ function upstreamDiagnostic(value) {
   return { kind: "chatgpt-admin-http", operation, status };
 }
 
+// Stack lines before the first frame: the "Name: message" header.
+function stackHeader(stack) {
+  const lines = stack.split("\n");
+  const end = lines.findIndex((line) => /^\s+at\s/u.test(line));
+  return lines
+    .slice(0, end === -1 ? lines.length : end)
+    .join("\n")
+    .trim();
+}
+
+// An error's first line. A DOMException (a fetch TimeoutError or AbortError)
+// crosses the test runner's process boundary as a bare stack with an empty
+// message, so its header names it; a thrown value without either is printed.
+function errorHeader(error) {
+  if (typeof error === "string") {
+    return error;
+  }
+  if (typeof error?.message === "string" && error.message) {
+    return error.message;
+  }
+  const header = typeof error?.stack === "string" ? stackHeader(error.stack) : "";
+  if (header || error === undefined) {
+    return header;
+  }
+  try {
+    const text = String(error);
+    return text === "[object Object]" ? "" : text;
+  } catch {
+    return "";
+  }
+}
+
 // Failure messages and the top stack frame make flakes attributable. They are
 // raw here and travel only over the pipe to run-tests, which redacts and
 // truncates them (failure-redaction.mjs) before anything reaches an artifact
 // or the job log.
 function failureText(cause) {
-  const message =
-    typeof cause === "string" ? cause : typeof cause?.message === "string" ? cause.message : "";
+  const message = errorHeader(cause);
   const stack = typeof cause?.stack === "string" ? cause.stack : "";
   // The stack starts with the message, which can quote another process's stack.
   const messageEnd =
@@ -653,9 +684,11 @@ function failureText(cause) {
     .split("\n")
     .filter((line) => /^\s+at\s/u.test(line))
     .map((line) => line.trim());
+  // A DOMException's constructor and Node's own frames do not locate a failure.
+  const frame = frames.find((line) => !/^at (?:.* \()?node:internal\//u.test(line)) ?? frames[0];
   return {
     message: message ? message.slice(0, failureInputLimit) : undefined,
-    frame: frames[0]?.slice(0, failureInputLimit),
+    frame: frame?.slice(0, failureInputLimit),
     // The whole stack goes only to the failure details in the diagnostics report.
     stack: frames.length > 0 ? frames.join("\n").slice(0, failureInputLimit) : undefined,
   };

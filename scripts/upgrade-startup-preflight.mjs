@@ -30,6 +30,10 @@ try {
   ({ formatStartupConfigurationFailure: formatConfigurationFailure } = await import(
     "/app/apps/controller/src/startup-failure.ts"
   ));
+  if (process.env.${componentVariable} === "api" && process.env.OCC_CONSOLE_THEME_DIR !== undefined) {
+    const { loadConsoleTheme } = await import("/app/apps/controller/src/composition/console-theme.ts");
+    await loadConsoleTheme(process.env.OCC_CONSOLE_THEME_DIR);
+  }
   const { loadInstallationConfiguration, loadStartupConfigurationSnapshot } = await import(
     "/app/apps/controller/src/composition/installation-config.ts"
   );
