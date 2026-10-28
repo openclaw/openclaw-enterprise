@@ -15,9 +15,10 @@ methods. A Driver that omits them offers no browser connections.
 
 ### Browser authorization
 
-- `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri })`
-  returns `{ authorizationUrl, privateState }`. The Driver creates the PKCE
-  verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
+- `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri, selectedScopes? })`
+  returns `{ authorizationUrl, privateState }`. MCP requires the owner's validated
+  `selectedScopes`. Configured OAuth uses the version's fixed scopes. The Driver
+  creates the PKCE verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
   `privateState` is opaque to OCC.
 - `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
   `state`, exchanges the code with the verifier and the version's client
@@ -39,18 +40,28 @@ grant and account permissions.
    server metadata. Discovery uses credential-free requests subject to management
    egress policy, including redirects. The administrator approves the server URL,
    exact resource identifier, issuer, authorization and token endpoints, registered
-   client, and requested scopes as one immutable version. The SDK takes scope
-   guidance from the server's challenge and falls back to the protected resource's
-   `scopes_supported` when the challenge omits scope. The administrator reviews
-   those scopes and can choose a narrower set.
-2. **Connect.** The Driver calls SDK `auth()` with the approved scopes and an
-   `OAuthClientProvider` backed by the version's client registration. It checks
-   the SDK's consent URL against the approved destination and scope set before
-   redirecting the user. Token requests go directly to the pinned endpoint with
-   redirects disabled. Changed destinations require a new version and consent.
-   Newly advertised scopes do not change an existing grant.
-   If a later challenge requires additional scopes, the owner can reconnect
-   after an administrator approves them in a new version.
+   client, and allowed scopes as one immutable version. The administrator reviews
+   the scopes in the challenge and in the protected resource's `scopes_supported`.
+   Either source can name scopes the other omits. The challenge identifies the
+   scopes needed for the current request. Without a scoped challenge, the SDK
+   suggests the advertised resource scopes. The administrator decides which
+   scopes the template offers, including any required for identity or refresh.
+   Saving a version requires at least one approved scope so that the owner
+   can make an explicit request.
+2. **Connect.** Console shows the owner the version's entire approved list.
+   The owner chooses which scopes to request for this connection. Console labels
+   any required scopes and includes them in the selection. OCC validates that
+   selection against the displayed version before creating a source or redirect.
+   It rejects a missing or empty selection, an unlisted scope, an omitted
+   required scope, or a stale version. The source records the validated set.
+   The Driver passes that set to SDK `auth()` with the version's registered
+   client. Before redirecting, it checks the consent URL's destination,
+   `resource`, and exact scope set, including any scope the SDK adds.
+   Token requests go directly to the pinned endpoint with redirects disabled.
+   A changed destination requires a new version and fresh consent.
+   A tool that needs additional scopes can return `insufficient_scope`. The
+   owner can request more through **Reconnect**. Scopes outside the approved
+   list require a new template version first.
    The Driver keeps the PKCE verifier and SDK discovery state in the private
    authorization session. OCC checks the initiating user, Agent, and single-use
    callback state, and forwards the callback's optional `iss` to the Driver. The
@@ -59,9 +70,11 @@ grant and account permissions.
 3. **Refresh and present.** The credential service behind the Driver uses the SDK
    for exchange and refresh so both requests include the approved resource.
    Before activating an access token, the service verifies that the user's
-   effective grant matches the approved scopes. If the grant differs or the
-   service cannot establish its scope, it withholds the token and requires
-   reconnection.
+   effective grant matches the selection recorded for this connection. Under
+   OAuth, an issuer may omit `scope` when it grants exactly the requested set.
+   A refresh without a scope change retains the original grant. If the effective
+   set differs or cannot be established, the service withholds the token and
+   requires reconnection.
    The service serializes refresh per source and atomically saves the new access
    token and any replacement refresh token. It reports `ready` once it holds a
    usable access token and refresh grant. Deployment matches the ready connection
@@ -71,19 +84,29 @@ grant and account permissions.
    A Driver that only hands a refresh token to OpenShell cannot admit this protocol
    until it supports that handoff of prepared access tokens.
 
-Using a controlled MCP server and issuer, verify that saving a `read-only` MCP
-template fails and creates no version. With a `full` template, observe the same
-resource on consent, exchange, and refresh. With a scoped challenge, verify the
-SDK proposes that scope. Without one, verify it proposes the resource's advertised
-scopes and the consent URL requests only the set approved for the version.
+Verify the following with a controlled MCP server and issuer.
+
+- Offer `files:read` and `files:write` in the template. When the server challenges
+  for `files:read`, the owner still sees both approved scopes. Select only
+  `files:read`. Inspect the outgoing consent URL and the saved connection for
+  exactly that scope. Reject a forged scope before creating a source. Withhold
+  a refreshed token that adds `files:write`, even though the template allows it.
+  Repeat discovery without a challenge scope and verify the SDK suggests the
+  resource's advertised scopes.
+- Inspect the OAuth authorization request, the code exchange, and the refresh
+  request. Each must send the template's exact MCP resource identifier as the
+  `resource` parameter. This identifies the server the token is intended for.
+- Try saving an MCP template with the HTTP-method filter `endpoint.access: read-only`.
+  Verify that OCC rejects the save and creates no version. A connection with
+  only `files:read` must still be able to send a tool call by HTTP `POST`.
+
 Change the advertised token endpoint and verify it receives no secret or code.
-An invalid callback issuer must fail before exchange, and a broader scope in a
-token response must keep that token out of egress.
+An invalid callback issuer must fail before exchange.
 After rotation, the same worker placeholder must reach the server with the second
 access token. With an authorized test account, compare the worker's tool catalog
 with the server's `tools/list` for that connection and invoke a tool from Console.
 
-[MCP scope selection](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#scope-selection-strategy) · [SDK OAuth client](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
+[MCP scope selection](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#scope-selection-strategy) · [OAuth token response](https://www.rfc-editor.org/rfc/rfc6749#section-5.1) · [SDK OAuth client](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
 ### Client registrations
 
@@ -179,9 +202,9 @@ approved. Attaching a source cannot expand an installation's egress ceiling.
 For a configured HTTP template with `read-only` access, the sender permits only
 `GET`, `HEAD`, and `OPTIONS`. MCP clients send both read and write tool calls by
 `POST` to the declared endpoint. OCC rejects an `mcp_oauth` template with
-`read-only` access before saving a version. With `full` access, the sender
-admits the transport at that exact endpoint and the MCP server enforces the
-user's grant on each call. [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
+`read-only` access before saving a version. The supported value, `full`, allows
+the MCP transport at that exact endpoint. The owner can still select only read
+scopes. The MCP server enforces the user's grant on each call. [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
 
 RFC-0023 authenticates an execution. Listing a binary in a connection template
 does not establish which process sent a request. Refuse deployment when the

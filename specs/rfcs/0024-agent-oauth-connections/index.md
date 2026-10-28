@@ -99,7 +99,7 @@ Namespace.
 | `issuer`                            | The authorization server's identifier, an exact `https` URL. It scopes the client ID and is the expected `iss` for `accountIdentity: oidc`.     |
 | `authorizationUrl`, `tokenUrl`      | Where OCC sends the user, and where the Driver exchanges the code. Exact `https` URLs.                                                          |
 | `clientId`, `clientSecret`          | The administrator's OAuth client at `issuer`. The Refresh Driver keeps the secret; OCC stores no value.                                         |
-| `scopes`, `authorizationParameters` | The fixed access the user approves. Users cannot add scopes. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
+| `scopes`, `authorizationParameters` | Fixed scopes for configured OAuth. MCP owners pick a subset. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
 | `endpoint`                          | Credential destination (`host`, `port`, `path`). `access` is `read-only` or `full` for `oauth2`, and `full` for `mcp_oauth`.                    |
 | `envVar`, `binary`                  | The placeholder variable and the one executable that may send it.                                                                               |
 | `accountIdentity`                   | `none` (default) or `oidc`. With `oidc`, OCC also requests `openid email` and shows the connected address.                                      |
@@ -108,9 +108,10 @@ Namespace.
 Each version has an authorization protocol. Existing templates default to
 `oauth2` and keep their configured endpoints. With `mcp_oauth`, the administrator
 selects the MCP server URL and a registered client. The SDK discovers the
-resource, issuer, endpoints, and proposed scopes. The administrator can narrow
-the scopes and approves the resulting version. Both protocols use the same
-**Connect** action, personal Agent binding, and reconnect/disconnect lifecycle. See the
+resource, issuer, endpoints, and scope suggestions. The administrator approves
+the scopes to offer. At **Connect**, the Agent owner sees the whole approved
+list and chooses which scopes to request for their account. Both protocols use
+the same personal Agent binding and reconnect/disconnect lifecycle. See the
 [MCP authorization contract](contracts.md#mcp-authorization).
 
 OCC rejects non-HTTPS URLs. Where OpenShell supplies a configured list of tool
@@ -133,10 +134,10 @@ wrong account; it does not affect who may use the Agent.
 An edit never changes what an existing connection does. Changing any field except
 `displayName` creates a new connection template version. The credential source
 records the version and the values its owner approved: issuer and its URLs, client
-registration, scopes, authorization parameters, endpoint and access, variable,
-binary, and OIDC settings. OCC and both Drivers use only that record, so an
-administrator cannot redirect a user's refresh grant or credential. Source
-configuration is already immutable.
+registration, this connection's scopes, authorization parameters, endpoint and
+access, variable, binary, and OIDC settings. OCC and both Drivers use only that
+record, so an administrator cannot redirect a user's refresh grant or credential.
+Source configuration is already immutable.
 
 After a new version, existing connections keep working and Agent details show
 **Reconnect to apply changes**. Reconnecting asks for consent again and creates a
@@ -243,13 +244,15 @@ sequenceDiagram
   end
 ```
 
-_Proposed flow for a template with configured OAuth endpoints. An MCP template
-uses the same Console and API steps with the
+_The diagram shows a template with configured OAuth endpoints. MCP adds scope
+selection before the redirect and uses the
 [MCP authorization contract](contracts.md#mcp-authorization)._
 
-1. `POST /namespaces/:namespaceId/agents/:agentId/connections` with a connection
-   template ID. OCC checks connection template `use`, confirms the caller is the
-   recorded owner, registers an empty source as `registering`, and calls
+1. For MCP, the owner selects scopes in Console before starting OAuth.
+   `POST /namespaces/:namespaceId/agents/:agentId/connections` takes the template
+   ID and, for MCP, the displayed template version and `selectedScopes`. OCC
+   checks template `use`, confirms the caller owns the Agent, and validates the
+   selection. It then registers an empty source as `registering` and calls
    `startBrowserAuthorization`. It stores `privateState` in a Namespace Secret, as
    device login does, and returns the source ID and `authorizationUrl`.
 2. The console shows the destination and scopes the tool is requesting, then
