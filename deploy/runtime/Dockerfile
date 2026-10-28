@@ -177,7 +177,7 @@ RUN echo '4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804  /tmp
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo '9895b2a4e47df3ab83d1f79aedd2d8a6298693cca0f12ceb7f81688b3ad2cbe8  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+RUN echo 'f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.

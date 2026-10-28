@@ -22,7 +22,7 @@ an `agents` roster, a model or fallback that is not `<provider>/<model>`
 (OpenClaw's `openrouter:auto` included), or a fallback on another provider than
 its primary's, all of which every deployment refuses, with deployment's own
 text, and
-[the settings rules](../../../packages/occ/src/gateway-security-defaults.ts), which
+[the settings rules](../../../packages/occ/src/configuration-settings.ts), which
 refuse a Codex approval policy the Gateway refuses and a literal
 `gateway.auth.password`, and the selected Compute Driver's optional
 [`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
@@ -124,7 +124,7 @@ bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
 When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
 stored reusable Configuration and its generation remain unchanged.
-[`admitGatewaySecurityDefaults`](../../../packages/occ/src/configuration-settings.ts)
+[`admitGatewaySecurityDefaults`](../../../packages/occ/src/gateway-security-defaults.ts)
 then fills the two settings OpenClaw's `personal` security preset would loosen
 ([reference](../../reference/configuration.md#agent-references-and-immutable-versions)). Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared

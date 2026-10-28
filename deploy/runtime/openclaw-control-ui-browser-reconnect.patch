@@ -145,12 +145,12 @@ index 2708f32ef422ea9b6881005c190b3aceba53d80a..a498cbdcc3db389bc444faba94c36ed7
    let mobile = false;
    mockMobile(() => mobile);
 diff --git a/ui/src/app/app-shell-view.tsx b/ui/src/app/app-shell-view.tsx
-index d6bcbd1be7ceb0624a7220b7bc6796f60b6e2fb9..4b2fefdad9fcc68b2d2909f804dd7e007edcfb1f 100644
+index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323954a02ac 100644
 --- a/ui/src/app/app-shell-view.tsx
 +++ b/ui/src/app/app-shell-view.tsx
-@@ -96,6 +96,11 @@ export function ApplicationShell(props: {
-     return readShellView(props.host);
-   });
+@@ -101,6 +101,11 @@ export function ApplicationShell(props: {
+     projectOwner(sessionOwner(), (sessions) => sessions.state.result?.sessions),
+   );
    const shellConnectionStatus = createMemo(() => view().shellConnectionStatus);
 +  // The browser can reopen the Agent root for sign-in while the tab keeps its local draft.
 +  const offerBrowserReconnect = () =>
@@ -160,7 +160,7 @@ index d6bcbd1be7ceb0624a7220b7bc6796f60b6e2fb9..4b2fefdad9fcc68b2d2909f804dd7e00
    const footerStatus = createMemo(() =>
      shellConnectionStatus() || view().connectionRecovery ? view().gatewayStatus : null,
    );
-@@ -358,6 +363,19 @@ export function ApplicationShell(props: {
+@@ -363,6 +368,19 @@ export function ApplicationShell(props: {
            onMouseDown={beginNativeWindowDragFromTopInset}
            inert={view().mobileNavLayout && view().navDrawerOpen}
          >
@@ -180,7 +180,7 @@ index d6bcbd1be7ceb0624a7220b7bc6796f60b6e2fb9..4b2fefdad9fcc68b2d2909f804dd7e00
            <Show
              when={
                floatingSidebarAttentionVisible(view().floatingUpdateCard) ||
-@@ -381,8 +399,9 @@ export function ApplicationShell(props: {
+@@ -386,8 +404,9 @@ export function ApplicationShell(props: {
            >
              <RouterOutlet
                ref={(element) => (props.host.routeOutlet = element)}
@@ -333,10 +333,10 @@ index ca35a766a3002b5a6e8923fcc1694b9cc65609fd..e598e1a4ad5e132e7ea41a0957cd7b96
        "Connection to the Gateway was interrupted. Reconnecting automatically. (WebSocket {code})",
      interrupted:
 diff --git a/ui/src/styles/layout.css b/ui/src/styles/layout.css
-index 29e5f6b678b67a43c9187278a4079c7a4de68e9e..981904cba3e7af1049bf92eccb5f27ea1fc8604b 100644
+index 995470c81ff714a6d085de86316ba57ddbabaeaf..92a6fb5909064172ad5aa2e1be1a38b8574c95b7 100644
 --- a/ui/src/styles/layout.css
 +++ b/ui/src/styles/layout.css
-@@ -3462,6 +3462,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
+@@ -3395,6 +3395,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
    min-height: 0;
  }
  
