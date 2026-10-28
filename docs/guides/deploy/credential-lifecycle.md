@@ -98,6 +98,22 @@ and explicitly deploy each intended consumer. Account deletion performs upstream
 cleanup and is blocked by Agent drafts, selected versions, and pending deployments;
 inactive history alone does not retain the source indefinitely.
 
+## Rotate an AWS-backed protected credential
+
+For an operator-configured [AWS parameter binding](../../reference/drivers/kubernetes-secret.md#read-a-rotating-aws-parameter-for-protected-use),
+publish the replacement distributable credential as the next version of the same
+Parameter Store `SecureString`. The next authorized protected read obtains the
+current value and version. The driver refuses local OCC value updates and
+environment delivery while the mapping exists.
+
+Verify three separate outcomes: AWS stored the new version, an authorized
+protected operation read that version, and the provider accepted it. A successful
+publication or stored source status does not establish provider acceptance.
+Gateways that copied credentials at registration require their supported
+reconfiguration and activation. Do not assume an existing copied Gateway project
+updates after AWS rotation. Withdraw active use before changing or removing the
+mapping; deleting the OCC Secret never deletes the AWS parameter.
+
 ## Use a personal Codex login
 
 Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected

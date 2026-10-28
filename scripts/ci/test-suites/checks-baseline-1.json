@@ -110,6 +110,7 @@
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/credential-proxy-provider-pin.test.ts",
     "tests/integration/credential-proxy-revision-currentness.test.ts",
+    "tests/integration/aws-parameter-credential-input.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
@@ -485,6 +486,13 @@
       "path": "tests/integration/credential-proxy-revision-currentness.test.ts",
       "expectedTests": [
         "credential exchange consults revision history only for inactive executions"
+      ]
+    },
+    {
+      "path": "tests/integration/aws-parameter-credential-input.test.ts",
+      "expectedTests": [
+        "configured AWS protected input rereads rotation and refuses unsafe reads",
+        "regular OCC protected inference uses fresh AWS input and enforces withdrawn grants"
       ]
     },
     {
