@@ -8,6 +8,7 @@ import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/dep
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
@@ -2573,7 +2574,8 @@ test("Agent sharing reconciles a truncated committed response without replaying 
 });
 
 test("a read-only viewer is denied saved settings and native admin once per tab, not per view", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Read-only detail");
   const agent = await fixture.createAgent(namespace.id, "Viewed Agent", nativeValues("viewed"));
@@ -2582,7 +2584,7 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
     ["read", "agent"],
   ]);
   const denials = (action) =>
-    fixture.auditSink
+    auditSink
       .list()
       .filter((event) => event.kind === "authorization_denial" && event.action === action).length;
   const { page } = await newPage(t, fixture);
@@ -2659,7 +2661,8 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
 // and an audited denial. The permission answer already says the caller lacks it, so the card is
 // never asked for, on any view of the page.
 test("a viewer without Agent administer never asks for native admin status", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Administer answer");
   const agent = await fixture.createAgent(namespace.id, "Viewed Agent", nativeValues("viewed"));
@@ -2687,7 +2690,7 @@ test("a viewer without Agent administer never asks for native admin status", asy
     await page.reload();
   }
   assert.equal(
-    fixture.auditSink
+    auditSink
       .list()
       .filter(
         (event) =>
