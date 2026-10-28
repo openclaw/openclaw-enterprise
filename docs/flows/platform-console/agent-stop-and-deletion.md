@@ -62,12 +62,12 @@ not that Compute has shut down. Cancel restores focus to the invoking button; su
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
 version; the Console cannot inspect history or candidate cleanup. With no selected version
 and no readable versions yet (`setNoReadableVersions`), the Stop row is hidden unless the viewer
-just used it. A running Agent with no selected version hides the row only when the latest
-deployment the page read failed (`setLatestDeployment`). A queued or in-progress one keeps Stop,
-and the confirmation says Stop cancels that deployment. An unreadable deployment or a failed read
-keeps Stop with a confirmation that names both outcomes; a succeeded one read before the Agent
-reread keeps the running-gateway text. A failed readable deployment alone does not hide Stop
-on the Agents list; a newer deployment may be unreadable. The overview's **Runtime** row reports
+just used it. A running Agent keeps Stop regardless of the latest readable deployment outcome
+(`setLatestDeployment`), as on the Agents list: a failed readable deployment can hide newer queued
+work. Agent `operate` still controls access. The latest readable outcome supplies confirmation
+text, not visibility. A queued or in-progress one says Stop cancels that deployment. An unreadable
+deployment or a failed read keeps the confirmation that names both outcomes; a succeeded one read
+before the Agent reread keeps the running-gateway text. The overview's **Runtime** row reports
 a requested stop.
 
 Refresh reads desired state and selected version, not live health. Denial stays inline; changed

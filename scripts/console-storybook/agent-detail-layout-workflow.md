@@ -33,3 +33,9 @@ simulated API state; they do not prove persistence or live runtime behavior.
    missing file shows **Missing** in the tabs and phone picker. The browser
    regression also checks that a later missing-file response clears a previous
    **Needs attention** indicator.
+7. Open **Components / Stop Agent / First Deployment Failed**. The Agent has no
+   selected version and its latest readable deployment failed. Check that **Stop
+   Agent** remains enabled: a newer queued deployment can be unreadable. Open the
+   confirmation, then Cancel. Check **Denied** still offers no Stop control.
+   These stories do not prove revision filtering or Stop authorization; the mixed-history
+   browser regression exercises those through the Controller and Native IAM.

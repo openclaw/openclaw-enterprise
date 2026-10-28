@@ -444,7 +444,7 @@ for (const [code, outcome] of [
 }
 
 // A failed readable deployment does not rule out a newer deployment the viewer cannot read.
-// Agent detail retains its failed-first-deployment behavior; the list keeps Agent-level Stop.
+// Both surfaces keep Agent-level Stop after a readable deployment failed.
 test("the Agents list keeps Stop available after a readable deployment failed", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Failed list", "Failed list");
   const failed = await fixture.deployAgent(namespace.id, agent.id);
@@ -462,7 +462,11 @@ test("the Agents list keeps Stop available after a readable deployment failed", 
   await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
   await page.locator(".agent-current-summary").getByText("v1 · Failed", { exact: true }).waitFor();
   await page.getByRole("region", { name: "Delete Agent", exact: true }).waitFor();
-  assert.equal(await page.getByRole("region", { name: "Stop Agent", exact: true }).count(), 0);
+  await waitForEnabled(
+    page
+      .getByRole("region", { name: "Stop Agent", exact: true })
+      .getByRole("button", { name: "Stop Agent", exact: true }),
+  );
   const retried = await fixture.deployAgent(namespace.id, agent.id);
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, retried.id), (route) =>
     route.fulfill(deploymentStatusResponse(retried, { status: "queued" })),
@@ -475,92 +479,156 @@ test("the Agents list keeps Stop available after a readable deployment failed", 
 // The real Controller and Native IAM admit both deployments and authorize revision reads and
 // Stop against in-memory state. There is no deployment worker: v2 is genuinely queued, while
 // only v1's failed deployment response is supplied to the browser.
-test("an Agent operator can stop when the newer queued revision is unreadable", async (t) => {
-  const { fixture, namespace, agent, page } = await agentPage(t, "Mixed history", "Mixed Agent", {
-    recordOperations: true,
-  });
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const first = await fixture.deployAgent(namespace.id, agent.id);
-  const second = await fixture.deployAgent(namespace.id, agent.id);
-  const queued = await fixture.request("GET", `${path}/deployments/${second.id}`);
-  assert.equal(queued.status, 200);
-  assert.equal(queued.data.status, "queued");
+for (const surface of ["list", "detail"]) {
+  test(`an Agent operator can stop from ${surface} when the newer queued revision is unreadable`, async (t) => {
+    const { fixture, namespace, agent, page } = await agentPage(t, "Mixed history", "Mixed Agent", {
+      recordOperations: true,
+    });
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const first = await fixture.deployAgent(namespace.id, agent.id);
+    const second = await fixture.deployAgent(namespace.id, agent.id);
+    const queued = await fixture.request("GET", `${path}/deployments/${second.id}`);
+    assert.equal(queued.status, 200);
+    assert.equal(queued.data.status, "queued");
 
-  const member = await fixture.createNamespaceMember("mixed-operator", namespace.id, [
-    ["read", "namespace"],
-    ["read", "agent"],
-    ["operate", "agent"],
-  ]);
-  // Apply revision read only to v1. The real Native IAM Driver evaluates both bindings.
-  const roleId = `role-read-${first.id}`;
-  fixture.policy.roles.push({
-    id: roleId,
-    namespaceId: namespace.id,
-    permissions: [{ action: "read", resourceKind: "agent_revision" }],
+    const member = await fixture.createNamespaceMember("mixed-operator", namespace.id, [
+      ["read", "namespace"],
+      ["read", "agent"],
+      ["operate", "agent"],
+    ]);
+    // Apply revision read only to v1. The real Native IAM Driver evaluates both bindings.
+    const roleId = `role-read-${first.id}`;
+    fixture.policy.roles.push({
+      id: roleId,
+      namespaceId: namespace.id,
+      permissions: [{ action: "read", resourceKind: "agent_revision" }],
+    });
+    fixture.policy.bindings.push({
+      id: `binding-${first.id}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: member.principal.id,
+      roleId,
+      resourceKind: "agent_revision",
+      resourceId: first.id,
+    });
+    const session = await fixture.signIn(member.credentials);
+    const before = await fixture.request("GET", path, { session });
+    assert.equal(before.status, 200);
+    assert.equal(before.data.desiredRuntimeState, "running");
+    assert.equal(before.data.activeRevisionId ?? null, null);
+    // A reader sees the same failed v1 but cannot stop, even though hidden v2 is queued.
+    const reader = await fixture.createNamespaceMember("mixed-reader", namespace.id, [
+      ["read", "namespace"],
+      ["read", "agent"],
+    ]);
+    fixture.policy.bindings.push({
+      id: `binding-reader-${first.id}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: reader.principal.id,
+      roleId,
+      resourceKind: "agent_revision",
+      resourceId: first.id,
+    });
+    await routeFailedRecord(page, fixture, namespace, agent, first);
+    const readerSession = await fixture.signIn(reader.credentials);
+    const denied = await fixture.request("POST", `${path}/stop`, { session: readerSession });
+    assert.equal(denied.status, 403);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      reader.credentials,
+    );
+    await page
+      .locator(".agent-current-summary")
+      .getByText("v1 · Failed", { exact: true })
+      .waitFor();
+    await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Stop Agent", exact: true }).count(), 0);
+    assert.equal((await fixture.request("GET", path)).data.desiredRuntimeState, "running");
+    await page.context().clearCookies();
+    const requests = apiRequests(page, fixture.origin);
+    const listing = page.waitForResponse((r) => new URL(r.url()).pathname === `${path}/revisions`);
+    await login(
+      page,
+      fixture,
+      surface === "list"
+        ? `/console/agents?namespace=${namespace.id}`
+        : detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      member.credentials,
+    );
+    const response = await listing;
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    assert.deepEqual(
+      body.data.map((revision) => revision.id),
+      [first.id],
+    );
+    assert.equal(body.meta.nextCursor, null);
+    const row =
+      surface === "list"
+        ? page.getByRole("row").filter({ hasText: agent.name })
+        : page.locator(".agent-current-summary");
+    await row.getByText("v1 · Failed", { exact: true }).waitFor();
+    if (surface === "list") {
+      await row.getByText("Needs Agent delete", { exact: true }).waitFor();
+      assert.equal(
+        await row.getByRole("button", { name: `Delete ${agent.name}`, exact: true }).isDisabled(),
+        true,
+      );
+    }
+    assert.equal((await row.innerHTML()).includes(second.id), false);
+    assert.equal(await row.getByText(/v2/).count(), 0);
+    const stop =
+      surface === "list"
+        ? row.getByRole("button", { name: `Stop ${agent.name}`, exact: true })
+        : page
+            .getByRole("region", { name: "Stop Agent", exact: true })
+            .getByRole("button", { name: "Stop Agent", exact: true });
+    await waitForEnabled(stop);
+    assert.equal(
+      requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length,
+      0,
+    );
+    await stop.click();
+    const dialog = page.getByRole("dialog", {
+      name: surface === "list" ? `Stop ${agent.name}?` : "Stop this Agent?",
+    });
+    await dialog.waitFor();
+    assert.equal(
+      requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length,
+      0,
+    );
+    const stopResponse = page.waitForResponse(
+      (r) => r.url() === `${fixture.origin}${path}/stop` && r.request().method() === "POST",
+    );
+    await dialog.getByRole("button", { name: "Stop Agent", exact: true }).click();
+    const stopped = await stopResponse;
+    assert.equal(stopped.status(), 202);
+    const stoppedBody = await stopped.json();
+    assert.equal(stoppedBody.data.id, agent.id);
+    assert.equal(stoppedBody.data.desiredRuntimeState, "stopped");
+    await dialog.waitFor({ state: "hidden" });
+    assert.equal(
+      requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length,
+      1,
+    );
+    assert.equal(
+      requests.some((r) => r.path.includes(second.id)),
+      false,
+    );
+    const after = await fixture.request("GET", path, { session });
+    assert.equal(after.status, 200);
+    assert.equal(after.data.desiredRuntimeState, "stopped");
+    assert.equal(
+      requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length,
+      1,
+    );
+    assert.equal(requests.filter((r) => r.method === "DELETE").length, 0);
   });
-  fixture.policy.bindings.push({
-    id: `binding-${first.id}`,
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: member.principal.id,
-    roleId,
-    resourceKind: "agent_revision",
-    resourceId: first.id,
-  });
-  const session = await fixture.signIn(member.credentials);
-  const before = await fixture.request("GET", path, { session });
-  assert.equal(before.status, 200);
-  assert.equal(before.data.desiredRuntimeState, "running");
-  assert.equal(before.data.activeRevisionId ?? null, null);
-  await routeFailedRecord(page, fixture, namespace, agent, first);
-  const requests = apiRequests(page, fixture.origin);
-  const listing = page.waitForResponse((r) => new URL(r.url()).pathname === `${path}/revisions`);
-  await login(page, fixture, `/console/agents?namespace=${namespace.id}`, member.credentials);
-  const response = await listing;
-  assert.equal(response.status(), 200);
-  const body = await response.json();
-  assert.deepEqual(
-    body.data.map((revision) => revision.id),
-    [first.id],
-  );
-  assert.equal(body.meta.nextCursor, null);
-  const row = page.getByRole("row").filter({ hasText: agent.name });
-  await row.getByText("v1 · Failed", { exact: true }).waitFor();
-  await row.getByText("Needs Agent delete", { exact: true }).waitFor();
-  assert.equal(
-    await row.getByRole("button", { name: `Delete ${agent.name}`, exact: true }).isDisabled(),
-    true,
-  );
-  assert.equal((await row.innerHTML()).includes(second.id), false);
-  assert.equal(await row.getByText(/v2/).count(), 0);
-  const stop = row.getByRole("button", { name: `Stop ${agent.name}`, exact: true });
-  await waitForEnabled(stop);
-  assert.equal(requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length, 0);
-  await stop.click();
-  const dialog = page.getByRole("dialog", { name: `Stop ${agent.name}?` });
-  await dialog.waitFor();
-  assert.equal(requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length, 0);
-  const stopResponse = page.waitForResponse(
-    (r) => r.url() === `${fixture.origin}${path}/stop` && r.request().method() === "POST",
-  );
-  await dialog.getByRole("button", { name: "Stop Agent", exact: true }).click();
-  const stopped = await stopResponse;
-  assert.equal(stopped.status(), 202);
-  const stoppedBody = await stopped.json();
-  assert.equal(stoppedBody.data.id, agent.id);
-  assert.equal(stoppedBody.data.desiredRuntimeState, "stopped");
-  await dialog.waitFor({ state: "hidden" });
-  assert.equal(requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length, 1);
-  assert.equal(
-    requests.some((r) => r.path.includes(second.id)),
-    false,
-  );
-  const after = await fixture.request("GET", path, { session });
-  assert.equal(after.status, 200);
-  assert.equal(after.data.desiredRuntimeState, "stopped");
-  assert.equal(requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length, 1);
-  assert.equal(requests.filter((r) => r.method === "DELETE").length, 0);
-});
+}
 
 // Agent detail offers Stop for a first deployment in progress with no current version.
 // While it is still queued, Stop stays enabled and says it cancels that deployment: no gateway

@@ -79,12 +79,8 @@ export function createAgentStop(
 
   function render() {
     const requested = state.agent.desiredRuntimeState === "stopped";
-    // A first deployment that failed leaves the Agent requested to run with no version selected:
-    // Stop would change nothing, so the row is hidden, as on the Agents list (findings 2385,
-    // D691). Only a failure this page read decides it. A succeeded deployment read against an
-    // older Agent read, an unreadable deployment, or a failed read keeps Stop, and the API answers
-    // if nothing runs.
-    const idle = !requested && !state.agent.activeRevisionId && state.latestDeployment === "failed";
+    // A failed readable deployment can hide newer queued work. As on the Agents list,
+    // its outcome informs confirmation copy, not whether Agent-level Stop is available.
     setText(
       summary,
       cancelsFirstDeployment(state.agent, state.latestDeployment)
@@ -123,15 +119,6 @@ export function createAgentStop(
             ),
           ]
         : []),
-      ...(idle && !state.forbidden
-        ? [
-            statusBlock(
-              "info",
-              null,
-              "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
-            ),
-          ]
-        : []),
       ...(state.forbidden ? [statusBlock("info", null, permissionNotice)] : []),
       ...(state.notice ? [statusBlock("info", null, state.notice)] : []),
       ...(state.error
@@ -145,7 +132,7 @@ export function createAgentStop(
           ]
         : []),
     );
-    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden || idle;
+    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden;
     repeat.disabled = state.pending || state.needsRefresh || state.forbidden;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
@@ -162,10 +149,10 @@ export function createAgentStop(
     // A viewer whose permission answer denies Agent operate has no row either (UX spec 3.9).
     // A missing answer keeps it, and the API still decides. An answer that lands while this
     // viewer has the confirmation open keeps the row, so the reason stays where they were.
-    setHidden(section, (neverStarted || idle || state.forbidden) && !state.used);
+    setHidden(section, (neverStarted || state.forbidden) && !state.used);
     // After a request, a disabled Stop beside Request Stop again only adds noise, and an
     // uncertain outcome offers only Refresh (finding 1899).
-    if (neverStarted || (idle && !state.used)) {
+    if (neverStarted) {
       actions.replaceChildren();
     } else if (state.needsRefresh) {
       actions.replaceChildren(refresh);
