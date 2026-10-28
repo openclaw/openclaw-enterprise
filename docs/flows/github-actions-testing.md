@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-10-23
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+last_updated_session: authoring-run/b9c627b2-2d00-4912-b439-bdb8515f85d1
 ---
 
 # GitHub Actions testing flow
@@ -151,9 +151,28 @@ manual profile. Production node provisioning remains outside CI ownership; see
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner discovers active test files and verifies one lane assignment per file. Different prerequisites require separate files. It invokes whole files with invocation-scoped environment inputs. A custom Node reporter publishes case names, locations and outcomes, excluding arbitrary output. The runner also keeps each failure's error message (at most 600 characters) and top stack frame (240), with the repository path stripped, every nonpublic environment value of eight or more characters (from the job and from the test process) replaced by `[env:NAME]`, and common token, key, URL-password and `password=`-style values replaced by `[redacted]`; the runner prints the same line per failed case to the job log. Values a test generates at run time are redacted only when they match those shapes. Failed provider-test HTTP assertions also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Denied-traffic failures retain only an allowlisted traffic category, without target addresses or response data. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
+The runner invokes whole files with one lane and invocation-scoped inputs.
+Separate prerequisites require separate files. The reporter emits case names,
+locations and outcomes without arbitrary output. The runner redacts messages (600 characters) and frames (240) for paths,
+nonpublic job/child environment values of eight or more characters, and known
+credential shapes; job logs use that text. Other runtime-generated values can
+remain. Provider fields keep numeric statuses/allowlisted errors; traffic
+diagnostics keep allowlisted categories. Plugin diagnostics retain readiness/rollout
+stages, Pod phases, readiness/scheduling flags, restart counts, exit codes and reasons.
+They exclude addresses, response bodies, credentials and identities.
+The [CI guide](../testing/ci.md) lists fields and markers.
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
+
+The reporter projects `cause` and `AggregateError.errors` with context labels into
+message/stack fields: at most 32 values/eight levels. It marks cycles/limits and
+keeps shared siblings separate. `scripts/ci/failure-redaction.mjs:captureFailureText`
+normalizes controls and contextual shapes before retaining complete leading/tail
+lines within 16,384 JavaScript UTF-16 units, including omission markers.
+Oversized lines may be omitted. Reporter flags preserve redacted tails; expanded
+labels are re-budgeted. Artifacts omit flags. Top-frame and 600-character summary
+limits remain. Integration covers Node events and diagnostic artifacts;
+passing files gain no text.
 
 <a id="4-clean-up-and-publish-the-bounded-result" class="anchor-alias"></a>
 
@@ -242,11 +261,17 @@ External reconciliation awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-10-23 19:59: Preserve CI and diagnostic contracts. (authoring-run/b9c627b2-2d00-4912-b439-bdb8515f85d1 - 6f1a5653f230c4b0dce0e422d1422f4bc6c29827)
+
 - 2026-10-23 07:40: Preserve upstream CI selection alongside locale-independent timestamp ordering after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - a6a49a5192fa1c9cc5035801eed7d64b03336491)
 
 - 2026-10-23 03:43: Order Docker timestamps and retain twelve latest retry kinds independently of locale. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 9bca605f5175bb225a522c3d5537a7ee6e1a7751)
 
 - 2026-10-21 04:42: Preserve submillisecond Docker event order. (authoring-run/458f4777-70d1-4992-a922-ab387c6a4aba - e8185dac805b737363c7178d3068b310a53a7c24)
+
+- 2026-10-20 09:20: Preserve context before windowing. (authoring-run/bf83e367-c806-4cef-9b98-ff6d7b1f3846 - c233531705acbd852655557b894043748cc275c6)
+
+- 2026-10-20 07:20: Preserve diagnostic traces and cleanup anchors. (authoring-run/38d7de41-ba23-47a0-8084-a11002084ce3 - ca20ea0e3ef4f82a129223a187bd68c03eb2f4a6)
 
 - 2026-10-14 22:31: Complete all selection. (authoring-run/d5130a41-8ae6-4a80-aef3-32d61a53348c - 9b50982b75a578d6967ee12befb1fa3904e20a38)
 
