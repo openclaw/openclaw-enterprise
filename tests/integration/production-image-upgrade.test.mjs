@@ -269,6 +269,7 @@ case "$*" in
   *'{namespaceId: $namespaceId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","deploymentId":"rev_candidate"}' ;;
   *'{namespace: .metadata.namespace, name: .metadata.name,'*) printf '%s\\n' '{"namespace":"tenant-test","name":"gateway-test","restarts":0,"uid":"gateway-test-uid"}' ;;
   *' .uid') cat >/dev/null; printf '"gateway-test-uid"\\n' ;;
+  *'was replaced by a new Pod'*) exit 0 ;;
   *'.restarts'*|*'.gatewayRestarts'*) cat >/dev/null; printf '0\\n' ;;
   *'.lastState.terminated.reason'*) cat >/dev/null; printf '0\\tnone\\n' ;;
   *'spec.containers'*'length'*)

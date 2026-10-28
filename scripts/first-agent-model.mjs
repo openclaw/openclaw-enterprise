@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+import { admitGatewaySecurityDefaults } from "../packages/occ/src/gateway-security-defaults.ts";
 
 export function selectFirstAgentModel(configuredModel, existing) {
   const model = configuredModel || existing?.model || defaultAgentModel;
@@ -75,6 +76,18 @@ export function firstAgentRevisionValuesMatch(
   revisionId,
   priorRevisionId,
 ) {
+  // Deployment admission fills the Gateway security defaults the Configuration leaves unset.
+  // A saved revision the helper identified may predate that fill; accept it only there.
+  const admitted = [admitGatewaySecurityDefaults(configured)];
+  if (priorRevisionId !== undefined && revisionId === priorRevisionId) {
+    admitted.push(configured);
+  }
+  return admitted.some((snapshot) =>
+    snapshotValuesMatch(values, snapshot, record, revisionId, priorRevisionId),
+  );
+}
+
+function snapshotValuesMatch(values, configured, record, revisionId, priorRevisionId) {
   // Reconstruct the expected snapshot; never change the revision or ignore other drift.
   // Deployment names the helper's sole main Agent after the OCC Agent.
   const expected = structuredClone(configured);

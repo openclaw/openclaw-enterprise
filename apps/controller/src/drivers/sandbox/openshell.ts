@@ -110,12 +110,7 @@ import {
   toProtobufStruct,
 } from "./openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
-import {
-  AGENT_WITH_NODE_ENTRYPOINT,
-  LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
-  matchesWorkspaceNodeStateUpgrade,
-  RUNTIME_WRAPPER_COMMAND,
-} from "../compute/kubernetes/runtime-entrypoints.ts";
+import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
 import {
   compareResourceQuantities,
@@ -2807,52 +2802,6 @@ function runtimeProviderSetupUpdate(
   });
 }
 
-// These are the two workspace-node payloads actually produced before private state
-// initialization (b64bb6b8). Never accept a different program based on its name or owner.
-// TODO: remove the private-state upgrade shim and matchesWorkspaceNodeStateUpgrade when the
-// corresponding workspace-node programs can no longer reconstruct either pinned payload. Preserve
-// these predecessor pins while priorCodexPayloads uses them for unversioned-launch adoption.
-const beforePrivateNodeState = {
-  ordinary: "c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20",
-  protected: "58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",
-};
-
-function matchesOwnedSandboxSpec(
-  existing: OpenShellSandboxResponse,
-  request: OpenShellSandboxCreateRequest,
-  revision: Readonly<AgentRevision>,
-): boolean {
-  const wanted = canonicalSandboxSpec(request.spec);
-  if (isDeepStrictEqual(canonicalSandboxSpec(existing.spec), wanted)) {
-    return true;
-  }
-  const observed = existing.spec?.command;
-  const expected = request.spec.command;
-  const first = RUNTIME_WRAPPER_COMMAND.length + 1;
-  const admission = revision.compute?.admission;
-  const protectedCodex = admission === "protected-codex-no-connection-retry:v1";
-  if (
-    revision.harness.id !== "codex" ||
-    revision.harness.mode !== "dedicated" ||
-    !revision.compute ||
-    (admission !== undefined && !protectedCodex) ||
-    !Array.isArray(expected) ||
-    !Array.isArray(observed) ||
-    observed.length !== expected.length ||
-    !isDeepStrictEqual(observed.slice(0, first), expected.slice(0, first))
-  ) {
-    return false;
-  }
-  const payload = observed.slice(first);
-  return (
-    payload.every((part) => typeof part === "string" && part.length <= 32768) &&
-    sha256Hex(JSON.stringify(payload)) ===
-      beforePrivateNodeState[protectedCodex ? "protected" : "ordinary"] &&
-    matchesWorkspaceNodeStateUpgrade(expected.slice(first), payload, protectedCodex) &&
-    isDeepStrictEqual(canonicalSandboxSpec({ ...existing.spec, command: expected }), wanted)
-  );
-}
-
 // For each unversioned Codex launch, accept only its own known older payloads.
 // The OpenShell command prefix, ownership and remaining Sandbox spec still match exactly.
 const priorCodexPayloads = new Map([
@@ -2914,19 +2863,19 @@ const priorCodexPayloads = new Map([
   ],
 ]);
 
-// Private-state initialization changes the generated command, but not the exact
-// predecessor allowlist for an unversioned launch. Preserve those migrations.
-for (const [program, protectedCodex] of [
-  [AGENT_WITH_NODE_ENTRYPOINT, false],
-  [LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT, true],
-] as const) {
-  const prefix = protectedCodex ? "protected:" : "";
-  const previous = beforePrivateNodeState[protectedCodex ? "protected" : "ordinary"];
-  priorCodexPayloads.set(
-    prefix + sha256Hex(JSON.stringify(nodeProgramArguments(program).slice(1))),
-    new Set(priorCodexPayloads.get(prefix + previous)!),
-  );
-}
+// The workspace-node programs at the runtime update keep the historical migration
+// for these two stored launch families. Pin the expected programs as well as
+// their predecessors so a future runtime cannot silently inherit this exception.
+priorCodexPayloads.set(
+  "4101d1c45c7a1f0ff443de7fb1524000580e2d7ba368a1cd14291aada952dbfb",
+  priorCodexPayloads.get("c6903eddf73e5e3f9e3fd17857d2fd79286c3a1e23122078a8265d925b195b20")!,
+);
+priorCodexPayloads.set(
+  "protected:f47a42a3133981efa829b3f62edcc2bd864fe1d693708937af93699885474710",
+  priorCodexPayloads.get(
+    "protected:58bedfc8b3c4f69eb3589b8596e33717ee65ccc452e55b5ad8574e9ec9deaadb",
+  )!,
+);
 
 function existingSandboxSpec(
   existing: OpenShellSandboxResponse,
@@ -2976,11 +2925,10 @@ function verifyExistingSandbox(
       request.annotations,
       "internal.openshell.ai/",
     ) ||
-    (!matchesOwnedSandboxSpec(existing, request, revision) &&
-      !isDeepStrictEqual(
-        existingSandboxSpec(existing, request, revision),
-        canonicalSandboxSpec(request.spec),
-      ))
+    !isDeepStrictEqual(
+      existingSandboxSpec(existing, request, revision),
+      canonicalSandboxSpec(request.spec),
+    )
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,

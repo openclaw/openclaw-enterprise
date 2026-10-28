@@ -129,7 +129,7 @@ engine selection, database initialization, local API admission and worker startu
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver`
 
 [Namespace execution and Agent admission](docker-compose-development/agent-execution.md)
-traces API authorization, durable work, tenant network ownership, unsupported
+traces API authorization, queued controller operations, tenant network ownership, unsupported
 Agent authentication and exact resource removal.
 The Driver rejects Docker API responses above 4 MiB from either a declared
 content length or the bytes received before buffering the complete body.

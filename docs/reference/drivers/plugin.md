@@ -1,10 +1,14 @@
+---
+kind: reference/driver
+---
+
 # PluginDriver contract
 
 ## Overview
 
 `PluginDriver` supplies a curated catalog, policy capabilities, and policy
 validation for an Agent Harness. OpenClaw Control Plane (OCC) owns Agent
-selections, authorization, and immutable Agent revisions.
+selections, authorization, and Agent revisions.
 Compute owns native installation, runtime connections, readiness, activation,
 and retirement. Bundled startup code also translates selected policy into native
 configuration; those helpers are not methods on the exported Driver interface.

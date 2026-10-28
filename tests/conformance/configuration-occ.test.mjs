@@ -7,7 +7,6 @@ import {
   resolveApprovedProductionHarness,
 } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   AuthorizationDeniedError,
   ConfigurationHarnessError,
@@ -33,6 +32,7 @@ import { GATEWAY_MANAGED_MODE_DENIED } from "../helpers/refusal-text.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
+import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
 
 const administrator = "principal-configuration-administrator";
 const deployOnly = "principal-configuration-deploy-only";
@@ -935,7 +935,7 @@ test("a Configuration left ahead of its record by failed updates recovers on the
   assert.equal(revision.configurationGeneration, 4);
   assert.deepEqual(
     revision.configuration,
-    admitLoggingConfiguration(servedAs(valuesWith(["east"]), agent.name), "info"),
+    admittedConfiguration(servedAs(valuesWith(["east"]), agent.name), "info"),
   );
   // Lost write 1 to 2; lost retry 2 to 3 and its compensation 3 to 2; failed retry 2 to 3;
   // recovery 3 to 4.
@@ -1129,7 +1129,7 @@ test("Agent deployment snapshots its selected Configuration and Compute identity
   assert.equal(revision.configurationGeneration, configuration.generation);
   assert.deepEqual(
     revision.configuration,
-    admitLoggingConfiguration(servedAs(configuration.values, agent.name), "info"),
+    admittedConfiguration(servedAs(configuration.values, agent.name), "info"),
   );
   assert.equal(Object.isFrozen(configuration.values.models.providers.openai.apiKey), true);
   assert.equal(Object.isFrozen(revision.configuration.plugins.entries.example.regions), true);
@@ -1169,7 +1169,82 @@ test("Agent deployment keeps the display name its Configuration sets", async () 
   );
 
   assert.notEqual(agent.name, "Configured name");
-  assert.deepEqual(revision.configuration, admitLoggingConfiguration(values, "info"));
+  assert.deepEqual(revision.configuration, admittedConfiguration(values, "info"));
+});
+
+// OpenClaw's default personal security preset fills these two settings when they are unset: it
+// lets another participant steer a running turn under the first requester's authority and lets
+// apply_patch write outside the workspace. Admission keeps the earlier values in the document every
+// Compute Driver renders, for embedded and dedicated Gateways; the Configuration's value wins.
+test("deployment admission keeps the earlier steering and apply_patch defaults unless the Configuration sets them", async () => {
+  const { agent, configuration, controller, namespace } = await fixture();
+  const codexValues = {
+    agents: {
+      defaults: {
+        model: { primary: "codex/gpt-4.1" },
+        models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
+  const deploy = async (values, executionMode) => {
+    const selected = await controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+    await controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: selected.id,
+      executionMode,
+    });
+    return controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    );
+  };
+  for (const [executionMode, base] of [
+    ["embedded", configuration.values],
+    ["dedicated", codexValues],
+  ]) {
+    // Unset: admission fills each setting and keeps the settings beside it.
+    const filled = await deploy(
+      { ...base, messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
+      executionMode,
+    );
+    assert.equal(filled.harness.mode, executionMode);
+    assert.deepEqual(filled.configuration.messages, {
+      queue: { mode: "collect", allowCollaborativeSteering: false },
+    });
+    assert.deepEqual(filled.configuration.tools, { exec: { applyPatch: { workspaceOnly: true } } });
+    // Explicit values of either kind reach the Gateway as written.
+    for (const [allowCollaborativeSteering, workspaceOnly] of [
+      [true, false],
+      [false, true],
+    ]) {
+      const explicit = await deploy(
+        {
+          ...base,
+          messages: { queue: { allowCollaborativeSteering } },
+          tools: { exec: { applyPatch: { enabled: true, workspaceOnly } } },
+        },
+        executionMode,
+      );
+      assert.deepEqual(explicit.configuration.messages, { queue: { allowCollaborativeSteering } });
+      assert.deepEqual(explicit.configuration.tools, {
+        exec: { applyPatch: { enabled: true, workspaceOnly } },
+      });
+    }
+  }
+  // Like the preset, admission fills only unset settings. A value of the wrong type stays for
+  // the Gateway's own validation, which refuses it at startup, so it cannot loosen the setting.
+  const invalid = await deploy(
+    { ...codexValues, messages: { queue: { allowCollaborativeSteering: "no" } }, tools: ["read"] },
+    "dedicated",
+  );
+  assert.deepEqual(invalid.configuration.messages, { queue: { allowCollaborativeSteering: "no" } });
+  assert.deepEqual(invalid.configuration.tools, ["read"]);
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {
@@ -1722,7 +1797,7 @@ for (const scope of ["primary", "default-fallback", "entry-fallback", "provider-
     // sole roster entry after the OCC Agent.
     assert.deepEqual(
       admitted.configuration,
-      admitLoggingConfiguration(
+      admittedConfiguration(
         {
           ...values,
           agents: {

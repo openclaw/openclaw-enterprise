@@ -230,7 +230,7 @@ mounts and symlinks.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
 and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
 clearing inherited setgid. OpenClaw prepares its children on retry; retained state
-and workspace permissions stay unchanged. Permission failures stop startup. On upgrade, the Driver can adopt a correctly owned Codex workspace-node Sandbox whose launcher differs only in the old directory initialization. It leaves the running Sandbox and its permissions unchanged. Newly created Sandboxes always use private node state.
+and workspace permissions stay unchanged. Permission failures stop startup.
 Workspace, node identity, sessions and images stay separate. The supervisor probes
 `/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
 

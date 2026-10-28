@@ -434,6 +434,70 @@ test("import refuses overlapping tenant destinations before changing the map or 
   );
 });
 
+test("import requires own object mappings and restores literal names or explicit renames", async () => {
+  const source = await createFixture();
+  const namespace = await created(source, "/namespaces", { name: "__proto__" });
+  await markReady(source, namespace.id);
+  for (const name of ["constructor", "0"]) {
+    await created(source, `/namespaces/${namespace.id}/secrets`, { name, value: "source" });
+  }
+  const bundle = await exportTenants(source.api);
+  bundle.namespaces = bundle.namespaces.filter(({ id }) => id === namespace.id);
+  const values = JSON.parse('{"__proto__":{"constructor":"restored","0":"indexed"}}');
+  const destination = await createFixture();
+  const state = { ids: {}, deployed: [] };
+  let saves = 0;
+  const options = { state, save: () => saves++, deploy: false };
+  const before = (await destination.api.expect("GET", "/namespaces")).data;
+  // An inherited tenant map and an inherited string inside an own tenant map are distinct gaps.
+  for (const [invalid, missing] of [
+    [Object.create(values), ["constructor", "0"]],
+    [{ ["__proto__"]: Object.create(values.__proto__) }, ["constructor", "0"]],
+    [{ ["__proto__"]: "abc" }, ["constructor", "0"]],
+    [{ ["__proto__"]: ["indexed"] }, ["constructor", "0"]],
+    [{ ["__proto__"]: { constructor: "restored" } }, ["0"]],
+  ]) {
+    await assert.rejects(importTenants(destination.api, bundle, invalid, options), {
+      message: bundle.namespaces[0].secrets
+        .filter(({ name }) => missing.includes(name))
+        .map(({ name }) => `no value for Secret __proto__/${name}`)
+        .join("\n"),
+    });
+    assert.deepEqual(state, { ids: {}, deployed: [] });
+    assert.equal(saves, 0);
+    assert.deepEqual((await destination.api.expect("GET", "/namespaces")).data, before);
+  }
+  assert.deepEqual(
+    checkImport(bundle, JSON.parse('{"__proto__":{"constructor":"restored","0":""}}')),
+    [],
+  );
+
+  // Ignore inherited renames; an explicit own __proto__ rename must still work.
+  for (const [name, names] of [
+    ["__proto__", Object.create(JSON.parse('{"__proto__":"wrong destination"}'))],
+    ["constructor", JSON.parse('{"__proto__":"constructor"}')],
+  ]) {
+    const target = await created(destination, "/namespaces", { name });
+    await markReady(destination, target.id);
+    const restored = { ids: {}, deployed: [] };
+    const result = await importTenants(destination.api, bundle, values, {
+      ...options,
+      state: restored,
+      names,
+    });
+    assert.equal(result.complete, true);
+    assert.equal(restored.ids[namespace.id], target.id);
+    const secrets = (await destination.api.expect("GET", `/namespaces/${target.id}/secrets`)).data;
+    assert.deepEqual(
+      secrets.map(({ id, name }) => ({ id, name })),
+      bundle.namespaces[0].secrets.map((secret) => ({
+        id: restored.ids[secret.id],
+        name: secret.name,
+      })),
+    );
+  }
+});
+
 test("discard refuses a stale bundle or one missing workspace files, before deleting", async () => {
   const fixture = await createFixture();
   const seeded = await seedTenant(fixture);

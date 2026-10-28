@@ -2,7 +2,7 @@
 
 # Configuration persistence and Agent revision snapshots
 
-Follow Configuration storage transactions into immutable Agent revision admission. See the [parent flow](../configuration-driver.md) for its context and overall sequence.
+Trace how OCC reads a Configuration and saves its values in an Agent revision. See the [parent flow](../configuration-driver.md) for its context and overall sequence.
 
 ## Execution trace
 
@@ -98,7 +98,9 @@ prerequisites.
 
 <span id="5-resolve-the-agent-reference-and-freeze-an-immutable-revision" class="anchor-alias"></span>
 
-### 5. Resolve the Agent reference and freeze an immutable Agent revision
+<span id="5-resolve-the-agent-reference-and-freeze-an-immutable-agent-revision" class="anchor-alias"></span>
+
+### 5. Resolve the Agent reference and save the deployment configuration
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
@@ -110,8 +112,7 @@ Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-s
 the Sandbox execution mode, the Harness and its mode, and the Compute checks.
 With a Compute Driver and a Harness resolver selected, every Agent save reads
 its Configuration once from the Configuration Driver, inside the save's
-transaction; a Driver outage then fails the save with `503` instead of letting
-an unchecked pair through. `deployAgent` then locks the Agent, authorizes a read of the
+transaction; a Driver outage then fails the save with `503`. `deployAgent` then locks the Agent, authorizes a read of the
 referenced Configuration, and locks its ownership metadata. It authorizes the
 caller's selected Secret bindings and the Agent service principal's consumption,
 checks topology/model-source compatibility, and asks the selected Secret Driver
@@ -122,15 +123,18 @@ Next OCC reads the selected Configuration Driver's stored document. For the
 bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
 When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
-stored reusable Configuration and its generation remain unchanged. Compute then
+stored reusable Configuration and its generation remain unchanged.
+[`admitGatewaySecurityDefaults`](../../../packages/occ/src/gateway-security-defaults.ts)
+then fills the two settings OpenClaw's `personal` security preset would loosen
+([reference](../../reference/configuration.md#agent-references-and-immutable-versions)). Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
 [the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)
 preparation and the Gateway entrypoint apply after a dedicated deployment stops its
 predecessors: enabled channels need a dedicated workload and `runtime.channels`, and a
 Gateway hosting a workspace node needs the file-transfer plugin) and, through optional
-`validateGatewaySettings`, the native gateway settings: Kubernetes Compute refuses
-a setting every preparation would refuse with `409`, naming the setting and never
+`validateGatewaySettings`, the native gateway settings: Kubernetes and Docker Compute
+refuse a setting every preparation would refuse with `409`, naming the setting and never
 its value, before an Agent revision exists. Kubernetes and Docker Compute also refuse
 listeners that routed traffic cannot reach, which the local readiness check would
 pass: a `gateway.bind` other than `auto`, `lan` or `custom`, `custom` unless
@@ -158,7 +162,7 @@ Configuration edits increment its generation but affect only later explicit
 deployments; historical Agent revisions and their admitted snapshots remain unchanged.
 PostgreSQL enforces the supported kind, positive generation, exact admitted
 snapshot shape, ownership, and Agent revision immutability. OCC records an
-attributable sanitized admission event and hands the immutable Agent revision to
+attributable sanitized admission event and hands the Agent revision to
 Compute-owned reconciliation without resolving credential bytes or starting a
 gateway during HTTP admission. A development worker can subsequently create or
 reuse exactly one gateway for the owning Agent during Agent revision preparation.

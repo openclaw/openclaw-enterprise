@@ -60,7 +60,7 @@ graph TD
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
 The page reads Agent, readable versions, and current Configuration
-(`revision=draft`) or immutable Agent revision (`revision=<id>`).
+(`revision=draft`) or Agent revision (`revision=<id>`).
 `packages/occ/src/index.ts` uses `listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing` for browsing.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` turns

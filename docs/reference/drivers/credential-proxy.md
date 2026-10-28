@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # Credential Proxy Driver contract
 
 ## Overview

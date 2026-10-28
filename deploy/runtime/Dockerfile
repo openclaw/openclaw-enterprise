@@ -177,7 +177,7 @@ RUN echo '4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804  /tmp
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo '48dbcb32c453861b8d8facf9d1fd62003a994c234289270727eb41763b8b8d9c  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+RUN echo 'f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
@@ -198,7 +198,8 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
 # Vite server on localhost, which Buildah's network-less RUN cannot resolve.
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
-    src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts
+    src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
+    src/app/gateway-page-activation.test.ts
 # The test runner restores its cache by renaming directories. A fresh mount
 # keeps those renames off the previous test layer.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \

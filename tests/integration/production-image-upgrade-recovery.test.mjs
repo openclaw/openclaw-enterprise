@@ -481,6 +481,14 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         status: "Success",
         message: "private-delete-response-marker",
       });
+    } else if (resource?.startsWith("pod/") && args.includes("get") && state.revisionPods) {
+      // The revision's Pods after a scripted eviction or replacement: a read by name
+      // finds a Pod that still exists, ended or not, as the Kubernetes API does.
+      const pod = state.revisionPods.find((item) => "pod/" + item.metadata.name === resource);
+      if (!pod) {
+        return fail(1, `Error from server (NotFound): pods "${resource.slice(4)}" not found`);
+      }
+      out(pod);
     } else if (resource === "pod/gateway" && args.includes("get")) {
       out(state.gatewayAfter ?? gatewayPod());
     } else if (resource && (args.includes("get") || args.includes("logs"))) {
@@ -715,7 +723,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
             initialization && state.initActive
               ? [{ status: { phase: "Running" } }]
               : revision
-                ? [state.gatewayReady ?? gatewayPod()]
+                ? (state.revisionPods ?? [state.gatewayReady ?? gatewayPod()])
                 : [],
         });
       }
@@ -785,6 +793,18 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
           134,
           "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\ncommand terminated with exit code 134",
         );
+      }
+      // Doctor runs for doctorSpanMs and logs its end, to show whether Doctors overlap.
+      if (state.doctorSpanMs) {
+        await new Promise((resolve) => setTimeout(resolve, state.doctorSpanMs));
+        log("doctor-end");
+      }
+      // Doctor passes, and then Kubernetes evicts, replaces or restarts the gateway, as
+      // node memory pressure did on a production-shaped cluster (finding 2736).
+      if (state.afterDoctor) {
+        Object.assign(state, state.afterDoctor);
+        delete state.afterDoctor;
+        save();
       }
       out("{}");
     } else if (args.includes("exec")) {
@@ -1873,6 +1893,127 @@ test("OpenClaw Doctor reports unknown restart history unless Ready and post-read
       }
     });
   }
+});
+
+// Doctor passing proves nothing about a gateway that Kubernetes then evicted, replaced
+// or restarted (finding 2736: node memory pressure evicted a gateway after its Doctor
+// passed, and the upgrade still reported success). Each case changes the gateway right
+// after a passing Doctor, in a state the Kubernetes API returns.
+test("a gateway changed after a passing Doctor fails the upgrade and resume checks its replacement", async (t) => {
+  const pod = ({
+    name = "gateway",
+    uid = "gateway-uid",
+    phase = "Running",
+    ready = true,
+  } = {}) => ({
+    metadata: { namespace: "tenant", name, uid },
+    spec: { containers: [{ name: "gateway", image: runtime }] },
+    status: {
+      phase,
+      conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
+      containerStatuses: [{ name: "gateway", restartCount: 0, lastState: {} }],
+    },
+  });
+  // The Deployment's replacement Pod, Ready on the new revision.
+  const replacement = pod({ name: "gateway-2", uid: "gateway-2-uid" });
+  // The kubelet ends an evicted Pod and keeps it (phase Failed, reason Evicted).
+  const evicted = pod({ phase: "Failed", ready: false });
+  evicted.status.reason = "Evicted";
+  // On the dogfood cluster the evicted gateway ended with phase Succeeded.
+  const ended = pod({ phase: "Succeeded", ready: false });
+  const cases = [
+    ["evicted", { revisionPods: [evicted, replacement] }, /was evicted \(phase Failed\)/],
+    ["ended", { revisionPods: [ended, replacement] }, /stopped \(phase Succeeded, reason none\)/],
+    ["deleted", { revisionPods: [replacement] }, /no longer exists \(evicted or deleted\)/],
+    [
+      "replaced under the same name",
+      { gatewayAfter: pod({ uid: "gateway-uid-2" }) },
+      /was replaced by a new Pod with the same name/,
+    ],
+    [
+      "restarted",
+      { gatewayRestarts: 1, gatewayLastReason: "Error" },
+      /restarted 1 time\(s\) \(last termination: Error\)/,
+    ],
+    ["not Ready", { gatewayAfter: pod({ ready: false }) }, /is not Ready/],
+  ];
+  for (const [name, afterDoctor, change] of cases) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, { agent: true });
+      const state = await f.state();
+      state.afterDoctor = afterDoctor;
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      const failure = await f.run().then(
+        () => assert.fail("a gateway changed after Doctor must stop the upgrade"),
+        (stopped) => stopped,
+      );
+      assert.match(
+        failure.stderr,
+        new RegExp(
+          `Agent agt_test's gateway Pod tenant/gateway ${change.source} after it became Ready for OpenClaw Doctor\\.`,
+        ),
+      );
+      assert.match(
+        failure.stderr,
+        /repeat the command with --resume and the same evidence directory/,
+      );
+      assert.doesNotMatch(failure.stdout, /Upgraded/);
+      assert.deepEqual(
+        (await f.events()).filter((event) => event.startsWith("doctor ")),
+        [doctorCommand(384)],
+      );
+    });
+  }
+  // Resume after the eviction: the ended Pod stays in the API, but the readiness wait
+  // ignores it, runs Doctor in the replacement and checks that Pod instead. No new deploy.
+  const f = await fixture(t, { agent: true });
+  const state = await f.state();
+  state.afterDoctor = { revisionPods: [evicted, replacement] };
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await assert.rejects(f.run(), /did not stay on the same Ready Pod without restarts/);
+  const resumed = await f.run("--resume");
+  assert.match(resumed.stdout, /Upgraded runtime image/);
+  assert.equal((await f.state()).dispatches, 1);
+  assert.deepEqual(
+    (await f.events()).filter((event) => event.startsWith("doctor ")),
+    [doctorCommand(384), doctorCommand(384)],
+  );
+  const targets = (await readFile(join(f.evidence, "doctor-targets.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    targets.map((target) => target.gatewayName),
+    ["gateway-2"],
+  );
+});
+
+// Doctors in several gateways on one node can together exhaust its memory, so they run
+// one at a time: each ends before the next gateway's memory check and Doctor start.
+test("OpenClaw Doctor runs in one gateway at a time", async (t) => {
+  const agent = (id) => ({
+    id,
+    status: "active",
+    desiredRuntimeState: "running",
+    executionMode: "embedded",
+    activeRevisionId: "rev_old",
+    deploymentInProgress: false,
+  });
+  const f = await fixture(t, {
+    inventoryNamespaces: [
+      { id: "ns_test", status: "ready", agents: [agent("agt_a"), agent("agt_b"), agent("agt_c")] },
+    ],
+  });
+  const state = await f.state();
+  state.doctorSpanMs = 500;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await f.run();
+  assert.deepEqual(
+    (await f.events()).filter((event) => /^(gateway-memory|doctor)/.test(event)),
+    Array(3)
+      .fill(["gateway-memory 2048", doctorCommand(384), "doctor-end"])
+      .flat(),
+  );
 });
 
 // Values that would wrap shell arithmetic (a negative deadline or Doctor threshold)

@@ -2,6 +2,7 @@
 
 These [breaking-change notices](breaking-changes.md) are older than the ones
 on that page, in the
+[notices before 2026-10-26](breaking-changes-before-2026-10-26.md), in the
 [later notices from 2026-10-24](breaking-changes-later-2026-10-24.md), in the
 [earlier notices from 2026-10-24](breaking-changes-earlier-2026-10-24.md), in the
 [notices before 2026-10-24](breaking-changes-before-2026-10-24.md), in the

@@ -10,10 +10,7 @@ import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import {
-  admitLoggingConfiguration,
-  renderPresetTemplate,
-} from "../../packages/contracts/src/index.ts";
+import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
@@ -38,6 +35,10 @@ import {
 } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
+import {
+  admittedConfiguration,
+  withGatewaySecurityDefaults,
+} from "../helpers/admitted-configuration.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -2932,8 +2933,8 @@ for (const runtimeLogging of [undefined, "driver"]) {
     assert.deepEqual(
       deployed.body.data.configuration,
       runtimeLogging === "driver"
-        ? servedAs(initialValues, "Configuration consumer")
-        : admitLoggingConfiguration(servedAs(initialValues, "Configuration consumer"), "info"),
+        ? withGatewaySecurityDefaults(servedAs(initialValues, "Configuration consumer"))
+        : admittedConfiguration(servedAs(initialValues, "Configuration consumer")),
     );
 
     const source = await request(context.app, "GET", `${collection}/${configurationId}`);

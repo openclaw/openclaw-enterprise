@@ -314,12 +314,25 @@ function bindingKey(binding) {
   ].join("\u0000");
 }
 
+function ownValue(mapping, key) {
+  return mapping !== null &&
+    typeof mapping === "object" &&
+    !Array.isArray(mapping) &&
+    Object.hasOwn(mapping, key)
+    ? mapping[key]
+    : undefined;
+}
+
+function secretValue(secretValues, namespaceName, secretName) {
+  return ownValue(ownValue(secretValues, namespaceName), secretName);
+}
+
 /** Checks a bundle and its Secret values before anything is created. Returns the problems. */
 export function checkImport(bundle, secretValues) {
   const problems = [];
   for (const namespace of bundle.namespaces) {
     for (const secret of namespace.secrets) {
-      if (typeof secretValues?.[namespace.name]?.[secret.name] !== "string") {
+      if (typeof secretValue(secretValues, namespace.name, secret.name) !== "string") {
         problems.push(`no value for Secret ${namespace.name}/${secret.name}`);
       }
     }
@@ -349,7 +362,7 @@ export async function importTenants(
 ) {
   // A deleted Namespace's name stays reserved, so the copies usually need new names.
   const namespaces = bundle.namespaces.filter(({ name }) => !skip.includes(name));
-  const targetName = (namespace) => names[namespace.name] ?? namespace.name;
+  const targetName = (namespace) => ownValue(names, namespace.name) ?? namespace.name;
   const problems = checkImport({ ...bundle, namespaces }, secretValues);
   if (problems.length > 0) {
     throw new SplitLayoutError(problems.join("\n"));
@@ -489,7 +502,7 @@ export async function importTenants(
       await create(
         secret.id,
         "secrets",
-        { name: secret.name, value: secretValues[namespace.name][secret.name] },
+        { name: secret.name, value: secretValue(secretValues, namespace.name, secret.name) },
         `Secret ${namespace.name}/${secret.name}`,
         secret.name,
       );
@@ -668,7 +681,7 @@ export async function importTenants(
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
-  const options = { command, names: {}, skip: [] };
+  const options = { command, names: Object.create(null), skip: [] };
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     if (["--yes", "--no-deploy", "--allow-unread-workspace-files"].includes(flag)) {

@@ -498,29 +498,58 @@ test("Docker Compute gateway containers use password auth by default and preserv
   );
 });
 
-test("Docker Compute rejects unsupported native gateway settings before Docker engine access", async () => {
+test("Docker Compute rejects unsupported native gateway settings at admission and before Docker engine access", async () => {
   const driver = new DockerComputeDriver({
     images: { gateway: "gateway:local", agent: "agent:local" },
   });
 
-  for (const [configuration, expected] of [
-    [{ gateway: { auth: { mode: "oauth" } } }, /password or trusted-proxy/i],
-    [{ gateway: { auth: { unsupportedField: true } } }, /unsupported field unsupportedField/i],
-    [{ gateway: { auth: null } }, /gateway auth must be an object/i],
-    [{ gateway: { tls: { enabled: true } } }, /gateway\.tls\.enabled must be omitted or false/i],
+  for (const [configuration, setting, expected] of [
+    [{ gateway: { auth: { mode: "oauth" } } }, "gateway.auth.mode", /password or trusted-proxy/i],
+    [{ gateway: { auth: { mode: "token" } } }, "gateway.auth.mode", /password or trusted-proxy/i],
+    [{ gateway: { auth: { mode: "none" } } }, "gateway.auth.mode", /password or trusted-proxy/i],
+    [
+      { gateway: { auth: { token: "gateway-token" } } },
+      "gateway.auth.token",
+      /gateway\.auth\.token is not a supported native gateway authentication field/,
+    ],
+    [
+      { gateway: { auth: { unsupportedField: true } } },
+      "gateway.auth.unsupportedField",
+      /gateway\.auth\.unsupportedField is not a supported/,
+    ],
+    [{ gateway: { auth: null } }, "gateway.auth", /gateway\.auth must be an object/],
+    [
+      { gateway: { tls: { enabled: true } } },
+      "gateway.tls.enabled",
+      /gateway\.tls\.enabled must be omitted or false/i,
+    ],
     // The published port forwards to the container IP while the healthcheck probes
     // loopback, so a loopback-only listener would pass readiness and serve nothing.
-    [{ gateway: { bind: "loopback" } }, /gateway\.bind must listen on all interfaces/],
-    [{ gateway: { bind: "tailnet" } }, /gateway\.bind must listen on all interfaces/],
+    [
+      { gateway: { bind: "loopback" } },
+      "gateway.bind",
+      /gateway\.bind must listen on all interfaces/,
+    ],
+    [
+      { gateway: { bind: "tailnet" } },
+      "gateway.bind",
+      /gateway\.bind must listen on all interfaces/,
+    ],
     [
       { gateway: { bind: "custom", customBindHost: "127.0.0.1" } },
+      "gateway.customBindHost",
       /gateway\.customBindHost must be 0\.0\.0\.0/,
     ],
-    [{ gateway: { tailscale: { mode: "serve" } } }, /gateway\.tailscale\.mode must be off/],
+    [
+      { gateway: { tailscale: { mode: "serve" } } },
+      "gateway.tailscale.mode",
+      /gateway\.tailscale\.mode must be off/,
+    ],
     [
       {
         plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } } },
       },
+      "plugins.entries.codex.config.appServer.approvalPolicy",
       /appServer\.approvalPolicy must not be "untrusted"/,
     ],
   ]) {
@@ -536,22 +565,33 @@ test("Docker Compute rejects unsupported native gateway settings before Docker e
       throw new Error("Docker API access must not occur");
     };
 
-    await assert.rejects(() => driver.prepareRevision(revision), expected);
+    let preparationMessage;
+    await assert.rejects(
+      () => driver.prepareRevision(revision),
+      (error) => {
+        preparationMessage = error.message;
+        return expected.test(error.message);
+      },
+    );
     assert.equal(networkAccesses, 0);
     assert.equal(dockerRequests, 0);
-  }
-  // Admission names the same listener settings with a 409 before a revision exists.
-  for (const [gateway, setting] of [
-    [{ bind: "loopback" }, "gateway.bind"],
-    [{ bind: "custom", customBindHost: "127.0.0.1" }, "gateway.customBindHost"],
-    [{ tailscale: { mode: "funnel" } }, "gateway.tailscale.mode"],
-  ]) {
+    // Deployment admission refuses every setting preparation refuses, with the same message and a
+    // 409, because the deploy stops the running revision before preparation (finding 2352).
     assert.throws(
-      () => driver.validateGatewaySettings({ gateway }),
-      (error) => error instanceof ComputeGatewaySettingError && error.setting === setting,
+      () => driver.validateGatewaySettings(configuration),
+      (error) =>
+        error instanceof ComputeGatewaySettingError &&
+        error.setting === setting &&
+        error.message === preparationMessage,
     );
   }
   assert.doesNotThrow(() => driver.validateGatewaySettings({ gateway: { bind: "lan" } }));
+  for (const auth of [
+    { mode: "password", password: "static-gateway-password" },
+    { mode: "trusted-proxy" },
+  ]) {
+    assert.doesNotThrow(() => driver.validateGatewaySettings({ gateway: { auth } }));
+  }
 });
 
 test("Docker prepares configuration before starting a managed Gateway", async () => {

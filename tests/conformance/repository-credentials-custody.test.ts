@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type {
+  AttemptContext,
+  CaptureObservation,
+} from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
 import { createCustody } from "../../apps/controller/src/drivers/repo/credentials/custody.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { custodyLimits } from "../fixtures/repository-credentials/builders.mjs";
@@ -16,7 +20,7 @@ function setup() {
       changes++;
     },
   });
-  const attempt = Object.freeze({
+  const attempt: AttemptContext = Object.freeze({
     id: "original-attempt",
     authority: Object.freeze({
       sessionId: "session",
@@ -33,7 +37,7 @@ function setup() {
   custody.register(attempt);
   const reservation = custody.reserve(attempt);
   const capture = (
-    observation = {
+    observation: CaptureObservation = {
       observedWallMs: clock.wallNow(),
       expiresAtWallMs: clock.wallNow() + 90000,
     },
@@ -60,12 +64,13 @@ test("custody rejects copied attempts and handles and wipes callback-scoped byte
   record.accepted = true;
   record.useDeadlineMonoMs = 90000;
   record.uses++;
-  let retained;
+  const retained: { bytes?: Uint8Array } = {};
   await custody.withUseBytes(record, async (bytes) => {
-    retained = bytes;
     assert.equal(Buffer.from(bytes).toString(), "owned-material");
+    retained.bytes = bytes;
   });
-  assert.ok(retained.every((value) => value === 0));
+  assert.ok(retained.bytes);
+  assert.ok(retained.bytes.every((value) => value === 0));
   record.uses--;
   record.disposition = "revoked";
   assert.throws(() => custody.release(record), /CREDENTIAL_BUSY/);
@@ -115,10 +120,10 @@ test("access slot reclamation retains independent renewal bytes through finaliza
   custody.release(record);
   close();
   assert.equal(custody.records.size, 0);
-  const renewalRead = Promise.withResolvers();
-  let bytes;
+  const renewalRead = Promise.withResolvers<void>();
+  const retained: { bytes?: Uint8Array } = {};
   const read = custody.driver.withRenewal(renewal, async (value) => {
-    bytes = value;
+    retained.bytes = value;
     await renewalRead.promise;
   });
   let disposed = false;
@@ -136,7 +141,8 @@ test("access slot reclamation retains independent renewal bytes through finaliza
   await read;
   await dispose;
   assert.equal(custody.renewalCount, 0);
-  assert.ok(bytes.every((value) => value === 0));
+  assert.ok(retained.bytes);
+  assert.ok(retained.bytes.every((value) => value === 0));
 });
 
 test("custody limits admit exactly their maximum and refuse one more", async (t) => {
@@ -153,13 +159,13 @@ test("custody limits admit exactly their maximum and refuse one more", async (t)
   });
   assert.throws(() => capture(), /CAPTURE_LIMIT/);
   assert.equal(reservation.unknown, true);
-  const retain = (bytes) => custody.driver.retainRenewal(Buffer.alloc(bytes, 1));
+  const retain = (bytes: number) => custody.driver.retainRenewal(Buffer.alloc(bytes, 1));
   const full = [retain(maximumRenewalBytes - 1), retain(1)];
   await Promise.all(full.map((renewal) => custody.driver.disposeRenewal(renewal)));
-  const renewals = [retain(1), retain(1)];
+  const renewals = [retain(1), retain(1)] as const;
   assert.equal(custody.renewalCount, maximumSlots);
   assert.throws(() => retain(1), /RENEWAL_LIMIT/);
-  const held = Promise.withResolvers();
+  const held = Promise.withResolvers<void>();
   t.after(() => held.resolve());
   const record = custody.lookup(ref);
   record.useDeadlineMonoMs = 90000;

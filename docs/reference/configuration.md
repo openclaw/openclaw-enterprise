@@ -155,8 +155,7 @@ replaces whichever generation is current, without this freshness check. The
 console's Configuration and channel saves include it.
 
 Creation requires `kind: "agent"`; missing or unsupported kinds are rejected.
-Additional consumer kinds are reserved for future approved resources and are
-not accepted. `values` must be a JSON object. It can contain the nested objects,
+`values` must be a JSON object. It can contain the nested objects,
 arrays, strings, finite numbers, booleans, and nulls used by native OpenClaw
 configuration. OCC preserves the native document without interpreting its
 fields or resolving SecretRefs, except that Configuration create and update,
@@ -202,9 +201,7 @@ deployment separately validates supported
 runtime selection, topology, and Secret binding ownership before admission.
 Creation requires `create` permission for Configurations in the
 exact parent Namespace. Reads, updates, and deletes require the corresponding
-permission for the exact Configuration. Authentication failures return `401`,
-malformed inputs `400`, denied operations `403`, missing resources `404`,
-dependency conflicts `409`, and unavailable authorization or storage `503`.
+permission for the exact Configuration. Unauthenticated requests return `401`.
 
 ## Credentials and channels
 
@@ -228,13 +225,16 @@ outside the Agent's Namespace or to a Configuration whose `kind` is not
 `"agent"`. Agent creation, update, and deployment separately require `read`
 permission for the exact referenced Configuration. Deployment deeply
 snapshots its admitted native document, including unresolved inline SecretRefs,
-into the immutable `AgentRevision.configuration` field and records
+into the `AgentRevision.configuration` field and records
 `configurationId`, `configurationKind`, and `configurationGeneration` as
 separate Agent revision fields. A selected [SandboxDriver](drivers/sandbox.md) may
 transform a copy through `configureAgent` before admission; the reusable
 Configuration and its generation remain unchanged. The snapshot adds the
 [Agent display name](agents/deployment.md#versions-and-deployment) to that document;
-its metadata names the source generation.
+its metadata names the source generation. Admission also sets
+`messages.queue.allowCollaborativeSteering: false` and
+`tools.exec.applyPatch.workspaceOnly: true` where the document leaves them
+unset, the values from before OpenClaw's `personal` security preset.
 Subsequent Configuration updates do not change a
 running gateway or existing version; only a later explicit deployment observes
 the next generation. Deleting a Configuration still referenced by an Agent
@@ -251,11 +251,10 @@ environment-variable names. `secretBindings` remain separate from `values` so
 OCC can authorize, validate, and freeze delivery references without rewriting
 the native OpenClaw document.
 
-AgentRevisions retain their selected Compute Driver identity and immutable
-Configuration snapshot. Compute runtime settings are loaded from Installation
-startup YAML and are not copied into that snapshot. See the
+AgentRevisions also keep the selected Compute Driver identity. Compute runtime
+settings come from Installation startup YAML and are not in the snapshot; see the
 [Agent revision contract](agents/deployment.md#versions-and-deployment) for the fields
-admission freezes; immutable Configuration does not freeze all Driver settings.
+admission freezes.
 
 ## Kubernetes storage
 

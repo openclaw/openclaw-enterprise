@@ -329,14 +329,13 @@ OpenClaw runs startup-safe migrations and plugin convergence before each gateway
 becomes ready. This workflow replaces immutable images instead of running
 `openclaw update`, so the command then runs
 `openclaw doctor --lint --json --severity-min error` inside every replacement
-gateway. At the default heap cap it waits for two consecutive readings with
-640 MiB free or one with 1024 MiB free; initially unavailable cgroup data allows
-a warning and run. Once insufficient memory is observed, only fresh sufficient
-readings allow Doctor to start within the original timeout. Doctor shares the
-gateway's memory limit: this check reduces risk but cannot reserve memory or
-guarantee no OOM kill. See [Doctor recovery](production-upgrade-recovery.md#correct-a-doctor-failure).
-Doctor is read-only here; a reported error fails the upgrade
-and is saved under `status/*.doctor.*`. Gateways run `doctor --fix` themselves only
+gateway, one at a time, each within `--timeout-seconds`. Doctor shares the
+gateway's memory limit, so it first waits for free gateway memory; this cannot
+reserve memory or guarantee no OOM kill. Doctor is read-only here; a reported
+error, or a gateway evicted, replaced, restarted, or not `Ready` after the last
+Doctor, fails the upgrade. Doctor output is saved under `status/*.doctor.*`; see
+[Doctor recovery](production-upgrade-recovery.md#correct-a-doctor-failure).
+Gateways run `doctor --fix` themselves only
 for [older state](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
 Success looks like:

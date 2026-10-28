@@ -124,7 +124,7 @@ the command waits for two consecutive readings with at least 640 MiB free or
 one with at least 1024 MiB free. Initially unavailable cgroup data produces a
 warning and Doctor runs. Once insufficient memory is observed, missing or failed
 reads cannot admit Doctor and reset consecutive evidence. Fresh sufficient
-readings must arrive before the original upgrade timeout. Wait for memory use
+readings must arrive within that Doctor's `--timeout-seconds`. Wait for memory use
 to settle, then resume; consider a larger gateway memory limit if it stays low.
 These readings do not reserve memory or guarantee that the gateway avoids an OOM kill.
 
@@ -135,6 +135,13 @@ prove Doctor caused it. The restart history is unknown when the gateway Pod was
 replaced, its container status is missing, or its restart count went down.
 Wait until the gateway is `Ready` again, then resume; the resume runs Doctor
 again without new deployments.
+
+`did not stay on the same Ready Pod without restarts through OpenClaw Doctor`
+means that every Doctor passed, but afterward a named Agent's gateway Pod was
+evicted, deleted, replaced, restarted, or not `Ready`. Doctors run one at a time,
+but node memory pressure from other Pods can still evict a gateway. Inspect the
+node's events, wait until that Agent's gateway is `Ready`, then resume. The
+resume runs Doctor in the current gateway without new deployments.
 
 `OpenClaw Doctor ran out of its 384 MiB heap` means Doctor reached its heap cap;
 check the separate gateway restart observation. Repeat the command with
