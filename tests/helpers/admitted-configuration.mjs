@@ -48,13 +48,50 @@ function withUnset(parent, [key, ...rest], value, admits = () => true) {
   return { ...parent, [key]: withUnset(current, rest, value, admits) };
 }
 
+const objectAt = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+
+// An Agent entry's own exec policy replaces the top-level mode but inherits the top-level
+// strictInlineEval. Where admission filled `false` there under the corporate preset, an entry
+// whose policy is not mode "full" and that sets no strictInlineEval keeps the preset's `true`.
+function withEntryInlineEvalRule(values, filled) {
+  const entries = objectAt(filled.agents?.entries);
+  if (
+    values.tools?.exec?.strictInlineEval !== undefined ||
+    filled.tools?.exec?.strictInlineEval !== false ||
+    values.security?.preset !== "corporate" ||
+    entries === undefined
+  ) {
+    return filled;
+  }
+  const kept = Object.fromEntries(
+    Object.entries(entries).map(([id, entry]) => {
+      const exec = objectAt(entry?.tools?.exec);
+      const ownPolicy =
+        exec !== undefined &&
+        exec.strictInlineEval === undefined &&
+        (exec.mode === undefined ? !noExecPolicy(exec) : exec.mode !== "full");
+      return [
+        id,
+        ownPolicy
+          ? { ...entry, tools: { ...entry.tools, exec: { ...exec, strictInlineEval: true } } }
+          : entry,
+      ];
+    }),
+  );
+  return { ...filled, agents: { ...filled.agents, entries: kept } };
+}
+
 // `values` with each of `defaults` (every GATEWAY_SECURITY_DEFAULTS row unless given) it leaves
 // unset filled, as deployment admission fills it: a value of any type, or a non-object on the
 // path, is kept.
 export function withGatewaySecurityDefaults(values, defaults = GATEWAY_SECURITY_DEFAULTS) {
-  return defaults.reduce(
-    (filled, { path, value, admits }) => withUnset(filled, path, value, admits),
+  return withEntryInlineEvalRule(
     values,
+    defaults.reduce(
+      (filled, { path, value, admits }) => withUnset(filled, path, value, admits),
+      values,
+    ),
   );
 }
 
