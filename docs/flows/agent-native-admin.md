@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-28
-last_updated_session: codex/01a1558e-c27f-7bc0-a403-af59e9364ddf
+updated: 2026-10-27
+last_updated_session: authoring-run/f3434faa-8624-4f34-83a2-521047f80329
 ---
 
 # Agent Native Admin UI Flow
@@ -95,12 +95,6 @@ when a readable version exists. Other unavailable states keep Refresh access.
 
 The warning describes Gateway managed mode and OCE overwriting changes made while
 it is off; durable configuration belongs in OCE.
-
-`apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
-reads the deployed revision's mode. Docker and Kubernetes pass
-`OPENCLAW_CONTROL_UI_MANAGED_MODE_NOTICE` to the managed Gateway process. A
-supporting native UI displays that notice. The running Gateway keeps its notice
-when an administrator saves a draft.
 
 ### 2. OCC protects the availability route
 
@@ -254,8 +248,6 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-10-28 19:05: Trace the native UI notice to the deployed revision's Gateway process. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf - aa352e92bcdc7cab58364c692a01042c5e459db0)
 
 - 2026-10-27 09:30: Document direct Open Agent UI navigation and availability recovery. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 

@@ -12,7 +12,7 @@ import {
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
-  gatewayRuntimeEntrypoint,
+  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   image,
@@ -251,24 +251,16 @@ test(
   async (t) => {
     // An embedded OpenClaw Gateway starts from the Configuration OCC mounts read-only.
     const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
-    const startGateway = (managedMode) =>
-      runGatewaySmoke(t, "openclaw", {
-        configurationPath: "/etc/openclaw/openclaw.json",
-        entrypoint: gatewayRuntimeEntrypoint(managedMode),
-        volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
-        withAppServer: false,
-        extraEnvironment: [
-          "NODE_OPTIONS=--max-old-space-size=3072",
-          "OPENCLAW_CONTROL_UI_MANAGED_MODE_NOTICE=Inherited from the image",
-        ],
-      });
-    const { containerName } = await startGateway(false);
+    const { containerName } = await runGatewaySmoke(t, "openclaw", {
+      configurationPath: "/etc/openclaw/openclaw.json",
+      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+      withAppServer: false,
+      // An operator's own Node options on the container.
+      extraEnvironment: ["NODE_OPTIONS=--max-old-space-size=3072"],
+    });
     const environment = await gatewayProcessEnvironment(containerName);
     assert.ok(environment.includes("OPENCLAW_CONFIG_READONLY=1"));
-    // The mount is read-only even though the deployed revision has managed mode off.
-    assert.ok(
-      !environment.some((entry) => entry.startsWith("OPENCLAW_CONTROL_UI_MANAGED_MODE_NOTICE=")),
-    );
     // The wrapper caps V8's semi-space for the Gateway (finding 2700) and keeps the
     // operator's options after it, so an operator's own flag still wins.
     assert.ok(
@@ -283,12 +275,5 @@ test(
     // pin moves, since a promotion moved after post-ready work would pass here.
     const logs = await waitForDockerLog(containerName, /remote model catalog refresh failed/);
     assert.doesNotMatch(logs, /last-known-good|EROFS/);
-
-    const managed = await startGateway(true);
-    assert.ok(
-      (await gatewayProcessEnvironment(managed.containerName)).includes(
-        "OPENCLAW_CONTROL_UI_MANAGED_MODE_NOTICE=Edit Gateway configuration in OpenClaw Enterprise and redeploy the Agent to apply changes. Gateway-local terminals and Gateway-hosted command jobs are disabled.",
-      ),
-    );
   },
 );

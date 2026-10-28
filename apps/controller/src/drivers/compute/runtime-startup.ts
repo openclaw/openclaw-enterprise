@@ -5,17 +5,15 @@ const STARTUP_PHASE_EVENT = "runtime.startup_phase";
 
 // Apply the controls to the Gateway child, after OCE finishes configuration and plugin setup.
 export function gatewayManagedModeEnvironment(managedMode: boolean): string {
-  if (!managedMode) {
-    // spawn skips undefined entries, so an inherited notice cannot label an unmanaged Gateway.
-    return "{ OPENCLAW_CONTROL_UI_MANAGED_MODE_NOTICE: undefined }";
-  }
-  return JSON.stringify({
-    OPENCLAW_CONFIG_READONLY: "1",
-    OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS: "1",
-    OPENCLAW_DISABLE_CRON_HOST_EXECUTION: "1",
-    OPENCLAW_CONTROL_UI_MANAGED_MODE_NOTICE:
-      "Edit Gateway configuration in OpenClaw Enterprise and redeploy the Agent to apply changes. Gateway-local terminals and Gateway-hosted command jobs are disabled.",
-  });
+  return JSON.stringify(
+    managedMode
+      ? {
+          OPENCLAW_CONFIG_READONLY: "1",
+          OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS: "1",
+          OPENCLAW_DISABLE_CRON_HOST_EXECUTION: "1",
+        }
+      : {},
+  );
 }
 
 // V8 sizes each isolate's young generation from the memory it sees: in a 4 GiB
