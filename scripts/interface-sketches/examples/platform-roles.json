@@ -1,0 +1,238 @@
+{
+  "title": "00 Protected requests in OCE",
+  "width": 1180,
+  "height": 640,
+  "items": [
+    {
+      "kind": "text",
+      "text": "00 Protected requests in OCE",
+      "x": 20,
+      "y": 33,
+      "size": 28,
+      "role": "title"
+    },
+    {
+      "kind": "text",
+      "text": "OpenClaw Enterprise · platform roles, with an optional Git authority binding",
+      "x": 20,
+      "y": 55,
+      "size": 16,
+      "role": "subtitle"
+    },
+    { "kind": "box", "id": "setup", "x": 20, "y": 80, "w": 1140, "h": 130, "role": "control" },
+    {
+      "kind": "text",
+      "text": "Setup · installed capabilities",
+      "x": 32,
+      "y": 98,
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "box", "id": "worker", "x": 20, "y": 290, "w": 330, "h": 250, "role": "control" },
+    { "kind": "text", "text": "OCE worker", "x": 32, "y": 308, "size": 16, "role": "group" },
+    { "kind": "box", "id": "execution", "x": 380, "y": 290, "w": 460, "h": 250, "role": "runtime" },
+    {
+      "kind": "text",
+      "text": "Execution · request path",
+      "x": 392,
+      "y": 308,
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "box", "id": "sandbox", "x": 395, "y": 318, "w": 235, "h": 100, "role": "boundary" },
+    {
+      "kind": "text",
+      "text": "Workload boundary",
+      "x": 407,
+      "y": 336,
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "box", "id": "upstream", "x": 935, "y": 290, "w": 225, "h": 250, "role": "external" },
+    { "kind": "text", "text": "Upstream", "x": 947, "y": 308, "size": 16, "role": "group" },
+    {
+      "kind": "node",
+      "id": "compute",
+      "x": 40,
+      "y": 120,
+      "w": 270,
+      "h": 55,
+      "lines": ["ComputeDriver", "Prepares and verifies execution"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "sandbox-driver",
+      "x": 380,
+      "y": 120,
+      "w": 320,
+      "h": 55,
+      "lines": ["SandboxDriver", "Protected Git requires repositoryAccess"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "proxy",
+      "x": 760,
+      "y": 120,
+      "w": 370,
+      "h": 55,
+      "lines": ["CredentialProxyDriver", "Can supply the Git transport adapter"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "authority",
+      "x": 40,
+      "y": 330,
+      "w": 290,
+      "h": 75,
+      "lines": [
+        "Repository Git authority",
+        "ProtectedRepositoryGitAuthority",
+        "Checks grant and requested operation"
+      ],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "workload",
+      "x": 405,
+      "y": 348,
+      "w": 215,
+      "h": 55,
+      "lines": ["Agent workload", "Attempts a protected request"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "boundary"
+    },
+    {
+      "kind": "node",
+      "id": "sender",
+      "x": 580,
+      "y": 440,
+      "w": 240,
+      "h": 75,
+      "lines": ["Trusted sender", "Enforces the selected profile", "outside the workload"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "provider",
+      "x": 950,
+      "y": 440,
+      "w": 190,
+      "h": 75,
+      "lines": ["Provider", "Applies its own", "access rules"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "external"
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "authority", "side": "top" },
+        [185, 235],
+        [945, 235],
+        { "node": "proxy", "side": "bottom" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "For protected Git, the worker supplies the authority\nCredentialProxyDriver.bindRepositoryGit(authority)",
+      "x": 355,
+      "y": 257,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "workload", "side": "right" },
+        [700, 375.5],
+        { "node": "sender", "side": "top" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Attempt\nrequest",
+      "x": 720,
+      "y": 383,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "sender", "side": "left" },
+        [185, 477.5],
+        { "node": "authority", "side": "bottom" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Authorize this\nGit request",
+      "x": 212,
+      "y": 450,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "sender", "side": "right" },
+        { "node": "provider", "side": "left" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Send if\nallowed",
+      "x": 856,
+      "y": 450,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "text",
+      "text": "OpenShell implements the GitHub App installation preview. Its online allow decision leaves dispatch and provider delivery unconfirmed.",
+      "x": 20,
+      "y": 562,
+      "size": 14,
+      "role": "note"
+    },
+    {
+      "kind": "text",
+      "text": "Strands/Box has separate sandbox and provider-call prototypes. Protected Git requires its own binding and verification.",
+      "x": 20,
+      "y": 584,
+      "size": 14,
+      "role": "note"
+    }
+  ]
+}

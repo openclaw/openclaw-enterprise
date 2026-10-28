@@ -3,7 +3,8 @@ import type { ElkNode, ElkExtendedEdge, ELK as ElkEngine } from "elkjs/lib/elk-a
 import { widestLine, wrap } from "./measure.ts";
 import { theme, type TextRole } from "./theme.ts";
 import { validateDiagram, type Diagram } from "./diagram.ts";
-import type { Item, Sketch } from "./scene.ts";
+import { textBlock, type Item, type Sketch } from "./scene.ts";
+import { compileBoard } from "./board.ts";
 
 const MARGIN = 24;
 const ROOT = "$root";
@@ -112,6 +113,14 @@ function prepareGraph(diagram: Diagram, direction: "RIGHT" | "DOWN") {
       outbound.add(`${from}>${to}`);
     }
     const lines = edgeLines[index];
+    const bounds = textBlock({
+      kind: "text",
+      role: "label",
+      x: 0,
+      y: 0,
+      text: lines.join("\n"),
+      backdrop: true,
+    });
     return {
       id: `$edge-${index}`,
       sources: [reply ? edge.to : edge.from],
@@ -119,8 +128,8 @@ function prepareGraph(diagram: Diagram, direction: "RIGHT" | "DOWN") {
       labels: [
         {
           text: lines.join("\n"),
-          width: Math.ceil(widestLine(lines, theme.text.label.size, "Regular") + 8),
-          height: lines.length * 19 + 4,
+          width: Math.ceil(bounds.w),
+          height: Math.ceil(bounds.h),
           ...(direction === "DOWN"
             ? { layoutOptions: { "elk.edgeLabels.placement": "HEAD" } }
             : {}),
@@ -184,8 +193,8 @@ function routedEdges(
       for (const label of edge.labels ?? []) {
         labels.push({
           lines: edgeLines[index],
-          x: origin.x + (label.x ?? 0) + 4,
-          y: origin.y + (label.y ?? 0) + 16,
+          x: origin.x + (label.x ?? 0) + theme.caption.paddingX,
+          y: origin.y + (label.y ?? 0) + theme.caption.paddingY + theme.text.label.size,
         });
       }
     }
@@ -216,7 +225,6 @@ function compileScene(
         text,
         size: theme.text[role].size,
         role,
-        ...(role === "label" ? { halo: true } : {}),
       }),
     );
   }
@@ -292,7 +300,15 @@ function compileScene(
     );
   }
   for (const label of routes.labels) {
-    textLines(label.lines, label.x, label.y, 19, "label");
+    items.push({
+      kind: "text",
+      role: "label",
+      text: label.lines.join("\n"),
+      x: label.x,
+      y: label.y,
+      size: theme.text.label.size,
+      backdrop: true,
+    });
   }
   let bottom = graphTop + (graph.height ?? 0);
   for (const note of diagram.notes ?? []) {
@@ -312,6 +328,9 @@ function compileScene(
 /** Choose the orientation that fits most legibly into a landscape review window. */
 export async function compileDiagram(diagram: Diagram): Promise<Sketch> {
   validateDiagram(diagram);
+  if (diagram.layout?.board) {
+    return compileBoard(diagram);
+  }
   // The bundled CommonJS export is the constructor, despite its ESM declaration.
   const Elk = ELK as unknown as { new (): ElkEngine };
   const elk = new Elk();

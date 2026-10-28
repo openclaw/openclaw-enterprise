@@ -116,6 +116,10 @@ test("long headings, labels and notes wrap inside a bounded scene", async () => 
     ],
   });
   assert.ok(scene.width < 2000 && scene.height < 2000);
+  const captions = scene.items.filter((item) => item.kind === "text" && item.role === "label");
+  assert.equal(captions.length, 1);
+  assert.ok(captions[0].kind === "text" && captions[0].text.includes("\n"));
+
   for (const item of scene.items) {
     if (item.kind === "line") {
       for (const point of item.points) {
@@ -134,8 +138,15 @@ test("long headings, labels and notes wrap inside a bounded scene", async () => 
             : item.role === "note"
               ? "Italic"
               : "Regular";
-        assert.ok(item.x + widestLine([item.text], size, face) <= scene.width);
-        assert.ok(item.y + size / 2 <= scene.height);
+        assert.ok(item.x + widestLine(item.text.split("\n"), size, face) <= scene.width);
+        const lines = item.text.split("\n");
+        const padding = item.backdrop ? 2 : 0;
+        assert.ok(item.y - size - padding >= 0);
+        assert.ok(
+          item.y + (lines.length - 1) * (item.lineHeight ?? size + 4) + size / 4 + padding <=
+            scene.height,
+        );
+        assert.ok(item.x + widestLine(lines, size, face) + (item.backdrop ? 4 : 0) <= scene.width);
       } else {
         assert.ok(item.x + item.w <= scene.width && item.y + item.h <= scene.height);
       }

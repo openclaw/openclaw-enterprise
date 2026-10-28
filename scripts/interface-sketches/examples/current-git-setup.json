@@ -1,632 +1,505 @@
 {
-  "title": "01b OpenShell Git setup",
-  "width": 1016,
-  "height": 1913,
+  "title": "01b Protected Git setup",
+  "width": 1180,
+  "height": 640,
   "items": [
     {
       "kind": "text",
-      "x": 24,
-      "y": 58,
-      "text": "01b OpenShell Git setup",
-      "size": 34,
+      "text": "01b Protected Git setup",
+      "x": 20,
+      "y": 33,
+      "size": 28,
       "role": "title"
     },
     {
       "kind": "text",
-      "x": 24,
-      "y": 85,
-      "text": "Provisioning and token refresh for the installation-wide observed-hook preview",
-      "size": 17,
+      "text": "OpenShell reference implementation · provisioning, token refresh and installation readback",
+      "x": 20,
+      "y": 55,
+      "size": 16,
       "role": "subtitle"
     },
     {
       "kind": "box",
       "id": "control-plane",
-      "x": 40,
-      "y": 130,
-      "w": 935.1666666666667,
-      "h": 1189,
+      "x": 20,
+      "y": 75,
+      "w": 690,
+      "h": 505,
       "role": "control"
+    },
+    {
+      "kind": "text",
+      "text": "OCE · OpenClaw Enterprise control plane",
+      "x": 32,
+      "y": 93,
+      "size": 16,
+      "role": "group"
     },
     {
       "kind": "box",
       "id": "installed-driver",
-      "x": 431.16666666666674,
-      "y": 402,
-      "w": 528,
-      "h": 210,
+      "x": 320,
+      "y": 105,
+      "w": 375,
+      "h": 155,
       "role": "control"
     },
     {
-      "kind": "box",
-      "id": "worker",
-      "x": 67,
-      "y": 642,
-      "w": 858.8333333333334,
-      "h": 656,
-      "role": "control"
+      "kind": "text",
+      "text": "InstalledDriver · shared OpenShell backend",
+      "x": 332,
+      "y": 123,
+      "size": 16,
+      "role": "group"
     },
+    { "kind": "box", "id": "worker", "x": 35, "y": 285, "w": 660, "h": 280, "role": "control" },
     {
-      "kind": "box",
-      "id": "openshell",
-      "x": 307.6666666666667,
-      "y": 1357,
-      "w": 639.3333333333333,
-      "h": 406,
-      "role": "runtime"
+      "kind": "text",
+      "text": "Worker · token preparation and transport",
+      "x": 47,
+      "y": 303,
+      "size": 16,
+      "role": "group"
     },
-    {
-      "kind": "box",
-      "id": "sandbox",
-      "x": 323.6666666666667,
-      "y": 1402,
-      "w": 296,
-      "h": 168,
-      "role": "boundary"
-    },
+    { "kind": "box", "id": "openshell", "x": 900, "y": 75, "w": 260, "h": 505, "role": "runtime" },
+    { "kind": "text", "text": "OpenShell", "x": 912, "y": 93, "size": 16, "role": "group" },
+    { "kind": "box", "id": "sandbox", "x": 915, "y": 110, "w": 230, "h": 105, "role": "boundary" },
+    { "kind": "text", "text": "Sandbox", "x": 927, "y": 128, "size": 16, "role": "group" },
     {
       "kind": "node",
       "id": "installation",
-      "x": 434.50000000000006,
-      "y": 168,
-      "w": 255,
-      "h": 94,
-      "lines": ["Installation configuration", "Pairs Sandbox and Credential", "Proxy capabilities"],
+      "x": 45,
+      "y": 110,
+      "w": 250,
+      "h": 55,
+      "lines": ["Installation configuration", "Pairs both capabilities"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "compute",
-      "x": 471.00000000000006,
-      "y": 307,
-      "w": 182,
-      "h": 70,
+      "x": 45,
+      "y": 200,
+      "w": 250,
+      "h": 55,
       "lines": ["ComputeDriver", "Kubernetes Compute"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "sandbox-driver",
-      "x": 447.16666666666674,
-      "y": 506,
-      "w": 169,
-      "h": 46,
+      "x": 415,
+      "y": 140,
+      "w": 260,
+      "h": 40,
       "lines": ["SandboxDriver"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "proxy-driver",
-      "x": 666.6666666666667,
-      "y": 506,
-      "w": 231,
-      "h": 46,
+      "x": 415,
+      "y": 210,
+      "w": 260,
+      "h": 40,
       "lines": ["CredentialProxyDriver"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "harness",
-      "x": 339.6666666666667,
-      "y": 1484,
-      "w": 236,
-      "h": 70,
-      "lines": ["Harness", "Agent receives no Git secrets"],
+      "x": 925,
+      "y": 145,
+      "w": 210,
+      "h": 55,
+      "lines": ["Harness", "Agent has no Git secrets"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "boundary"
     },
     {
       "kind": "node",
       "id": "policy",
-      "x": 524.1666666666667,
-      "y": 702,
-      "w": 248,
-      "h": 70,
+      "x": 45,
+      "y": 320,
+      "w": 235,
+      "h": 55,
       "lines": ["GitHubRepositoryPolicy", "RepositoryPolicyDriver"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "adapter",
-      "x": 543.5,
-      "y": 897,
-      "w": 314,
-      "h": 46,
-      "lines": ["OpenShell Git transport adapter"],
+      "x": 440,
+      "y": 320,
+      "w": 245,
+      "h": 55,
+      "lines": ["Git transport adapter", "OpenShell reference"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "token-service",
-      "x": 124,
-      "y": 897,
-      "w": 163,
-      "h": 46,
-      "lines": ["Token Service"],
+      "x": 45,
+      "y": 420,
+      "w": 205,
+      "h": 55,
+      "lines": ["Token Service", "Scheduled preparation"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "owner",
-      "x": 130.5,
-      "y": 1030,
-      "w": 225,
-      "h": 94,
-      "lines": ["Prepared Git owner", "Restricted port ·", "observedHook.readMaterial"],
+      "x": 380,
+      "y": 420,
+      "w": 305,
+      "h": 55,
+      "lines": ["Prepared Git owner", "Restricted port · observedHook.readMaterial"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "app-signer",
-      "x": 83,
-      "y": 1188,
-      "w": 245,
-      "h": 94,
-      "lines": [
-        "Worker App JWT signer",
-        "Signs the App JWT. GitHub",
-        "issues the installation token."
-      ],
+      "x": 45,
+      "y": 500,
+      "w": 255,
+      "h": 55,
+      "lines": ["App JWT signer", "GitHub issues the installation token"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "token-store",
-      "x": 375.5,
-      "y": 1188,
-      "w": 315,
-      "h": 70,
+      "x": 380,
+      "y": 500,
+      "w": 305,
+      "h": 55,
       "lines": ["PostgreSQL-backed token store", "Sealed installation token"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "gateway",
-      "x": 639.6666666666667,
-      "y": 1500,
-      "w": 209,
-      "h": 70,
-      "lines": ["OpenShell Gateway", "Management API"],
+      "x": 910,
+      "y": 320,
+      "w": 240,
+      "h": 75,
+      "lines": ["Gateway · management API", "Sentinel provider", "Sandbox references its name"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "runtime"
     },
     {
       "kind": "node",
       "id": "supervisor",
-      "x": 630.6666666666667,
-      "y": 1653,
-      "w": 227,
-      "h": 94,
-      "lines": ["OpenShell supervisor", "Loaded policy and provider", "generation"],
+      "x": 910,
+      "y": 500,
+      "w": 240,
+      "h": 75,
+      "lines": ["Supervisor", "Loaded policy +", "provider generation"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "runtime"
     },
     {
       "kind": "line",
       "points": [
-        [562, 262],
-        [562, 307]
+        { "node": "installation", "side": "bottom" },
+        { "node": "compute", "side": "top" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Configures",
+      "x": 185,
+      "y": 185,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [531.6666666666667, 377],
-        [531.6666666666667, 506]
+        { "node": "compute", "side": "right" },
+        [345, 227.5],
+        [345, 160],
+        { "node": "sandbox-driver", "side": "left" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Provisions",
+      "x": 350,
+      "y": 152,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [592.3333333333334, 377],
-        [592.3333333333334, 387],
-        [782.1666666666667, 387],
-        [782.1666666666667, 506]
+        { "node": "compute", "side": "bottom" },
+        [170, 270],
+        [390, 270],
+        [390, 230],
+        { "node": "proxy-driver", "side": "left" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Prepares wiring",
+      "x": 220,
+      "y": 267,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [531.6666666666667, 552],
-        [531.6666666666667, 627],
-        [56, 627],
-        [56, 1334],
-        [457.6666666666667, 1334],
-        [457.6666666666667, 1484]
+        { "node": "sandbox-driver", "side": "right" },
+        [800, 160],
+        [800, 172.5],
+        { "node": "harness", "side": "left" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Provisions or adopts",
+      "x": 740,
+      "y": 146,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [782.1666666666667, 552],
-        [782.1666666666667, 782],
-        [752.8333333333334, 782],
-        [752.8333333333334, 897]
+        { "node": "proxy-driver", "side": "bottom" },
+        [545, 275],
+        [562.5, 275],
+        { "node": "adapter", "side": "top" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Binds transport",
+      "x": 570,
+      "y": 277,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [648.1666666666667, 772],
-        [648.1666666666666, 897]
+        { "node": "policy", "side": "right" },
+        { "node": "adapter", "side": "left" }
       ],
       "dashed": false,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Admitted binding\n+ installation ID",
+      "x": 300,
+      "y": 326,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [205.5, 943],
-        [205.5, 1030]
+        { "node": "token-service", "side": "right" },
+        { "node": "owner", "side": "left" }
       ],
       "dashed": false,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Prepares",
+      "x": 285,
+      "y": 439,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [205.5, 1124],
-        [205.5, 1188]
+        { "node": "owner", "side": "bottom" },
+        [532.5, 487],
+        [172.5, 487],
+        { "node": "app-signer", "side": "top" }
       ],
       "dashed": false,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Requests token",
+      "x": 185,
+      "y": 484,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [280.5, 1124],
-        [280.5, 1134],
-        [533, 1134],
-        [533, 1188]
+        { "node": "owner", "side": "bottom" },
+        { "node": "token-store", "side": "top" }
       ],
       "dashed": false,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Stores / reads",
+      "x": 545,
+      "y": 492,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [622, 943],
-        [622, 953],
-        [280.5, 953],
-        [280.5, 1030]
+        { "node": "adapter", "side": "bottom" },
+        [562.5, 408],
+        [532.5, 408],
+        { "node": "owner", "side": "top" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Read for setup or refresh",
+      "x": 390,
+      "y": 399,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [700.5, 943],
-        [700.5, 1334],
-        [709.3333333333333, 1334],
-        [709.3333333333333, 1500]
+        { "node": "adapter", "side": "right" },
+        [790, 347.5],
+        [790, 357.5],
+        { "node": "gateway", "side": "left" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Bootstraps provider;\nupdates token if needed",
+      "x": 723,
+      "y": 319,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [779, 943],
-        [779, 1500]
+        { "node": "adapter", "side": "right" },
+        [720, 347.5],
+        [720, 260],
+        [1030, 260],
+        { "node": "gateway", "side": "top" }
       ],
       "dashed": false,
       "arrow": true
     },
     {
+      "kind": "text",
+      "text": "Checks recipient\n+ generation",
+      "x": 744,
+      "y": 232,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
       "kind": "line",
       "points": [
-        [744.1666666666667, 1570],
-        [744.1666666666667, 1653]
+        { "node": "gateway", "side": "bottom" },
+        { "node": "supervisor", "side": "top" }
       ],
       "dashed": true,
       "arrow": true
     },
-    { "kind": "text", "x": 56, "y": 153, "text": "OCE control plane", "size": 16, "role": "group" },
     {
       "kind": "text",
-      "x": 536.6666666666667,
-      "y": 425,
-      "text": "InstalledDriver · shared",
-      "size": 16,
-      "role": "group"
-    },
-    {
-      "kind": "text",
-      "x": 536.6666666666667,
-      "y": 447,
-      "text": "OpenShell backend",
-      "size": 16,
-      "role": "group"
-    },
-    {
-      "kind": "text",
-      "x": 83,
-      "y": 665,
-      "text": "OpenClaw Enterprise",
-      "size": 16,
-      "role": "group"
-    },
-    { "kind": "text", "x": 83, "y": 687, "text": "worker", "size": 16, "role": "group" },
-    {
-      "kind": "text",
-      "x": 323.6666666666667,
-      "y": 1380,
-      "text": "OpenShell",
-      "size": 16,
-      "role": "group"
-    },
-    {
-      "kind": "text",
-      "x": 339.6666666666667,
-      "y": 1425,
-      "text": "Sandbox",
-      "size": 16,
-      "role": "group"
-    },
-    {
-      "kind": "text",
-      "x": 569,
-      "y": 298,
-      "text": "Setup: Configures",
-      "size": 15,
+      "text": "Loads attached\nprovider settings",
+      "x": 1040,
+      "y": 477,
+      "size": 14,
       "role": "label",
-      "halo": true
+      "backdrop": true,
+      "lineHeight": 16
     },
     {
       "kind": "text",
-      "x": 538.6666666666667,
-      "y": 478,
-      "text": "Setup: Uses for",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 538.6666666666667,
-      "y": 497,
-      "text": "provisioning",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 789.1666666666667,
-      "y": 478,
-      "text": "Setup: Prepares proxy",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 789.1666666666667,
-      "y": 497,
-      "text": "wiring",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 464.6666666666667,
-      "y": 1456,
-      "text": "Setup: Provisions or",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 464.6666666666667,
-      "y": 1475,
-      "text": "adopts",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 759.8333333333334,
-      "y": 808,
-      "text": "Setup: Binds selected",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 759.8333333333334,
-      "y": 827,
-      "text": "transport",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 655.1666666666666,
-      "y": 850,
-      "text": "Resolves admitted",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 655.1666666666666,
-      "y": 869,
-      "text": "binding and installation",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 655.1666666666666,
-      "y": 888,
-      "text": "ID",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 212.5,
-      "y": 1021,
-      "text": "Schedules preparation",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 212.5,
-      "y": 1160,
-      "text": "Requests installation",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 212.5,
-      "y": 1179,
-      "text": "token",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 540,
-      "y": 1179,
-      "text": "Stores or reads token",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 287.5,
-      "y": 979,
-      "text": "Setup: Reads prepared",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 287.5,
-      "y": 998,
-      "text": "token",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 716.3333333333333,
-      "y": 1453,
-      "text": "Setup: Bootstraps",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 716.3333333333333,
-      "y": 1472,
-      "text": "provider, then updates",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 716.3333333333333,
-      "y": 1491,
-      "text": "token",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 786,
-      "y": 1411,
-      "text": "Checks recipient and",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 786,
-      "y": 1430,
-      "text": "generation",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 751.1666666666667,
-      "y": 1606,
-      "text": "Setup: Supplies",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 751.1666666666667,
-      "y": 1625,
-      "text": "attached provider",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 751.1666666666667,
-      "y": 1644,
-      "text": "settings",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 24,
-      "y": 1803,
-      "text": "The adapter reads the prepared token during setup or refresh. Git requests do not pull tokens. The native Git sender and broker use a separate path.",
+      "text": "Gateway acceptance alone does not confirm installation. Mandatory mediation is unverified. The bundled Driver refuses repository-scoped Git.",
+      "x": 20,
+      "y": 602,
       "size": 14,
       "role": "note"
     },
     {
       "kind": "text",
-      "x": 24,
-      "y": 1833,
-      "text": "The sandbox references the sentinel provider by name. The adapter updates its token conditionally and checks the loaded policy and generation",
-      "size": 14,
-      "role": "note"
-    },
-    { "kind": "text", "x": 24, "y": 1853, "text": "independently.", "size": 14, "role": "note" },
-    {
-      "kind": "text",
-      "x": 24,
-      "y": 1883,
-      "text": "The preview observes the hook. Mandatory mediation remains unverified. The bundled Driver refuses repository-scoped Git.",
+      "text": "Git requests do not pull tokens. The native Git sender and broker use a separate path.",
+      "x": 20,
+      "y": 624,
       "size": 14,
       "role": "note"
     }

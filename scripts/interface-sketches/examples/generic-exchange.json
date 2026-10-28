@@ -1,461 +1,290 @@
 {
-  "title": "02 Generic protected exchange",
-  "width": 1236,
-  "height": 1325,
+  "title": "02 Who sends a protected request?",
+  "width": 1180,
+  "height": 640,
   "items": [
     {
       "kind": "text",
-      "x": 24,
-      "y": 58,
-      "text": "02 Generic protected exchange",
-      "size": 34,
+      "text": "02 Who sends a protected request?",
+      "x": 20,
+      "y": 33,
+      "size": 28,
       "role": "title"
     },
     {
       "kind": "text",
-      "x": 24,
-      "y": 85,
-      "text": "Exact-exchange contract · stock OpenShell lacks a qualified exact sender",
-      "size": 17,
+      "text": "Generic exchange · configured OCC API and OpenShell listener · the stock supervisor lacks a qualified exact sender",
+      "x": 20,
+      "y": 55,
+      "size": 16,
       "role": "subtitle"
     },
-    { "kind": "box", "id": "control", "x": 40, "y": 461, "w": 863, "h": 764, "role": "control" },
+    { "kind": "box", "id": "api", "x": 20, "y": 80, "w": 475, "h": 460, "role": "control" },
     {
-      "kind": "box",
-      "id": "installed-driver",
-      "x": 187.66666666666669,
-      "y": 594,
-      "w": 506.5,
-      "h": 189,
-      "role": "control"
+      "kind": "text",
+      "text": "Controller API process",
+      "x": 32,
+      "y": 98,
+      "size": 16,
+      "role": "group"
     },
-    {
-      "kind": "box",
-      "id": "runtime",
-      "x": 613.8333333333334,
-      "y": 130,
-      "w": 276.5,
-      "h": 293,
-      "role": "runtime"
-    },
-    {
-      "kind": "box",
-      "id": "sandbox",
-      "x": 677.3333333333334,
-      "y": 168,
-      "w": 128,
-      "h": 100,
-      "role": "boundary"
-    },
-    {
-      "kind": "box",
-      "id": "provider",
-      "x": 923,
-      "y": 461,
-      "w": 272.5,
-      "h": 144,
-      "role": "external"
-    },
+    { "kind": "box", "id": "runtime", "x": 815, "y": 80, "w": 345, "h": 348, "role": "runtime" },
+    { "kind": "text", "text": "Selected runtime", "x": 827, "y": 98, "size": 16, "role": "group" },
+    { "kind": "box", "id": "sender", "x": 830, "y": 230, "w": 315, "h": 183, "role": "runtime" },
+    { "kind": "text", "text": "Trusted sender", "x": 842, "y": 248, "size": 16, "role": "group" },
+    { "kind": "box", "id": "origin", "x": 815, "y": 458, "w": 345, "h": 82, "role": "external" },
+    { "kind": "text", "text": "Provider", "x": 827, "y": 476, "size": 16, "role": "group" },
     {
       "kind": "node",
-      "id": "compute-driver",
-      "x": 197.16666666666669,
-      "y": 499,
-      "w": 182,
-      "h": 70,
-      "lines": ["ComputeDriver", "Kubernetes Compute"],
+      "id": "static",
+      "x": 40,
+      "y": 125,
+      "w": 205,
+      "h": 56,
+      "lines": ["SecretDriver", "Versioned static value"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
-      "id": "sandbox-driver",
-      "x": 203.66666666666669,
-      "y": 698,
-      "w": 169,
-      "h": 46,
-      "lines": ["SandboxDriver"],
+      "id": "warm",
+      "x": 270,
+      "y": 125,
+      "w": 205,
+      "h": 56,
+      "lines": ["PreparedTokenIssuer", "Eligible warm token"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
-      "id": "credential-proxy-driver",
-      "x": 447.1666666666667,
-      "y": 674,
-      "w": 231,
-      "h": 70,
-      "lines": ["CredentialProxyDriver", "Supplies transport owner"],
+      "id": "exchange",
+      "x": 70,
+      "y": 250,
+      "w": 375,
+      "h": 60,
+      "lines": ["OCC exchange authority", "CredentialProxy class · checks use, send and reply"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
-      "id": "request-authority",
-      "x": 313,
-      "y": 1024,
-      "w": 233,
-      "h": 94,
-      "lines": ["OCC request authority", "Policy · use record · send", "decision"],
-      "role": "control"
-    },
-    {
-      "kind": "node",
-      "id": "credential-proxy",
-      "x": 561.5,
-      "y": 875,
-      "w": 214,
-      "h": 94,
-      "lines": ["CredentialProxy", "Implements", "CredentialProxyExchange"],
-      "role": "control"
-    },
-    {
-      "kind": "node",
-      "id": "secret-driver",
-      "x": 76,
-      "y": 1043,
-      "w": 148,
-      "h": 46,
-      "lines": ["SecretDriver"],
-      "role": "control"
-    },
-    {
-      "kind": "node",
-      "id": "token-issuer",
-      "x": 609.5,
-      "y": 1035.5,
-      "w": 225,
-      "h": 46,
-      "lines": ["PreparedTokenIssuer"],
-      "role": "control"
-    },
-    {
-      "kind": "node",
-      "id": "versioned-secret",
-      "x": 56,
-      "y": 1163,
-      "w": 188,
-      "h": 46,
-      "lines": ["Versioned Secret"],
-      "role": "control"
-    },
-    {
-      "kind": "node",
-      "id": "prepared-material",
-      "x": 625.5,
-      "y": 1163,
-      "w": 193,
-      "h": 46,
-      "lines": ["Prepared material"],
+      "id": "listener",
+      "x": 70,
+      "y": 377,
+      "w": 375,
+      "h": 60,
+      "lines": ["Driver-owned exchange listener", "OpenShell adapter · authenticates the stream"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "control"
     },
     {
       "kind": "node",
       "id": "agent",
-      "x": 693.3333333333334,
-      "y": 206,
-      "w": 96,
-      "h": 46,
-      "lines": ["Agent"],
-      "role": "boundary"
-    },
-    {
-      "kind": "node",
-      "id": "trusted-sender",
-      "x": 629.8333333333334,
-      "y": 337,
-      "w": 223,
-      "h": 70,
-      "lines": ["Trusted sender", "Required for exact dispatch"],
+      "x": 850,
+      "y": 120,
+      "w": 275,
+      "h": 42,
+      "lines": ["Agent in sandbox"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "runtime"
     },
     {
       "kind": "node",
-      "id": "external-api",
-      "x": 939,
-      "y": 543,
-      "w": 147,
-      "h": 46,
+      "id": "capture",
+      "x": 850,
+      "y": 265,
+      "w": 275,
+      "h": 42,
+      "lines": ["Capture request and hold reply"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "dispatch",
+      "x": 850,
+      "y": 342,
+      "w": 275,
+      "h": 55,
+      "lines": ["Enforce the decision", "Own upstream TLS and reply delivery"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "provider",
+      "x": 850,
+      "y": 488,
+      "w": 275,
+      "h": 40,
       "lines": ["External API"],
+      "titleLineCount": 1,
+      "density": "compact",
       "role": "external"
     },
     {
       "kind": "line",
       "points": [
-        [288.1666666666667, 569],
-        [288.1666666666667, 698]
+        { "node": "exchange", "side": "top" },
+        [257.5, 222],
+        [142.5, 222],
+        { "node": "static", "side": "bottom" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
-      "kind": "line",
-      "points": [
-        [562.6666666666667, 744],
-        [562.6666666666666, 798],
-        [632.8333333333333, 798],
-        [632.8333333333333, 875]
-      ],
-      "dashed": true,
-      "arrow": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [741.3333333333334, 252],
-        [741.3333333333334, 337]
-      ],
-      "dashed": false,
-      "arrow": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [704.1666666666667, 407],
-        [704.1666666666667, 875]
-      ],
-      "dashed": false,
-      "arrow": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [668.5, 969],
-        [668.5, 989],
-        [429.5, 989],
-        [429.5, 1024]
-      ],
-      "dashed": false,
-      "arrow": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [615, 969],
-        [615, 979],
-        [150, 979],
-        [150, 1043]
-      ],
-      "dashed": true,
-      "arrow": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [722, 969],
-        [722, 1035.5]
-      ],
-      "dashed": true,
-      "arrow": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [150, 1089],
-        [150, 1163]
-      ],
-      "dashed": false,
-      "arrow": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [722, 1081.5],
-        [722, 1163]
-      ],
-      "dashed": false,
-      "arrow": true
-    },
-    {
-      "kind": "line",
-      "points": [
-        [778.5, 407],
-        [778.5, 438],
-        [1012.5, 438],
-        [1012.5, 543]
-      ],
-      "dashed": true,
-      "arrow": true
-    },
-    { "kind": "text", "x": 56, "y": 484, "text": "OCE control plane", "size": 16, "role": "group" },
-    {
       "kind": "text",
-      "x": 293.1666666666667,
-      "y": 617,
-      "text": "One InstalledDriver ·",
-      "size": 16,
-      "role": "group"
-    },
-    {
-      "kind": "text",
-      "x": 293.1666666666667,
-      "y": 639,
-      "text": "OpenShell backend",
-      "size": 16,
-      "role": "group"
-    },
-    {
-      "kind": "text",
-      "x": 629.8333333333334,
-      "y": 153,
-      "text": "Data plane",
-      "size": 16,
-      "role": "group"
-    },
-    {
-      "kind": "text",
-      "x": 693.3333333333334,
-      "y": 191,
-      "text": "Sandbox",
-      "size": 16,
-      "role": "group"
-    },
-    { "kind": "text", "x": 939, "y": 484, "text": "Internet", "size": 16, "role": "group" },
-    {
-      "kind": "text",
-      "x": 295.1666666666667,
-      "y": 670,
-      "text": "Setup: Uses paired",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 295.1666666666667,
-      "y": 689,
-      "text": "owner",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 639.8333333333335,
-      "y": 866,
-      "text": "Setup: bindExchange",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 748.3333333333334,
-      "y": 309,
-      "text": "Requests provider",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 748.3333333333334,
-      "y": 328,
-      "text": "operation",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 711.1666666666667,
-      "y": 824,
-      "text": "Calls exchange via",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 711.1666666666667,
-      "y": 843,
-      "text": "listener",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 436.5,
-      "y": 1015,
-      "text": "Checks send authority",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 157,
-      "y": 1015,
-      "text": "Conditional:",
-      "size": 15,
-      "role": "label",
-      "halo": true
-    },
-    {
-      "kind": "text",
-      "x": 157,
-      "y": 1034,
       "text": "readCredentialInput",
-      "size": 15,
+      "x": 46,
+      "y": 208,
+      "size": 14,
       "role": "label",
-      "halo": true
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "exchange", "side": "top" },
+        [257.5, 222],
+        [372.5, 222],
+        { "node": "warm", "side": "bottom" }
+      ],
+      "dashed": true,
+      "arrow": true
     },
     {
       "kind": "text",
-      "x": 729,
-      "y": 1026.5,
-      "text": "Conditional: readWarm",
-      "size": 15,
+      "text": "readWarm",
+      "x": 382,
+      "y": 208,
+      "size": 14,
       "role": "label",
-      "halo": true
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "listener", "side": "top" },
+        { "node": "exchange", "side": "bottom" }
+      ],
+      "dashed": false,
+      "arrow": true
     },
     {
       "kind": "text",
-      "x": 157,
-      "y": 1154,
-      "text": "Reads version",
-      "size": 15,
+      "text": "Five bound methods",
+      "x": 267,
+      "y": 348,
+      "size": 14,
       "role": "label",
-      "halo": true
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "agent", "side": "bottom" },
+        { "node": "capture", "side": "top" }
+      ],
+      "dashed": false,
+      "arrow": true
     },
     {
       "kind": "text",
-      "x": 729,
-      "y": 1154,
-      "text": "Reads token",
-      "size": 15,
+      "text": "Provider request",
+      "x": 998,
+      "y": 199,
+      "size": 14,
       "role": "label",
-      "halo": true
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "capture", "side": "left" },
+        [640, 286],
+        [640, 407],
+        { "node": "listener", "side": "right" }
+      ],
+      "dashed": false,
+      "arrow": true
     },
     {
       "kind": "text",
-      "x": 1019.5,
-      "y": 515,
-      "text": "Conditional: Injects and",
-      "size": 15,
+      "text": "Captured request / held response",
+      "x": 517,
+      "y": 307,
+      "size": 14,
       "role": "label",
-      "halo": true
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "listener", "side": "bottom" },
+        [257.5, 493],
+        [763, 493],
+        [763, 369.5],
+        { "node": "dispatch", "side": "left" }
+      ],
+      "dashed": false,
+      "arrow": true
     },
     {
       "kind": "text",
-      "x": 1019.5,
-      "y": 534,
-      "text": "forwards if approved",
-      "size": 15,
+      "text": "Credential headers when needed,\nsend permit / protected response",
+      "x": 509,
+      "y": 447,
+      "size": 14,
       "role": "label",
-      "halo": true
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "dispatch", "side": "bottom" },
+        { "node": "provider", "side": "top" }
+      ],
+      "dashed": true,
+      "arrow": true
     },
     {
       "kind": "text",
-      "x": 24,
-      "y": 1265,
-      "text": "OCC constructs the proxy and exposes only five bound methods to the listener: resolve, authorizeSend, beginResponse, renewResponse, and protectResponse.",
+      "text": "Authorized HTTPS request",
+      "x": 995,
+      "y": 445,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "text",
+      "text": "At API startup, the selected CredentialProxyDriver can bind its transport owner to OCC. A credential-free route skips both material readers.",
+      "x": 20,
+      "y": 562,
       "size": 14,
       "role": "note"
     },
     {
       "kind": "text",
-      "x": 24,
-      "y": 1295,
-      "text": "Credential-free routes skip both material readers. The observed Git hook is shown in 01 and 01b.",
+      "text": "The runtime sender must forward only the permitted request and release only the protected reply. The observed Git hook uses a separate worker path (01).",
+      "x": 20,
+      "y": 584,
       "size": 14,
       "role": "note"
     }

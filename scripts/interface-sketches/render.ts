@@ -57,11 +57,10 @@ export function renderSvg(input: unknown): string {
     size: number = theme.text.label.size,
     center = false,
     color: string = theme.ink,
-    halo = false,
     weight: number = 400,
     style: string = "normal",
   ): string =>
-    `<text x="${x}" y="${y}" text-anchor="${center ? "middle" : "start"}" font-family="Liberation Sans" font-size="${size}" font-weight="${weight}" font-style="${style}" fill="${color}"${halo ? ' paint-order="stroke" stroke="white" stroke-width="7" stroke-linejoin="round"' : ""}>${escapeXml(s)}</text>`;
+    `<text x="${x}" y="${y}" text-anchor="${center ? "middle" : "start"}" font-family="Liberation Sans" font-size="${size}" font-weight="${weight}" font-style="${style}" fill="${color}">${escapeXml(s)}</text>`;
   const box = (
     r: Rect,
     color: string = theme.line,
@@ -71,6 +70,7 @@ export function renderSvg(input: unknown): string {
   ): string =>
     `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="${Math.min(radius, r.w / 2, r.h / 2)}" fill="${fill}" stroke="${color}" stroke-width="1.9"${dashed ? ' stroke-dasharray="7 6"' : ""}/>`;
   const markers: string[] = [];
+  const captions: string[] = [];
   const chunks = sketch.items.map((item, index) => {
     switch (item.kind) {
       case "box": {
@@ -80,6 +80,7 @@ export function renderSvg(input: unknown): string {
       case "node": {
         const region = theme.regions[item.role ?? "external"];
         const color = item.color ?? region.stroke;
+        const typography = item.density === "compact" ? theme.compactNode : theme.node;
         const titleLineCount = item.titleLineCount ?? 1;
         const inset = Math.min(8, item.w / 8, item.h / 4);
         const accentWidth = Math.min(4, item.w / 10);
@@ -92,13 +93,12 @@ export function renderSvg(input: unknown): string {
           item.lines
             .map((s, i) =>
               text(
-                item.x + (item.role ? Math.min(theme.node.padding, item.w / 2) : item.w / 2),
-                item.y + item.h / 2 + 6 + (i - (item.lines.length - 1) / 2) * theme.node.stride,
+                item.x + (item.role ? Math.min(typography.padding, item.w / 2) : item.w / 2),
+                item.y + item.h / 2 + 6 + (i - (item.lines.length - 1) / 2) * typography.stride,
                 s,
-                item.size ?? (i < titleLineCount ? theme.node.titleSize : theme.node.detailSize),
+                item.size ?? (i < titleLineCount ? typography.titleSize : typography.detailSize),
                 !item.role,
                 i < titleLineCount ? theme.ink : theme.detail,
-                false,
                 i < titleLineCount ? 700 : 400,
                 i < titleLineCount ? "normal" : "italic",
               ),
@@ -108,17 +108,29 @@ export function renderSvg(input: unknown): string {
       }
       case "text": {
         const style = theme.text[item.role ?? "label"];
-        return text(
-          item.x,
-          item.y,
-          item.text,
-          item.size ?? style.size,
-          item.center,
-          item.color ?? style.color,
-          item.halo,
-          style.weight,
-          style.style,
-        );
+        const block = scene.textBlock(item);
+        const glyphs = block.lines
+          .map((line, i) =>
+            text(
+              item.x,
+              item.y + i * block.stride,
+              line,
+              item.size ?? style.size,
+              item.center,
+              item.color ?? style.color,
+              style.weight,
+              style.style,
+            ),
+          )
+          .join("");
+        if (item.backdrop ?? item.halo ?? false) {
+          captions.push(
+            `<rect x="${block.x}" y="${block.y}" width="${block.w}" height="${block.h}" rx="${theme.caption.radius}" fill="white" fill-opacity="${theme.caption.opacity}"/>` +
+              glyphs,
+          );
+          return "";
+        }
+        return glyphs;
       }
       case "line": {
         const color = item.color ?? theme.line;
@@ -131,7 +143,7 @@ export function renderSvg(input: unknown): string {
       }
     }
   });
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${sketch.width}" height="${sketch.height}" viewBox="0 0 ${sketch.width} ${sketch.height}"><title>${escapeXml(sketch.title)}</title><metadata>${escapeXml(fontLicense)}</metadata><defs><style>${fonts}</style>${markers.join("")}</defs><rect width="100%" height="100%" fill="white"/>${chunks.join("\n")}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${sketch.width}" height="${sketch.height}" viewBox="0 0 ${sketch.width} ${sketch.height}"><title>${escapeXml(sketch.title)}</title><metadata>${escapeXml(fontLicense)}</metadata><defs><style>${fonts}</style>${markers.join("")}</defs><rect width="100%" height="100%" fill="white"/>${chunks.join("\n")}${captions.join("\n")}</svg>`;
 }
 
 /** Pure output API: no files are written. Font discovery and network are disabled. */

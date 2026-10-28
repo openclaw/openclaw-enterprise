@@ -1,5 +1,8 @@
-/** Semantic authoring model. Use raw scenes when exact placement is required. */
+/** Semantic authoring model. Optional pins provide exact board placement. */
 import type { RegionRole } from "./theme.ts";
+import type { Side } from "./scene.ts";
+
+export type Pin = readonly [number, number, number, number];
 
 export type GroupRole = RegionRole;
 
@@ -11,21 +14,29 @@ export type Diagram = {
     title: string;
     role?: GroupRole;
     parent?: string;
+    pin?: Pin;
   }[];
   nodes: readonly {
     id: string;
     title: string;
     detail?: string;
     group?: string;
+    pin?: Pin;
   }[];
   edges: readonly {
     from: string;
     to: string;
     label: string;
     kind?: "conditional" | "setup";
+    pin?: {
+      from?: Side;
+      to?: Side;
+      via?: readonly (readonly [number, number])[];
+      label?: readonly [number, number];
+    };
   }[];
   notes?: readonly string[];
-  layout?: { direction?: "RIGHT" | "DOWN" };
+  layout?: { direction?: "RIGHT" | "DOWN"; board?: readonly [number, number] };
 };
 
 export function validateDiagram(diagram: Diagram): void {

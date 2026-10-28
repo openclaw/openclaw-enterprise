@@ -1,3 +1,4 @@
+import { widestLine } from "./measure.ts";
 import { theme } from "./theme.ts";
 import type { RegionRole, TextRole } from "./theme.ts";
 
@@ -11,6 +12,7 @@ export type Item =
       role?: RegionRole;
       lines: string[];
       titleLineCount?: number;
+      density?: "compact";
       size?: number;
       color?: string;
     })
@@ -24,9 +26,37 @@ export type Item =
       center?: boolean;
       color?: string;
       halo?: boolean;
+      backdrop?: boolean;
+      lineHeight?: number;
     }
   | { kind: "line"; points: Point[]; color?: string; dashed?: boolean; arrow?: boolean };
 export type Sketch = { title: string; width: number; height: number; items: Item[] };
+
+/** Shared measured bounds; y is the first baseline, including for multiline captions. */
+export function textBlock(item: Extract<Item, { kind: "text" }>) {
+  const style = theme.text[item.role ?? "label"];
+  const size = item.size ?? style.size;
+  const lines = item.text.split("\n");
+  const stride = item.lineHeight ?? size + 4;
+  let face: "Regular" | "Bold" | "Italic" = "Regular";
+  if (style.weight === 700) {
+    face = "Bold";
+  } else if (style.style === "italic") {
+    face = "Italic";
+  }
+  const width = widestLine(lines, size, face);
+  const backed = item.backdrop ?? item.halo ?? false;
+  const px = backed ? theme.caption.paddingX : 0;
+  const py = backed ? theme.caption.paddingY : 0;
+  return {
+    lines,
+    stride,
+    x: item.x - (item.center ? width / 2 : 0) - px,
+    y: item.y - size - py,
+    w: width + 2 * px,
+    h: size * 1.25 + (lines.length - 1) * stride + 2 * py,
+  };
+}
 
 function fail(message: string): never {
   throw new Error(`Invalid sketch: ${message}`);
@@ -92,10 +122,13 @@ export function validateScene(input: unknown): Sketch {
       "radius",
       "lines",
       "titleLineCount",
+      "density",
       "size",
       "text",
       "center",
       "halo",
+      "backdrop",
+      "lineHeight",
       "points",
       "arrow",
     ]);
@@ -105,10 +138,33 @@ export function validateScene(input: unknown): Sketch {
         keys = ["role", "id", "x", "y", "w", "h", "color", "dashed", "radius"];
         break;
       case "node":
-        keys = ["role", "id", "x", "y", "w", "h", "lines", "titleLineCount", "size", "color"];
+        keys = [
+          "role",
+          "id",
+          "x",
+          "y",
+          "w",
+          "h",
+          "lines",
+          "titleLineCount",
+          "density",
+          "size",
+          "color",
+        ];
         break;
       case "text":
-        keys = ["role", "x", "y", "text", "size", "center", "color", "halo"];
+        keys = [
+          "role",
+          "x",
+          "y",
+          "text",
+          "size",
+          "center",
+          "color",
+          "halo",
+          "backdrop",
+          "lineHeight",
+        ];
         break;
       case "line":
         keys = ["points", "color", "dashed", "arrow"];
@@ -123,7 +179,7 @@ export function validateScene(input: unknown): Sketch {
         fail("invalid role");
       }
     }
-    for (const key of ["dashed", "center", "halo", "arrow"]) {
+    for (const key of ["dashed", "center", "halo", "backdrop", "arrow"]) {
       if (key in obj && typeof obj[key] !== "boolean") {
         fail(`invalid ${key}`);
       }
@@ -134,8 +190,14 @@ export function validateScene(input: unknown): Sketch {
     ) {
       fail("invalid color (use #RGB or #RRGGBB)");
     }
+    if ("density" in obj && obj.density !== "compact") {
+      fail("invalid density");
+    }
     if ("size" in obj) {
       number(obj.size, "size", 1, 512);
+    }
+    if ("lineHeight" in obj) {
+      number(obj.lineHeight, "lineHeight", 1, 1024);
     }
     if ("radius" in obj) {
       number(obj.radius, "radius", 0, 100_000);

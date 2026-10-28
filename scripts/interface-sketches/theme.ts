@@ -18,5 +18,7 @@ export const theme = {
     label: { size: 15, weight: 400, style: "normal", color: "#243247" },
     note: { size: 14, weight: 400, style: "italic", color: "#4b5563" },
   },
+  caption: { paddingX: 4, paddingY: 2, opacity: 0.84, radius: 3 },
+  compactNode: { titleSize: 16, detailSize: 14, stride: 20, padding: 14 },
   node: { titleSize: 18, detailSize: 15, stride: 24, fill: "#ffffff", padding: 20 },
 } as const;

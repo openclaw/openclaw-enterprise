@@ -4,14 +4,17 @@ Change the **TypeScript** to describe a component or connection. The tool lays o
 
 | Diagram                                                               | What it shows                                                                                                                                       | Authoring source                                                    |
 | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [1 · OpenShell Git request](examples/current-git.png)                 | One push attempt in the GitHub App installation preview. The supervisor calls the worker hook; an allow does not prove GitHub received the request. | [current-git.ts](examples/current-git.ts)                           |
-| [1b · OpenShell Git setup](examples/current-git-setup.png)            | How OCE prepares a token, updates an attached provider and verifies what the supervisor loaded.                                                     | [current-git-setup.ts](examples/current-git-setup.ts)               |
-| [2 · Generic protected exchange](examples/generic-exchange.png)       | The exchange contract and its required sender. Stock OpenShell is not a qualified exact-dispatch sender.                                            | [generic-exchange.ts](examples/generic-exchange.ts)                 |
+| [00 · Protected requests in OCE](examples/platform-roles.png)         | Platform roles and the optional Git binding. Start here before the OpenShell reference views.                                                       | [platform-roles.ts](examples/platform-roles.ts)                     |
+| [1 · Protected Git request](examples/current-git.png)                 | One push attempt in the GitHub App installation preview. The supervisor calls the worker hook; an allow does not prove GitHub received the request. | [current-git.ts](examples/current-git.ts)                           |
+| [1b · Protected Git setup](examples/current-git-setup.png)            | How OCE prepares a token, updates an attached provider and verifies what the supervisor loaded.                                                     | [current-git-setup.ts](examples/current-git-setup.ts)               |
+| [2 · Who sends a protected request?](examples/generic-exchange.png)   | The controller API binds an exchange authority; the trusted sender owns provider TLS and response delivery.                                         | [generic-exchange.ts](examples/generic-exchange.ts)                 |
 | [3 · Credential pull proposal](examples/credential-pull-proposal.png) | A design proposal with a supervisor credential cache. Its ownership and refresh assumptions are separate from the current implementation.           | [credential-pull-proposal.ts](examples/credential-pull-proposal.ts) |
 
-![OpenShell Git request and worker authorization](examples/current-git.png)
+![Platform roles for protected requests](examples/platform-roles.png)
 
-For diagrams 1 and 1b, see the [worker hook and Git authority](https://github.com/openclaw/openclaw-enterprise/blob/cdbbee5b97230097f43ae715d3f2fda087546a3c/apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts#L2157-L2200) and the [profile admission checks](https://github.com/openclaw/openclaw-enterprise/blob/cdbbee5b97230097f43ae715d3f2fda087546a3c/apps/controller/src/drivers/egress-proxy/openshell.ts#L418-L437). Diagram 2 describes the [separate exchange contract at its source revision](https://github.com/openclaw/openclaw-enterprise/tree/d1e543d3b5348070ac41e41ef346cc8f03070f0d).
+**Read the headings as roles.** The Git transport adapter is supplied by the selected backend. The public extension point is [`CredentialProxyDriver.bindRepositoryGit(authority)`](https://github.com/openclaw/openclaw-enterprise/blob/cdbbee5b97230097f43ae715d3f2fda087546a3c/packages/contracts/src/credential-proxy.ts#L429-L439); there is no required `GitTransportDriver` service. In 1 and 1b, OpenShell implements this role and its supervisor calls the worker hook. A different backend can implement the capability differently. [AWS Strands/Box sandbox work](https://github.com/openclaw/openclaw-enterprise/pull/3832) illustrates a different Sandbox implementation; the [separate Box sender prototype](https://github.com/openclaw/openclaw-enterprise/blob/ee2da743e54a8540b24c4ae217d8237fb17a5538/apps/controller/src/backends/strands-box.ts#L165) explores protected provider calls. Neither establishes support for this Git binding.
+
+For diagrams 1 and 1b, see the [worker hook and Git authority](https://github.com/openclaw/openclaw-enterprise/blob/cdbbee5b97230097f43ae715d3f2fda087546a3c/apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts#L2157-L2200) and the [profile admission checks](https://github.com/openclaw/openclaw-enterprise/blob/cdbbee5b97230097f43ae715d3f2fda087546a3c/apps/controller/src/drivers/egress-proxy/openshell.ts#L418-L437). Diagram 2 separates the controller API’s [exchange object and its five bound methods](https://github.com/openclaw/openclaw-enterprise/blob/4e9e2ccefd7e17bdb0746b62f3c90c59b3f822bb/apps/controller/src/composition/egress-authority.ts#L13-L42) from the sender that injects credentials and sends the request. Diagram 3 is a proposal.
 
 ## Make a change
 
@@ -54,10 +57,16 @@ Nest a group using `parent` when containment is meaningful, for example an Agent
 ## How the tool fits together
 
 - [diagram.ts](diagram.ts) defines what authors describe: groups, components, relationships and notes. The examples contain domain facts, not SVG.
-- [layout.ts](layout.ts) compiles a definition into positioned boxes, text and lines. [ELK Layered](https://eclipse.dev/elk/reference/algorithms/org-eclipse-elk-layered.html) supplies node placement and orthogonal routing. By default the compiler compares horizontal and vertical layouts. Set `layout: { direction: "RIGHT" }` or `"DOWN"` to fix the reading direction. Diagram 1 uses a horizontal layout to keep the hook and its reply together.
+- [layout.ts](layout.ts) compiles a definition into positioned boxes, text and lines. [ELK Layered](https://eclipse.dev/elk/reference/algorithms/org-eclipse-elk-layered.html) supplies node placement and orthogonal routing. By default the compiler compares horizontal and vertical layouts. Set `layout: { direction: "RIGHT" }` or `"DOWN"` to fix the reading direction. Pinned presentation boards use [board.ts](board.ts) instead of automatic layout.
 - [scene.ts](scene.ts) defines and validates the JSON passed between layout and rendering. A scene contains geometry and semantic roles; it can be used without the TypeScript authoring API.
 - [theme.ts](theme.ts) owns the colors and typography. [render.ts](render.ts) draws a scene with bundled Liberation Sans regular, bold, and italic faces. Component names are bold, details use dark-gray italics, and labeled regions use distinct tints.
 - [build.ts](build.ts) loads trusted local diagram modules and writes or checks generated artifacts. A TypeScript module runs as code. Use the data-only JSON renderer for input from elsewhere.
+
+## Fit a diagram on one screen
+
+Leave placement automatic for sketches in progress. For a presentation, set `layout: { board: [1180, 640] }` and give each group and component a `pin: [x, y, width, height]`. Root groups use board coordinates; child groups and nodes use coordinates relative to their parent, so moving a group moves its contents. The compiler rejects cards or text that cannot fit. The gallery uses landscape boards: at 1,000 pixels wide, each PNG is about 542 pixels tall.
+
+Connections still identify components by ID. Use an edge's optional `pin` to select endpoint sides (`from`, `to`), add bends (`via`), or position the label (`label`). Bend points and label positions use board coordinates. See [diagram 1's layout](examples/current-git.ts) for a working example.
 
 ## Keep a presentation override in TypeScript
 

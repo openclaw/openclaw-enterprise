@@ -29,7 +29,8 @@ test("forward anchors track moved nodes and retain drawing order", () => {
   assert.match(after, /points="10,40 110,40"/);
   assert.ok(before.indexOf("<polyline") < before.indexOf('<rect x="80"'));
   assert.match(before, /<marker[^>]+id="arrow-0"[^>]*><path[^>]+stroke="#e43c39"/);
-  assert.match(before, /paint-order="stroke" stroke="white"/);
+  assert.match(before, /fill="white" fill-opacity="0.84"/);
+  assert.doesNotMatch(before, /<text[^>]*stroke/);
   assert.match(before, /@font-face.*data:font\/ttf;base64,/);
 });
 
@@ -346,4 +347,66 @@ test("two-line component titles stay bold above gray italic descriptions", () =>
   );
   const resized = renderSvg({ ...sketch, items: [{ ...node, size: 21 }] });
   assert.equal((resized.match(/font-size="21"/g) ?? []).length, 3);
+});
+
+test("multiline captions have one measured backdrop, crisp baselines, and paint after crossing lines", () => {
+  for (const center of [false, true]) {
+    for (const flag of [{ backdrop: true }, { halo: true }]) {
+      const svg = renderSvg({
+        title: "Caption",
+        width: 300,
+        height: 150,
+        items: [
+          { kind: "text", role: "label", x: 150, y: 60, text: "M&M\n<reply>", center, ...flag },
+          // The later connector must remain behind the entire caption.
+          {
+            kind: "line",
+            points: [
+              [10, 60],
+              [290, 60],
+            ],
+          },
+        ],
+      });
+      const rects = [
+        ...svg.matchAll(
+          /<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)"[^>]*fill-opacity="0.84"/g,
+        ),
+      ];
+      assert.equal(rects.length, 1);
+      const [, x, y, width, height] = rects[0];
+      assert.equal(Number(y), 43);
+      assert.equal(Number(height), 41.75);
+      assert.equal(Number(x), center ? 150 - Number(width) / 2 : 146);
+      assert.ok(Number(width) > 40 && Number(width) < 80);
+      const texts = [...svg.matchAll(/<text[^>]+>[^<]*<\/text>/g)].map((m) => m[0]);
+      assert.equal(texts.length, 2);
+      assert.match(texts[0], /y="60".*>M&amp;M<\/text>/);
+      assert.match(texts[1], /y="79".*>&lt;reply&gt;<\/text>/);
+      for (const text of texts) {
+        assert.match(text, new RegExp(`text-anchor="${center ? "middle" : "start"}"`));
+        assert.match(text, /font-weight="400"/);
+        assert.doesNotMatch(text, /stroke|paint-order/);
+      }
+      assert.ok(svg.indexOf("<polyline") < rects[0].index!);
+      assert.ok(rects[0].index! < svg.indexOf("<text"));
+    }
+  }
+});
+
+test("raw labels and unrelated text stay plain without an explicit backdrop", () => {
+  const svg = renderSvg({
+    title: "Plain",
+    width: 300,
+    height: 200,
+    items: [undefined, "label", "title", "group", "note"].map((role, i) => ({
+      kind: "text",
+      ...(role ? { role } : {}),
+      x: 20,
+      y: 30 + i * 30,
+      text: "Plain",
+    })),
+  });
+  assert.equal((svg.match(/<rect/g) ?? []).length, 1); // Canvas only.
+  assert.doesNotMatch(svg, /<text[^>]*stroke|fill-opacity/);
 });
