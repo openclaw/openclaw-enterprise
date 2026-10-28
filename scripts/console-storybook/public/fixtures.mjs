@@ -905,6 +905,11 @@ export function installFixture(scenario, evidence) {
       ...template,
       redirectUri: "https://console.example.test/oauth/callback",
     });
+    if (path === "/connection-templates/discover-mcp" && method === "POST") {
+      return scenario.mcpDiscovery && body.serverUrl === scenario.mcpDiscovery.serverUrl
+        ? response(scenario.mcpDiscovery)
+        : error(400);
+    }
     if (path === "/connection-templates") {
       if (method === "GET") {
         return response(connectionTemplates.map(templateResponse));

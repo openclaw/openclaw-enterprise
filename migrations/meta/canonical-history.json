@@ -497,6 +497,14 @@
       "tag": "0062_agent_connections",
       "breakpoints": true,
       "sha256": "3b48190956b8ce17e6df4b86f6125fcc112681df9aebeb533b64356bfc483575"
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1787000000063,
+      "tag": "0063_mcp_connection_templates",
+      "breakpoints": true,
+      "sha256": "1cba7532d88dd46829620ea6ddaba5f63ecc0d6a37bc4a4699e55c85cacb7969"
     }
   ],
   "initialSchemaStates": {
@@ -524,7 +532,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "84a84426bcbd5c0d7197a64db94eb94400a36460236a240574f6f12ef7180ec9",
+    "completed": "60136dbd3b8ba1a0f999df3f31fbdabb583c55cdb9fb021d66c91e8479f5a5bb",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -558,7 +566,8 @@
     "preSandboxPolicyAdministrator": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
     "preInstallationAccessBindings": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
     "preConnectionTemplates": "6ffbcf625bb9e8a9bc6b034f076ebc55d25d21df69df5ed2ba4e46be421ad112",
-    "preAgentConnections": "d7b2923db779f9ada4d080d6d5e5c11bc2cbc08161f08bae45f258c82106e31f"
+    "preAgentConnections": "d7b2923db779f9ada4d080d6d5e5c11bc2cbc08161f08bae45f258c82106e31f",
+    "preMcpConnectionTemplates": "84a84426bcbd5c0d7197a64db94eb94400a36460236a240574f6f12ef7180ec9"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

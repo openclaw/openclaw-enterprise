@@ -175,6 +175,9 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 51) {
         return "preProvisioningDeploymentOutcome";
       }
+      if (receipts.length === 62) {
+        return "preMcpConnectionTemplates";
+      }
       if (receipts.length === 61) {
         return "preAgentConnections";
       }
@@ -212,6 +215,9 @@ function classifyReceipts(receipts, manifest) {
     }
   } else {
     requireReceiptsMatchEntries(receipts, manifest.entries);
+  }
+  if (receipts.length === 62) {
+    return "preMcpConnectionTemplates";
   }
   if (receipts.length === 61) {
     return "preAgentConnections";

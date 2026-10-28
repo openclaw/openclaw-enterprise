@@ -1678,6 +1678,8 @@ export const connectionTemplateVersions = occSchema.table(
     endpointPort: integer("endpoint_port").notNull(),
     endpointPath: collatedText("endpoint_path").notNull(),
     envVar: collatedText("env_var").notNull(),
+    mcpServerUrl: collatedText("mcp_server_url"),
+    mcpResource: collatedText("mcp_resource"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [

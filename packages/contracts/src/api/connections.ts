@@ -16,6 +16,31 @@ export const ConnectionTemplateId = Type.String({
 const HttpsUrl = Type.String({ minLength: 9, maxLength: 2048, pattern: "^https://" });
 const Scope = Type.String({ minLength: 1, maxLength: 512, pattern: "^[!#-\\[\\]-~]+$" });
 
+const McpResourceFields = { serverUrl: HttpsUrl, resource: HttpsUrl };
+const McpResource = Type.Object(McpResourceFields, { additionalProperties: false });
+
+export const DiscoverMcpConnectionRequest = Type.Object(
+  { serverUrl: HttpsUrl },
+  { additionalProperties: false },
+);
+
+export const DiscoverMcpConnectionResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        ...McpResourceFields,
+        issuer: HttpsUrl,
+        authorizationUrl: HttpsUrl,
+        tokenUrl: HttpsUrl,
+        scopes: Type.Array(Scope),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 const ConnectionEndpointSchema = Type.Object(
   {
     host: Type.String({ minLength: 1, maxLength: 253 }),
@@ -26,6 +51,7 @@ const ConnectionEndpointSchema = Type.Object(
 );
 
 const ConnectionTemplateFields = {
+  mcp: Type.Optional(McpResource),
   displayName: Type.String({ minLength: 1, maxLength: 200 }),
   issuer: HttpsUrl,
   authorizationUrl: HttpsUrl,
@@ -56,6 +82,7 @@ export const CreateConnectionTemplateBody = Type.Object(
 
 export const UpdateConnectionTemplateBody = Type.Object(
   {
+    mcp: ConnectionTemplateFields.mcp,
     displayName: Type.Optional(ConnectionTemplateFields.displayName),
     issuer: Type.Optional(ConnectionTemplateFields.issuer),
     authorizationUrl: Type.Optional(ConnectionTemplateFields.authorizationUrl),
@@ -78,6 +105,7 @@ export const RotateConnectionClientSecretBody = Type.Object(
 const ConnectionTemplateVersionSchema = Type.Object(
   {
     version: Type.Integer({ minimum: 1 }),
+    mcp: ConnectionTemplateFields.mcp,
     issuer: Type.String(),
     authorizationUrl: Type.String(),
     tokenUrl: Type.String(),

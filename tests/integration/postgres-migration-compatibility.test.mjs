@@ -9,6 +9,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
+import { connectionValuesChanged } from "../../packages/contracts/src/connection-templates.ts";
+import { postgresConnectionTemplates } from "../../packages/occ/src/state/postgres-connection-templates.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
 import {
   catalogDigest,
@@ -1587,6 +1589,70 @@ async function canonicalData(db) {
   }
   return result;
 }
+
+test(
+  "MCP template migration preserves existing consent and versions the approved resource",
+  requiresHistoryPostgres,
+  async (t) => {
+    const db = await historyDatabase(t, await migrationHistoryFixture(), "mcp_template", {
+      prefix: 62,
+    });
+    const store = postgresConnectionTemplates(db.app, async () => {});
+    const registration = await store.createClientRegistration({
+      id: `ccr_${randomUUID()}`,
+      issuer: "https://issuer.example",
+      clientId: "fixture",
+      credentialRefreshDriverId: "fixture-refresh",
+      createdAt: new Date().toISOString(),
+    });
+    const templateId = `ctp_${randomUUID()}`;
+    // This template predates MCP metadata. Its consented version may already have connections.
+    await db.app.query(
+      `WITH inserted AS (
+       INSERT INTO occ.connection_templates(id, display_name, current_version, created_at)
+       VALUES ($1, 'Existing template', 1, now()) RETURNING id
+     )
+     INSERT INTO occ.connection_template_versions(template_id, version, client_registration_id,
+       issuer, client_id, authorization_url, token_url, scopes, authorization_parameters,
+       endpoint_host, endpoint_port, endpoint_path, env_var, created_at)
+     SELECT id, 1, $2, $3, $4, 'https://issuer.example/authorize', 'https://issuer.example/token',
+       ARRAY['tools'], '{}', 'tools.example', 443, '/mcp', 'MCP_TOKEN', now() FROM inserted`,
+      [templateId, registration.id, registration.issuer, registration.clientId],
+    );
+    assert.deepEqual(await runHistoryMigration(db), {
+      ok: true,
+      history: "preMcpConnectionTemplates",
+    });
+    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
+    const original = (await store.findConnectionTemplate(templateId)).current;
+    assert.equal(Object.hasOwn(original, "mcp"), false);
+
+    const next = {
+      ...original,
+      version: 2,
+      mcp: {
+        serverUrl: "https://tools.example/mcp",
+        resource: "https://tools.example?tenant=Acme%2Fteam",
+      },
+    };
+    assert.equal(connectionValuesChanged(original, next), true);
+    const updated = await store.updateConnectionTemplate(templateId, { version: next });
+    assert.deepEqual(updated.current, next);
+    assert.deepEqual(await store.findConnectionTemplateVersion(templateId, 1), original);
+    assert.deepEqual(await store.findConnectionTemplateVersion(templateId, 2), next);
+    assert.equal(connectionValuesChanged(next, { ...next, mcp: { ...next.mcp } }), false);
+    assert.equal(
+      connectionValuesChanged(next, {
+        ...next,
+        mcp: { ...next.mcp, resource: next.mcp.serverUrl },
+      }),
+      true,
+    );
+  },
+);
 
 test(
   "First installation requires empty migration history under the migration lock",

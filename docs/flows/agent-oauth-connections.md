@@ -1,7 +1,7 @@
 ---
 created: "2026-10-20"
-updated: "2026-10-22"
-last_updated_session: "claude-code/0aaa76e4-8457-4cdb-b732-780b69e59679"
+updated: "2026-10-28"
+last_updated_session: "authoring-run/6d878668-6673-4fd1-8383-71f47974a66c"
 ---
 
 # Agent OAuth connection lifecycle Flow
@@ -16,6 +16,13 @@ then binds the source to the Agent and treats the Agent as personal until the
 source is deleted. This flow stops when the source is bound, or when disconnect
 removes it. Deployment and attachment continue in the
 [credential source lifecycle](credential-source-lifecycle.md).
+
+Administrators can prepare an MCP connection in Settings. The selected Credential
+Refresh Driver reads the server's public metadata and OCC checks it again before
+registering the client. The version records the server URL and OAuth resource.
+On this stack, Agent connection admission stops before registering a source for
+an MCP template because the selected driver hands refresh to OpenShell.
+[Connection template setup](../reference/connection-templates.md#discover-an-mcp-connection-template)
 
 ## Entry Points
 
@@ -204,6 +211,8 @@ deletion.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 15:12: Document MCP discovery and Agent admission. (authoring-run/6d878668-6673-4fd1-8383-71f47974a66c - 11c02a29)
 
 - 2026-10-22 03:30: Add the console's popup, same-tab redirect, and outcome hand-off (claude-code/0aaa76e4-8457-4cdb-b732-780b69e59679 - 4bde49d9d)
 - 2026-10-20 21:44: Document the RFC-0023 connection lifecycle (claude-code/session_01HzmRt1DGB79VEnEWHt7PRy - 0400c9f6729f6ce5efd91040f2802a21dfc1d90e)

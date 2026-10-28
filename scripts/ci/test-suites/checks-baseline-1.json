@@ -23,6 +23,7 @@
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.mjs",
     "tests/integration/plugin-discovery-api.test.mjs",
+    "tests/integration/mcp-oauth-discovery.test.ts",
     "tests/integration/runtime-credentials-api.test.mjs",
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.mjs",
@@ -358,6 +359,9 @@
     },
     {
       "path": "tests/integration/plugin-discovery-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/mcp-oauth-discovery.test.ts"
     },
     {
       "path": "tests/integration/device-authorization-api.test.mjs"

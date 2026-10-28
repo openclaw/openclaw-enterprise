@@ -6,6 +6,7 @@ import type {
   ConnectionTemplateValues,
   CredentialClientRegistrationContext,
   InstallationResourceKind,
+  McpAuthorizationMetadata,
   SandboxPolicy,
   SandboxFacet,
   SandboxNetworkGrant,
@@ -769,6 +770,7 @@ export interface CreateCredentialSourceInput {
 }
 
 export interface ConnectionTemplateInput {
+  readonly mcp?: ConnectionTemplateValues["mcp"];
   readonly displayName: string;
   readonly issuer: string;
   readonly authorizationUrl: string;
@@ -1085,17 +1087,11 @@ function revisionHoldsCredentialSource(
 
 /** A name-based (version 5 layout) UUID, so a replayed registration step reuses its request ID. */
 /** Normalizes connection template input; the database enforces every value format. */
-function connectionTemplateValues(input: {
-  readonly issuer: string;
-  readonly authorizationUrl: string;
-  readonly tokenUrl: string;
-  readonly clientId: string;
-  readonly scopes: readonly string[];
-  readonly authorizationParameters?: Readonly<Record<string, string>>;
-  readonly endpoint: { readonly host: string; readonly port?: number; readonly path?: string };
-  readonly envVar: string;
-}): ConnectionTemplateValues {
+function connectionTemplateValues(
+  input: Omit<ConnectionTemplateInput, "displayName">,
+): ConnectionTemplateValues {
   return Object.freeze({
+    ...(input.mcp ? { mcp: Object.freeze({ ...input.mcp }) } : {}),
     issuer: input.issuer,
     authorizationUrl: input.authorizationUrl,
     tokenUrl: input.tokenUrl,
@@ -6051,6 +6047,25 @@ export class OpenClawController {
     return template;
   }
 
+  async discoverMcpConnection(
+    principalId: string,
+    serverUrl: string,
+  ): Promise<McpAuthorizationMetadata> {
+    await this.authorize(principalId, "create", this.connectionTemplateRef(this.installation.id));
+    return this.discoverMcpAuthorization(serverUrl);
+  }
+
+  private async discoverMcpAuthorization(serverUrl: string): Promise<McpAuthorizationMetadata> {
+    const refresh = this.connectionRefreshDriver();
+    if (!refresh.discoverMcpAuthorization) {
+      throw new NotImplementedError(
+        "connection_templates",
+        "The selected Credential Refresh Driver does not support MCP discovery.",
+      );
+    }
+    return refresh.discoverMcpAuthorization(serverUrl);
+  }
+
   async createConnectionTemplate(
     principalId: string,
     input: CreateConnectionTemplateInput,
@@ -6060,7 +6075,7 @@ export class OpenClawController {
     const templateId = this.nextIdentifier("connection_template");
     const createdAt = this.timestamp();
     const values = connectionTemplateValues(input);
-    this.assertConnectionSourceConfig(values);
+    await this.validateConnectionTemplate(values);
     const registration = await this.connectionClientRegistration(
       refresh,
       values.issuer,
@@ -6108,7 +6123,7 @@ export class OpenClawController {
     const values = connectionTemplateValues({ ...current.current, ...input });
     const changed = connectionValuesChanged(current.current, values);
     if (changed) {
-      this.assertConnectionSourceConfig(values);
+      await this.validateConnectionTemplate(values);
     }
     const refresh = this.connectionRefreshDriver();
     const registration = changed
@@ -6173,8 +6188,37 @@ export class OpenClawController {
    * Refuses values the Credential Gateway would refuse at connect time, such as a token host
    * its gateway cannot reach, so administrators see the error instead of the connecting person.
    */
-  private assertConnectionSourceConfig(values: Readonly<ConnectionTemplateValues>): void {
+  private async validateConnectionTemplate(
+    values: Readonly<ConnectionTemplateValues>,
+  ): Promise<void> {
     this.assertCredentialGatewaySelected();
+    if (values.mcp) {
+      // Recheck at save before registering a secret. The preview is supplied by the browser.
+      const metadata = await this.discoverMcpAuthorization(values.mcp.serverUrl);
+      const server = new URL(metadata.serverUrl);
+      if (
+        values.mcp.serverUrl !== metadata.serverUrl ||
+        values.mcp.resource !== metadata.resource ||
+        values.issuer !== metadata.issuer ||
+        values.authorizationUrl !== metadata.authorizationUrl ||
+        values.tokenUrl !== metadata.tokenUrl ||
+        values.endpoint.host !== server.hostname ||
+        values.endpoint.port !== Number(server.port || 443) ||
+        values.endpoint.path !== server.pathname ||
+        values.scopes.length === 0 ||
+        !values.scopes.every((scope) => metadata.scopes.includes(scope)) ||
+        Object.keys(values.authorizationParameters).length > 0
+      ) {
+        throw new ResourceStateConflictError(
+          "The MCP template does not match the server's current authorization metadata. Discover settings again.",
+        );
+      }
+      this.credentialGatewayDriver().validateSourceConfig({
+        type: "bearer-token",
+        config: { ...values.endpoint, port: String(values.endpoint.port), env_var: values.envVar },
+      });
+      return;
+    }
     this.credentialGatewayDriver().validateSourceConfig({
       type: "oauth2-refresh-token",
       config: connectionSourceConfig(values),
@@ -6493,6 +6537,14 @@ export class OpenClawController {
       );
     }
     const version = template.current;
+    if (version.mcp) {
+      // The current browser path gives the grant to the native refresh implementation.
+      // MCP requires SDK-owned, resource-bound refresh and delivery of a prepared access token.
+      throw new NotImplementedError(
+        "mcp_oauth",
+        "Connecting this MCP account requires a credential service that prepares and delivers the access token.",
+      );
+    }
     // The source is registered before consent with the approved values; its refresh is
     // configured only when the callback completes, so it is never usable before then.
     const source = await this.createCredentialSource(

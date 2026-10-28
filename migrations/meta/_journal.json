@@ -435,6 +435,13 @@
       "when": 1787000000062,
       "tag": "0062_agent_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1787000000063,
+      "tag": "0063_mcp_connection_templates",
+      "breakpoints": true
     }
   ]
 }

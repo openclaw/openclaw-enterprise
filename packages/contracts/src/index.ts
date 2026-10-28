@@ -1600,12 +1600,23 @@ export interface CredentialRefreshStatus {
   readonly recoveryAction?: "retry" | "reauthorize" | "fix_configuration" | "investigate";
 }
 
+export interface McpAuthorizationMetadata {
+  readonly serverUrl: string;
+  readonly resource: string;
+  readonly issuer: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly scopes: readonly string[];
+}
+
 /**
  * Mints and re-mints tokens for the paired Credential Gateway's `refresh` sources. OCC drives
  * only setup, incident rotation, and status; the implementation refreshes before expiry.
  */
 export interface CredentialRefreshDriver extends Driver {
   readonly capability: "credential_refresh";
+  /** Reads public MCP authorization metadata without using a client registration. */
+  discoverMcpAuthorization?(serverUrl: string): Promise<McpAuthorizationMetadata>;
   /** Owns the private device exchange; OCC retains only an opaque login handle. */
   startDeviceAuthorization?(
     context: CredentialSourceContext,

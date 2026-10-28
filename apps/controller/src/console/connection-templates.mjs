@@ -46,6 +46,7 @@ function formValues(template) {
   const version = template.current;
   return {
     displayName: template.displayName,
+    mcp: version.mcp,
     issuer: version.issuer,
     authorizationUrl: version.authorizationUrl,
     tokenUrl: version.tokenUrl,
@@ -91,6 +92,7 @@ function requestBody(values, before) {
     authorizationParameters: parameters,
     endpoint,
     envVar: values.envVar.trim(),
+    ...(values.mcp ? { mcp: values.mcp } : {}),
     ...(values.clientSecret ? { clientSecret: values.clientSecret } : {}),
   };
   if (!before) {
@@ -142,6 +144,9 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
     error,
     list,
     create,
+    button("New MCP connection template", (event) => openDiscovery(null, event.currentTarget), {
+      tone: "secondary",
+    }),
   );
 
   let templates = [];
@@ -351,6 +356,12 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
           tone: "ghost",
           size: "sm",
         }),
+        version.mcp
+          ? button("Rediscover server", (event) => openDiscovery(template, event.currentTarget), {
+              tone: "ghost",
+              size: "sm",
+            })
+          : null,
         button("Rotate client secret", (event) => openRotate(template, event.currentTarget), {
           tone: "ghost",
           size: "sm",
@@ -379,14 +390,90 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
     return dialog;
   }
 
-  function openEditor(template, invoker) {
+  function openDiscovery(template, invoker) {
+    const dialog = dialogShell("Discover MCP server", invoker);
+    const server = element("input", { id: "mcp-server-url", type: "url", required: true });
+    server.value = template?.current.mcp.serverUrl ?? "";
+    const feedback = element("p", { className: "error", role: "alert" });
+    const discover = button(
+      "Discover",
+      async () => {
+        if (!server.reportValidity()) return;
+        feedback.textContent = "";
+        discover.disabled = server.disabled = true;
+        try {
+          const metadata = await request("/connection-templates/discover-mcp", {
+            method: "POST",
+            body: { serverUrl: server.value.trim() },
+          });
+          if (!dialog.open || !isCurrent()) return;
+          if (!metadata.scopes.length) {
+            feedback.textContent =
+              "This server advertised no scopes. A connection template requires at least one.";
+            return;
+          }
+          dialog.close();
+          openEditor(template, invoker, metadata);
+        } catch (cause) {
+          handle(cause, feedback);
+        } finally {
+          discover.disabled = server.disabled = false;
+        }
+      },
+      { tone: "primary" },
+    );
+    dialog.append(
+      field({
+        label: "MCP server URL",
+        control: server,
+        help: "Enter the HTTPS endpoint the worker will call.",
+      }),
+      feedback,
+      element(
+        "div",
+        { className: "dialog-actions" },
+        button("Cancel", () => dialog.close()),
+        discover,
+      ),
+    );
+    dialog.showModal();
+    server.focus();
+  }
+
+  function openEditor(template, invoker, discovered) {
     const dialog = dialogShell(
-      template ? `Edit ${template.displayName}` : "New connection template",
+      template
+        ? `Edit ${template.displayName}`
+        : discovered
+          ? "New MCP connection template"
+          : "New connection template",
       invoker,
     );
     const before = template ? formValues(template) : null;
+    const initial = { ...before };
+    if (discovered) {
+      const endpoint = new URL(discovered.serverUrl);
+      Object.assign(initial, {
+        mcp: { serverUrl: discovered.serverUrl, resource: discovered.resource },
+        issuer: discovered.issuer,
+        authorizationUrl: discovered.authorizationUrl,
+        tokenUrl: discovered.tokenUrl,
+        scopes: (template
+          ? template.current.scopes.filter((scope) => discovered.scopes.includes(scope))
+          : discovered.scopes
+        ).join("\n"),
+        host: endpoint.hostname,
+        port: endpoint.port,
+        path: endpoint.pathname,
+      });
+    }
+    const { mcp } = initial;
+    const allowedScopes = discovered?.scopes ?? template?.current.scopes;
     const controls = {};
     const fields = FIELDS.map(([key, label, help]) => {
+      if (mcp && !["displayName", "clientId", "clientSecret", "scopes", "envVar"].includes(key)) {
+        return null;
+      }
       const multiline = key === "scopes" || key === "authorizationParameters";
       const control = element(multiline ? "textarea" : "input", {
         id: `connection-template-${key}`,
@@ -396,7 +483,7 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
         ...(key === "port" ? { inputmode: "numeric" } : {}),
         required: !["clientSecret", "authorizationParameters", "port"].includes(key),
       });
-      control.value = before?.[key] ?? "";
+      control.value = initial[key] ?? "";
       controls[key] = control;
       return field({ label, control, help });
     });
@@ -408,18 +495,19 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
         ? "Changing anything except the name creates a new version. Existing connections keep the version their owner approved and show Reconnect to apply changes."
         : "",
     );
-    const example = template
-      ? null
-      : button(
-          "Fill in the Gmail example",
-          () => {
-            for (const [key, value] of Object.entries(GMAIL_EXAMPLE)) {
-              controls[key].value = value;
-            }
-            controls.clientId.focus();
-          },
-          { tone: "ghost", size: "sm" },
-        );
+    const example =
+      template || mcp
+        ? null
+        : button(
+            "Fill in the Gmail example",
+            () => {
+              for (const [key, value] of Object.entries(GMAIL_EXAMPLE)) {
+                controls[key].value = value;
+              }
+              controls.clientId.focus();
+            },
+            { tone: "ghost", size: "sm" },
+          );
     const cancel = button("Cancel", () => dialog.close());
     const save = button(
       template ? "Save" : "Create template",
@@ -431,7 +519,15 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
         const values = Object.fromEntries(
           Object.entries(controls).map(([key, control]) => [key, control.value]),
         );
-        const body = requestBody(values, before);
+        const body = requestBody({ authorizationParameters: "", ...initial, ...values }, before);
+        if (
+          mcp &&
+          body.scopes &&
+          (!body.scopes.length || body.scopes.some((scope) => !allowedScopes.includes(scope)))
+        ) {
+          feedback.textContent = "Choose scopes from those discovered for this MCP server.";
+          return;
+        }
         if (template && Object.keys(body).length === 0) {
           dialog.close();
           return;
@@ -455,9 +551,34 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
       },
       { tone: "primary" },
     );
+    dialog.append(note);
+    if (example) dialog.append(example);
+    if (mcp) {
+      dialog.append(
+        element(
+          "p",
+          { className: "hint" },
+          "Saving creates a template. An Agent can connect only when the selected credential service supports MCP token delivery.",
+        ),
+        element(
+          "dl",
+          { className: "settings connection-template-facts" },
+          element("dt", {}, "MCP server"),
+          element("dd", {}, mcp.serverUrl),
+          element("dt", {}, "Protected resource"),
+          element("dd", {}, mcp.resource),
+          element("dt", {}, "Issuer"),
+          element("dd", {}, initial.issuer),
+          element("dt", {}, "Authorization URL"),
+          element("dd", {}, initial.authorizationUrl),
+          element("dt", {}, "Token URL"),
+          element("dd", {}, initial.tokenUrl),
+          discovered && template ? element("dt", {}, "Available scopes") : null,
+          discovered && template ? element("dd", {}, discovered.scopes.join(", ")) : null,
+        ),
+      );
+    }
     dialog.append(
-      note,
-      example,
       element("div", { className: "connection-template-form" }, ...fields),
       feedback,
       element("div", { className: "dialog-actions" }, cancel, save),

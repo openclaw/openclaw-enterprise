@@ -637,6 +637,26 @@ export const scenarios = {
     description:
       "The template form filled from the Gmail example. The client secret is write-only and leaves the page once saved.",
   },
+  settingsMcpConnectionTemplate: {
+    group: "Pages/Settings",
+    name: "Discover an MCP connection template",
+    path: "/console/settings",
+    mcpDiscovery: {
+      serverUrl: "https://tools.example.test/mcp",
+      resource: "https://tools.example.test",
+      issuer: "https://login.example.test",
+      authorizationUrl: "https://login.example.test/authorize",
+      tokenUrl: "https://login.example.test/token",
+      scopes: ["documents:read", "documents:write"],
+    },
+    actions: [
+      click("New MCP connection template"),
+      { selector: "#mcp-server-url", value: "https://tools.example.test/mcp" },
+      click("Discover"),
+    ],
+    description:
+      "Review simulated MCP metadata, choose scopes, and enter the registered client before saving the template.",
+  },
   runtimeImages: {
     group: "Pages/Navigation",
     name: "Debug runtime images",

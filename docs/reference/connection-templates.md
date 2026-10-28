@@ -35,8 +35,10 @@ The production chart's default-deny NetworkPolicy blocks the API's token
 request. Set `agentConnections.tokenEgress.enabled: true` to add the API-only
 policy `openclaw-enterprise-api-connection-token-egress`. Empty `egressCidrs`
 allows each TCP port in `ports` (default `[443]`) to any IPv4 address except
-link-local `169.254.0.0/16`. List the token hosts' IPv4 CIDRs to narrow it, and
-add a port only when a `tokenUrl` names one. The gateway Pod needs its own egress.
+link-local `169.254.0.0/16`. When restricting CIDRs and ports, allow the OAuth
+destinations the API contacts. For MCP discovery these include the server, the
+protected-resource metadata URL in its challenge, and the issuer's metadata
+endpoint. Include their HTTPS ports. The gateway Pod needs its own egress.
 
 ## Connection templates
 
@@ -66,6 +68,21 @@ template is created or changed, as it does for a source. The OpenShell gateway
 refuses an IP address or `localhost` token host, because it refreshes from its
 own network position (`400`). Responses include `redirectUri`, the exact URI to
 register with the provider.
+
+### Discover an MCP connection template
+
+In **Settings → Connection templates**, select **New MCP connection template** and
+enter the server URL. For Slack, use `https://mcp.slack.com/mcp`. The Credential
+Refresh Driver uses the TypeScript MCP client to discover the resource, issuer,
+OAuth endpoints, and proposed scopes. Discovery supports publicly routable HTTPS
+servers with one authorization server. It runs without the client secret.
+
+Review the values, choose the scopes, and enter the registered OAuth client. OCC
+checks the server metadata again before saving the version or registering the
+secret. Existing templates with manually configured endpoints keep their OAuth
+flow. The current OpenShell refresh implementation can stage an MCP template.
+Connecting an account and deploying it require SDK-owned refresh and delivery
+of the resulting access token to protected worker egress.
 
 ### Versions and consent
 

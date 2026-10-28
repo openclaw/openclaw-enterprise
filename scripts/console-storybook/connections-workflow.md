@@ -38,3 +38,7 @@ refresh need the real backend.
    Namespace that may connect. Grant use to a person, then remove it. Choose
    **Edit**, change a scope, and save: the template shows **Version 2**.
    **New connection template** opens the form filled from the Gmail example.
+10. Open **Pages / Settings / Discover an MCP connection template**. Inspect the
+    protected resource, issuer and exact worker endpoint. Narrow the scopes, enter
+    a name, OAuth client and worker variable, then save. The story simulates discovery
+    and registration and never contacts an MCP server.

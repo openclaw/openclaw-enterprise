@@ -431,7 +431,7 @@ export function renderAgentConnections(context, { path, agent, deployLink }) {
     });
     const provider = hostOf(template.current.issuer);
     const progress = element("p", { role: "status", "aria-live": "polite" });
-    const refusal = element("p", { className: "error", role: "alert" });
+    const refusal = element("p", { className: "error", role: "alert", tabindex: "-1" });
     const cancel = button("Cancel", () => dialog.close());
     // Set once the API returns the consent URL; the primary button then reopens the window.
     let started = null;
@@ -503,7 +503,7 @@ export function renderAgentConnections(context, { path, agent, deployLink }) {
         }
         progress.textContent = "";
         refusal.textContent = [
-          message(cause, true),
+          cause.code === "NOT_IMPLEMENTED" ? "Connection unavailable." : message(cause, true),
           cause.serverMessage,
           cause.requestId && `Request ID: ${cause.requestId}`,
         ]
@@ -511,6 +511,7 @@ export function renderAgentConnections(context, { path, agent, deployLink }) {
           .join(" ");
         proceed.disabled = false;
         render();
+        refusal.focus();
         return;
       }
       if (!context.isCurrent()) {

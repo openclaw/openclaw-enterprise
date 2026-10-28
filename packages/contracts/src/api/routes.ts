@@ -17,6 +17,8 @@ import {
   ConnectionTemplateParams,
   ConnectionTemplateResponse,
   CreateConnectionTemplateBody,
+  DiscoverMcpConnectionRequest,
+  DiscoverMcpConnectionResponse,
   CreateInstallationAccessBindingBody,
   InstallationAccessBindingListResponse,
   InstallationAccessBindingParams,
@@ -434,6 +436,22 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       response: { 200: ConnectionTemplateListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "discoverMcpConnection",
+    method: "POST",
+    path: "/connection-templates/discover-mcp",
+    action: "openclaw.connection_templates.discover_mcp",
+    iamAction: "create",
+    resourceKind: "connection_template",
+    authorizationTarget: "installation_collection",
+    summary: "Discover OAuth settings for an MCP connection template",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      body: DiscoverMcpConnectionRequest,
+      response: { 200: DiscoverMcpConnectionResponse, 501: ErrorResponseRef, ...createErrors },
     },
   },
   {

@@ -12,7 +12,8 @@ type Row = Record<string, unknown>;
 
 const versionColumns = `v.template_id, v.version, v.client_registration_id, v.issuer, v.client_id,
   v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.endpoint_host,
-  v.endpoint_port, v.endpoint_path, v.env_var, v.created_at AS version_created_at`;
+  v.endpoint_port, v.endpoint_path, v.env_var, v.mcp_server_url, v.mcp_resource,
+  v.created_at AS version_created_at`;
 
 function invalid(): never {
   throw new DependencyUnavailableError("Persisted connection template state is invalid.");
@@ -47,6 +48,9 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
     invalid();
   }
   return {
+    ...(row.mcp_server_url === null && row.mcp_resource === null
+      ? {}
+      : { mcp: { serverUrl: text(row, "mcp_server_url"), resource: text(row, "mcp_resource") } }),
     templateId: text(row, "template_id"),
     version: integer(row, "version"),
     clientRegistrationId: text(row, "client_registration_id"),
@@ -93,8 +97,8 @@ async function insertVersion(
     `INSERT INTO occ.connection_template_versions
      (template_id, version, client_registration_id, issuer, client_id, authorization_url,
       token_url, scopes, authorization_parameters, endpoint_host, endpoint_port, endpoint_path,
-      env_var, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::jsonb, $10, $11, $12, $13, $14)`,
+      env_var, created_at, mcp_server_url, mcp_resource)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::jsonb, $10, $11, $12, $13, $14, $15, $16)`,
     [
       version.templateId,
       version.version,
@@ -110,6 +114,8 @@ async function insertVersion(
       version.endpoint.path,
       version.envVar,
       version.createdAt,
+      version.mcp?.serverUrl ?? null,
+      version.mcp?.resource ?? null,
     ],
   );
 }

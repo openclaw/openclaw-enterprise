@@ -7,6 +7,8 @@ export interface ConnectionEndpoint {
 
 /** The values a person approves when they connect; any change creates a new version. */
 export interface ConnectionTemplateValues {
+  /** MCP transport and OAuth resource identifiers approved with this version. */
+  readonly mcp?: { readonly serverUrl: string; readonly resource: string };
   readonly issuer: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
@@ -51,6 +53,8 @@ export function connectionValuesChanged(
   next: Readonly<ConnectionTemplateValues>,
 ): boolean {
   return (
+    current.mcp?.serverUrl !== next.mcp?.serverUrl ||
+    current.mcp?.resource !== next.mcp?.resource ||
     current.issuer !== next.issuer ||
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||

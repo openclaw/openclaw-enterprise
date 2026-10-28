@@ -66,6 +66,9 @@ export async function performInstallationConnectionOperation(
         ),
       );
       return true;
+    case "discoverMcpConnection":
+      send(await controller.discoverMcpConnection(context.actorId, body?.serverUrl as string));
+      return true;
     case "createConnectionTemplate": {
       const created = await controller.createConnectionTemplate(
         context.actorId,

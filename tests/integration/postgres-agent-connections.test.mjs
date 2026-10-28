@@ -40,13 +40,13 @@ const requiresKeycloak = {
 // The console test serves the app behind the lane's HTTPS console origin, which the browser
 // and Keycloak's registered redirect URI both use.
 const consolePort = Number(process.env.OCC_TEST_KEYCLOAK_CONSOLE_PORT);
+const hasConsoleIngress =
+  Number.isInteger(consolePort) &&
+  Boolean(process.env.OCC_TEST_KEYCLOAK_CONSOLE_CERT && process.env.OCC_TEST_KEYCLOAK_CONSOLE_KEY);
 const requiresConsole = {
   skip:
     requiresKeycloak.skip ||
-    (Number.isInteger(consolePort) &&
-    process.env.OCC_TEST_KEYCLOAK_CONSOLE_CERT &&
-    process.env.OCC_TEST_KEYCLOAK_CONSOLE_KEY &&
-    process.env.OCC_TEST_KEYCLOAK_CA_CERT
+    (hasConsoleIngress && process.env.OCC_TEST_KEYCLOAK_CA_CERT
       ? false
       : "Prepare the keycloak-oidc lane's console origin (OCC_TEST_KEYCLOAK_CONSOLE_PORT, _CERT, _KEY and OCC_TEST_KEYCLOAK_CA_CERT; docs/testing/ci.md)."),
 };
@@ -231,7 +231,7 @@ function selectConnectionDrivers(fixture) {
   fixture.controller.selectDriver("credential_gateway", gateway.id);
   fixture.controller.registerDriver(refresh);
   fixture.controller.selectDriver("credential_refresh", refresh.id);
-  return openShell;
+  return { ...openShell, refreshDriver: refresh };
 }
 
 test(
@@ -635,6 +635,45 @@ test(
   },
 );
 
+async function openSettingsBrowser(t, app, consoleOrigin, providerLeaves = []) {
+  // The production app behind the lane's HTTPS origin, as an ingress would serve it.
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const tls = {
+    key: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_KEY),
+    cert: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_CERT),
+  };
+  const ingress = await startHttpsIngress({
+    port: consolePort,
+    upstreamPort: app.server.address().port,
+    tls,
+  });
+  t.after(ingress.close);
+  const browser = await chromium.launch({
+    headless: true,
+    // Trust only the fixture ingress and any supplied provider leaf.
+    args: [chromiumTrustArg([tls.cert, ...providerLeaves])],
+    ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
+      ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
+      : {}),
+  });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+
+  // The Installation administrator signs in with the bootstrap password.
+  await page.goto(`${consoleOrigin}/console/`);
+  await page.getByLabel("Email", { exact: true }).fill("postgres-admin@openclaw.local");
+  await page.getByLabel("Password").fill("postgres-development-password");
+  const signedIn = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/auth/sign-in/email",
+  );
+  await page.getByRole("button", { name: "Sign in" }).click();
+  assert.equal((await signedIn).status(), 200);
+
+  return { page, pageErrors };
+}
+
 test(
   "the owner connects and disconnects their Keycloak account from the console",
   requiresConsole,
@@ -669,47 +708,13 @@ test(
       }
     });
 
-    // The production app behind the lane's HTTPS origin, as an ingress would serve it.
-    await app.listen({ host: "127.0.0.1", port: 0 });
-    const tls = {
-      key: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_KEY),
-      cert: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_CERT),
-    };
-    const ingress = await startHttpsIngress({
-      port: consolePort,
-      upstreamPort: app.server.address().port,
-      tls,
-    });
-    t.after(ingress.close);
     const keycloakLeaf = await tlsPeerCertificate({
       host: "127.0.0.1",
       port: 443,
       servername: new URL(issuer).hostname,
       ca: await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT),
     });
-    const browser = await chromium.launch({
-      headless: true,
-      // Trusts exactly the console origin and Keycloak leaves.
-      args: [chromiumTrustArg([tls.cert, keycloakLeaf])],
-      ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
-        ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
-        : {}),
-    });
-    t.after(() => browser.close());
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    const pageErrors = [];
-    page.on("pageerror", (error) => pageErrors.push(error.message));
-
-    // The Installation administrator signs in with the bootstrap password.
-    await page.goto(`${consoleOrigin}/console/`);
-    await page.getByLabel("Email", { exact: true }).fill("postgres-admin@openclaw.local");
-    await page.getByLabel("Password").fill("postgres-development-password");
-    const signedIn = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/auth/sign-in/email",
-    );
-    await page.getByRole("button", { name: "Sign in" }).click();
-    assert.equal((await signedIn).status(), 200);
+    const { page, pageErrors } = await openSettingsBrowser(t, app, consoleOrigin, [keycloakLeaf]);
 
     // Settings: create the template from the form. The client secret goes only to the API.
     await page.goto(`${consoleOrigin}/console/settings?namespace=${namespace.id}`);
@@ -818,5 +823,101 @@ test(
     await connections.getByText(`${name} is disconnected`, { exact: false }).waitFor();
     assert.deepEqual((await inject("GET", `${path}/connections`)).json().data, []);
     assert.deepEqual(pageErrors, [], "the console raised no page errors");
+  },
+);
+
+test(
+  "Settings saves the approved MCP metadata and the Agent refuses an unsupported credential handoff",
+  {
+    skip:
+      requiresPostgres.skip ||
+      (!hasConsoleIngress && "Prepare the connection test HTTPS Console ingress."),
+  },
+  async (t) => {
+    const consoleOrigin = `https://127.0.0.1:${consolePort}`;
+    const fixture = await createPostgresAgentApp(t, {
+      label: `mcp-settings-${randomUUID().slice(0, 8)}`,
+      authSecret: "openclaw-mcp-settings-auth-secret-minimum-32-bytes",
+      authOrigin: consoleOrigin,
+      appOptions: { publicOrigin: consoleOrigin },
+    });
+    const { namespace, agent } = await fixture.deployAgent("MCP Settings");
+    const { refreshDriver, providers } = selectConnectionDrivers(fixture);
+    const metadata = {
+      serverUrl: "https://tools.example.test:8443/mcp",
+      resource: "https://tools.example.test:8443",
+      issuer: "https://login.example.test",
+      authorizationUrl: "https://login.example.test/authorize",
+      tokenUrl: "https://login.example.test/token",
+      scopes: ["documents:read", "documents:write"],
+    };
+    // The provider's discovery result is controlled. Settings, admission, registration,
+    // template storage, and the Agent's connection endpoint run through the production app.
+    t.mock.method(refreshDriver, "discoverMcpAuthorization", async (serverUrl) => {
+      assert.equal(serverUrl, metadata.serverUrl);
+      return metadata;
+    });
+    const { page, pageErrors } = await openSettingsBrowser(t, fixture.app, consoleOrigin);
+    await page.goto(`${consoleOrigin}/console/settings`);
+    await page.getByRole("button", { name: "New MCP connection template" }).click();
+    const discovery = page.getByRole("dialog", { name: "Discover MCP server" });
+    await discovery.getByLabel("MCP server URL").fill(metadata.serverUrl);
+    await discovery.getByRole("button", { name: "Discover", exact: true }).click();
+    const editor = page.getByRole("dialog", { name: "New MCP connection template" });
+    await editor.getByText(metadata.resource, { exact: true }).waitFor();
+    assert.doesNotMatch(await editor.innerText(), /\bnull\b/);
+    const name = `Tools ${randomUUID()}`;
+    await editor.getByLabel("Name", { exact: true }).fill(name);
+    await editor.getByLabel("Client ID", { exact: true }).fill(randomUUID());
+    await editor.getByLabel("Client secret", { exact: true }).fill("controlled-client-secret");
+    await editor.getByLabel("Variable", { exact: true }).fill("TOOLS_TOKEN");
+    const scopes = editor.getByLabel("Scopes", { exact: true });
+    await scopes.fill("undiscovered-scope");
+    await editor.getByRole("button", { name: "Create template" }).click();
+    await editor.getByText("Choose scopes from those discovered for this MCP server.").waitFor();
+    await scopes.fill("documents:read");
+    const creating = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === "/connection-templates",
+    );
+    await editor.getByRole("button", { name: "Create template" }).click();
+    const created = await creating;
+    assert.equal(created.status(), 201, (await created.json()).error?.message);
+
+    await editor.waitFor({ state: "detached" });
+    const row = page.getByRole("listitem").filter({ hasText: name });
+    await row.getByText("tools.example.test:8443/mcp", { exact: true }).waitFor();
+    const saved = (await fixture.inject("GET", "/connection-templates"))
+      .json()
+      .data.find((item) => item.displayName === name);
+    assert.deepEqual(saved.current.mcp, {
+      serverUrl: metadata.serverUrl,
+      resource: metadata.resource,
+    });
+    assert.deepEqual(saved.current.scopes, ["documents:read"]);
+    assert.equal(saved.current.tokenUrl, metadata.tokenUrl);
+    // A caller can bypass the editor, but cannot register a new client at an unreviewed endpoint.
+    const registrations = providers.size;
+    const tampered = await fixture.inject("PATCH", `/connection-templates/${saved.id}`, {
+      tokenUrl: "https://other.example.test/token",
+      clientId: randomUUID(),
+      clientSecret: "controlled-other-secret",
+    });
+    assert.equal(tampered.statusCode, 409);
+    assert.equal(providers.size, registrations);
+    await page.goto(`${consoleOrigin}/console/agents/${agent.id}?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: `Connect ${name}` }).click();
+    await page.getByRole("button", { name: "Continue to login.example.test" }).click();
+    await page
+      .getByRole("dialog")
+      .getByText(
+        /Connection unavailable\. Connecting this MCP account requires a credential service/,
+      )
+      .waitFor();
+    const sources = await fixture.inject("GET", `/namespaces/${namespace.id}/credential-sources`);
+    assert.equal(sources.statusCode, 200);
+    assert.deepEqual(sources.json().data, []);
+    assert.deepEqual(pageErrors, []);
   },
 );
