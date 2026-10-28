@@ -2013,6 +2013,83 @@ test("failure text is bounded and redacts env values and credential shapes", asy
   assert.doesNotMatch(straddle.message, /jobonly/);
   assert.equal((await render("thrown string")).message, "thrown string");
   assert.equal((await render(undefined)).message, undefined);
+  assert.equal((await render(42)).message, "42");
+  // The cause chain stops at a cycle and after three causes.
+  const looped = new Error("a", { cause: new Error("b") });
+  looped.cause.cause = looped;
+  assert.equal((await render(looped)).message, "a\ncaused by: Error: b");
+  let deep = new Error("level 4");
+  for (let level = 3; level >= 0; level -= 1) {
+    deep = new Error(`level ${level}`, { cause: deep });
+  }
+  assert.equal(
+    (await render(deep)).message,
+    "level 0\ncaused by: Error: level 1\ncaused by: Error: level 2\ncaused by: Error: level 3",
+  );
+});
+
+// Finding 2785: a DOMException (a fetch timeout or abort) crosses node:test's process
+// boundary as a bare stack with an empty message, so its failure had no text at all.
+test("run names DOMException, empty-message, and caused failures", async (t) => {
+  const root = await fixture(t);
+  const file = "tests/integration/errors.test.mjs";
+  const resultsPath = join(root, "results/errors.json");
+  await writeFile(
+    join(root, file),
+    [
+      'import test from "node:test";',
+      'test("timeout", () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); });',
+      'test("abort", () => { const controller = new AbortController(); controller.abort(); throw controller.signal.reason; });',
+      'test("empty", () => { throw new Error(""); });',
+      'test("caused", () => {',
+      '  const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");',
+      '  const socket = Object.assign(new Error("other side closed", { cause: timeout }), { code: "UND_ERR_SOCKET" });',
+      '  throw new Error("request failed", { cause: new Error("connect to secretauthvalue failed", { cause: socket }) });',
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { errors: { files: [{ path: file }] } },
+    groups: { ci: ["errors"] },
+  });
+
+  const result = run(root, laneArgs(root, "errors", "state/errors.jsonl", resultsPath));
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const failure = (name) => summary.files[0].tests.find((entry) => entry.name === name).error;
+  // The stack header names the exception, and the frame skips Node's DOMException constructor.
+  for (const [name, message, line] of [
+    ["timeout", "TimeoutError: The operation was aborted due to timeout", 2],
+    ["abort", "AbortError: This operation was aborted", 3],
+    ["empty", "Error", 4],
+  ]) {
+    assert.equal(failure(name).message, message);
+    assert.match(
+      failure(name).frame,
+      new RegExp(`\\(${file.replaceAll(".", "\\.")}:${line}:\\d+\\)$`),
+    );
+  }
+  // Each cause adds a line with its name (and a code its message lacks), redacted like the message.
+  assert.equal(
+    failure("caused").message,
+    [
+      "request failed",
+      "caused by: Error: connect to [env:CI_RUNNER_FIXTURE_CREDENTIAL] failed",
+      "caused by: Error: other side closed (code UND_ERR_SOCKET)",
+      "caused by: TimeoutError: The operation was aborted due to timeout",
+    ].join("\n"),
+  );
+  // The job log names every failure on one line.
+  assert.match(
+    result.stderr,
+    /run-tests: failed tests\/integration\/errors\.test\.mjs:2 "timeout": TimeoutError: The operation was aborted due to timeout \(at /,
+  );
+  assert.match(
+    result.stderr,
+    /"caused": request failed \| caused by: Error: connect to \[env:CI_RUNNER_FIXTURE_CREDENTIAL\] failed \| caused by: Error: other side closed/,
+  );
 });
 
 test("the reporter forwards a failed file's output tail and whole stack only", async () => {
