@@ -98,14 +98,17 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
 
   // Run real sources outside the checkout so installed workspace packages cannot
   // hide import failures in the host-run command used by First Agent Smoke.
-  // plain-text.ts has no imports; first-agent loads the Name rule from it.
+  // plain-text.ts and gateway-security-defaults.ts have no imports; first-agent loads the Name
+  // rule and the defaults deployment admission fills from them.
   await mkdir(join(directory, "packages/contracts/src/api"), { recursive: true });
+  await mkdir(join(directory, "packages/occ/src"), { recursive: true });
   for (const path of [
     "package.json",
     "scripts/first-agent.mjs",
     "scripts/first-agent-database.mjs",
     "scripts/first-agent-model.mjs",
     "packages/contracts/src/api/plain-text.ts",
+    "packages/occ/src/gateway-security-defaults.ts",
     "apps/controller/src",
   ]) {
     await cp(join(repository, path), join(directory, path), { recursive: true });
@@ -197,10 +200,13 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   const settings = (sandbox, approvalsReviewer = "user") => ({
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
-  // Deployment adds the Agent name to the sole main entry of each revision snapshot.
+  // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
+  // the Gateway security defaults the Configuration leaves unset.
   const values = (sandbox, approvalsReviewer) => ({
     ...settings(sandbox, approvalsReviewer),
     agents: { entries: { main: { identity: { name: record.name } } } },
+    messages: { queue: { allowCollaborativeSteering: false } },
+    tools: { exec: { applyPatch: { workspaceOnly: true } } },
   });
   const configured = settings("read-only");
   const matches = (snapshot, priorRevisionId) =>
@@ -231,6 +237,17 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     matches({ ...prior, tools: { allow: ["*"] } }, "rev_saved"),
     false,
     "the historical exception must retain unrelated configuration drift checks",
+  );
+  const beforeDefaults = {
+    ...settings("danger-full-access"),
+    agents: { entries: { main: { identity: { name: record.name } } } },
+  };
+  assert.equal(matches(beforeDefaults, "rev_saved"), true, "a saved revision from before the fill");
+  assert.equal(matches(beforeDefaults), false, "a new deployment carries the defaults");
+  assert.equal(
+    matches({ ...values("danger-full-access"), messages: { queue: {} } }),
+    false,
+    "a missing default is drift",
   );
   assert.deepEqual(prior, values("workspace-write"), "reading never rewrites a frozen revision");
   assert.deepEqual(configured, settings("read-only"), "reading never rewrites configured settings");

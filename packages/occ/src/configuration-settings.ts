@@ -218,49 +218,6 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
-/**
- * Settings OCE keeps at the value OpenClaw used before its `security.preset` (default
- * `personal`, openclaw/openclaw#185477), which fills them only when unset. Without them, another
- * participant's message could steer a running turn under the first requester's authority, and
- * apply_patch could write outside the workspace.
- */
-const GATEWAY_SECURITY_DEFAULTS: readonly (readonly [readonly string[], boolean])[] = [
-  [["messages", "queue", "allowCollaborativeSteering"], false],
-  [["tools", "exec", "applyPatch", "workspaceOnly"], true],
-];
-
-/**
- * Deployment admission fills each unset GATEWAY_SECURITY_DEFAULTS setting, for every Compute
- * Driver and execution mode, the way the preset does (OpenClaw's mergeMissing): a value the
- * Configuration sets is kept, and so is a non-object on the path. The Gateway refuses a
- * non-boolean value or a non-object there at startup, so neither can loosen the setting.
- */
-export function admitGatewaySecurityDefaults(
-  values: Readonly<OpenClawConfigurationDocument>,
-): OpenClawConfigurationDocument {
-  const fill = (
-    parent: Readonly<Record<string, unknown>>,
-    [key, ...rest]: readonly string[],
-    value: boolean,
-  ): Readonly<Record<string, unknown>> => {
-    const current = parent[key!];
-    if (current === undefined) {
-      return { ...parent, [key!]: rest.length === 0 ? value : fill({}, rest, value) };
-    }
-    const child = asRecord(current);
-    if (rest.length === 0 || child === undefined) {
-      return parent;
-    }
-    const next = fill(child, rest, value);
-    return next === child ? parent : { ...parent, [key!]: next };
-  };
-  let admitted: Readonly<Record<string, unknown>> = values;
-  for (const [path, value] of GATEWAY_SECURITY_DEFAULTS) {
-    admitted = fill(admitted, path, value);
-  }
-  return admitted as OpenClawConfigurationDocument;
-}
-
 // `${NAME}`, or an object naming a source and an id (OpenClaw's SecretRef).
 function isCredentialReference(value: unknown): boolean {
   if (typeof value === "string") {

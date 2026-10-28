@@ -22,7 +22,7 @@ an `agents` roster, a model or fallback that is not `<provider>/<model>`
 (OpenClaw's `openrouter:auto` included), or a fallback on another provider than
 its primary's, all of which every deployment refuses, with deployment's own
 text, and
-[the settings rules](../../../packages/occ/src/configuration-settings.ts), which
+[the settings rules](../../../packages/occ/src/gateway-security-defaults.ts), which
 refuse a Codex approval policy the Gateway refuses and a literal
 `gateway.auth.password`, and the selected Compute Driver's optional
 [`validateConfiguration`](../../reference/drivers/compute-admission.md), which on

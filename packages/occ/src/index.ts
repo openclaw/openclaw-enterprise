@@ -326,8 +326,8 @@ import {
   SecretStorageDriverError,
   SecretValueError,
 } from "./errors.ts";
+import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 import {
-  admitGatewaySecurityDefaults,
   refuseRetiredOpenClawSettings,
   validateConfigurationSettings,
   validateWorkspaceBootstrapSettings,
