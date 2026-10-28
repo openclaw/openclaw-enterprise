@@ -478,7 +478,10 @@
       "path": "tests/conformance/repository-sessions-memory.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-admission.test.mjs"
+      "path": "tests/integration/repository-credentials-admission.test.mjs",
+      "expectedTests": [
+        "Dedicated native OpenClaw applies the OpenShell profile gate before creating deployment work"
+      ]
     },
     {
       "path": "tests/integration/repository-native-cutover.test.ts",
