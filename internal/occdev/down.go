@@ -161,24 +161,27 @@ func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttemp
 }
 
 func podmanComposeArgs(args []string, files, separator string) ([]string, error) {
-	result := append([]string{}, args...)
+	result := make([]string, 0, len(args)+2)
 	explicit, override := false, false
-	for i, arg := range args {
-		value := ""
-		named := false
-		if arg == "-f" || arg == "--file" {
-			named = true
+	for i := 0; i < len(args); i++ {
+		arg, value := args[i], ""
+		switch {
+		case arg == "-f" || arg == "--file":
+			result = append(result, arg)
 			if i+1 < len(args) {
-				value = args[i+1]
+				i++
+				value = args[i]
+				result = append(result, value)
 			}
-		} else if strings.HasPrefix(arg, "--file=") {
-			named = true
+		case strings.HasPrefix(arg, "--file="):
 			value = strings.TrimPrefix(arg, "--file=")
-		} else if strings.HasPrefix(arg, "-f") && !strings.HasPrefix(arg, "--") && len(arg) > 2 {
-			named = true
-			value = arg[2:]
-		}
-		if !named {
+			result = append(result, arg)
+		case strings.HasPrefix(arg, "-f") && len(arg) > 2:
+			// Podman can interpret an "h" in -fFILE as help. Match scripts/dev-up.
+			value = strings.TrimPrefix(arg[2:], "=")
+			result = append(result, "--file="+value)
+		default:
+			result = append(result, arg)
 			continue
 		}
 		if value == "" {
