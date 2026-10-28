@@ -163,7 +163,6 @@ process.exit(r.error ? 0 : r.status);`;
         enabled: false,
         transport: "streamable-http",
         url: "https://mcp.slack.com/mcp",
-        toolFilter: { include: ["slack_search_public"] },
       });
       const mcpPath = "/usr/local/lib/oce/plugins/slack/mcp.json";
       const replacement = fileURLToPath(

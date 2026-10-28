@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "oce-slack",
   "version": "1.0.0",
-  "description": "Configure Slack’s hosted MCP server for public-channel search on a dedicated OpenClaw worker.",
+  "description": "Configure Slack’s hosted MCP server for tool discovery on a dedicated OpenClaw worker.",
   "author": { "name": "OpenClaw Enterprise" },
   "homepage": "https://docs.slack.dev/ai/slack-mcp-server/",
   "repository": "https://github.com/openclaw/openclaw-enterprise",

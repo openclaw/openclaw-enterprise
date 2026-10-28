@@ -137,7 +137,7 @@ Installation uses `GET /installation`; Agent editors use
 
 OCC revalidates the Configuration and selections, snapshots the Driver and policies, and queues the Agent revision. Startup resolves native metadata.
 
-Kubernetes sends the [release digest](../../apps/controller/plugins/README.md) to both roles. Google verifies its Gateway skill and worker CLI. The Slack worker verifies `mcp.json` before staging its server.
+Kubernetes sends the [release digest](../../apps/controller/plugins/README.md) to both roles. Google verifies its Gateway skill and worker CLI. The Slack worker stages verified `mcp.json` for discovery after connection.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -363,7 +363,7 @@ establish starvation.
 
 ## Changelog
 
-- 2026-10-28 20:43: Trace Slack MCP setup on the dedicated worker. (authoring-run/6fc0e9f4-f1a5-482d-95c6-676c48821328 - c4d98ab574f2671896c2ccfce3ee458753f78a35)
+- 2026-10-28 14:40: Trace worker installation and discovery of Slack MCP tools. (authoring-run/55da35a7-f123-436e-9c32-65036b85894d - 0ba3c0fd5a26a82dba6551f04b74a697c5324fdd)
 
 - 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)
 

@@ -4746,12 +4746,9 @@ let nodeMcp;
 if (release?.capabilities.harness.includes("mcp")) {
   const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
   const manifest = JSON.parse(bytes);
-  const { server, tools } = release.credentials.account.mcp;
+  const { server } = release.credentials.account.mcp;
   const endpoint = manifest.mcpServers[server];
-  if (
-    endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:" ||
-    !Array.isArray(tools) || tools.length === 0 || !tools.every((name) => typeof name === "string" && name.length > 0)
-  ) {
+  if (endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:") {
     throw new Error("The managed MCP server declaration is invalid.");
   }
   nodeMcp = {
@@ -4760,7 +4757,6 @@ if (release?.capabilities.harness.includes("mcp")) {
         enabled: false,
         transport: endpoint.type,
         url: endpoint.url,
-        toolFilter: { include: tools },
       },
     },
   };

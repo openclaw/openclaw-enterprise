@@ -11,12 +11,10 @@
     "account": {
       "label": "Slack user account",
       "issuer": "https://mcp.slack.com",
-      "requiredScopes": ["search:read.public"],
       "delivery": { "role": "harness", "env": "SLACK_MCP_TOKEN", "presentation": "bearer" },
       "mcp": {
         "server": "slack",
-        "resource": "https://mcp.slack.com",
-        "tools": ["slack_search_public"]
+        "resource": "https://mcp.slack.com"
       }
     }
   }
