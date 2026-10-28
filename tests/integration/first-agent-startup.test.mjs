@@ -15,6 +15,12 @@ import {
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import {
+  GATEWAY_SECURITY_DEFAULTS,
+  withGatewaySecurityDefaults,
+  withSetting,
+} from "../helpers/admitted-configuration.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.mjs");
@@ -201,16 +207,12 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
   // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
-  // the Gateway security defaults the Configuration leaves unset (apply_patch in the workspace,
-  // OpenClaw's sandbox off, exec at the personal preset's mode and inline-program rule).
-  const values = (sandbox, approvalsReviewer) => ({
-    ...settings(sandbox, approvalsReviewer),
-    agents: {
-      defaults: { sandbox: { mode: "off" } },
-      entries: { main: { identity: { name: record.name } } },
-    },
-    tools: { exec: { applyPatch: { workspaceOnly: true }, strictInlineEval: false, mode: "full" } },
-  });
+  // the Gateway security defaults the Configuration leaves unset (all of them unless given).
+  const values = (sandbox, approvalsReviewer, defaults) =>
+    withGatewaySecurityDefaults(
+      servedAs(settings(sandbox, approvalsReviewer), record.name),
+      defaults,
+    );
   const configured = settings("read-only");
   const matches = (snapshot, priorRevisionId) =>
     firstAgentRevisionValuesMatch(snapshot, configured, record, "rev_saved", priorRevisionId);
@@ -243,50 +245,21 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   );
   // Each admission fill landed separately, so a saved revision can lack any subset of the
   // defaults (finding 2770). Only the identified prior revision gets them filled before comparing.
-  const current = values("danger-full-access");
-  const entries = { entries: current.agents.entries };
-  const lacking = {
-    "every default": { ...settings("danger-full-access"), agents: entries },
-    "the sandbox mode": { ...current, agents: entries },
-    "the tools.exec defaults": { ...settings("danger-full-access"), agents: current.agents },
-    "the exec mode": { ...current, tools: { exec: { applyPatch: { workspaceOnly: true } } } },
-    "the inline-program rule": {
-      ...current,
-      tools: { exec: { applyPatch: { workspaceOnly: true }, mode: "full" } },
-    },
-  };
-  for (const [missing, snapshot] of Object.entries(lacking)) {
-    assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision without ${missing}`);
-    assert.equal(matches(snapshot, "rev_other"), false, `another revision without ${missing}`);
-    assert.equal(matches(snapshot), false, `a new deployment without ${missing}`);
+  for (let mask = 0; mask < 2 ** GATEWAY_SECURITY_DEFAULTS.length - 1; mask += 1) {
+    const filled = GATEWAY_SECURITY_DEFAULTS.filter((_, index) => mask & (1 << index));
+    const snapshot = values("danger-full-access", undefined, filled);
+    const missing = `without ${GATEWAY_SECURITY_DEFAULTS.filter((row) => !filled.includes(row))
+      .map(({ path }) => path.join("."))
+      .join(", ")}`;
+    assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision ${missing}`);
+    assert.equal(matches(snapshot, "rev_other"), false, `another revision ${missing}`);
+    assert.equal(matches(snapshot), false, `a new deployment ${missing}`);
   }
-  // The fill keeps explicit values, so a prior revision with a looser setting is still drift.
-  assert.equal(
-    matches({ ...current, tools: { exec: { applyPatch: { workspaceOnly: false } } } }, "rev_saved"),
-    false,
-    "an explicit apply_patch value outside the workspace",
-  );
-  assert.equal(
-    matches(
-      { ...current, agents: { ...entries, defaults: { sandbox: { mode: "all" } } } },
-      "rev_saved",
-    ),
-    false,
-    "an explicit sandbox mode other than off",
-  );
-  assert.equal(
-    matches({ ...current, tools: { exec: { ...current.tools.exec, mode: "ask" } } }, "rev_saved"),
-    false,
-    "an explicit exec mode other than the default",
-  );
-  assert.equal(
-    matches(
-      { ...current, tools: { exec: { ...current.tools.exec, strictInlineEval: true } } },
-      "rev_saved",
-    ),
-    false,
-    "an explicit inline-program approval rule",
-  );
+  // The fill keeps explicit values, so a prior revision with another value is still drift.
+  for (const { path, explicit } of GATEWAY_SECURITY_DEFAULTS) {
+    const snapshot = withSetting(values("danger-full-access"), path, explicit);
+    assert.equal(matches(snapshot, "rev_saved"), false, `an explicit ${path.join(".")}`);
+  }
   assert.equal(
     matches({
       ...values("danger-full-access"),

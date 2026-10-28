@@ -32,7 +32,12 @@ import { GATEWAY_MANAGED_MODE_DENIED } from "../helpers/refusal-text.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
-import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
+import {
+  OPENCLAW_SANDBOX_SETTINGS,
+  admittedConfiguration,
+  openClawSandboxRefusal,
+  withSetting,
+} from "../helpers/admitted-configuration.mjs";
 
 const administrator = "principal-configuration-administrator";
 const deployOnly = "principal-configuration-deploy-only";
@@ -1177,11 +1182,10 @@ test("Agent deployment keeps the display name its Configuration sets", async () 
 // the workspace; its corporate preset turns on OpenClaw's Docker sandbox, which the OCE runtime
 // cannot run (finding 2767), and its exec mode "ask" and strictInlineEval, which need an approval
 // client the OCE Console does not have, so every shell command, then every inline program such as
-// `python3 -c`, failed (finding 2771). Admission keeps apply_patch in the workspace, the sandbox
-// off and exec at the personal preset's mode and strictInlineEval in the document every Compute
-// Driver renders, for embedded and dedicated Gateways, and leaves steering unset so the
-// preset's default (on) applies. The Configuration's value wins, so a strict Configuration stays
-// strict.
+// `python3 -c`, failed (finding 2771). Admission fills each GATEWAY_SECURITY_DEFAULTS setting the
+// Configuration leaves unset in the document every Compute Driver renders, for embedded and
+// dedicated Gateways, and leaves steering unset so the preset's default (on) applies. The
+// Configuration's value wins, so a strict Configuration stays strict.
 test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable and steering to the Configuration", async () => {
   const { agent, configuration, controller, namespace } = await fixture();
   const codexValues = {
@@ -1210,78 +1214,52 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       resolveApprovedDevelopmentHarness,
     );
   };
+  const corporate = { security: { preset: "corporate" } };
+  const cases = {
+    // Admission fills each default, keeps the settings beside them (the base's sandbox scope, an
+    // empty applyPatch, the queue mode), and adds no steering value.
+    unset: { messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
+    // The corporate preset fills only what is still unset, so the Gateway runs without its
+    // sandbox and runs shell commands and inline programs without waiting for an approval.
+    "the corporate preset": corporate,
+    // An explicit strictInlineEval `true` is kept beside the filled mode: inline programs then wait
+    // for an approval, as that Configuration asks.
+    "an explicit inline-program rule": {
+      ...corporate,
+      tools: { exec: { strictInlineEval: true } },
+    },
+    // Explicit values reach the Gateway as written; inline programs need no approval in an
+    // explicit mode "full" either.
+    "explicit looser values": {
+      messages: { queue: { allowCollaborativeSteering: true } },
+      tools: { exec: { mode: "full", applyPatch: { enabled: true, workspaceOnly: false } } },
+    },
+    // A strict steering `false` is kept, not replaced by the preset's default, and so is an exec
+    // mode "ask" for an operator who connects an approval channel; beside it admission fills no
+    // strictInlineEval.
+    "explicit stricter values": {
+      messages: { queue: { allowCollaborativeSteering: false } },
+      tools: { exec: { mode: "ask", applyPatch: { enabled: true, workspaceOnly: true } } },
+    },
+    // A legacy exec security or ask value is an explicit policy too: like the preset, admission
+    // fills no mode beside it, since the Gateway would apply a mode over it, and no
+    // strictInlineEval.
+    "a legacy exec security": { ...corporate, tools: { exec: { security: "allowlist" } } },
+    "a legacy exec ask": { ...corporate, tools: { exec: { ask: "always" } } },
+  };
   for (const [executionMode, base] of [
     ["embedded", configuration.values],
     ["dedicated", codexValues],
   ]) {
-    // Unset: admission fills workspaceOnly and the exec policy, keeps the settings beside them, and
-    // adds no steering value, so the Gateway's preset turns collaborative steering on.
-    const filled = await deploy(
-      { ...base, messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
-      executionMode,
-    );
-    assert.equal(filled.harness.mode, executionMode);
-    assert.deepEqual(filled.configuration.messages, { queue: { mode: "collect" } });
-    assert.deepEqual(filled.configuration.tools, {
-      exec: { applyPatch: { workspaceOnly: true }, strictInlineEval: false, mode: "full" },
-    });
-    // The sandbox settings beside an unset mode are kept.
-    assert.deepEqual(filled.configuration.agents.defaults.sandbox, {
-      ...base.agents.defaults.sandbox,
-      mode: "off",
-    });
-    // The corporate preset fills only what is still unset, so the Gateway runs without its
-    // sandbox and runs shell commands without waiting for an approval.
-    const corporate = await deploy({ ...base, security: { preset: "corporate" } }, executionMode);
-    assert.deepEqual(corporate.configuration.security, { preset: "corporate" });
-    assert.equal(corporate.configuration.agents.defaults.sandbox.mode, "off");
-    assert.equal(corporate.configuration.tools.exec.mode, "full");
-    assert.equal(corporate.configuration.tools.exec.strictInlineEval, false);
-    // An explicit strictInlineEval `true` is kept beside the filled mode: inline programs then wait
-    // for an approval, as that Configuration asks.
-    const strictInline = await deploy(
-      { ...base, security: { preset: "corporate" }, tools: { exec: { strictInlineEval: true } } },
-      executionMode,
-    );
-    assert.deepEqual(strictInline.configuration.tools, {
-      exec: { strictInlineEval: true, applyPatch: { workspaceOnly: true }, mode: "full" },
-    });
-    // Explicit values of each kind reach the Gateway as written: an explicit steering `false`
-    // (strict) is kept, not replaced by the preset's default, and so is an exec mode "ask" for an
-    // operator who connects an approval channel. Inline programs need no approval in an explicit
-    // mode "full" either; beside "ask" admission fills nothing.
-    for (const [allowCollaborativeSteering, workspaceOnly, mode] of [
-      [true, false, "full"],
-      [false, true, "ask"],
-    ]) {
-      const explicit = await deploy(
-        {
-          ...base,
-          messages: { queue: { allowCollaborativeSteering } },
-          tools: { exec: { mode, applyPatch: { enabled: true, workspaceOnly } } },
-        },
-        executionMode,
+    for (const [name, settings] of Object.entries(cases)) {
+      const values = { ...base, ...settings };
+      const revision = await deploy(values, executionMode);
+      assert.equal(revision.harness.mode, executionMode, name);
+      assert.deepEqual(
+        revision.configuration,
+        admittedConfiguration(servedAs(values, agent.name), "info"),
+        `${executionMode}: ${name}`,
       );
-      assert.deepEqual(explicit.configuration.messages, { queue: { allowCollaborativeSteering } });
-      assert.deepEqual(explicit.configuration.tools, {
-        exec: {
-          mode,
-          applyPatch: { enabled: true, workspaceOnly },
-          ...(mode === "full" ? { strictInlineEval: false } : {}),
-        },
-      });
-    }
-    // A legacy exec security or ask value is an explicit policy too: like the preset, admission
-    // fills no mode beside it, since the Gateway would apply a mode over it, and no
-    // strictInlineEval.
-    for (const exec of [{ security: "allowlist" }, { ask: "always" }]) {
-      const legacy = await deploy(
-        { ...base, security: { preset: "corporate" }, tools: { exec } },
-        executionMode,
-      );
-      assert.deepEqual(legacy.configuration.tools, {
-        exec: { ...exec, applyPatch: { workspaceOnly: true } },
-      });
     }
   }
   // Like the preset, admission fills only unset settings. A value of the wrong type, or a
@@ -1291,6 +1269,46 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
     const invalid = await deploy({ ...codexValues, tools }, "dedicated");
     assert.deepEqual(invalid.configuration.tools, tools);
     assert.equal(invalid.configuration.messages, undefined);
+  }
+});
+
+// The rule's refused and accepted values, for every Agent and for one Agent's entry, which
+// overrides it (findings 2767, 2773). configuration-controller.test.mjs proves that each save
+// path, Agent save and deployment run it.
+test("Configuration save refuses OpenClaw's sandbox and keeps the values the OCE runtime runs", async () => {
+  const { controller, namespace } = await fixture();
+  const save = (values) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+  for (const setting of OPENCLAW_SANDBOX_SETTINGS) {
+    const entry = ["agents", "entries", "main", ...setting.entry];
+    for (const value of setting.refused) {
+      for (const [path, values] of [
+        [setting.path, withSetting({}, setting.path, value)],
+        // An accepted value for every Agent does not admit an Agent's entry that turns it on.
+        [entry, withSetting(withSetting({}, setting.path, setting.accepted[0]), entry, value)],
+      ]) {
+        await assert.rejects(save(values), {
+          name: "ConfigurationHarnessError",
+          message: openClawSandboxRefusal(setting, path),
+        });
+      }
+    }
+    for (const value of setting.accepted) {
+      const values = withSetting(withSetting({}, setting.path, value), entry, value);
+      assert.deepEqual((await save(values)).values, values, JSON.stringify(values));
+    }
+  }
+  // The settings beside an accepted mode save, and so does a corporate security preset, which
+  // turns the sandbox on only where the Configuration leaves the mode unset.
+  for (const values of [
+    { agents: { defaults: { sandbox: { mode: "off", scope: "session" } } } },
+    { security: { preset: "corporate" } },
+  ]) {
+    assert.deepEqual((await save(values)).values, values);
   }
 });
 
