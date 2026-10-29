@@ -171,3 +171,8 @@ export const AuthSaveHoldsNavigation = {
 };
 export const AuthSaveUnknown = { ...story("authSaveUnknown"), name: "Authentication save unknown" };
 export const AuthenticationNavigation = story("authenticationNavigation");
+
+export const CredentialsSavedRetryReadDenied = {
+  ...story("credentialsSavedRetryReadDenied"),
+  name: "Saved channel bindings, retry read denied",
+};

@@ -2433,8 +2433,9 @@ async function loadPage({
         {
           ...agentContext,
           agentId: current.agentId,
-          onBindingReadDenied(error, receipt) {
+          onProtectedReadDenied(error, receipt) {
             if (lifetime.isCurrent(viewState.active)) {
+              agentContext.drafts.clear();
               showAgentReadFailure(current, namespaceId, error).append(receipt);
             }
           },

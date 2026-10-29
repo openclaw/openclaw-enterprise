@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-29
-last_updated_session: authoring-run/84c88245631c4882bd93c2140e0f313b
+last_updated_session: authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25
 ---
 
 # Console Agent editing and runtime requests
@@ -266,16 +266,19 @@ grants the Agent service principal exact Secret (`api_key` or imported `codex_pa
 or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
 
-Grant failure preserves saved authentication and freezes controls;
-`apps/controller/src/console/agents/credentials.mjs:grantWarning` words it as the
-Slack Secret path does; a member's session sends no grant and gets no retry. A refused or unconfirmed grant offers
-**Retry credential access**, which retries only the grant once the Agent's service
-principal and authentication binding still match; rereading bindings recovers lost
-responses. An uncertain PATCH requires **Reload authentication source** before saving
-or granting. Pending access survives navigation and blocks deployment until confirmed
-or reloaded, as does an administrator's Credentials tab once Namespace IAM shows no
-grant. A member's unverified grant blocks nothing. Admission remains authoritative;
-confirmed access does not prove provider readiness.
+Grant failure preserves saved authentication and freezes controls. `credentials.mjs:grantWarning`
+names the outcome; members send no grant and get no retry. **Retry credential access**
+rechecks identity and bindings before granting. Uncertain PATCH requires **Reload authentication
+source**. Pending access survives navigation and holds deployment until confirmed or reloaded;
+members' unverified grants do not. Administrator Namespace IAM denials also hold deployment.
+Admission remains authoritative; confirmed access does not prove provider readiness.
+
+Authentication and JSON Save preflight 403 call `detail.mts:retireSaveRead`. The shell's
+`onProtectedReadDenied` clears that Agent's scoped drafts and retires its view before
+completion handlers run. The causal receipt and request ID remain; history cannot restore data. Binding preflight uses the same boundary. Retry receipts preserve
+prior saved-binding success and identify the failed read, without names or identifiers.
+No write or grant starts on denied preflight. Transient reads and PATCH refusals keep their
+contextual recovery. Lifecycle polling remains separately owned.
 
 Deployment also authorizes the caller's Secret `operate` on each bound Secret. When the
 Agent's `permissions/secrets` answer lists one, Deploy is disabled with a note naming it; a
@@ -294,11 +297,6 @@ to check ownership/workloads and create missing whole Secrets, preserving matchi
 groups. Bytes enter neither Configuration nor audit.
 Failure admits no version; retry rechecks status. Missing credentials after an
 earlier version require operator investigation. Model/channel Secrets stay separate.
-
-On explicit submission, the panel rereads and refuses as channel saves do above, PATCHes every
-binding with `expectedGeneration`, then calls `ensureCredentialOperateBinding` for changed and
-pending Secrets. A refused or unconfirmed grant blocks deployment until a later save or Retry
-confirms it or removes its reference.
 
 ### 6. Read and replace live workspace files
 
@@ -345,6 +343,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
 
 - 2026-10-29 03:49: Clear a completed Secret refresh hint while selection permission is pending. Accompanying uncommitted changes. (authoring-run/84c88245631c4882bd93c2140e0f313b - b81139ddfe086aca0e4da4eb5b9feedc8ac39d67)
 

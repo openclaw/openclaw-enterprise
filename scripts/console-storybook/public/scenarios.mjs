@@ -7985,6 +7985,73 @@ export const scenarios = {
       "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
     ],
   },
+  authenticationReadDenied: {
+    group: "Pages/Agent detail",
+    name: "Authentication Save read denied",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      {
+        method: "GET",
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        status: 403,
+        once: true,
+      },
+    ],
+    description:
+      "The Agent becomes unreadable before authentication Save. The contextual receipt remains while the Agent name, authentication binding and editors are removed.",
+    steps: [
+      "Select Save authentication source. Read the Save refusal and request ID; no editor or binding remains.",
+      "Select Refresh after the one-shot refusal. Saved state returns without replaying Save.",
+    ],
+  },
+  configurationSaveReadDenied: {
+    group: "Pages/Agent detail",
+    name: "Configuration Save read denied",
+    path: draft,
+    rules: [
+      {
+        method: "GET",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        status: 403,
+        once: true,
+      },
+    ],
+    actions: [click("Enable gateway password access")],
+    description:
+      "A staged Configuration edit loses read access before Save. The entire protected editor is retired with its causal receipt, and no PATCH starts.",
+    steps: [
+      "Select Save Configuration. Confirm the staged document disappears and the read-access reason remains.",
+      "Refocus to see the partial Agent with Configuration unavailable. Select Retry after access recovers; the unsaved edit must not return.",
+    ],
+  },
+  credentialsSavedRetryReadDenied: {
+    group: "Components/Credentials",
+    name: "Saved channel bindings, retry read denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      { method: "POST", suffix: "/iam/access-bindings", status: 403, once: true },
+      {
+        method: "GET",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        skip: 2,
+        status: 403,
+        once: true,
+      },
+    ],
+    actions: [
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save channel Secrets"),
+    ],
+    description:
+      "Bindings saved, but their grant failed. Retry then loses Configuration read access. A sanitized receipt preserves the successful save while removing binding metadata.",
+    steps: [
+      "Select Retry Secret access. The receipt says bindings are saved and the Configuration could not be read. No additional PATCH or grant starts.",
+      "Select Refresh, then Retry Secret access after reads recover. The saved replacement remains and only its missing grant is retried.",
+    ],
+  },
   credentialsBindingReadDenied: {
     group: "Components/Credentials",
     name: "Channel binding read denied",

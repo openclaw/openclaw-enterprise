@@ -70,3 +70,27 @@ In a real Console session, an Installation administrator must restore the exact
 Configuration read grant before Refresh can recover. Native IAM browser tests
 cover that authorization boundary. This story proves only UI recovery with
 simulated responses; it does not prove persistence or Secret propagation.
+
+## Save read revocation and prior-save receipts
+
+Open **Pages / Agent detail / Authentication Save read denied**, then select
+**Save authentication source**. Confirm the Agent name, authentication Secret link,
+and editors disappear immediately. Keep the read-access reason and request ID in
+view for three seconds. Refresh after the one-shot refusal restores saved state
+without replaying Save.
+
+In **Pages / Agent detail / Configuration Save read denied**, select **Save
+Configuration**. Confirm the staged document disappears with the same causal
+receipt. Refocus, then select **Retry** once reads recover. The discarded edit
+must not return from another tab or browser history.
+
+Open **Components / Credentials / Saved channel bindings, retry read denied**.
+The prepared state has saved the replacement but failed its grant. Select **Retry
+Secret access**. The receipt must retain the generic fact that bindings are saved,
+identify the failed Configuration read, and expose no binding name or identifier.
+Select **Refresh**, then explicitly retry the missing grant. There must be no
+second Configuration PATCH and no duplicate successful grant.
+
+Record desktop and phone walkthroughs at normal speed. Pause before each action
+and on its visible result. These stories simulate API failures; Native IAM tests
+separately verify authorization, zero writes, and history/draft retirement.

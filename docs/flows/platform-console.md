@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-10-29
-last_updated_session: authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05
+last_updated_session: authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25
 ---
 
 # Platform console request flow
@@ -242,7 +242,7 @@ See [Agent setup and provisioning](platform-console/agent-creation.md).
 
 [Agent editing](platform-console/agent-editing.md) traces version rendering,
 channels and credentials; [workspace files](platform-console/agent-workspace-files.md) and
-[stop and deletion](platform-console/agent-stop-and-deletion.md) have their own traces;
+[stop and deletion](platform-console/agent-stop-and-deletion.md) trace those operations;
 [Agent sharing](platform-console/agent-sharing.md) traces policy writes.
 
 `channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve. The
@@ -251,8 +251,8 @@ owns DM policies and channel-only reply defaults. Admission snapshots native val
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tab
-navigation with `console.mjs:loadPage`. For the same Agent, Namespace, and
-version, tab clicks/history replace only tab content; shell, native-admin panel,
+navigation with `console.mjs:loadPage`. For one Agent, Namespace, and
+version, tab clicks/history replace tab content; shell, native-admin panel,
 and version controls stay mounted. Configuration and Agent revision reads are shared;
 direct Workspace URLs start neither. Refresh, version changes, and successful
 channel/authentication edits reload fully. A `403` on the configuration or Agent revision
@@ -272,11 +272,8 @@ Password values clear while [draft captures](platform-console/agent-editing.md#4
 Secret saves update the shared draft snapshot used by other tabs and deployment
 preflight.
 
-`agents/credentials.mts:createChannelSecretsPanel` owns binding preflight: 403 clears bindings
-before completion handlers. Its callback invokes `console.mjs:showAgentReadFailure`
-with the receipt. No write starts.
-Refresh rereads before retrying. `viewRequest` leaves authentication refusals,
-partial grants, Stop uncertainty, and Delete recovery to their callers.
+[Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
+owns receipts and draft retirement.
 
 **Open vN Logs** opens the failed version from any version or draft. Logs reserves space;
 Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
@@ -371,6 +368,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
 
 - 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
 

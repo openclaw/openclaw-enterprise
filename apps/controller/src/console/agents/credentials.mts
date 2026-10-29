@@ -230,6 +230,7 @@ export function hasRequiredChannelCredentials(values: unknown, configuration: Ch
 type SaveFailure = ReturnType<typeof requestFailure> & {
   step: "configuration" | "preflight" | "grant";
   refusal?: string | undefined;
+  retryRead?: "Agent" | "Configuration";
 };
 
 // Where to fix a channel setting a channel Secret save was refused for. A refusal that asks only
@@ -711,6 +712,12 @@ export function createChannelSecretsPanel({
     if (!saveError || saveError.step === "grant") {
       return saveGrantWarning;
     }
+    if (saveError.retryRead) {
+      return (
+        `Channel Secret bindings are saved. Could not read the ${saveError.retryRead} before retrying Secret access. No binding changes or access grants were sent.` +
+        (saveError.requestId ? ` Request ID: ${saveError.requestId}` : "")
+      );
+    }
     const message =
       saveError.step === "preflight"
         ? "Could not check the saved Configuration. Try again before saving channel Secrets." +
@@ -1063,6 +1070,7 @@ export function createChannelSecretsPanel({
       onChange();
       let mutationStarted = false;
       let configurationSaved = false;
+      let failedRead: "Agent" | "Configuration" | undefined;
       // A conflict keeps these choices for Reload draft instead of dropping them (finding 1512).
       const carryChoices = () => {
         state.reloadRequired = true;
@@ -1076,8 +1084,20 @@ export function createChannelSecretsPanel({
       try {
         const configurationPath = `${namespacePath(context.namespaceId)}/configurations/${encodeURIComponent(state.configuration.id)}`;
         const [freshAgent, freshConfiguration] = await Promise.all([
-          context.request(path).then(responseFields),
-          context.request(configurationPath).then(responseFields),
+          context
+            .request(path)
+            .then(responseFields)
+            .catch((error: unknown) => {
+              failedRead ??= "Agent";
+              throw error;
+            }),
+          context
+            .request(configurationPath)
+            .then(responseFields)
+            .catch((error: unknown) => {
+              failedRead ??= "Configuration";
+              throw error;
+            }),
         ]);
         if (!context.isCurrent()) {
           return;
@@ -1189,7 +1209,12 @@ export function createChannelSecretsPanel({
         if (!context.isCurrent()) {
           return;
         }
-        state.saveError = { ...failure, step, refusal };
+        state.saveError = {
+          ...failure,
+          step,
+          refusal,
+          ...(retry && step === "preflight" && failedRead ? { retryRead: failedRead } : {}),
+        };
         if (step === "preflight" && failure.status === 403) {
           // This read authorizes the binding editor. Retire it before finally or a pending
           // grant check can recreate protected controls, but retain this attempt's receipt.

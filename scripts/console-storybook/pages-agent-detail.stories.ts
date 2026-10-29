@@ -245,3 +245,12 @@ export const PolicyApplied = story("policyApplied");
 export const PolicyRetryApplication = story("policyRetryApplication");
 export const PolicyEditingAdminDenied = story("policyEditingAdminDenied");
 export const PolicyNoNetworkLimits = story("policyNoNetworkLimits");
+
+export const AuthenticationReadDenied = {
+  ...story("authenticationReadDenied"),
+  name: "Authentication Save read denied",
+};
+export const ConfigurationSaveReadDenied = {
+  ...story("configurationSaveReadDenied"),
+  name: "Configuration Save read denied",
+};
