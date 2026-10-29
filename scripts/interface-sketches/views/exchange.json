@@ -16,10 +16,10 @@
     ],
     "apps/controller/src/composition/production.ts#composeProduction": [40, 143, 205, 65],
     "apps/controller/src/drivers/egress-proxy/openshell-authority.ts#createOpenShellEgressAuthority": [
-      60, 454, 290, 65
+      20, 454, 290, 65
     ],
     "packages/contracts/src/credential-proxy-exchange.ts#CredentialProxyExchange": [
-      500, 470, 240, 65
+      570, 470, 240, 65
     ],
     "packages/contracts/src/credential-proxy.ts#CredentialProxyDriver.bindExchange": [
       819, 86, 225, 65
