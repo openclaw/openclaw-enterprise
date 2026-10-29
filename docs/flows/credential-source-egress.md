@@ -1,6 +1,6 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-27"
+updated: "2026-10-29"
 last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
 ---
 
@@ -236,6 +236,31 @@ deadline. A lost acknowledgment, handle or deadline yields no permit. Restart ca
 reauthorize the attempt. Revocation may race an authorized send; an origin write with a
 lost reply remains a possible effect and must not be retried.
 
+The [reference Box sender](../../runtimes/strands-credential-proxy/README.md)
+implements the terminal transport in
+`runtimes/strands-credential-proxy/src/exchange.rs:CredentialProxy::exchange`.
+Box supplies the canonical request after its policy checks and one constrained
+connection capability. The sender signs the opening, resolves material, and
+authenticates the pinned origin before requesting permission. In
+`runtimes/strands-credential-proxy/src/origin.rs:SocketGate::poll_write`, the first
+underlying socket write checks the permit deadline on that same TLS connection.
+The gate is armed after handshake and authorization; accepting plaintext into
+rustls or a pending socket write does not consume the deadline check. Unsupported
+headers are refused before opening the authority exchange. Only Host,
+Content-Type and Accept are admitted for the Responses route.
+There is no retry or direct-writer fallback. This library and its loopback
+reference caller do not supply native Driver enrollment or workload containment.
+
+The optional native entry point,
+`runtimes/strands-credential-proxy/src/launcher.rs:main`, instead calls Box's
+synchronous `run` with its own `OnceLock`-backed exchange. Box hardens the process,
+creates the runtime, and invokes the fallible `on_ready` callback before workload
+setup. That callback loads the fixed supervisor-only installation and checks its
+local identity projection. Missing inputs abort startup; an uninitialized slot
+returns `Unavailable`. Box retains the hosted gateway, policy, telemetry and
+containment. This joined caller still requires a separate native Driver and
+ingress supplier to enroll the execution before selecting it.
+
 ### 4. Protect response and finish
 
 `packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its peer,
@@ -256,6 +281,14 @@ preserves safe response bytes. The origin has already received the credential.
 Only this exchange can claim the response. `EgressSendReceipts.observe` atomically records
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
 Failure withholds bytes; success still requires checking cancellation and deadline.
+
+The reference Box sender buffers the complete origin response and actual trailers,
+then submits them on the same signed exchange. It returns only OCE-approved bytes
+to Box's original response controls and client writer. Its narrower limits are
+1 MiB and 30 seconds, without incremental release. It reports actual completed
+response progress to recheck current execution policy before protection; a lease
+never extends its local deadline.
+Replacement or loss of the captured association prevents OCE response approval.
 
 Structured OpenAI `invalid_api_key` can establish rejection; a bare 401 cannot. At
 its next scheduled check, the prepared owner excludes a positively rejected version.
@@ -333,6 +366,10 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-29 02:00: Trace the optional native launcher and post-hardening sender initialization. (protected-sender - 0c4ef4ddfdb78)
+
+- 2026-10-29 00:59: Trace the reference Box sender, final write gate, and current response lifecycle. (protected-sender - 328dacc04bf5132f98c244bc9e5537e528b2916c)
 
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 

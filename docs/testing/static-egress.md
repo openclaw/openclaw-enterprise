@@ -42,6 +42,48 @@ fail this recipe. Keep the printed state/results directory for diagnosis and
 [cleanup recovery](postgresql.md). Source and database
 checks do not replace [installed qualification](#installed-runtime-and-provider-qualification).
 
+## Reference Box sender
+
+Build the [reference sender](../../runtimes/strands-credential-proxy/README.md)
+from its public Box pin and native exchange patch, then run:
+
+```sh
+OCC_TEST_STRANDS_SENDER_BINARY="$PWD/runtimes/strands-credential-proxy/target/debug/oce-reference-gateway" \
+  node --test tests/integration/strands-protected-sender.test.ts
+```
+
+This test-only variable selects the compiled executable. Without it the cases
+skip; a selected missing or failing binary fails. The `strands-sender` CI lane
+requires it. The Reference protected sender workflow builds the binary from
+source and runs the cases without credentials or a cluster.
+
+The suite uses real Box policy, the Rust terminal sender, current OCE authority,
+IAM and Secret adapters, and a controlled TLS origin. The existing fixture
+supplies installation and Kubernetes observations. It checks one allowed request,
+withdrawal after material lookup, changed sender instance before response release,
+a dropped origin reply, Box denial, unavailable authority, and three untrusted
+credential-header cases. Unsupported fields never enter OCE resolution or its
+durable classification path; their values are absent from the audit sink.
+The origin counts
+decrypted application bytes across all accepted connections. Refusal after lookup
+must produce zero bytes, and uncertain sends must not replay.
+
+The optional `oce-protected-box` executable joins the sender to Box's real
+hosted caller. Its [startup check](../../runtimes/strands-credential-proxy/checks/native-startup.py)
+runs the built binary under strace, confirms post-hardening callback refusal
+without an installation, and forbids network calls or workload execution.
+The dedicated workflow builds and runs it; missing host tracing support fails
+the check rather than skipping it. Rust tests separately force TLS to buffer
+plaintext while the underlying socket remains pending past the permit deadline,
+then verify that the TLS origin receives no application bytes.
+
+This is reference transport proof, not native Agent or containment proof.
+Main has no native Box Driver. Installed qualification still needs its admitted
+execution, authenticated Harness, sender enrollment, and normal/direct-route
+denial from the workload. The reference gateway starts no workload and must not
+be presented as a second sandbox. Keep protected-profile admission disabled until
+those suppliers and the installed checks exist.
+
 ## Authority and provider fixtures
 
 The focused suites above use synthetic acceptance. Test [installation-bound exchange
