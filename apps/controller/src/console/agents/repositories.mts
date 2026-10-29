@@ -223,7 +223,8 @@ export function createRepositoryFields(
     undo: undefined,
   };
   const initialAccess = JSON.stringify(accessIntent());
-  let searchState: SearchState;
+  // Set before any render: a held form renders before its first read (finding 2909).
+  let searchState: SearchState = { query: "", browsing: false, dismissed: false, page: 0 };
   let loadGeneration = 0;
   const status = element(
     "p",
@@ -1194,6 +1195,23 @@ export function createRepositoryFields(
       if (state.discovery === "held") {
         void load();
       }
+    },
+    /**
+     * Settles a held form whose permission answer refuses Agent create without the read the API
+     * would refuse and audit, and with no retry (finding 2909). Without a reason, a block above
+     * the form gives it.
+     */
+    refuse: (reason?: string) => {
+      if (state.discovery !== "held") {
+        return;
+      }
+      state.discovery = "denied";
+      setStatusTone(status, "danger");
+      status.textContent = ["Repository choices are not shown.", reason].filter(Boolean).join(" ");
+      retry.hidden = true;
+      revealInvalidSelections();
+      render();
+      onChange(false);
     },
     isDirty,
     isSettled,

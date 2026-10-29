@@ -85,7 +85,8 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 
 `agents/repositories.mts:createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
 which authorizes Agent create. Create Agent holds this read until the permission answer allows
-Agent create, or the Installation read succeeds without an answer. It then requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
+Agent create, or the Installation read succeeds without an answer; after a known refusal it
+reads none and says so, without a retry. After the read it requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
 submitted `repositoryAccess`. Retained drafts keep selections through failed
 discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
 or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other

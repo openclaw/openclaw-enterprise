@@ -3063,8 +3063,11 @@ function renderAgentForm(
       }
       capabilityDiscoveryDone = true;
       // A readable Installation is an administrator's: without a permission answer, the form
-      // goes on as allowed, and so do its repository choices. A known refusal reads none.
-      if (namespacePermissions?.agents?.create !== false) {
+      // goes on as allowed, and so do its repository choices. A known refusal (a kept draft a
+      // Restriction now refuses) reads none and says why: nothing else on the form does.
+      if (namespacePermissions?.agents?.create === false) {
+        repositories.refuse(agentCreateDenied(namespacePermissions));
+      } else {
         repositories.start();
       }
       // A mode the form chose but the Installation refuses becomes the usable one, if any.
@@ -3126,6 +3129,8 @@ function renderAgentForm(
       renderCreateAgent(context);
     } else {
       showAccess("danger", agentCreateDenied(namespacePermissions));
+      // The block above gives the reason; the held repository line no longer waits for anything.
+      repositories.refuse();
     }
   }
   async function rereadPermissions() {
