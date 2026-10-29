@@ -229,6 +229,43 @@ export async function createQaBrowser(f, { themed }) {
         }
       }
     },
+    async verifyNamespaceDeletionBlockers(agent) {
+      const namespacesPage = await browser.newPage();
+      try {
+        const namespace = await f.api("GET", `/namespaces/${agent.namespaceId}`);
+        await namespacesPage.goto(`${f.consoleUrl}/console/namespaces?namespace=${namespace.id}`);
+        await namespacesPage
+          .getByRole("button", { name: `Delete ${namespace.name}`, exact: true })
+          .click();
+        const refused = namespacesPage.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === `/namespaces/${namespace.id}` &&
+            response.request().method() === "DELETE",
+        );
+        await namespacesPage.getByRole("button", { name: "Delete Namespace", exact: true }).click();
+        assert.equal((await refused).status(), 409);
+        // A deployed Agent in this run's Namespace must block real teardown and appear in the dialog.
+        const blockers = namespacesPage.getByRole("dialog", {
+          name: "Namespace still contains resources",
+          exact: true,
+        });
+        await blockers.getByText(agent.id, { exact: true }).waitFor();
+        await blockers.getByText(agent.configurationId, { exact: true }).waitFor();
+        assert.equal((await f.api("GET", `/namespaces/${namespace.id}`)).status, "ready");
+        await blockers.getByRole("button", { name: "View Agents", exact: true }).click();
+        assert.equal(new URL(namespacesPage.url()).searchParams.get("namespace"), namespace.id);
+        await namespacesPage.getByRole("link", { name: agent.name, exact: true }).waitFor();
+        await f.record(`${agent.preset}-console-namespace-deletion`, {
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          configurationId: agent.configurationId,
+          nonemptyDeletionRefused: true,
+          cleanupNavigationScoped: true,
+        });
+      } finally {
+        await namespacesPage.close();
+      }
+    },
     async verify(agent) {
       assert.equal(await page.locator(".sidebar .brand-name").textContent(), "Example Agents");
       assert.equal(

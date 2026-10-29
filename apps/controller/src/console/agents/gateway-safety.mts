@@ -11,9 +11,8 @@ type GatewaySafetySetting = {
   readonly help: (values: ConfigurationDocument) => string;
   // The locked-down value Strict mode sets.
   readonly strict: boolean;
-  // OpenClaw's `security.preset` value for an unset setting that deployment admission leaves
-  // unset (packages/occ/src/gateway-security-defaults.ts fills the others).
-  readonly preset: { readonly personal: boolean; readonly corporate: boolean };
+  // OpenClaw's default when deployment admission leaves the setting unset.
+  readonly gatewayDefault: boolean;
 };
 
 /** The Gateway collaboration and safety settings the Configuration tab offers as toggles. */
@@ -23,9 +22,9 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     path: ["messages", "queue", "allowCollaborativeSteering"],
     label: "Other participants can steer a running turn",
     help: (values) =>
-      `On: while a turn runs, another person in the conversation can add guidance to it. The turn keeps the identity and permissions of the person who started it, even when the person steering has fewer. ${steeringOffHelp(values)}`,
+      `On: while a turn runs, another Gateway participant in the conversation can add guidance to it. The turn keeps the identity and permissions of the participant who started it, even when the participant steering has fewer. Participants are channel users or local operators with distinct Gateway identities. OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users. ${steeringOffHelp(values)}`,
     strict: false,
-    preset: { personal: true, corporate: false },
+    gatewayDefault: true,
   },
   {
     id: "apply-patch-workspace",
@@ -34,7 +33,7 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     help: () =>
       "On: the apply_patch tool can add and change files only in the Agent’s workspace. Off: it can also change files outside the workspace that the Agent’s runtime can write.",
     strict: true,
-    preset: { personal: false, corporate: true },
+    gatewayDefault: false,
   },
 ];
 
@@ -47,20 +46,9 @@ function isObject(value: unknown): value is ConfigurationDocument {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function corporatePreset(values: ConfigurationDocument) {
-  return isObject(values.security) && values.security.preset === "corporate";
-}
-
-/**
- * What the Gateway does with another participant's message while steering is off:
- * `messages.queue.collaborativeSteeringFallback`, else OpenClaw's preset default ("reject" for
- * `corporate`, "queue" otherwise). The Gateway refuses any other value at startup.
- */
 function steeringOffHelp(values: ConfigurationDocument) {
   const queue = isObject(values.messages) ? values.messages.queue : undefined;
-  const fallback = isObject(queue) ? queue.collaborativeSteeringFallback : undefined;
-  const reject = fallback === undefined ? corporatePreset(values) : fallback === "reject";
-  return reject
+  return isObject(queue) && queue.collaborativeSteeringFallback === "reject"
     ? "Off: the Gateway refuses their message and asks them to resend it with /followup, which runs it as a separate turn after it."
     : "Off: their message runs as a separate turn after it.";
 }
@@ -83,7 +71,7 @@ function configured(values: unknown, path: readonly string[]) {
 
 /**
  * The value the Gateway runs with for `setting`: the Configuration's own, else the value
- * deployment admission fills, else OpenClaw's preset default.
+ * deployment admission fills, else OpenClaw's default.
  */
 export function gatewaySafetyValue(
   values: ConfigurationDocument,
@@ -94,12 +82,9 @@ export function gatewaySafetyValue(
     return own.kind === "value" ? { ...own, explicit: true } : own;
   }
   const admitted = configured(admitGatewaySecurityDefaults(values), setting.path);
-  if (admitted.kind === "value") {
-    return { kind: "value", value: admitted.value, explicit: false };
-  }
   return {
     kind: "value",
-    value: corporatePreset(values) ? setting.preset.corporate : setting.preset.personal,
+    value: admitted.kind === "value" ? admitted.value : setting.gatewayDefault,
     explicit: false,
   };
 }

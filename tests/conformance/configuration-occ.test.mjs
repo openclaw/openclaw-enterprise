@@ -32,7 +32,12 @@ import { GATEWAY_MANAGED_MODE_DENIED } from "../helpers/refusal-text.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
-import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
+import {
+  OPENCLAW_SANDBOX_SETTINGS,
+  admittedConfiguration,
+  openClawSandboxRefusal,
+  withSetting,
+} from "../helpers/admitted-configuration.mjs";
 
 const administrator = "principal-configuration-administrator";
 const deployOnly = "principal-configuration-deploy-only";
@@ -114,7 +119,7 @@ async function fixture(options = {}) {
         providers: { teamstore: { source: "store" } },
         defaults: { store: "teamstore" },
       },
-      agents: { defaults: { sandbox: { mode: "all" } } },
+      agents: { defaults: { sandbox: { scope: "agent" } } },
       plugins: { entries: { example: { enabled: true, regions: ["west"], retryCount: 2 } } },
     },
   });
@@ -1172,12 +1177,9 @@ test("Agent deployment keeps the display name its Configuration sets", async () 
   assert.deepEqual(revision.configuration, admittedConfiguration(values, "info"));
 });
 
-// OpenClaw's default personal security preset fills unset settings: it lets another participant
-// steer a running turn under the first requester's authority and lets apply_patch write outside
-// the workspace. Admission keeps apply_patch in the workspace in the document every Compute Driver
-// renders, for embedded and dedicated Gateways, and leaves steering unset so the preset's default
-// (on) applies. The Configuration's value wins for both, so a strict Configuration stays strict.
-test("deployment admission keeps apply_patch in the workspace and leaves steering to the Configuration", async () => {
+// Every Compute Driver renders the defaults OCE admits. Embedded and dedicated Gateways
+// keep explicit choices about steering, workspace access, and command approvals.
+test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable and steering to the Configuration", async () => {
   const { agent, configuration, controller, namespace } = await fixture();
   const codexValues = {
     agents: {
@@ -1205,47 +1207,105 @@ test("deployment admission keeps apply_patch in the workspace and leaves steerin
       resolveApprovedDevelopmentHarness,
     );
   };
+  const cases = {
+    // Admission fills each default, keeps the settings beside them (the base's sandbox scope, an
+    // empty applyPatch, the queue mode), and adds no steering value.
+    unset: { messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
+    // An explicit strictInlineEval `true` is kept beside the filled mode: inline programs then wait
+    // for an approval, as that Configuration asks.
+    "an explicit inline-program rule": {
+      tools: { exec: { strictInlineEval: true } },
+    },
+    // Explicit values reach the Gateway as written; inline programs need no approval in an
+    // explicit mode "full" either.
+    "explicit looser values": {
+      messages: { queue: { allowCollaborativeSteering: true } },
+      tools: { exec: { mode: "full", applyPatch: { enabled: true, workspaceOnly: false } } },
+    },
+    // An explicit steering restriction is kept, and so is an exec
+    // mode "ask" for an operator who connects an approval channel; beside it admission fills no
+    // strictInlineEval.
+    "explicit stricter values": {
+      messages: { queue: { allowCollaborativeSteering: false } },
+      tools: { exec: { mode: "ask", applyPatch: { enabled: true, workspaceOnly: true } } },
+    },
+    // A legacy exec security or ask value is an explicit policy too: admission
+    // fills no mode beside it, since the Gateway would apply a mode over it, and no
+    // strictInlineEval.
+    "a legacy exec security": { tools: { exec: { security: "allowlist" } } },
+    "a legacy exec ask": { tools: { exec: { ask: "always" } } },
+  };
   for (const [executionMode, base] of [
     ["embedded", configuration.values],
     ["dedicated", codexValues],
   ]) {
-    // Unset: admission fills workspaceOnly, keeps the settings beside it, and adds no steering
-    // value, so the Gateway's preset turns collaborative steering on.
-    const filled = await deploy(
-      { ...base, messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
-      executionMode,
-    );
-    assert.equal(filled.harness.mode, executionMode);
-    assert.deepEqual(filled.configuration.messages, { queue: { mode: "collect" } });
-    assert.deepEqual(filled.configuration.tools, { exec: { applyPatch: { workspaceOnly: true } } });
-    // Explicit values of either kind reach the Gateway as written: an explicit steering `false`
-    // (strict) is kept, not replaced by the preset's default.
-    for (const [allowCollaborativeSteering, workspaceOnly] of [
-      [true, false],
-      [false, true],
-    ]) {
-      const explicit = await deploy(
-        {
-          ...base,
-          messages: { queue: { allowCollaborativeSteering } },
-          tools: { exec: { applyPatch: { enabled: true, workspaceOnly } } },
-        },
-        executionMode,
+    for (const [name, settings] of Object.entries(cases)) {
+      const values = { ...base, ...settings };
+      const revision = await deploy(values, executionMode);
+      assert.equal(revision.harness.mode, executionMode, name);
+      assert.deepEqual(
+        revision.configuration,
+        admittedConfiguration(servedAs(values, agent.name), "info"),
+        `${executionMode}: ${name}`,
       );
-      assert.deepEqual(explicit.configuration.messages, { queue: { allowCollaborativeSteering } });
-      assert.deepEqual(explicit.configuration.tools, {
-        exec: { applyPatch: { enabled: true, workspaceOnly } },
-      });
     }
   }
-  // Like the preset, admission fills only unset settings. A value of the wrong type, or a
+  // An owner can keep inline approvals for one Agent while other entries inherit the default.
+  const entryExec = { mode: "allowlist", strictInlineEval: true };
+  const revision = await deploy(
+    {
+      agents: {
+        ...codexValues.agents,
+        entries: { main: { tools: { exec: entryExec } } },
+      },
+    },
+    "dedicated",
+  );
+  assert.equal(revision.configuration.tools.exec.strictInlineEval, false);
+  assert.deepEqual(revision.configuration.agents.entries.main.tools.exec, entryExec);
+
+  // Admission fills only unset settings. A value of the wrong type, or a
   // non-object on the path, stays for the Gateway's own validation, which refuses it at startup,
   // so it cannot loosen the setting.
-  for (const tools of [{ exec: { applyPatch: { workspaceOnly: "no" } } }, ["read"]]) {
+  for (const tools of [{ exec: { mode: 1, applyPatch: { workspaceOnly: "no" } } }, ["read"]]) {
     const invalid = await deploy({ ...codexValues, tools }, "dedicated");
     assert.deepEqual(invalid.configuration.tools, tools);
     assert.equal(invalid.configuration.messages, undefined);
   }
+});
+
+// The rule's refused and accepted values, for every Agent and for one Agent's entry, which
+// overrides it (findings 2767, 2773). configuration-controller.test.mjs proves that each save
+// path, Agent save and deployment run it.
+test("Configuration save refuses OpenClaw's sandbox and keeps the values the OCE runtime runs", async () => {
+  const { controller, namespace } = await fixture();
+  const save = (values) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+  for (const setting of OPENCLAW_SANDBOX_SETTINGS) {
+    const entry = ["agents", "entries", "main", ...setting.entry];
+    for (const value of setting.refused) {
+      for (const [path, values] of [
+        [setting.path, withSetting({}, setting.path, value)],
+        // An accepted value for every Agent does not admit an Agent's entry that turns it on.
+        [entry, withSetting(withSetting({}, setting.path, setting.accepted[0]), entry, value)],
+      ]) {
+        await assert.rejects(save(values), {
+          name: "ConfigurationHarnessError",
+          message: openClawSandboxRefusal(setting, path),
+        });
+      }
+    }
+    for (const value of setting.accepted) {
+      const values = withSetting(withSetting({}, setting.path, value), entry, value);
+      assert.deepEqual((await save(values)).values, values, JSON.stringify(values));
+    }
+  }
+  const values = { agents: { defaults: { sandbox: { mode: "off", scope: "session" } } } };
+  assert.deepEqual((await save(values)).values, values);
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {

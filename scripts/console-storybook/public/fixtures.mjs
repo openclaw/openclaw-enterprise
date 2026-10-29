@@ -66,11 +66,12 @@ function configurationValues(scenario) {
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
     };
   }
-  if (scenario.securityPreset !== undefined) {
-    values.security = { preset: scenario.securityPreset };
+  if (scenario.messageQueue !== undefined) {
+    values.messages = { queue: structuredClone(scenario.messageQueue) };
   }
-  if (scenario.collaborativeSteering !== undefined) {
-    values.messages = { queue: { allowCollaborativeSteering: scenario.collaborativeSteering } };
+  if (scenario.retiredSetting) {
+    // A setting an older release saved and the pinned OpenClaw has since retired.
+    values.security = { preset: "corporate" };
   }
   if (scenario.slack) {
     values.channels.slack = {
@@ -82,8 +83,10 @@ function configurationValues(scenario) {
       ...(scenario.slackEnterpriseOrgInstall ? { enterpriseOrgInstall: true } : {}),
       dmPolicy: scenario.slackPolicy ?? "pairing",
       groupPolicy: scenario.slackPolicy === "open" ? "open" : "allowlist",
-      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      ...(scenario.slackTokens ?? {
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      }),
       allowFrom:
         scenario.slackAllowFrom ?? (scenario.slackPolicy === "open" ? ["*"] : ["UDEMO123"]),
       channels: slackChannels(scenario),
@@ -276,6 +279,7 @@ export function installFixture(scenario, evidence) {
           createdAt,
         },
       ];
+  const namespaceDeletionReads = new Map();
   const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
@@ -314,8 +318,9 @@ export function installFixture(scenario, evidence) {
     config.values.agents.defaults.model = "codex/gpt-5.1";
   }
   if (scenario.slack && scenario.slackBindings !== false) {
-    const keys =
-      scenario.slackBindings === "app"
+    const keys = Array.isArray(scenario.slackBindings)
+      ? scenario.slackBindings
+      : scenario.slackBindings === "app"
         ? ["SLACK_APP_TOKEN"]
         : ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"];
     for (const key of keys) {
@@ -807,7 +812,15 @@ export function installFixture(scenario, evidence) {
           : "SANDBOX_POLICY_CEILING_CHANGED",
     };
   }
-  const response = (data, status = 200, errorCode, meta = {}, errorMessage, details) =>
+  const response = (
+    data,
+    status = 200,
+    errorCode,
+    meta = {},
+    errorMessage,
+    details,
+    remainingResources,
+  ) =>
     new Response(
       JSON.stringify({
         ...(errorCode
@@ -816,6 +829,7 @@ export function installFixture(scenario, evidence) {
                 code: errorCode,
                 message: errorMessage ?? "The selected preview simulates this failure.",
                 ...(details ? { details } : {}),
+                ...(remainingResources ? { remainingResources } : {}),
               },
             }
           : { data }),
@@ -1015,6 +1029,61 @@ export function installFixture(scenario, evidence) {
       }
       return response(namespaces);
     }
+    const namespaceMatch = path.match(/^\/namespaces\/([^/]+)$/);
+    if (namespaceMatch) {
+      const item = namespaces.find((namespace) => namespace.id === namespaceMatch[1]);
+      if (!item) {
+        return error(404, "NOT_FOUND");
+      }
+      if (method === "DELETE") {
+        if (scenario.namespaceDeleteOutcome === "blocked") {
+          return response(
+            null,
+            409,
+            "NAMESPACE_NOT_EMPTY",
+            {},
+            "The requested Namespace is not empty. It still contains Agents, Configurations and Secrets.",
+            undefined,
+            [
+              { kind: "Agents", count: 1, ids: ["agt_00000000-0000-4000-8000-000000000003"] },
+              {
+                kind: "Configurations",
+                count: 1,
+                ids: ["cfg_00000000-0000-4000-8000-000000000004"],
+              },
+              { kind: "Secrets", count: 1, ids: ["sec_00000000-0000-4000-8000-000000000005"] },
+            ],
+          );
+        }
+        if (scenario.namespaceDeleteOutcome === "forbidden") {
+          return error(
+            403,
+            "FORBIDDEN",
+            "Not authorized: Namespace delete is required on this Namespace.",
+          );
+        }
+        item.status = "deleting";
+        namespaceDeletionReads.set(item.id, 0);
+        if (scenario.namespaceDeleteOutcome === "pending") {
+          await new Promise((resolve) => setTimeout(resolve, 20000));
+        }
+        if (scenario.namespaceDeleteOutcome === "unknown") {
+          return error(503, "DEPENDENCY_UNAVAILABLE");
+        }
+        return response(item, 202);
+      }
+      if (method === "GET") {
+        if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {
+          const reads = (namespaceDeletionReads.get(item.id) ?? 0) + 1;
+          namespaceDeletionReads.set(item.id, reads);
+          if (reads > 1) {
+            namespaces.splice(namespaces.indexOf(item), 1);
+            return error(404, "NOT_FOUND");
+          }
+        }
+        return response(item);
+      }
+    }
     if (path === "/backends" && method === "GET") {
       return response(backends);
     }
@@ -1029,6 +1098,7 @@ export function installFixture(scenario, evidence) {
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
           return response({
+            delete: !scenario.namespaceDeleteDenied,
             agents: { create: true },
             secrets: { create: true },
             installation: { administer: !scenario.observabilityDenied },
@@ -1301,6 +1371,7 @@ export function installFixture(scenario, evidence) {
       }
       if (resource === "permissions" && method === "GET") {
         return response({
+          delete: !scenario.namespaceDeleteDenied,
           agents: {
             create: !scenario.readOnlyPermissionSummary && !scenario.agentCreateRestricted,
           },
@@ -2200,6 +2271,19 @@ export function installFixture(scenario, evidence) {
                   available: true,
                   retention: "Kubernetes keeps the current and the previous instance.",
                 })),
+              // Dedicated sources remain listed even when their current Pod is absent.
+              ...(scenario.runtimePod === "missingAgent"
+                ? [
+                    {
+                      id: "agent",
+                      kind: "container",
+                      pods: [],
+                      available: false,
+                      unavailableCode: "NO_POD",
+                      retention: "Kubernetes keeps the current and the previous instance.",
+                    },
+                  ]
+                : []),
             ],
           });
         }

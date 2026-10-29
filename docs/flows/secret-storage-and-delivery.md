@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-16
-last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
+updated: "2026-10-29"
+last_updated_session: "authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -170,6 +170,10 @@ CredentialSource and uses the public Namespace IAM API to grant the Agent princi
 updates the Secret and asks the Credential Gateway to reread it before deploying
 a new version. The private helper record freezes the Harness and Sandbox Driver
 choices so a rerun cannot silently change topology.
+`scripts/first-agent.mjs:withRecord` creates the PID lock and atomic record
+replacement with explicit owner read/write mode `0600`, independent of the
+process umask. It closes the temporary file before renaming and removes a
+failed temporary output without replacing the previous record.
 
 The tool provisions runtime credentials and requests deployment through
 OCC. The check requires the local OpenShell profile's Driver-owned
@@ -306,6 +310,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 19:38: Keep local first-Agent records owner-readable under restrictive umasks. (authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42 - cadab7afee966df8ff7a13250df443404ae76314)
 
 - 2026-10-16 01:36: Combine the OpenShell workspace guard with credential-independent Codex permissions. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

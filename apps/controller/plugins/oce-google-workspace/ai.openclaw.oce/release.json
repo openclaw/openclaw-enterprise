@@ -1,0 +1,47 @@
+{
+  "operationsSha256": "2e4880fc8849ec65217da4591fb7345cb7f7089986a0e8fc950101f25aef177f",
+  "release": "google-install-v1",
+  "placement": {
+    "harnessId": "openclaw",
+    "mode": "dedicated",
+    "computeImplementations": ["occ/kubernetes", "kubernetes-local"]
+  },
+  "capabilities": {
+    "gateway": ["skill"],
+    "harness": ["cli"]
+  },
+  "credentials": {
+    "account": {
+      "label": "Google account",
+      "issuer": "https://accounts.google.com",
+      "tokenEndpoint": "https://oauth2.googleapis.com/token",
+      "delivery": {
+        "role": "harness",
+        "env": "GOG_ACCESS_TOKEN",
+        "presentation": "bearer"
+      }
+    }
+  },
+  "clawhub": {
+    "skill": "@steipete/gog",
+    "version": "1.0.0",
+    "skillSha256": "00c1af6cde01299753439088916cb6e245ce00e1672b8cd4305a66d7eac2abad",
+    "sourceUrl": "https://raw.githubusercontent.com/openclaw/openclaw/246adaa1191438b9e9e178384a026b4c123782f1/skills/gog/SKILL.md"
+  },
+  "skill": "oce-google",
+  "skillSha256": "521d1151e0ded46e599368af023ab93a031cbb47862541f38b7d69f908085bfc",
+  "executable": "gog",
+  "version": "0.46.0",
+  "artifacts": {
+    "linux-amd64": {
+      "url": "https://github.com/openclaw/gogcli/releases/download/v0.46.0/gogcli_0.46.0_linux_amd64.tar.gz",
+      "archiveSha256": "d53cf89f0c2a2338211212e380b3efcacadd4e27e500cb8e7ed2cd82a739da2e",
+      "binarySha256": "36551bb5725a7c7f22413826109ed455ce9de9a1aecaa81e918a5d461072787a"
+    },
+    "linux-arm64": {
+      "url": "https://github.com/openclaw/gogcli/releases/download/v0.46.0/gogcli_0.46.0_linux_arm64.tar.gz",
+      "archiveSha256": "9ae69d117cef895aa1c50b5859d7d3def45c5580886b25dc1c7f3cfe128ed0dd",
+      "binarySha256": "ad84f12b8efd889f65bd7c45c4eb6152fa963f623394fdf50938b14c57b9b694"
+    }
+  }
+}

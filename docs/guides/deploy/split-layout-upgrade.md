@@ -190,6 +190,11 @@ Configurations, workspace files, transcripts and Secret values.
    hand: Agents whose deploy failed, such as a service-account Agent without an
    issued credential, and access bindings it could not re-create.
 
+   Presets are restored after service-account IDs are mapped, so their Harness
+   authentication refers to the restored account. Existing mapped Presets are
+   left unchanged; inspect their account references before resuming an older
+   import. See the [tenant restore flow](../../flows/tenant-restore.md).
+
 7. Put each Harness workspace back once the new Agent's Harness Pod runs:
 
    ```bash

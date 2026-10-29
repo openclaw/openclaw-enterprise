@@ -119,6 +119,10 @@
                     "label": "Create a Namespace"
                   },
                   {
+                    "page": "guides/console/delete-namespace",
+                    "label": "Delete a Namespace"
+                  },
+                  {
                     "page": "guides/console/agent-details",
                     "label": "Console Walkthrough"
                   },
@@ -1020,6 +1024,7 @@
               "flows/platform-startup",
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
+              "flows/tenant-restore",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/keycloak",
               "flows/docker-compose-development/agent-execution",

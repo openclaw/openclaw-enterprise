@@ -85,6 +85,10 @@ Gateway and paired Sandbox that already provide OAuth token injection. The
 experimental OpenShell `codex-oauth` type requires the upstream gateway API and
 alias-enabled supervisor described in the [OpenShell Driver reference](openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
+For an OAuth attachment used by a managed request guard, `requestScope` carries
+the provider’s host, port, path and configured OAuth scopes to the paired Sandbox.
+The Sandbox uses these non-secret limits when it prepares the revision’s request policy.
+
 For an `openai`/`chatgptAuthTokens` source, `attachForRevision` must return
 `externalChatgptAuth` on the source's attachment: `accessTokenPlaceholder`,
 `accountId`, `planType`, and optional `userId`, `accountUserId`, `email`, and `isFedramp`. The

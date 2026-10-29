@@ -526,6 +526,16 @@ export async function importTenants(
         `Configuration ${namespace.name}/${configuration.id}`,
       );
     }
+    // Preset Harness authentication can refer to these accounts; map them before templates.
+    for (const account of namespace.serviceAccounts) {
+      await create(
+        account.id,
+        "service-accounts",
+        { name: account.name },
+        `service account ${namespace.name}/${account.name}`,
+        account.name,
+      );
+    }
     for (const preset of namespace.presets) {
       const template = structuredClone(preset.template);
       if (template?.agent?.harnessAuth !== undefined) {
@@ -555,15 +565,6 @@ export async function importTenants(
         "iam/roles",
         pick(role, ["name", "permissions"]),
         `Role ${namespace.name}/${role.name ?? role.id}`,
-      );
-    }
-    for (const account of namespace.serviceAccounts) {
-      await create(
-        account.id,
-        "service-accounts",
-        { name: account.name },
-        `service account ${namespace.name}/${account.name}`,
-        account.name,
       );
     }
     for (const agent of namespace.agents) {

@@ -8,6 +8,7 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   apiRequests,
   detailUrl,
@@ -40,6 +41,77 @@ import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
+
+test("A dedicated OpenClaw Agent can enable and disable Google Workspace without a connection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Package installation", { ready: true });
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-google-package"),
+  ]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await fixture.createAgent(namespace.id, "Package Agent", nativeValues("package"), {
+    executionMode: "dedicated",
+    harnessAuth: null,
+  });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const id = "occ-plugin:google@1.0.0";
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  async function checkPolicySupport(pluginName) {
+    const policies = dialog.getByRole("group", { name: "Plugin policies" });
+    for (const label of ["tools enabled by default", "require approval for", "default reviewer"]) {
+      const field = policies.getByRole("combobox", { name: `${pluginName} ${label}`, exact: true });
+      assert.equal(await field.isDisabled(), true);
+      assert.equal(await field.locator("option:checked").textContent(), "Not supported");
+    }
+    await dialog
+      .getByRole("group", { name: "Driver policy" })
+      .getByText(/driver-specific settings are not supported/i)
+      .waitFor();
+    await dialog.getByRole("heading", { name: "Tools", exact: true }).waitFor();
+    await dialog.getByText(/per-tool policies are not supported/i).waitFor();
+  }
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
+  assert.equal(await dialog.getByLabel("Google account", { exact: true }).inputValue(), "");
+  await dialog
+    .getByRole("option", { name: "Install without an account" })
+    .waitFor({ state: "attached" });
+  await checkPolicySupport("Google Workspace");
+  async function save(enabled) {
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    const saved = page.waitForResponse(
+      (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
+    );
+    await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+    assert.equal((await saved).status(), 200);
+    assert.deepEqual((await fixture.request("GET", path)).data.plugins, { [id]: { enabled } });
+    await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
+  }
+  await save(true);
+
+  // Reopen the saved selection before its catalog entry (including the tool list) has arrived.
+  const catalog = await holdRequests(t, page, `**${path}/plugins`, { method: "POST" });
+  await page.reload();
+  await catalog.requested;
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: id, exact: true }).click();
+  const enabled = dialog.getByLabel(`Enable ${id}`, { exact: true });
+  assert.equal(await enabled.isChecked(), true);
+  await checkPolicySupport(id);
+  assert.equal(await dialog.getByLabel(/plugin approvers mode/).count(), 0);
+  assert.equal(await dialog.getByLabel("Filter tools").count(), 0);
+  await enabled.uncheck();
+  await save(false);
+  catalog.release();
+});
 
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -598,7 +670,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   );
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const pluginDialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await pluginDialog.getByRole("button", { name: pluginId, exact: true }).click();
+  await pluginDialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await pluginDialog.locator(`[data-plugin-id="${pluginId}"] .plugin-list-item`).click();
   await pluginDialog.getByLabel(`${pluginId} plugin approvers mode`).selectOption("none");
   const toolRow = pluginDialog.locator(`details.plugin-tool-row[data-tool="${toolId}"]`);
   await toolRow.locator("summary").click();
@@ -657,7 +730,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const reopenedPlugins = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await reopenedPlugins.getByRole("button", { name: pluginId, exact: true }).click();
+  await reopenedPlugins.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await reopenedPlugins.locator(`[data-plugin-id="${pluginId}"] .plugin-list-item`).click();
   const reopenedTool = reopenedPlugins.locator(`details.plugin-tool-row[data-tool="${toolId}"]`);
   await reopenedTool.locator("summary").click();
   await reopenedTool.getByLabel(`${toolId} tool approvers mode`).selectOption("inherit");

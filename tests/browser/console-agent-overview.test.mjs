@@ -43,6 +43,7 @@ import {
   versionChooser,
   versionOption,
   waitForChosenVersion,
+  waitForCondition,
   waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
@@ -2362,9 +2363,9 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
 // A version whose deploy is running, and a page at `viewport` for it. Once the test routes its
 // record, open() signs in to its Access tab (where Share Agent is) under a fake clock and waits
 // for it to settle.
-async function pendingDeploy(t, viewport, name) {
+async function pendingDeploy(t, viewport, name, fixtureOptions) {
   const size = `${viewport.width}x${viewport.height}`;
-  const { fixture, namespace } = await readyNamespace(t, `${name} deploy ${size}`);
+  const { fixture, namespace } = await readyNamespace(t, `${name} deploy ${size}`, fixtureOptions);
   const agent = await fixture.createAgent(namespace.id, `${name} Deploy`, nativeValues("v1"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const pending = await fixture.deployAgent(namespace.id, agent.id);
@@ -2510,6 +2511,136 @@ for (const viewport of [
     assert.ok(Math.abs(attemptTop - firstTop) <= 1, `moved ${attemptTop - firstTop} px`);
     assert.ok(settledTop <= firstTop + 1, `moved down ${settledTop - firstTop} px`);
   });
+}
+
+// Exercise the real Controller page and reads; only the deployment response models a
+// worker transition. A terminal poll must not make its automatic overview reread look manual.
+for (const refreshDuring of ["terminal poll", "automatic overview reread"]) {
+  test(
+    `terminal deployment refresh stays quiet and coalesces a click during ${refreshDuring}`,
+    { timeout: 30_000 },
+    async (t) => {
+      const { page, recordUrl, pending, open } = await pendingDeploy(
+        t,
+        { width: 1440, height: 900 },
+        "Terminal refresh",
+        { recordOperations: true },
+      );
+      const agentUrl = recordUrl.split("/deployments/")[0];
+      const revisionsUrl = `${agentUrl}/revisions`;
+      let terminal = false;
+      let terminalReads = 0;
+      let release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      t.after(() => release());
+      let held;
+      const holding = new Promise((resolve) => {
+        held = resolve;
+      });
+      const heldRead = refreshDuring === "terminal poll" ? 1 : 2;
+      await page.route(recordUrl, async (route) => {
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        const body = await response.json();
+        assert.equal(body.data.deploymentId, pending.id);
+        assert.equal(body.data.status, "queued");
+        body.data.status = terminal ? "succeeded" : "running";
+        body.data.progress = null;
+        if (terminal && ++terminalReads === heldRead) {
+          held();
+          await gate;
+        }
+        await route.fulfill({ response, json: body });
+      });
+      await open();
+      const now = await page.evaluate(() => Date.now());
+      await page.clock.pauseAt(new Date(now + 1000));
+      await showDeploymentTab(page);
+      const refresh = page.getByRole("button", { name: "Refresh deployment", exact: true });
+      await refresh.hover();
+      await refresh.focus();
+      await page.clock.runFor(400);
+      const original = await refresh.elementHandle();
+      const appearance = () =>
+        original.evaluate((button) => ({
+          connected: button.isConnected,
+          focused: globalThis.document.activeElement === button,
+          hovered: button.matches(":hover"),
+          label: button.textContent,
+          disabled: button.getAttribute("aria-disabled"),
+          background: globalThis.getComputedStyle(button).backgroundColor,
+        }));
+      const before = await appearance();
+      assert.equal(before.disabled, "false");
+      assert.equal(before.hovered, true);
+      assert.notEqual(before.background, "rgba(0, 0, 0, 0)");
+      await original.evaluate((button) => {
+        globalThis.refreshDisabledChanges = [];
+        new globalThis.MutationObserver((changes) => {
+          globalThis.refreshDisabledChanges.push(...changes.map((change) => change.oldValue));
+        }).observe(button, {
+          attributes: true,
+          attributeFilter: ["aria-disabled"],
+          attributeOldValue: true,
+        });
+      });
+      const reads = { record: 0, agent: 0, revisions: 0 };
+      page.on("request", (request) => {
+        if (request.method() !== "GET") {
+          return;
+        }
+        if (request.url() === recordUrl) {
+          reads.record += 1;
+        } else if (request.url() === agentUrl) {
+          reads.agent += 1;
+        } else if (request.url() === revisionsUrl) {
+          reads.revisions += 1;
+        }
+      });
+
+      terminal = true;
+      await page.clock.runFor(DEPLOYMENT_POLL_MS);
+      await holding;
+      if (refreshDuring === "automatic overview reread") {
+        await waitForCondition(
+          () => reads.agent === 1 && reads.revisions === 1,
+          "automatic full overview reads started",
+        );
+      }
+      await page.clock.runFor(400);
+      assert.deepEqual(
+        await appearance(),
+        before,
+        "unattended reads retain the stationary hover and focus",
+      );
+      assert.deepEqual(await page.evaluate(() => globalThis.refreshDisabledChanges), []);
+      assert.equal(await refresh.evaluate((button, prior) => button === prior, original), true);
+
+      // An operator click acknowledges immediately, then waits for the quiet read. Repeated
+      // activation cannot queue another full batch, even when the poll also found completion.
+      await refresh.click();
+      assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+      await original.evaluate((button) => button.click());
+      const manual = await holdRequests(t, page, agentUrl, { once: true, afterServer: true });
+      release();
+      await manual.requested;
+      assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+      assert.equal(await refresh.evaluate((button, prior) => button === prior, original), true);
+      manual.release();
+      await waitForIdleFetches(page);
+      await page.clock.runFor(400);
+      assert.deepEqual(await appearance(), before);
+      await expectDeploymentOutcome(page, "Completed", { folded: false });
+      // Terminal records stop polling. A second interval also exposes an accidentally queued batch.
+      await page.clock.runFor(DEPLOYMENT_POLL_MS * 2);
+      await waitForIdleFetches(page);
+      const fullReads = refreshDuring === "terminal poll" ? 1 : 2;
+      assert.deepEqual(reads, { record: fullReads + 1, agent: fullReads, revisions: fullReads });
+      assert.equal(await refresh.evaluate((button, prior) => button === prior, original), true);
+    },
+  );
 }
 
 // A queued deploy's details list when its next attempt is eligible; the first claim drops that

@@ -55,10 +55,6 @@ Secret Driver operations do not include Installation management. Installed
 Drivers remain trusted, unsandboxed controller code. Invalid production YAML,
 unsupported settings, and unavailable Drivers stop startup before requests run.
 
-Each selected Driver validates its own closed configuration schema; unknown
-fields fail startup. OCC routes authorization through the selected IAM Driver,
-whose reviewed implementation is trusted to enforce its policy.
-
 The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
 network additions. It grants no default access; an absent or empty array delegates
 none. API and worker must use the same trusted value. See
@@ -111,7 +107,7 @@ Agent Configuration. A representative request body is:
 {
   "kind": "agent",
   "values": {
-    "agents": { "defaults": { "sandbox": { "mode": "all" } } }
+    "agents": { "defaults": { "skipBootstrap": true } }
   }
 }
 ```
@@ -131,7 +127,7 @@ requires the replacement `values` and may also set `secretBindings` and
 ```json
 {
   "values": {
-    "agents": { "defaults": { "sandbox": { "mode": "all" } } }
+    "agents": { "defaults": { "skipBootstrap": false } }
   },
   "expectedGeneration": 1
 }
@@ -191,13 +187,20 @@ Every write and Preset save also refuses, with the `400` every deployment gives,
 an `agents.defaults.model` or `agents.entries.<id>.model` primary or fallback
 that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included),
 fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
-and `agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
-optional file list, naming the setting. A Preset value that waits on a variable
+`agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
+optional file list, an `agents.defaults.sandbox.mode` or
+`agents.entries.<id>.sandbox.mode` other than `off`, and a `tools.exec.host` or
+`agents.entries.<id>.tools.exec.host` other than `auto`, `gateway` or `node`,
+naming the setting. A
+Preset value that waits on a variable
 is checked as far as its written text goes, and in full once filled. A
 Configuration saved before these checks still reads; deployment refuses it, and
-only a write that keeps the value is refused. Agent
-deployment separately validates supported
-runtime selection, topology, and Secret binding ownership before admission.
+only a write that keeps the value is refused.
+
+OCC also refuses `security.preset`. Remove it and [set the controls you need](../guides/console/configuration-plugins-and-files.md#configuration-tab).
+OpenClaw's `doctor --fix` removes the field without translating its restrictions.
+See [OpenClaw's repair behavior](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/docs/gateway/doctor/config-migrations.md#removed-security-presets).
+
 Creation requires `create` permission for Configurations in the
 exact parent Namespace. Reads, updates, and deletes require the corresponding
 permission for the exact Configuration. Unauthenticated requests return `401`.
@@ -230,12 +233,11 @@ it. A selected [SandboxDriver](drivers/sandbox.md) may
 transform a copy through `configureAgent` before admission; the reusable
 Configuration and its generation remain unchanged. The snapshot adds the
 [Agent display name](agents/deployment.md#versions-and-deployment) to that document;
-its metadata names the source generation. Admission also sets
-`tools.exec.applyPatch.workspaceOnly: true` where the document leaves it
-unset, as before OpenClaw's `personal` security preset. Other unset settings
-keep the preset's defaults: `messages.queue.allowCollaborativeSteering` is on,
-so other participants can steer a running turn, which keeps its first
-requester's permissions.
+its metadata names the source generation. Where unset, OCC sets
+`tools.exec.applyPatch.workspaceOnly: true` and `agents.defaults.sandbox.mode: "off"`.
+OCE isolates the Agent and has no Gateway approval screen. Unless `tools.exec`
+sets `security` or `ask`, OCC defaults `tools.exec.mode` to `"full"` and, in that
+mode, `tools.exec.strictInlineEval` to `false`.
 Later Configuration updates change no running gateway or existing version
 until the next deployment. Deleting a Configuration still referenced by an Agent
 returns `409`.

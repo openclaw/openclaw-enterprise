@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-25
-last_updated_session: fix-2505
+updated: 2026-10-29
+last_updated_session: authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61
 ---
 
 # Platform console request flow
@@ -43,6 +43,7 @@ graph TD
     DBG --> F
     D --> E["Request current page resource"]
     E --> NC["Create Namespace"]
+    E --> ND["Confirm deletion"]
     E --> SEC["Manage Namespace Secret metadata and values"]
     E --> E1["Edit starter JSON and select associations"]
     E1 --> S1["Select Secret or open creation modal"]
@@ -54,6 +55,7 @@ graph TD
     E2 --> E5["Confirm Agent stop"]
   end
   subgraph Controller["Controller API"]
+    ND --> NDELETE["Authorize DELETE; check contents"]
     E --> F["Authenticate and authorize exact scope"]
     F -->|Agents or Namespaces| G["OCC reads and filters by IAM"]
     F -->|Backends and Installation admin| H["Project loaded Backend IDs and types"]
@@ -75,6 +77,9 @@ graph TD
     E5 --> P2["POST exact Agent stop"]
   end
   subgraph Result["Browser result"]
+    NDELETE -->|nonempty| NB["Show blockers and cleanup links"]
+    NDELETE -->|accepted| NP["Poll Namespace until removed"]
+    NDELETE -->|uncertain| NRD["Require status refresh before retry"]
     G --> I["Accept only current navigation response"]
     H --> I
     NPOST -->|201| NSUCCESS["Creation accepted"]
@@ -162,18 +167,16 @@ restores the DOM, handlers, drafts, and expanded debug details. Changed data,
 a newly readable Namespace, or Refresh rebuilds the view. Pending or failed
 reads, password input, and mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
 
-**Back to Agents:** session, Namespace, permission, and collection checks gate the
-list, not row reads. Each row's newest readable revisions page feeds its deployment
-and `agents/collection.mts:currentRevision`, which reads an off-page current version alone;
-`deniedReadsFor` keeps a `403`. On reuse, `renderAgentList` sets visible deployment
-cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, before paint, then shows
-each fresh result or refusal. Back or refocus from a deployment focuses that cell,
-not the old version's link. Unfinished or failed row reads never prevent reuse; resuming rereads them.
+**Back to Agents:** session, Namespace, permission, and collection checks gate
+reuse; row reads do not. The newest readable revisions supply deployment metadata. `agents/collection.mts:currentRevision` reads an off-page current version;
+`deniedReadsFor` retains `403` answers. `renderAgentList` resets cells to
+**Reading deployment…** (hidden 250 ms, then visible at least 150 ms) before showing
+fresh results or refusals. Return focus targets the pending cell, not its old link.
+Resuming retries unfinished or failed row reads.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
-The [console sign-in flow](platform-console/sign-in-return.md) covers provider
-discovery, one-use session binding, and requested destination recovery.
+See [sign-in, session binding, and destination recovery](platform-console/sign-in-return.md).
 
 After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
@@ -183,8 +186,8 @@ unavailable; selection never becomes an API query selector.
 Namespace checks, naming a known selection; retained-view reads do not extend this.
 `shell.mts:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
-Load renders replace the shell; `createShell` activates a control whose mouse
-press a render replaced before release.
+Load renders replace the shell; `createShell` activates a primary navigation link
+whose mouse press a render replaced before release.
 Empty lists show access guidance. `navigation.mts:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
 
@@ -225,15 +228,21 @@ relisted. Closing refocuses the opener; a 403 disables it per account, across
 navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
 mark names; conflicts keep input; unconfirmed responses need inspection.
 
+`namespace-deletion.mts` blocks navigation and dismissal during writes; OCC rechecks
+IAM and contents. `http/errors.ts` limits blockers to 20
+IDs per kind. Poll every three seconds after `202`; `404` removes the row;
+`console.mjs` repairs selection and views. `403` reports lost access.
+Uncertain writes require **Refresh status** before retry.
+See [deletion](../guides/console/delete-namespace.md).
+
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
 Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
-omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.
-OCC authorizes writes ([Agent creation](../reference/console/create-and-deploy.md)).
+omission disables Create (`NAMESPACE_MISSING`), clears rows and feedback, closes
+confirmations, and ends polling. Its note replaces empty states. Late outcomes are
+generic, without replay; 401 expires the session. Focus: Search. Failed reads retry.
 
-The [creation flow](platform-console/agent-creation.md) traces the form: plugin
-fields and discovery, model choices, the starter template, repository options,
-provisioning, ordinary drafts, Secret grants, and harness authentication.
+See [Agent setup and provisioning](platform-console/agent-creation.md).
 
 ### 4–6. Edit the Agent and access runtime files
 
@@ -348,16 +357,24 @@ gateway startup and file availability.
 
 ## Related docs
 
+- [Namespaces](../reference/namespaces.md)
 - [Authentication](../reference/authentication.md)
-- [Configuration and Agent revision](configuration-driver.md)
-- [Docker development](docker-compose-development.md)
-- [Production startup](production-startup.md)
 
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
+
+- 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
+
+- 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
+
+- 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
+
+- 2026-10-27 14:42: Trace Namespace deletion and recovery. (authoring-run/20fc7b4c-0501-4d3e-9f0c-16a3fd016866 - 0402f1cf1)
 
 - 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
 

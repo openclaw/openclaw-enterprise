@@ -15,6 +15,16 @@ import {
   SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
+import {
+  assertPluginNetworkInspection,
+  assertPluginRequestPolicy,
+  googleRequestPolicyFromSandbox,
+  managedGoogleCredentialEnvironment,
+  openShellPluginPolicy,
+  verifyPluginRequestGuard,
+  verifyManagedPluginRegistration,
+} from "./openshell-plugin-policy.ts";
+import { managedCredentialBinding, managedGoogleInstall } from "../plugin/managed-catalog.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import {
   AGENT_POLICY_PREFIX,
@@ -159,6 +169,8 @@ export interface OpenShellSandboxDriverOptions {
   /** Workspace and readiness policy; the `openshell` Backend owns the gateway connection. */
   readonly gateway: {
     readonly workspaceMode: "managed" | "operator";
+    /** Exact HTTPS endpoint of the registered OCE request guard. */
+    readonly managedPluginMiddleware?: string;
     readonly operatorNamespaceLabels?: Readonly<Record<string, string>>;
     readonly readiness?: {
       readonly serviceName: string;
@@ -2183,7 +2195,19 @@ function sandboxSpec(
   providerEnvironment: ReadonlySet<string> = new Set(),
   workspaceNodeBinding?: WorkspaceNodeBinding,
   egressPolicy?: Readonly<Record<string, unknown>>,
+  plugin?: ReturnType<typeof openShellPluginPolicy>,
 ) {
+  const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
+  const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
+  if (plugin) {
+    assertPluginNetworkInspection(defaults, plugin.hosts);
+    assertPluginNetworkInspection(additions, plugin.hosts);
+    if (Object.hasOwn(defaults, "oce-google-requests")) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "The Google plugin network rule name is reserved.",
+      );
+    }
+  }
   const dataMount = sandboxDataMount(options, requirements);
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
   const volumeMounts = workspace.mounts;
@@ -2218,12 +2242,15 @@ function sandboxSpec(
   };
   return {
     log_level: options.logLevel ?? "info",
-    environment: environment(
-      requirements,
-      providerEnvironment,
-      dataMount.mount_path,
-      workspace.workspaceMountPaths,
-    ),
+    environment: {
+      ...environment(
+        requirements,
+        providerEnvironment,
+        dataMount.mount_path,
+        workspace.workspaceMountPaths,
+      ),
+      ...(plugin && { [managedGoogleCredentialEnvironment]: plugin.environment }),
+    },
     template: {
       image: requirements.image,
       runtime_class_name: options.kubernetes.runtimeClassName,
@@ -2242,14 +2269,12 @@ function sandboxSpec(
         run_as_group: options.policy.process.runAsGroup,
       },
       ...(egressPolicy && { network_middlewares: egressPolicy.network_middlewares }),
+      ...(plugin && { network_middlewares: plugin.middlewares }),
       network_policies: {
         // A protected execution keeps the exact policy and model attachment verified before provisioning.
-        ...(egressPolicy
-          ? asRecord(egressPolicy.network_policies)
-          : (revision.sandboxPolicy?.defaults ?? networkPolicies(options))),
-        ...(egressPolicy
-          ? {}
-          : openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? [])),
+        ...(egressPolicy ? asRecord(egressPolicy.network_policies) : defaults),
+        ...(egressPolicy ? {} : additions),
+        ...plugin?.networks,
         ...(runtimeProvider === undefined || workspaceNodeBinding === undefined
           ? {}
           : workspaceNodeNetworkPolicy(workspaceNodeBinding)),
@@ -2293,6 +2318,7 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     if (
       ![
         "workspaceMode",
+        "managedPluginMiddleware",
         "operatorNamespaceLabels",
         "readiness",
         "operatorWorkspaceResources",
@@ -2301,6 +2327,22 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     ) {
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell gateway option ${key} belongs to the openshell Backend or is unsupported.`,
+      );
+    }
+  }
+  if (options.gateway.managedPluginMiddleware !== undefined) {
+    const endpoint = URL.parse(options.gateway.managedPluginMiddleware);
+    if (
+      !endpoint ||
+      endpoint.protocol !== "https:" ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.pathname !== "/" ||
+      endpoint.search ||
+      endpoint.hash
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell managedPluginMiddleware must be the HTTPS origin of the registered OCE plugin request guard.",
       );
     }
   }
@@ -2422,6 +2464,7 @@ export const configurationSchema = Object.freeze({
       additionalProperties: false,
       properties: {
         workspaceMode: { type: "string", enum: ["managed", "operator"] },
+        managedPluginMiddleware: { type: "string", pattern: "^https://" },
         operatorNamespaceLabels: { type: "object" },
         operatorWorkspaceResources: { type: "array" },
         networkPolicyResources: { type: "array" },
@@ -3196,6 +3239,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
+    const plugin = openShellPluginPolicy(
+      context.revision,
+      context.requirements,
+      this.options.gateway.managedPluginMiddleware,
+      this.options.providers ?? [],
+    );
+    if (plugin) {
+      await verifyManagedPluginRegistration(client, context.signal);
+    }
     // Backstop for the admission check (finding 2144): the revision's own policy is immutable,
     // so a retry cannot clear an overlap.
     const gitOverlap =
@@ -3231,6 +3283,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
     }
+    const checkGuard = async () => {
+      if (plugin) {
+        verifyPluginRequestGuard(
+          await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal),
+          plugin,
+          workspace,
+        );
+      }
+    };
     const exposed = exposesHarnessPort(context.requirements, codex);
     if (exposed) {
       harnessTransportVerifier(context.requirements);
@@ -3279,6 +3340,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         new Set([
           WORKSPACE_NODE_SETUP_ENVIRONMENT,
           WORKSPACE_NODE_CA_ENVIRONMENT,
+          managedGoogleCredentialEnvironment,
+          ...(!codex
+            ? Object.values(managedGoogleInstall.credentials).map((slot) => slot.delivery.env)
+            : []),
           // Only the attached provider supplies its identity-bound credential alias.
           // A static placeholder would survive withdrawal and shadow its absence.
           ...(context.requirements.loginMode === "chatgptAuthTokens" ? ["CODEX_ACCESS_TOKEN"] : []),
@@ -3287,6 +3352,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ]),
         runtimeCredentialMaterial.binding,
         egressPolicy,
+        plugin,
       ),
       serviceExposures,
     };
@@ -3415,6 +3481,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           // delay when OpenShell reports that an exposed Sandbox service is ready.
           await delay(this.options.startupDelayMs, undefined, { signal: context.signal });
         }
+        await checkGuard();
         await this.initializeWorkspace(context, sandbox, client);
         return result;
       }
@@ -3425,8 +3492,28 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       }
     }
-    // Adopt only this revision's own live Sandbox, with its Harness service in place.
-    verifyExistingSandbox(existing, { ...create, requestId: requestIds[0]! });
+    // DetachSandboxProvider removes the provider, but keeps the Sandbox's original launch
+    // environment and policy. A replacement is created above without either plugin setting.
+    let expectedSpec = create.spec;
+    if (!plugin && managedCredentialBinding(context.revision.plugins?.plugins)) {
+      const previous = googleRequestPolicyFromSandbox(existing.spec?.policy);
+      if (previous) {
+        expectedSpec = {
+          ...expectedSpec,
+          environment: {
+            ...expectedSpec.environment,
+            [managedGoogleCredentialEnvironment]: previous.environment,
+          },
+          policy: {
+            ...expectedSpec.policy,
+            network_middlewares: previous.middlewares,
+            network_policies: { ...expectedSpec.policy.network_policies, ...previous.networks },
+          },
+        };
+      }
+    }
+    // Exact provider equality also verifies that a withdrawn provider is absent.
+    verifyExistingSandbox(existing, { ...create, spec: expectedSpec, requestId: requestIds[0]! });
     if (existing.phase === "SANDBOX_PHASE_DELETING" || existing.phase === 4) {
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell Sandbox ${sandbox.resourceName} is being deleted; it can be created again once deletion finishes.`,
@@ -3457,6 +3544,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       validateHarnessServiceUrl(service.url);
     }
+    await checkGuard();
     await this.initializeWorkspace(context, sandbox, client);
     return result;
   }
@@ -3901,6 +3989,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
+    context.signal.throwIfAborted();
     if (context.revision.harness.id === "openclaw" && context.workspaceNodeEnrolled === true) {
       // The exposure is withdrawn with enrollment, and nothing of Compute's listens there.
       throw new OpenShellSandboxConfigurationFailure(
@@ -3909,12 +3998,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     try {
       const { client, service } = await this.exactHarnessService(context, "observe a Harness");
+      context.signal.throwIfAborted();
       // Handshake first, so a serving app-server never receives a plain request. A
       // Harness wrapper holding a startup failure answers the upgrade 503 with the held
       // code and serves the failure itself on the status path.
-      if (
-        await client.serviceWebSocketHandshake(service.url, context.transportToken, context.signal)
-      ) {
+      const serving = await client.serviceWebSocketHandshake(
+        service.url,
+        context.transportToken,
+        context.signal,
+      );
+      context.signal.throwIfAborted();
+      if (serving) {
         return Object.freeze({ state: "serving" });
       }
       const document = await client.getServiceDocument(
@@ -3923,11 +4017,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         context.transportToken,
         context.signal,
       );
+      context.signal.throwIfAborted();
       const runtimeFailure = asRecord(document.json)?.runtimeFailure;
       return document.status === 200 && runtimeFailure !== undefined
         ? Object.freeze({ state: "failed", runtimeFailure })
         : Object.freeze({ state: "starting" });
     } catch (error) {
+      context.signal.throwIfAborted();
       // A gateway that does not answer, over gRPC or its service listener, is no evidence
       // about the Harness: the read waits for convergence without spending the revision's
       // attempt budget (finding 1658). Refusals and invalid answers keep their classes, and
@@ -4303,10 +4399,26 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
+    const candidate = openShellPolicyCandidate(baseline, input.snapshot);
+    const plugin = googleRequestPolicyFromSandbox(baseline);
+    if (plugin) {
+      assertPluginRequestPolicy(candidate, plugin);
+    } else {
+      const binding = managedCredentialBinding(context.revision.plugins?.plugins);
+      if (
+        binding &&
+        Array.isArray(sandbox.spec?.providers) &&
+        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+      ) {
+        throw new SandboxNetworkPolicyConflictError(
+          "The attached Google account requires its admitted request guard.",
+        );
+      }
+    }
     await client.updatePolicy(
       {
         ...request,
-        policy: openShellPolicyCandidate(baseline, input.snapshot),
+        policy: candidate,
         expectedResourceVersion: input.expectedProviderVersion,
         requestId: input.operationId,
       },

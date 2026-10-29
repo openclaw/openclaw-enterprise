@@ -20,6 +20,7 @@ import {
   apiRequests,
   expectNoText,
   expireSessions,
+  expireSessionsWhenSettled,
   login,
   loginThroughForm,
   newPage,
@@ -36,6 +37,7 @@ import {
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   NO_READABLE_NAMESPACES,
+  NAMESPACE_UNAVAILABLE,
   WORKSPACE_FILES_UNAVAILABLE,
   SIGN_IN_UNAVAILABLE,
 } from "../helpers/refusal-text.mjs";
@@ -75,16 +77,34 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
     ),
     "#2457C5",
   );
+  assert.deepEqual(
+    await page
+      .locator(".brand img")
+      .boundingBox()
+      .then(({ width, height }) => ({ width, height })),
+    { width: 40, height: 40 },
+  );
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  assert.deepEqual(
+    await page
+      .locator(".sidebar .brand img")
+      .boundingBox()
+      .then(({ width, height }) => ({ width, height })),
+    { width: 48, height: 48 },
+  );
   await page.getByText("Theme assistant", { exact: true }).click();
   await page.getByRole("heading", { name: "Theme assistant", exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator(".topbar .brand-name").textContent(), "Example Agents");
   const logo = await page.locator(".topbar .brand img").evaluate((node) => {
-    const { width, filter } = globalThis.getComputedStyle(node);
-    return { width, filter };
+    const { width, height, filter } = globalThis.getComputedStyle(node);
+    return { width, height, filter };
   });
-  assert.deepEqual(logo, { width: "20px", filter: "none" }, "the theme logo keeps its own artwork");
+  assert.deepEqual(
+    logo,
+    { width: "48px", height: "48px", filter: "none" },
+    "the theme logo keeps its own artwork",
+  );
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   await page.locator(".sidebar nav").waitFor({ state: "visible" });
   await page.keyboard.press("Escape");
@@ -710,7 +730,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     [
       `/console/agents?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
+      `${NAMESPACE_UNAVAILABLE}, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.`,
       "Unavailable",
     ],
     // An Agent bookmark in that Namespace kept the Agent page's header above the panel: the
@@ -719,7 +739,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     [
       `/console/agents/${agent.id}?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
+      `${NAMESPACE_UNAVAILABLE}, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.`,
       "Unavailable",
     ],
   ]) {
@@ -1265,7 +1285,10 @@ test("console retained views clear after session expiry and exact Agent denial",
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
-  expireSessions(fixture);
+  // Each row reads its Namespace delete permission after the list shows, so wait for the view
+  // to settle before expiring: the held return, not a row read, must find the expiry.
+  await waitForSettledView(page);
+  await expireSessionsWhenSettled(page, fixture);
   const sessionPattern = "**/api/auth/session";
   const expiredSession = await holdRoute(t, page, sessionPattern, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),
@@ -2109,7 +2132,7 @@ test("Namespaces rows open their Agents and status badges use words with a tone"
   for (const [namespace, label, tone] of [
     [ready, "Ready", "success"],
     [provisioning, "Provisioning", "warning"],
-    [retiring, "Deleting", "warning"],
+    [retiring, "Deleting…", "warning"],
   ]) {
     const row = list.getByRole("listitem").filter({ hasText: namespace.id });
     const link = row.getByRole("link", { name: namespace.name, exact: true });
@@ -2983,12 +3006,10 @@ test("a naturally expired session returns to the requested page after sign-in", 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  // The button shows before the Namespace's Preset read returns. If that read reached the API
-  // after the expiry below, its 401 would show the expired sign-in on this page before the click,
-  // and the Namespaces link would be gone. Expire only once the page has no read in flight.
-  await waitForIdleFetches(page);
-  // Expire the actual session: the controller must reject it before returning to login.
-  expireSessions(fixture);
+  // The button shows before the Namespace's Preset read returns, and that read must not find
+  // the expiry. Expire the actual session: the controller must reject it before returning to
+  // login.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByLabel("Email", { exact: true }).waitFor();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
@@ -3003,6 +3024,7 @@ test("session expiry after a failed check returns to the requested page", async 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Interrupted expiry", { ready: true });
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   await page.route(
@@ -3017,7 +3039,8 @@ test("session expiry after a failed check returns to the requested page", async 
   );
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByText("Session unavailable", { exact: true }).waitFor();
-  expireSessions(fixture);
+  // The Preset read may still be out (see the test above); Retry must find the expiry.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("button", { name: "Retry" }).click();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
@@ -3040,7 +3063,7 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   const requests = apiRequests(page, fixture.origin);
 
   // A foreground recheck discovers real expiry without navigating away from this Agent.
-  expireSessions(fixture);
+  await expireSessionsWhenSettled(page, fixture);
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Expired page Agent/, () => waitForIdleFetches(page));

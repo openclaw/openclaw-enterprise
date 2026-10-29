@@ -120,7 +120,11 @@ takes `api_key`, dedicated OpenClaw also `credential_source`, and dedicated
 Codex also `codex_pat` and `oauth`), then the model provider rule above, a
 channel credential reference without a Configuration Secret binding (for a
 row stored before Configuration save checked it), and the dedicated
-OpenClaw model catalog settings. Whether the Installation supplies
+OpenClaw model catalog settings. On OpenClaw it also names a `${` or SecretRef in
+the selected provider's settings (other than `apiKey`) or the primary model's
+`agents.defaults.models` entry: the startup model check gets only the binding's
+credential. Configuration save accepts these, since another Compute may resolve
+them. Whether the Installation supplies
 what a method needs (OAuth needs no Sandbox Driver; a credential source needs
 its paired Sandbox) stays a fixed `409`.
 The channel runtime rule stays at deployment: it depends on the execution mode

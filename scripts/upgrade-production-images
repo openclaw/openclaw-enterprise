@@ -123,6 +123,34 @@ json_file_name() {
   printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
 }
 
+# json_fields JSON NAME=FIELD... sets each variable NAME to what
+# NAME=$(jq -r .FIELD <<<"$JSON") would, with one jq start for all of them. jq
+# prints each value as one compact JSON line: a string without escapes is that
+# text between its quotes. Any other value, or output that is not one line per
+# field (JSON holding several values), is read again with jq -r.
+json_fields() {
+  local json=$1 values filter='' assignment value index=0
+  local plain='^"[^"\\]*"$'
+  local -a lines=()
+  shift
+  for assignment in "$@"; do
+    filter+="${filter:+, }.${assignment#*=}"
+  done
+  values=$(jq -c "$filter" <<<"$json") || return
+  IFS=$'\n' read -r -d '' -a lines <<<"$values" || true
+  ((${#lines[@]} == $#)) || lines=()
+  for assignment in "$@"; do
+    value=${lines[index]-}
+    if [[ "$value" =~ $plain ]]; then
+      value=${value:1:${#value}-2}
+    else
+      value=$(jq -r ".${assignment#*=}" <<<"$json") || return
+    fi
+    printf -v "${assignment%%=*}" '%s' "$value"
+    ((++index))
+  done
+}
+
 # Prints OCC's refusal from a failed `occ agent deploy`'s stderr FILE and
 # succeeds only when OCC answered with a 4xx error code (occ prints
 # "OCC operation failed (HTTP 4xx): CODE: message") or refused the service key.
@@ -152,20 +180,87 @@ print(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "?", refusal)[:600])
 PYTHON
 }
 
+# YAML files this run already converted, keyed by their exact bytes: yq gives the
+# same bytes the same JSON, so a file read again unchanged starts no new yq, and
+# no new jq for the comparison form. Only successful results are kept, and only
+# when the file still holds the same bytes after yq read it.
+yaml_sources=()
+yaml_values=()
+yaml_objects=()
+
+# yaml_json FILE sets yaml_text to `yq -p=yaml -o=json '.' FILE`'s output and
+# returns yq's status. yaml_index names FILE's entry above, or is -1 when the
+# result is not reused (a failure, a NUL byte or a file that changed meanwhile).
+yaml_json() {
+  local file=$1 source='' again='' status=0 index
+  yaml_index=-1
+  # read -d '' succeeds only at a NUL byte, which a Bash string cannot hold. An
+  # empty read (an empty file, or one that went away) is never reused either.
+  if [[ -f "$file" && -r "$file" ]] && ! IFS= read -r -d '' source 2>/dev/null <"$file" &&
+    [[ -n "$source" ]]; then
+    for ((index = 0; index < ${#yaml_sources[@]}; index++)); do
+      if [[ "${yaml_sources[index]}" == "$source" ]]; then
+        yaml_index=$index
+        yaml_text=${yaml_values[index]}
+        return 0
+      fi
+    done
+  else
+    source=
+    again=unreadable
+  fi
+  yaml_text=$(yq -p=yaml -o=json '.' "$file") || status=$?
+  if ((status == 0)) && [[ -z "$again" ]] && ! IFS= read -r -d '' again 2>/dev/null <"$file" &&
+    [[ "$again" == "$source" ]]; then
+    yaml_index=${#yaml_sources[@]}
+    yaml_sources+=("$source")
+    yaml_values+=("$yaml_text")
+    yaml_objects+=("")
+  fi
+  return "$status"
+}
+
 project_yaml() {
   local path=$1
   local filter=$2
   local output=$3
-  yq -p=yaml -o=json '.' "$path" | jq -S "$filter" >"$output"
+  local status=0
+  yaml_json "$path" || status=$?
+  # As in a yq | jq pipeline under pipefail: jq reads whatever yq printed, and
+  # the status is jq's failure, else yq's.
+  jq -S "$filter" <<<"$yaml_text" >"$output" || return
+  return "$status"
+}
+
+# yaml_object FILE OUTPUT writes FILE's YAML object documents to OUTPUT as sorted
+# JSON and sets yaml_object_text to the same bytes; it fails without one or if
+# any document is not an object.
+yaml_object() {
+  local file=$1 output=$2 status=0
+  yaml_json "$file" || status=$?
+  if ((status == 0 && yaml_index >= 0)) && [[ -n "${yaml_objects[yaml_index]}" ]]; then
+    yaml_object_text=${yaml_objects[yaml_index]}
+    printf '%s' "$yaml_object_text" >"$output" || return 1
+    return 0
+  fi
+  jq -eS -n 'inputs | if type == "object" then . else error("expected a YAML object") end' <<<"$yaml_text" >"$output" || return 1
+  ((status == 0)) || return 1
+  yaml_object_text=
+  IFS= read -r -d '' yaml_object_text <"$output" || true
+  if ((yaml_index >= 0)) && [[ -n "$yaml_object_text" ]]; then
+    yaml_objects[yaml_index]=$yaml_object_text
+  fi
 }
 
 matches_yaml() {
   local actual=$1
   local expected=$2
-  yq -p=yaml -o=json '.' "$actual" | jq -eS 'select(type == "object")' >"$evidence_dir/compare-actual.json" || return 1
-  yq -p=yaml -o=json '.' "$expected" | jq -eS 'select(type == "object")' >"$evidence_dir/compare-expected.json" || return 1
+  local actual_text
+  yaml_object "$actual" "$evidence_dir/compare-actual.json" || return 1
+  actual_text=$yaml_object_text
+  yaml_object "$expected" "$evidence_dir/compare-expected.json" || return 1
   [[ -s "$evidence_dir/compare-actual.json" && -s "$evidence_dir/compare-expected.json" ]] || return 1
-  cmp -s "$evidence_dir/compare-actual.json" "$evidence_dir/compare-expected.json"
+  [[ "$actual_text" == "$yaml_object_text" ]]
 }
 
 # Prints the quoted name of the resource that the OCC read ARGS returns, or
@@ -484,7 +579,21 @@ trap 'cleanup_preflight; rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true
 # migration.
 preflight_startup() {
   local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options
+  local drafts='' drafts_flag=none drafts_status=0 draft_refusals
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+  if [[ -s "${agent_drafts:-}" ]]; then
+    drafts="$evidence_dir/inventory/agent-drafts.json.gz"
+    node scripts/upgrade-startup-preflight.mjs drafts "$agent_drafts" "$candidate_installation" \
+      "$drafts" >/dev/null || drafts_status=$?
+    if ((drafts_status == 3)); then
+      warn "the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it."
+      drafts=
+    elif ((drafts_status != 0)); then
+      die "cannot gather the recorded Agents' drafts for the startup preflight; no OCC writer was stopped."
+    else
+      drafts_flag=drafts
+    fi
+  fi
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
     die "cannot read the rendered chart for the startup preflight; no OCC writer was stopped."
@@ -498,7 +607,7 @@ preflight_startup() {
     preflight_resources+=("networkpolicy.networking.k8s.io/$secret $delete_options")
   fi
   delete_options=$(node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
-    "$installation_key" "$secret" "$namespace" "$release" |
+    "$installation_key" "$secret" "$namespace" "$release" "$drafts" |
     create_preflight - preflight-secret-create.err scrub) ||
     unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
   preflight_resources+=("secret/$secret $delete_options")
@@ -506,7 +615,7 @@ preflight_startup() {
     pod="$release-upgrade-preflight-$component-$suffix"
     node scripts/upgrade-startup-preflight.mjs pod "$evidence_dir/preflight-rendered.jsonl" \
       "$component" "$pod" "$namespace" "$release" "$installation_secret" "$secret" \
-      "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" \
+      "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag" \
       >"$evidence_dir/preflight-$component-pod.json" ||
       die "cannot build the $component startup preflight Pod from the rendered chart; no OCC writer was stopped."
     delete_options=$(create_preflight "$evidence_dir/preflight-$component-pod.json" \
@@ -554,6 +663,13 @@ preflight_startup() {
         Succeeded)
           grep -qx installation-startup-ready "$evidence_dir/preflight-$component.log" ||
             message="the $component startup preflight succeeded without its result line; no OCC writer was stopped."
+          if [[ -z "$message" && "$component" == api && -n "$drafts" ]] &&
+            grep -qx agent-draft-check-unavailable "$evidence_dir/preflight-api.log"; then
+            warn "the selected controller image cannot check Agent drafts before the upgrade; OCC checks each draft when the upgrade deploys it."
+          elif [[ -z "$message" && "$component" == api && -n "$drafts" ]] &&
+            ! grep -qx agent-drafts-accepted "$evidence_dir/preflight-api.log"; then
+            message="the api startup preflight succeeded without checking the Agent drafts; no OCC writer was stopped."
+          fi
           ;;
         Stuck:*)
           message="the $component startup preflight Pod cannot start (${phase#Stuck:}); no OCC writer was stopped."
@@ -563,7 +679,16 @@ preflight_startup() {
             "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
           refusal=$(grep -m 1 -E '^Kubernetes Compute startup preflight (refused the candidate release|could not complete):' \
             "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
-          if [[ -n "$name_refusal" ]]; then
+          draft_refusals=
+          if [[ "$component" == api && -n "$drafts" ]]; then
+            draft_refusals=$(node scripts/upgrade-startup-preflight.mjs refusals \
+              "$evidence_dir/preflight-api.log") || draft_refusals=
+          fi
+          if [[ -n "$draft_refusals" ]]; then
+            message="the selected controller image refuses to deploy $(grep -c '^Agent draft refused: ' "$evidence_dir/preflight-api.log") recorded Agent draft(s):
+$draft_refusals
+No OCC writer was stopped; the old release keeps serving. Correct each draft as its refusal says, for example remove a setting the new release retired, or stop the Agent, then start again with a new evidence directory."
+          elif [[ -n "$name_refusal" ]]; then
             message="the $component startup preflight stopped: $name_refusal (INSTALLATION_NAME_INVALID) No OCC writer was stopped; the old release keeps serving. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery.md#correct-an-invalid-installation-name, then start again with a new evidence directory."
           elif [[ -n "$refusal" ]]; then
             message="the $component startup preflight stopped: $refusal No OCC writer was stopped; the old release keeps serving."
@@ -718,6 +843,33 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
   ' "$inventory" >"$targets"
   target_count=$(wc -l <"$targets" | tr -d ' ')
 
+  # The draft each recorded Agent deploys: its saved Configuration. The startup preflight
+  # checks them with the selected controller image's deploy rules before any writer stops,
+  # so a setting that release refuses stops the upgrade here, not after the controller
+  # moved (finding 2809). Deploy needs the same Agent and Configuration reads.
+  agent_drafts="$evidence_dir/inventory/agent-drafts.jsonl"
+  : >"$agent_drafts"
+  while IFS= read -r target; do
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId
+    prefix="$evidence_dir/inventory/$(json_file_name "$namespace_id--$agent_id")"
+    "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" </dev/null \
+      >"$prefix.agent.json" ||
+      die "cannot read Agent $agent_id in Namespace $namespace_id to check its draft; no cluster changes were made."
+    configuration_id=$(jq -er '.configurationId | select(type == "string" and length > 0)' \
+      "$prefix.agent.json") ||
+      die "OCC returned no Configuration for Agent $agent_id in Namespace $namespace_id; no cluster changes were made."
+    "${occ_json[@]}" --namespace "$namespace_id" configuration get "$configuration_id" </dev/null \
+      >"$prefix.configuration.json" ||
+      die "cannot read Configuration $configuration_id of Agent $agent_id in Namespace $namespace_id to check its draft; no cluster changes were made."
+    jq -ec --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
+      --arg configurationId "$configuration_id" --slurpfile agent "$prefix.agent.json" '
+      select(.id == $configurationId and (.values | type) == "object") |
+      {namespaceId: $namespaceId, agentId: $agentId, name: $agent[0].name,
+        configurationId: $configurationId, values: .values}
+    ' "$prefix.configuration.json" >>"$agent_drafts" ||
+      die "OCC returned no values for Configuration $configuration_id of Agent $agent_id; no cluster changes were made."
+  done <"$targets"
+
   current_gateway=$(yq -er '.drivers.compute.configuration.images.gateway' "$evidence_dir/before-installation.yaml")
   current_agent=$(yq -er '.drivers.compute.configuration.images.agent' "$evidence_dir/before-installation.yaml")
   [[ "$runtime_image" != "$current_gateway" || "$runtime_image" != "$current_agent" ]] ||
@@ -810,7 +962,8 @@ fi
 
 # Keep the endpoint already pinned by certificates and repository sessions.
 # Read it only after protected/live values and Installation identity agree.
-if [[ $(yq -r '.repositoryCredentials.enabled // false' "$evidence_dir/before-values.yaml") == true ]]; then
+# repository_enabled is before-values.yaml's setting, read above after both checks.
+if [[ "$repository_enabled" == true ]]; then
   broker_deployment="$evidence_dir/before-broker-deployment.json"
   "${kube[@]}" --namespace "$namespace" get deployment openclaw-enterprise-worker \
     --output json >"$broker_deployment"
@@ -944,6 +1097,13 @@ fi
 # needed. An accepted write whose response was lost must not be repeated.
 helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/current-helm-status.json"
 helm_state=$(jq -er '.info.status' "$evidence_dir/current-helm-status.json")
+case "$helm_state" in
+  deployed | failed) ;;
+  *) die "Helm reports $helm_state; resolve the in-progress or unknown release before resuming." ;;
+esac
+if [[ ! -f "$evidence_dir/helm-started" && "$helm_state" != deployed ]]; then
+  die "the Helm release changed before this upgrade started; investigate before continuing."
+fi
 helm get values "$release" "${helm_args[@]}" --output yaml >"$evidence_dir/current-live-values.yaml"
 matches_yaml "$values" "$evidence_dir/before-values.yaml" ||
   matches_yaml "$values" "$candidate_values" || die "protected Helm values changed outside this upgrade."
@@ -966,13 +1126,6 @@ matches_yaml "$evidence_dir/current-live-installation.yaml" "$evidence_dir/befor
   matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation" ||
   die "the live Installation Secret changed outside this upgrade."
 
-case "$helm_state" in
-  deployed | failed) ;;
-  *) die "Helm reports $helm_state; resolve the in-progress or unknown release before resuming." ;;
-esac
-if [[ ! -f "$evidence_dir/helm-started" && "$helm_state" != deployed ]]; then
-  die "the Helm release changed before this upgrade started; investigate before continuing."
-fi
 if [[ ! -f "$evidence_dir/helm-started" ]]; then
   jq -e --slurpfile before "$evidence_dir/before-helm-status.json" \
     '.version == $before[0].version' "$evidence_dir/current-helm-status.json" >/dev/null ||
@@ -1084,7 +1237,6 @@ PYTHON
   } >"$evidence_dir/helm-upgrade.txt"
 fi
 
-repository_enabled=$(yq -r '.repositoryCredentials.enabled // false' "$candidate_values")
 for component in api worker; do
   deployment="openclaw-enterprise-$component"
   "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s ||
@@ -1190,8 +1342,7 @@ dispatch_failed=0
 if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
   # Check every prior intent before launching any additional requests.
   while IFS= read -r target; do
-    namespace_id=$(jq -r '.namespaceId' <<<"$target")
-    agent_id=$(jq -r '.agentId' <<<"$target")
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId
     prefix="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id")"
     if [[ -f "$prefix.json" ]]; then
       jq -e '.id | type == "string" and length > 0' "$prefix.json" >/dev/null ||
@@ -1206,8 +1357,7 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
 
   pids=()
   while IFS= read -r target; do
-    namespace_id=$(jq -r '.namespaceId' <<<"$target")
-    agent_id=$(jq -r '.agentId' <<<"$target")
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId
     output="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").json"
     error="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").error"
     intent="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").intent"
@@ -1233,8 +1383,7 @@ if ((dispatch_failed)); then
   key_refused=()
   unknown=()
   while IFS= read -r target; do
-    namespace_id=$(jq -r '.namespaceId' <<<"$target")
-    agent_id=$(jq -r '.agentId' <<<"$target")
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId
     prefix="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id")"
     [[ ! -f "$prefix.json" ]] || continue
     agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
@@ -1272,11 +1421,10 @@ fi
 deployments="$evidence_dir/deployments.jsonl"
 : >"$deployments"
 while IFS= read -r target; do
-  namespace_id=$(jq -r '.namespaceId' <<<"$target")
-  agent_id=$(jq -r '.agentId' <<<"$target")
-  execution_mode=$(jq -r '.executionMode' <<<"$target")
+  json_fields "$target" namespace_id=namespaceId agent_id=agentId execution_mode=executionMode
   output="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").json"
   deployment_id=$(jq -er '.id' "$output")
+  # shellcheck disable=SC2154 # json_fields assigns execution_mode.
   jq -cn --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
     --arg executionMode "$execution_mode" --arg deploymentId "$deployment_id" \
     '{namespaceId: $namespaceId, agentId: $agentId, executionMode: $executionMode, deploymentId: $deploymentId}' \
@@ -1289,9 +1437,7 @@ while ((pending > 0)); do
   pending=0
   failed=0
   while IFS= read -r deployment; do
-    namespace_id=$(jq -r '.namespaceId' <<<"$deployment")
-    agent_id=$(jq -r '.agentId' <<<"$deployment")
-    deployment_id=$(jq -r '.deploymentId' <<<"$deployment")
+    json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
     "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
       >"$status_file"
@@ -1310,10 +1456,8 @@ done
 doctor_targets="$evidence_dir/doctor-targets.jsonl"
 : >"$doctor_targets"
 while IFS= read -r deployment; do
-  namespace_id=$(jq -r '.namespaceId' <<<"$deployment")
-  agent_id=$(jq -r '.agentId' <<<"$deployment")
-  execution_mode=$(jq -r '.executionMode' <<<"$deployment")
-  deployment_id=$(jq -r '.deploymentId' <<<"$deployment")
+  json_fields "$deployment" namespace_id=namespaceId agent_id=agentId \
+    execution_mode=executionMode deployment_id=deploymentId
   case "$execution_mode" in
     embedded) expected_runtime_count=1 ;;
     dedicated) expected_runtime_count=2 ;;
@@ -1425,7 +1569,8 @@ transient_kubectl_failure='^error: EOF$|"https?://[^" ]+": EOF$|Unable to connec
 
 # Prints the gateway container's free memory below its cgroup v2 limit in MiB,
 # or "unlimited". Inactive file cache counts as free, as in the kubelet's
-# working set. Fails when the container's cgroup files cannot be read.
+# working set. Fails when the container's cgroup files cannot be read, and
+# returns 2 without a read once the deadline has passed.
 gateway_free_memory() {
   local gateway_namespace=$1 gateway_name=$2 output=$3 free attempt remaining
   local LC_ALL=C
@@ -1434,7 +1579,7 @@ gateway_free_memory() {
   # failure, such as missing cgroup v2 files, falls back at once.
   for attempt in 1 2 3; do
     remaining=$((deadline - SECONDS))
-    ((remaining > 0)) || return 1
+    ((remaining > 0)) || return 2
     ((remaining <= 15)) || remaining=15
     "${kube[@]}" --request-timeout="${remaining}s" --namespace "$gateway_namespace" exec "$gateway_name" \
       --container gateway -- cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current \
@@ -1506,13 +1651,13 @@ report_doctor_failure() {
 }
 
 # Prints how a revision Pod changed since its Ready baseline (a doctor-targets.jsonl
-# revisionPods entry), or nothing when it is the same Pod, still Running and Ready,
-# with the same restart count. A read failure is a change too: the upgrade cannot
-# show the Pod kept serving.
+# revisionPods entry, with its namespace and name as json_fields reads them), or
+# nothing when it is the same Pod, still Running and Ready, with the same restart
+# count. A read failure is a change too: the upgrade cannot show the Pod kept serving.
 revision_pod_change_since_ready() {
-  local ready_pod=$1 output=$2 status=0
-  "${kube[@]}" --request-timeout=15s --namespace "$(jq -r '.namespace' <<<"$ready_pod")" \
-    get "pod/$(jq -r '.name' <<<"$ready_pod")" --output json \
+  local ready_pod=$1 pod_namespace=$2 pod_name=$3 output=$4 status=0
+  "${kube[@]}" --request-timeout=15s --namespace "$pod_namespace" \
+    get "pod/$pod_name" --output json \
     </dev/null >"$output" 2>"$output.error" || status=$?
   if ((status != 0)); then
     if grep -q '(NotFound)' "$output.error"; then
@@ -1556,19 +1701,27 @@ doctor_failed=0
 doctor_timeout=
 if ((target_count > 0)); then
   while IFS= read -r target; do
-    namespace_id=$(jq -r '.namespaceId' <<<"$target")
-    agent_id=$(jq -r '.agentId' <<<"$target")
-    deployment_id=$(jq -r '.deploymentId' <<<"$target")
-    gateway_namespace=$(jq -r '.gatewayNamespace' <<<"$target")
-    gateway_name=$(jq -r '.gatewayName' <<<"$target")
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId \
+      gateway_namespace=gatewayNamespace gateway_name=gatewayName
     doctor_prefix="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").doctor"
     deadline=$((SECONDS + timeout_seconds))
     settled=0
     measured_low=0
     admitted=0
     free=unknown
-    while ((SECONDS < deadline)); do
-      if ! free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory"); then
+    # The last successful read, for the timeout message when later reads fail.
+    measured=unknown
+    # gateway_free_memory checks the deadline before each read.
+    while :; do
+      read_status=0
+      read_free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory") ||
+        read_status=$?
+      # The deadline passed before the read: keep the last read for the timeout message.
+      ((read_status != 2)) || break
+      if ((read_status == 0)); then
+        free=$read_free
+        measured=$free
+      else
         if ((measured_low == 0)); then
           warn "cannot read the cgroup v2 memory use of Agent $agent_id's gateway; running OpenClaw Doctor without checking its free memory."
           admitted=1
@@ -1597,7 +1750,11 @@ if ((target_count > 0)); then
     # A read that admitted Doctor can still end at the deadline; that is a plain
     # timeout below, not a memory shortage.
     if ((admitted == 0 && measured_low == 1)); then
-      doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout (last read: $free MiB free), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
+      last_read="last read: $free MiB free"
+      # A read that failed after a low one, such as one cut off at the deadline, measured
+      # nothing; name the last read that did.
+      [[ "$free" != unknown ]] || last_read="last measured: $measured MiB free; later reads failed"
+      doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout ($last_read), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
     fi
     # On a timeout, start no further Doctor. No Doctor is running then: each one
     # ends before the next starts, so the evidence lock outlasts all of them.
@@ -1630,19 +1787,19 @@ fi
 # restart, and only this check names it.
 pod_changed=0
 while IFS= read -r target; do
-  agent_id=$(jq -r '.agentId' <<<"$target")
-  target_prefix="$(jq -r '.namespaceId' <<<"$target")--$agent_id--$(jq -r '.deploymentId' <<<"$target")"
+  json_fields "$target" agent_id=agentId namespace_id=namespaceId deployment_id=deploymentId
+  target_prefix="$namespace_id--$agent_id--$deployment_id"
   ready_pods=$(jq -ce '.revisionPods | arrays | select(length > 0) | .[]' <<<"$target") ||
     die "Agent $agent_id's Doctor target records no revision Pods to check."
   while IFS= read -r ready_pod; do
-    pod_namespace=$(jq -r '.namespace' <<<"$ready_pod")
-    pod_name=$(jq -r '.name' <<<"$ready_pod")
-    pod_change=$(revision_pod_change_since_ready "$ready_pod" \
+    json_fields "$ready_pod" pod_namespace=namespace pod_name=name pod_role=role
+    pod_change=$(revision_pod_change_since_ready "$ready_pod" "$pod_namespace" "$pod_name" \
       "$evidence_dir/status/$(json_file_name "$target_prefix--$pod_name").after-doctor.json") ||
       pod_change="could not be compared with its Ready state"
     [[ -n "$pod_change" ]] || continue
     pod_changed=1
-    warn "Agent $agent_id's $(jq -r '.role' <<<"$ready_pod") Pod $pod_namespace/$pod_name $pod_change after it became Ready for OpenClaw Doctor."
+    # shellcheck disable=SC2154 # json_fields assigns pod_role.
+    warn "Agent $agent_id's $pod_role Pod $pod_namespace/$pod_name $pod_change after it became Ready for OpenClaw Doctor."
   done <<<"$ready_pods"
 done <"$doctor_targets"
 ((doctor_failed == 0)) ||

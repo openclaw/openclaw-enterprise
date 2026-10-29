@@ -241,7 +241,7 @@ test("saving a Configuration with negative zero confirms the value sent as JSON"
 
 // The collaboration and safety toggles stage each change in the Configuration JSON, through the
 // editor's own draft and save checks, so the two never disagree and one Save keeps both. Unset
-// settings show what a deployment runs with: OpenClaw's preset leaves collaborative steering on,
+// settings show what a deployment runs with: OpenClaw leaves collaborative steering on,
 // and deployment admission keeps apply_patch in the workspace.
 test("collaboration and safety toggles stage their settings in the Configuration JSON and save with it", async (t) => {
   const c = await plainAgent(t, "Gateway Safety");
@@ -279,15 +279,28 @@ test("collaboration and safety toggles stage their settings in the Configuration
   );
   await page.locator("#gateway-safety-collaborative-steering:checked").waitFor();
   assert.equal(await strict.isChecked(), false);
-  // The steering help says what Off does for this document: under the corporate preset the
-  // Gateway refuses another participant's message instead of queuing it.
+  // The Gateway queues another participant's message unless the owner explicitly selects reject.
   const steeringHint = page.locator("#gateway-safety-collaborative-steering-hint");
+  const sharedIdentityHelp =
+    "OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users.";
+  assert.match(
+    (await steeringHint.textContent()) ?? "",
+    /Participants are channel users or local operators with distinct Gateway identities\./,
+  );
+  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
   assert.match(
     (await steeringHint.textContent()) ?? "",
     /Off: their message runs as a separate turn after it\.$/,
   );
-  await json.fill(JSON.stringify({ ...strictValues, security: { preset: "corporate" } }));
+  const rejectSteering = {
+    ...strictValues,
+    messages: {
+      queue: { allowCollaborativeSteering: false, collaborativeSteeringFallback: "reject" },
+    },
+  };
+  await json.fill(JSON.stringify(rejectSteering));
   await steeringHint.filter({ hasText: "Off: the Gateway refuses their message" }).waitFor();
+  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
   await json.fill("{");
   await page
     .getByText("Correct the Configuration JSON to change these settings.", { exact: true })
@@ -298,13 +311,14 @@ test("collaboration and safety toggles stage their settings in the Configuration
     /\bgateway-safety-reason\b/,
   );
 
-  // Back at its default, a toggle removes its own setting and leaves the rest of the JSON.
-  await json.fill(JSON.stringify(strictValues, null, 2));
+  // Returning steering to its default removes only that setting and preserves the fallback.
+  await json.fill(JSON.stringify(rejectSteering, null, 2));
   await page.locator("#gateway-safety-strict:checked:enabled").waitFor();
   await steering.check();
   const edited = JSON.parse(await json.inputValue());
   assert.deepEqual(edited, {
     ...nativeValues("before"),
+    messages: { queue: { collaborativeSteeringFallback: "reject" } },
     tools: { exec: { applyPatch: { workspaceOnly: true } } },
   });
   const url = c.fixture.origin + configurationPath(c);

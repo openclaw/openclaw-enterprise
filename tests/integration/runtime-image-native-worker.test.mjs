@@ -8,13 +8,18 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   cpuScaledImageTimeoutMs,
   imageSmokeTimeoutMultiplier,
 } from "../helpers/image-smoke-timeout.mjs";
 import { assertAllPassed } from "../helpers/node-test-summary.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
-import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+  NATIVE_WORKER_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   commandOutput,
@@ -27,11 +32,186 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
 
-// Each case starts its own randomly named container with no published port.
-// Only the first writes host files, into its own temporary directory; the others
-// pass their programs over stdin. The cases share no container, port, volume or
-// fixture state. Two run at a time.
+async function startGoogleGateway(t, enabled, workspaceNodeId) {
+  const { id, releaseSha256 } = managedGoogleInstall;
+  const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
+  const manifest = { kind: "openclaw", selections: { [id]: { enabled } } };
+  return runGatewaySmoke(t, "openclaw", {
+    configurationPath: "/etc/openclaw/openclaw.json",
+    entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+    volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+    withAppServer: false,
+    extraEnvironment: [
+      ...(workspaceNodeId ? ["OPENCLAW_WORKSPACE_NODE_ID=" + workspaceNodeId] : []),
+      "OPENCLAW_PLUGIN_RUNTIME_JSON=" + JSON.stringify({ manifest }),
+      "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID=" + id,
+      ...(enabled ? ["OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + releaseSha256] : []),
+    ],
+  });
+}
+
+// Each case uses a private container and run-owned fixtures. Two run at a time.
 describe("runtime image native worker", { concurrency: 2 }, () => {
+  test(
+    "the dedicated worker launches the pinned gog on PATH only for the selected release",
+    imageTestOptions,
+    async () => {
+      const releaseFile = new URL(
+        "../../apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json",
+        import.meta.url,
+      );
+      const { version } = JSON.parse(await readFile(releaseFile, "utf8"));
+      const expected = managedGoogleInstall.releaseSha256;
+      // Exercise the production worker bootstrap in the real image. Substitute its model probe and
+      // enrollment peer; the child resolves and executes the installed binary with the actual launch env.
+      const probe = `const r = require("node:child_process").spawnSync("gog", ["--version"], {encoding:"utf8"});
+console.log(JSON.stringify({...(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}), markerVisible:process.env.GOG_ACCESS_TOKEN===undefined?undefined:"present"}));
+process.exit(r.error ? 0 : r.status);`;
+      const launch = `
+const cp = require("node:child_process"), realSpawn = cp.spawn;
+cp.spawnSync = () => ({status:0,stdout:JSON.stringify({auth:{probes:{results:[{provider:"openai",model:"openai/test",source:"env",status:"ok"}]}}})});
+cp.spawn = (command, args, options) => {
+  require("node:assert/strict").deepEqual(args.slice(0, 2), ["/app/openclaw.mjs", "connect"]);
+  return realSpawn(command, ["-e", ${JSON.stringify(probe)}], options);
+};
+Object.assign(process.env, {
+  HOME:"/tmp/home", TMPDIR:"/tmp/worker-tmp", OPENCLAW_WORKSPACE_DIR:"/tmp/workspace", OPENCLAW_NODE_STATE_DIR:"/tmp/node",
+  OPENCLAW_NODE_SETUP_CODE:"fixture", OPENCLAW_NATIVE_WORKER_CAPACITY:"1", OPENCLAW_NATIVE_INFERENCE_CONFIG:"{}",
+  OPENCLAW_HARNESS_MODEL:"openai/test", OPENCLAW_HARNESS_PROVIDER:"openai", OPENCLAW_HARNESS_CREDENTIAL_ENV:"TEST_MODEL_KEY",
+  TEST_MODEL_KEY:"fixture", OPENCLAW_HARNESS_PROBE_CONFIG:'{"agents":{"defaults":{"model":"openai/test"}}}'
+});
+${NATIVE_WORKER_ENTRYPOINT}`;
+      const worker = (digest, mounts = [], environment = []) =>
+        runDocker(
+          [
+            "run",
+            "--rm",
+            "-i",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--tmpfs",
+            "/tmp:mode=1777",
+            ...(digest === undefined
+              ? []
+              : ["-e", "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + digest]),
+            ...mounts,
+            ...environment.flatMap((entry) => ["--env", entry]),
+            "--entrypoint",
+            "node",
+            image,
+            // The default OpenShell policy permits image reads under /usr and /app. Exercise
+            // the bootstrap with those roots plus its writable fixture home under /tmp.
+            "--permission",
+            "--allow-fs-read=/usr",
+            "--allow-fs-read=/app",
+            "--allow-fs-read=/tmp",
+            "--allow-fs-write=/tmp",
+            "--allow-child-process",
+            "-",
+          ],
+          {},
+          launch,
+        );
+      const marker =
+        "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
+      assert.deepEqual(JSON.parse((await worker(undefined, [], [marker])).stdout.trim()), {
+        code: "ENOENT",
+        markerVisible: "present",
+      });
+      assert.deepEqual(JSON.parse((await worker(expected)).stdout.trim()), {
+        version: "v" + version,
+      });
+      const bound = "OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV=GOG_ACCESS_TOKEN";
+      assert.deepEqual(JSON.parse((await worker(expected, [], [marker])).stdout), {
+        version: "v" + version,
+        markerVisible: "present",
+      });
+      assert.deepEqual(JSON.parse((await worker(expected, [], [bound])).stdout), {
+        version: "v" + version,
+      });
+      assert.deepEqual(JSON.parse((await worker(expected, [], ["GOG_ACCESS_TOKEN=raw"])).stdout), {
+        version: "v" + version,
+      });
+      assert.deepEqual(JSON.parse((await worker(expected, [], [bound, marker])).stdout), {
+        version: "v" + version,
+        markerVisible: "present",
+      });
+      await assert.rejects(
+        worker(expected, [], [bound, "GOG_ACCESS_TOKEN=not-an-issued-placeholder"]),
+        (error) => /requires its scoped OpenShell credential placeholder/.test(error.stderr),
+      );
+      await assert.rejects(worker("0".repeat(64)), (error) =>
+        /image integrity check: \/usr\/local\/lib\/oce\/plugins\/google\/release\.json/.test(
+          error.stderr,
+        ),
+      );
+      await assert.rejects(
+        worker(expected, [
+          "-v",
+          fileURLToPath(releaseFile) + ":/usr/local/lib/oce/plugins/google/bin/gog:ro",
+        ]),
+        (error) =>
+          /image integrity check: \/usr\/local\/lib\/oce\/plugins\/google\/bin\/gog/.test(
+            error.stderr,
+          ),
+      );
+    },
+  );
+
+  test(
+    "the native Gateway discovers the selected Google installation instructions",
+    imageTestOptions,
+    async (t) => {
+      const { containerName } = await startGoogleGateway(t, true);
+      const { stdout } = await runDocker([
+        "exec",
+        "-e",
+        "OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json",
+        containerName,
+        "node",
+        "/app/openclaw.mjs",
+        "skills",
+        "info",
+        "oce-google",
+        "--json",
+      ]);
+      assert.equal(
+        JSON.parse(stdout).filePath,
+        "/usr/local/lib/oce/plugins/google/skills/oce-google/SKILL.md",
+      );
+    },
+  );
+
+  test(
+    "the node skill policy admits only the selected Google instructions",
+    imageTestOptions,
+    async (t) => {
+      const probe = await readFile(
+        new URL("../fixtures/runtime-google-skill-policy.mts", import.meta.url),
+        "utf8",
+      );
+      for (const enabled of [false, true]) {
+        const { containerName } = await startGoogleGateway(t, enabled, "a".repeat(64));
+        await runDocker(
+          [
+            "exec",
+            "-i",
+            containerName,
+            "node",
+            "--input-type=module-typescript",
+            "-",
+            String(enabled),
+          ],
+          {},
+          probe,
+        );
+      }
+    },
+  );
+
   test(
     "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
     imageTestOptions,
@@ -84,6 +264,7 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
         "tests/helpers/available-port.mjs",
         "tests/helpers/reuse-port-preload.mjs",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+        "apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json",
         "apps/controller/src/drivers/compute/embedded-gateway-owner.ts",
         "apps/controller/src/drivers/compute/gateway-tool-policy.ts",
         "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",

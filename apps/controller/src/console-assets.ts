@@ -47,6 +47,8 @@ const CONSOLE_ASSETS = new Map([
       "navigation.mts",
       "shell.mts",
       "namespaces.mts",
+      "namespace-deletion.mts",
+      "resource-actions.mts",
       "secrets.mts",
       "runtime-images.mts",
       "agents/list.mts",
@@ -127,6 +129,14 @@ const CONSOLE_ASSETS = new Map([
     "/console/gateway-security-defaults.mjs",
     {
       path: new URL("../../../packages/occ/src/gateway-security-defaults.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console shows a draft's retired OpenClaw setting with OCC's own deploy refusal.
+  [
+    "/console/retired-openclaw-settings.mjs",
+    {
+      path: new URL("../../../packages/occ/src/retired-openclaw-settings.ts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],

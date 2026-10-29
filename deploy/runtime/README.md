@@ -179,7 +179,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/a3b12ef66cb923ff2bffe36ddf2a74ec397b00da/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
@@ -212,6 +212,40 @@ configure the Kubernetes Compute Driver with immutable `@sha256:` image
 references. Follow [Build and publish production images](../../docs/guides/deploy/production-installation.md#build-and-publish-production-images)
 for the controller and runtime build commands, registry publishing, and digest
 configuration.
+
+## Review the managed Google plugin pin
+
+The [managed Google release](../../apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json)
+links Peter Steinberger's [gog skill on ClawHub](https://clawhub.ai/steipete/skills/gog)
+to its reviewed `SKILL.md` bytes at an immutable OpenClaw commit.
+When updating the pin, check the publisher, read the selected version, and compare
+its file digest with the manifest from the repository root.
+
+```bash
+manifest=apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json
+clawhub inspect "$(jq -r .clawhub.skill "$manifest")" \
+  --version "$(jq -r .clawhub.version "$manifest")" --files --json |
+  jq -e --arg sha "$(jq -r .clawhub.skillSha256 "$manifest")" \
+    'any(.version.files[]; .path == "SKILL.md" and .sha256 == $sha)'
+```
+
+The build verifies the upstream skill pin, the packaged `oce-google` instructions, the
+[gog CLI archive](https://github.com/openclaw/gogcli/releases/tag/v0.46.0) for the
+image architecture, and the executable’s checksum and reported version. The binary
+lives under `/usr/local/lib/oce/plugins/google/bin`, outside the image’s default PATH.
+
+A selected dedicated OpenClaw worker verifies the bundled release and binary before
+enrollment, then adds that directory to its PATH. The Gateway verifies the bundled
+skill and adds it to native skill discovery. OpenClaw’s usual precedence applies if
+the workspace contains another skill with the same name. Run `gog --version` in the
+worker to check the installation.
+
+For account selection and deployment, see [Configure Agent plugins](../../docs/guides/topics/plugins-configure.md#use-the-console).
+
+OCE grants its workspace node read access to the selected skill. If you supply a
+custom file-transfer policy for that node, allow reads of
+`/usr/local/lib/oce/plugins/google/skills`, its `oce-google` directory and
+`oce-google/SKILL.md`.
 
 ## Select a storage-split test image
 

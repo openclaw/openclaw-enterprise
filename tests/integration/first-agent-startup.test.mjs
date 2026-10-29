@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { cp, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -15,6 +15,12 @@ import {
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import {
+  GATEWAY_SECURITY_DEFAULTS,
+  withGatewaySecurityDefaults,
+  withSetting,
+} from "../helpers/admitted-configuration.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.mjs");
@@ -201,12 +207,12 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
   // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
-  // the Gateway security default the Configuration leaves unset (apply_patch in the workspace).
-  const values = (sandbox, approvalsReviewer) => ({
-    ...settings(sandbox, approvalsReviewer),
-    agents: { entries: { main: { identity: { name: record.name } } } },
-    tools: { exec: { applyPatch: { workspaceOnly: true } } },
-  });
+  // the Gateway security defaults the Configuration leaves unset (all of them unless given).
+  const values = (sandbox, approvalsReviewer, defaults) =>
+    withGatewaySecurityDefaults(
+      servedAs(settings(sandbox, approvalsReviewer), record.name),
+      defaults,
+    );
   const configured = settings("read-only");
   const matches = (snapshot, priorRevisionId) =>
     firstAgentRevisionValuesMatch(snapshot, configured, record, "rev_saved", priorRevisionId);
@@ -237,17 +243,23 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     false,
     "the historical exception must retain unrelated configuration drift checks",
   );
-  const beforeDefaults = {
-    ...settings("danger-full-access"),
-    agents: { entries: { main: { identity: { name: record.name } } } },
-  };
-  assert.equal(matches(beforeDefaults, "rev_saved"), true, "a saved revision from before the fill");
-  assert.equal(matches(beforeDefaults), false, "a new deployment carries the defaults");
-  assert.equal(
-    matches({ ...values("danger-full-access"), tools: { exec: { applyPatch: {} } } }),
-    false,
-    "a missing default is drift",
-  );
+  // Each admission fill landed separately, so a saved revision can lack any subset of the
+  // defaults (finding 2770). Only the identified prior revision gets them filled before comparing.
+  for (let mask = 0; mask < 2 ** GATEWAY_SECURITY_DEFAULTS.length - 1; mask += 1) {
+    const filled = GATEWAY_SECURITY_DEFAULTS.filter((_, index) => mask & (1 << index));
+    const snapshot = values("danger-full-access", undefined, filled);
+    const missing = `without ${GATEWAY_SECURITY_DEFAULTS.filter((row) => !filled.includes(row))
+      .map(({ path }) => path.join("."))
+      .join(", ")}`;
+    assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision ${missing}`);
+    assert.equal(matches(snapshot, "rev_other"), false, `another revision ${missing}`);
+    assert.equal(matches(snapshot), false, `a new deployment ${missing}`);
+  }
+  // The fill keeps explicit values, so a prior revision with another value is still drift.
+  for (const { path, explicit } of GATEWAY_SECURITY_DEFAULTS) {
+    const snapshot = withSetting(values("danger-full-access"), path, explicit);
+    assert.equal(matches(snapshot, "rev_saved"), false, `an explicit ${path.join(".")}`);
+  }
   assert.equal(
     matches({
       ...values("danger-full-access"),
@@ -437,6 +449,51 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
     ),
   );
 });
+
+test(
+  "first-Agent keeps its saved record readable after a restrictive-umask attempt",
+  { skip: process.platform === "win32" ? "Unix file modes are required" : false },
+  async (t) => {
+    const { directory, engineLog, env } = await k3dFixture(t);
+    // Existing Local Setup files retain their original permissions. Only the new
+    // helper process inherits the real kernel umask; no model credential is used.
+    await writeFile(engineLog, "", { mode: 0o600 });
+    for (const key of [
+      "CODEX_ACCESS_TOKEN",
+      "CODEX_ACCESS_TOKEN_FILE",
+      "OPENAI_API_KEY",
+      "OPENAI_API_KEY_FILE",
+    ]) {
+      delete env[key];
+    }
+    const strict = {
+      ...env,
+      NODE_OPTIONS:
+        `${env.NODE_OPTIONS ?? ""} --import=data:text/javascript,process.umask(0o777)`.trim(),
+    };
+    const first = await runFirstAgentAsync(strict);
+    assert.match(first, /kubectl did not complete successfully \(exit 23\)/);
+    const path = join(
+      directory,
+      `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json`,
+    );
+    const readRecord = async () => {
+      const file = await open(path, "r");
+      try {
+        return { mode: (await file.stat()).mode & 0o777, content: await file.readFile("utf8") };
+      } finally {
+        await file.close();
+      }
+    };
+    const saved = await readRecord();
+    assert.equal(saved.mode, 0o600);
+    await writeFile(engineLog, "", { mode: 0o600 });
+    const retry = await runFirstAgentAsync(env);
+    assert.match(retry, /kubectl did not complete successfully \(exit 23\)/);
+    assert.match(await readFile(engineLog, "utf8"), /exec -i statefulset\/postgres/);
+    assert.deepEqual(await readRecord(), saved);
+  },
+);
 
 test("first-Agent refuses an unrecognized saved record without calling it old", async (t) => {
   const { directory, engineLog, env } = await k3dFixture(t);

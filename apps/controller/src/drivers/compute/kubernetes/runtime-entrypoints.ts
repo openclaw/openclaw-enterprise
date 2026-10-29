@@ -6,6 +6,7 @@ import {
   RUNTIME_FAILURE_CHECKS,
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
+import { readFileSync } from "node:fs";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
@@ -230,6 +231,34 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
     console.error("Held runtime failure server failed: " + (error?.code ?? "unknown"));
   });
   server.listen(port, "0.0.0.0");
+}
+`;
+
+// The bootstrap also needs the reserved alias when the Agent installs no Google release.
+// Read it in the controller so an unselected worker need not have the package on disk.
+const googleAccountEnv: string = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../plugins/oce-google-workspace/ai.openclaw.oce/release.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).credentials.account.delivery.env;
+
+const GOOGLE_INSTALL_HELPERS = String.raw`
+function verifiedGoogleFile(path, expected) {
+  const bytes = require("node:fs").readFileSync(path);
+  if (require("node:crypto").createHash("sha256").update(bytes).digest("hex") !== expected) {
+    throw new Error("The managed Google plugin failed its image integrity check: " + path);
+  }
+  return bytes;
+}
+
+function installedGoogleRelease() {
+  const digest = process.env.OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256;
+  if (!digest) return undefined;
+  return JSON.parse(verifiedGoogleFile("/usr/local/lib/oce/plugins/google/release.json", digest));
 }
 `;
 
@@ -1638,8 +1667,8 @@ function codexPluginConfigEdits(configuration) {
   ];
 }
 
-async function writeCodexPluginConfiguration(configuration) {
-  const effective = await readCodexPluginConfiguration();
+async function writeCodexPluginConfiguration(configuration, request = codexAppServerRequest) {
+  const effective = await readCodexPluginConfiguration(request);
   const edits = codexPluginConfigEdits(configuration);
   // Replacing a user table does not erase descendants inherited from other
   // config layers. Materialize the selection and approval policy at those keys.
@@ -1678,16 +1707,16 @@ async function writeCodexPluginConfiguration(configuration) {
       }
     }
   }
-  await codexAppServerRequest("config/batchWrite", {
+  await request("config/batchWrite", {
     edits,
     reloadUserConfig: true,
   });
 }
 
-async function readCodexPluginConfiguration() {
+async function readCodexPluginConfiguration(request = codexAppServerRequest) {
   // Match the dedicated Harness workspace; a thread-agnostic read omits its
   // trusted .codex layers and can validate a different policy than the Agent uses.
-  const response = await codexAppServerRequest("config/read", {
+  const response = await request("config/read", {
     cwd: process.env.OPENCLAW_WORKSPACE_DIR || "/home/node/workspace",
   });
   return response?.config;
@@ -1752,11 +1781,11 @@ function verifyCodexPluginConfiguration(configuration, effective) {
   }
 }
 
-async function verifyCodexReviewerConfiguration(configuration, effective) {
+async function verifyCodexReviewerConfiguration(configuration, effective, request) {
   const requestedApps = Object.entries(configuration.apps ?? {})
     .filter(([, app]) => app.approvals_reviewer !== undefined);
   if (requestedApps.length === 0) return;
-  const response = await codexAppServerRequest("configRequirements/read", {});
+  const response = await request("configRequirements/read", {});
   if (!isPlainObject(response) ||
       (response.requirements !== null && !isPlainObject(response.requirements))) {
     throw new Error("Codex reviewer requirements are unavailable; use a runtime supporting configRequirements/read.");
@@ -1829,13 +1858,13 @@ function enabledCodexSelectionIds(selections) {
   );
 }
 
-async function readCodexToolStatuses() {
+async function readCodexToolStatuses(request = codexAppServerRequest) {
   const statuses = [];
   const cursors = new Set();
   let cursor;
   // Bound startup discovery even if a server keeps returning fresh cursors.
   for (let page = 0; page < 100; page += 1) {
-    const response = await codexAppServerRequest("mcpServerStatus/list", {
+    const response = await request("mcpServerStatus/list", {
       detail: "toolsAndAuthOnly",
       ...(cursor === undefined ? {} : { cursor }),
     });
@@ -1872,19 +1901,19 @@ async function readCodexPluginDetails(readParamsList, read = (params) => codexAp
   return details;
 }
 
-async function installCodexSelectionSet(selections, failures = []) {
+async function installCodexSelectionSet(selections, failures, request) {
   if (Object.keys(selections).length === 0) return { successfulPluginIds: [], failures: [] };
   const enabledPluginIds = enabledCodexSelectionIds(selections);
-  const listed = await codexAppServerRequest("plugin/list", {});
+  const listed = await request("plugin/list", {});
   const readParamsList = pluginRuntimeTranslator.codexReadParamsForSelections(selections, listed);
-  const resolvedDetails = await readCodexPluginDetails(readParamsList);
+  const resolvedDetails = await readCodexPluginDetails(readParamsList, (params) => request("plugin/read", params));
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
   const successfulPluginIds = [];
   const installs = pluginRuntimeTranslator.codexInstallPlan(selections, resolvedDetails);
   // Native installation reports connector auth only for enabled plugins.
   // Grant validated selections before installation; app grants still wait for revalidation.
-  await codexAppServerRequest("config/batchWrite", {
+  await request("config/batchWrite", {
     edits: [{ keyPath: "plugins", mergeStrategy: "replace", value: {
       _default: { enabled: false },
       ...Object.fromEntries(installs.map((plugin) => [plugin.nativeId, {
@@ -1901,7 +1930,7 @@ async function installCodexSelectionSet(selections, failures = []) {
     if (selectedPlugin !== undefined && failedIds.has(selectedPlugin.pluginId)) continue;
     let install;
     try {
-      install = await codexAppServerRequest("plugin/install", readParams);
+      install = await request("plugin/install", readParams);
     } catch (error) {
       if (
         error instanceof CodexAppServerRequestError &&
@@ -1955,7 +1984,7 @@ async function installCodexSelectionSet(selections, failures = []) {
     Object.entries(selections).filter(([pluginId]) => enabledPluginIds.has(pluginId) && !failedIds.has(pluginId)),
   );
   const toolStatuses = pluginRuntimeTranslator.codexNeedsToolInventory(enabledSelections)
-    ? await readCodexToolStatuses()
+    ? await readCodexToolStatuses(request)
     : [];
   const effectiveResolvedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, resolvedDetails, failed, toolStatuses);
   const installedDetails = await readCodexPluginDetails(readParamsList, (readParams, index) => {
@@ -1968,7 +1997,7 @@ async function installCodexSelectionSet(selections, failures = []) {
     ) {
       return resolvedDetails[index];
     }
-    return codexAppServerRequest("plugin/read", readParams);
+    return request("plugin/read", readParams);
   });
   const installedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, installedDetails, failed, toolStatuses);
   if (JSON.stringify(installedArtifact.installs) !== JSON.stringify(effectiveResolvedArtifact.installs)) {
@@ -1979,12 +2008,12 @@ async function installCodexSelectionSet(selections, failures = []) {
   }
   // Remote plugin/read reports catalog metadata, not cached bundle contents.
   // Recheck the admitted release and app mapping before granting apps.
-  await writeCodexPluginConfiguration(effectiveResolvedArtifact.configuration);
+  await writeCodexPluginConfiguration(effectiveResolvedArtifact.configuration, request);
   const enabledReadParams = readParamsList.filter((readParams) => installs.some(
     (plugin) => plugin.remotePluginId === readParams.pluginName &&
       !failedIds.has(plugin.pluginId) && enabledPluginIds.has(plugin.pluginId),
   ));
-  const enabledDetails = await readCodexPluginDetails(enabledReadParams);
+  const enabledDetails = await readCodexPluginDetails(enabledReadParams, (params) => request("plugin/read", params));
   for (const plugin of effectiveResolvedArtifact.installs) {
     if (failedIds.has(plugin.pluginId) || !enabledPluginIds.has(plugin.pluginId)) continue;
     const readParams = enabledReadParams.find((candidate) => candidate.pluginName === plugin.remotePluginId);
@@ -1997,8 +2026,8 @@ async function installCodexSelectionSet(selections, failures = []) {
   // TODO: use native effective app/tool policy introspection when available.
   // Codex 0.156 config/read omits managed app requirements applied at execution;
   // this readback verifies loaded configuration, not future thread policy.
-  const effectiveConfiguration = await readCodexPluginConfiguration();
-  await verifyCodexReviewerConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
+  const effectiveConfiguration = await readCodexPluginConfiguration(request);
+  await verifyCodexReviewerConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration, request);
   verifyCodexPluginConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
   return { successfulPluginIds, failures: failed };
 }
@@ -2007,7 +2036,7 @@ async function installCodexSelectionSet(selections, failures = []) {
 // API-key login ("api key auth is not supported"), so retrying cannot succeed.
 // Disable every enabled selection as an authentication requirement and turn the
 // plugin features off instead of holding the Harness unready.
-async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = []) {
+async function disableCodexSelectionsWithoutChatGptLogin(selections, failures, request) {
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
   for (const pluginId of enabledCodexSelectionIds(selections)) {
@@ -2033,8 +2062,8 @@ async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = 
     let lastError = new Error("Codex plugin disable deadline expired before the first attempt.");
     while (Date.now() < deadline) {
       try {
-        await writeCodexPluginConfiguration(configuration);
-        verifyCodexPluginConfiguration(configuration, await readCodexPluginConfiguration());
+        await writeCodexPluginConfiguration(configuration, request);
+        verifyCodexPluginConfiguration(configuration, await readCodexPluginConfiguration(request));
         lastError = undefined;
         break;
       } catch (error) {
@@ -2051,18 +2080,23 @@ async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = 
   return { successfulPluginIds: [], failures: failed };
 }
 
-async function installCodexPlugins(runtime, failures = []) {
+async function installCodexPlugins(runtime, failures = [], request) {
   assertCodexPluginRuntime(runtime);
   const selections = runtime.manifest.selections ?? {};
+  // The owner supplies the authenticated native session. Never fall back to
+  // ambient credentials when a nonempty preparation has no valid caller.
+  if (Object.keys(selections).length > 0 && typeof request !== "function") {
+    throw new Error("Codex plugin preparation requires a native request caller.");
+  }
   if (process.env.CODEX_LOGIN_MODE === "api_key") {
-    return disableCodexSelectionsWithoutChatGptLogin(selections, failures);
+    return disableCodexSelectionsWithoutChatGptLogin(selections, failures, request);
   }
   const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
   let lastError = new Error("Codex plugin installation deadline expired before the first attempt.");
   let result = { successfulPluginIds: [], failures };
   while (Date.now() < deadline) {
     try {
-      result = await installCodexSelectionSet(selections, failures);
+      result = await installCodexSelectionSet(selections, failures, request);
       lastError = undefined;
       break;
     } catch (error) {
@@ -2370,6 +2404,7 @@ const { spawn } = require("node:child_process");
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
 ${PLUGIN_RUNTIME_HELPERS}
+${GOOGLE_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
@@ -2522,6 +2557,38 @@ function requireWorkspaceNodePlugins(config) {
   }
 }
 
+const googleSkillsDirectory = "/usr/local/lib/oce/plugins/google/skills";
+function googleInstallSkill(release) {
+  if (!release?.capabilities.gateway.includes("skill")) return undefined;
+  const directory = googleSkillsDirectory + "/" + release.skill;
+  return { directory, instructions: directory + "/SKILL.md" };
+}
+
+function installGatewayPlugins(runtime, failures) {
+  const id = process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID;
+  if (!id || runtime.manifest.kind !== "openclaw") return installOpenClawPlugins(runtime, failures);
+
+  // Google supplies a skill from the image. Only native packages go through OpenClaw's installer.
+  const { [id]: google, ...selections } = runtime.manifest.selections ?? {};
+  const release = installedGoogleRelease();
+  if (Boolean(google?.enabled) !== Boolean(release)) throw new Error("The managed Google plugin selection differs from the runtime release.");
+  const native = { ...runtime, manifest: { ...runtime.manifest, selections } };
+  const result = installOpenClawPlugins(native, failures);
+
+  const skill = googleInstallSkill(release);
+  if (skill) verifiedGoogleFile(skill.instructions, release.skillSha256);
+  const config = readOpenClawConfig();
+  if (skill || config.skills?.load?.extraDirs?.includes(googleSkillsDirectory)) {
+    const skills = config.skills ??= {};
+    const load = skills.load ??= {};
+    const directories = (load.extraDirs ?? []).filter((path) => path !== googleSkillsDirectory);
+    load.extraDirs = skill ? [...directories, googleSkillsDirectory] : directories;
+    writeOpenClawConfig(config);
+  }
+  if (release) result.successfulPluginIds.push(id);
+  return result;
+}
+
 // Every change this makes is under plugins.*, which OpenClaw hot-applies.
 function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   requireWorkspaceNodePlugins(config);
@@ -2561,6 +2628,9 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   ];
   const nodes = fileConfig.nodes ??= {};
   if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
+    // Native workspace.skills checks the source root for discovery, the skill directory for
+    // resources and the instruction file for reads. This release needs exactly those paths.
+    const googleSkill = googleInstallSkill(installedGoogleRelease());
     nodes[workspaceNodeId] = {
       ask: "off",
       allowReadPaths: [
@@ -2568,6 +2638,7 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
         remoteRoot + "/**",
         "/home/node/.openclaw",
         ...skillRoots.flatMap((root) => [root, root + "/**"]),
+        ...(googleSkill ? [googleSkillsDirectory, googleSkill.directory, googleSkill.instructions] : []),
       ],
       allowWritePaths: [
         ...editable.map((name) => remoteRoot + "/" + name),
@@ -2930,7 +3001,7 @@ function configureGateway(peerStatus) {
   const pluginResult =
     pluginRuntime === undefined
       ? { successfulPluginIds: [], failures: peerFailures }
-      : installOpenClawPlugins(pluginRuntime, peerFailures);
+      : installGatewayPlugins(pluginRuntime, peerFailures);
   if (pluginRuntime !== undefined) {
     logStartupPhase("plugin-install", pluginInstallStartedAt);
   }
@@ -4177,7 +4248,7 @@ child.on("exit", (code, signal) => {
   let pluginInstallLogged = false;
   try {
     if (pluginRuntime !== undefined) {
-      const result = await installCodexPlugins(pluginRuntime);
+      const result = await installCodexPlugins(pluginRuntime, [], codexAppServerRequest);
       logStartupPhase("plugin-install", pluginInstallStartedAt);
       pluginInstallLogged = true;
       publishPluginRuntimeStatus({ phase: "ready", ...result });
@@ -4633,6 +4704,7 @@ const { join } = require("node:path");
 const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
+${GOOGLE_INSTALL_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
@@ -4668,6 +4740,26 @@ if (
 // Until Doctor has brought it current, readiness does not open it.
 const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
 let nodeStateCurrent = outdatedNodeDatabases.length === 0;
+
+const googleRelease = installedGoogleRelease();
+const googleAlias = ${JSON.stringify(googleAccountEnv)};
+const googleCredentialEnv = process.env.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV;
+const googleMarker = process.env[googleAlias];
+const scopedGoogleMarker = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(googleMarker ?? "")?.[1] === googleAlias;
+if (googleCredentialEnv !== undefined && (
+  googleCredentialEnv !== googleAlias ||
+  googleRelease?.credentials?.account?.delivery?.env !== googleCredentialEnv ||
+  (googleMarker !== undefined && !scopedGoogleMarker)
+)) throw new Error("The selected Google account requires its scoped OpenShell credential placeholder.");
+// OpenShell supplies a scoped marker for an attached provider, including an independent
+// Agent credential. A withdrawn provider stops supplying it when this container restarts.
+if (!scopedGoogleMarker) delete process.env[googleAlias];
+const googleBin = "/usr/local/lib/oce/plugins/google/bin";
+const enableGoogleCli = googleRelease?.capabilities.harness.includes("cli");
+if (enableGoogleCli) {
+  const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
+  verifiedGoogleFile(join(googleBin, googleRelease.executable), googleRelease.artifacts[architecture]?.binarySha256);
+}
 
 function nativeWorkerReady() {
   return new Promise((resolve) => {
@@ -4742,6 +4834,7 @@ delete process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 delete process.env.OPENCLAW_HARNESS_PROBE_CONFIG;
 const nodeEnv = {
   ...process.env,
+  ...(enableGoogleCli && { PATH: [googleBin, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };

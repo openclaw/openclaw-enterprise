@@ -77,6 +77,11 @@ async function call(method, params = {}) {
       process.env.OPENCLAW_GATEWAY_PASSWORD,
       "--params",
       JSON.stringify(params),
+      // The CLI's own RPC timer defaults to 10 s and covers the connect, handshake
+      // and reply, so it must share the deadline too (main run 40714481715: node.list
+      // reported "gateway timeout after 10000ms" with 88 s of the budget left).
+      "--timeout",
+      String(timeout),
       "--json",
     ],
     { timeout, maxBuffer: 1_000_000 },
