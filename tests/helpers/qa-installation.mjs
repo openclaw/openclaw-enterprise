@@ -372,9 +372,10 @@ export async function createQaInstallation(
   context,
   controlPlane,
   artifacts,
-  { repositoryInputs = true } = {},
+  { repositoryInputs = true, sandboxDriver = "none", sandboxNetworkPolicyFile = undefined } = {},
 ) {
   assert.ok(["compose", "kubernetes"].includes(controlPlane));
+  assert.ok(["none", "openshell"].includes(sandboxDriver));
   const suffix = randomUUID().slice(0, 8);
   const cluster = `occ-dev-qa-${controlPlane === "compose" ? "c" : "k"}-${suffix}`;
   const directory = await mkdtemp(join(tmpdir(), `${cluster}-`));
@@ -391,7 +392,7 @@ export async function createQaInstallation(
     OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
     OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
-    OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
+    OCC_DEVELOPMENT_SANDBOX_DRIVER: sandboxDriver,
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
     OCC_DEVELOPMENT_COMPOSE_PROJECT: cluster,
     OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
@@ -753,14 +754,18 @@ export async function createQaInstallation(
     env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = subnet;
     await f.record("compose-network", { subnet });
   }
-  const started = await f.run(join(repository, "scripts/dev-up"), [], { timeout: 1_100_000 });
+  const started = await f.run(
+    join(repository, "scripts/dev-up"),
+    sandboxNetworkPolicyFile ? ["--sandbox-network-policy-file", sandboxNetworkPolicyFile] : [],
+    { timeout: 1_100_000 },
+  );
   assert.match(
     started,
     controlPlane === "compose" ? /Control plane: Compose/ : /Deployment: Kubernetes only/,
   );
   f.state = JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8"));
   assert.equal(f.state.cluster, cluster);
-  assert.equal(f.state.sandboxDriver, "none");
+  assert.equal(f.state.sandboxDriver, sandboxDriver);
   f.serviceKey = JSON.parse(
     await protectedText(join(stateDirectory, "initial-admin-service-key.json"), "bootstrap key"),
   ).data.key;
@@ -771,11 +776,13 @@ export async function createQaInstallation(
     return namespace?.status === "ready" && namespace;
   });
   f.presets = await f.api("GET", `/namespaces/${f.defaultNamespace.id}/presets`);
-  assert.deepEqual(f.presets.map((p) => p.name).sort(), [
-    "Standard Codex",
-    "Standard OpenClaw",
-    "default-codex",
-  ]);
+  if (sandboxDriver === "none") {
+    assert.deepEqual(f.presets.map((p) => p.name).sort(), [
+      "Standard Codex",
+      "Standard OpenClaw",
+      "default-codex",
+    ]);
+  }
   f.configuration = loadYaml(await readFile(join(stateDirectory, "installation.yaml"), "utf8"));
   f.namespace = f.defaultNamespace;
   if (controlPlane === "compose") {
@@ -797,7 +804,7 @@ export async function createQaInstallation(
     defaultNamespaceId: f.defaultNamespace.id,
     namespaceId: f.namespace.id,
     presets: f.presets.map(({ id, name }) => ({ id, name })),
-    sandboxDriver: "none",
+    sandboxDriver,
   });
   return f;
 }

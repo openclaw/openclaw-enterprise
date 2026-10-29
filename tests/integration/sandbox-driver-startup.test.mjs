@@ -3621,14 +3621,14 @@ test("OpenShell rejects unsupported or foreign Codex runtime providers before Sa
       expected: /requires its exact bounded plugin-runtime files/,
     },
     {
-      name: "selected plugin",
+      name: "non-Codex manifest",
       fixture: {
         runtimeManifest: JSON.stringify({
-          kind: "codex",
-          selections: { slack: { enabled: true } },
+          kind: "openclaw",
+          selections: {},
         }),
       },
-      expected: /does not yet support selected plugins/,
+      expected: /requires a Codex plugin-runtime manifest/,
     },
     {
       name: "foreign provider collision",
@@ -4609,7 +4609,7 @@ async function ready(operation) {
   assert.deepEqual(await operation, { state: "ready" });
 }
 
-test("Codex PAT profiles admit native startup without granting the whole backend", async () => {
+test("Codex PAT profiles restrict native startup and plugin routes", async () => {
   const { context, driver, profiles } = credentialGatewayOverProviders();
   const source = context("cs_00000000-0000-4000-8000-0000000000c1");
   await driver.registerSource(
@@ -4617,8 +4617,8 @@ test("Codex PAT profiles admit native startup without granting the whole backend
     { type: "codex-pat", config: {}, secrets: { access_token: "synthetic-codex-pat" } },
   );
   const [profile] = profiles.values();
-  // These are the pinned Codex dependency's startup, turn and usage-recovery routes. A broader backend
-  // or WHAM wildcard would release this credential to unrelated account APIs.
+  // The native client needs plugin installation, app metadata and MCP transport.
+  // Backend or WHAM wildcards would also admit unrelated account APIs.
   assert.deepEqual(profile.endpoints, [
     {
       host: "auth.openai.com",
@@ -4631,6 +4631,30 @@ test("Codex PAT profiles admit native startup without granting the whole backend
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/accounts/check" },
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/settings/user" },
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/usage" },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/plugins/**",
+      rules: [
+        { allow: { method: "GET", path: "/backend-api/ps/plugins/*" } },
+        { allow: { method: "POST", path: "/backend-api/ps/plugins/*/install" } },
+      ],
+    },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/apps/batch",
+      rules: [{ allow: { method: "POST", path: "/backend-api/ps/apps/batch" } }],
+    },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/mcp",
+      rules: [{ allow: { method: "POST", path: "/backend-api/ps/mcp" } }],
+    },
   ]);
   assert.deepEqual(profile.binaries, ["/usr/local/bin/codex"]);
 });

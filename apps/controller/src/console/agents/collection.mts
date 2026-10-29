@@ -67,12 +67,16 @@ interface AgentListContext extends AgentNavigation {
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
 // Returns it with the rest of its page, and whether that page lists every readable version: the
 // API sends a cursor only when it found an older one the caller can read.
-async function latestReadableRevision(context: AgentListContext, path: string) {
+async function latestReadableRevision(
+  context: AgentListContext,
+  path: string,
+  signal: AbortSignal,
+) {
   let cursor: string | null = null;
   do {
     const page = (await context.request(
       cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
-      { ...rowRead, includeMeta: true },
+      { ...rowRead, signal, includeMeta: true },
     )) as AgentRevisionListResponse;
     cursor = page.meta?.nextCursor ?? null;
     const [latest] = page.data;
@@ -99,6 +103,7 @@ async function currentRevision(
   path: string,
   activeId: string | undefined,
   { page, complete }: { page: readonly AgentRevisionMetadata[]; complete: boolean },
+  signal: AbortSignal,
 ): Promise<Exclude<CurrentVersion, typeof NEWER_UNREADABLE>> {
   const listed = page.find((revision) => revision.id === activeId);
   if (!activeId || listed) {
@@ -109,7 +114,7 @@ async function currentRevision(
     return UNREADABLE;
   }
   try {
-    return (await context.request(activePath, rowRead)) as AgentRevisionMetadata;
+    return (await context.request(activePath, { ...rowRead, signal })) as AgentRevisionMetadata;
   } catch (error) {
     const { status } = requestFailure(error);
     if (status === 401) {
@@ -136,6 +141,42 @@ const readingVersion = () => element("span", { className: "delayed-status" }, "R
 const READING_SHOWN_MS = 150;
 
 const rowRead = { revalidate: false, rereadOnResume: true } as const;
+
+// The reads of one row that a search can retire. A search that hides the row aborts them while
+// they are unfinished, so the browser never sends the ones it still queues; a row shown again
+// reads anew. A finished read stays, so a row is not read twice.
+interface RowReads {
+  readonly signal: AbortSignal;
+  finished: boolean;
+  retire(): void;
+}
+
+function rowReads(): RowReads {
+  const controller = new AbortController();
+  return { signal: controller.signal, finished: false, retire: () => controller.abort() };
+}
+
+function finishWith(row: RowReads, ...reads: Promise<unknown>[]) {
+  void Promise.allSettled(reads).then(() => {
+    row.finished = true;
+  });
+}
+
+// Retires the unfinished reads of rows that are not in `shown`, and forgets them so a row that is
+// shown again starts them anew.
+function retireHidden<Read>(
+  reads: Map<string, Read>,
+  shown: ReadonlySet<string>,
+  rowOf: (read: Read) => RowReads,
+) {
+  for (const [id, read] of reads) {
+    const row = rowOf(read);
+    if (!shown.has(id) && !row.finished) {
+      row.retire();
+      reads.delete(id);
+    }
+  }
+}
 
 function agentNameLink(item: AgentRead, context: AgentNavigation) {
   const node = link(item.name, `agents/${item.id}`, context);
@@ -184,7 +225,7 @@ export function renderAgentList(context: AgentListContext) {
   // Advisory caller permissions per Agent, read as on Agent detail. A refusal disables that
   // row's icon before confirmation; a failed read keeps the usual path, and the API still
   // authorizes every write.
-  const permissionReads = new Set<string>();
+  const permissionReads = new Map<string, RowReads>();
   // Each row's permission answer as it settles (null when it failed), for text that depends on it.
   const permissionAnswers = new Map<string, Promise<AgentPermissions | null>>();
   const permissions = new Map<string, AgentPermissions>();
@@ -254,14 +295,16 @@ export function renderAgentList(context: AgentListContext) {
   // The row's revisions read, then its latest deployment and its current version side by side.
   function readDeployment(item: AgentRead) {
     const agentPath = agentRequestPath(item.id);
-    const revisions = latestReadableRevision(context, `${agentPath}/revisions`);
+    const row = rowReads();
+    const { signal } = row;
+    const revisions = latestReadableRevision(context, `${agentPath}/revisions`, signal);
     const deployment = revisions.then(async ({ latest }) => {
       if (!latest) {
         return null;
       }
       const status = (await context.request(
         `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
-        rowRead,
+        { ...rowRead, signal },
       )) as AgentDeploymentStatusWire;
       // A rejected model credential is worded for the caller, as on the Agent's page (finding
       // D752), so that row waits for its permission answer.
@@ -276,26 +319,26 @@ export function renderAgentList(context: AgentListContext) {
           : undefined;
       return { revision: latest, status, credentialAsk };
     });
-    return {
-      deployment,
-      current: revisions.then(async (found): Promise<CurrentVersion> => {
-        const active = await currentRevision(
-          context,
-          `${agentPath}/revisions`,
-          item.activeRevisionId,
-          found,
-        );
-        if (active !== UNREADABLE) {
-          return active;
-        }
-        // A succeeded deployment makes its version current, so an unreadable current version
-        // beside the newest readable one's succeeded deployment is newer, as on the Agent page.
-        const latest = await deployment.catch(() => null);
-        return latest && deploymentOutcome(latest.status) === "succeeded"
-          ? NEWER_UNREADABLE
-          : UNREADABLE;
-      }),
-    };
+    const current = revisions.then(async (found): Promise<CurrentVersion> => {
+      const active = await currentRevision(
+        context,
+        `${agentPath}/revisions`,
+        item.activeRevisionId,
+        found,
+        signal,
+      );
+      if (active !== UNREADABLE) {
+        return active;
+      }
+      // A succeeded deployment makes its version current, so an unreadable current version
+      // beside the newest readable one's succeeded deployment is newer, as on the Agent page.
+      const latest = await deployment.catch(() => null);
+      return latest && deploymentOutcome(latest.status) === "succeeded"
+        ? NEWER_UNREADABLE
+        : UNREADABLE;
+    });
+    finishWith(row, deployment, current);
+    return { deployment, current, row };
   }
   // A read that lands before a cell's reading text shows, or after it has shown long enough,
   // fills the cell now; otherwise once it has. The text shows in the frame its delay animation
@@ -387,9 +430,11 @@ export function renderAgentList(context: AgentListContext) {
       current.querySelector(".delayed-status"),
       (active: CurrentVersion) => fillCurrent(current, item, active),
     );
+    // A read a search retired fails here; its row is no longer shown, so it paints nothing.
+    const showing = () => context.isCurrent() && !reads.row.signal.aborted;
     void reads.current.then(
       (active) => context.isCurrent() && fillVersion(active),
-      () => context.isCurrent() && fillVersion(null),
+      () => showing() && fillVersion(null),
     );
     void reads.deployment
       .then((result) => {
@@ -428,7 +473,7 @@ export function renderAgentList(context: AgentListContext) {
       })
       .catch((error) => {
         // A read the list's reset aborted fails here; it never paints the list it left.
-        if (!context.isCurrent()) {
+        if (!showing()) {
           return;
         }
         setLatestDeployment(item, null);
@@ -501,10 +546,12 @@ export function renderAgentList(context: AgentListContext) {
     if (permissionReads.has(item.id) || item.status === "deleting") {
       return;
     }
-    permissionReads.add(item.id);
+    const row = rowReads();
+    permissionReads.set(item.id, row);
     const read = context
-      .request(`${agentRequestPath(item.id)}/permissions`, rowRead)
+      .request(`${agentRequestPath(item.id)}/permissions`, { ...rowRead, signal: row.signal })
       .then((result) => result as AgentPermissions);
+    finishWith(row, read);
     permissionAnswers.set(
       item.id,
       read.catch(() => null),
@@ -826,6 +873,9 @@ export function renderAgentList(context: AgentListContext) {
     const matches = items
       .filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query))
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    const shown = new Set(matches.map((item) => item.id));
+    retireHidden(deployments, shown, (reads) => reads.row);
+    retireHidden(permissionReads, shown, (row) => row);
     if (!matches.length) {
       rows.replaceChildren(
         element(

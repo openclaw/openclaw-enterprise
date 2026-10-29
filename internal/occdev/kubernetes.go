@@ -403,11 +403,11 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
 		compute["runtime"].(map[string]any)["codexSeccompProfile"] = codexSeccompProfile
 	}
+	config["drivers"].(map[string]any)["plugin"] = map[string]any{
+		"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
+	}
 	if s.SandboxDriver == "none" {
 		config["presets"] = map[string]any{"includeDefaults": true}
-		config["drivers"].(map[string]any)["plugin"] = map[string]any{
-			"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
-		}
 	}
 	if s.SandboxDriver == "openshell" {
 		if openShell == nil {

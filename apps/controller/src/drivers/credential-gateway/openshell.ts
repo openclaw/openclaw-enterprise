@@ -620,6 +620,27 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
           // The Gateway reads native rate limits when recovering a usage-limit error.
           "/backend-api/wham/usage",
         ].map((path) => ({ host: "chatgpt.com", port: 443, protocol: "rest", path })),
+        {
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path: "/backend-api/ps/plugins/**",
+          // Shared by this source's Agents: catalog/detail reads and installation only.
+          // Bundle downloads remain credential-free and need their own egress allowance.
+          rules: [
+            { allow: { method: "GET", path: "/backend-api/ps/plugins/*" } },
+            { allow: { method: "POST", path: "/backend-api/ps/plugins/*/install" } },
+          ],
+        },
+        // Native app metadata and hosted tools use separate POST endpoints.
+        // The shared source profile does not replace managed app/tool policy.
+        ...["/backend-api/ps/apps/batch", "/backend-api/ps/mcp"].map((path) => ({
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path,
+          rules: [{ allow: { method: "POST", path } }],
+        })),
       ],
       binaries: options.binaries,
       inferenceCapable: true,

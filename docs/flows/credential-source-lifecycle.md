@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-10-29
-last_updated_session: authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741
+last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
 ---
 
 # Credential source lifecycle Flow
@@ -120,6 +120,10 @@ material.
 
 For a live versioned static OpenAI source without refresh, OCC skips placement
 and Gateway registration. The Gateway still owns the catalog and the source record.
+
+Codex PAT profiles include native app metadata and MCP transport; the
+[Driver reference](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+owns the exact source-wide routes.
 
 A definitive failed/absent result triggers cleanup and record deletion; failed
 cleanup retains `deleting`. Thrown calls may still take effect, so cleanup retains
