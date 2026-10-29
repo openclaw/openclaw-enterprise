@@ -22,6 +22,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { assertProvisioningRepositoryStatus } from "../helpers/provisioning-repository-status.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
 import {
   conformanceKubernetesOptions,
@@ -4854,10 +4855,10 @@ test(
   },
 );
 
-async function createFailedPreHandoffAgent(fixture) {
+async function createFailedPreHandoffAgent(fixture, overrides = {}) {
   const namespace = await fixture.bootstrapNamespace();
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
-  const body = provisioningBody(namespace.id, secrets);
+  const body = provisioningBody(namespace.id, secrets, overrides);
   const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
     body,
   });
@@ -5777,6 +5778,16 @@ test(
     const gone = await fixture.request("GET", configurationPath);
     assert.equal(gone.status, 404, JSON.stringify(gone.body));
   },
+);
+
+test(
+  "existing Agent provisioning status survives repository policy refusal while retry and IAM remain enforced",
+  { ...requiresPostgres, timeout: 60_000 },
+  (context) =>
+    assertProvisioningRepositoryStatus(failingTransportDriver(), async (options, overrides) => {
+      const fixture = await createFixture(context, options);
+      return { fixture, ...(await createFailedPreHandoffAgent(fixture, overrides)) };
+    }),
 );
 
 test(
