@@ -546,44 +546,40 @@ export function renderSecrets(
       );
     }
     const referenced = count > 0 || consumers.unreadable > 0 || consumers.truncated;
-    current.body.append(
-      element(
-        "p",
-        referenced ? { id: "secret-delete-blocked" } : {},
-        referenced
-          ? "Deletion is blocked while references remain. Remove them from their owning resources first."
-          : "No current consumers were found. Deletion checks references again.",
-      ),
+    const references = element(
+      "p",
+      referenced ? { id: "secret-delete-blocked" } : {},
+      referenced
+        ? "Deletion is blocked while references remain. Remove them from their owning resources first."
+        : "No current consumers were found. Deletion checks references again.",
     );
+    current.body.append(references);
     // The read's advisory answer disables what the API would refuse, with the reason, instead of
     // refusing a replacement after the value is typed (finding D761). Gating only: the API still
     // authorizes each write, and an unknown answer keeps the action.
     const replaceDenied = detail.callerPermissions.update === false;
     const deleteDenied = detail.callerPermissions.delete === false;
-    if (replaceDenied) {
-      current.body.append(
-        element("p", { className: "muted", id: "secret-replace-denied" }, SECRET_UPDATE_DENIED),
-      );
-    }
-    if (deleteDenied) {
-      current.body.append(
-        element("p", { className: "muted", id: "secret-delete-denied" }, SECRET_DELETE_DENIED),
-      );
-    }
+    const replaceDeniedNote = replaceDenied
+      ? element("p", { className: "muted", id: "secret-replace-denied" }, SECRET_UPDATE_DENIED)
+      : null;
+    const deleteDeniedNote = deleteDenied
+      ? element("p", { className: "muted", id: "secret-delete-denied" }, SECRET_DELETE_DENIED)
+      : null;
+    current.body.append(...[replaceDeniedNote, deleteDeniedNote].filter((note) => note !== null));
+    // An unavailable action with its reason in the dialog stays in the Tab order, described by
+    // that reason (findings 2899, 2925). Replace value in a Namespace that is not ready has no
+    // reason here, so it stays natively disabled.
     const replace = button("Replace value", () => editValue(detail));
-    replace.disabled = !ready || replaceDenied;
-    if (replaceDenied) {
-      replace.setAttribute("aria-describedby", "secret-replace-denied");
-    }
+    setUnavailable(replace, !ready || replaceDenied, replaceDeniedNote);
     const remove = button("Delete Secret", () => confirmDelete(detail), { tone: "danger" });
-    remove.disabled = referenced || deleteDenied;
-    const deleteReasons = [
-      ...(referenced ? ["secret-delete-blocked"] : []),
-      ...(deleteDenied ? ["secret-delete-denied"] : []),
-    ];
-    if (deleteReasons.length) {
-      remove.setAttribute("aria-describedby", deleteReasons.join(" "));
+    const deleteReasons = [referenced ? references : null, deleteDeniedNote].filter(
+      (note) => note !== null,
+    );
+    // Both reasons describe Delete Secret when both apply; the first decides that it is reachable.
+    if (deleteReasons.length > 1) {
+      remove.setAttribute("aria-describedby", deleteReasons.map((note) => note.id).join(" "));
     }
+    setUnavailable(remove, referenced || deleteDenied, deleteReasons[0]);
     current.actions.append(replace, remove);
   }
 

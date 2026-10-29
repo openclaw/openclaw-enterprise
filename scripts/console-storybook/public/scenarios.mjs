@@ -587,6 +587,9 @@ export const scenarios = {
     actions: [click("Demo model API key (simulated)")],
     description:
       "The Secret read says this caller may neither replace nor delete the Secret. Both buttons are disabled before any typing, and each names its reason. Consumers name the Agent, with its ID beside it. Simulated UI proof.",
+    steps: [
+      "Tab to Replace value and Delete Secret. Each takes focus and looks unavailable. Replace value is described by its note; Delete Secret by the blocked-deletion sentence and its note. Enter, Space or a click opens nothing.",
+    ],
     gap: "The answer is advisory. The controller still authorizes each write.",
   },
   secretsLinkUnlisted: {
@@ -1192,7 +1195,7 @@ export const scenarios = {
       "The row's Stop icon opens the same confirmation as Agent detail. Cancel returns focus to the icon without a write; Stop Agent requests the stopped state.",
     steps: [
       "Cancel the dialog and check focus returns to the Stop icon.",
-      "Open it again and select Stop Agent. The row shows Stop requested, its Stop icon is disabled, and the list stays open.",
+      "Open it again and select Stop Agent. The row shows Stop requested, its Stop icon is disabled but keeps focus with Stop requested as its description, and the list stays open.",
       "In Populated, never-deployed Agents show no Stop icon, as on Agent detail.",
     ],
     gap: "The fixture records the requested state only. Live runtime shutdown is not simulated.",
@@ -8602,6 +8605,7 @@ export const scenarios = {
     steps: [
       "Switch Authentication source to API key, Service Accounts, and Operator-managed credentials. The issued-account error disappears; each source shows its own fields with consistent styling.",
       "Return to Issued ChatGPT service account. The unavailable-account feedback and saved account return; the failed lookup does not change its selection.",
+      "Tab to the account select. It takes focus and looks unavailable, its description is the feedback, and Enter, Space, a click or an arrow key changes nothing.",
     ],
   },
   nativeAdmin: {

@@ -34,6 +34,7 @@ import { consoleStorage } from "../helpers/console-storage.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   apiRequests,
+  expectReachableReason,
   expectWriteAsksBeforeUnload,
   fileBrowser,
   hasFocus,
@@ -51,6 +52,8 @@ type SecretWriteMethod = "POST" | "PATCH" | "DELETE";
 const secretsUrl = (namespace: Namespace) => `/console/secrets?namespace=${namespace.id}`;
 const secretPath = (namespace: Namespace) => `/namespaces/${namespace.id}/secrets`;
 const dialog = (page: Page, name: string) => page.getByRole("dialog", { name, exact: true });
+const DELETE_BLOCKED =
+  "Deletion is blocked while references remain. Remove them from their owning resources first.";
 
 async function createFromConsole(page: Page, name: string, value: string) {
   await page.getByRole("button", { name: "Create Secret", exact: true }).click();
@@ -113,9 +116,11 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   // Consumers name the Agent, its ID beside it (finding D761).
   await detail.getByRole("link", { name: agent.name, exact: true }).waitFor();
   await detail.getByText(agent.id, { exact: true }).waitFor();
-  assert.equal(
-    await detail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
-    true,
+  // A keyboard reader reaches the blocked Delete Secret and hears why (finding 2925).
+  await expectReachableReason(
+    page,
+    detail.getByRole("button", { name: "Delete Secret", exact: true }),
+    DELETE_BLOCKED,
   );
   await detail.getByRole("link", { name: agent.name, exact: true }).click();
   await page.waitForURL(new RegExp(`/console/agents/${agent.id}`));
@@ -378,9 +383,11 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   // A consumer the member may read shows by name, its ID beside it (finding D761).
   await privateDetail.getByRole("link", { name: sharedAgent.name, exact: true }).waitFor();
   await privateDetail.getByText(sharedAgent.id, { exact: true }).waitFor();
-  assert.equal(
-    await privateDetail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
-    true,
+  // Both reasons describe Delete Secret: the references and the missing grant (finding 2925).
+  await expectReachableReason(
+    page,
+    privateDetail.getByRole("button", { name: "Delete Secret", exact: true }),
+    `${DELETE_BLOCKED} ${SECRET_DELETE_DENIED}`,
   );
   await privateDetail.getByRole("button", { name: "Close" }).click();
 
@@ -395,6 +402,8 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     const action = readOnly.getByRole("button", { name, exact: true, description: reason });
     await action.waitFor();
     assert.equal(await action.isDisabled(), true, name);
+    // Still in the Tab order, so a keyboard reader hears why (finding 2925).
+    await expectReachableReason(page, action, reason);
   }
   await readOnly.getByRole("button", { name: "Close" }).click();
 
@@ -723,8 +732,11 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   await page.getByRole("button", { name: secret.name, exact: true }).click();
   const unready = dialog(page, secret.name);
   await unready.getByText(/No current consumers were found/).waitFor();
+  // The dialog shows no reason for it, so Replace value is natively disabled, out of the Tab order.
   assert.equal(
-    await unready.getByRole("button", { name: "Replace value", exact: true }).isDisabled(),
+    await unready
+      .getByRole("button", { name: "Replace value", exact: true })
+      .evaluate((node: HTMLButtonElement) => node.disabled),
     true,
   );
 });

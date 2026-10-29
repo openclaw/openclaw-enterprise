@@ -6,6 +6,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   AGENT_READ,
+  accessibleDescription,
   apiRequests,
   authorizationDenials,
   denyRevisionRead,
@@ -2930,11 +2931,16 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   await page.getByRole("status").getByText("Stop requested for Running Agent.").waitFor();
   await runningRow.getByText("Stop requested", { exact: true }).waitFor();
   assert.equal(await stop.isDisabled(), true);
-  // With Stop now disabled, focus falls back to the Agent's name, which sits off-screen to the
-  // left; moving focus there must not scroll the table either.
-  await page.waitForFunction(
-    () => globalThis.document.activeElement?.textContent === "Running Agent",
-  );
+  // Stop is unavailable now, with the badge as its reason, so it stays focusable and focus stays
+  // on it (finding 2926); keeping focus there must not scroll the table either.
+  await page.waitForFunction(() => {
+    const focused = globalThis.document.activeElement;
+    return (
+      focused?.getAttribute("aria-label") === "Stop Running Agent" &&
+      focused.getAttribute("aria-disabled") === "true"
+    );
+  });
+  assert.equal(await accessibleDescription(stop), "Stop requested");
   assert.equal(
     await page.evaluate(() => globalThis.document.querySelector(".table-scroll").scrollLeft),
     scrolledLeft,
@@ -3021,6 +3027,15 @@ for (const action of ["Stop", "Delete"]) {
 
     const targetRow = page.getByRole("row").filter({ hasText: target.name });
     const invoke = targetRow.getByRole("button", { name: `${action} ${target.name}` });
+    // A narrow window above the phone layout: the table scrolls sideways to reach Actions.
+    await page.setViewportSize({ width: 800, height: 844 });
+    await invoke.waitFor();
+    const scrolledLeft = await page.evaluate(() => {
+      const scroller = globalThis.document.querySelector(".table-scroll");
+      scroller.scrollLeft = scroller.scrollWidth;
+      return scroller.scrollLeft;
+    });
+    assert.ok(scrolledLeft > 0, "the narrow table should scroll horizontally");
     await invoke.click();
     const dialog = page.getByRole("dialog", { name: `${action} ${target.name}?` });
     await dialog
@@ -3036,6 +3051,17 @@ for (const action of ["Stop", "Delete"]) {
       `the response for ${other.name} must not change that row`,
     );
     assert.equal(await invoke.isDisabled(), true);
+    // The unknown outcome disables the icon natively (its reason is the alert above the table),
+    // so focus falls back to the Agent's name, off-screen to the left, without scrolling the table.
+    assert.equal(await invoke.evaluate((node) => node.disabled), true);
+    await page.waitForFunction(
+      (name) => globalThis.document.activeElement?.textContent === name,
+      target.name,
+    );
+    assert.equal(
+      await page.evaluate(() => globalThis.document.querySelector(".table-scroll").scrollLeft),
+      scrolledLeft,
+    );
     await page
       .getByRole("alert")
       .getByText(
@@ -3169,7 +3195,8 @@ test("Agents list row actions explain missing access and still report a refused 
 
   // A refusal that arrives while the dialog is open disables confirmation and moves focus to
   // Cancel. The redraw replaced the icon that opened the dialog, so closing it must land focus
-  // on the row (its name, since Stop is now disabled) rather than dropping it to the page.
+  // on the row's new Stop rather than dropping it to the page: Stop is unavailable with its
+  // reason, so it stays focusable and says why (finding 2926).
   await stop.click();
   const dialog = page.getByRole("dialog", { name: "Stop Guarded Agent?" });
   await dialog.waitFor();
@@ -3181,9 +3208,13 @@ test("Agents list row actions explain missing access and still report a refused 
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
   await cancel.click();
   await dialog.waitFor({ state: "hidden" });
-  await page.waitForFunction(
-    () => globalThis.document.activeElement?.textContent === "Guarded Agent",
-  );
+  await page.waitForFunction(() => {
+    const focused = globalThis.document.activeElement;
+    return (
+      focused?.getAttribute("aria-label") === "Stop Guarded Agent" &&
+      focused.getAttribute("aria-disabled") === "true"
+    );
+  });
 
   // The Agent's real permission read reports neither action, so both icons are disabled with a
   // visible reason before any confirmation, and nothing is sent. The row's one line names the
@@ -3307,7 +3338,6 @@ test("Agents list permission advice updates its own row without moving focus els
         { once: true },
       )
     ).release;
-  const focusedText = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
   const guardedRow = page.getByRole("row").filter({ hasText: "Guarded Agent" });
   const otherRow = page.getByRole("row").filter({ hasText: "Other Agent" });
 
@@ -3326,7 +3356,8 @@ test("Agents list permission advice updates its own row without moving focus els
   );
   assert.equal(await otherLink.evaluate((node) => node.ownerDocument.activeElement === node), true);
 
-  // When the focused icon is the one the refusal disables, focus stays in that row.
+  // When the focused icon is the one the refusal disables, focus stays on it: the refused icon is
+  // still focusable, and its description says why (finding 2899).
   release = await holdGuardedAdvice();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   const guardedStop = guardedRow.getByRole("button", { name: "Stop Guarded Agent" });
@@ -3339,9 +3370,17 @@ test("Agents list permission advice updates its own row without moving focus els
   await guardedStop.focus();
   release();
   await guardedRow.getByText(AGENT_STOP_AND_DELETE_DENIED, { exact: true }).waitFor();
-  await page.waitForFunction(
-    () => globalThis.document.activeElement?.textContent === "Guarded Agent",
+  await page.waitForFunction(() => {
+    const focused = globalThis.document.activeElement;
+    return (
+      focused?.getAttribute("aria-label") === "Stop Guarded Agent" &&
+      focused.getAttribute("aria-disabled") === "true"
+    );
+  });
+  assert.equal(
+    await guardedStop.evaluate((node) => node === globalThis.document.activeElement),
+    true,
   );
-  assert.equal(await focusedText(), "Guarded Agent");
+  assert.ok((await accessibleDescription(guardedStop)).includes(AGENT_STOP_AND_DELETE_DENIED));
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });

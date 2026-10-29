@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -49,6 +50,31 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
   const namespace = await fixture.createNamespace("Described reader", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Described Agent", nativeValues("why"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // An Agent bound to an issued service account. Issuance is outside the console: seed its stored
+  // result, as the Credentials tests do.
+  const issued = await fixture.controller.transact(async (state) => {
+    const created = await state.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Described issued account",
+    });
+    return state.serviceAccounts.updateCredential(namespace.id, created.id, {
+      kind: "access_token",
+      secretRef: { name: "described-issued-account", key: "token" },
+    });
+  });
+  const issuedAgent = await fixture.createAgent(
+    namespace.id,
+    "Described issued Agent",
+    nativeValues("issued", { harnessId: "codex" }),
+    {
+      executionMode: "dedicated",
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: namespace.id, id: issued.id },
+      },
+    },
+  );
   const reader = await fixture.createNamespaceMember("described-reader", namespace.id, AGENT_READ);
   const { page } = await newPage(t, fixture);
 
@@ -101,6 +127,14 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
   await status.filter({ hasNotText: "Loading" }).filter({ hasText: /\S/ }).waitFor();
   const bound = (await status.textContent())?.trim();
   await expectReachableReason(page, apiKey, bound);
+
+  // An issued-account source: its account select needs Agent update too, and the same note says
+  // why (finding 2925).
+  await page.goto(detailUrl(fixture, namespace.id, issuedAgent.id, "draft", "credentials").href);
+  const account = page.getByLabel("Issued ChatGPT service account", { exact: true });
+  await page.getByText(reason, { exact: true }).waitFor();
+  assert.equal(await account.inputValue(), issued.id);
+  await expectReachableReason(page, account, reason);
 });
 
 // Finding 2899: the Agents list, Secrets and Slack token controls a reader cannot use were

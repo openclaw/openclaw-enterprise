@@ -12,6 +12,7 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  expectReachableReason,
   login,
   nativeValues,
   newPage,
@@ -1540,6 +1541,8 @@ test("Credentials shows issued-account denial only while that source is selected
   await feedback.waitFor();
   assert.equal(await issuedAccount.inputValue(), account.id);
   assert.equal(await issuedAccount.isDisabled(), true);
+  // The select cannot be used, but a keyboard reader still reaches it and hears why (finding 2925).
+  await expectReachableReason(page, issuedAccount, await feedback.textContent());
 
   // Other methods remain usable without presenting the issued-account permission error.
   const method = page.getByLabel("Authentication source", { exact: true });
