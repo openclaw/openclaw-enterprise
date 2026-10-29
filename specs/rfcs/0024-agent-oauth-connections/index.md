@@ -27,11 +27,12 @@ Agent. The Agent's tool, such as `gog`, can then read that user's Gmail. Only th
 user can use the Agent.
 
 Installation administrators define connections as Installation-wide **connection
-templates**, which Presets can reference. The Credential Refresh Driver exchanges
-the authorization code and puts the refresh grant in OpenShell custody, and
-OpenShell refreshes the access token. The browser, OCC storage, and the Agent never
-receive the refresh token; the tool receives only a placeholder. OCE core contains
-no provider-specific endpoints, scopes, or binaries.
+templates**, which Presets can reference. OCE handles client setup, consent,
+and the authorization-code exchange. For MCP it uses the official TypeScript
+MCP client. After exchange, the OCE Token Service keeps the grant and refreshes
+access tokens in the background. OpenShell presents the prepared token at the
+approved endpoint. The deployed tool receives only a placeholder.
+OCE core contains no provider-specific endpoints, scopes, or binaries.
 
 ## Motivation
 
@@ -47,9 +48,8 @@ Device login, used only by the experimental `codex-oauth` model source, does not
 help: Google's device-code flow does not permit Gmail scopes. Gmail needs the
 browser authorization-code flow, with an OCC callback.
 
-This proposal reuses the custody model of
-[device login](../../../apps/controller/src/drivers/credential-refresh/openshell.ts),
-which hands the grant to OpenShell without persisting the refresh token.
+After the code exchange, browser connections use the [RFC-0023 Token Service lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle).
+It separates background refresh from the worker's outbound request.
 
 ## Goals
 
@@ -97,20 +97,25 @@ Namespace.
 | `displayName`                       | The label on the **Connect** button and consent warning.                                                                                        |
 | `issuer`                            | The authorization server's identifier, an exact `https` URL. It scopes the client ID and is the expected `iss` for `accountIdentity: oidc`.     |
 | `authorizationUrl`, `tokenUrl`      | Where OCC sends the user, and where the Driver exchanges the code. Exact `https` URLs.                                                          |
-| `clientId`, `clientSecret`          | The administrator's OAuth client at `issuer`. The Refresh Driver keeps the secret; OCC stores no value.                                         |
-| `scopes`, `authorizationParameters` | The fixed access the user approves. Users cannot add scopes. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
-| `endpoint`                          | The API `host`, `port`, `path`, and `access` (`read-only` or `full`) that receive the credential.                                               |
+| `clientId`, `clientSecret`          | For a preregistered client, its ID and any required secret. DCR supplies these for an MCP client registered at setup.                           |
+| `scopes`, `authorizationParameters` | Fixed scopes for configured OAuth. MCP owners pick a subset. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
+| `endpoint`                          | Credential destination (`host`, `port`, `path`). `access` is `read-only` or `full` for `oauth2`, and `full` for `mcp_oauth`.                    |
 | `envVar`, `binary`                  | The placeholder variable and the one executable that may send it.                                                                               |
 | `accountIdentity`                   | `none` (default) or `oidc`. With `oidc`, OCC also requests `openid email` and shows the connected address.                                      |
 | `jwksUri`                           | Optional with `oidc`. Without it, the Driver discovers the signing keys from `issuer`.                                                          |
+
+Existing templates use configured `oauth2` endpoints. For an `mcp_oauth`
+template, the administrator enters the MCP server URL and supplies a preregistered
+client or approves Dynamic Client Registration (DCR) when the issuer advertises
+it. At **Connect**, the owner chooses from the template's approved scopes. [MCP authorization contract](contracts.md#mcp-authorization)
 
 OCC rejects non-HTTPS URLs. Where OpenShell supplies a configured list of tool
 binaries, OCC also rejects a binary outside that list. Admission must separately
 verify that the runtime can enforce the consented restriction.
 
 The callback URI is derived from the console origin as
-`https://<console-host>/oauth/callback`. Administrators register that exact URI
-with the provider. The connection template response shows it.
+`https://<console-host>/oauth/callback`. The template response shows the exact URI
+for manual registration. OCE includes the same URI in its DCR request.
 
 With `accountIdentity: oidc`, the Refresh Driver verifies the provider before it
 accepts the connection template version, and verifies each ID token against it
@@ -124,10 +129,10 @@ wrong account; it does not affect who may use the Agent.
 An edit never changes what an existing connection does. Changing any field except
 `displayName` creates a new connection template version. The credential source
 records the version and the values its owner approved: issuer and its URLs, client
-registration, scopes, authorization parameters, endpoint and access, variable,
-binary, and OIDC settings. OCC and both Drivers use only that record, so an
-administrator cannot redirect a user's refresh grant or credential. Source
-configuration is already immutable.
+registration, this connection's scopes, authorization parameters, endpoint and
+access, variable, binary, and OIDC settings. OCC and both Drivers use only that
+record, so an administrator cannot redirect a user's refresh grant or credential.
+Source configuration is already immutable.
 
 After a new version, existing connections keep working and Agent details show
 **Reconnect to apply changes**. Reconnecting asks for consent again and creates a
@@ -194,9 +199,9 @@ Preset stays valid.
 These changes require review of this RFC before implementation. The
 [companion](contracts.md) defines their inputs, results, and failure behavior.
 
-1. **`CredentialRefreshDriver`** gains browser authorization, client registration,
-   and OIDC provider verification. It keeps OAuth client secrets; the OpenShell
-   implementation adds a `clientWorkspace` setting for them.
+1. **`CredentialRefreshDriver`** exposes browser authorization, client registration,
+   and OIDC provider verification to OCC. After exchange, the Driver hands the
+   source's grant and first access token to the OCE Token Service for refresh.
 2. **Protected egress** uses the [RFC-0023 contract](../0023-egress-proxy-credential-lifecycle/contracts.md).
    The sender must enforce the consented destination and HTTP methods. Admission
    must also establish the promised executable restriction before the Agent can
@@ -204,8 +209,10 @@ These changes require review of this RFC before implementation. The
 3. **`IAMDriver`** gains Installation-level access bindings, a `namespace` subject
    kind, and an optional Namespace context on authorization requests.
 
-Connections create sources of the existing `oauth2-refresh-token` type. The type
-keeps its Secret-backed registration path for manual use.
+Browser connections use the existing `oauth2-refresh-token` source type. For a
+template-created source, the Backend must select the Token Service as its only
+refresh owner and support delivery of prepared access tokens. Manual registration
+keeps its existing Secret-backed path.
 
 ### Console and API flow
 
@@ -213,36 +220,43 @@ keeps its Secret-backed registration path for manual use.
 sequenceDiagram
   participant User as Owner browser
   participant API as OCC API and console
-  participant Refresh as Credential Refresh Driver
+  participant OAuth as OCE browser authorization (Driver)
   participant Issuer as OAuth issuer
-  participant Gateway as OpenShell credential custody
+  participant Tokens as OCE Token Service
   User->>API: Connect on the personal Agent
-  API->>Refresh: startBrowserAuthorization
-  Refresh-->>API: authorizationUrl, privateState
+  API->>OAuth: startBrowserAuthorization
+  OAuth-->>API: authorizationUrl, privateState
   API-->>User: Consent warning, then popup to authorizationUrl
   User->>Issuer: Approve the fixed scopes
-  Issuer->>API: GET /oauth/callback with code and state
-  API->>Refresh: completeBrowserAuthorization
-  Refresh->>Issuer: Exchange code with PKCE verifier
-  Refresh->>Gateway: Configure refresh custody and mint
-  alt Exchange and mint succeed
-    Refresh-->>API: ready
-    API-->>User: Connected; Ready for deployment checks
+  Issuer->>API: GET /oauth/callback with code, state, and optional iss
+  API->>OAuth: completeBrowserAuthorization
+  OAuth->>Issuer: Exchange code with PKCE verifier
+  alt Exchange succeeds
+    Issuer-->>OAuth: Access token and refresh grant
+    OAuth->>Tokens: Hand off validated grant and first access token for this source
+    Tokens-->>OAuth: Committed
+    OAuth-->>API: ready
+    API-->>User: Connected and ready for deployment checks
   else Consent denied, state invalid, or exchange refused
-    Refresh-->>API: failure code
-    API-->>User: Show the failure; remove the pending source
+    OAuth-->>API: failure code
+    API-->>User: Show failure after removing the pending source
   end
 ```
 
-_Proposed flow; none of these paths is implemented._
+_The diagram shows a template with configured OAuth endpoints. MCP adds scope
+selection before the redirect and uses the
+[MCP authorization contract](contracts.md#mcp-authorization)._
 
-1. `POST /namespaces/:namespaceId/agents/:agentId/connections` with a connection
-   template ID. OCC checks connection template `use`, confirms the caller is the
-   recorded owner, registers an empty source as `registering`, and calls
+1. For MCP, the owner selects scopes in Console before starting OAuth.
+   `POST /namespaces/:namespaceId/agents/:agentId/connections` takes the template
+   ID and, for MCP, the displayed template version and `selectedScopes`. OCC
+   checks template `use`, confirms the caller owns the Agent, and validates the
+   selection. It then registers an empty source as `registering` and calls
    `startBrowserAuthorization`. It stores `privateState` in a Namespace Secret, as
    device login does, and returns the source ID and `authorizationUrl`.
-2. The console shows which account data the tool can read, then opens the URL in a
-   popup. When a browser blocks popups, it redirects the page.
+2. The console shows the destination and scopes the tool is requesting, then
+   opens the consent URL in a popup. When a browser blocks popups, it redirects
+   the page.
 3. `GET /oauth/callback` requires the session that started the connection. OCC
    finds the session by a hash of `state`, rejects reuse or an age above ten
    minutes, and calls `completeBrowserAuthorization` once. The response sets
@@ -276,11 +290,9 @@ integration, real-cluster, and live-provider outcomes.
 - **OCC exchanges the code and stores the refresh token as a Secret.** This needs no
   new Refresh Driver methods, but it puts a rotating refresh token in OCC storage
   and inherits the `issuerRotated` update hazards.
-- **Installation-owned Secrets for the OAuth client secret.** This keeps the
-  Refresh Driver contract smaller, but adds a Secret scope that only this feature
-  would use and splits refresh material between two owners. The Refresh Driver
-  already holds the per-source refresh material, so it also holds the client
-  secret.
+- **Installation-owned Secrets for the OAuth client secret.** The Driver already
+  manages the client registration. Adding an Installation Secret would introduce
+  a new Secret scope solely for this feature.
 - **A Google-specific Gateway type.** Each new provider would need an OCE release.
 - **Shared Agents with a warning.** Anyone with access could read the mailbox.
 - **Consent for the whole execution.** RFC-0023 gives processes in the same

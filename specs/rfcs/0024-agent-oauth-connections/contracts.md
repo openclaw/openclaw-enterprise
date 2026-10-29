@@ -15,49 +15,76 @@ methods. A Driver that omits them offers no browser connections.
 
 ### Browser authorization
 
-- `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri })`
-  returns `{ authorizationUrl, privateState }`. The Driver creates the PKCE
-  verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
+OCC owns the connection session and calls the Driver's browser authorization
+methods for setup and code exchange. After exchange, the OCE Token Service
+keeps the grant in encrypted custody and refreshes access tokens in the
+background. It serializes refresh per source and atomically commits the access token
+with any replacement refresh token. OpenShell presents an eligible, prepared
+token for the deployed binding or refuses the request. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
+
+- `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri, selectedScopes? })`
+  returns `{ authorizationUrl, privateState }`. MCP requires the owner's validated
+  `selectedScopes`. Configured OAuth uses the version's fixed scopes. The Driver
+  creates the PKCE verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
   `privateState` is opaque to OCC.
-- `completeBrowserAuthorization(context, privateState, { code, state })` verifies
-  `state`, exchanges the code with the verifier and the version's client
-  registration, configures OpenShell refresh custody, and mints the first token. It
-  returns `ready` with an optional verified `accountEmail`, or a failure code. It
-  never returns a token.
+- `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
+  `state` and exchanges the code using the verifier and pinned client registration.
+  The Driver hands the validated refresh grant and first usable access token to
+  the Token Service, bound to the source and its approved OAuth context. It returns
+  `ready` only after the Token Service durably accepts them. An uncertain handoff
+  leaves the source `registering` and never replays the code. OCC receives status
+  and an optional verified `accountEmail`.
+
+### MCP authorization
+
+The administrator enters the MCP server URL. OCE uses the official TypeScript
+MCP client to discover the protected resource and its authorization server under
+the Installation's management egress policy. The administrator supplies a
+preregistered client ID and any required secret, or approves Dynamic Client
+Registration (DCR) at the issuer's advertised `registration_endpoint`. If the
+issuer omits that endpoint or refuses registration, Console asks for a
+preregistered client.
+
+Client ID Metadata Documents (CIMD) are deferred. Supporting CIMD would require
+a stable HTTPS document the issuer can fetch, listing the installation's exact
+callback URI.
+
+At setup, the template version records the resolved client, server URL, resource,
+issuer, approved endpoints, and at least one scope approved from the challenge
+and resource metadata.
+
+At **Connect**, the owner chooses from the entire approved scope list.
+OCC validates the nonempty selection and required scopes before creating a
+source. OCE checks the requested scopes, validates the callback issuer, and
+verifies the granted scopes at exchange. The Token Service refreshes with the
+same pinned client, resource, and token endpoint. It checks each renewed grant
+against the connection's selected scopes before use.
+Changed endpoints require a new version and consent. The deployed worker exposes
+every tool the server lists for that connection (`tools/list`). [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
 ### Client registrations
 
-OCE has no Installation-owned Secrets, so the Refresh Driver keeps OAuth client
-secrets. A client identifier is unique only within its authorization server
-([RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)), so the
-Driver keys each secret by the trusted `issuer` and `clientId` pair:
+OCE manages client registrations through the Driver. It keys each registration
+by the trusted `issuer` and `clientId` pair because client IDs are unique only
+within an authorization server. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)
 
-- `registerClient({ issuer, clientId }, clientSecret)` returns an opaque
-  `clientRegistrationId` bound to that pair. Connection templates with the same
-  pair share one registration. The same `clientId` at a different `issuer` gets
-  a separate registration.
-- `rotateClientSecret(clientRegistrationId, clientSecret)` replaces the stored
-  secret. New connections that carry the registration use it for the code exchange
-  and refresh. Existing connections keep the secret they were configured with:
-  OpenShell replaces refresh material only as a whole, never returns a stored
-  refresh token, and starts a new authorization epoch that revokes running
-  Sandboxes' placeholders. When the provider disables the old secret, those
-  connections report `reauthorize`. Operators overlap secrets where the provider
-  allows it; Google keeps two client secrets active during rotation.
-- `removeClient(clientRegistrationId)` deletes the secret. OCC calls it only when
-  no connection template version or source carries the registration.
+- `registerClient({ issuer, clientId }, clientSecret?)` stores the resolved client
+  and any secret in the Driver's protected store. A public MCP client can omit the secret.
+  Templates with the same pair share the returned `clientRegistrationId`. The
+  same `clientId` at another issuer gets a separate registration.
+- For clients with a secret, `rotateClientSecret(clientRegistrationId, clientSecret)`
+  sets the version for new connections. Each connection pins the version used
+  for its exchange. Existing connections continue refreshing
+  with that version until the provider disables it, then report `reauthorize`.
+- `removeClient(clientRegistrationId)` removes the stored registration and any
+  secret it holds. OCC calls it only when no template version or source uses it.
 
 Each connection template version and credential source records its
-`clientRegistrationId`. The Driver stores secrets durably for every API replica
-and across restarts. OCC stores no secret value.
-
-OpenShell keeps providers per Workspace, and each OCE Namespace has its own
-Workspace, so the OpenShell Credential Refresh Driver needs one Installation-level
-place for client secrets. Its configuration gains a required `clientWorkspace`
-when browser connections are enabled: an operator-provisioned OpenShell Workspace
-that holds one Driver-owned provider per client registration. The Driver reads a
-secret back over the operator-TLS connection, so operator TLS is a prerequisite.
-The Workspace grants no Agent access; no Sandbox attaches its providers.
+`clientRegistrationId`. The Driver keeps referenced client secret versions
+available across replicas and restarts. The Token Service can use the exact
+registration and secret version bound to the source for refresh. OCC stores
+the registration reference. Client secrets and refresh grants stay out of the
+worker's OpenShell attachment.
 
 ### OIDC account identity
 
@@ -114,8 +141,22 @@ administrators, who hold every action through the built-in administrator role.
 
 Use [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 for the deployed revision. Limit the authorized route to the endpoint the owner
-approved. For `read-only`, the sender permits only `GET`, `HEAD`, and `OPTIONS`.
-Attaching a source cannot expand an installation's egress ceiling.
+approved. Attaching a source cannot expand an installation's egress ceiling.
+
+For a configured HTTP template with `read-only` access, the sender permits only
+`GET`, `HEAD`, and `OPTIONS`. MCP clients send both read and write tool calls by
+`POST` to the declared endpoint. OCC rejects an `mcp_oauth` template with
+`read-only` access before saving a version. The supported value, `full`, allows
+the MCP transport at that exact endpoint. The MCP server enforces the owner's
+selected scopes on each call. [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
+
+Every remote Streamable HTTP plugin uses the same credential policy helper. When
+binding a ready connection, OCE matches its approved server URL and OAuth resource
+to the plugin descriptor and release. The helper derives the bearer route from
+the server URL’s HTTPS host, effective port and literal path. OpenShell permits
+`POST` for messages, `GET` for streams and `DELETE` for session closure at that
+endpoint. Installing the plugin alone grants no route.
+Discovery, registration and refresh use separate management endpoints.
 
 RFC-0023 authenticates an execution. Listing a binary in a connection template
 does not establish which process sent a request. Refuse deployment when the
@@ -137,9 +178,9 @@ installation cannot enforce the executable restriction recorded at consent.
 | Withdrawal pending or failed after disconnect               | Personal restriction stays in force              | Retry withdrawal, or stop or delete the Agent  |
 | Provider disables a rotated-out client secret               | Older connections report `reauthorize`           | Owners **Reconnect**                           |
 
-OpenShell refreshes access tokens. The operator guide documents provider rules,
-such as Google's: `gmail.readonly` is a restricted scope that public applications
-must verify, and External Testing applications issue seven-day refresh tokens.
+The operator guide documents provider rules. Google requires verification for
+public applications requesting `gmail.readonly`, and External Testing applications
+issue seven-day refresh tokens.
 
 ## Required outcomes
 
@@ -152,6 +193,16 @@ must verify, and External Testing applications issue seven-day refresh tokens.
   second sender and a shared reply destination, including while withdrawal is
   delayed or has failed after disconnect. Prove that codes and
   tokens are absent from responses, logs, and audit.
+- **Refresh ownership.** For both configured OAuth and MCP, observe the Token
+  Service refresh the access token with the issuer in the background. Send a
+  worker request with the same placeholder and verify that OpenShell presents
+  the new access token. With no eligible prepared token, verify that OpenShell
+  refuses the request without contacting the issuer.
+- **MCP.** Verify supplied clients, successful DCR, and the prompt for a supplied
+  client when DCR is unavailable or refused. On a dedicated worker, verify a Console tool call uses the selected scopes and that
+  an unselected scope stays unavailable after refresh. Bind two different MCP
+  servers, including one on a nondefault port, and verify each placeholder works
+  only at its own endpoint.
 - **Client registrations.** Two connection templates with the same `clientId` in
   two Keycloak realms keep independent secrets: rotating one leaves the other's
   sources refreshing.
