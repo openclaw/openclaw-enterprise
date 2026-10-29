@@ -662,3 +662,34 @@ test("an older version and a same-version apply do not claim the deployed policy
     "Live version unconfirmed",
   ]);
 });
+
+// Finding 2874: live application also needs SandboxPolicy read, since it admits and returns the
+// saved rules. A read revoked after the page loaded is refused by the real API, and the refusal
+// names every grant apply checks, not only the ones a save checks.
+test("an application refused for a revoked SandboxPolicy read names the read grant", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  assert.equal(
+    (await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [grants[0]] } }))
+      .status,
+    200,
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  const card = page.locator(".sandbox-network-card");
+  const apply = card.getByRole("button", { name: "Apply saved rules", exact: true });
+  await apply.waitFor();
+  restrict(fixture.policy, "read", "sandbox_policy", { namespaceId: namespace.id });
+  await apply.click();
+  await card
+    .getByRole("alert")
+    .filter({
+      hasText:
+        "Your access does not include applying this Agent’s policy. Ask an Installation administrator for Agent manage_policy and SandboxPolicy update and read on it.",
+    })
+    .waitFor();
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
+  fixture.policy.restrictions.pop();
+  assert.equal((await fixture.request("GET", base)).data.policy.application, undefined);
+});
