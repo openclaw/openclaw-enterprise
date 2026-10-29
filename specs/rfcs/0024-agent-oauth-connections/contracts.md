@@ -147,8 +147,16 @@ For a configured HTTP template with `read-only` access, the sender permits only
 `GET`, `HEAD`, and `OPTIONS`. MCP clients send both read and write tool calls by
 `POST` to the declared endpoint. OCC rejects an `mcp_oauth` template with
 `read-only` access before saving a version. The supported value, `full`, allows
-the MCP transport at that exact endpoint. The owner can still select only read
-scopes. The MCP server enforces the user's grant on each call. [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
+the MCP transport at that exact endpoint. The MCP server enforces the owner's
+selected scopes on each call. [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
+
+Every remote Streamable HTTP plugin uses the same credential policy helper. When
+binding a ready connection, OCE matches its approved server URL and OAuth resource
+to the plugin descriptor and release. The helper derives the bearer route from
+the server URL’s HTTPS host, effective port and literal path. OpenShell permits
+`POST` for messages, `GET` for streams and `DELETE` for session closure at that
+endpoint. Installing the plugin alone grants no route.
+Discovery, registration and refresh use separate management endpoints.
 
 RFC-0023 authenticates an execution. Listing a binary in a connection template
 does not establish which process sent a request. Refuse deployment when the
@@ -192,7 +200,9 @@ issue seven-day refresh tokens.
   refuses the request without contacting the issuer.
 - **MCP.** Verify supplied clients, successful DCR, and the prompt for a supplied
   client when DCR is unavailable or refused. On a dedicated worker, verify a Console tool call uses the selected scopes and that
-  an unselected scope stays unavailable after refresh.
+  an unselected scope stays unavailable after refresh. Bind two different MCP
+  servers, including one on a nondefault port, and verify each placeholder works
+  only at its own endpoint.
 - **Client registrations.** Two connection templates with the same `clientId` in
   two Keycloak realms keep independent secrets: rotating one leaves the other's
   sources refreshing.
