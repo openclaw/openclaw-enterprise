@@ -558,6 +558,16 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         resourceKind: "sandbox_policy",
         scope: "requested",
       },
+      // Apply returns the saved policy and admits its additions, so it also needs read (finding 2874).
+      ...(operation.operationId === "applyAgentSandboxPolicy"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "sandbox_policy" as const,
+              scope: "requested" as const,
+            },
+          ]
+        : []),
     ];
   }
   if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {

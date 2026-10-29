@@ -1067,6 +1067,8 @@ test(
     );
     assert.equal(unreadableApply.statusCode, 403, unreadableApply.body);
     assert.equal(Object.hasOwn(unreadableApply.json().error, "details"), false);
+    // The refusal names the grant the API contract and the CLI list for apply.
+    assert.match(unreadableApply.json().error.message, /needs SandboxPolicy read on /);
     // Update alone still saves. Apply returns the saved policy, so read is required even when
     // the saved version has no additions to admit.
     const emptied = await inject("PUT", path, { expectedVersion: 2, additions: [] }, app);

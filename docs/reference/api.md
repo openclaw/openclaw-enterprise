@@ -4473,12 +4473,13 @@ Apply the saved policy to the running Agent revision
 
 **Operation ID:** `applyAgentSandboxPolicy`
 
-**Permissions:** Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.
+**Permissions:** Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy. Requires read permission on the requested SandboxPolicy.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `manage_policy` | `agent` | `requested` |
 | `update` | `sandbox_policy` | `requested` |
+| `read` | `sandbox_policy` | `requested` |
 
 ##### Parameters
 

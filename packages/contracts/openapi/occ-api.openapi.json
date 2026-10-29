@@ -25177,7 +25177,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/apply": {
       "post": {
-        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy. Requires read permission on the requested SandboxPolicy.",
         "operationId": "applyAgentSandboxPolicy",
         "parameters": [
           {
@@ -25448,7 +25448,8 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
-          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" },
+          { "action": "read", "resourceKind": "sandbox_policy", "scope": "requested" }
         ]
       }
     },
