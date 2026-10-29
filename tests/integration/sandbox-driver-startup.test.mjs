@@ -5488,7 +5488,9 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
       const result = await original(...args);
       entered.resolve();
       await release.promise;
-      if (reject) throw reason;
+      if (reject) {
+        throw reason;
+      }
       return result;
     };
     try {
