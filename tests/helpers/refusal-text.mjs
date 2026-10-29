@@ -231,8 +231,9 @@ export const RUNTIME_STATUS_DENIED =
   "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Ask an Installation administrator to grant them.";
 export const RUNTIME_STATUS_OPERATE_DENIED =
   "Runtime status requires Agent operate on this Agent. Ask an Installation administrator to grant it.";
-export const RUNTIME_STATUS_VERSION_DENIED =
-  "Runtime status requires AgentRevision read on this version. Ask an Installation administrator to grant it.";
+// A version the page could not read: the strip says so instead of reading status (finding D794).
+export const RUNTIME_STATUS_VERSION_UNREADABLE =
+  "You cannot read this version, so its runtime status is not shown. Ask an Installation administrator for AgentRevision read on it.";
 // A version link the page cannot list may name a version that does not exist: the API answers
 // both alike, so the console says either may be true (finding D750).
 export const VERSION_UNAVAILABLE =

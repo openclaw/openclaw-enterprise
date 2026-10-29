@@ -459,12 +459,20 @@ function forgetInstallationAccess() {
 
 // The caller does not administer the Installation: true for this tab, not kept across reloads,
 // which ask the permission answer again at no audited cost. The Observability link goes away.
+// A page built while the answer was another one is told, so it takes the new answer in place, as
+// its Refresh would (finding D795).
 function settleNotAdministrator() {
+  const ended = installationAdmin !== false;
   forgetInstallationAccess();
   observabilityUrl = null;
   installationAdmin = false;
   observabilityOwner = sessionOwnerKey(session);
   shellUI.dropObservabilityLink();
+  if (ended) {
+    for (const handler of mountedViewState?.administrationEnded ?? []) {
+      handler();
+    }
+  }
 }
 
 // The refusal of a read only Installation administration may make, refused here without sending
@@ -2121,6 +2129,8 @@ async function loadPage({
       administrationReads: new Map(),
       resumeHandlers: new Set(),
       revalidators: new Set(),
+      // Called once Installation administration settles as ended while the view is mounted.
+      administrationEnded: new Set(),
       user: session.user,
       // The view this load renders, retained by its own node (finding 1542).
       view: shell.view,
@@ -2257,6 +2267,7 @@ async function loadPage({
         viewState.revalidators.add(check);
         return () => viewState.revalidators.delete(check);
       },
+      onAdministrationEnded: (handler) => viewState.administrationEnded.add(handler),
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
           showExpiredLogin();

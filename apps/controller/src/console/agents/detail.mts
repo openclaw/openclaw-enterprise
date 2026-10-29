@@ -1804,6 +1804,20 @@ export async function renderAgentDetail(
       }
     });
   }
+  // Installation administration ended while the page is open: an administrator-only read, such
+  // as the Access tab's recheck after a revoke, was refused and the permission answer settled
+  // "not an administrator". The page kept the administrator's Deploy, saves, Stop and Delete
+  // until Refresh, and Plugins sent a capabilities read the API refused (finding D795). It reads
+  // the Agent's permission answer again, as Refresh would, and its controls follow that answer
+  // without a reload. Views built meanwhile wait for it, so Plugins sends no read it denies.
+  context.onAdministrationEnded?.(() => {
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    agentSaveDenied = rereadPermissions().then((permissions) =>
+      agentSaveDenial(permissions, agent),
+    );
+  });
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
   let activityPanel = deploymentStatus;
@@ -3853,6 +3867,7 @@ export async function renderAgentDetail(
           }
           // A grant or revocation since the last answer relabels the draft (finding 2421).
           applyDraftAccess();
+          deletion.applyDelete(permissions?.delete);
         }
         // An older reread still applies when no newer one has answered: a newer read that
         // fails resolves to this answer, which the controls would otherwise never see.

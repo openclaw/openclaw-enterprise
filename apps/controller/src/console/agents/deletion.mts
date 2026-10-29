@@ -459,19 +459,37 @@ export function createAgentDeletion(
     cancel.focus();
   }
 
+  // The row follows the newest permission answer: a page that reads it again, such as after its
+  // Installation administration ended, hides or restores the row without a reload (finding D795).
+  function applyDelete(permitted: boolean | undefined) {
+    const forbidden = permitted === false;
+    if (forbidden === state.forbidden || !context.isCurrent()) {
+      return;
+    }
+    state.forbidden = forbidden;
+    if (forbidden) {
+      restrictConfirmation?.();
+    }
+    render();
+  }
+  // Once the page has passed a newer answer, a late first answer must not replace it.
+  let deleteAnswered = false;
+
   render();
   if (state.deleting) {
     schedulePoll();
   }
   void allowed?.then((permitted) => {
-    if (permitted === false && context.isCurrent()) {
-      state.forbidden = true;
-      restrictConfirmation?.();
-      render();
+    if (!deleteAnswered && permitted === false) {
+      applyDelete(permitted);
     }
   });
   return {
     section,
+    applyDelete(permitted: boolean | undefined) {
+      deleteAnswered = true;
+      applyDelete(permitted);
+    },
     // The page found the Agent deleting through another read and now shows only this row.
     showOnPage({ focus = false } = {}) {
       if (!state.deleting) {

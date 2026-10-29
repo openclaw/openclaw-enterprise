@@ -6211,6 +6211,29 @@ export const scenarios = {
       "The request log shows no read of the current version.",
     ],
   },
+  agentCurrentVersionHiddenLogs: {
+    group: "Pages/Agent detail",
+    name: "Logs of a current version the viewer cannot read",
+    // The current version, v8, which the viewer cannot read, opened on its Logs tab.
+    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    candidateSuperseded: true,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "An operator opens Logs on a current version she cannot read. Runtime status also needs AgentRevision read on it, so the page does not read it and says why in words; log text, which needs no version read, still shows.",
+    steps: [
+      'The runtime strip reads "You cannot read this version, so its runtime status is not shown. Ask an Installation administrator for AgentRevision read on it." with no Request ID.',
+      "The request log shows no /runtime status read and no read of the current version; log output still loads.",
+    ],
+    gap: "Simulated UI proof: it does not verify the API's refusal of the status read.",
+  },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
     name: "New version activated",

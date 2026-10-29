@@ -58,6 +58,7 @@ import {
   requestedVersionUnavailable,
   stopRefused,
   NEW_VERSIONS_READ,
+  PLUGINS_READ_ONLY,
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
@@ -1599,6 +1600,79 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   await loaded.waitFor();
   await waitForEnabled(remove.first());
   assert.equal(iamDenials().length, 1);
+});
+
+// Finding D795. Once the Access tab's recheck settled that a revoked administrator no longer
+// administers the Installation, her open page kept the administrator's controls until Refresh:
+// Deploy new version, Stop and Delete stayed enabled, and Plugins sent a capabilities read the
+// API refused and audited. The page now reads her permission answer again, which audits
+// nothing, and shows the member's controls as Refresh would, without a reload. Plugins opened
+// while that answer is in flight waits for it instead of reading.
+test("A revoke the Access tab settles takes away administrator controls without Refresh", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked controls", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Revoked controls Agent",
+    nativeValues("x"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const account = await fixture.createNamespaceMember("revoked-controls", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
+    account.credentials,
+  );
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+  const stop = stopAgentButton(page);
+  await waitForEnabled(deploy);
+  await waitForEnabled(stop);
+  await waitForEnabled(remove);
+  await accessTab.click();
+  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await waitForIdleFetches(page);
+
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  const reread = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    { once: true },
+  );
+  await accessTab.click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await reread.requested;
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
+  reread.release();
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  // She holds Agent read only: no deploy, operate or delete.
+  await stop.waitFor({ state: "hidden" });
+  await remove.waitFor({ state: "hidden" });
+  assert.equal(await deploy.isDisabled(), true);
+  await waitForIdleFetches(page);
+  assert.equal(
+    requests.slice(sent).filter(({ path }) => path.endsWith("/plugins/capabilities")).length,
+    0,
+  );
+  // The Access tab's refused policy read is the only audited refusal.
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
 });
 
 // Finding D792. A refusal after the page confirmed administration settles nothing until the
