@@ -22,7 +22,6 @@ import {
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
-import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -38,8 +37,10 @@ import {
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { listen as listenServer } from "../helpers/listen.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { waitForResult } from "../helpers/wait-for.mjs";
@@ -55,7 +56,7 @@ const PLUGIN_APP_SERVER_TOKEN_DOMAIN = "openclaw-plugin-runtime/app-server-token
 const nodeRequire = createRequire(import.meta.url);
 const gatewayRuntimeProvenance = JSON.stringify({
   source: "https://github.com/openclaw/openclaw",
-  commit: GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+  commit: (await readOpenclawSource()).commit,
 });
 
 function plain(value) {
@@ -432,7 +433,8 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
       `${PLUGIN_RUNTIME_HELPERS}
 installCodexPlugins(
   ${JSON.stringify(runtime)},
-  ${JSON.stringify(options.failures ?? [])}
+  ${JSON.stringify(options.failures ?? [])},
+  codexAppServerRequest
 ).then(result.resolve, result.reject);`,
       sandbox,
     );
@@ -3652,12 +3654,7 @@ async function startCodexGatewaySupervisor(
       JSON.stringify({ revisionId, deviceId: bindingDeviceId }),
     );
   }
-  const listen = async (handler) => {
-    const server = peerHttp.createServer(handler);
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    return server.address().port;
-  };
+  const listen = (handler) => listenServer(t, peerHttp.createServer(handler));
   const peerPort = await listen(async (request, response) => {
     assert.equal(request.url, "/openclaw/plugin-runtime/status");
     fixture.peerRequests++;

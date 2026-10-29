@@ -70,6 +70,14 @@ const refusalCodes = {
   deadline_exceeded: 5,
 } satisfies Record<EgressRefusal["kind"], number>;
 
+/** Exchange streams on one authority that have not yet presented a signed opening. */
+const pendingOpeningCapacity = 1024;
+/**
+ * Pending openings for one Sandbox: a quarter of the pool, like the Credential Proxy's
+ * per-Sandbox shares. A supervisor signs its opening at once, so this is far above normal use.
+ */
+const pendingOpeningSandboxShare = pendingOpeningCapacity / 4;
+
 function refused(kind: EgressRefusal["kind"]): Wire {
   return { refused: { code: refusalCodes[kind] ?? refusalCodes.denied } };
 }
@@ -162,8 +170,10 @@ export function createOpenShellEgressAuthority(
     "grpc.max_send_message_length": 5 * 1024 * 1024,
   });
   // Count openings across all streams on this authority, independently of the
-  // identity's limit on exchanges that have already proved possession.
+  // identity's limit on exchanges that have already proved possession. Each Sandbox
+  // also has its own share, so one Sandbox cannot hold the pool and refuse the others.
   let pendingOpenings = 0;
+  const sandboxOpenings = new Map<string, number>();
   const unary =
     (work: (call: ServerUnaryCall<Wire, Wire>) => Promise<Wire>) =>
     (call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) => {
@@ -340,14 +350,19 @@ export function createOpenShellEgressAuthority(
       const bearer = middlewareBearer(call.metadata);
       // This is only a preliminary check. acceptExchange repeats it and verifies
       // possession against the exact opening and challenge before granting authority.
-      if (!identity.supervisor(bearer)) {
+      const peer = identity.supervisor(bearer);
+      if (!peer) {
         call.emit("error", {
           message: "Installation exchange refused.",
           code: status.PERMISSION_DENIED,
         });
         return;
       }
-      if (pendingOpenings >= 1024) {
+      const sandboxPending = sandboxOpenings.get(peer.sandboxId) ?? 0;
+      if (
+        pendingOpenings >= pendingOpeningCapacity ||
+        sandboxPending >= pendingOpeningSandboxShare
+      ) {
         call.emit("error", {
           message: "Installation exchange unavailable.",
           code: status.RESOURCE_EXHAUSTED,
@@ -355,11 +370,18 @@ export function createOpenShellEgressAuthority(
         return;
       }
       pendingOpenings += 1;
+      sandboxOpenings.set(peer.sandboxId, sandboxPending + 1);
       let openingPending = true;
       const releaseOpening = () => {
         if (openingPending) {
           openingPending = false;
           pendingOpenings -= 1;
+          const held = sandboxOpenings.get(peer.sandboxId)! - 1;
+          if (held === 0) {
+            sandboxOpenings.delete(peer.sandboxId);
+          } else {
+            sandboxOpenings.set(peer.sandboxId, held);
+          }
         }
       };
       const challenge = randomBytes(32);

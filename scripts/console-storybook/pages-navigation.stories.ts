@@ -15,6 +15,7 @@ export const ReturnToLoadedPages = { ...story("navigationRetained") };
 export const SlowRechecks = { ...story("navigationSlowRecheck") };
 export const ReturnAccessDenied = { ...story("navigationDenied") };
 export const ReturnSessionExpired = { ...story("navigationExpired") };
+export const RefreshWhileOffline = { ...story("navigationOffline") };
 
 export const ReturnBackendAccessDenied = { ...story("navigationBackendDenied") };
 

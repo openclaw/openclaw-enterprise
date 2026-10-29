@@ -15,7 +15,8 @@ import {
 } from "typebox/schema";
 import { Has as hasFormat } from "typebox/format";
 import { ErrorDetail } from "./api/common.ts";
-import type { JSONSchema, DriverCapability } from "./index.ts";
+import type { DriverCapability } from "./driver.ts";
+import type { JSONSchema } from "./index.ts";
 
 export type ConfigurationResult<T> =
   | { readonly success: true; readonly data: T }

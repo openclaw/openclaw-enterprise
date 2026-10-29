@@ -48,7 +48,7 @@ machine-backed installation that path exists only inside the virtual machine.
 Build the CLI and start the Kubernetes profile:
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
@@ -124,7 +124,7 @@ If the K3s channel lookup fails or times out, follow
 For OpenShell, use the owned launcher:
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
@@ -314,9 +314,11 @@ To verify a fresh Kubernetes-only installation without OpenShell, use the
 [real local installation test](../../testing/kubernetes.md#local-kubernetes-installation).
 
 To prove OpenShell setup and cleanup in a separate fresh cluster, stop the
-reusable environment and run:
+reusable environment, install the test dependencies from the trusted repository
+root, and run:
 
 ```bash
+pnpm install --frozen-lockfile
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```

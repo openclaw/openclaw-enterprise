@@ -3,7 +3,8 @@
 // before it stops OCC: the selected controller image loads the candidate
 // Installation and runs the bundled Kubernetes Compute preflight exactly as the
 // API and worker do at startup, without a database.
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 
 // Printed before the image's own message when Compute preflight stops startup:
 // a refusal is the Driver's ConfigurationFailure (such as split-layout storage);
@@ -16,6 +17,17 @@ const nameRefusal = "The stored Installation name breaks the Name rule:";
 const nameVariable = "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME";
 // Names the component (api or worker) whose credentials and grants the Pod checks.
 const componentVariable = "OCC_UPGRADE_PREFLIGHT_COMPONENT";
+// The saved draft of each Agent the upgrade deploys (finding 2809): the API Pod reads it from
+// the temporary Secret, gzipped, under this key and path.
+const draftsKey = "agent-drafts.json.gz";
+const draftsDirectory = "/var/run/openclaw/upgrade-preflight";
+const draftsVariable = "OCC_UPGRADE_PREFLIGHT_AGENT_DRAFTS";
+// Printed before each Agent whose draft the image's deploy admission would refuse, with the
+// Agent and OCC's message as one JSON object.
+const draftRefusal = "Agent draft refused:";
+// Kubernetes refuses a Secret whose values exceed 1 MiB in total. The preflight Secret holds the
+// candidate Installation and the drafts, so the drafts get what the Installation leaves.
+const secretLimitBytes = 1024 * 1024;
 
 // Runs inside the controller image. It reads OCC_CONFIG_PATH and the chart's
 // environment, loads Drivers and Preset files, and never opens the database.
@@ -93,6 +105,49 @@ if (typeof contracts.isName === "function" && !contracts.isName(storedName)) {
   );
   process.exit(1);
 }
+// Each Agent the upgrade deploys, with its saved Configuration. Deploy admission runs these
+// values-only rules on the stored Configuration (refuseUndeployableConfigurationValues), so a
+// draft saved before one of this image's rules would stop the fleet deploy after the controller
+// moved. Every refused Agent is printed. An image without the shared rules skips the check.
+if (process.env.${draftsVariable} !== undefined) {
+  let drafts;
+  let settings;
+  try {
+    const { readFileSync } = await import("node:fs");
+    const { gunzipSync } = await import("node:zlib");
+    drafts = JSON.parse(gunzipSync(readFileSync(process.env.${draftsVariable})).toString("utf8"));
+  } catch (error) {
+    process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
+    process.exit(1);
+  }
+  try {
+    settings = await import("/app/packages/occ/src/configuration-settings.ts");
+  } catch {
+    settings = {};
+  }
+  if (typeof settings.refuseUndeployableConfigurationValues !== "function") {
+    process.stdout.write("agent-draft-check-unavailable\\n");
+  } else {
+    let refused = false;
+    for (const agent of drafts.agents) {
+      try {
+        settings.refuseUndeployableConfigurationValues(
+          drafts.configurations[agent.configurationId],
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stdout.write(
+          ${JSON.stringify(draftRefusal)} + " " + JSON.stringify({ ...agent, message }) + "\\n",
+        );
+        refused = true;
+      }
+    }
+    if (refused) {
+      process.exit(1);
+    }
+    process.stdout.write("agent-drafts-accepted\\n");
+  }
+}
 process.stdout.write("installation-startup-ready\\n");
 `;
 
@@ -116,15 +171,67 @@ function documents(path) {
     .filter((document) => document !== null && typeof document === "object");
 }
 
-// The Secret holds only the candidate Installation, under the chart's key.
-function secret([installationPath, key, name, namespace, release]) {
+// Gathers the helper's per-Agent drafts (one JSON line each: the Agent, its name and its saved
+// Configuration) into one gzipped document, each Configuration once. Exits 3 when it would not
+// fit in the preflight Secret beside the candidate Installation.
+function drafts([draftsPath, installationPath, outputPath]) {
+  const agents = [];
+  const configurations = {};
+  for (const line of readFileSync(draftsPath, "utf8").split("\n")) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+    const { namespaceId, agentId, name, configurationId, values } = JSON.parse(line);
+    agents.push({ namespaceId, agentId, name, configurationId });
+    configurations[configurationId] = values;
+  }
+  const document = gzipSync(JSON.stringify({ agents, configurations }));
+  const installationBytes = readFileSync(installationPath).length;
+  if (document.length + installationBytes > secretLimitBytes) {
+    process.stderr.write(
+      `upgrade-startup-preflight: ${agents.length} Agent drafts take ${document.length} bytes gzipped; with the ${installationBytes}-byte candidate Installation that is over the ${secretLimitBytes}-byte Secret limit.\n`,
+    );
+    process.exit(3);
+  }
+  writeFileSync(outputPath, document, { mode: 0o600 });
+  return agents.length;
+}
+
+// The Secret holds the candidate Installation, under the chart's key, and the gzipped Agent
+// drafts when the helper passes them (an empty path passes none).
+function secret([installationPath, key, name, namespace, release, draftsPath]) {
+  if (draftsPath !== "" && key === draftsKey) {
+    fail(`the Installation key ${draftsKey} is reserved for the Agent drafts.`);
+  }
   return {
     apiVersion: "v1",
     kind: "Secret",
     metadata: { name, namespace, labels: labels(release) },
     type: "Opaque",
-    data: { [key]: readFileSync(installationPath).toString("base64") },
+    data: {
+      [key]: readFileSync(installationPath).toString("base64"),
+      ...(draftsPath === "" ? {} : { [draftsKey]: readFileSync(draftsPath).toString("base64") }),
+    },
   };
+}
+
+// The refused drafts in a failed API preflight log, one line each for the operator. Names and
+// messages come from OCC; control characters are replaced so they cannot forge lines or
+// terminal sequences.
+function refusals([logPath]) {
+  const printable = (value) => String(value).replace(/[\p{Cc}\u2028\u2029]/gu, "?");
+  return readFileSync(logPath, "utf8")
+    .split("\n")
+    .filter((line) => line.startsWith(`${draftRefusal} `))
+    .map((line) => {
+      const agent = JSON.parse(line.slice(draftRefusal.length + 1));
+      const name =
+        typeof agent.name === "string" ? JSON.stringify(agent.name) : "(name unavailable)";
+      return printable(
+        `  - Agent ${agent.agentId} ${name} in Namespace ${agent.namespaceId}: ${agent.message}`,
+      ).slice(0, 800);
+    })
+    .join("\n");
 }
 
 const podFields = [
@@ -166,6 +273,7 @@ function pod([
   image,
   timeoutSeconds,
   storedInstallationPath,
+  withDrafts,
 ]) {
   const storedName = JSON.parse(readFileSync(storedInstallationPath, "utf8")).name;
   if (typeof storedName !== "string") {
@@ -204,7 +312,7 @@ function pod([
   // makes it deliver the name unchanged.
   container.env = [
     ...(container.env ?? []).filter(
-      (variable) => variable.name !== nameVariable && variable.name !== componentVariable,
+      (variable) => ![nameVariable, componentVariable, draftsVariable].includes(variable.name),
     ),
     { name: nameVariable, value: JSON.stringify(storedName).replaceAll("$", () => "$$") },
     { name: componentVariable, value: component },
@@ -218,6 +326,22 @@ function pod([
     fail(`the rendered ${component} container must mount the Installation Secret once.`);
   }
   installation[0].secret.secretName = candidateSecret;
+  // The API Pod alone checks the Agent drafts: the worker would print the same refusals.
+  if (withDrafts === "drafts" && component === "api") {
+    const volume = "upgrade-preflight-agent-drafts";
+    if (volumes.some((item) => item.name === volume)) {
+      fail(`the rendered ${component} Deployment already has a ${volume} volume.`);
+    }
+    volumes.push({
+      name: volume,
+      secret: { secretName: candidateSecret, items: [{ key: draftsKey, path: draftsKey }] },
+    });
+    container.volumeMounts = [
+      ...(container.volumeMounts ?? []),
+      { name: volume, mountPath: draftsDirectory, readOnly: true },
+    ];
+    container.env.push({ name: draftsVariable, value: `${draftsDirectory}/${draftsKey}` });
+  }
   return {
     apiVersion: "v1",
     kind: "Pod",
@@ -302,12 +426,14 @@ function phase([statusPath]) {
 
 const [action, ...input] = process.argv.slice(2);
 const actions = {
-  secret: [5, (values) => JSON.stringify(secret(values))],
-  pod: [10, (values) => JSON.stringify(pod(values))],
+  drafts: [3, drafts],
+  secret: [6, (values) => JSON.stringify(secret(values))],
+  pod: [11, (values) => JSON.stringify(pod(values))],
+  refusals: [1, refusals],
   networkpolicy: [4, (values) => JSON.stringify(networkPolicy(values))],
   phase: [1, phase],
 };
 if (!(action in actions) || input.length !== actions[action][0]) {
-  fail("expected secret, pod, networkpolicy, or phase with its arguments.");
+  fail("expected drafts, secret, pod, refusals, networkpolicy, or phase with its arguments.");
 }
 process.stdout.write(`${actions[action][1](input)}\n`);

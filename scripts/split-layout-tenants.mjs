@@ -621,16 +621,18 @@ export async function importTenants(
       if (ids.has(binding.id)) {
         continue;
       }
+      if (binding.resourceKind === "agent_revision") {
+        log(`skipped access binding ${binding.id}: Agent revisions are not carried over`);
+        continue;
+      }
       const skip =
-        binding.resourceKind === "agent_revision"
-          ? "Agent revisions are not carried over"
-          : binding.subjectKind !== "identity"
-            ? `subject kind ${binding.subjectKind} is not accepted here; re-create it by hand`
-            : !BINDING_RESOURCE_KINDS.includes(binding.resourceKind)
-              ? `resource kind ${binding.resourceKind ?? "(none)"} is not accepted here; re-create it by hand`
-              : undefined;
+        binding.subjectKind !== "identity"
+          ? `subject kind ${binding.subjectKind} is not accepted here; re-create it by hand`
+          : !BINDING_RESOURCE_KINDS.includes(binding.resourceKind)
+            ? `resource kind ${binding.resourceKind ?? "(none)"} is not accepted here; re-create it by hand`
+            : undefined;
       if (skip !== undefined) {
-        log(`skipped access binding ${binding.id}: ${skip}`);
+        skippedBindings.push(`${namespace.name}/${binding.id}: ${skip}`);
         continue;
       }
       const body = remap(

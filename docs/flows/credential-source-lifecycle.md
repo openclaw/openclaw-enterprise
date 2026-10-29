@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-23
-last_updated_session: fix-2242
+updated: 2026-10-29
+last_updated_session: authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741
 ---
 
 # Credential source lifecycle Flow
@@ -35,11 +35,16 @@ uses the paired Credential Gateway and Refresh Drivers with `credential_proxy` u
 graph TD
   A["<b>POST credential source</b><br/>API request"] --> B{"<b>Catalog and grants</b><br/>type, fields, secret:operate"}
   B -- "invalid or denied" --> X["<b>Reject</b><br/>No gateway call"]
-  B -- "valid" --> C["<b>Read Secret values</b><br/>SecretDriver.withValue"]
+  B -- "valid" --> C["<b>Read Secret input</b><br/>withValue or readCredentialInput"]
   C --> R["<b>Commit record</b><br/>state registering"]
-  R --> D["<b>registerSource</b><br/>Gateway stores copy"]
+  R -- "Gateway copy" --> D["<b>registerSource</b><br/>Gateway stores copy"]
   D -- "failed or unknown" --> Y["<b>removeSource</b><br/>Delete record, or keep it deleting"]
-  D -- "ready or pending" --> E["<b>Mark ready</b><br/>with audit"]
+  D -- "ready or pending" --> E0["<b>Attempt mark ready</b><br/>Gateway registration"]
+  E0 -- "marked" --> E["<b>Commit ready</b><br/>with audit"]
+  E0 -- "lost to DELETE" --> Y
+  R -- "live, no refresh: no write" --> E1["<b>Attempt mark ready</b><br/>Live registration"]
+  E1 -- "marked" --> E
+  E1 -- "lost to DELETE" --> X1["<b>409 conflict</b><br/>DELETE owns cleanup"]
   E --> F["<b>Bind to Agent</b><br/>actor operate"]
   F --> G{"<b>deployAgent</b><br/>gateway, Sandbox, both grants"}
   G -- "Secret-backed method" --> Z["<b>409 conflict</b><br/>No env fallback"]
@@ -88,13 +93,17 @@ Registration and attachment validate endpoints; cleanup uses owned identity.
 
 ### 2. Read Secret values
 
-`packages/occ/src/index.ts:createCredentialSource`
+`packages/occ/src/index.ts:readCredentialSourceSecrets`,
+`packages/occ/src/index.ts:admitStaticEgressSource`
 
 Cross-Namespace Secret references raise `SecretBindingValidationError`
-(`400 INVALID_REQUEST`). OCC then authorizes `secret:operate`, locks each Secret
-(`404` if absent), and calls its Driver's `withValue` (`503` if unsupported).
+(`400 INVALID_REQUEST`). OCC then authorizes `secret:operate` and locks each Secret
+(`404` if absent). For a Gateway copy, OCC calls the Secret Driver's `withValue`
+(`503` if unsupported); values remain in memory for the authorized external call.
+The live static path requires `readCredentialInput` with `retention: "none"`.
+It validates the value without retaining it and rejects missing version evidence
+or an invalid `authoritativeObservedAt` (`503`). `withValue` alone is insufficient.
 The Kubernetes Driver verifies ownership labels, UID, and key before decoding.
-Values remain in memory only for the authorized external call.
 
 ### 3. Register with the gateway and commit
 
@@ -102,17 +111,30 @@ Values remain in memory only for the authorized external call.
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-OCC commits `registering` with Secret references, resolves Compute's Sandbox
-namespace, and calls `registerSource` with a 30-second deadline. OpenShell checks
-provider ownership before changing the source-owned profile, creates the labeled
-provider, and rechecks creation collisions. These calls are not atomic. Only the
-Refresh Driver receives refresh material.
+OCC commits `registering` with Secret references. For Gateway registration,
+it resolves Compute's Sandbox namespace and calls `registerSource` with a
+30-second deadline. OpenShell checks provider ownership before changing the
+source-owned profile, creates the labeled provider, and rechecks creation
+collisions. These calls are not atomic. Only the Refresh Driver receives refresh
+material.
+
+For a live versioned static OpenAI source without refresh, OCC skips placement
+and Gateway registration. The Gateway still owns the catalog and the source record.
 
 A definitive failed/absent result triggers cleanup and record deletion; failed
 cleanup retains `deleting`. Thrown calls may still take effect, so cleanup retains
 `deleting` for another DELETE. Success commits `ready` and audit atomically. A
 failed commit leaves `registering`: binding/admission fail, deletion remains
-possible. If concurrent DELETE won, OCC repeats remote cleanup and returns `409`.
+possible.
+
+If DELETE wins before a fresh live static source without refresh becomes ready,
+POST returns `409` without resolving placement, calling Gateway removal, or deleting
+the row. This POST wrote nothing to the Gateway or Refresh Driver. If the registration
+fence delayed DELETE, the row stays `deleting` with its Secret link until DELETE
+retries. If DELETE finished, the row is already gone.
+After a Gateway write or Refresh configuration/mint, the losing POST still
+compensates through the original Drivers. Prepared issuer withdrawal belongs to
+DELETE; POST does not replay configuration.
 
 ### Device authorization and configuration
 
@@ -153,7 +175,9 @@ requires dedicated Codex or native OpenClaw, paired Drivers, and
 model Secret and passes the resolved source to Sandbox provisioning.
 
 `admitCredentialSources` requires a Sandbox (`409`), rechecks caller grants and
-requires the Agent principal's `operate` on each listed source of an offered type.
+requires the Agent principal's `operate` on each listed source. The source's
+recorded owner must still offer its type. A matching Proxy type cannot admit a
+source whose Gateway no longer offers it.
 The revision records `sourceId`, `sourceType` and the owner's `credentialGatewayId`
 or `credentialProxyId`. Older sources keep their Gateway owner, even when a Proxy
 with the same Driver ID enforces the revision's egress plan.
@@ -192,6 +216,8 @@ For prepared material, OCC calls the issuer's `withdraw`; a token that may still
 valid returns `409 CREDENTIAL_TOKEN_UNSETTLED`. A credential-free source
 has no material to remove. Otherwise the Refresh Driver removes refresh state,
 then Gateway `removeSource` verifies ownership and removes the provider and profile.
+Existing Gateway-owned live sources still use Compute placement and Gateway removal
+on DELETE, including sources whose registration made no Gateway write.
 Unknown ownership or a failed read cannot establish absence. Failure leaves
 `deleting` (`404` for refused ownership, `503` for an unavailable dependency).
 
@@ -303,6 +329,10 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 19:11: Use the recorded owner’s catalog for fresh source admission. (authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741 - 3a4244461)
+
+- 2026-10-29 15:48: Preserve DELETE ownership when live registration loses readiness without an external write. (authoring-run/0f4f447d-cd98-4f49-9d16-217bf7500d1d - 6ead449d5)
 
 - 2026-10-23 08:05: Refuse unselected protected withdrawals. (fix-2235 - 860eea712)
 

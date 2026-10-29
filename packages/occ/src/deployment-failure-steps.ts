@@ -32,6 +32,8 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     REPOSITORY_EXECUTION_REPLACED: "deploy-again",
     REPOSITORY_EXECUTION_UNVERIFIED: "deploy-again",
     REPOSITORY_GIT_ROUTE_BLOCKED: "deploy-again",
+    REPOSITORY_GIT_TOKEN_PENDING: "deploy-again",
+    REPOSITORY_GIT_TOKEN_QUARANTINED: "deploy-again",
     REPOSITORY_PROXY_ADMISSION_MISMATCH: "deploy-again",
     REPOSITORY_REVISION_STOPPED: "deploy-again",
     REPOSITORY_SESSION_NO_LONGER_CURRENT: "deploy-again",

@@ -775,6 +775,36 @@ test(
   },
 );
 
+test(
+  "a native revision's token state stays pending until GitHub issues it and quarantined after a refusal",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    // Finding 2415: maintenance issues a version's first token only once its active pointer is
+    // published, so a deployment reads this state before it reports success. A version whose
+    // token GitHub refused is never prepared again, so its deployment can fail at once.
+    const issued = await fixture(t);
+    assert.equal(await issued.owner.revisionMaterial(issued.revision.id), "pending");
+    await prepare(issued);
+    assert.equal(await issued.owner.revisionMaterial(issued.revision.id), "ready");
+    // Another revision has no open session of this owner: nothing is ready for it.
+    assert.equal(await issued.owner.revisionMaterial("rev_" + randomUUID()), "pending");
+
+    // A rejected App key: GitHub answers 401 and mints nothing.
+    const refused = await fixture(t);
+    refused.gh.setIssueStatus(401);
+    // Discovery and issuance may be separate passes.
+    await refused.owner.maintain();
+    await refused.owner.maintain();
+    assert.equal(await refused.owner.revisionMaterial(refused.revision.id), "quarantined");
+    // Restoring the key does not reopen this version's preparation; only a new version does.
+    refused.gh.setIssueStatus(201);
+    await refused.owner.maintain();
+    assert.equal(await refused.owner.revisionMaterial(refused.revision.id), "quarantined");
+    assert.equal(refused.gh.issuesOfTokens.length, 0);
+    assert.deepEqual(refused.gh.errors, []);
+  },
+);
+
 for (const outcome of ["refused", "response lost"]) {
   test(
     "a new protected version gets Git material once its predecessor's " +

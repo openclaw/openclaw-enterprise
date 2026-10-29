@@ -8,14 +8,14 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
 
 ## Tests
 
-| Check                             | When it runs                                       | Blocks merge               | GitHub Actions                                                                                                     |
-| --------------------------------- | -------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| CI                                | Every PR                                           | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| First Agent Smoke (job within CI) | [Every PR](#special-cases)                         | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| QA Matrix Advisory                | [`main`; every 6 h; PR with `full-qa`](#qa-matrix) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
-| Full Integration                  | Manual                                             | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
-| Observability Demo                | [Every PR](#special-cases)                         | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
-| Publish private documentation     | Manual                                             | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
+| Check                             | When it runs                                          | Blocks merge               | GitHub Actions                                                                                                     |
+| --------------------------------- | ----------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| CI                                | Every PR                                              | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| First Agent Smoke (job within CI) | [Every PR](#special-cases)                            | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| QA Matrix Advisory                | [`main`; every 6 h; selected trusted PRs](#qa-matrix) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
+| Full Integration                  | Manual                                                | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
+| Observability Demo                | [Every PR](#special-cases)                            | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
+| Publish private documentation     | Manual                                                | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
 
 <a id="pr-exceptions"></a>
 
@@ -60,7 +60,7 @@ Create only environments needed by selected jobs. Full Integration preflight
 requires no required reviewers. Its environments allow protected branches or a
 custom policy containing `main`; `integration-provider-account` instead requires
 exactly one custom rule: branch `main`. The advisory `integration-qa-pr` environment
-permits `main` and GitHub's `refs/pull/*/merge` branches. The `full-qa` label selects a run within
+permits `main` and GitHub's `refs/pull/*/merge` branches. The `full-qa` and `qa-openshell-compose` labels select runs within
 that policy. Full Integration preflight does not govern this environment.
 
 Only `k3d-model`, `openshell`, and credential-free `dev-up-k3d` accept a branch
@@ -186,7 +186,11 @@ not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
 The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
-and checks its branding through sign-in and the Agent workflow. Other scenarios
+and checks its branding through sign-in and the Agent workflow. Its OpenClaw
+cell also redeploys the same Agent with an explicitly configured provider alias,
+the existing OCC Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
+This stage runs wherever the OpenClaw `model-ui` cell is selected; the Codex-only
+advisory selection does not cover it. Other scenarios
 do not require the theme or an extra API rollout.
 
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
@@ -205,6 +209,16 @@ the run's commit and results before merging; skipped jobs provide no live QA res
 As long as the label remains, pushing a new commit replaces the previous run. Removing
 it stops selection on future pushes; cancel an active run separately. Forks and Dependabot PRs are
 ineligible. This is trusted code with real credentials, under the [existing environment policy](#environments).
+
+For the Compose OpenShell first-Agent workflow alone, add `qa-openshell-compose`
+to a reviewed, same-repository PR. Create that label once if it is absent. The job
+uses `integration-qa-pr` and runs only
+`tests/integration/local-first-agent-openshell-real.test.mjs`, including its native
+worker and redeployment cases. Its control plane runs in Compose; its workloads
+still use Kubernetes Compute. `full-qa` takes precedence when both labels exist.
+The focused run skips the other advisory jobs, keeps manifest case requirements
+and cleanup, and records `scope: focused`. It cannot satisfy full-lane aggregation.
+Inspect `qa-advisory-compose-openshell` and its attempt-specific artifacts.
 
 Ordinary PRs keep the [required CI suites](#ci) and, when selected, First Agent Smoke with a
 simulated model. Full Integration's `Shipped Installation QA Matrix` runs every selected combination.
@@ -303,16 +317,16 @@ selected results. QA waits for Slack to finish, including after Slack failure.
 The PR column identifies suites reused by other workflows; Full Integration
 itself remains manual.
 
-| Jobs                                    | What they test / suite guide                                                                                                                                           | Exact manifests                                                                                                       | Runs on PRs                      |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| Docker Model Runtime; k3d Model Runtime | [Docker](docker.md) deploy refusal; [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)          | No                               |
-| Gateway Routing; Production TUI         | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI version cutover](kubernetes.md#production-tui-tests)                                             | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json) | No                               |
-| Slack Live; Provider Account            | [Live Slack isolation, issued credentials and model turns](slack.md)                                                                                                   | [Slack](../../scripts/ci/test-suites/slack.json), [Account](../../scripts/ci/test-suites/provider-account.json)       | No                               |
-| OpenShell                               | [Sandbox enforcement and first-Agent flows](openshell.md)                                                                                                              | [OpenShell](../../scripts/ci/test-suites/openshell.json)                                                              | With `full-qa`                   |
-| Local Kubernetes Installation           | [Installation/recovery, including Keycloak](kubernetes.md#local-kubernetes-installation)                                                                               | [Installation](../../scripts/ci/test-suites/dev-up-k3d.json)                                                          | With `full-qa`                   |
-| Logging Collector                       | [Collector forwarding and recovery](local.md#metrics-and-observability-tests)                                                                                          | [Collector](../../scripts/ci/test-suites/logging-collector.json)                                                      | Yes: CI                          |
-| k3d OTEL; Helper Timeout                | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                                           | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)       | No                               |
-| Shipped Installation QA Matrix          | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                            | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                     | With `full-qa`; see QA scenarios |
+| Jobs                                    | What they test / suite guide                                                                                                                                           | Exact manifests                                                                                                       | Runs on PRs                                              |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Docker Model Runtime; k3d Model Runtime | [Docker](docker.md) deploy refusal; [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)          | No                                                       |
+| Gateway Routing; Production TUI         | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI version cutover](kubernetes.md#production-tui-tests)                                             | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json) | No                                                       |
+| Slack Live; Provider Account            | [Live Slack isolation, issued credentials and model turns](slack.md)                                                                                                   | [Slack](../../scripts/ci/test-suites/slack.json), [Account](../../scripts/ci/test-suites/provider-account.json)       | No                                                       |
+| OpenShell                               | [Sandbox enforcement and first-Agent flows](openshell.md)                                                                                                              | [OpenShell](../../scripts/ci/test-suites/openshell.json)                                                              | With `full-qa`; Compose-only with `qa-openshell-compose` |
+| Local Kubernetes Installation           | [Installation/recovery, including Keycloak](kubernetes.md#local-kubernetes-installation)                                                                               | [Installation](../../scripts/ci/test-suites/dev-up-k3d.json)                                                          | With `full-qa`                                           |
+| Logging Collector                       | [Collector forwarding and recovery](local.md#metrics-and-observability-tests)                                                                                          | [Collector](../../scripts/ci/test-suites/logging-collector.json)                                                      | Yes: CI                                                  |
+| k3d OTEL; Helper Timeout                | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                                           | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)       | No                                                       |
+| Shipped Installation QA Matrix          | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                            | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                     | With `full-qa`; see QA scenarios                         |
 
 ### Observability Demo
 
@@ -348,6 +362,12 @@ node scripts/ci/cleanup.mjs --state <private-state-file>
 ```
 
 Run cleanup after preparation or test failures too. See [local browser diagnostics](local.md#browser-failure-diagnostics) and the [CI flow](../flows/github-actions-testing.md) for failure evidence.
+
+For focused local proof, first validate the exact manifest path with
+`node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path>`.
+Then prepare the lane and pass the same `--file` argument to `run`. Omit `--file`
+for the complete lane. The composite action validates focused selection before
+tool setup or preparation; an unknown path, path alias, or another lane's file fails.
 
 ## Guides
 

@@ -2900,6 +2900,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   readonly capability = "sandbox" as const;
   readonly implementation: string;
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
+  readonly supportsHarnessExecutionMode;
   // environment() sets HOME to this for every Sandbox it creates.
   readonly harnessHome = OPENSHELL_HOME;
   static readonly configurationContributions = configurationContributions;
@@ -2934,6 +2935,24 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     this.options = options;
+    let reason: string | undefined;
+    if (options.kubernetes.userNamespaces !== false) {
+      reason =
+        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
+    } else if (sandboxServiceAccounts(options).length > 1) {
+      reason =
+        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.";
+    }
+    this.supportsHarnessExecutionMode = Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({ supported: false }),
+        dedicated: Object.freeze(
+          reason === undefined
+            ? { supported: true as const }
+            : { supported: false as const, reason },
+        ),
+      }),
+    });
     const git = selection.openShellGit;
     this.openShellGit = git;
     if (git) {
@@ -2971,16 +2990,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell SandboxDriver does not support the selected Harness runtime.",
       );
     }
-    // prepareNativeWorkspace refuses these only after a deploy has stopped its predecessors.
-    if (harness.id === "openclaw" && this.options.kubernetes.userNamespaces !== false) {
-      throw new ConfigurationHarnessError(
-        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
-      );
-    }
-    if (harness.id === "openclaw" && sandboxServiceAccounts(this.options).length > 1) {
-      throw new ConfigurationHarnessError(
-        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.",
-      );
+    const support = this.supportsHarnessExecutionMode.openclaw.dedicated;
+    if (harness.id === "openclaw" && !support.supported) {
+      throw new ConfigurationHarnessError(support.reason);
     }
     const agents = optionalAgentConfiguration(
       configuration.agents,
@@ -3989,6 +4001,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
+    context.signal.throwIfAborted();
     if (context.revision.harness.id === "openclaw" && context.workspaceNodeEnrolled === true) {
       // The exposure is withdrawn with enrollment, and nothing of Compute's listens there.
       throw new OpenShellSandboxConfigurationFailure(
@@ -3997,12 +4010,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     try {
       const { client, service } = await this.exactHarnessService(context, "observe a Harness");
+      context.signal.throwIfAborted();
       // Handshake first, so a serving app-server never receives a plain request. A
       // Harness wrapper holding a startup failure answers the upgrade 503 with the held
       // code and serves the failure itself on the status path.
-      if (
-        await client.serviceWebSocketHandshake(service.url, context.transportToken, context.signal)
-      ) {
+      const serving = await client.serviceWebSocketHandshake(
+        service.url,
+        context.transportToken,
+        context.signal,
+      );
+      context.signal.throwIfAborted();
+      if (serving) {
         return Object.freeze({ state: "serving" });
       }
       const document = await client.getServiceDocument(
@@ -4011,11 +4029,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         context.transportToken,
         context.signal,
       );
+      context.signal.throwIfAborted();
       const runtimeFailure = asRecord(document.json)?.runtimeFailure;
       return document.status === 200 && runtimeFailure !== undefined
         ? Object.freeze({ state: "failed", runtimeFailure })
         : Object.freeze({ state: "starting" });
     } catch (error) {
+      context.signal.throwIfAborted();
       // A gateway that does not answer, over gRPC or its service listener, is no evidence
       // about the Harness: the read waits for convergence without spending the revision's
       // attempt budget (finding 1658). Refusals and invalid answers keep their classes, and

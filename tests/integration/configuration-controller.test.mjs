@@ -1226,7 +1226,9 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
   });
   const flushes = "memory flushes use the session model and its fallbacks";
   const retries = "cyber-policy retries use the active model";
+  const explicitControls = "configure the individual security controls explicitly";
   for (const [path, replacement, value] of [
+    ["security.preset", explicitControls, "personal"],
     ["agents.defaults.compaction.memoryFlush.model", flushes, "openai/gpt-4.1"],
     ["agents.defaults.embeddedAgent.cyberFailover.model", retries, "openai/gpt-4.1"],
     ["plugins.entries.codex.config.appServer.cyberFailover.model", retries, null],
@@ -1261,8 +1263,37 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
     ),
     { label: "Agent save" },
   );
+  // A saved corporate draft remains editable. A deploy must fail before enqueuing a replacement.
+  const corrected = {
+    ...runtimeSelected,
+    security: { audit: { suppressions: [{ checkId: "example.check" }] } },
+    messages: { queue: { allowCollaborativeSteering: false } },
+  };
+  const legacy = { ...corrected, security: { ...corrected.security, preset: "corporate" } };
+  await writePastOcc(configurationDriver, agent.configurationId, legacy);
+  const operations = context.controller.pendingOperations();
+  assertRefused(
+    await request(context.app, "POST", `${agent.agentPath}/deploy`),
+    setting(
+      "security.preset",
+      `must be removed: the OpenClaw runtime retired it (${explicitControls})`,
+    ),
+  );
+  assert.deepEqual(context.controller.pendingOperations(), operations);
+  const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
+  assert.deepEqual(revisions.body.data, []);
+  const read = await request(context.app, "GET", agent.item);
+  assert.deepEqual(read.body.data.values, legacy);
+  const saved = await request(context.app, "PATCH", agent.item, {
+    body: { values: corrected, expectedGeneration: read.body.data.generation },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  assert.deepEqual(deployed.body.data.configuration.security, corrected.security);
+  assert.deepEqual(deployed.body.data.configuration.messages, corrected.messages);
+
   // The settings beside them still save.
-  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
   await acceptedOnSave(context, {
     ...runtimeSelected,
     agents: {
@@ -5120,4 +5151,66 @@ test("A stored Configuration with a literal Gateway password an older release ac
     const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
     assert.deepEqual(revisions.body.data, [], label);
   }
+});
+
+// Exercise regular Configuration/Agent/deployment routes with real Kubernetes
+// admission and OCC Secret authorization; runtime execution is a separate proof.
+test("embedded custom provider deploys through the existing Secret binding workflow", async () => {
+  const { namespace, ...context } = await fixture({
+    computeDriver: kubernetesRules("compute-configured-provider", ...configurationRules),
+  });
+  const model = "router/vendor/model";
+  const values = {
+    agents: { defaults: { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } } },
+    models: {
+      providers: {
+        router: {
+          baseUrl: "https://models.example.test/v1",
+          api: "openai-responses",
+          apiKey: { source: "env", provider: "default", id: "OCE_MODEL_API_KEY" },
+          models: [{ id: "vendor/model", name: "Configured model" }],
+        },
+      },
+    },
+  };
+  const { item, agentPath } = await deployableAgent(context, namespace, {
+    values,
+    name: "Configured provider consumer",
+    secretName: "configured-provider-key",
+  });
+  const saved = await request(context.app, "GET", item);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.body.data.values.models, values.models);
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+  assert.equal(revisions.status, 200);
+  assert.equal(revisions.body.data.length, 1);
+  assert.equal(revisions.body.data[0].harness.mode, "embedded");
+  const bound = await request(context.app, "GET", agentPath);
+  assert.equal(bound.body.data.harnessAuth.method, "api_key");
+  for (const apiKey of [
+    "${OPENAI_API_KEY}",
+    { source: "env", provider: "default", id: "OTHER_KEY" },
+  ]) {
+    const invalid = structuredClone(values);
+    invalid.models.providers.router.apiKey = apiKey;
+    const edited = await request(context.app, "PATCH", item, { body: { values: invalid } });
+    assert.equal(edited.status, 400, JSON.stringify(edited.body));
+    assert.match(JSON.stringify(edited.body), /OCE_MODEL_API_KEY/);
+  }
+  const competing = await request(context.app, "PATCH", agentPath, {
+    body: {
+      secretBindings: {
+        OCE_MODEL_API_KEY: {
+          source: {
+            kind: "secret",
+            namespaceId: namespace.id,
+            id: "sec_00000000-0000-4000-8000-000000000001",
+          },
+        },
+      },
+    },
+  });
+  assert.equal(competing.status, 400, JSON.stringify(competing.body));
 });

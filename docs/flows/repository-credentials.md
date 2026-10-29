@@ -73,8 +73,8 @@ The production native sender consumes READY material from the worker Token Servi
 It owns no App signing key, cannot issue installation tokens and does not load the
 development static-token implementation. The development backend requires both
 `developmentOnly: true` and the `--development-authority` process flag.
-`packages/contracts/src/repo.ts` owns public `RepoDriver`, grant identity and
-four-field status. Private contracts under
+`packages/contracts/src/repo.ts` owns public `RepositoryPolicyDriver` and
+`NativeRepositorySender`, grant identity and four-field status. Private contracts under
 `apps/controller/src/drivers/repo/credentials/` separate full status/admission/bearer
 results (`service-contracts.ts`), the dependency-free six-field client DTO
 (`client-contracts.ts`), and backend protocol/custody handles (`backend-contracts.ts`).

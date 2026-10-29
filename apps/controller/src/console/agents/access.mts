@@ -46,7 +46,8 @@ type PolicyRole = ReturnType<typeof policyRole>;
 
 // The Agent page's Access tab (spec 3.8). `onDenied` runs when the policy read is refused, after
 // the panel hides itself. `onWriting` runs with true when a share or removal starts and false
-// when it ends: the page holds version and page changes meanwhile (finding 2108).
+// when it ends: the page holds version and page changes meanwhile (finding 2108). `recheck` reads
+// the policy again for a reader who returns to the tab.
 export function renderAgentAccess(
   context: AgentAccessContext,
   agent: Pick<Agent, "id">,
@@ -232,11 +233,15 @@ export function renderAgentAccess(
     }
   }
 
-  async function readPolicy() {
-    const [roles, bindings] = await Promise.all([
-      context.request(`${path}/roles`, INSTALLATION_ADMINISTRATION),
-      context.request(`${path}/access-bindings`, INSTALLATION_ADMINISTRATION),
-    ]);
+  // A recheck reads one list at a time: a reader whose administration ended is refused, and
+  // audited, once.
+  async function readPolicy({ oneAtATime = false } = {}) {
+    const readRoles = () => context.request(`${path}/roles`, INSTALLATION_ADMINISTRATION);
+    const readBindings = () =>
+      context.request(`${path}/access-bindings`, INSTALLATION_ADMINISTRATION);
+    const [roles, bindings] = oneAtATime
+      ? [await readRoles(), await readBindings()]
+      : await Promise.all([readRoles(), readBindings()]);
     if (!context.isCurrent()) {
       throw new DOMException("View closed", "AbortError");
     }
@@ -278,7 +283,7 @@ export function renderAgentAccess(
     }
   }
 
-  async function load() {
+  async function load({ recheck = false } = {}) {
     if (state.pending || !context.isCurrent()) {
       return;
     }
@@ -288,11 +293,14 @@ export function renderAgentAccess(
     state.error = null;
     render();
     try {
-      await readPolicy();
+      await readPolicy({ oneAtATime: recheck });
       section.hidden = false;
       state.needsRefresh = false;
-      // What the listed bindings cannot confirm is said once, in the page's disclosure.
-      state.progress = ["Current policy loaded."];
+      // What the listed bindings cannot confirm is said once, in the page's disclosure. A recheck
+      // keeps what the panel said, a share's outcome too.
+      if (!recheck) {
+        state.progress = ["Current policy loaded."];
+      }
     } catch (error) {
       if (context.isCurrent()) {
         state.loaded = false;
@@ -450,7 +458,18 @@ export function renderAgentAccess(
       acknowledge.checked = false;
     }, true);
   });
+  // The panel is built once per page, so a return to the tab shows what it read before, and
+  // access can change meanwhile. An administrator revoked with the page open kept the old grants,
+  // "Current policy loaded." and an enabled Remove binding (finding D790). A return to a panel
+  // that shows the policy reads it again, its controls disabled meanwhile: a refusal takes the
+  // member path a page load takes. A panel that shows an error already asks for Refresh sharing.
+  function recheck() {
+    if (state.loaded && !state.needsRefresh && !state.error) {
+      void load({ recheck: true });
+    }
+  }
+
   render();
   void load();
-  return section;
+  return { section, recheck };
 }

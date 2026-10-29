@@ -36,6 +36,7 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
+  LIVE_BUTTON,
   createRepositoryLaunchFixture,
   focusedDescription,
   focusedText,
@@ -1137,7 +1138,7 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   await movedOn.requested;
   await page.evaluate(() => globalThis.document.activeElement?.blur());
   movedOn.release();
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "BODY");
 
   // A stale draft keeps Deploy disabled, so the refusal itself takes focus.
@@ -1341,7 +1342,7 @@ for (const [field, change] of [
     );
     const ready = () =>
       kubernetes
-        ? page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor()
+        ? page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor()
         : page.getByText("Configured on the runtime host", { exact: false }).waitFor();
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const { page } = await newPage(t, fixture);
@@ -1975,7 +1976,10 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     await page.getByText("Ready to deploy.", { exact: true }).waitFor();
     await page.waitForFunction(() =>
       [...globalThis.document.querySelectorAll("button")].some(
-        (button) => button.textContent === "Deploy new version" && !button.disabled,
+        (button) =>
+          button.textContent === "Deploy new version" &&
+          !button.disabled &&
+          button.getAttribute("aria-disabled") !== "true",
       ),
     );
     assert.equal(await deploy.isEnabled(), true);
@@ -2007,7 +2011,23 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       assert.equal(await checkRefusal.count(), 1);
       assert.equal(await credentialsPanel.getByText(refusalText).count(), 0);
       assert.equal(pathRequests(requests, "PATCH", configurationPath).length, writesBeforeCheck);
+      // A denied binding preflight clears previously readable bindings. Recovery must read
+      // the saved state again rather than retry through controls built from the old snapshot.
+      const refusedHtml = await page.content();
+      for (const secret of [appSecret, botSecret, replacementSecret]) {
+        assert.equal(refusedHtml.includes(secret.name), false);
+        assert.equal(refusedHtml.includes(secret.id), false);
+      }
       await page.unroute(`${fixture.origin}${configurationPath}`, refusedCheck);
+      const freshConfiguration = page.waitForResponse(
+        (response) =>
+          response.url() === `${fixture.origin}${configurationPath}` &&
+          response.request().method() === "GET",
+      );
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
+      assert.equal((await freshConfiguration).status(), 200);
+      await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+      assert.equal(pathRequests(requests, "PATCH", configurationPath).length, writesBeforeCheck);
       const previousConfigurationWrites = pathRequests(requests, "PATCH", configurationPath).length;
       await page.route(`${fixture.origin}${configurationPath}`, (route) =>
         route.request().method() === "PATCH"
@@ -2233,7 +2253,7 @@ for (const action of ["disable", "drawer"]) {
     });
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
     await login(page, fixture, url);
-    await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+    await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
     assert.equal(
       await page
         .locator(".channels-section")

@@ -1039,5 +1039,64 @@ test(
       ).rows,
       jobs.rows,
     );
+    // Finding 2151: a deployer without SandboxPolicy read gets the read refusal. The ceiling's
+    // named 409 would tell them that saved additions exist.
+    await pool.query(
+      "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'read','sandbox_policy',$3,'deny')",
+      [`restriction-${randomUUID()}`, namespace.id, previous.id],
+    );
+    const unreadable = await inject(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+      undefined,
+      app,
+    );
+    assert.equal(unreadable.statusCode, 403, unreadable.body);
+    assert.equal(Object.hasOwn(unreadable.json().error, "details"), false, unreadable.body);
+    assert.deepEqual(
+      await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
+      revisions,
+    );
+    // Finding 2874: live application with update but not read gets the read refusal, not the
+    // ceiling's 409 naming the saved additions, and requests nothing.
+    const unreadableApply = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 2, revisionId: revision.id },
+      app,
+    );
+    assert.equal(unreadableApply.statusCode, 403, unreadableApply.body);
+    assert.equal(Object.hasOwn(unreadableApply.json().error, "details"), false);
+    // The refusal names the grant the API contract and the CLI list for apply.
+    assert.match(unreadableApply.json().error.message, /needs SandboxPolicy read on /);
+    // Update alone still saves. Apply returns the saved policy, so read is required even when
+    // the saved version has no additions to admit.
+    const emptied = await inject("PUT", path, { expectedVersion: 2, additions: [] }, app);
+    assert.equal(emptied.statusCode, 200, emptied.body);
+    const emptyApply = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 3, revisionId: revision.id },
+      app,
+    );
+    assert.equal(emptyApply.statusCode, 403, emptyApply.body);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT document->'application' AS application FROM occ.sandbox_policies WHERE id=$1",
+          [previous.id],
+        )
+      ).rows,
+      [{ application: null }],
+    );
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+          [namespace.id],
+        )
+      ).rows,
+      jobs.rows,
+    );
   },
 );

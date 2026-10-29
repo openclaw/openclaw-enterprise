@@ -76,7 +76,8 @@
         "worker refuses repository credentials when repositoryPolicy is absent",
         "worker refuses repository credentials when nativeRepositorySender is present with the wrong id",
         "worker refuses repository credentials when nativeRepositorySender is present with the wrong implementation",
-        "worker refuses repository credentials when nativeRepositorySender is absent"
+        "worker refuses repository credentials when nativeRepositorySender is absent",
+        "live repository cleanup uses the persisted owner with revision identity only"
       ]
     },
     {

@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { cp, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -449,6 +449,51 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
     ),
   );
 });
+
+test(
+  "first-Agent keeps its saved record readable after a restrictive-umask attempt",
+  { skip: process.platform === "win32" ? "Unix file modes are required" : false },
+  async (t) => {
+    const { directory, engineLog, env } = await k3dFixture(t);
+    // Existing Local Setup files retain their original permissions. Only the new
+    // helper process inherits the real kernel umask; no model credential is used.
+    await writeFile(engineLog, "", { mode: 0o600 });
+    for (const key of [
+      "CODEX_ACCESS_TOKEN",
+      "CODEX_ACCESS_TOKEN_FILE",
+      "OPENAI_API_KEY",
+      "OPENAI_API_KEY_FILE",
+    ]) {
+      delete env[key];
+    }
+    const strict = {
+      ...env,
+      NODE_OPTIONS:
+        `${env.NODE_OPTIONS ?? ""} --import=data:text/javascript,process.umask(0o777)`.trim(),
+    };
+    const first = await runFirstAgentAsync(strict);
+    assert.match(first, /kubectl did not complete successfully \(exit 23\)/);
+    const path = join(
+      directory,
+      `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json`,
+    );
+    const readRecord = async () => {
+      const file = await open(path, "r");
+      try {
+        return { mode: (await file.stat()).mode & 0o777, content: await file.readFile("utf8") };
+      } finally {
+        await file.close();
+      }
+    };
+    const saved = await readRecord();
+    assert.equal(saved.mode, 0o600);
+    await writeFile(engineLog, "", { mode: 0o600 });
+    const retry = await runFirstAgentAsync(env);
+    assert.match(retry, /kubectl did not complete successfully \(exit 23\)/);
+    assert.match(await readFile(engineLog, "utf8"), /exec -i statefulset\/postgres/);
+    assert.deepEqual(await readRecord(), saved);
+  },
+);
 
 test("first-Agent refuses an unrecognized saved record without calling it old", async (t) => {
   const { directory, engineLog, env } = await k3dFixture(t);

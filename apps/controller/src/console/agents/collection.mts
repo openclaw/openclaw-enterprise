@@ -10,7 +10,7 @@ import type {
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { resourceActionIcon } from "../resource-actions.mjs";
-import { button, element, setText, statusBlock, requestIdLine } from "../dom.mjs";
+import { button, element, mayReturnFocus, setText, statusBlock, requestIdLine } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
 import { credentialRejectedAsk } from "./deployment-recovery.mjs";
@@ -21,6 +21,7 @@ import {
   deleteRefused,
   notIncluded,
   stopRefused,
+  unreadableCurrentVersion,
 } from "./access-reasons.mjs";
 import {
   type AgentNavigation,
@@ -64,7 +65,8 @@ interface AgentListContext extends AgentNavigation {
 
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
-// Returns it with the rest of its page.
+// Returns it with the rest of its page, and whether that page lists every readable version: the
+// API sends a cursor only when it found an older one the caller can read.
 async function latestReadableRevision(context: AgentListContext, path: string) {
   let cursor: string | null = null;
   do {
@@ -72,32 +74,39 @@ async function latestReadableRevision(context: AgentListContext, path: string) {
       cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
       { ...rowRead, includeMeta: true },
     )) as AgentRevisionListResponse;
+    cursor = page.meta?.nextCursor ?? null;
     const [latest] = page.data;
     if (latest) {
-      return { latest, page: page.data };
+      return { latest, page: page.data, complete: cursor === null };
     }
-    cursor = page.meta?.nextCursor ?? null;
   } while (cursor);
-  return { latest: null, page: [] };
+  return { latest: null, page: [], complete: true };
 }
 
+// A current version the caller cannot read, and whether it is newer than every version they can.
+const UNREADABLE = "unreadable";
+const NEWER_UNREADABLE = "newer-unreadable";
+type CurrentVersion = AgentRevisionMetadata | typeof UNREADABLE | typeof NEWER_UNREADABLE | null;
+
 // The current version, `activeId`, for the Agents list (finding 2093). It is usually on the
-// newest readable page; otherwise it is older or unreadable, so it is read on its own. That page
-// lists only readable versions, so a refusal is remembered like the Agent page's denied reads
-// (an audited 403 per list view otherwise). An unreadable or unread version is null.
+// newest readable page. When that page lists every readable version, one it does not list is
+// unreadable, and the list says so without reading it, as the Agent page does: the read was an
+// audited 403 on every list load (finding D789). Otherwise it may be on an older page, so it is
+// read on its own, and a refusal is remembered like the Agent page's denied reads. A version
+// that could not be read for another reason is null.
 async function currentRevision(
   context: AgentListContext,
   path: string,
   activeId: string | undefined,
-  page: readonly AgentRevisionMetadata[],
-) {
+  { page, complete }: { page: readonly AgentRevisionMetadata[]; complete: boolean },
+): Promise<Exclude<CurrentVersion, typeof NEWER_UNREADABLE>> {
   const listed = page.find((revision) => revision.id === activeId);
-  if (!activeId || listed || !page.length) {
+  if (!activeId || listed) {
     return listed ?? null;
   }
   const activePath = `${path}/${encodeURIComponent(activeId)}`;
-  if (context.deniedReads?.has(activePath)) {
-    return null;
+  if (complete || context.deniedReads?.has(activePath)) {
+    return UNREADABLE;
   }
   try {
     return (await context.request(activePath, rowRead)) as AgentRevisionMetadata;
@@ -108,6 +117,7 @@ async function currentRevision(
     }
     if (status === 403) {
       context.deniedReads?.remember(activePath);
+      return UNREADABLE;
     }
     return null;
   }
@@ -180,6 +190,7 @@ export function renderAgentList(context: AgentListContext) {
   const permissions = new Map<string, AgentPermissions>();
   type RestrictDialog = (id: string, answer: AgentPermissions) => void;
   let restrictOpenDialog: RestrictDialog | null = null;
+  let dismissOpenDialog: (() => void) | null = null;
   // The page renders with the caller's permission answer, so Create Agent is never painted
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
@@ -244,30 +255,45 @@ export function renderAgentList(context: AgentListContext) {
   function readDeployment(item: AgentRead) {
     const agentPath = agentRequestPath(item.id);
     const revisions = latestReadableRevision(context, `${agentPath}/revisions`);
+    const deployment = revisions.then(async ({ latest }) => {
+      if (!latest) {
+        return null;
+      }
+      const status = (await context.request(
+        `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
+        rowRead,
+      )) as AgentDeploymentStatusWire;
+      // A rejected model credential is worded for the caller, as on the Agent's page (finding
+      // D752), so that row waits for its permission answer.
+      const code = status.status === "failed" ? status.error?.code : undefined;
+      const credentialAsk =
+        code === "RUNTIME_AUTHENTICATION_FAILED"
+          ? credentialRejectedAsk(
+              code,
+              "harnessAuth" in item ? item.harnessAuth : undefined,
+              await permissionAnswers.get(item.id),
+            )
+          : undefined;
+      return { revision: latest, status, credentialAsk };
+    });
     return {
-      current: revisions.then(({ page }) =>
-        currentRevision(context, `${agentPath}/revisions`, item.activeRevisionId, page),
-      ),
-      deployment: revisions.then(async ({ latest }) => {
-        if (!latest) {
-          return null;
+      deployment,
+      current: revisions.then(async (found): Promise<CurrentVersion> => {
+        const active = await currentRevision(
+          context,
+          `${agentPath}/revisions`,
+          item.activeRevisionId,
+          found,
+        );
+        if (active !== UNREADABLE) {
+          return active;
         }
-        const status = (await context.request(
-          `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
-          rowRead,
-        )) as AgentDeploymentStatusWire;
-        // A rejected model credential is worded for the caller, as on the Agent's page (finding
-        // D752), so that row waits for its permission answer.
-        const code = status.status === "failed" ? status.error?.code : undefined;
-        const credentialAsk =
-          code === "RUNTIME_AUTHENTICATION_FAILED"
-            ? credentialRejectedAsk(
-                code,
-                "harnessAuth" in item ? item.harnessAuth : undefined,
-                await permissionAnswers.get(item.id),
-              )
-            : undefined;
-        return { revision: latest, status, credentialAsk };
+        // A succeeded deployment makes its version current, so an unreadable current version
+        // beside the newest readable one's succeeded deployment is newer, as on the Agent page.
+        const latest = await deployment.catch(() => null);
+        return latest && deploymentOutcome(latest.status) === "succeeded"
+          ? NEWER_UNREADABLE
+          : UNREADABLE;
       }),
     };
   }
@@ -309,14 +335,27 @@ export function renderAgentList(context: AgentListContext) {
       });
     }
   }
-  // Fills a row's Current version cell: the version's number once its row's read finds it, else
-  // its ID as before, for a current version the reader cannot read (finding 2093).
-  function fillCurrent(
-    current: HTMLTableCellElement,
-    item: AgentRead,
-    active: AgentRevisionMetadata | null,
-  ) {
+  // Fills a row's Current version cell: the version's number once its row's read finds it
+  // (finding 2093), words for one the reader cannot read (finding D789), else its ID.
+  function fillCurrent(current: HTMLTableCellElement, item: AgentRead, active: CurrentVersion) {
     if (!item.activeRevisionId) {
+      return;
+    }
+    if (active === UNREADABLE || active === NEWER_UNREADABLE) {
+      const text = unreadableCurrentVersion(active === NEWER_UNREADABLE);
+      const shown = current.querySelector(".agent-version-unreadable");
+      if (shown) {
+        setText(shown, text);
+        return;
+      }
+      // A retained row's link gives way to the words; focus on it moves to the row's Agent link.
+      const focused = current.contains(current.ownerDocument.activeElement);
+      current.replaceChildren(
+        element("span", { className: "muted agent-version-unreadable" }, text),
+      );
+      if (focused) {
+        current.closest("tr")?.querySelector("a")?.focus({ preventScroll: true });
+      }
       return;
     }
     const label = active ? `v${active.revision}` : shortId(item.activeRevisionId);
@@ -346,7 +385,7 @@ export function renderAgentList(context: AgentListContext) {
     );
     const fillVersion = fillAfterReading(
       current.querySelector(".delayed-status"),
-      (active: AgentRevisionMetadata | null) => fillCurrent(current, item, active),
+      (active: CurrentVersion) => fillCurrent(current, item, active),
     );
     void reads.current.then(
       (active) => context.isCurrent() && fillVersion(active),
@@ -495,6 +534,15 @@ export function renderAgentList(context: AgentListContext) {
       context.onExpired();
       return;
     }
+    if (notReady?.missing) {
+      const refused = [400, 403, 404, 409, 429].includes(error.status ?? 0);
+      showOutcome({
+        error: refused
+          ? "The request was not accepted. This Namespace is no longer available."
+          : "Outcome unknown. The request may have been accepted. This Namespace is no longer available; the request has not been repeated.",
+      });
+      return;
+    }
     let text;
     if (error.status === 403) {
       text = kind === "stop" ? stopRefused(item.name) : deleteRefused(item.name);
@@ -530,6 +578,10 @@ export function renderAgentList(context: AgentListContext) {
         throw new Error("Invalid Agent stop response");
       }
       replaceItem(item.id, stopped);
+      if (notReady?.missing) {
+        showOutcome({ notice: "Stop request accepted. This Namespace is no longer available." });
+        return;
+      }
       showOutcome({
         notice:
           stopped.status === "deleting"
@@ -554,7 +606,9 @@ export function renderAgentList(context: AgentListContext) {
       }
       replaceItem(item.id, deleting);
       showOutcome({
-        notice: `Deletion requested for ${item.name}. It leaves this list once cleanup finishes; select Refresh to check.`,
+        notice: notReady?.missing
+          ? "Deletion request accepted. This Namespace is no longer available."
+          : `Deletion requested for ${item.name}. It leaves this list once cleanup finishes; select Refresh to check.`,
       });
     } catch (error) {
       reportFailure(item, error, "delete");
@@ -581,7 +635,7 @@ export function renderAgentList(context: AgentListContext) {
     const confirm = button(
       stopping ? "Stop Agent" : "Permanently delete Agent",
       async () => {
-        if (permissions.get(item.id)?.[permission] === false) {
+        if (notReady?.missing || pending || permissions.get(item.id)?.[permission] === false) {
           return;
         }
         pending = true;
@@ -608,6 +662,8 @@ export function renderAgentList(context: AgentListContext) {
       cancel.focus();
     };
     restrictOpenDialog = restrict;
+    const dismiss = () => dialog.close();
+    dismissOpenDialog = dismiss;
     dialog.append(
       element(
         "h2",
@@ -629,8 +685,11 @@ export function renderAgentList(context: AgentListContext) {
         if (restrictOpenDialog === restrict) {
           restrictOpenDialog = null;
         }
+        if (dismissOpenDialog === dismiss) {
+          dismissOpenDialog = null;
+        }
         dialog.remove();
-        if (!context.isCurrent()) {
+        if (!context.isCurrent() || !mayReturnFocus(dialog)) {
           return;
         }
         // A redraw while the dialog was open (a permission refusal, for example) replaces the
@@ -759,6 +818,10 @@ export function renderAgentList(context: AgentListContext) {
   function render() {
     cells.clear();
     rowControls.clear();
+    if (notReady?.missing) {
+      rows.replaceChildren();
+      return;
+    }
     const query = search.value.trim().toLowerCase();
     const matches = items
       .filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query))
@@ -983,8 +1046,23 @@ export function renderAgentList(context: AgentListContext) {
           );
       notReadyNote?.replaceWith(replacement);
       notReadyNote = replacement;
-      // Only the empty state's sentence depends on the Namespace; rows keep their focus.
-      if (!rows.querySelector("table")) {
+      if (!namespace) {
+        // A lost Namespace also removes its retained rows, so search cannot reveal them again.
+        const focused =
+          rows.contains(document.activeElement) ||
+          feedback.contains(document.activeElement) ||
+          document.activeElement === create ||
+          dismissOpenDialog !== null;
+        items.length = 0;
+        feedback.replaceChildren();
+        render();
+        // Dismiss stale confirmation without aborting or replaying an already submitted write.
+        dismissOpenDialog?.();
+        if (focused) {
+          search.focus({ preventScroll: true });
+        }
+      } else if (!rows.querySelector("table")) {
+        // Status changes affect the empty state's sentence; readable rows keep their focus.
         render();
       }
     };

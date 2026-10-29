@@ -136,6 +136,11 @@ and Agent state stay unchanged.
   failed. The log line names the cause and any invalid setting paths, and
   OpenClaw's own hints to run `openclaw doctor` are dropped, since the
   Harness runs Doctor itself. Fix the cause, then deploy again.
+- A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a dedicated
+  Gateway that OpenClaw refused to configure: an earlier Gateway process did not
+  stop cleanly, and the restarted container cannot verify that the lock holder
+  stopped. The log line quotes OpenClaw's holder description. Follow
+  [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout, a
   transient failure or a network or 5xx exit, and the second attempt failed that
@@ -177,6 +182,8 @@ and Agent state stay unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 15:00: Hold a dedicated Gateway's unverifiable Gateway state lock as check `gateway-state-lock` instead of `gateway-tool-policy`. (fix-2864, finding 2864)
 
 - 2026-10-27 09:00: Name the `state-migration` and `workspace-baseline` holds of a dedicated Harness or native worker. (fix-2686-status, finding 2686)
 

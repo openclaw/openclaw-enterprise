@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -1843,6 +1844,7 @@ function createIntegrationSandboxDriverFactory(
       id: selection.id,
       capability: "sandbox",
       implementation: selection.implementation,
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: Object.freeze(["networking", "filesystem", "process"]),
       networkPolicy: { live: true, wildcards: true, portRanges: true },
       admitNetworkPolicy(additions, version, defaults) {

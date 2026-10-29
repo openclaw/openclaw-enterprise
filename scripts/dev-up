@@ -41,7 +41,7 @@ case "$development_compute_driver" in
   docker) ;;
   kubernetes)
     if [ ! -x "$occ_cli" ]; then
-      echo "dev-up: prerequisite failed: OCC CLI is required at $occ_cli; run pnpm cli:build" >&2
+      echo "dev-up: prerequisite failed: OCC CLI is required at $occ_cli; run go build -trimpath -o bin/occ ./cmd/occ" >&2
       exit 1
     fi
     exec "$occ_cli" dev up "$@"
@@ -135,7 +135,7 @@ require_command() {
 
 require_command python3
 if [ ! -x "$occ_cli" ]; then
-  fail "prerequisite" "OCC CLI is required at $occ_cli; run pnpm cli:build"
+  fail "prerequisite" "OCC CLI is required at $occ_cli; run go build -trimpath -o bin/occ ./cmd/occ"
 fi
 if ! "$occ_cli" dev check-profile; then
   exit 2

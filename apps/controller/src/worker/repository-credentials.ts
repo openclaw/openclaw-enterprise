@@ -13,6 +13,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
 import {
+  eligibleRepositoryApprovalScope,
   isRepositoryCleanupWork,
   repositoryApprovalFingerprint,
   revisionAdmittedBeforeWork,
@@ -30,6 +31,7 @@ import {
 type Queue = Pick<PostgresWorkQueue, keyof PostgresWorkQueue>;
 type Attempt = Readonly<RepositorySessionAttempt>;
 type Revision = Readonly<AgentRevision>;
+type RevisionIdentity = Pick<Revision, "id" | "namespaceId" | "agentId">;
 type CleanupContext = Attempt["cleanupContext"];
 
 export class RepositoryCredentialAuthorityError extends Error {
@@ -61,7 +63,7 @@ interface Dependencies {
   ) => Promise<T>;
 }
 
-function owner(revision: Revision) {
+function owner(revision: RevisionIdentity) {
   return {
     namespaceId: revision.namespaceId,
     agentId: revision.agentId,
@@ -166,7 +168,8 @@ export class RepositoryCredentialLifecycle {
     if (snapshot.standingApprovalId !== undefined) {
       const binding = snapshot.bindings[0];
       const scope =
-        binding && driver.standingApprovalScope?.({ namespaceId: revision.namespaceId, binding });
+        binding &&
+        eligibleRepositoryApprovalScope(driver, { namespaceId: revision.namespaceId, binding });
       if (
         !binding ||
         snapshot.bindings.length !== 1 ||
@@ -239,7 +242,7 @@ export class RepositoryCredentialLifecycle {
           candidate.repositoryRef === binding.repositoryRef && candidate.phase === "closing",
       );
       for (const attempt of closingAttempts) {
-        const closed = await this.closeAttempt(claim, revision, attempt);
+        const closed = await this.closeAttempt(claim, attempt);
         if (revision.repositoryCredentials.standingApprovalId && closed.disposalPending) {
           throw new StandingRepositorySessionDisposingError();
         }
@@ -297,7 +300,7 @@ export class RepositoryCredentialLifecycle {
             continue;
           }
           const closing = await this.markAttemptClosing(claim, revision, existing);
-          const closed = await this.closeAttempt(claim, revision, closing, status);
+          const closed = await this.closeAttempt(claim, closing, status);
           if (renew && closed.disposalPending) {
             throw new StandingRepositorySessionDisposingError();
           }
@@ -308,7 +311,7 @@ export class RepositoryCredentialLifecycle {
       } else if (existing !== undefined) {
         // No bearer survives recovery. Lookup also fences a delayed first request.
         const closing = await this.markAttemptClosing(claim, revision, existing);
-        const closed = await this.closeAttempt(claim, revision, closing);
+        const closed = await this.closeAttempt(claim, closing);
         if (!closed.authorityClosed) {
           throw new Error("REPOSITORY_CLEANUP_PENDING");
         }
@@ -401,7 +404,7 @@ export class RepositoryCredentialLifecycle {
         throw new RepositoryCredentialAuthorityError("INVALID_DRIVER_OBSERVATION");
       }
       const closing = await this.markAttemptClosing(claim, revision, attempt);
-      const closed = await this.closeAttempt(claim, revision, closing);
+      const closed = await this.closeAttempt(claim, closing);
       if (!closed.authorityClosed) {
         throw new Error("REPOSITORY_CLEANUP_PENDING");
       }
@@ -452,7 +455,7 @@ export class RepositoryCredentialLifecycle {
 
   async cleanup(
     claim: ClaimedWork,
-    revision: Revision,
+    revision: RevisionIdentity,
     options: { readonly closeLiveSessions?: boolean } = {},
   ): Promise<RepositoryCleanupOutcome> {
     if (options.closeLiveSessions) {
@@ -472,26 +475,17 @@ export class RepositoryCredentialLifecycle {
     const attempts = await this.dependencies.state.read((view) =>
       view.repositorySessions.listRevisionAttempts(owner(revision)),
     );
-    return this.closeEach(attempts, (attempt) => this.closeAttempt(claim, revision, attempt));
+    return this.cleanupRetained(claim, attempts);
   }
 
   async cleanupRetained(
     claim: ClaimedWork,
     attempts: readonly Readonly<RepositorySessionAttempt>[],
   ): Promise<RepositoryCleanupOutcome> {
-    return this.closeEach(attempts, (attempt) =>
-      this.closeAttemptWithContext(claim, attempt, attempt.cleanupContext),
-    );
-  }
-
-  private async closeEach(
-    attempts: readonly Readonly<RepositorySessionAttempt>[],
-    close: (attempt: Readonly<RepositorySessionAttempt>) => Promise<{ readonly settled: boolean }>,
-  ): Promise<RepositoryCleanupOutcome> {
     const outcome = settleCleanup(attempts);
     for (const attempt of attempts.filter((candidate) => candidate.phase === "closing")) {
       try {
-        const closed = await close(attempt);
+        const closed = await this.closeAttempt(claim, attempt);
         outcome.settled = closed.settled && outcome.settled;
       } catch (error) {
         if (error instanceof WorkClaimLostError) {
@@ -728,7 +722,7 @@ export class RepositoryCredentialLifecycle {
         attempt,
         opened.status.sessionId,
       );
-      await this.closeAttempt(claim, revision, closing, opened.status);
+      await this.closeAttempt(claim, closing, opened.status);
       throw new Error("REPOSITORY_ADMISSION_RECOVERED");
     }
     if (predecessor) {
@@ -745,7 +739,7 @@ export class RepositoryCredentialLifecycle {
         attempt,
         opened.session.sessionId,
       );
-      await this.closeAttempt(claim, revision, closing, opened.session);
+      await this.closeAttempt(claim, closing, opened.session);
       throw new Error("REPOSITORY_SESSION_NOT_OPEN");
     }
     try {
@@ -760,7 +754,7 @@ export class RepositoryCredentialLifecycle {
           attempt,
           opened.session.sessionId,
         );
-        await this.closeAttempt(claim, revision, closing).catch(() => {});
+        await this.closeAttempt(claim, closing).catch(() => {});
       }
       // The original admission remains recoverable even when the claim was lost.
       throw error;
@@ -807,33 +801,10 @@ export class RepositoryCredentialLifecycle {
 
   private async closeAttempt(
     claim: ClaimedWork,
-    revision: Revision,
     attempt: Attempt,
     observedStatus?: RepositoryCredentialSessionStatus,
   ) {
-    const binding = revision.repositoryCredentials?.bindings.find(
-      (candidate) => candidate.repositoryRef === attempt.repositoryRef,
-    );
-    if (binding === undefined) {
-      throw new RepositoryCredentialAuthorityError("INVALID_REPOSITORY_ATTEMPT_OWNER");
-    }
-    return this.closeAttemptWithContext(
-      claim,
-      attempt,
-      {
-        driver: revision.repositoryCredentials!.driver,
-        binding,
-      },
-      observedStatus,
-    );
-  }
-
-  private async closeAttemptWithContext(
-    claim: ClaimedWork,
-    attempt: Attempt,
-    context: CleanupContext,
-    observedStatus?: RepositoryCredentialSessionStatus,
-  ) {
+    const context = attempt.cleanupContext;
     if (context.binding.repositoryRef !== attempt.repositoryRef) {
       throw new RepositoryCredentialAuthorityError("INVALID_REPOSITORY_ATTEMPT_OWNER");
     }

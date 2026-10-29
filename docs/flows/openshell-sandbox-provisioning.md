@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-28
-last_updated_session: authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88
+updated: 2026-10-29
+last_updated_session: 01a183dc-eb11-7f33-9992-dec02cd989e3
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -126,6 +126,15 @@ ownership for private routing files; Installation files remain `0644` in private
 
 Cleanup validates ownership, deletes cluster/project/volumes, and retains partial-failure recovery state.
 
+### 0.1. Check Harness mode support
+
+`apps/controller/src/drivers/sandbox/openshell.ts:constructor` sets
+`supportsHarnessExecutionMode`.
+`packages/occ/src/index.ts:admitsOpenClawExecutionMode` checks this value,
+native-worker support, and provisioning requirements.
+Agent writes check support before transforming Configuration; deployment stores
+the result in the Agent revision. Provisioning status reads return stored work.
+
 ### 1. Prepare the Namespace and OpenShell Workspace
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:ensureNamespace`
@@ -228,9 +237,8 @@ writable PVC subpaths, preserving retained entries. Mode and process ownership c
 UID-fenced foreground deletion and writer Pod termination.
 Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
 and the pinned Gateway's default identity, without model credentials, ServiceAccount
-tokens, capabilities, or direct Pod creation. `configureAgent` refuses dedicated OpenClaw
-at save and deploy without the first two, and the Installation then offers no dedicated
-OpenClaw mode.
+tokens, capabilities, or direct Pod creation. Mode support and admission report
+these setting requirements before deployment.
 
 Document delivery is separate from native subpath preparation.
 After Sandbox readiness, `initializeWorkspace` checks the private setup Secret's
@@ -283,9 +291,10 @@ destroys HTTP refusals at once, releasing their connections.
 Provider files use reported absolute paths. Gateway failure blocks readiness.
 Providers survive uncertain creates; cleanup deletes their Sandbox first.
 
-The OpenShell supervisor connects through in-cluster WSS on Kubernetes or the
-Agent Gateway Service URL on Compose. Policy binds the executable/supervisor to
-that destination. On process-group `EPERM`, the supervisor signals the process directly.
+The workspace node uses the configured Gateway's scoped WSS node route on
+both control planes. Envoy rewrites worker-transfer paths and attributes each
+client. Policy binds the executable to that host and port. On process-group
+`EPERM`, the supervisor signals the process directly.
 
 ### 5. Observe readiness or clean up
 
@@ -373,6 +382,12 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
+
+- 2026-10-28 15:09: Clarify mode support and Configuration transformation wording. (01a183dc-eb11-7f33-9992-dec02cd989e3 - a06c28fe0e)
+
+- 2026-10-28 12:05: Separate static Harness mode reporting from real Configuration transformation. (01a183dc-eb11-7f33-9992-dec02cd989e3 - 07418d1980)
 
 - 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
 

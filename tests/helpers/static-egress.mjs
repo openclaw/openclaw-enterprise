@@ -79,7 +79,9 @@ export function supervisorBearer(claims, privateKey) {
 }
 
 /** Real app/auth/IAM/controller/Drivers. Storage and installed runtime observations are wire fixtures,
- * not a Kubernetes API server or an OpenShell supervisor. No authorization/provider logic is mocked. */
+ * not a Kubernetes API server or an OpenShell supervisor. No authorization/provider logic is mocked.
+ * @template {import("node:net").Server} [Provider=never]
+ */
 export async function staticEgressFixture(
   t,
   {
@@ -104,8 +106,8 @@ export async function staticEgressFixture(
     configurePreparedTokens,
     secretValue,
     admitSource,
-    providerServer = /** @type {(options: import("node:https").ServerOptions, handler: import("node:http").RequestListener) => import("node:https").Server} */ (
-      createHttpsServer
+    providerServer = /** @type {((tls: import("node:tls").TlsOptions, handle: import("node:http").RequestListener) => Provider) | undefined} */ (
+      undefined
     ),
     credentialProxyCapacity,
   } = {},
@@ -523,7 +525,8 @@ export async function staticEgressFixture(
   const path = `/namespaces/${namespace.id}/credential-sources`;
   const providerRequests = [];
   let providerResponse = { status: 200, body: { output: "fixture answer" } };
-  const provider = providerServer({ key, cert }, async (request, response) => {
+  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
+  const provider = createProvider({ key, cert }, async (request, response) => {
     const bytes = await buffer(request);
     providerRequests.push({
       method: request.method,
@@ -735,16 +738,16 @@ export async function staticEgressFixture(
     return entry.number;
   };
   const services = grpc.loadPackageDefinition(definition).openshell.middleware.v1;
+  function createAuthorityClient(name) {
+    return new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert));
+  }
   const clients = Object.fromEntries(
     [
       "HttpCredentialAccess",
       "HttpResponsePreReturn",
       "SupervisorMiddleware",
       "HttpInstallationExchange",
-    ].map((name) => [
-      name,
-      new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert)),
-    ]),
+    ].map((name) => [name, createAuthorityClient(name)]),
   );
   t.after(() => {
     for (const client of Object.values(clients)) {
@@ -1066,10 +1069,7 @@ export async function staticEgressFixture(
       await bindOpenShellEgressAuthority(authority, "127.0.0.1:" + authorityPort, cert, key);
       for (const [name, client] of Object.entries(clients)) {
         client.close();
-        clients[name] = new services[name](
-          "127.0.0.1:" + authorityPort,
-          grpc.credentials.createSsl(cert),
-        );
+        clients[name] = createAuthorityClient(name);
       }
     },
     providerRequests,

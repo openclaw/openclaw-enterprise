@@ -166,6 +166,17 @@ export function dismissOnBackdrop(dialog: HTMLDialogElement) {
 }
 
 /**
+ * A dialog's `close` event fires a task after the dialog closes, so the reader may already have
+ * moved focus on, for example to a field they are typing in (finding 2862). True only while focus
+ * is still in `dialog` or was dropped to the page, where a close handler may return it to the
+ * dialog's opener without taking it from anything else.
+ */
+export function mayReturnFocus(dialog: Element) {
+  const active = document.activeElement;
+  return active === null || active === document.body || dialog.contains(active);
+}
+
+/**
  * A phone's on-screen keyboard shrinks the visual viewport, not the layout viewport a modal
  * dialog sits in, so a bottom sheet's actions ended up under the keyboard (finding 1957). This
  * mirrors how far the visible area is inset from the layout viewport's top and bottom
@@ -221,7 +232,8 @@ export function focusSaveOutcome(
   if (active && active !== document.body && !root.contains(active)) {
     return;
   }
-  const control = controls.find((node) => node?.isConnected && !node.disabled);
+  // An unavailable control (aria-disabled) is not one to return to: its message says why.
+  const control = controls.find((node) => node?.isConnected && node && !isUnavailable(node));
   if (message?.isConnected && message.textContent) {
     if (!control) {
       message.tabIndex = -1;
@@ -245,23 +257,33 @@ export function jsonObjectProblem(text: string): string | undefined {
   try {
     parsed = JSON.parse(text);
   } catch {
-    if (!text.trim()) {
+    // Only JSON whitespace is blank: trim() also strips a byte order mark or a space-like
+    // character, which the message below names (finding 1959).
+    if (!/[^ \t\n\r]/.test(text)) {
       return "Enter a valid JSON object.";
     }
     const offset = jsonErrorOffset(text);
     if (offset === undefined) {
       return "Invalid JSON. Enter a valid JSON object.";
     }
-    // A character pasted from a file or a document can be invisible, or look like a space, so a
-    // bare position would point at nothing wrong; the message names it.
-    const unseen = UNSEEN_CHARACTERS[text.charAt(offset)];
-    if (offset === 0 && unseen) {
-      return `Invalid JSON: remove the ${unseen} at the start. Enter a valid JSON object.`;
+    // A character pasted from a file or a document can be invisible, look like a space, or be a
+    // curly quote a word processor put in, so a bare position would point at nothing visibly
+    // wrong; the message names it.
+    const character = text.charAt(offset);
+    const unseen = UNSEEN_CHARACTERS[character];
+    const fix = unseen
+      ? (place: string) => `remove the ${unseen} ${place}`
+      : CURLY_QUOTES.has(character)
+        ? (place: string) =>
+            `replace the curly quote ${character} ${place} with a straight quote (")`
+        : undefined;
+    if (offset === 0 && fix) {
+      return `Invalid JSON: ${fix("at the start")}. Enter a valid JSON object.`;
     }
     const lines = text.slice(0, offset).split(/\r\n?|\n/);
     const where = `line ${lines.length}, column ${visibleLength(lines.at(-1) ?? "") + 1}`;
-    return unseen
-      ? `Invalid JSON at ${where}: remove the ${unseen} there. Enter a valid JSON object.`
+    return fix
+      ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
       : `Invalid JSON at ${where}. Enter a valid JSON object.`;
   }
   return parsed === null || Array.isArray(parsed) || typeof parsed !== "object"
@@ -415,8 +437,14 @@ const JSON_LITERALS: Record<string, string> = { t: "true", f: "false", n: "null"
 const UNSEEN_CHARACTERS: Record<string, string> = {
   "\uFEFF": "invisible byte order mark",
   "\u200B": "invisible zero-width space",
+  "\u2028": "invisible line separator",
+  "\u2029": "invisible paragraph separator",
   "\u00A0": "non-breaking space",
+  "\u202F": "narrow non-breaking space",
+  "\u3000": "full-width space",
 };
+// Typographic quotes that word processors and chat apps substitute for straight ones.
+const CURLY_QUOTES = new Set(["\u201C", "\u201D", "\u2018", "\u2019"]);
 
 const graphemes =
   typeof Intl.Segmenter === "function"
@@ -500,6 +528,67 @@ export function describeDisabled(
   if (id && linked !== id) {
     control.dataset.disabledReason = id;
   }
+}
+
+type UnavailableControl = HTMLButtonElement | HTMLInputElement;
+
+const guardedControls = new WeakSet<UnavailableControl>();
+
+// An aria-disabled control keeps its activation: a click, Enter or Space would still run its
+// handler, submit its form or flip its checkbox. A capture listener on the control runs before
+// its own listeners, so it cancels all three.
+function blockUnavailable(event: Event) {
+  if ((event.currentTarget as Element).getAttribute("aria-disabled") === "true") {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+}
+
+function reasonShown(reason: HTMLElement | string | null | undefined) {
+  if (!reason) {
+    return false;
+  }
+  return typeof reason === "string" || (!reason.hidden && Boolean(reason.textContent?.trim()));
+}
+
+/**
+ * Disables or enables a button or checkbox that has a visible reason when it is unavailable
+ * (findings 2714, 2878). A disabled control whose `reason` shows text stays in the Tab order
+ * (aria-disabled, not disabled) and is described by the reason (describeDisabled), so a keyboard
+ * reader reaches why; a click, Enter or Space does nothing, and its form does not submit. With no
+ * reason to read it is natively disabled, unless it has focus: disabling the focused control
+ * would drop focus to the page. A reason that is already part of the control's own description
+ * (its help) is not linked again. Call it wherever the control's state or its reason changes,
+ * after the reason's text is set.
+ */
+export function setUnavailable(
+  control: UnavailableControl,
+  unavailable: boolean,
+  reason: HTMLElement | string | null | undefined,
+) {
+  if (!guardedControls.has(control)) {
+    guardedControls.add(control);
+    control.addEventListener("click", blockUnavailable, { capture: true });
+  }
+  const reachable = unavailable && (reasonShown(reason) || document.activeElement === control);
+  control.disabled = unavailable && !reachable;
+  if (reachable) {
+    control.setAttribute("aria-disabled", "true");
+  } else {
+    control.removeAttribute("aria-disabled");
+  }
+  control.classList.toggle("control-unavailable", reachable);
+  const id = typeof reason === "string" ? reason : reason?.id;
+  const ownDescription =
+    Boolean(id) &&
+    control.dataset.disabledReason !== id &&
+    (control.getAttribute("aria-describedby") ?? "").split(/\s+/).includes(id as string);
+  describeDisabled(control, ownDescription ? null : reason);
+}
+
+/** True while `control` is disabled, natively or as an unavailable control (setUnavailable). */
+export function isUnavailable(control: HTMLElement & { disabled?: boolean }) {
+  return control.disabled === true || control.getAttribute("aria-disabled") === "true";
 }
 
 /**

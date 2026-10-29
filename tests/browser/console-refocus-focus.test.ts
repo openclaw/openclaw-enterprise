@@ -5,15 +5,22 @@ import type { Locator, Page } from "playwright";
 import type { NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 
 import {
+  apiRequests,
+  detailUrl,
   fileBrowser,
   hasFocus,
   holdRequests,
   login,
   nativeValues,
   newPage,
+  nonAuthWriteRequests,
+  secretOptionLabel,
+  selectSecret,
+  waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -247,3 +254,248 @@ test("refocusing at phone width with the navigation drawer open focuses the draw
     assert.equal(await drawer.isVisible(), false, "the drawer is closed");
   }
 });
+
+// Tab past a page's last control moves focus to the browser's own controls, and the next Tab
+// brings it back to the page's first. That lap is not the reader coming back: the refocus recheck
+// it started held the page inert, so the next lap went from the header straight back to the
+// sidebar (finding 2879). Each recheck's session read is held here, so a held page stays held
+// while the lap runs. A refocus from elsewhere still rechecks.
+for (const view of ["Agent page", "Create Agent"] as const) {
+  test(`a Tab lap past the end of ${view} reaches its content again, and a refocus still rechecks`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Tab lap ${view}`);
+    const agent = await fixture.createAgent(namespace.id, "Tab lap Agent", nativeValues("v1"));
+    const { page } = await newPage(t, fixture, { browser });
+    await login(
+      page,
+      fixture,
+      view === "Agent page"
+        ? detailUrl(fixture, namespace.id, agent.id)
+        : `/console/agents/new?namespace=${namespace.id}`,
+    );
+    await page.locator(settledView).waitFor();
+    await page
+      .getByRole("heading", { name: view === "Agent page" ? "Tab lap Agent" : view })
+      .waitFor();
+    let releaseSession = () => {};
+    let sessionHeld = Promise.resolve();
+    const holdSession = () => {
+      sessionHeld = new Promise<void>((resolve) => {
+        releaseSession = resolve;
+      });
+    };
+    holdSession();
+    t.after(() => releaseSession());
+    let sessionReads = 0;
+    await page.route("**/api/auth/session", async (route) => {
+      sessionReads += 1;
+      await sessionHeld;
+      await route.fallback();
+    });
+    const focusIn = () =>
+      page.evaluate(() => {
+        const active = globalThis.document.activeElement;
+        if (!active || active === globalThis.document.body) {
+          return "outside";
+        }
+        return globalThis.document.querySelector('.content [aria-live="polite"]')?.contains(active)
+          ? "content"
+          : "shell";
+      });
+    // Tab until focus is in `where`, at most 150 presses.
+    const tabUntil = async (where: "content" | "outside") => {
+      for (let presses = 0; presses < 150; presses += 1) {
+        await page.keyboard.press("Tab");
+        if ((await focusIn()) === where) {
+          return true;
+        }
+      }
+      return false;
+    };
+    // Two laps: Tab until focus leaves the page, then on until it reaches the page's content.
+    // Each lap stops at a bound, so a page whose content Tab skips fails here.
+    for (const lap of [1, 2]) {
+      assert.equal(await tabUntil("content"), true, `lap ${lap} reaches the page content`);
+      assert.equal(await tabUntil("outside"), true, `lap ${lap} leaves the page`);
+    }
+    // One more Tab brings focus back, which ends the lap.
+    await page.keyboard.press("Tab");
+    assert.equal(await focusIn(), "shell");
+    assert.equal(sessionReads, 0, "a Tab lap starts no recheck");
+    assert.equal(await page.locator(heldView).count(), 0);
+
+    // A refocus that no Tab started is the reader coming back: it rechecks and holds the page.
+    await refocus(page);
+    await page.locator(heldView).waitFor();
+    assert.equal(sessionReads, 1);
+    releaseSession();
+    await page.locator(settledView).waitFor();
+
+    // Focus that leaves the window with no Tab just before it, such as a click on another
+    // window, is not a lap either: its return rechecks. The wait puts that blur over 1 s past the
+    // last Tab press.
+    holdSession();
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("blur")));
+    await refocus(page);
+    await page.locator(heldView).waitFor();
+    assert.equal(sessionReads, 2, "a return from a blur no Tab started rechecks");
+    releaseSession();
+    await page.locator(settledView).waitFor();
+
+    // Nor is a Tab out that comes back after the lap window (10 s): the reader may have been
+    // elsewhere meanwhile, so the return rechecks. One page is enough for this shared handler.
+    if (view === "Agent page") {
+      holdSession();
+      assert.equal(await tabUntil("outside"), true, "Tab leaves the page");
+      await new Promise((resolve) => setTimeout(resolve, 10_500));
+      await page.keyboard.press("Tab");
+      await page.locator(heldView).waitFor();
+      assert.equal(sessionReads, 3, "a return after the lap window rechecks");
+      releaseSession();
+      await page.locator(settledView).waitFor();
+    }
+  });
+}
+
+// Initial admission allows Agent metadata without Configuration read. Refocus must preserve
+// that same partial view instead of replacing the accessible Agent with a page-wide denial.
+test("mounted Agent refocus preserves a stable Configuration denial", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Partial Agent refocus");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Partial Agent",
+    nativeValues("private-model"),
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  restrict(fixture.policy, "read", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+  );
+  const unavailable = page.getByRole("heading", { name: "Configuration unavailable", exact: true });
+  await unavailable.waitFor();
+  await page.locator(settledView).waitFor();
+  // Reload admits the partial view from the same owner's remembered exact-path refusal.
+  // Refocus must still ask the server again when this new view has no read signature.
+  await page.reload();
+  await unavailable.waitFor();
+  await page.locator(settledView).waitFor();
+  await page
+    .locator(settledView)
+    .evaluate((node) => node.setAttribute("data-partial-agent", "true"));
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const checked = page.waitForResponse((response) => response.url().endsWith(configurationPath));
+    await refocus(page);
+    assert.equal((await checked).status(), 403);
+    await page.locator(settledView).waitFor();
+    assert.equal(await unavailable.isVisible(), true);
+    assert.equal(await page.locator('[data-partial-agent="true"]').count(), 1);
+    assert.equal(
+      await page.getByRole("heading", { name: "Partial Agent", exact: true }).isVisible(),
+      true,
+    );
+  }
+});
+
+for (const revoked of ["configuration", "agent"] as const) {
+  test(`Credentials preflight scrubs bindings when ${revoked} read is revoked`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(
+      t,
+      `Revoked ${revoked} preflight`,
+    );
+    const appSecret = await fixture.createSecret(
+      namespace.id,
+      "Original app binding",
+      "xapp-original",
+    );
+    const botSecret = await fixture.createSecret(
+      namespace.id,
+      "Original bot binding",
+      "xoxb-original",
+    );
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement app binding",
+      "xapp-replacement",
+    );
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Credential refocus Agent",
+      nativeValues("binding-review", {
+        harnessId: "codex",
+        channels: {
+          slack: {
+            enabled: true,
+            mode: "socket",
+            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+            dmPolicy: "allowlist",
+            groupPolicy: "allowlist",
+            allowFrom: ["U123"],
+            channels: { C123: { requireMention: true } },
+          },
+        },
+      }),
+      {
+        executionMode: "dedicated",
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+        },
+      },
+    );
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+    await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
+    await page.locator(settledView).waitFor();
+
+    // A granted administrator keeps the readable form on refocus. Only the later exact
+    // read restriction changes admission; Configuration update and Secret operate stay granted.
+    await refocusHeld(t, page);
+    await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
+    await selectSecret(page, "Slack app token", replacement);
+    restrict(fixture.policy, "read", revoked, {
+      namespaceId: namespace.id,
+      resourceId: revoked === "agent" ? agent.id : agent.configurationId,
+    });
+    await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
+    await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+    const assertScrubbed = async () => {
+      assert.equal(await page.getByLabel("Slack bot token").count(), 0);
+      const html = await page.content();
+      for (const secret of [appSecret, botSecret, replacement]) {
+        assert.equal(html.includes(secret.name), false, "no cached binding name remains");
+        assert.equal(html.includes(secret.id), false, "no cached binding reference remains");
+      }
+      assert.deepEqual(nonAuthWriteRequests(requests), [], "denied preflight sends no write");
+    };
+    await assertScrubbed();
+
+    // Re-admission and history must not recover the now-revoked form from a retained view.
+    const sessionRead = page.waitForResponse("**/api/auth/session");
+    await refocus(page);
+    await sessionRead;
+    const heading = revoked === "agent" ? "Access denied" : "Configuration unavailable";
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    await assertScrubbed();
+    await page.reload();
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    const deniedPath = `/namespaces/${namespace.id}/${revoked === "agent" ? "agents" : "configurations"}/${revoked === "agent" ? agent.id : agent.configurationId}`;
+    const deniedRead = page.waitForResponse((response) => response.url().endsWith(deniedPath));
+    await refocus(page);
+    assert.equal((await deniedRead).status(), 403);
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    await assertScrubbed();
+    await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    await page.goBack();
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    await assertScrubbed();
+  });
+}
