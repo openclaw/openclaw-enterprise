@@ -14,6 +14,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -245,5 +246,45 @@ test("refocusing at phone width with the navigation drawer open focuses the draw
     assert.equal(await hasFocus(navigation), true, `${name} gives focus to the drawer toggle`);
     assert.equal(await navigation.getAttribute("aria-expanded"), "false");
     assert.equal(await drawer.isVisible(), false, "the drawer is closed");
+  }
+});
+
+// Initial admission allows Agent metadata without Configuration read. Refocus must preserve
+// that same partial view instead of replacing the accessible Agent with a page-wide denial.
+test("mounted Agent refocus preserves a stable Configuration denial", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Partial Agent refocus");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Partial Agent",
+    nativeValues("private-model"),
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  restrict(fixture.policy, "read", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+  );
+  const unavailable = page.getByRole("heading", { name: "Configuration unavailable", exact: true });
+  await unavailable.waitFor();
+  await page.locator(settledView).waitFor();
+  await page
+    .locator(settledView)
+    .evaluate((node) => node.setAttribute("data-partial-agent", "true"));
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const checked = page.waitForResponse((response) => response.url().endsWith(configurationPath));
+    await refocus(page);
+    assert.equal((await checked).status(), 403);
+    await page.locator(settledView).waitFor();
+    assert.equal(await unavailable.isVisible(), true);
+    assert.equal(await page.locator('[data-partial-agent="true"]').count(), 1);
+    assert.equal(
+      await page.getByRole("heading", { name: "Partial Agent", exact: true }).isVisible(),
+      true,
+    );
   }
 });

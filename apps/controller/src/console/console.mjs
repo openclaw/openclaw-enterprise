@@ -2793,13 +2793,25 @@ async function revalidateMountedAgent(current) {
     if (current.url.searchParams.get("tab") !== "workspace") {
       const selected =
         current.url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
+      const snapshotPath =
+        selected === "draft"
+          ? `/namespaces/${encodeURIComponent(selectedNamespace)}/configurations/${encodeURIComponent(agent.configurationId)}`
+          : `${path}/revisions/${encodeURIComponent(selected)}`;
+      const previousSnapshotRead = mountedViewState?.reads.get(snapshotPath);
       await Promise.all([
         request(`${path}/revisions`),
-        request(
-          selected === "draft"
-            ? `/namespaces/${encodeURIComponent(selectedNamespace)}/configurations/${encodeURIComponent(agent.configurationId)}`
-            : `${path}/revisions/${encodeURIComponent(selected)}`,
-        ),
+        request(snapshotPath).catch((error) => {
+          // Initial admission can show an Agent with its draft Configuration denied. Keep
+          // that same refusal, but scrub a page whose previously readable data was revoked.
+          if (
+            selected === "draft" &&
+            error.status === 403 &&
+            previousSnapshotRead === refusedRead(403)
+          ) {
+            return;
+          }
+          throw error;
+        }),
       ]);
     }
   } catch (error) {
