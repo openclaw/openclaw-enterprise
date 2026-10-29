@@ -153,7 +153,11 @@ export function analyzeCoupling(
         member = node.name.text;
       }
       if (member) {
-        name = `${node.parent.name.text}.${member}`;
+        // A separate delimiter keeps static IDs distinct even from quoted
+        // instance names such as "static.resolve".
+        const separator =
+          ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Static ? "::static." : ".";
+        name = `${node.parent.name.text}${separator}${member}`;
       }
     }
     return name ? `${relative(source.fileName)}#${name}` : undefined;
@@ -291,7 +295,7 @@ export function analyzeCoupling(
       for (const clause of node.heritageClauses ?? []) {
         if (clause.token === ts.SyntaxKind.ImplementsKeyword) {
           for (const type of clause.types) {
-            record(type, type.expression, "implements", owner);
+            record(type, type.expression, "implements", identity(node));
           }
         }
       }

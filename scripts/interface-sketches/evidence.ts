@@ -50,7 +50,7 @@ const coupling = (from: string, kind: CouplingEdge["kind"], to: string): Require
   kind,
   to,
 });
-const optionalGitBinding = coupling(
+const gitBinding = coupling(
   `${installed}#InstalledDriver.requireRepositoryGitTransport`,
   "binds",
   `${driver}#CredentialProxyDriver.bindRepositoryGit`,
@@ -66,7 +66,7 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
     claims: [
       {
         description:
-          "The installed Driver exposes an optional repository Git method binding; this does not identify a runtime sender.",
+          "The installed Driver exposes a repository Git method binding; this does not identify a runtime sender.",
         pointer: {
           kind: "edge",
           from: "authority",
@@ -76,7 +76,7 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
           edgeKind: "setup",
         },
         required: [
-          optionalGitBinding,
+          gitBinding,
           coupling(
             "apps/controller/src/composition/repository-credentials/transport.ts#bindRepositoryGitTransport",
             "calls",
@@ -123,7 +123,7 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
           edgeKind: "setup",
         },
         required: [
-          optionalGitBinding,
+          gitBinding,
           coupling(
             "apps/controller/src/composition/repository-credentials/transport.ts#bindRepositoryGitTransport",
             "calls",

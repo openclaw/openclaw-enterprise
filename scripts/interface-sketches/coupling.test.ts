@@ -178,3 +178,90 @@ helper();
     ],
   );
 });
+
+test("nested class implementations cannot satisfy an enclosing class witness", (t) => {
+  const root = fixture(t, {
+    "caller.ts": `interface Exchange { resolve(): void }
+export class Service implements Exchange {
+  resolve() {}
+}
+`,
+  });
+  const witness = { from: "caller.ts#Service", kind: "implements", to: "caller.ts#Exchange" };
+  const matches = () =>
+    analyzeCoupling(root, ["caller.ts"]).edges.filter(
+      ({ from, kind, to }) => from === witness.from && kind === witness.kind && to === witness.to,
+    );
+  assert.equal(matches().length, 1);
+  // Moving the implementation into a nested class removes the outer class contract.
+  writeFileSync(
+    path.join(root, "caller.ts"),
+    `interface Exchange { resolve(): void }
+export class Service {
+  static {
+    class Nested implements Exchange { resolve() {} }
+  }
+}
+`,
+  );
+  assert.deepEqual(matches(), []);
+  assert.deepEqual(analyzeCoupling(root, ["caller.ts"]).unresolved, [
+    { from: "caller.ts", kind: "implements", site: { file: "caller.ts", line: 4 } },
+  ]);
+});
+
+test("static members cannot satisfy instance witnesses or collide with dotted member names", (t) => {
+  const root = fixture(t, {
+    "caller.ts": `export const helper = () => {};
+export class Service {
+  resolve() { helper(); }
+  static resolve() { helper(); }
+  "static.resolve"() { helper(); }
+}
+export function run(service: Service) {
+  service.resolve();
+  service.resolve.bind(service);
+}
+`,
+  });
+  const before = analyzeCoupling(root, ["caller.ts"]);
+  assert.deepEqual(before.unresolved, []);
+  assert.equal(before.edges.filter(({ from }) => from === "caller.ts#run").length, 2);
+  // Keep the instance declaration, but replace its callers with static calls/binds.
+  writeFileSync(
+    path.join(root, "caller.ts"),
+    `export const helper = () => {};
+export class Service {
+  resolve() { helper(); }
+  static resolve() { helper(); }
+  "static.resolve"() { helper(); }
+}
+export function run(service: Service) {
+  Service.resolve();
+  Service.resolve.bind(Service);
+  service["static.resolve"]();
+}
+`,
+  );
+  const after = analyzeCoupling(root, ["caller.ts"]);
+  assert.deepEqual(after.unresolved, []);
+  const oldWitnesses = before.edges.filter(({ from }) => from === "caller.ts#run");
+  for (const witness of oldWitnesses) {
+    assert.ok(
+      !after.edges.some(
+        ({ from, kind, to }) => from === witness.from && kind === witness.kind && to === witness.to,
+      ),
+    );
+  }
+  assert.deepEqual(
+    after.edges.map(({ from, kind, to }) => [from, kind, to]),
+    [
+      ["caller.ts#Service.resolve", "calls", "caller.ts#helper"],
+      ["caller.ts#Service.static.resolve", "calls", "caller.ts#helper"],
+      ["caller.ts#Service::static.resolve", "calls", "caller.ts#helper"],
+      ["caller.ts#run", "binds", "caller.ts#Service::static.resolve"],
+      ["caller.ts#run", "calls", "caller.ts#Service.static.resolve"],
+      ["caller.ts#run", "calls", "caller.ts#Service::static.resolve"],
+    ],
+  );
+});
