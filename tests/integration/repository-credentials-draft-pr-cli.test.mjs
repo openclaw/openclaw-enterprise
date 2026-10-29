@@ -45,7 +45,7 @@ function runHelper(args, env, secret) {
 // A server leaf for api.github.com signed by the Harness fixture CA, so the helper's
 // configured root trusts it.
 async function githubLeaf(tls) {
-  const { key, cert } = await signedLeaf(tls.directory, tls.ca, {
+  const { key, cert } = await signedLeaf(tls.directory, tls.authority, {
     name: "github",
     commonName: "api.github.com",
     subjectAltName: "DNS:api.github.com",

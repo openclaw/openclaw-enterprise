@@ -2,11 +2,15 @@ import { readFile } from "node:fs/promises";
 import { certificateAuthority, signedLeaf } from "./certificates.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
-/** Local test-owned CA and a localhost leaf; no host trust or credentials are read. */
+/**
+ * Local test-owned CA and a localhost leaf; no host trust or credentials are read.
+ * Callers pass the result straight to TLS servers as options, so no field may use a
+ * TLS option name: the CA is `authority`, not `ca`.
+ */
 export async function harnessTlsFixture(t) {
   const directory = await temporaryDirectory(t, "oce-harness-tls-");
   const ca = await certificateAuthority(directory, { caName: "Harness fixture CA", days: 1 });
-  const { key, cert } = await signedLeaf(directory, ca, {
+  const leaf = await signedLeaf(directory, ca, {
     name: "server",
     commonName: "localhost",
     subjectAltName: "DNS:localhost",
@@ -14,10 +18,12 @@ export async function harnessTlsFixture(t) {
   });
   return {
     directory,
-    ca,
+    authority: ca,
     rootCertificatePath: ca.caPath,
     caBundle: await readFile(ca.caPath, "utf8"),
-    cert,
-    key,
+    cert: leaf.cert,
+    key: leaf.key,
+    certPath: leaf.certPath,
+    keyPath: leaf.keyPath,
   };
 }
