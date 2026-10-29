@@ -62,16 +62,12 @@ export async function withComputeAbortSignal<Result>(
   operation: () => Promise<Result>,
 ): Promise<Result> {
   const parent = currentComputeOperationLifetime();
-  if (parent?.deadline !== undefined) {
-    const effective = {
-      signal: AbortSignal.any([signal, parent.signal]),
-      deadline: parent.deadline,
-    };
-    effective.signal.throwIfAborted();
-    return operationLifetimes.run(effective, operation);
-  }
-  signal.throwIfAborted();
-  return operationLifetimes.run({ signal }, operation);
+  const effective = {
+    signal: parent ? AbortSignal.any([signal, parent.signal]) : signal,
+    ...(parent?.deadline !== undefined ? { deadline: parent.deadline } : {}),
+  };
+  effective.signal.throwIfAborted();
+  return operationLifetimes.run(effective, operation);
 }
 
 /**
