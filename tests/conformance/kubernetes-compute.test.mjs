@@ -308,34 +308,40 @@ test("a remote provider Harness route renders exact egress, ingress and a bare h
   );
 
   // The gateway Deployment maps the advertised provider hostname to the bare
-  // address, never to a prefix-stripped network address.
-  const configuration = driver.gatewayConfiguration(revision, "node", target);
-  const render = (endpoint) =>
-    driver.deployment(
-      `gateway-${suffix}`,
-      { namespaceId: revision.namespaceId, agentId: revision.agentId },
-      target,
-      driver.options.images.gateway,
-      "gateway-account",
-      "gateway",
-      {},
-      "info",
-      configuration,
-      false,
-      undefined,
-      undefined,
-      [],
-      [],
-      undefined,
-      [],
-      undefined,
-      undefined,
-      undefined,
-      endpoint,
-    );
-  assert.deepEqual(render(await sandboxDriver.harnessEndpoint()).spec.template.spec.hostAliases, [
-    { ip: "192.0.2.10", hostnames: ["tenant--sandbox.openshell.localhost"] },
-  ]);
+  // address, never to a prefix-stripped network address or the raw configured
+  // value when an explicit /32 or /128 prefix is set.
+  const renderFor = (owner) => {
+    const configuration = owner.gatewayConfiguration(revision, "node", target);
+    return (endpoint) =>
+      owner.deployment(
+        `gateway-${suffix}`,
+        { namespaceId: revision.namespaceId, agentId: revision.agentId },
+        target,
+        owner.options.images.gateway,
+        "gateway-account",
+        "gateway",
+        {},
+        "info",
+        configuration,
+        false,
+        undefined,
+        undefined,
+        [],
+        [],
+        undefined,
+        [],
+        undefined,
+        undefined,
+        undefined,
+        endpoint,
+      );
+  };
+  const render = renderFor(driver);
+  const expectedAlias = [{ ip: "192.0.2.10", hostnames: ["tenant--sandbox.openshell.localhost"] }];
+  assert.deepEqual(
+    render(await sandboxDriver.harnessEndpoint()).spec.template.spec.hostAliases,
+    expectedAlias,
+  );
   // An explicit /32 and an IPv6 address normalize to the same exact forms.
   const explicit = driverFor("192.0.2.10/32");
   explicit.apiClients = Promise.resolve({ objects: {} });
@@ -347,6 +353,10 @@ test("a remote provider Harness route renders exact egress, ingress and a bare h
       .egress[0].to,
     [{ ipBlock: { cidr: "192.0.2.10/32" } }],
   );
+  assert.deepEqual(
+    renderFor(explicit)(await sandboxDriver.harnessEndpoint()).spec.template.spec.hostAliases,
+    expectedAlias,
+  );
   const v6 = driverFor("2001:db8::1");
   v6.apiClients = Promise.resolve({ objects: {} });
   const v6Policies = (await v6.agentNetworkPoliciesWithPeers(revision, target)).map(
@@ -356,6 +366,10 @@ test("a remote provider Harness route renders exact egress, ingress and a bare h
     v6Policies.find(({ metadata }) => metadata.name === `allow-gateway-agent-${suffix}`).spec
       .egress[0].to,
     [{ ipBlock: { cidr: "2001:db8::1/128" } }],
+  );
+  assert.deepEqual(
+    renderFor(v6)(await sandboxDriver.harnessEndpoint()).spec.template.spec.hostAliases,
+    [{ ip: "2001:db8::1", hostnames: ["tenant--sandbox.openshell.localhost"] }],
   );
   // The remote endpoint must use WSS: its transport and token cross a network.
   assert.throws(
