@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-28
-last_updated_session: fix-3678
+updated: 2026-10-29
+last_updated_session: authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61
 ---
 
 # Platform console request flow
@@ -167,18 +167,16 @@ restores the DOM, handlers, drafts, and expanded debug details. Changed data,
 a newly readable Namespace, or Refresh rebuilds the view. Pending or failed
 reads, password input, and mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
 
-**Back to Agents:** session, Namespace, permission, and collection checks gate the
-list, not row reads. Each row's newest readable revisions page feeds its deployment
-and `agents/collection.mts:currentRevision`, which reads an off-page current version alone;
-`deniedReadsFor` keeps a `403`. On reuse, `renderAgentList` sets visible deployment
-cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, before paint, then shows
-each fresh result or refusal. Back or refocus from a deployment focuses that cell,
-not the old version's link. Unfinished or failed row reads never prevent reuse; resuming rereads them.
+**Back to Agents:** session, Namespace, permission, and collection checks gate
+reuse; row reads do not. The newest readable revisions supply deployment metadata. `agents/collection.mts:currentRevision` reads an off-page current version;
+`deniedReadsFor` retains `403` answers. `renderAgentList` resets cells to
+**Reading deployment…** (hidden 250 ms, then visible at least 150 ms) before showing
+fresh results or refusals. Return focus targets the pending cell, not its old link.
+Resuming retries unfinished or failed row reads.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
-The [console sign-in flow](platform-console/sign-in-return.md) covers provider
-discovery, one-use session binding, and requested destination recovery.
+See [sign-in, session binding, and destination recovery](platform-console/sign-in-return.md).
 
 After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
@@ -240,12 +238,11 @@ See [deletion](../guides/console/delete-namespace.md).
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
 Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
-omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.
-OCC authorizes writes ([Agent creation](../reference/console/create-and-deploy.md)).
+omission disables Create (`NAMESPACE_MISSING`), clears rows and feedback, closes
+confirmations, and ends polling. Its note replaces empty states. Late outcomes are
+generic, without replay; 401 expires the session. Focus: Search. Failed reads retry.
 
-The [creation flow](platform-console/agent-creation.md) traces the form: plugin
-fields and discovery, model choices, the starter template, repository options,
-provisioning, ordinary drafts, Secret grants, and harness authentication.
+See [Agent setup and provisioning](platform-console/agent-creation.md).
 
 ### 4–6. Edit the Agent and access runtime files
 
@@ -368,6 +365,12 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
+
+- 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
+
+- 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 - 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
 

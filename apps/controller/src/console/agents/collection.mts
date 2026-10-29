@@ -180,6 +180,7 @@ export function renderAgentList(context: AgentListContext) {
   const permissions = new Map<string, AgentPermissions>();
   type RestrictDialog = (id: string, answer: AgentPermissions) => void;
   let restrictOpenDialog: RestrictDialog | null = null;
+  let dismissOpenDialog: (() => void) | null = null;
   // The page renders with the caller's permission answer, so Create Agent is never painted
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
@@ -495,6 +496,15 @@ export function renderAgentList(context: AgentListContext) {
       context.onExpired();
       return;
     }
+    if (notReady?.missing) {
+      const refused = [400, 403, 404, 409, 429].includes(error.status ?? 0);
+      showOutcome({
+        error: refused
+          ? "The request was not accepted. This Namespace is no longer available."
+          : "Outcome unknown. The request may have been accepted. This Namespace is no longer available; the request has not been repeated.",
+      });
+      return;
+    }
     let text;
     if (error.status === 403) {
       text = kind === "stop" ? stopRefused(item.name) : deleteRefused(item.name);
@@ -530,6 +540,10 @@ export function renderAgentList(context: AgentListContext) {
         throw new Error("Invalid Agent stop response");
       }
       replaceItem(item.id, stopped);
+      if (notReady?.missing) {
+        showOutcome({ notice: "Stop request accepted. This Namespace is no longer available." });
+        return;
+      }
       showOutcome({
         notice:
           stopped.status === "deleting"
@@ -554,7 +568,9 @@ export function renderAgentList(context: AgentListContext) {
       }
       replaceItem(item.id, deleting);
       showOutcome({
-        notice: `Deletion requested for ${item.name}. It leaves this list once cleanup finishes; select Refresh to check.`,
+        notice: notReady?.missing
+          ? "Deletion request accepted. This Namespace is no longer available."
+          : `Deletion requested for ${item.name}. It leaves this list once cleanup finishes; select Refresh to check.`,
       });
     } catch (error) {
       reportFailure(item, error, "delete");
@@ -581,7 +597,7 @@ export function renderAgentList(context: AgentListContext) {
     const confirm = button(
       stopping ? "Stop Agent" : "Permanently delete Agent",
       async () => {
-        if (permissions.get(item.id)?.[permission] === false) {
+        if (notReady?.missing || pending || permissions.get(item.id)?.[permission] === false) {
           return;
         }
         pending = true;
@@ -608,6 +624,8 @@ export function renderAgentList(context: AgentListContext) {
       cancel.focus();
     };
     restrictOpenDialog = restrict;
+    const dismiss = () => dialog.close();
+    dismissOpenDialog = dismiss;
     dialog.append(
       element(
         "h2",
@@ -628,6 +646,9 @@ export function renderAgentList(context: AgentListContext) {
       () => {
         if (restrictOpenDialog === restrict) {
           restrictOpenDialog = null;
+        }
+        if (dismissOpenDialog === dismiss) {
+          dismissOpenDialog = null;
         }
         dialog.remove();
         if (!context.isCurrent()) {
@@ -759,6 +780,10 @@ export function renderAgentList(context: AgentListContext) {
   function render() {
     cells.clear();
     rowControls.clear();
+    if (notReady?.missing) {
+      rows.replaceChildren();
+      return;
+    }
     const query = search.value.trim().toLowerCase();
     const matches = items
       .filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query))
@@ -983,8 +1008,23 @@ export function renderAgentList(context: AgentListContext) {
           );
       notReadyNote?.replaceWith(replacement);
       notReadyNote = replacement;
-      // Only the empty state's sentence depends on the Namespace; rows keep their focus.
-      if (!rows.querySelector("table")) {
+      if (!namespace) {
+        // A lost Namespace also removes its retained rows, so search cannot reveal them again.
+        const focused =
+          rows.contains(document.activeElement) ||
+          feedback.contains(document.activeElement) ||
+          document.activeElement === create ||
+          dismissOpenDialog !== null;
+        items.length = 0;
+        feedback.replaceChildren();
+        render();
+        // Dismiss stale confirmation without aborting or replaying an already submitted write.
+        dismissOpenDialog?.();
+        if (focused) {
+          search.focus({ preventScroll: true });
+        }
+      } else if (!rows.querySelector("table")) {
+        // Status changes affect the empty state's sentence; readable rows keep their focus.
         render();
       }
     };

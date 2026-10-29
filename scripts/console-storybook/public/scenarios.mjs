@@ -1350,7 +1350,62 @@ export const scenarios = {
       "The Namespace list the Agents page rereads while its Namespace provisions no longer holds it: it was deleted, or the reader lost access. The wait ends, the note asks for another Namespace, as Create Agent's does, and Create Agent is disabled.",
     steps: [
       'Within about 10 s the note "Namespace status: Provisioning." becomes "This Namespace is missing or you no longer have access. Choose another Namespace."',
-      'Confirm Create Agent is disabled and described by that note, the empty state reads "Agents cannot be created in this Namespace.", and no further Namespace reads happen.',
+      "Confirm Create Agent is disabled and described by that note, no empty-list message appears, and no further Namespace reads happen.",
+    ],
+  },
+  agentsNamespaceMissingStopDialog: {
+    group: "Pages/Agents",
+    name: "Namespace loss with Stop dialog",
+    deployed: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
+    description:
+      "The last Namespace response still says provisioning. Its idle recheck removes access while the row confirmation is open.",
+    steps: [
+      "Wait for the recheck. The dialog, rows and previous feedback disappear. Search Agents receives focus, with no empty-list message.",
+    ],
+  },
+  agentsNamespaceMissingLateStop: {
+    group: "Pages/Agents",
+    name: "Namespace loss before Stop response",
+    deployed: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    rules: [{ suffix: "/stop", method: "POST", delayMs: 12000 }],
+    actions: [
+      { selector: '[aria-label="Stop Research assistant"]', click: true },
+      { selector: ".agent-stop-dialog .danger", click: true },
+    ],
+    description: "The Namespace becomes unavailable while a Stop response is pending.",
+    steps: [
+      "Wait for the result. Only generic acceptance and the unavailable warning remain, with no Agent name, ID or empty-list message.",
+    ],
+  },
+  agentsNamespaceMissingDeleteDialog: {
+    group: "Pages/Agents",
+    name: "Namespace loss with Delete dialog",
+    deployed: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [{ selector: '[aria-label="Delete Research assistant"]', click: true }],
+    description:
+      "The last Namespace response still says provisioning. Its idle recheck removes access while the row confirmation is open.",
+    steps: [
+      "Wait for the recheck. The dialog, rows and previous feedback disappear. Search Agents receives focus, with no empty-list message.",
+    ],
+  },
+  agentsNamespaceMissingPopulated: {
+    group: "Pages/Agents",
+    name: "Populated Namespace leaves the list",
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [{ selector: 'input[type="search"]', value: "Research", focus: true }],
+    description:
+      "A provisioning Namespace becomes unreadable while its Agents are displayed. The idle check removes the rows and disables Create Agent without moving search focus.",
+    steps: [
+      "Wait for the missing-Namespace warning. Research assistant and its actions disappear.",
+      "Clear Search Agents. The old rows must not return. Repeat at phone width.",
     ],
   },
   agentsDenied: {
