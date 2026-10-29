@@ -60,4 +60,4 @@ jobs:
       - name: Build and check the native launcher
         run: |
           bash runtimes/strands-credential-proxy/package-native.sh "$RUNNER_TEMP/oce-native"
-          python3 runtimes/strands-credential-proxy/checks/native-startup.py "$RUNNER_TEMP/oce-native/oce-protected-box"
+          python3 runtimes/strands-credential-proxy/checks/native-startup.py "$RUNNER_TEMP/oce-native/oce-protected-box" --hosted-fixture

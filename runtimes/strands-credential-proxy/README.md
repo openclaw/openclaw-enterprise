@@ -190,8 +190,8 @@ separate artifact directories (`target` and `target/box`) to avoid mixing
 dependency graphs. This is a local build, not an image
 publication or installed qualification.
 
-On Linux with Python, strace and bubblewrap, and with no installation mounted at the fixed
-path, run:
+On a shared Linux devbox, use an ordinary user with Python, strace and bubblewrap,
+and no installation mounted at the fixed path:
 
 ```sh
 python3 runtimes/strands-credential-proxy/checks/native-startup.py \
@@ -202,6 +202,19 @@ This invokes the actual binary, proves that its missing-installation failure
 comes from `on_ready` after successful memory hardening, and checks that it
 attempts neither networking nor workload execution. Private mount namespaces exercise malformed and incomplete installation files
 through the same callback. The binary also rejects extra arguments. A preflight or host-capability failure is a failed check, never a skip.
+
+The disposable GitHub-hosted job instead passes `--hosted-fixture`. Ubuntu's
+unprivileged user-namespace restrictions can prevent bwrap from starting there.
+This explicit mode requires `GITHUB_ACTIONS=true`,
+`RUNNER_ENVIRONMENT=github-hosted`, a non-root caller and passwordless sudo.
+It refuses an existing `/etc/oce-protected-sender`, checks tracing before staging,
+and uses sudo only to create/remove that fresh root-owned directory and its two
+synthetic files, `pins.json` and `installation.json`. The ordinary runner executes
+the launcher and strace. Ownership, permissions and contents are verified;
+cleanup checks the directory identity and removes only the two owned files,
+including after a failed check. It never relaxes AppArmor or kernel controls.
+Do not select this mode on a shared devbox.
+
 It does not establish the installed allowed path, valid enrolled-workload startup,
 Driver mount isolation, or direct-egress containment.
 
