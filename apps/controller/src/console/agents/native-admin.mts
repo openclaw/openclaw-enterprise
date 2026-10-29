@@ -1,5 +1,5 @@
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element } from "../dom.mjs";
+import { button, element, setText } from "../dom.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { message } from "./list.mjs";
 
@@ -134,7 +134,11 @@ export function renderNativeAdminAccess(
     }
   }
   function updateTarget() {
-    target.textContent = `Opens selected version · ${options?.versionLabel() ?? "current version"} in a new tab.`;
+    // Deployment polls call this too; an unchanged line is left untouched.
+    setText(
+      target,
+      `Opens selected version · ${options?.versionLabel() ?? "current version"} in a new tab.`,
+    );
   }
 
   async function load() {

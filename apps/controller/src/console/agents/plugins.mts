@@ -12,6 +12,7 @@ import { sameValue } from "../carry.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import {
   button,
+  describeDisabled,
   element,
   focusSaveOutcome,
   revealStatus,
@@ -366,6 +367,14 @@ export function renderAgentPlugins(
       // A caller who may not save reads the selections; nothing addresses an editor.
       feedback.textContent = updateDenied ? "" : "No plugin changes to save.";
     }
+    describeControls();
+  }
+
+  // Disabled Save and Discard are described by the feedback line that says why, such as "No
+  // plugin changes to save." (finding D793). Called wherever that line or the controls change.
+  function describeControls() {
+    describeDisabled(save, feedback);
+    describeDisabled(discard, feedback);
   }
 
   input.addEventListener("input", () => {
@@ -458,6 +467,7 @@ export function renderAgentPlugins(
       if (context.isCurrent()) {
         // The controls stay disabled until the owner rebuilds this tab from the saved Agent.
         feedback.textContent = "Plugin selections saved.";
+        describeControls();
         context.drafts.forget("plugins");
         void onSaved(savedAgent);
       }
@@ -511,6 +521,7 @@ export function renderAgentPlugins(
   updateState();
   if (savedNotice) {
     feedback.textContent = savedNotice;
+    describeControls();
   }
   function readCapabilities() {
     void context.request(`${path}/plugins/capabilities`).then(

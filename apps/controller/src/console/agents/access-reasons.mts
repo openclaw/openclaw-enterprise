@@ -113,6 +113,12 @@ export const requestedVersionUnavailable = (version: string) =>
 // it is told that, not that it may not exist (finding D751).
 export const deployAcceptedVersionUnreadable = (version: string) =>
   `Deployment accepted. You cannot read version ${version}, so its progress and outcome are not shown here; ${ASK_INSTALLATION_ADMINISTRATOR} for AgentRevision read on it.`;
+// A current version the reader cannot read, named in words rather than by its raw ID, on the
+// Agents list and the Agent page alike (findings D789, D791). It is newer than every readable
+// version when the newest readable one's deployment succeeded: that made it current, and a
+// different current version came after it.
+export const unreadableCurrentVersion = (newer: boolean) =>
+  newer ? "A newer version you cannot read" : "A version you cannot read";
 
 // A rejected model credential is fixed in the Agent's Credentials, which needs Agent update and
 // the grants each Agent update also checks. A Secret-backed credential can also be replaced in

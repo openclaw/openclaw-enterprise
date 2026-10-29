@@ -8,7 +8,14 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { sameValue } from "../carry.mjs";
-import { element, button, focusSaveOutcome, setStatusTone, validateFields } from "../dom.mjs";
+import {
+  element,
+  button,
+  describeDisabled,
+  focusSaveOutcome,
+  setStatusTone,
+  validateFields,
+} from "../dom.mjs";
 import {
   environmentReferenceNames,
   secretInputShorthandName,
@@ -944,6 +951,8 @@ export function createChannelSecretsPanel({
     );
     const readOnlyNote = element("p", { className: "hint" }, readOnlyReason());
     const replaceNote = element("p", { className: "hint" });
+    // Why an enterable form's Save is disabled; Save is described by it (finding D793).
+    const saveHint = element("p", { className: "hint", hidden: true });
     shown.status = status;
     shown.save = save;
     function createTokenPicker(binding: (typeof SLACK_SECRET_BINDINGS)[number]) {
@@ -1017,6 +1026,23 @@ export function createChannelSecretsPanel({
         readOnly() ||
         (!state.unsavedSecrets && unverifiedGrants()) ||
         (listOnly && !retryableGrants());
+      // A form the reader can fill says why Save is disabled: a token has no Secret yet, or
+      // nothing changed. While a save runs, or after one that needs Reload draft, the status or
+      // error line says why instead.
+      let saveReason = "";
+      if (!save.hidden && save.disabled && canEnterChannelCredentials()) {
+        saveReason = formBindings.some(
+          (binding) => secretIdForBinding(draft.secretBindings[binding.key]) === null,
+        )
+          ? "Choose a Secret for each Slack token to save."
+          : "No channel Secret changes to save.";
+      }
+      saveHint.textContent = saveReason;
+      saveHint.hidden = saveReason === "";
+      describeDisabled(
+        save,
+        [saveHint, status, error].find((reason) => !reason.hidden && reason.textContent?.trim()),
+      );
     };
     shown.updateControls = updateControls;
     const form = element(
@@ -1027,6 +1053,7 @@ export function createChannelSecretsPanel({
       replaceNote,
       ...formBindings.map((binding) => createTokenPicker(binding)),
       status,
+      saveHint,
       element("div", { className: "form-actions" }, save),
     );
     form.addEventListener("submit", async (event) => {

@@ -21,6 +21,7 @@ import {
   deleteRefused,
   notIncluded,
   stopRefused,
+  unreadableCurrentVersion,
 } from "./access-reasons.mjs";
 import {
   type AgentNavigation,
@@ -341,10 +342,7 @@ export function renderAgentList(context: AgentListContext) {
       return;
     }
     if (active === UNREADABLE || active === NEWER_UNREADABLE) {
-      const text =
-        active === NEWER_UNREADABLE
-          ? "A newer version you cannot read"
-          : "A version you cannot read";
+      const text = unreadableCurrentVersion(active === NEWER_UNREADABLE);
       const shown = current.querySelector(".agent-version-unreadable");
       if (shown) {
         setText(shown, text);

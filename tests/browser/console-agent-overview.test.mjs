@@ -320,13 +320,13 @@ test("A failed older version raises no recovery while the current version is hid
   await page.getByRole("heading", { name: "Hidden current" }).waitFor();
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("v1 · Failed", { exact: true }).waitFor();
-  await summary.getByText("Selected for service · you cannot read this version").waitFor();
+  // Beside a failed deployment the hidden current version may be older or newer, so the page
+  // names it in the Agents list's words, without its raw ID (finding D791).
+  await summary.getByText("A version you cannot read", { exact: true }).waitFor();
   await page
     .locator(".agent-status-line")
     .getByText(
-      new RegExp(
-        `The current version, rev_.*, is one you cannot read, so this page cannot tell whether the failed v1 deployment affects it\\. ${RegExp.escape(NEW_VERSIONS_READ)}`,
-      ),
+      `The current version is one you cannot read, so this page cannot tell whether the failed v1 deployment affects it. ${NEW_VERSIONS_READ}`,
     )
     .waitFor();
   assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
@@ -1138,9 +1138,7 @@ test("A failed version raises no recovery while the current version is on no loa
   assert.equal(await older.count(), 0);
   await statusLine
     .getByText(
-      new RegExp(
-        `The current version, rev_.*, is one you cannot read, so this page cannot tell whether the failed v2 deployment affects it\\. ${RegExp.escape(NEW_VERSIONS_READ)}`,
-      ),
+      `The current version is one you cannot read, so this page cannot tell whether the failed v2 deployment affects it. ${NEW_VERSIONS_READ}`,
     )
     .waitFor();
   assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
@@ -1211,6 +1209,32 @@ test("A succeeded version says when the current version is on no loaded page", a
     .filter({ hasText: /^v1(?: ·|$)/ })
     .waitFor({ state: "attached" });
   await summary.getByText("Newer version hidden", { exact: true }).waitFor();
+});
+
+// The page skips the current version's read only when the newest page lists every version the
+// reader can read and leaves it out (finding D791). Here it is readable and on an older page: v2,
+// a later failed deployment, is the only version on the first page. The page still reads v1.
+test("A readable current version on an older page is still read", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Paged current", "Paged current");
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, revision);
+  await routeOneVersionPerPage(page, fixture, namespace, agent);
+  await trackSettledFetches(page);
+  const snapshotPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${active.revision.id}`;
+  const snapshot = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === snapshotPath,
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, undefined, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Paged current" }).waitFor();
+  assert.equal((await snapshot).status(), 200);
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByText("You cannot read this version", { exact: true }).count(), 0);
 });
 
 test("Recovery offers no draft link without Agent update or deploy permission", async (t) => {

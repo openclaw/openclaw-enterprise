@@ -488,13 +488,32 @@ function administrationRefusal() {
 // administration, the refusal settles "not an administrator" for this tab, as a Backends refusal
 // does (finding 2627), and the reads still waiting are refused here, unsent. A failed answer
 // settles nothing (finding 2637). A probe answered in this page load already confirms the answer.
+// Administration can also end while the page is open, after a read confirmed it: a revoked
+// administrator's Access tab recheck was refused, and then Credentials sent two more IAM reads
+// the API refused and audited (finding D792). So a refusal after confirmation is checked the same
+// way, and the reads after it wait for that answer. Refresh on the Agent page asks again, so
+// access that returns is used again.
 // Gating only: the API still authorizes every read.
 function administrationRead(path, options) {
   if (installationAdmin === false) {
     return Promise.reject(administrationRefusal());
   }
   if (administrationConfirmed) {
-    return sendRequest(path, options);
+    const owner = sessionOwnerKey(session);
+    return sendRequest(path, options).catch(async (error) => {
+      if (error?.status === 403) {
+        // The first refusal starts the check; refusals of reads sent alongside it wait for it.
+        if (administrationConfirmed) {
+          administrationConfirmed = false;
+          trackAdministrationCheck(settleAdministrationRefusal(error, owner));
+        }
+        await administrationCheck;
+        if (installationAdmin === false) {
+          error.notAdministrator = true;
+        }
+      }
+      throw error;
+    });
   }
   if (administrationCheck) {
     // A read waiting behind the check belongs to this page: leaving it or signing out aborts the
@@ -514,37 +533,45 @@ function administrationRead(path, options) {
         administrationConfirmed = true;
       }
     },
-    async (error) => {
-      if (error?.status !== 403) {
-        return;
-      }
-      let answer;
-      try {
-        answer = await namespacePermissionsRead({ outlivesView: true });
-      } catch {
-        // No answer (a network failure or a 5xx) is unknown, not a refusal: an administrator
-        // whose read a Restriction refused keeps that answer, and the next page load asks again
-        // (finding 2637).
-        return;
-      }
-      if (owner === null || owner !== sessionOwnerKey(session)) {
-        return;
-      }
-      if (answer?.installation?.administer === true) {
-        administrationConfirmed = true;
-      } else {
-        settleNotAdministrator();
-        error.notAdministrator = true;
-      }
-    },
+    (error) => settleAdministrationRefusal(error, owner),
   );
+  trackAdministrationCheck(check);
+  return check.then(() => read);
+}
+
+function trackAdministrationCheck(check) {
   administrationCheck = check;
   void check.then(() => {
     if (administrationCheck === check) {
       administrationCheck = null;
     }
   });
-  return check.then(() => read);
+}
+
+// What a refused read that took the caller for an Installation administrator says, asked of a
+// readable Namespace's permission answer (see administrationRead). Never rejects.
+async function settleAdministrationRefusal(error, owner) {
+  if (error?.status !== 403) {
+    return;
+  }
+  let answer;
+  try {
+    answer = await namespacePermissionsRead({ outlivesView: true });
+  } catch {
+    // No answer (a network failure or a 5xx) is unknown, not a refusal: an administrator
+    // whose read a Restriction refused keeps that answer, and the next page load asks again
+    // (finding 2637).
+    return;
+  }
+  if (owner === null || owner !== sessionOwnerKey(session)) {
+    return;
+  }
+  if (answer?.installation?.administer === true) {
+    administrationConfirmed = true;
+  } else {
+    settleNotAdministrator();
+    error.notAdministrator = true;
+  }
 }
 
 // Agent detail reads that the viewer's grants may not allow (saved settings, native admin
@@ -1488,9 +1515,15 @@ async function loadPage({
     reuseView = false;
   }
   namespaceId = current.namespace;
-  if (fromRefresh && current.feature === "backends" && installationAdmin === false) {
+  if (
+    fromRefresh &&
+    (current.feature === "backends" || current.agentId) &&
+    installationAdmin === false
+  ) {
     // Refresh on the Backends refusal checks Installation administration again instead of
     // reusing the settled answer (finding 2622): a permission answer, or one probe without one.
+    // So does an Agent page's, whose Access tab and administrator-only reads a refusal there
+    // turned off while the page was open (finding D792).
     forgetInstallationAccess();
     observabilityOwner = null;
     installationAdmin = null;
