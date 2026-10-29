@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
+import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -13,6 +15,7 @@ import {
   settledFetches,
   settledView,
   trackSettledFetches,
+  waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -293,4 +296,94 @@ test("a Namespace deletion confirmation opened during a background poll closes w
     .waitFor();
   // Nothing is left to delete, so the confirmation closes instead of offering a dead action.
   await dialog.waitFor({ state: "detached" });
+});
+
+test("returning to an unchanged Namespaces page reads each row's delete permission once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespaces = [
+    await fixture.createNamespace("First return", { ready: true }),
+    await fixture.createNamespace("Second return", { ready: true }),
+  ];
+  const { page } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/namespaces?namespace=${namespaces[0].id}`);
+  const permissions = namespaces.map(({ id }) => `/namespaces/${id}/permissions`);
+  const reads = () => Promise.all(permissions.map((path) => settledFetches(page, path)));
+  for (const path of permissions) {
+    await waitForSettledFetches(page, path, 1);
+  }
+  // A view with a read still in flight is rebuilt on return, not reused.
+  await waitForIdleFetches(page);
+  // Mark the shown view: a reused view keeps the mark, a rebuilt one does not.
+  await page.evaluate(() => {
+    document.querySelector<HTMLElement>(".content [aria-live='polite']")!.dataset.returnMark = "1";
+  });
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page
+    .locator(settledView)
+    .getByRole("heading", { name: "No Agents yet", exact: true })
+    .waitFor();
+  // Counted from here: the Agents page reads the selected Namespace's permissions itself.
+  await waitForIdleFetches(page);
+  const before = await reads();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.locator(settledView).getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        document.querySelector<HTMLElement>(".content [aria-live='polite']")?.dataset.returnMark,
+    ),
+    "1",
+    "the unchanged Namespaces page was rebuilt instead of reused",
+  );
+  // The return's recheck replays each row's permission read once to prove the page unchanged;
+  // resuming the reused rows must not read the same answers again (finding 2799).
+  assert.deepEqual(
+    await reads(),
+    before.map((count) => count + 1),
+  );
+});
+
+test("a refused Namespace deletion retry keeps its reason through a background poll", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Owned retry", { ready: true });
+  const path = `/namespaces/${namespace.id}`;
+  assert.equal((await fixture.request("DELETE", path)).status, 202);
+  const { page } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  // The in-memory fixture has no failed teardown work, so the retry's refusal is the API's own
+  // ownership error, mapped as the HTTP layer maps it (403 FORBIDDEN with the error's message).
+  const ownership = new DeletionRetryOwnedError("prn_initiator", {
+    kind: "namespace",
+    id: namespace.id,
+    namespaceId: namespace.id,
+  }).message;
+  await page.route(fixture.origin + path, async (route) => {
+    if (route.request().method() !== "DELETE") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill(apiErrorResponse(403, "FORBIDDEN", ownership));
+  });
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
+  const retry = page.getByRole("button", { name: "Request deletion again", exact: true });
+  await retry.click();
+  await page
+    .getByRole("dialog", { name: "Retry deletion of Owned retry?", exact: true })
+    .getByRole("button", { name: "Request deletion again", exact: true })
+    .click();
+  const reason = page.locator(`#namespace-delete-feedback-${namespace.id}`).getByText(ownership, {
+    exact: true,
+  });
+  await reason.waitFor();
+  assert.equal(await retry.isDisabled(), true);
+  // The next read of this path is the 3 s background status poll; cleanup is still running.
+  await waitForSettledFetches(page, path, (await settledFetches(page, path)) + 1);
+  // The poll changed nothing, so the refusal and the disabled retry stay; re-enabling the retry
+  // would invite the same 403 (finding 2725).
+  assert.equal(await reason.isVisible(), true);
+  assert.equal(await retry.isDisabled(), true);
 });

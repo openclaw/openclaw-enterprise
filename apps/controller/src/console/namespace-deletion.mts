@@ -465,9 +465,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   render();
   void readPermissions();
   schedulePoll();
-  context.onResume?.(() => {
-    void readPermissions();
-    schedulePoll();
-  });
+  // A return mounts this row only after replaying its reads, including the permission answer,
+  // unchanged, so resuming only restarts the poll a detached view stopped (finding 2799).
+  context.onResume?.(schedulePoll);
   return { actions, feedback };
 }
