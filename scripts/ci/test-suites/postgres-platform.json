@@ -54,6 +54,7 @@
     "tests/integration/postgres-standing-session-worker.test.ts",
     "tests/integration/postgres-standing-expiry-authority.test.ts",
     "tests/integration/credential-proxy-withdrawal.test.ts",
+    "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/postgres-egress-policy-transaction.test.ts"
   ],
   "files": [
@@ -447,6 +448,13 @@
       "expectedTests": [
         "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
         "Git reduction v7 preserves earlier admission meanings and rejects widening"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-proxy-revision-currentness.test.ts",
+      "expectedTests": [
+        "provisioning validates Harness authentication with the source descriptor that supplied its login mode (PostgreSQL)",
+        "credential exchange consults revision history only for inactive executions"
       ]
     },
     {

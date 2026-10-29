@@ -18,7 +18,6 @@ import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
 import {
   button,
-  describeDisabled,
   element,
   fieldError,
   focusSaveOutcome,
@@ -52,6 +51,7 @@ import {
   askForGrant,
   CONFIGURATION_UPDATE_DENIED,
   credentialCheckedAtDeploy,
+  DEPLOY_SANDBOX_POLICY_READ_DENIED,
   deployAcceptedVersionUnreadable,
   deployUnreadableSecretsReason,
   MODEL_CREDENTIAL_REJECTED_REPLACED,
@@ -269,6 +269,10 @@ function deployRefusedBeforeAdmission(error: unknown) {
   );
 }
 
+// The start of the API's named denial of a deploy without SandboxPolicy read on the Agent's
+// network policy (finding 2151); the policy's ID follows.
+const DEPLOY_SANDBOX_POLICY_READ_NEED = "Not authorized: this needs SandboxPolicy read on ";
+
 function deployFailureText(cause: unknown, submitted: boolean) {
   const error = requestFailure(cause);
   if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
@@ -283,6 +287,10 @@ function deployFailureText(cause: unknown, submitted: boolean) {
   }
   if (error.status !== 403 && error.status !== 409) {
     return rejectionMessage(cause, submitted);
+  }
+  // The page names the Agent's network policy in words, not by the ID the API gives (D801).
+  if (namedDenial(cause)?.startsWith(DEPLOY_SANDBOX_POLICY_READ_NEED)) {
+    return DEPLOY_SANDBOX_POLICY_READ_DENIED;
   }
   // A typed refusal is written for the caller: a 409 names the setting or state to fix, and a
   // 403 names the grant the caller's own request lacks (finding 2534) or the Agent's service
@@ -633,10 +641,9 @@ export async function renderAgentDetail(
   let agentSaveDenied = callerPermissionsRead.then((permissions) =>
     agentSaveDenial(permissions, agent),
   );
-  // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
-  // The newest reread whose operate answer the page's controls show.
-  let appliedOperateReread = 0;
+  // The newest reread whose answer the page shows: the summary and every control that follows it.
+  let appliedReread = 0;
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
@@ -3858,21 +3865,27 @@ export async function renderAgentDetail(
     const reread = ++permissionsRereads;
     const read = readPermissions().then(
       (permissions) => {
-        if (context.isCurrent() && reread === permissionsRereads) {
+        // An older reread still applies when no newer one has answered: a newer read that
+        // fails resolves to this answer. The summary and the controls take it together, so
+        // the failed-version recovery and Delete never keep an answer that Stop has left
+        // (finding 2329).
+        if (context.isCurrent() && reread > appliedReread) {
+          appliedReread = reread;
           callerPermissions = permissions;
           // Views built from now on take this answer; shown ones follow it below (finding 2470).
-          agentSaveDenied = Promise.resolve(agentSaveDenial(permissions, agent));
+          // While a newer reread is in flight, views built meanwhile wait for it instead, so
+          // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
+          // resolves to this answer.
+          agentSaveDenied =
+            reread === permissionsRereads
+              ? Promise.resolve(agentSaveDenial(permissions, agent))
+              : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
           // A grant or revocation since the last answer relabels the draft (finding 2421).
           applyDraftAccess();
           deletion.applyDelete(permissions?.delete);
-        }
-        // An older reread still applies when no newer one has answered: a newer read that
-        // fails resolves to this answer, which the controls would otherwise never see.
-        if (context.isCurrent() && reread > appliedOperateReread) {
-          appliedOperateReread = reread;
           applyOperateAnswer(permissions?.operate);
         }
         return permissions;
@@ -3898,6 +3911,13 @@ export async function renderAgentDetail(
       agentSaveDenial(permissions, agent),
     );
     const next = loadDetails();
+    // Other tabs draw from the last answer and follow the reread (finding 2421), but Repositories
+    // draws its editor only once the reread lands. Rebuilt before that, the tab was empty at the
+    // focus step below: Cancel was not found, the tab strip took focus, the shortened page lost
+    // the reader's place, and the editor drawn later showed no saved status (finding 2892).
+    if (selectedTab === "repositories") {
+      await agentSaveDenied;
+    }
     const data = await next;
     if (!context.isCurrent() || deleting || !data) {
       return;
@@ -4666,7 +4686,7 @@ export async function renderAgentDetail(
       const reload = button("Reload authentication source", async () => {
         context.drafts.forget("authentication");
         reload.disabled = true;
-        save.disabled = true;
+        setSaveUnavailable(true);
         let fresh;
         try {
           // The tab's own request keeps this tab from being retained while the read is pending.
@@ -4700,15 +4720,21 @@ export async function renderAgentDetail(
       let pending = false;
       // Set when the caller's permission answer denies Agent update (finding 1530).
       let updateDenied = false;
-      // The method select and Save are described by the note that says why they are disabled
-      // (finding D749).
+      let saveUnavailable = false;
+      let authUnavailable = false;
+      // Save and the method select are described by the note that says why they are disabled
+      // (finding D749), and stay in the Tab order while it shows (finding 2899).
+      const setSaveUnavailable = (value: boolean) => {
+        saveUnavailable = value;
+        setUnavailable(save, value, updateDenied ? updateNote : null);
+      };
+      const setAuthUnavailable = (value: boolean) => {
+        authUnavailable = value;
+        auth.setDisabled(value, updateDenied ? updateNote : null);
+      };
       const describeUpdateDenial = () => {
-        const method = auth.section.querySelector<HTMLElement>("#harness-auth-method");
-        for (const control of [save, method]) {
-          if (control) {
-            describeDisabled(control, updateDenied ? updateNote : null);
-          }
-        }
+        setSaveUnavailable(saveUnavailable);
+        setAuthUnavailable(authUnavailable);
       };
       const applyUpdateDenial = (reason: string | undefined) => {
         // Retry credential access only rechecks the Secret grant; it is not an Agent update.
@@ -4720,9 +4746,9 @@ export async function renderAgentDetail(
         updateNote.hidden = !updateDenied;
         // A save in flight sets the controls when it ends.
         if (!pending) {
-          save.disabled = outcomeUnknown || updateDenied;
+          saveUnavailable = outcomeUnknown || updateDenied;
           // An edit that cannot be saved would only block Deploy (finding 1539).
-          auth.setDisabled(outcomeUnknown || updateDenied);
+          authUnavailable = outcomeUnknown || updateDenied;
         }
         describeUpdateDenial();
       };
@@ -4842,15 +4868,15 @@ export async function renderAgentDetail(
       });
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
-        auth.setDisabled(true);
+        setAuthUnavailable(true);
         setStatusTone(feedback, "warning");
         feedback.textContent = grantProblem
           ? grantText(grantProblem)
           : "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.";
       }
       if (outcomeUnknown) {
-        save.disabled = true;
-        auth.setDisabled(true);
+        setSaveUnavailable(true);
+        setAuthUnavailable(true);
         setStatusTone(feedback, "danger");
         feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
       }
@@ -4864,7 +4890,7 @@ export async function renderAgentDetail(
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         // The console's own errors under each field, not the browser's bubble (UX plan C3).
-        if (!validateFields([...form.elements]) || save.disabled) {
+        if (!validateFields([...form.elements]) || saveUnavailable) {
           return;
         }
         let harnessAuth: HarnessAuthBinding | null;
@@ -4875,10 +4901,10 @@ export async function renderAgentDetail(
           say(error instanceof Error ? error.message : message(error), "danger");
           return;
         }
-        save.disabled = true;
+        setSaveUnavailable(true);
         pending = true;
         reload.disabled = true;
-        auth.setDisabled(true);
+        setAuthUnavailable(true);
         data.setAuthenticationSaveState("saving");
         data.setAuthenticationPending(true);
         say(savedAuthentication ? "Checking credential access…" : "Saving authentication…");
@@ -5052,9 +5078,8 @@ export async function renderAgentDetail(
               : "Save authentication source";
             pending = false;
             reload.disabled = false;
-            save.disabled = outcomeUnknown || updateDenied;
-            auth.setDisabled(outcomeUnknown || savedAuthentication !== null || updateDenied);
-            describeUpdateDenial();
+            setSaveUnavailable(outcomeUnknown || updateDenied);
+            setAuthUnavailable(outcomeUnknown || savedAuthentication !== null || updateDenied);
             syncUnsavedAuthentication();
           }
         }

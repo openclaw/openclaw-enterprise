@@ -2,6 +2,30 @@
 
 <!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->
 
+## Table of contents
+
+- [Authentication accounts](#authentication-accounts)
+- [Authentication sessions](#authentication-sessions)
+- [Service API keys](#service-api-keys)
+- [Authentication](#authentication)
+- [Installation](#installation)
+- [Namespaces](#namespaces)
+- [Agents](#agents)
+- [Agent deployments](#agent-deployments)
+- [Agent revisions](#agent-revisions)
+- [Agent runtime credentials](#agent-runtime-credentials)
+- [Agent workspace files](#agent-workspace-files)
+- [Configurations](#configurations)
+- [IAM access bindings](#iam-access-bindings)
+- [IAM roles](#iam-roles)
+- [IAM service principals](#iam-service-principals)
+- [Secrets](#secrets)
+- [Service accounts](#service-accounts)
+- [Service account credentials](#service-account-credentials)
+- [Backends](#backends)
+- [Credential sources](#credential-sources)
+- [Presets](#presets)
+
 ## Operations
 
 ### Authentication accounts

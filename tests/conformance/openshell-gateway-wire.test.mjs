@@ -27,6 +27,7 @@ import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { agentClients } from "../helpers/egress-custody-observations.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { relaySockets } from "../helpers/socket-relay.mjs";
 
@@ -1736,35 +1737,8 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
   outage(closed);
 });
 
-function selfSignedCertificate(directory, name, subjectAltName) {
-  const keyPath = join(directory, `${name}.key`);
-  const certPath = join(directory, `${name}.crt`);
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:prime256v1",
-      "-nodes",
-      "-days",
-      "1",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-subj",
-      "/CN=openshell-gateway",
-      "-addext",
-      `subjectAltName=${subjectAltName}`,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
-  return { keyPath, certPath };
-}
+const selfSignedCertificate = (directory, name, subjectAltName) =>
+  selfSigned(directory, { name, commonName: "openshell-gateway", subjectAltName });
 
 // A TLS gRPC listener that answers Health and records the SNI of every connection
 // and the path of every request it receives.
@@ -1841,13 +1815,13 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
     assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
     return true;
   };
-  const otherAuthority = selfSignedCertificate(directory, "other-authority", "DNS:localhost");
+  const otherAuthority = await selfSignedCertificate(directory, "other-authority", "DNS:localhost");
   for (const { name, san, bind, host, sni, needsIpv6, untrusted: distrusted } of cases) {
     await t.test(
       name,
       { skip: needsIpv6 && !ipv6 && "IPv6 loopback ::1 is unavailable" },
       async (t) => {
-        const { keyPath, certPath } = selfSignedCertificate(directory, name, san);
+        const { keyPath, certPath } = await selfSignedCertificate(directory, name, san);
         const seen = [];
         const gateway = await tlsHealthGateway(keyPath, certPath, bind, seen);
         t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -1875,8 +1849,8 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
   // Clients of one IP endpoint never share a verified connection: a client that does not
   // trust the gateway's certificate still fails while a trusting client is connected.
   await t.test("untrusted-beside-trusted", async (t) => {
-    const { keyPath, certPath } = selfSignedCertificate(directory, "shared", "IP:127.0.0.1");
-    const other = selfSignedCertificate(directory, "other", "IP:127.0.0.1");
+    const { keyPath, certPath } = await selfSignedCertificate(directory, "shared", "IP:127.0.0.1");
+    const other = await selfSignedCertificate(directory, "other", "IP:127.0.0.1");
     const seen = [];
     const gateway = await tlsHealthGateway(keyPath, certPath, "127.0.0.1", seen);
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -1947,8 +1921,8 @@ function signedClientCertificate(directory, name, ca) {
 
 async function mutualTls(t) {
   const directory = await temporaryDirectory(t, "openshell-mtls-");
-  const identity = selfSignedCertificate(directory, "server", "DNS:localhost,IP:127.0.0.1");
-  const authority = selfSignedCertificate(directory, "client-ca", "DNS:client-ca.invalid");
+  const identity = await selfSignedCertificate(directory, "server", "DNS:localhost,IP:127.0.0.1");
+  const authority = await selfSignedCertificate(directory, "client-ca", "DNS:client-ca.invalid");
   const auth = signedClientCertificate(directory, "client", authority);
   const tls = {
     key: readFileSync(identity.keyPath),
@@ -1961,7 +1935,7 @@ async function mutualTls(t) {
 test("OpenShell mTLS authenticates DNS and IP channels and refuses missing or foreign identities", async (t) => {
   const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
   const { tls, auth, rootCertificatePath, directory } = await mutualTls(t);
-  const foreignCA = selfSignedCertificate(directory, "foreign-ca", "DNS:foreign.invalid");
+  const foreignCA = await selfSignedCertificate(directory, "foreign-ca", "DNS:foreign.invalid");
   const foreign = signedClientCertificate(directory, "foreign", foreignCA);
   const seen = [];
   const server = createSecureServer({

@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -621,6 +622,7 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
       id: "source-discovery-sandbox",
       capability: "sandbox",
       implementation: "test-admission-only",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       async cleanup() {},
     },

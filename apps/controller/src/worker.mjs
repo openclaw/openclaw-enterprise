@@ -233,6 +233,10 @@ try {
     ...options,
     emit: createWorkerLogEmitter(logger),
     ...(drivers === undefined ? { computeDriver } : { drivers }),
+    // Native prepared Git: a deployment waits for its version's first GitHub token (finding 2415).
+    ...(preparedRepositoryGit?.revisionMaterial === undefined
+      ? {}
+      : { repositoryGitMaterial: preparedRepositoryGit.revisionMaterial }),
     ...(readinessPath === undefined
       ? {}
       : {

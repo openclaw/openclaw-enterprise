@@ -2,3 +2,6 @@
 minimumReleaseAge: 10080
 minimumReleaseAgeStrict: true
 minimumReleaseAgeIgnoreMissingTime: false
+allowBuilds:
+  # The prebuilt Scalar browser bundle needs no Vue build script.
+  vue-demi: false

@@ -20,6 +20,7 @@ import {
   deploymentStatusResponse,
   detailUrl,
   expectNoText,
+  expectReachableReason,
   expireSessionsWhenSettled,
   grantMember,
   grantSecretOperate,
@@ -2094,12 +2095,12 @@ test("Agent draft plugin picker warns that API-key Codex Agents cannot use plugi
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   const unavailable = "Plugin browsing is unavailable with API-key authentication.";
   await dialog.getByText(unavailable).waitFor();
-  // Load plugins and the pager are disabled for the reason that line gives, and each is
-  // described by it (finding D796).
+  // Load plugins and the pager are disabled for the reason that line gives, each is described
+  // by it (finding D796), and Tab still reaches each (finding 2899).
   for (const name of ["Load plugins", "Previous page", "Next page"]) {
     const control = dialog.getByRole("button", { name, exact: true });
     assert.equal(await control.isDisabled(), true, name);
-    assert.equal(await accessibleDescription(control), unavailable, name);
+    await expectReachableReason(page, control, unavailable);
   }
   // The empty list must not tell the user to load a catalog they cannot load.
   await dialog
@@ -4315,7 +4316,9 @@ for (const viewport of [
         const create = [...globalThis.document.querySelectorAll("button")].find(
           (node) => node.textContent === "Create Agent",
         );
-        const state = create ? (create.disabled ? "disabled" : "enabled") : null;
+        // An unavailable Create Agent with its reason is aria-disabled (finding 2899).
+        const unavailable = create?.disabled || create?.getAttribute("aria-disabled") === "true";
+        const state = create ? (unavailable ? "disabled" : "enabled") : null;
         if (state && states.at(-1) !== state) {
           states.push(state);
         }

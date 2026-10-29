@@ -7,6 +7,7 @@ import test from "node:test";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   createTenantReaderFixture,
@@ -421,8 +422,7 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
     response.writeHead(answer.status, { "content-type": "application/json" });
     response.end(await answer.text());
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await listen(t, server);
   for (const [name, value] of Object.entries({
     OCC_URL: `http://127.0.0.1:${server.address().port}`,
     OCC_SERVICE_KEY_FILE: join(directory, "key.json"),

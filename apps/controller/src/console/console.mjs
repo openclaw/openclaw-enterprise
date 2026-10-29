@@ -2565,10 +2565,11 @@ async function loadPage({
     if (!accessResolved) {
       // Uncertain shared admission invalidates every preview, not just this route. Drafts stay:
       // a later read clears them only if it proves their Namespace or account gone (finding 1935).
+      const account = session;
       resetReads();
       clearPrivate();
       shell = null;
-      showAdmissionUnavailable(sessionResolved, error.status);
+      showAdmissionUnavailable(sessionResolved, error, account);
       return;
     }
     mountedRouteKey = null;
@@ -2887,22 +2888,37 @@ async function revalidateMountedAgent(current) {
           : `${path}/revisions/${encodeURIComponent(selected)}`;
       const previousSnapshotRead = mountedViewState?.reads.get(snapshotPath);
       const snapshotWasReadable = mountedViewState?.readablePaths.has(snapshotPath);
+      // A refusal this page already showed, or this tab already settled, for a read it never had.
+      const refusalSettled =
+        snapshotWasReadable === false &&
+        (previousSnapshotRead === refusedRead(403) || deniedReadsFor(owner).has(snapshotPath));
+      const versions = request(`${path}/revisions`, { includeMeta: true });
+      // A version this page showed as unreadable has nothing on screen to scrub: its read would
+      // only be refused and audited again on every refocus, and the refusal would replace the
+      // page (finding D799). The page proved it on load as the version's own view does: a settled
+      // refusal, or a current version left out of a newest page of versions that lists every
+      // version the caller can read (finding D791). Refresh reads it again.
+      const shownUnreadable = async () =>
+        selected !== "draft" &&
+        snapshotWasReadable === false &&
+        (refusalSettled ||
+          (selected === agent.activeRevisionId &&
+            (await versions.then(
+              ({ data, meta }) =>
+                (meta?.nextCursor ?? null) === null && !data.some(({ id }) => id === selected),
+            ))));
       await Promise.all([
-        request(`${path}/revisions`),
-        request(snapshotPath).catch((error) => {
-          // Initial admission can show an Agent with its draft Configuration denied. Keep
-          // that same refusal, but scrub a page whose previously readable data was revoked.
-          if (
-            selected === "draft" &&
-            error.status === 403 &&
-            (previousSnapshotRead === refusedRead(403) ||
-              deniedReadsFor(owner).has(snapshotPath)) &&
-            snapshotWasReadable === false
-          ) {
-            return;
-          }
-          throw error;
-        }),
+        versions,
+        shownUnreadable()
+          .then((unreadable) => (unreadable ? undefined : request(snapshotPath)))
+          .catch((error) => {
+            // Initial admission can show an Agent with its draft Configuration denied. Keep
+            // that same refusal, but scrub a page whose previously readable data was revoked.
+            if (selected === "draft" && error.status === 403 && refusalSettled) {
+              return;
+            }
+            throw error;
+          }),
       ]);
     }
   } catch (error) {
@@ -2916,8 +2932,9 @@ async function revalidateMountedAgent(current) {
     if (checking !== "detail") {
       resetReads();
       // Drafts survive an unavailable check, as in loadPage (finding 1935).
+      const account = session;
       clearPrivate();
-      showAdmissionUnavailable(checking !== "session", error.status);
+      showAdmissionUnavailable(checking !== "session", error, account);
       return;
     }
     showAgentReadFailure(current, selectedNamespace, error);
@@ -3026,10 +3043,44 @@ function settingsView() {
   );
 }
 
+const UNREACHABLE_TITLE = "Could not reach OpenClaw Enterprise";
+const UNREACHABLE_TEXT = "Check your connection, then try again.";
+
+// A read that never reached the API: the browser is offline, or the API did not answer in time.
+function unreachable(error) {
+  return (
+    error.status === undefined && (error.name === "TypeError" || error.name === "TimeoutError")
+  );
+}
+
 // The shared session or Namespace read failed, so no private page can show. Once the session
 // is confirmed, a refusal can be lasting (an account whose access was removed), and this panel
 // has no account menu, so it offers Sign out beside Retry (finding 1894).
-function showAdmissionUnavailable(sessionChecked, status) {
+// A read that never reached the API says nothing about the session (finding 1896). A tab that
+// was signed in as `account` keeps its shell, without Namespace or page data, names the
+// connection and puts focus on Retry. Any answer from the API (401, 403, 503) is shown below.
+function showAdmissionUnavailable(sessionChecked, error, account) {
+  const current = route();
+  if (unreachable(error) && account && Object.hasOwn(pages, current.feature)) {
+    // The account alone stays known, so Retry, Refresh and a refocus hold this shell while they
+    // check again, and a 401 then still signs the tab out.
+    session = account;
+    const shell = renderShell(current.feature, true, { recovery: false });
+    panel(shell.view, UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    shell.refresh.disabled = false;
+    shell.view.setAttribute("aria-busy", "false");
+    const reason = shell.view.querySelector(".state-panel > p");
+    reason.id = "unreachable-reason";
+    const retry = shell.view.querySelector(".state-panel > button");
+    retry.setAttribute("aria-describedby", reason.id);
+    retry.focus();
+    return;
+  }
+  if (unreachable(error)) {
+    publicPanel(UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    return;
+  }
+  const { status } = error;
   if (!sessionChecked) {
     publicPanel(
       "Session unavailable",

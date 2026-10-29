@@ -39,14 +39,41 @@ updates `node_setup_json` only if the provider's resource version still matches;
 endpoint, TLS fingerprint, runtime files, CA, and identity labels must also match.
 Native startup reads the envelope; the Codex
 supervisor rereads it before node retries and retains valid setup during projection
-gaps. The raw app-server token stays outside the provider. Plugins and repository
-broker configuration fail before creation.
+gaps. The raw app-server token stays outside the provider. Repository broker
+configuration fails before creation.
 
 Agent revision cleanup deletes the Sandbox before its Git and runtime providers; Namespace
 cleanup removes leftover Git providers and unused profiles. Adoption requires matching
 Namespace, Agent, and Agent revision IDs and nonsecret configuration,
 except when renewing an expired setup envelope. Failed or timed-out Sandbox creation may complete remotely. The provider remains
 for normal Agent revision cleanup with the Sandbox.
+
+## Codex plugin installation
+
+For a dedicated Codex Agent, the Harness installs selected plugins with a
+temporary native app-server over stdio after login and protected-egress setup.
+Both native processes use the same private `CODEX_HOME`. Preparation must finish
+within 60 seconds; its process must exit within eight seconds before the final
+authenticated WebSocket app-server starts. Installation failure prevents startup.
+The existing supervisor cleans the process group before retrying a failed wrapper.
+
+The final process receives the transport verifier. The Gateway keeps the raw
+transport token and uses the admitted plugin configuration without the ordinary
+Compute peer-status exchange. Restart repeats preparation; unchanged
+reconciliation does not reinstall. Managed configuration disables removed
+selections even when package files remain cached.
+
+Installation requires a Codex-backed account with access to the selected plugin
+and any required app connection. Permit the catalog's package origins through
+the selected egress policy, separately from credential-bearing API endpoints.
+Ordinary [Sandbox configuration](../openshell-sandbox.md#configuration) supports
+exact-host, binary-scoped read-only REST access with enforced inspection. Omit
+`tls` for automatic TLS inspection; the pinned gateway rejects explicit
+`terminate`. A protected egress plan is authoritative; Sandbox defaults do not
+extend it. Review new download or redirect destinations before allowing them.
+Installation success and basic readiness do not
+attest effective tool policy or prove an authenticated app operation. See the
+[installation proof](../../../testing/openshell.md#codex-plugin-installation).
 
 ## Create-time app-server exposure
 

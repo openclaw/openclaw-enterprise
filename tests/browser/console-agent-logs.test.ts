@@ -34,9 +34,9 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
-  accessibleDescription,
   apiRequests,
   detailUrl,
+  expectReachableReason,
   fileBrowser,
   holdRequests,
   login,
@@ -1349,9 +1349,10 @@ test("an operator without administer sees status but no log text and is never re
   await page.locator(".runtime-pod").getByRole("heading", { name: "Gateway" }).waitFor();
   await page.getByText(LOG_TEXT_DENIED).waitFor();
   assert.equal(await page.getByText("operator must not see this").count(), 0);
-  // Every log control is disabled and described by the refusal beside it (finding D749).
-  const refusal = await page.locator(".log-error").textContent();
-  assert.ok(refusal?.startsWith(LOG_TEXT_DENIED));
+  // Every log control is disabled and described by the refusal beside it (finding D749), and
+  // Tab still reaches it (finding 2899).
+  const refusal = (await page.locator(".log-error").textContent())?.trim() ?? "";
+  assert.ok(refusal.startsWith(LOG_TEXT_DENIED));
   for (const control of [
     page.locator("#runtime-log-source"),
     page.getByLabel("Previous instance"),
@@ -1361,7 +1362,7 @@ test("an operator without administer sees status but no log text and is never re
     page.getByRole("button", { name: "Download" }),
   ]) {
     assert.equal(await control.isDisabled(), true);
-    assert.equal(await accessibleDescription(control), refusal);
+    await expectReachableReason(page, control, refusal);
   }
   // The permission answer says log text is denied, so the read the API would refuse and audit
   // is never sent (finding D758).
@@ -2335,7 +2336,7 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   await page.getByRole("heading", { name: "Namespaces" }).waitFor();
   // The heading shows before the Namespaces page has checked access. Advancing the clock past
   // the console's 15 s request timeout while a session or Namespace read is pending fails it
-  // ("Session unavailable" or "Namespace access unavailable") and drops every cached view, so
+  // ("Could not reach OpenClaw Enterprise") and drops every cached view, so
   // let the page finish its reads first.
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await waitForIdleFetches(page);

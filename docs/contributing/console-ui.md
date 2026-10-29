@@ -34,12 +34,12 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   the intended resource and confirms the expected saved state. If the write may have
   committed but you cannot confirm it, say the outcome is unknown and read that same
   resource again. Do not repeat the write to find out.
-- **Disabled controls.** Show the reason next to a disabled control. For a button or
-  checkbox, call `setUnavailable(control, unavailable, reason)` wherever its state or
-  reason changes. While the reason shows, the control stays in the Tab order
-  (`aria-disabled`), is described by the reason, and ignores clicks, Enter and Space.
-  With no reason it is natively disabled. For other controls, link the reason with
-  `describeDisabled(control, reason)`.
+- **Disabled controls.** Show the reason next to a disabled control. For a button,
+  checkbox, select or text field, call `setUnavailable(control, unavailable, reason)`
+  wherever its state or reason changes. While the reason shows, the control stays in the
+  Tab order (`aria-disabled`), is described by the reason, and ignores clicks, Enter,
+  Space and edits. With no reason it is natively disabled. For other controls, link the
+  reason with `describeDisabled(control, reason)`.
 
 ## Extend the shared styles
 

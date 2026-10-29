@@ -2132,6 +2132,13 @@ label:has(> input[type="checkbox"].control-unavailable:focus-visible) {
   outline-offset: var(--focus-offset);
   border-radius: var(--radius-sm);
 }
+/* An unavailable select or text field fades its text, not the field, so its focus ring keeps full
+   contrast (finding 2899). */
+select.control-unavailable,
+input.control-unavailable:not([type="checkbox"], [type="radio"]) {
+  cursor: not-allowed;
+  color: color-mix(in srgb, var(--text) 60%, var(--color-surface));
+}
 .native-admin-access .overview-text-button {
   margin-top: var(--space-1);
   text-decoration: underline;
@@ -2902,6 +2909,7 @@ label:has(> input[type="checkbox"].control-unavailable:focus-visible) {
   cursor: not-allowed;
 }
 .resource-row-actions .icon-button[aria-disabled="true"] {
+  color: var(--muted);
   background: color-mix(in srgb, var(--color-surface) 60%, transparent);
   border-color: color-mix(in srgb, var(--color-border-strong) 60%, transparent);
 }
@@ -4635,11 +4643,12 @@ html:has(#create-agent-form) {
   border-radius: var(--radius-sm);
   background: var(--surface);
 }
-.log-picker select:not(:disabled):hover,
+.log-picker select:not(:disabled, [aria-disabled="true"]):hover,
 .log-search input:hover {
   border-color: var(--input-border);
 }
-.log-picker select:disabled {
+.log-picker select:disabled,
+.log-picker select.control-unavailable {
   color: var(--muted);
 }
 .log-pod-picker {
@@ -4664,7 +4673,8 @@ html:has(#create-agent-form) {
   height: 15px;
   margin: 0;
 }
-.log-option:has(input:disabled) {
+.log-option:has(input:disabled),
+.log-option:has(input.control-unavailable) {
   color: var(--muted);
 }
 .log-actions {

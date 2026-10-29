@@ -237,14 +237,14 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
   const fixture = await temporaryDirectory(t, "occ-api-reference-check-");
 
   await mkdir(join(fixture, "scripts"), { recursive: true });
-  await copyFile(
-    join(repositoryRoot, "scripts/generate-occ-openapi.mjs"),
-    join(fixture, "scripts/generate-occ-openapi.mjs"),
-  );
-  await copyFile(
-    join(repositoryRoot, "scripts/generate-occ-api-reference.mjs"),
-    join(fixture, "scripts/generate-occ-api-reference.mjs"),
-  );
+  for (const file of [
+    "generate-occ-openapi.mjs",
+    "generate-occ-api-reference.mjs",
+    "document-api-examples.mjs",
+    "api-examples.mjs",
+  ]) {
+    await copyFile(join(repositoryRoot, "scripts", file), join(fixture, "scripts", file));
+  }
   await copyFile(join(repositoryRoot, "package.json"), join(fixture, "package.json"));
   await symlink(join(repositoryRoot, "apps"), join(fixture, "apps"));
   await symlink(join(repositoryRoot, "node_modules"), join(fixture, "node_modules"));

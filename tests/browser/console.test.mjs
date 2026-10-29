@@ -1354,7 +1354,8 @@ test("console retained views clear after session expiry and exact Agent denial",
   await expectNoText(page, /Configuration draft|Selected revision/, () => waitForIdleFetches(page));
 });
 
-// Both shared admission reads must revoke every preview when their outcome is unknown.
+// Both shared admission reads must revoke every preview when their outcome is unknown. Here the
+// API answers 503; a read that never reaches it is covered in console-shell.test.ts.
 for (const gate of ["/api/auth/session", "/namespaces"]) {
   test(`console clears all retained pages after ${gate} fails`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
@@ -1368,7 +1369,7 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
     await page.getByRole("link", { name: "Namespaces", exact: true }).click();
     await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
 
-    await page.route(`**${gate}`, (route) => route.abort("failed"));
+    await page.route(`**${gate}`, (route) => route.fulfill({ status: 503 }));
     await page.getByRole("link", { name: "Agents", exact: true }).click();
     await page
       .getByRole("heading", {

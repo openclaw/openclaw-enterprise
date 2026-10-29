@@ -6,7 +6,7 @@ author: kevinlin-openai
 
 # Proposal: Inspect accepted Installation Driver values
 
-- **ID:** RFC-0024
+- **ID:** RFC-0025
 - **Created:** 2026-10-29
 - **RFC PR:** [#4092](https://github.com/openclaw/openclaw-enterprise/pull/4092)
 - **Related:** [RFC-0022](0022-driver-configuration-contributions.md)
@@ -101,5 +101,7 @@ The decision remains Proposed pending human review.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29: Renumber the provisional RFC-0024 to preserve the ID assigned on main.
 
 - 2026-10-29: Propose Driver-owned inspection of accepted startup values.

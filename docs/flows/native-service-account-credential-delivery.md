@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-16
-last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
+updated: 2026-10-26
+last_updated_session: authoring-run/dc3e84d5-d5f9-44fa-870c-a8497b2c5379
 ---
 
 # Harness Authentication Binding Flow
@@ -157,16 +157,16 @@ indefinitely; drafts, selected versions, and pending deployments block source de
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareHarnessAuth`,
 `KubernetesComputeDriver.prepareRevision`
 
-One workload-rendering step converts validated references to supported
-Secret projections and a closed login mode. Embedded OpenClaw receives the key
-in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
-from the immutable native model Configuration; admission requires every model
-selection, including fallbacks, to use the same supported provider. Dedicated
-Codex receives the key or account token through a DP projection for the Agent revision.
-Managed and directly supplied service account tokens deliver only
-`CODEX_ACCESS_TOKEN` as the model credential; the separate Gateway receives none.
-Neither gateway-only Configuration secret bindings nor initial runtime
-provisioning, which creates only transport/channel groups, can supply model auth.
+Compute projects the admitted Secret into the combined embedded workload as
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or, for explicit custom providers,
+`OCE_MODEL_API_KEY`. `harnessModelAuthentication` and `requireProviderApiKeys`
+require a matching provider key reference. Configuration environment and generic
+Secret bindings cannot override it. All selections retain the same provider.
+`harnessProbeConfiguration` preserves custom transport/model IDs and supplies a
+default env SecretRef; native probe results must name `models.json` for this path,
+`env` for built-ins. Dedicated Codex receives only its key or `CODEX_ACCESS_TOKEN`;
+its Gateway receives neither. Initial runtime credentials supply transport/channel
+groups, not model authentication.
 
 The selected Sandbox consumes these already-rendered
 `HarnessWorkloadRequirements` and selects or looks up no other credential. An
@@ -295,6 +295,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-26 06:25: Document embedded custom-provider Secret projection and isolated probe binding in the accompanying implementation. (authoring-run/dc3e84d5-d5f9-44fa-870c-a8497b2c5379 - 835094105cb0feba10ab0f82243bd6fe7e146931)
 
 - 2026-10-16 01:36: Keep external OAuth custody while integrating current Sandbox policy. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

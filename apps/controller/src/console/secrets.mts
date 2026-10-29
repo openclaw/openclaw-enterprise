@@ -26,6 +26,7 @@ import {
   dismissOnBackdrop,
   element,
   field,
+  setUnavailable,
   statusBlock,
   validateFields,
   requestIdLine,
@@ -211,10 +212,27 @@ export function renderSecrets(
   // then refused after the dialog is filled in (finding 2365). Gating only: the API still
   // authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.secrets?.create === false;
-  create.disabled = !ready || createDenied;
-  if (createDenied) {
-    create.setAttribute("aria-describedby", "secrets-create-denied");
-  }
+  const notReadyNote = ready
+    ? null
+    : statusBlock(
+        "info",
+        null,
+        "Secrets can be created or replaced after this Namespace is ready.",
+        [],
+        {
+          id: "secrets-not-ready",
+        },
+      );
+  const createDeniedNote = createDenied
+    ? element(
+        "p",
+        { className: "muted", role: "status", id: "secrets-create-denied" },
+        SECRET_CREATE_DENIED,
+      )
+    : null;
+  // An unavailable Create Secret stays in the Tab order with the note that says why (finding
+  // 2899).
+  setUnavailable(create, !ready || createDenied, createDeniedNote ?? notReadyNote);
   context.view.replaceChildren(
     statusBlock(
       "info",
@@ -223,25 +241,9 @@ export function renderSecrets(
       [],
       { role: null },
     ),
-    ...(!ready
-      ? [
-          statusBlock(
-            "info",
-            null,
-            "Secrets can be created or replaced after this Namespace is ready.",
-          ),
-        ]
-      : []),
+    ...(notReadyNote ? [notReadyNote] : []),
     element("div", { className: "collection-toolbar" }, search, create),
-    ...(createDenied
-      ? [
-          element(
-            "p",
-            { className: "muted", role: "status", id: "secrets-create-denied" },
-            SECRET_CREATE_DENIED,
-          ),
-        ]
-      : []),
+    ...(createDeniedNote ? [createDeniedNote] : []),
     list,
   );
   search.addEventListener("input", renderList);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
 import { setEnvironment, withEnvironment } from "../helpers/environment.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -365,69 +366,16 @@ test("the IP host identity check leaves other connection configurations unchange
 });
 
 async function databaseCertificates(directory) {
-  const file = (name) => join(directory, name);
-  const run = (args) => execute("openssl", args, { timeout: 10000 });
-  await run([
-    "req",
-    "-x509",
-    "-newkey",
-    "ec",
-    "-pkeyopt",
-    "ec_paramgen_curve:prime256v1",
-    "-nodes",
-    "-days",
-    "2",
-    "-subj",
-    "/CN=occ-test-database-ca",
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign",
-    "-keyout",
-    file("ca.key"),
-    "-out",
-    file("ca.pem"),
-  ]);
+  const run = (command, args) => execute(command, args, { timeout: 10000 });
+  const ca = await certificateAuthority(directory, { caName: "occ-test-database-ca", run });
   const leaf = async (name, subjectAltName) => {
-    await run([
-      "req",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:prime256v1",
-      "-nodes",
-      "-subj",
-      "/CN=localhost",
-      "-keyout",
-      file(`${name}.key`),
-      "-out",
-      file(`${name}.csr`),
-    ]);
-    await writeFile(
-      file(`${name}.ext`),
-      `subjectAltName=${subjectAltName}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n`,
-    );
-    await run([
-      "x509",
-      "-req",
-      "-in",
-      file(`${name}.csr`),
-      "-CA",
-      file("ca.pem"),
-      "-CAkey",
-      file("ca.key"),
-      "-CAcreateserial",
-      "-days",
-      "2",
-      "-extfile",
-      file(`${name}.ext`),
-      "-out",
-      file(`${name}.pem`),
-    ]);
-    return {
-      key: await readFile(file(`${name}.key`), "utf8"),
-      cert: await readFile(file(`${name}.pem`), "utf8"),
-    };
+    const { key, cert } = await signedLeaf(directory, ca, {
+      name,
+      commonName: "localhost",
+      subjectAltName,
+      run,
+    });
+    return { key, cert };
   };
   return {
     dnsLocalhost: await leaf("dns-localhost", "DNS:localhost"),

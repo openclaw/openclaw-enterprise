@@ -21,6 +21,7 @@ import {
   updateConfiguration,
   waitForNamespaceReady,
 } from "../helpers/postgres-platform-state.mjs";
+import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
 
@@ -93,8 +94,32 @@ stateCase(
     cleanupKubernetesNamespaces(context, [namespace.data.id]);
 
     const worker = await startKubernetesWorker(context);
+    // The worker has created the Kubernetes namespace but cannot reconcile tenant resources
+    // until its tenant-local RoleBinding exists. Inspect only this Namespace's own pass.
+    const completion = (matches) =>
+      jsonLines(worker.output(), { lenient: true }).find(
+        (line) =>
+          line.event === "worker.completed" &&
+          line.operation === "namespace.ensure" &&
+          line.namespaceId === namespace.data.id &&
+          matches(line),
+      );
+    const denied = await pollUntil(
+      "the worker to report the denied tenant request",
+      () => completion((line) => line.hintCode === "KUBERNETES_TENANT_ACCESS_DENIED"),
+      { worker, timeoutMs: 60_000 },
+    );
+    assert.equal(denied.code, "NAMESPACE_INCOMPLETE");
+    assert.equal(denied.result, "pending");
     await grantTenantAccess(context, namespace.data.id);
     const readyNamespace = await waitForNamespaceReady(first, namespace.data.id, worker);
+    const ready = await pollUntil(
+      "the worker to finish the authorized pass",
+      () => completion((line) => line.result === "success"),
+      { worker },
+    );
+    assert.equal(ready.code, "NAMESPACE_RECONCILED");
+    assert.equal(ready.hintCode, undefined);
 
     const { agent } = await createConfiguredAgent(
       pool,

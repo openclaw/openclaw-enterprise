@@ -145,6 +145,8 @@ jobs:
     timeout-minutes: 120
     environment: integration-qa-pr
     env:
+      # The registered plugin-install case uses this admitted curated selection.
+      OCC_TEST_CODEX_INSTALL_PLUGIN_ID: codex-plugin:linear@openai-curated-remote
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
