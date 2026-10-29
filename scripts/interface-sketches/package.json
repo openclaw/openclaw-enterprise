@@ -8,6 +8,8 @@
   "scripts": {
     "build": "node build.ts",
     "check": "node build.ts --check",
+    "graph": "node graph.ts",
+    "graph:check": "node graph.ts --check",
     "test": "tsc --noEmit && node --test '*.test.ts'"
   },
   "dependencies": {

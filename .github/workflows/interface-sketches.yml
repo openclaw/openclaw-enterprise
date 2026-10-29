@@ -2,9 +2,17 @@ name: Interface sketches
 on:
   push:
     branches: [main, tools/interface-sketches]
-    paths: ["scripts/interface-sketches/**", ".github/workflows/interface-sketches.yml"]
+    paths:
+      - "scripts/interface-sketches/**"
+      - "apps/controller/src/**"
+      - "packages/**/src/**"
+      - ".github/workflows/interface-sketches.yml"
   pull_request:
-    paths: ["scripts/interface-sketches/**", ".github/workflows/interface-sketches.yml"]
+    paths:
+      - "scripts/interface-sketches/**"
+      - "apps/controller/src/**"
+      - "packages/**/src/**"
+      - ".github/workflows/interface-sketches.yml"
 permissions:
   contents: read
 jobs:
@@ -26,3 +34,5 @@ jobs:
       - run: pnpm test
       - name: Check generated scenes and previews
         run: pnpm check
+      - name: Check diagram claims against the checked-out code
+        run: pnpm graph:check

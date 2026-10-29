@@ -10,6 +10,23 @@ Change the **TypeScript** to describe a component or connection. The tool lays o
 | [2 · Who sends a protected request?](examples/generic-exchange.png)   | The controller API binds an exchange authority; the trusted sender owns provider TLS and response delivery.                                         | [generic-exchange.ts](examples/generic-exchange.ts)                 |
 | [3 · Credential pull proposal](examples/credential-pull-proposal.png) | A design proposal with a supervisor credential cache. Its ownership and refresh assumptions are separate from the current implementation.           | [credential-pull-proposal.ts](examples/credential-pull-proposal.ts) |
 
+## Which parts are backed by code?
+
+The pictures are authored in TypeScript. A separate [claim catalog](evidence.ts) connects selected boxes and arrows to relationships that the TypeScript compiler can resolve in OCE source. The graph is extracted from code independently of the claims. Diagram 00 describes a contract, 1 and 1b trace a specific preview, 2 describes a conditional composition, and 3 is a proposal. None is a deployment inventory.
+
+From this directory, after installing dependencies:
+
+```sh
+pnpm graph:check                      # exit nonzero if a catalogued relationship disappears
+node graph.ts > coupling.json         # all observed edges, source lines, unknowns and claim results
+jq '.evidence.claims[] | select(.diagram == "generic-exchange")' coupling.json
+node graph.ts --root /path/to/oce --file apps/controller/src/composition/egress-authority.ts
+```
+
+The default scan checks selected files. Use a clean checkout with `--root` to compare revisions. Each observed edge names its enclosing declaration, the kind of reference (call, construction, binding or explicit implementation), its target declaration and its source line. For example, follow the controller factory’s construction of `CredentialProxy`, then inspect the separate listener calls against `CredentialProxyExchange`. A similarly named method on a different interface cannot satisfy the same claim.
+
+Look at `.evidence.diagrams[].coverage` before relying on a picture: unmapped elements have no automated claim. A match establishes a lexical relationship, even if the branch never runs. It cannot tell you which Driver an installation selects, where a process runs, which request reached a provider, or whether withdrawal stopped a send. Those require configuration and runtime evidence. CI checks the static claims separately from whether the generated pictures are up to date.
+
 ![Platform roles for protected requests](examples/platform-roles.png)
 
 **Read the headings as roles.** The Git transport adapter is supplied by the selected backend. The public extension point is [`CredentialProxyDriver.bindRepositoryGit(authority)`](https://github.com/openclaw/openclaw-enterprise/blob/cdbbee5b97230097f43ae715d3f2fda087546a3c/packages/contracts/src/credential-proxy.ts#L429-L439); there is no required `GitTransportDriver` service. In 1 and 1b, OpenShell implements this role and its supervisor calls the worker hook. A different backend can implement the capability differently. [AWS Strands/Box sandbox work](https://github.com/openclaw/openclaw-enterprise/pull/3832) illustrates a different Sandbox implementation; the [separate Box sender prototype](https://github.com/openclaw/openclaw-enterprise/blob/ee2da743e54a8540b24c4ae217d8237fb17a5538/apps/controller/src/backends/strands-box.ts#L165) explores protected provider calls. Neither establishes support for this Git binding.
