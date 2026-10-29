@@ -12,6 +12,10 @@ import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/c
 import { validateGitHubRepositoryRegistry as registry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { normalizedRepositoryAccess } from "../../packages/occ/src/state/repository-credential-state.ts";
 
+// Runtime policy decisions cannot detect accidental widening of this constructor input.
+// @ts-expect-error Repository policy receives identity fields, never a transport client.
+type _PolicyTransport = ConstructorParameters<typeof GitHubRepositoryPolicy>[0]["client"];
+
 const namespaceId = "first";
 const repositoryRef = "team-installation";
 const policy = { namespaceId, accessMode: "installation" };
@@ -48,7 +52,7 @@ function config(namespacePolicy: unknown, options = {}) {
 }
 function driver(options: unknown) {
   return new GitHubRepositoryPolicy(
-    { id: registration.backendId, drivers: { repo: "repo" }, client: undefined },
+    { id: registration.backendId, drivers: { repo: "repo" } },
     registry(options),
     { sessionDurationSeconds: 600 },
   );
