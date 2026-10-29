@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-10-29
-last_updated_session: authoring-run/221d2fc5-7549-4054-a3ab-6b078a1755ae
+last_updated_session: authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05
 ---
 
 # Platform console request flow
@@ -160,15 +160,6 @@ Namespaces, and Refresh rebuild. Discovery state is not retained. Pending/failed
 mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
 Interrupted returns preserve the view; interrupted Refresh discards it.
 
-`console.mjs:revalidateMountedAgent` rechecks session, Namespace, Agent, and version
-access. An exact Configuration refusal shown to the same owner can preserve a
-partial Agent after reload. A previously successful mounted read instead requires
-scrubbing on denial. `viewRequest` leaves feedback to callers: authentication,
-partial grants, Stop, and Delete retain their recovery states. A binding-preflight
-403 in `agents/credentials.mts` removes controls before completion handlers run.
-Its callback invokes `showAgentReadFailure`, retaining the refusal receipt.
-No write started; Refresh reads saved state before retry.
-
 `api-client.mts:createApiClient` preserves abort reasons through response bodies.
 Socket failure means interrupted read, not invalid JSON. Neither replays requests.
 
@@ -282,6 +273,12 @@ Password values clear while [draft captures](platform-console/agent-editing.md#4
 Secret saves update the shared draft snapshot used by other tabs and deployment
 preflight.
 
+`agents/credentials.mts:createChannelSecretsPanel` owns binding preflight: 403 clears bindings
+before completion handlers. Its callback invokes `console.mjs:showAgentReadFailure`
+with the receipt. No write starts.
+Refresh rereads before retrying. `viewRequest` leaves authentication refusals,
+partial grants, Stop uncertainty, and Delete recovery to their callers.
+
 **Open vN Logs** opens the failed version from any version or draft. Logs reserves space;
 Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
 the tab leaves visible output in place. Recovery links scroll their version tab into view
@@ -304,13 +301,18 @@ After full-page navigation settles, `loadPage` focuses the destination heading i
 focus fell to the body, using `preventScroll` to preserve return position. An Agent
 opened from the list focuses its heading when the title renders. Tabs (one Tab
 stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
-reads; generations reject late responses. Refocus coalesces events. Agent detail
-rechecks access in place, preserving controls, input, and saves; failures clear it.
+reads; generations reject late responses. Refocus coalesces events.
+`revalidateMountedAgent` rechecks session, Namespace, Agent, and version;
+unchanged access preserves controls, input, and saves.
+The same owner’s exact draft Configuration refusal preserves the partial Agent
+after reload/refocus on repeated 403 if that mounted path was never readable.
+Refocus sends a fresh GET.
+Lost access scrubs; Agent, session, and scope failures clear their protected views.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
 Returning to the tab restores focus after the unchanged view is admitted, if the control
 remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
 
-Authorization and dependency failures clear affected content and expose recovery;
+Other admission failures clear affected content;
 a current protected `401` clears all private state. `pagehide` clears
 private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
 a fresh load. Failure views show local reasons and `req_<UUID>` request IDs. The
@@ -319,8 +321,9 @@ rule, a typed 409 naming the state), set as text. Backend authorization denial c
 including other Namespace selections, because the permission is Installation-wide.
 
 The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
-Stop and Delete: acceptance is not completion, and uncertain outcomes block replay until
-readback. The [Agent reference](../reference/agents.md#deletion) owns asynchronous cleanup.
+acceptance, uncertainty, and replay guards. `agents/deletion.mts:refreshStatus` owns polling: 404 returns to Agents;
+Postacceptance 403 stops polling without claiming completion.
+The [Agent reference](../reference/agents.md#deletion) owns asynchronous cleanup.
 
 Logout first hides private state, then calls the sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -369,6 +372,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
 
 - 2026-10-29 11:42: Keep contextual request recovery and scope binding scrubbing to its preflight. (authoring-run/221d2fc5-7549-4054-a3ab-6b078a1755ae - aa74d9bc28d8c)
 

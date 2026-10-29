@@ -6419,6 +6419,28 @@ export const scenarios = {
     ],
     description: "The Configuration read fails independently of the Agent header.",
   },
+  configurationReadDeniedReloadRefocus: {
+    group: "Pages/Agent detail",
+    name: "Configuration read denied across reload and refocus",
+    path: draft,
+    rules: [
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        status: 403,
+      },
+    ],
+    description:
+      "The draft Configuration is never readable. Its repeated permission denial preserves the permitted Agent after reload and a fresh refocus check.",
+    steps: [
+      "Confirm the Agent heading and Configuration unavailable are visible together. This is a persistent 403, not a 503 or unreadable saved data.",
+      "Reload the Storybook preview page in the browser. The same tab remembers the exact denied path and still shows the partial Agent.",
+      "Focus another browser tab, then return to the Console preview. Refocus sends a fresh Configuration GET returning 403; the Agent remains visible without draft editors.",
+      "Choose Retry to perform another denied read. Repeat at phone width. No Save action is available for the unreadable draft.",
+      "For Save recovery, follow Channel binding read denied and the binding preflight workflow: Save, inspect the scrubbed refusal, Refresh, then explicitly save again.",
+    ],
+    gap: "Simulated permission responses through the production Console; Native IAM browser regressions cover real authorization. See unreadable-configuration-workflow.md for reload, refocus, and Save recovery instructions.",
+  },
   unreadableAgentConfiguration: {
     group: "Pages/Agent detail",
     name: "Unreadable Agent draft",
@@ -7730,6 +7752,7 @@ export const scenarios = {
     steps: [
       "Select Save channel Secrets. Check Access denied and the failed preflight receipt; no token picker or saved binding remains.",
       "Select Refresh. The simulated read succeeds again and restores the saved bindings, without applying the staged choice.",
+      "Select Slack backup token (simulated) again, then Save channel Secrets once. A fresh preflight and one PATCH save that replacement. See unreadable-configuration-workflow.md for the complete walkthrough.",
     ],
   },
   credentialsSavePending: {
