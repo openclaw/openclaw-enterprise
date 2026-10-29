@@ -225,6 +225,9 @@ export function runtimeStatusDenied(grants: {
   }
   return `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. ${askAdministratorTo("grant them")}`;
 }
+// A version the page could not read: its runtime status would be refused too, so the Logs tab
+// says so in words instead of sending that read (finding D794).
+export const RUNTIME_STATUS_VERSION_UNREADABLE = `You cannot read this version, so its runtime status is not shown. ${askForGrant("AgentRevision read on it")}`;
 
 // Reading a workspace file authorizes Agent read; saving one and running diagnostics, Agent
 // operate.

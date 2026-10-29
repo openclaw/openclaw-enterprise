@@ -1802,6 +1802,38 @@ export async function renderAgentDetail(
       }
     });
   }
+  // Hides the Access tab once the reader is known not to administer the Installation, leaving it
+  // for Configuration when it is shown. Focus on the hidden tab moves to Configuration's.
+  function hideAccessTab() {
+    const control = tabControls.get("access");
+    if (!control) {
+      return;
+    }
+    const focused = document.activeElement === control;
+    control.hidden = true;
+    leaveDeniedAccess({ refocus: focused });
+  }
+  // Installation administration ended while the page is open: an administrator-only read, such
+  // as the Access tab's recheck after a revoke, was refused and the permission answer settled
+  // "not an administrator". The page kept the administrator's Deploy, saves, Stop and Delete
+  // until Refresh, and Plugins sent a capabilities read the API refused (finding D795). It now
+  // takes the answers Refresh would read, in place: the Access tab goes, views built from now on
+  // take the member path, the Agent's permission answer is read again for the shown controls, and
+  // tabs built from the old answer are rebuilt when shown again.
+  context.onAdministrationEnded?.(() => {
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    context.installationAdmin = false;
+    hideAccessTab();
+    retainedTabs.clear();
+    if (mountedTab) {
+      mountedTab.reusable = false;
+    }
+    agentSaveDenied = rereadPermissions().then((permissions) =>
+      agentSaveDenial(permissions, agent),
+    );
+  });
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
   let activityPanel = deploymentStatus;
@@ -3846,6 +3878,7 @@ export async function renderAgentDetail(
           }
           // A grant or revocation since the last answer relabels the draft (finding 2421).
           applyDraftAccess();
+          deletion.applyDelete(permissions?.delete);
         }
         // An older reread still applies when no newer one has answered: a newer read that
         // fails resolves to this answer, which the controls would otherwise never see.
@@ -4116,18 +4149,9 @@ export async function renderAgentDetail(
             updateNavigationControls();
           }
         },
-        onDenied: () => {
-          // A refused policy read (the session probe could not tell) hides the tab, as the
-          // panel hid on the overview; a reader on it is taken to Configuration instead. Focus
-          // on the hidden tab moves to Configuration's.
-          const control = tabControls.get("access");
-          if (!control) {
-            return;
-          }
-          const focused = document.activeElement === control;
-          control.hidden = true;
-          leaveDeniedAccess({ refocus: focused });
-        },
+        // A refused policy read (the session probe could not tell) hides the tab, as the panel
+        // hid on the overview; a reader on it is taken to Configuration instead.
+        onDenied: hideAccessTab,
       });
       if (tabControls.get("access")?.hidden) {
         // Back to a tab whose policy read was refused.

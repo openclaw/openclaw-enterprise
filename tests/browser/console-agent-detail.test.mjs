@@ -2091,8 +2091,15 @@ test("Agent draft plugin picker warns that API-key Codex Agents cannot use plugi
     .waitFor();
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  const unavailable = "Plugin browsing is unavailable with API-key authentication.";
+  await dialog.getByText(unavailable).waitFor();
+  // Load plugins and the pager are disabled for the reason that line gives, and each is
+  // described by it (finding D796).
+  for (const name of ["Load plugins", "Previous page", "Next page"]) {
+    const control = dialog.getByRole("button", { name, exact: true });
+    assert.equal(await control.isDisabled(), true, name);
+    assert.equal(await accessibleDescription(control), unavailable, name);
+  }
   // The empty list must not tell the user to load a catalog they cannot load.
   await dialog
     .getByText("To add a plugin by ID, choose Done and edit Plugin selections JSON.")

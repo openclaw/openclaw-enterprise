@@ -11,7 +11,14 @@ import type {
   PluginToolCatalogEntry,
   PluginToolPolicy,
 } from "@openclaw-enterprise/contracts";
-import { element, button, dismissOnBackdrop, mayReturnFocus, setText } from "../dom.mjs";
+import {
+  element,
+  button,
+  describeDisabled,
+  dismissOnBackdrop,
+  mayReturnFocus,
+  setText,
+} from "../dom.mjs";
 
 export type CatalogDirection = "search" | "refresh" | "next" | "previous";
 export type CatalogEntry = PluginCatalogEntry & {
@@ -242,6 +249,15 @@ export function createPluginFields({
   const previous = button("Previous page", () => loadPage("previous"));
   const next = button("Next page", () => loadPage("next"));
   const pagination = element("div", { className: "plugin-pagination" }, previous, next);
+  // While the catalog cannot load, Load plugins and the pager are disabled and the status line
+  // says why, such as "Plugin browsing is unavailable with API-key authentication.": each is
+  // described by it (finding D796). Called wherever the status line or the controls change.
+  function describeCatalogControls() {
+    const reason = configuredOnly || catalog?.canLoad ? null : status;
+    for (const control of [loadPlugins, previous, next]) {
+      describeDisabled(control, reason);
+    }
+  }
   const available = button("Available plugins", () => showConfigured(false));
   const configured = button("Configured plugins", () => showConfigured(true));
   available.setAttribute("aria-label", "Available plugins");
@@ -776,6 +792,7 @@ export function createPluginFields({
       statusText = `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
     setText(status, statusText);
+    describeCatalogControls();
     workspace.dataset.showDetails = String(tabState().activeId !== null);
     renderPluginList(values, entries, catalogLoading);
     const activeId = tabState().activeId;
@@ -1317,6 +1334,7 @@ export function createPluginFields({
         value || !catalog?.canLoad || !catalog?.hasPrevious || catalog?.status === "loading";
       next.disabled =
         value || !catalog?.canLoad || !catalog?.nextCursor || catalog?.status === "loading";
+      describeCatalogControls();
       updateDetailDisabled(selections() === null);
     },
     resetSearch() {
