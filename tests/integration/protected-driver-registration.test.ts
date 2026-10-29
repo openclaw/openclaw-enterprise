@@ -1,3 +1,4 @@
+import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import {
   openShellGitRuntimeFixture,
   registry as runtimeRegistry,
@@ -27,13 +28,22 @@ import test, { afterEach } from "node:test";
 import type {
   AgentRevision,
   ComputeDriver,
+  CredentialProxyDriver,
   Driver,
   EgressInstallation,
   Namespace,
+  ProtectedRepositoryGitAuthority,
   SandboxHarnessStatusContext,
 } from "../../packages/contracts/src/index.ts";
-import { InstalledDriver, OpenClawController } from "../../packages/occ/src/index.ts";
-import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import {
+  InstalledDriver,
+  OpenClawController,
+  type PostgresPool,
+} from "../../packages/occ/src/index.ts";
+import {
+  loadInstallationConfiguration,
+  type InstallationRuntimeDrivers,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { ComputeLifecycleDispatcher } from "../../apps/controller/src/drivers/compute/lifecycle-hooks.ts";
@@ -544,7 +554,7 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     },
   };
   let runtime: OpenShellGitRuntime | undefined;
-  const capabilities = createOpenShellCapabilities({
+  const input = {
     sandbox: {
       id: "openshell-sandbox",
       implementation: "openshell",
@@ -579,12 +589,70 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
         authority: {} as OpenShellGitRuntime["configuration"]["authority"],
       },
     },
-  });
+  } satisfies Parameters<typeof createOpenShellCapabilities>[0];
+  const capabilities = createOpenShellCapabilities(input);
   t.after(() => capabilities.close());
   assert.ok(runtime);
   assert.ok(capabilities.sandbox.repositoryAccess);
   assert.ok(capabilities.proxy?.bindRepositoryGit);
+  assert.ok(capabilities.repositoryTransport);
   assert.equal(runtime.configuration.protectedExecution, true);
+  // Observe the actual bundled handoff without starting listeners or contacting PostgreSQL.
+  const authority = {} as ProtectedRepositoryGitAuthority;
+  const connect = t.mock.method(runtime, "connectRouteStore");
+  const bind = t.mock.method(
+    capabilities.proxy as Required<Pick<CredentialProxyDriver, "bindRepositoryGit">>,
+    "bindRepositoryGit",
+    async (received: ProtectedRepositoryGitAuthority) => {
+      assert.equal(connect.mock.callCount(), 1);
+      assert.equal(received, authority);
+      return { async close() {} };
+    },
+  );
+  const registration = {
+    capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy },
+  };
+  const selected = new InstalledDriver(input.sandbox, registration);
+  const drivers = {
+    protectedDriver: selected,
+    repositoryGitDriver: selected,
+    repositoryTransport: capabilities.repositoryTransport,
+  } as InstallationRuntimeDrivers;
+  const pool = {} as PostgresPool;
+  const { repositoryGitDriver: _repositoryGitDriver, ...withoutDriver } = drivers;
+  for (const [selection, availableAuthority] of [
+    [{ ...drivers, protectedDriver: new InstalledDriver(input.sandbox, registration) }, authority],
+    [withoutDriver, authority],
+    [drivers, undefined],
+  ] as const) {
+    await assert.rejects(
+      bindRepositoryGitTransport(selection, availableAuthority, pool),
+      /selected Driver/,
+    );
+  }
+  await assert.rejects(
+    // @ts-expect-error Deliberately exercise a malformed runtime call.
+    capabilities.repositoryTransport.bind(undefined, pool),
+    /selected Driver/,
+  );
+  assert.equal(connect.mock.callCount(), 0);
+  assert.equal(bind.mock.callCount(), 0);
+  await bindRepositoryGitTransport(drivers, authority, pool);
+  assert.equal(bind.mock.callCount(), 1);
+
+  // Reject the unsupported helper path before constructing any Sandbox or Git runtime.
+  const construct = t.mock.fn(input.createSandbox);
+  const { proxy: _proxy, repository, ...bareInput } = input;
+  assert.throws(
+    () => createOpenShellCapabilities({ ...bareInput, repository, createSandbox: construct }),
+    /protected.*proxy/i,
+  );
+  assert.equal(construct.mock.callCount(), 0);
+  const bare = createOpenShellCapabilities(bareInput);
+  t.after(() => bare.close());
+  assert.equal(bare.sandbox.id, input.sandbox.id);
+  assert.equal(bare.repositoryTransport, undefined);
+  assert.equal(bare.sandbox.repositoryAccess, undefined);
 });
 
 test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {

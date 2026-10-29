@@ -601,6 +601,7 @@
       "path": "tests/integration/protected-driver-registration.test.ts",
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
+        "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
         "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
         "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
