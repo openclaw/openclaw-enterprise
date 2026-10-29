@@ -364,18 +364,30 @@ export function createRepositoryFields(
           ? "Push code and work with pull requests."
           : "Push code, work with pull requests, and manage issues.",
       ],
+      ...(allowed.includes("github-repository")
+        ? [
+            [
+              "github-repository",
+              "Repository collaborator",
+              "Use the GitHub App permissions explicitly approved for this repository. GitHub rules apply.",
+            ] as const,
+          ]
+        : []),
     ] as const) {
-      const writable = value !== "git-read";
+      const writable = value === "git-full";
       const input = element("input", {
         id: `${id}-${value}`,
         type: "radio",
         name: id,
         value,
         checked:
-          allowed.includes(profile) && (writable ? profile !== "git-read" : profile === value),
+          allowed.includes(profile) &&
+          (writable ? ["git-write", "git-full"].includes(profile) : profile === value),
         disabled:
           !editable() ||
-          (writable ? !allowed.some((p) => p !== "git-read") : !allowed.includes(value)),
+          (writable
+            ? !allowed.some((p) => ["git-write", "git-full"].includes(p))
+            : !allowed.includes(value)),
       });
       input.addEventListener("change", () => {
         change(writable ? contributor : value);
@@ -410,7 +422,7 @@ export function createRepositoryFields(
       {
         className: "repository-customize",
         "data-access-customize": id,
-        hidden: profile === "git-read",
+        hidden: profile === "git-read" || profile === "github-repository",
       },
       element(
         "summary",
@@ -440,7 +452,13 @@ export function createRepositoryFields(
   function renderAccess() {
     access.hidden = !state.options.length && !state.selected.size;
     const expanded = access.querySelector("details")?.open;
-    const allowed = repositoryProfiles.map((p) => p.id);
+    const allowed = repositoryProfiles
+      .filter(
+        (p) =>
+          p.id !== "github-repository" ||
+          state.options.some((option) => option.allowedProfiles.includes(p.id)),
+      )
+      .map((p) => p.id);
     const custom = [...state.selected].filter(
       ([ref, profile]) =>
         profile !== null &&

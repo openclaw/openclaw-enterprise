@@ -5,7 +5,13 @@ export interface RepositoryGitDeliveryBinding {
   readonly binding: AdmittedRepositoryBinding;
   readonly delivery:
     | { readonly repository: string; readonly installationId?: never }
-    | { readonly repository?: never; readonly installationId: string };
+    | { readonly repository?: never; readonly installationId: string }
+    | {
+        readonly scope: "github-repository";
+        readonly repository: string;
+        readonly repositoryId: string;
+        readonly installationId: string;
+      };
   readonly repository?: {
     readonly pushRef: string;
     readonly draftPullRequest: boolean;

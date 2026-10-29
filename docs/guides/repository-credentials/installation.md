@@ -300,3 +300,10 @@ version. That deployment does not settle old cleanup or replay repository
 operations. See [restart and cleanup limits](../../reference/repository-credentials.md#repo-driver-contract).
 Updating policy requires a new immutable registry ConfigMap and consistent
 selection by all three consumers; existing admitted grants are not silently widened.
+
+## Prepare OpenShell enrollment
+
+For the Sandbox and Credential Proxy composition, use the separate
+[OpenShell enrollment procedure](openshell-enrollment.md). It covers Gateway-only
+model-source preparation, explicit repository policy and the operator choice
+between observed-hook preview and qualified enforcement.

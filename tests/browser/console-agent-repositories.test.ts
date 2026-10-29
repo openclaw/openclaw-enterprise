@@ -1294,3 +1294,30 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
     assert.equal(agent.configurationId, firstAttempt.configurationId);
   });
 }
+
+test("Repository collaborator is an explicit approved choice without changing the default", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "collaborator",
+      repositoryId: "789",
+      repository: "example/collaborator",
+      namespaces: [
+        {
+          namespaceId,
+          profiles: ["github-repository"],
+          permissions: { metadata: "read", contents: "write" },
+        },
+      ],
+    },
+  ]);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await repositoryCheckbox(page, "example/collaborator").click();
+  const choice = page.locator("#repository-default-github-repository");
+  assert.equal(await choice.isChecked(), false);
+  assert.equal(await page.locator("#repository-default-git-full").isChecked(), true);
+  await choice.check();
+  assert.equal(await choice.isChecked(), true);
+  assert.equal(await page.locator("#repository-default-git-full").isChecked(), false);
+});

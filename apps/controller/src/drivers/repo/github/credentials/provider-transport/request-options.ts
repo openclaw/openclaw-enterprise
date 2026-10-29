@@ -1,3 +1,4 @@
+import { validateGitHubRepositoryGrant, type GitHubRepositoryGrant } from "../repository-grant.ts";
 import type { RequestOptions } from "node:https";
 import { isGitHubWireCredential } from "../wire-credential.ts";
 import type { GitHubTokenProfile } from "../types.ts";
@@ -8,6 +9,7 @@ declare const scopeIdentity: unique symbol;
 export type ProviderScope = Readonly<{ [scopeIdentity]: true }>;
 export type ProviderIssuanceScope =
   | GitHubInstallationGrant
+  | GitHubRepositoryGrant
   | Readonly<{ installationId: string; repositoryId: string; profile: GitHubTokenProfile }>;
 type Scope = Readonly<{ origin: string; issuePath: string; issueBody: string }>;
 const scopes = new WeakMap<ProviderScope, Scope>();
@@ -44,6 +46,12 @@ export function prepareProviderScope(origin: string, scope: ProviderIssuanceScop
     }
     numericId(scope.appId);
     issueBody = "{}";
+  } else if (scope.profile === "github-repository") {
+    validateGitHubRepositoryGrant(scope);
+    issueBody = JSON.stringify({
+      repository_ids: [numericId(scope.repositoryId)],
+      permissions: scope.permissions,
+    });
   } else {
     issueBody = JSON.stringify({
       repository_ids: [numericId(scope.repositoryId)],

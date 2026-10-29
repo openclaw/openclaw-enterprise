@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-10-29"
-last_updated_session: authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf
+last_updated_session: authoring-run/34b2800e-eee1-42e0-a46d-fe4623c6e3f6
 ---
 
 # Agent repository credential flow
@@ -135,24 +135,32 @@ preserves them and an empty array clears them.
 ### 2. Freeze a deployable version
 
 `packages/occ/src/index.ts:OpenClawController.admitRepositoryCredentials`
-re-resolves the draft, validates Compute topology and freezes Driver identity,
-grants and an absolute deadline unaffected by renewal or recovery.
-`validateRepositoryBrokerNetworkProxy` then refuses a Codex proxy setting that
-blocks the broker, as Agent save does.
+re-resolves the draft, validates topology and freezes Driver identity, grants
+and deadline across renewal and recovery. `validateRepositoryBrokerNetworkProxy`
+refuses broker-blocking Codex proxies, as save does.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
-constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
-member. Protected installations select `repository.preparedGitHub` and the installed
-Sandbox/Credential Proxy Driver. OCC creates finite sessions without a native sender,
-control socket, broker CA or session files.
+pins `GitHubRepositoryPolicy` to the Backend's `repo` ID. Protected installations
+select `repository.preparedGitHub` and installed Sandbox/Credential Proxy Drivers.
+OCC creates finite sessions without native senders, control sockets, broker CAs or files.
 
-Explicit `repository.nativeSender` selects `GitHubNativeRepositorySender` and requires
-prepared GitHub custody. It owns session operations and files, receives no App key, and
-cannot coexist with protected delivery. Controller startup rejects `drivers.repo` in
-every mode, before it constructs a worker or allocates an attempt. Operators must
-drain accepted work on the original owner before cutover.
-Cleanup matches recorded owner identity without resolving policy or restoring authority.
-The worker's prepared provider owns issuance and custody.
+Explicit `repository.nativeSender` selects `GitHubNativeRepositorySender` with worker-prepared
+custody, session files and no App key; it excludes protected delivery.
+Startup rejects `drivers.repo` before creating workers or attempts. Drain original
+owners before cutover; cleanup uses recorded ownership without resolving policy or
+restoring authority.
+
+`github-repository` preparation reads current Namespace permissions and repository ID. The worker calls
+`apps/controller/src/drivers/repo/github/credentials/repository-grant.ts:createGitHubRepositoryGrant`;
+registry normalization shares its permission validator. Issuance requires the exact returned
+repository and permissions. Optional `repository_selection` may be absent; `all` is refused.
+Renewal preserves identity; retirement uses original issuer custody.
+`apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:OpenShellGitRuntime`
+binds the registered authority's dedicated repository port to material, held launch,
+request authorization and withdrawal. Stock 0.1.5 requires explicit observed-hook preview;
+it does not establish mandatory enforcement. See the
+[enrollment guide](../guides/repository-credentials/openshell-enrollment.md).
+Classification adds no local branch restriction.
 
 ### 3. Record ownership before opening a session
 
@@ -288,19 +296,16 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) passes only the selected `ProtectedRepositoryGitAuthority`
-to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
-The worker retains maintenance and shutdown. Missing authority or mismatched Drivers stop
-binding before route-store or sender calls.
-Bundled OpenShell connects its route store before binding; a bare Sandbox runs without Git.
+The [worker](../../apps/controller/src/worker.mjs) passes the selected authority to the
+[sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts),
+retaining maintenance and shutdown. Missing authority or mismatched Drivers stop
+binding. OpenShell connects its route store first; bare Sandboxes have no Git.
+Reconciliation runs serially with a 25-second abort and one-second interval.
+Close aborts and joins. Readback settles original delivery without restoring access.
 
-If an external binding provides `reconcile`, the worker calls it serially with a 25-second abort
-signal and a one-second delay between calls.
-Close aborts and joins. Independent readback settles the original OCC delivery without
-reinstalling or restoring withdrawn access.
-
-The worker commits activation and next maintenance together, preserving the actor. Maintenance uses
-30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing known sessions without reminting. Users can deploy during cleanup.
+Activation commits with maintenance scheduling and actor identity. Maintenance uses
+the shortest applicable interval. Restart invalidates missing sessions without
+reminting; deployment remains available during cleanup.
 
 [Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
 permission and current scope for standing approval. The
@@ -379,6 +384,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 19:55: Connect selected repository custody and observed-hook delivery; retain explicit enrollment and assurance limits. (authoring-run/34b2800e-eee1-42e0-a46d-fe4623c6e3f6 - 967328e841c77974cc692ff638ae322a4312b9a6)
 
 - 2026-10-29 14:26: Narrow sender binding and remove fresh legacy Git composition. (authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf - ea84f8a9595fc57e2b35bab4f9ad45f9174c8319)
 

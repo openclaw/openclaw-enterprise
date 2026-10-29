@@ -1,0 +1,34 @@
+# Overlay on site-specific production values after Gateway-only model enrollment.
+# Replace resource names, issuer destinations and trusted peer selectors before use.
+# This provisions custody and the listener, not a qualified sender or profile grant.
+backend:
+  openshell:
+    clientSecretName: openshell-client-mtls
+repositoryCredentials:
+  enabled: false
+  authority: prepared-git
+  backendId: repository-backend
+  registryConfigMapName: occ-repository-registry-v1
+  appKeySecretName: occ-repository-app-key
+  preparedCustodySecretName: occ-repository-custody
+  # Documentation-only address; replace with the approved api.github.com destination.
+  upstreamCidrs: [198.51.100.23/32]
+openshellGit:
+  enabled: true
+  mode: protected
+  port: 8445
+  tlsSecretName: openshell-git-tls
+  issuerPublicKeyConfigMapName: openshell-gateway-public
+  clients:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshell-system
+      podSelector:
+        matchLabels:
+          app: openshell-gateway
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshell-system
+      podSelector:
+        matchLabels:
+          app: openshell-supervisor

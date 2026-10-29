@@ -360,7 +360,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         }
         const info = await client.getGatewayInfo(signal);
         const extensions = info.extensions;
-        const git = profile === "repository_git" || profile === "github_installation";
+        const git =
+          profile === "repository_git" ||
+          profile === "github_installation" ||
+          profile === "github_repository";
         const registration = git
           ? this.options.repositoryMiddlewareName
           : this.options.middlewareName;
@@ -397,7 +400,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         // Advertise the explicitly selected assurance. The held launcher, actual policy and
         // recipient must still be verified before any usable Git credential is selected.
         if (
-          profile === "github_installation" &&
+          (profile === "github_installation" || profile === "github_repository") &&
           this.options.observedHookPreviewWorkspace &&
           this.previewEnforcement &&
           info.gateway_version === "0.1.5"
@@ -405,7 +408,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           return { profile, authorization: "request-hook-observed" as const };
         }
         if (git) {
-          if (this.options.observedHookPreviewWorkspace && profile === "github_installation") {
+          if (
+            this.options.observedHookPreviewWorkspace &&
+            (profile === "github_installation" || profile === "github_repository")
+          ) {
             // The gateway's version is live state an operator fixes (finding 2536).
             throw new RetryLaterError("previewGatewayVersion");
           }
@@ -427,7 +433,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       throw new RepositoryGitSenderUnqualifiedError();
     }
     if (
-      profile === "github_installation" &&
+      (profile === "github_installation" || profile === "github_repository") &&
       !(this.options.observedHookPreviewWorkspace && this.previewEnforcement)
     ) {
       // An Installation setting no retry changes: a 409 like the git-write refusal above

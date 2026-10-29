@@ -1,6 +1,24 @@
-# Merge with a bundled Kubernetes/OpenShell Installation using dedicated Codex.
-# Release remains blocked until the protected sender and TLS path are qualified.
+# Apply after preparing a Gateway-only Kubernetes/OpenShell Installation and its model source.
+# APPEND this Backend; preserve the existing OpenShell Backend and its credentials.
+# Add credential_proxy: openshell-sandbox to that Backend's drivers membership.
+# See docs/guides/repository-credentials/installation.md#prepare-openshell-enrollment.
+# This selects no repository profile and does not enable observed-hook preview.
+backend:
+  - id: repository-backend
+    type: github
+    configuration:
+      registryPath: /etc/openclaw/repository-registry/registry.json
+    drivers:
+      repo: repository-credentials
+drivers:
+  # Must be the SAME selection ID as the existing bundled Sandbox Driver.
+  credential_proxy:
+    id: openshell-sandbox
+    configuration: {}
 repository:
+  id: repository-credentials
+  configuration:
+    sessionDurationSeconds: 3600
   openShell:
     registrationName: oce-prepared-git
     authority:

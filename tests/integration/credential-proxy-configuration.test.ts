@@ -243,11 +243,12 @@ test("OpenShell direct construction and policy rendering still enforce configura
 
 test("OpenShell discovery and policy use the installed configuration after caller mutation", async (t) => {
   let registration = "installed";
+  let gatewayVersion = "0.1.5";
   let executionCapable = true;
   const gatewayClient = new (class extends GrpcOpenShellGatewayClient {
     override async getGatewayInfo() {
       return {
-        gateway_version: "0.1.5",
+        gateway_version: gatewayVersion,
         extensions: [
           {
             configured_name: registration,
@@ -321,6 +322,35 @@ test("OpenShell discovery and policy use the installed configuration after calle
     await repositoryGitAuthorization(proxy.sourceControl, t.signal, "github_installation"),
     "request-hook-observed",
   );
+  assert.equal(
+    await repositoryGitAuthorization(proxy.sourceControl, t.signal, "github_repository"),
+    "request-hook-observed",
+  );
+  const noOptIn = new OpenShellCredentialProxyDriver(
+    {
+      middlewareName: "installed",
+      repositoryMiddlewareName: "installed",
+      authorityScope: "execution",
+    },
+    {
+      id: "proxy",
+      backend: {
+        id: "openshell",
+        drivers: {},
+        client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient }),
+      },
+      sandbox,
+      previewEnforcement: async () => undefined,
+    },
+  );
+  await assert.rejects(noOptIn.sourceControl.assertAvailable(t.signal, "github_repository"), {
+    name: "CredentialProxyAdmissionError",
+  });
+  gatewayVersion = "0.1.6";
+  await assert.rejects(proxy.sourceControl.assertAvailable(t.signal, "github_repository"), {
+    name: "RetryLaterError",
+  });
+  gatewayVersion = "0.1.5";
   await assert.rejects(proxy.sourceControl.assertAvailable(t.signal, "repository_git"), {
     code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
   });

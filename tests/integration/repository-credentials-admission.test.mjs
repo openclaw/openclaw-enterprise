@@ -128,6 +128,7 @@ function repositorySandbox(registry, id = "repository-admission-openshell") {
 // Stands in for the Kubernetes Driver composed with drivers.repo.openShell, which admits
 // dedicated Codex repository bindings in the selected OpenShell Sandbox.
 class OpenShellGitComputeDriver extends KubernetesComputeDriver {
+  validateRepositoryCredentialSupport() {}
   validateRepositoryCredentials(harness) {
     assert.deepEqual([harness.id, harness.mode], ["codex", "dedicated"]);
   }
@@ -194,7 +195,12 @@ function sshCompute() {
   });
 }
 
-function registryFor(namespaceId, extraRepositories = [], installationAccess = false) {
+function registryFor(
+  namespaceId,
+  extraRepositories = [],
+  installationAccess = false,
+  collaboratorPermissions,
+) {
   return {
     ...(installationAccess && {
       installationAccess: {
@@ -213,7 +219,11 @@ function registryFor(namespaceId, extraRepositories = [], installationAccess = f
         repositoryRef: "project",
         repositoryId: "789",
         repository: "example/project",
-        namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+        namespaces: [
+          collaboratorPermissions
+            ? { namespaceId, profiles: ["github-repository"], permissions: collaboratorPermissions }
+            : { namespaceId, profiles: ["git-read", "git-write", "git-full"] },
+        ],
       },
       {
         repositoryRef: "foreign-project",
@@ -256,6 +266,7 @@ async function fixture(
     controllerOptions = {},
     extraRepositories = [],
     installationAccess = false,
+    collaboratorPermissions,
   } = {},
 ) {
   const installation = {
@@ -340,7 +351,12 @@ async function fixture(
   );
   assert.equal(configurationResponse.status, 201, JSON.stringify(configurationResponse));
   const configuration = configurationResponse.data;
-  const registry = registryFor(namespace.id, extraRepositories, installationAccess);
+  const registry = registryFor(
+    namespace.id,
+    extraRepositories,
+    installationAccess,
+    collaboratorPermissions,
+  );
   const composed = repositories ? await compose(registry) : initial;
   const collection = `/namespaces/${namespace.id}/agents`;
 
@@ -1708,6 +1724,8 @@ async function protectedOpenShellComposition(
     middlewareName,
     credentialGateway = false,
     installationAccess = false,
+    collaboratorPermissions,
+    senderConfirmation,
     preview = false,
     gatewayVersion = "0.1.5",
   } = {},
@@ -1737,6 +1755,7 @@ async function protectedOpenShellComposition(
       .map(({ repositoryRef }) => repositoryRef)
       .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
     installationAccess,
+    collaboratorPermissions,
   });
   const sandbox = repositorySandbox(f.registry);
   const registration = "oce-prepared-git";
@@ -1778,14 +1797,14 @@ async function protectedOpenShellComposition(
   // Production composes the Proxy with the Git runtime's transport whenever repository Git is
   // protected; admission only checks that it is there.
   const git =
-    installationAccess &&
+    (installationAccess || collaboratorPermissions) &&
     new OpenShellGitRuntime(
       { protectedExecution: true },
       createGitHubRepositoryDeliveryResolver(
         validateGitHubRepositoryRegistry(f.registry, backendId),
       ),
     );
-  const proxy = new OpenShellCredentialProxyDriver(options, {
+  const bundledProxy = new OpenShellCredentialProxyDriver(options, {
     id: sandbox.id,
     sandbox,
     backend,
@@ -1794,6 +1813,20 @@ async function protectedOpenShellComposition(
       previewEnforcement: git.previewEnforcement.bind(git),
     }),
   });
+  // Only the external sender's eligibility is a fixture. OCC, registry policy,
+  // HTTP, IAM and the persisted admission remain the production implementations.
+  const proxy =
+    senderConfirmation === undefined
+      ? bundledProxy
+      : new Proxy(bundledProxy, {
+          get(target, key) {
+            if (key === "sourceControl") {
+              return { ...target.sourceControl, assertAvailable: async () => senderConfirmation };
+            }
+            const value = Reflect.get(target, key, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
   const owner = new InstalledDriver(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
     { capabilities: { sandbox, credential_proxy: proxy } },
@@ -2197,4 +2230,55 @@ test("the policy worker fails a Driver's named policy refusal at once", async ()
   assert.deepEqual(outcomes, ["fail SANDBOX_POLICY_UNSUPPORTED"]);
   assert.equal(policy.application.state, "failed");
   assert.equal(policy.application.reason, "SANDBOX_POLICY_UNSUPPORTED");
+});
+
+// Real registry and HTTP admission with explicitly eligible sender and Compute fixtures.
+// This proves admission and deployment scheduling, not a running cluster or provider send.
+test("Fresh github-repository selection saves and deploys through the opted-in sender", async (t) => {
+  const bindings = [{ repositoryRef: "project", profile: "github-repository" }];
+  const f = await protectedOpenShellComposition(t, {
+    bindings,
+    preview: true,
+    senderConfirmation: { profile: "github_repository", authorization: "request-hook-observed" },
+    collaboratorPermissions: {
+      metadata: "read",
+      contents: "write",
+      pull_requests: "write",
+      issues: "write",
+    },
+  });
+  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: bindings });
+  const options = await f.request("GET", `${f.collection}/${agent.id}/repository-options`);
+  assert.equal(options.status, 200, JSON.stringify(options));
+  assert.deepEqual(
+    options.data.find((entry) => entry.repositoryRef === "project").allowedProfiles,
+    ["github-repository"],
+  );
+  assert.deepEqual(agent.repositoryBindings, bindings);
+  await f.prepareDeployment(agent);
+  const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed));
+  const revision = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, deployed.data.id),
+  );
+  assert.deepEqual(revision.executionAdmission, { version: 6, mode: "protected" });
+  assert.equal(revision.egressPlan.repositoryGitAuthorization, "request-hook-observed");
+  const [binding] = revision.repositoryCredentials.bindings;
+  assert.equal(binding.profile, "github-repository");
+  assert.equal(binding.grant.repositoryId, "789");
+  assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
+});
+
+test("Absent collaborator opt-in preserves defaults and refuses explicit github-repository", async (t) => {
+  const f = await fixture(t);
+  const agent = await f.createAgent({ repositoryBindings: [{ repositoryRef: "project" }] });
+  assert.deepEqual(agent.repositoryBindings, [{ repositoryRef: "project", profile: "git-write" }]);
+  const response = await f.request("PATCH", `${f.collection}/${agent.id}`, {
+    configurationId: f.configuration.id,
+    repositoryBindings: [{ repositoryRef: "project", profile: "github-repository" }],
+  });
+  assert.equal(response.status, 400, JSON.stringify(response));
+  const saved = await f.request("GET", `${f.collection}/${agent.id}`);
+  assert.deepEqual(saved.data.repositoryBindings, agent.repositoryBindings);
+  assert.deepEqual((await f.request("GET", `${f.collection}/${agent.id}/revisions`)).data, []);
 });

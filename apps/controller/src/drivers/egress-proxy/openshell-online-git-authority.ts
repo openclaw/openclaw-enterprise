@@ -5,6 +5,7 @@ import type {
   RepositoryGitOnlineDecision,
   PreparedGitHubPullScope,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseRequest,
 } from "@openclaw-enterprise/contracts";
 import type { RequestHead } from "../repo/credentials/backend-contracts.ts";
@@ -56,9 +57,18 @@ export type OpenShellOnlineGitBinding =
       readonly scope: "github-installation";
       readonly installationId: string;
       readonly apiOrigin: string;
+    })
+  | (GitBindingIdentity & {
+      readonly scope: "github-repository";
+      readonly installationId: string;
+      readonly repositoryId: string;
+      readonly apiOrigin: string;
     });
 
-type Use = PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest;
+type Use =
+  | PreparedGitHubUseRequest
+  | PreparedGitHubInstallationUseRequest
+  | PreparedGitHubRepositoryUseRequest;
 
 export type OpenShellOnlineGitAuthorityOptions = Omit<
   OpenShellOnlineHttpAuthorityOptions,
@@ -204,8 +214,11 @@ function validBinding(
       binding.installed?.preparationAttemptId,
       binding.installed?.materialVersion,
     ].every((id) => typeof id === "string" && /^[\x21-\x7e]{1,256}$/.test(id)) &&
-    (binding.scope === "github-installation"
-      ? /^[1-9][0-9]{0,15}$/.test(binding.installationId) &&
+    (binding.scope !== undefined
+      ? (binding.scope !== "github-repository" ||
+          (/^[1-9][0-9]{0,15}$/.test(binding.repositoryId) &&
+            Number.isSafeInteger(Number(binding.repositoryId)))) &&
+        /^[1-9][0-9]{0,15}$/.test(binding.installationId) &&
         binding.apiOrigin === "https://api.github.com" &&
         binding.installed.route?.revisionId === binding.executionId &&
         Number.isSafeInteger(binding.installed.route.fence) &&
@@ -394,25 +407,38 @@ type Selection =
     }
   | { readonly denied: OpenShellOnlineGitDenialReason };
 
+/** Classify the existing provider-enforced GitHub transport without granting authority.
+ * The caller must independently bind verified token scope, recipient and current grant.
+ * In particular, a repository collaborator token must never be treated as an installation
+ * grant here: classification intentionally knows neither selected IDs nor token permissions.
+ * Input is the normalized, bounded HTTP view, not an untrusted wire request.
+ */
+export function classifyOpenShellGitHubTransport(request: OpenShellOnlineHttpRequest): Selection {
+  const head = requestHead(request);
+  if (!head || request.body.byteLength > 4 * 1024 * 1024) {
+    return { denied: "request_invalid" };
+  }
+  if (matchesOrigin("https://api.github.com", request)) {
+    const api = installationApiOperation(request, head);
+    return api ? { selected: { operation: api } } : { denied: "route_unsupported" };
+  }
+  if (!matchesOrigin("https://github.com", request)) {
+    return { denied: "origin_mismatch" };
+  }
+  // Require smart HTTP; GitHub owns repository membership, ref protection and token permissions.
+  const repo = /^\/([a-zA-Z0-9_-]{1,100}\/[a-zA-Z0-9_.-]{1,100})(?:\.git)?\//.exec(
+    request.target.path,
+  )?.[1];
+  return repo ? gitOperation(request, head, repo) : { denied: "route_unsupported" };
+}
+
 function operation(
   request: OpenShellOnlineHttpRequest,
   binding: OpenShellOnlineGitBinding,
   head: RequestHead,
 ): Selection {
-  if (binding.scope === "github-installation") {
-    if (matchesOrigin("https://api.github.com", request)) {
-      const api = installationApiOperation(request, head);
-      return api ? { selected: { operation: api } } : { denied: "route_unsupported" };
-    }
-    if (!matchesOrigin("https://github.com", request)) {
-      return { denied: "origin_mismatch" };
-    }
-    // The operator granted the installation, not one named repository. Still require exactly a
-    // smart HTTP request; GitHub owns repository membership, ref protection and token permissions.
-    const repo = /^\/([a-zA-Z0-9_-]{1,100}\/[a-zA-Z0-9_.-]{1,100})(?:\.git)?\//.exec(
-      request.target.path,
-    )?.[1];
-    return repo ? gitOperation(request, head, repo) : { denied: "route_unsupported" };
+  if (binding.scope !== undefined) {
+    return classifyOpenShellGitHubTransport(request);
   }
   if (request.target.path.startsWith("/repos/")) {
     if (head.contentEncoding !== "identity") {
@@ -561,7 +587,13 @@ export function createOpenShellOnlineGitAuthority(
             executionId,
             sessionId,
             providerInstanceId,
-            binding.scope ? [binding.scope, binding.installationId] : binding.repositoryId,
+            binding.scope
+              ? [
+                  binding.scope,
+                  binding.installationId,
+                  ...(binding.scope === "github-repository" ? [binding.repositoryId] : []),
+                ]
+              : binding.repositoryId,
             grantId,
             binding.scope ? binding.installed.route!.fence : binding.pushRef,
             request.target,
@@ -580,16 +612,25 @@ export function createOpenShellOnlineGitAuthority(
         deadlineAt: request.deadlineAt,
       };
       let q: Use;
-      if (binding.scope === "github-installation") {
+      if (binding.scope !== undefined) {
         if (selected.operation === "create-draft-pull" || !options.authorizeOnlineRequest) {
           return deny("binding_mismatch");
         }
-        q = {
-          ...use,
-          scope: binding.scope,
-          installationId: binding.installationId,
-          operation: selected.operation,
-        };
+        q =
+          binding.scope === "github-repository"
+            ? {
+                ...use,
+                scope: binding.scope,
+                installationId: binding.installationId,
+                repositoryId: binding.repositoryId,
+                operation: selected.operation,
+              }
+            : {
+                ...use,
+                scope: binding.scope,
+                installationId: binding.installationId,
+                operation: selected.operation,
+              };
       } else {
         const { operation, pull } = selected;
         if (operation === "github-rest" || operation === "github-graphql") {

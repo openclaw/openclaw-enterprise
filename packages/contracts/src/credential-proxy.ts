@@ -152,7 +152,7 @@ export const repositoryGitRecipientFields = Object.freeze([
 export type RepositoryGitRecipient = Readonly<
   Record<(typeof repositoryGitRecipientFields)[number], string> & {
     /** Absent on the original repository Git wire. Installation scope needs positive evidence. */
-    deliveryProfile?: "github_installation";
+    deliveryProfile?: "github_installation" | "github_repository";
     /** v5 requires online authorization before injection for every new request. In v6 we
      * observed that hook at startup; a trusted operator could subsequently make stock skip it.
      * Both require verified TLS, a dedicated fresh recipient, and no bypass in the admitted
@@ -163,7 +163,8 @@ export type RepositoryGitRecipient = Readonly<
   }
 >;
 
-export type RepositoryGitDeliveryProfile = "repository_git" | "github_installation";
+export type RepositoryGitDeliveryProfile =
+  "repository_git" | "github_installation" | "github_repository";
 
 export function validRepositoryGitRecipient(
   value: RepositoryGitRecipient | undefined,
@@ -176,14 +177,14 @@ export function validRepositoryGitRecipient(
     (authorization === undefined ||
       authorization === "online-request" ||
       (authorization === "request-hook-observed" &&
-        profile === "github_installation" &&
+        (profile === "github_installation" || profile === "github_repository") &&
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
           value.observedHook?.startupId ?? "",
         ) &&
         /^[0-9a-f]{64}$/.test(value.observedHook?.observationId ?? ""))) &&
     value.authorization === authorization &&
     (authorization === "request-hook-observed" || value.observedHook === undefined) &&
-    value.deliveryProfile === (profile === "github_installation" ? profile : undefined) &&
+    value.deliveryProfile === (profile === "repository_git" ? undefined : profile) &&
     repositoryGitRecipientFields.every(
       (key) => typeof value[key] === "string" && value[key].trim().length > 0,
     )
@@ -320,6 +321,7 @@ export interface CredentialSourceControl {
   ): Promise<
     | void
     | "github_installation"
+    | "github_repository"
     | {
         readonly profile: RepositoryGitDeliveryProfile;
         readonly authorization: "online-request" | "request-hook-observed";
@@ -339,7 +341,7 @@ export async function repositoryGitAuthorization(
   const confirmed = await control.assertAvailable(signal, profile);
   if (profile && typeof confirmed === "object" && confirmed !== null) {
     if (
-      profile === "github_installation" &&
+      (profile === "github_installation" || profile === "github_repository") &&
       confirmed.profile === profile &&
       confirmed.authorization === "request-hook-observed"
     ) {
@@ -349,8 +351,9 @@ export async function repositoryGitAuthorization(
       ? "online-request"
       : "unavailable";
   }
-  return (confirmed === undefined && profile !== "github_installation") ||
-    (profile === "github_installation" && confirmed === profile)
+  return (confirmed === undefined && (profile === undefined || profile === "repository_git")) ||
+    ((profile === "github_installation" || profile === "github_repository") &&
+      confirmed === profile)
     ? "exact-dispatch"
     : "unavailable";
 }
@@ -510,7 +513,9 @@ export function assertExecutionAdmission(
       : repository !== undefined) ||
     (admission.version === 6
       ? revision.egressPlan?.repositoryGitAuthorization !== "request-hook-observed" ||
-        repositoryGitDeliveryProfile(repository) !== "github_installation"
+        !(["github_installation", "github_repository"] as const).some(
+          (profile) => profile === repositoryGitDeliveryProfile(repository),
+        )
       : admission.version === 5
         ? revision.egressPlan?.repositoryGitAuthorization !== "online-request"
         : revision.egressPlan?.repositoryGitAuthorization !== undefined)

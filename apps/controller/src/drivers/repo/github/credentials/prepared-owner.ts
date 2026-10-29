@@ -39,7 +39,11 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
       : {
           repositoryId: grant.repositoryId,
           repository: grant.repository,
-          permissions: permissionsForProfile(grant.profile),
+          permissions:
+            grant.profile === "github-repository"
+              ? grant.permissions
+              : permissionsForProfile(grant.profile),
+          ...(grant.profile === "github-repository" ? { profile: grant.profile } : {}),
         };
 
   return createTokenPreparation({

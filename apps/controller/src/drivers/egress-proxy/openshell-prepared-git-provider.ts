@@ -15,10 +15,20 @@ import {
   type OpenShellProviderResponse,
 } from "../sandbox/openshell-gateway-client.ts";
 
+export interface OpenShellRepositorySelection {
+  readonly scope: "github-repository";
+  readonly installationId: string;
+  readonly repositoryId: string;
+  readonly repository: string;
+  /** Resolved policy identity, including the issuer's exact permission policy. */
+  readonly grantId: string;
+}
+
 /** Operator-owned scope; never populate this from a workload request. */
 export type OpenShellPreparedGitDelivery =
-  | { readonly repository: string; readonly installationId?: never }
-  | { readonly repository?: never; readonly installationId: string };
+  | { readonly repository: string; readonly installationId?: never; readonly scope?: never }
+  | { readonly repository?: never; readonly installationId: string; readonly scope?: never }
+  | OpenShellRepositorySelection;
 
 export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
   readonly workspace: string;
@@ -37,6 +47,11 @@ export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
 export interface OpenShellPreparedGitToken {
   readonly value: string;
   readonly expiresAt: string;
+  readonly scope?: "github-repository" | "github-installation";
+  readonly installationId?: string;
+  readonly repositoryId?: string;
+  readonly repository?: string;
+  readonly grantId?: string;
 }
 
 export interface OpenShellPreparedGitBinding {
@@ -104,6 +119,7 @@ export class OpenShellPreparedGitProviderError extends Error {
 const KEY = "GITHUB_TOKEN";
 const OWNER = "openclaw.dev/prepared-git-binding";
 const REPOSITORY_PROVIDER_PREFIX = "oce-git-";
+const COLLABORATOR_PROVIDER_PREFIX = "oce-github-repository-";
 
 function refuse(): never {
   throw new OpenShellPreparedGitProviderError("refused");
@@ -187,7 +203,7 @@ export class OpenShellPreparedGitProvider {
       !scope.executionId ||
       (scope.installationId !== undefined
         ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
-          scope.repository !== undefined ||
+          (scope.scope !== "github-repository" && scope.repository !== undefined) ||
           scope.apiOrigin !== "https://api.github.com" ||
           scope.gitOrigin !== "https://github.com"
         : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
@@ -196,6 +212,16 @@ export class OpenShellPreparedGitProvider {
       scope.binaries.some(
         (path) => !/^\/[A-Za-z0-9_./-]+$/.test(path) || path.split("/").includes(".."),
       )
+    ) {
+      refuse();
+    }
+    if (
+      scope.scope === "github-repository" &&
+      (!/^[1-9][0-9]{0,15}$/.test(scope.repositoryId) ||
+        !Number.isSafeInteger(Number(scope.repositoryId)) ||
+        !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
+        scope.repository.split("/").some((part) => part === "." || part === "..") ||
+        !scope.grantId)
     ) {
       refuse();
     }
@@ -210,7 +236,17 @@ export class OpenShellPreparedGitProvider {
           scope.workspaceId,
           scope.sandbox,
           scope.executionId,
-          scope.installationId ? ["github-installation", scope.installationId] : scope.repository,
+          scope.scope === "github-repository"
+            ? [
+                scope.scope,
+                scope.installationId,
+                scope.repositoryId,
+                scope.repository,
+                scope.grantId,
+              ]
+            : scope.installationId
+              ? ["github-installation", scope.installationId]
+              : scope.repository,
           git.origin,
           api.origin,
           scope.binaries,
@@ -218,9 +254,12 @@ export class OpenShellPreparedGitProvider {
       )
       .digest("hex")
       .slice(0, 48);
-    const prefix = scope.installationId
-      ? openShellInstallationGitProviderPrefix
-      : REPOSITORY_PROVIDER_PREFIX;
+    const prefix =
+      scope.scope === "github-repository"
+        ? COLLABORATOR_PROVIDER_PREFIX
+        : scope.installationId
+          ? openShellInstallationGitProviderPrefix
+          : REPOSITORY_PROVIDER_PREFIX;
     this.provider = prefix + this.fingerprint.slice(0, 32);
     this.profile = {
       id: this.provider,
@@ -288,6 +327,13 @@ export class OpenShellPreparedGitProvider {
     const expires = Date.parse(token.expiresAt);
     const remaining = expires - Date.now();
     if (
+      (this.scope.scope === "github-repository"
+        ? token.scope !== this.scope.scope ||
+          token.installationId !== this.scope.installationId ||
+          token.repositoryId !== this.scope.repositoryId ||
+          token.repository !== this.scope.repository ||
+          token.grantId !== this.scope.grantId
+        : token.scope === "github-repository") ||
       !isGitHubWireCredential(token.value) ||
       token.value.includes("openshell:resolve:") ||
       !Number.isFinite(expires) ||
@@ -882,7 +928,8 @@ function preparedGitName(name: string, owner: string | undefined): boolean {
     owner !== undefined &&
     /^[0-9a-f]{48}$/.test(owner) &&
     (name === REPOSITORY_PROVIDER_PREFIX + hash ||
-      name === openShellInstallationGitProviderPrefix + hash)
+      name === openShellInstallationGitProviderPrefix + hash ||
+      name === COLLABORATOR_PROVIDER_PREFIX + hash)
   );
 }
 

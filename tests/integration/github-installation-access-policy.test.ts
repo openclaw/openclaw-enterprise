@@ -252,3 +252,108 @@ test("installation access needs positive sender capability and a profile-bound s
     ),
   );
 });
+
+test("repository collaboration is explicit, permission-bound, and rejects scope substitution", async () => {
+  const permissions = { metadata: "read", contents: "write", issues: "write" };
+  const configured = (extra = {}) => ({
+    ...registration,
+    allowStandingApprovals: true,
+    repositories: [
+      {
+        ...registration.repositories[0],
+        namespaces: [
+          {
+            namespaceId,
+            allowStandingApproval: true,
+            profiles: ["github-repository"],
+            permissions,
+            ...extra,
+          },
+        ],
+      },
+    ],
+  });
+  const selected = { repositoryRef: "example", profile: "github-repository" };
+  const resolve = (input: unknown) =>
+    driver(input).resolve({ namespaceId, bindings: [selected] }).bindings[0]!;
+  const binding = resolve(configured());
+  assert.equal(binding.grant.repositoryId, "789");
+  assert.equal(binding.profile, "github-repository");
+  assert.ok(driver(configured()).standingApprovalScope({ namespaceId, binding }));
+  assert.equal(
+    driver(
+      configured({ permissions: { metadata: "read", contents: "read" } }),
+    ).standingApprovalScope({ namespaceId, binding }),
+    undefined,
+  );
+  assert.equal(
+    resolve(configured({ permissions: { issues: "write", contents: "write", metadata: "read" } }))
+      .grant.grantId,
+    binding.grant.grantId,
+  );
+  assert.notEqual(
+    resolve(configured({ permissions: { metadata: "read", contents: "read" } })).grant.grantId,
+    binding.grant.grantId,
+  );
+  for (const extra of [
+    { permissions: undefined },
+    { permissions: { ...permissions, members: "write" } },
+    { permissions: { ...permissions, contents: "admin" } },
+    { permissions: { ...permissions, metadata: "write" } },
+    { pushRefAllowlist: ["refs/heads/main"] },
+    { transport: "git-only" },
+  ]) {
+    assert.throws(() => registry(configured(extra)), /invalid-repository-registry/);
+  }
+  assert.throws(
+    () => driver(configured()).resolve({ namespaceId, bindings: [{ repositoryRef: "example" }] }),
+    /not permitted/,
+  );
+  assert.throws(
+    () => driver(registration).resolve({ namespaceId, bindings: [selected] }),
+    /not permitted/,
+  );
+  assert.equal(
+    driver(configured()).standingApprovalScope({
+      namespaceId,
+      binding: { ...binding, grant: { ...binding.grant, grantId: "old-grant" } },
+    }),
+    undefined,
+  );
+  const identity = { id: "sender", generation: 1 };
+  const control = {
+    backend: identity,
+    sender: identity,
+    resolver: identity,
+    providers: [],
+    async assertAvailable() {},
+  } satisfies CredentialSourceControl;
+  const signal = new AbortController().signal;
+  assert.equal(await repositoryGitProfileAvailable(control, signal, "github_repository"), false);
+  assert.equal(
+    await repositoryGitProfileAvailable(
+      {
+        ...control,
+        async assertAvailable() {
+          return "github_installation" as const;
+        },
+      },
+      signal,
+      "github_repository",
+    ),
+    false,
+  );
+  assert.equal(
+    await repositoryGitProfileAvailable(
+      {
+        ...control,
+        async assertAvailable() {
+          return "github_repository" as const;
+        },
+      },
+      signal,
+      "github_repository",
+    ),
+    true,
+  );
+});

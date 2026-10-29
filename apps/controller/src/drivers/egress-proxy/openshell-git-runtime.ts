@@ -3,10 +3,11 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { githubInstallationProfile } from "@openclaw-enterprise/contracts";
+import { githubInstallationProfile, githubRepositoryProfile } from "@openclaw-enterprise/contracts";
 import type {
   AgentRevision,
   ProtectedGitHubInstallationMaterial,
+  ProtectedGitHubRepositoryMaterial,
   ProtectedRepositoryGitAuthority,
   ProtectedRepositoryGitMaterial,
   ProxyRevisionContext,
@@ -88,15 +89,22 @@ type GitOwner = Awaited<ReturnType<typeof startPreparedGitHubGitOwner>>;
 type ReadMaterial = GitOwner["readOpenShellMaterial"];
 type MaterialReader = {
   readOpenShellMaterial(
-    ...args: [...Parameters<ReadMaterial>, installationScope?: typeof githubInstallationProfile]
-  ): Promise<Awaited<ReturnType<ReadMaterial>> | ProtectedGitHubInstallationMaterial>;
+    ...args: [
+      ...Parameters<ReadMaterial>,
+      installationScope?: typeof githubInstallationProfile | typeof githubRepositoryProfile,
+    ]
+  ): Promise<
+    | Awaited<ReturnType<ReadMaterial>>
+    | ProtectedGitHubInstallationMaterial
+    | ProtectedGitHubRepositoryMaterial
+  >;
 };
 type OnlineGitOwner = MaterialReader & {
   authorizeOnlineRequest: NonNullable<OpenShellOnlineGitAuthorityOptions["authorizeOnlineRequest"]>;
 };
 type Owner = OnlineGitOwner | (MaterialReader & Pick<GitOwner, "authorizeOpenShellRequest">);
 
-/** The bundled sender cannot honor an exact-send permit. Both calls use only the online port. */
+/** The bundled sender uses its selected online or observed-hook authority, never an exact-send permit. */
 export function protectedOpenShellGitOwner(
   authority: ProtectedRepositoryGitAuthority,
   preview = false,
@@ -104,14 +112,41 @@ export function protectedOpenShellGitOwner(
   const installationAuthority = preview
     ? authority.observedHook
     : authority.online.githubInstallation;
+  const repositoryAuthority = preview
+    ? authority.observedRepositoryHook
+    : authority.online.githubRepository;
   return {
     readOpenShellMaterial: async (revisionId, signal, route, scope) => {
-      const owner = scope === githubInstallationProfile ? installationAuthority : authority.online;
+      const owner =
+        scope === githubRepositoryProfile
+          ? repositoryAuthority
+          : scope === githubInstallationProfile
+            ? installationAuthority
+            : authority.online;
       return route?.revisionId === revisionId ? owner?.readMaterial(route, signal) : undefined;
     },
     authorizeOnlineRequest: async (request, installed, signal) => {
       const { route } = installed;
       if (!route) {
+        return { kind: "denied", reason: "unavailable" };
+      }
+      if ("scope" in request && request.scope === githubRepositoryProfile) {
+        const result = await repositoryAuthority?.authorize(
+          request,
+          { ...installed, route },
+          signal,
+        );
+        if (
+          result &&
+          (result.kind === "denied" ||
+            (result.scope === request.scope &&
+              result.repositoryId === request.repositoryId &&
+              result.operation === request.operation &&
+              result.revisionId === route.revisionId &&
+              result.fence === route.fence))
+        ) {
+          return result;
+        }
         return { kind: "denied", reason: "unavailable" };
       }
       if ("scope" in request) {
@@ -137,7 +172,8 @@ export function protectedOpenShellGitOwner(
 
 type MaterialIdentity =
   | Omit<ProtectedRepositoryGitMaterial, "value">
-  | Omit<ProtectedGitHubInstallationMaterial, "value">;
+  | Omit<ProtectedGitHubInstallationMaterial, "value">
+  | Omit<ProtectedGitHubRepositoryMaterial, "value">;
 
 /** The route's state for one revision, as Compute readiness and operators see it. */
 export type OpenShellGitRouteState =
@@ -316,6 +352,12 @@ function generationOf(binding: OpenShellPreparedGitBinding): OpenShellPreparedGi
   };
 }
 
+function providerDelivery(scope: RepositoryGitDeliveryBinding): OpenShellPreparedGitDelivery {
+  return "scope" in scope.delivery
+    ? { ...scope.delivery, grantId: scope.binding.grant.grantId }
+    : scope.delivery;
+}
+
 /** Construct the same stock provider scope on initial preparation, observation and adoption. */
 function gitProvider(
   client: OpenShellGatewayClient,
@@ -446,18 +488,23 @@ export class OpenShellGitRuntime {
       !binding ||
       revision.harness.id !== "codex" ||
       revision.harness.mode !== "dedicated" ||
+      (binding.profile === githubRepositoryProfile && revision.executionAdmission.version !== 6) ||
       (this.configuration.protectedExecution
         ? (revision.executionAdmission.version === 6
             ? !this.configuration.observedHookPreviewWorkspace ||
-              binding.profile !== githubInstallationProfile ||
+              (binding.profile !== githubInstallationProfile &&
+                binding.profile !== githubRepositoryProfile) ||
               revision.egressPlan?.repositoryGitAuthorization !== observedRequestHook
             : revision.executionAdmission.version !== 5 ||
               revision.egressPlan?.repositoryGitAuthorization !== "online-request" ||
-              (binding.profile === githubInstallationProfile &&
+              ((binding.profile === githubInstallationProfile ||
+                binding.profile === githubRepositoryProfile) &&
                 !!this.configuration.observedHookPreviewWorkspace)) ||
           !revision.egressPlan?.driver ||
           !isDeepStrictEqual(revision.egressPlan.repositoryGit, state) ||
-          (binding.profile !== "git-write" && binding.profile !== githubInstallationProfile)
+          (binding.profile !== "git-write" &&
+            binding.profile !== githubInstallationProfile &&
+            binding.profile !== githubRepositoryProfile)
         : revision.egressPlan !== undefined || binding.profile !== "git-write")
     ) {
       throw new Error(
@@ -465,7 +512,11 @@ export class OpenShellGitRuntime {
       );
     }
     const scope = this.resolveDelivery(revision);
-    if (!isDeepStrictEqual(scope.binding, binding)) {
+    if (
+      !isDeepStrictEqual(scope.binding, binding) ||
+      (binding.profile === githubRepositoryProfile) !== "scope" in scope.delivery ||
+      ("scope" in scope.delivery && scope.delivery.repositoryId !== binding.grant.repositoryId)
+    ) {
       throw new Error("OpenShell Git delivery does not match the admitted binding.");
     }
     return scope;
@@ -507,7 +558,7 @@ export class OpenShellGitRuntime {
         await this.gateway(client, workspace, signal),
         sandbox,
         revision.id,
-        scope.delivery,
+        providerDelivery(scope),
       );
       const binding = provider.restore(generation, true);
       if (!(await provider.observePredecessor(binding, git, signal))) {
@@ -699,7 +750,7 @@ export class OpenShellGitRuntime {
           await verified(() => this.gateway(client, workspace, signal)),
           sandbox,
           revision.id,
-          scope.delivery,
+          providerDelivery(scope),
           preview ? true : undefined,
         );
         const bindingId =
@@ -766,7 +817,15 @@ export class OpenShellGitRuntime {
           authorization: structuredClone(scope),
           otherProviders: [...otherProviders],
           bindingId,
-          ...(preview && { preview: new ObservedHookPreview(workspace, bindingId) }),
+          ...(preview && {
+            preview: new ObservedHookPreview(
+              workspace,
+              bindingId,
+              scope.binding.profile === githubRepositoryProfile
+                ? "github_repository"
+                : "github_installation",
+            ),
+          }),
           ...(this.routes === undefined ? {} : { fence }),
         };
         // The written generation is recorded now; a store that does not answer leaves the
@@ -843,7 +902,7 @@ export class OpenShellGitRuntime {
         { name: "GIT_CONFIG_VALUE_0", value: "" },
         {
           name: "GIT_CONFIG_KEY_1",
-          value: `credential.https://github.com${entry.authorization.delivery.repository ? "/" + entry.authorization.delivery.repository + ".git" : ""}.helper`,
+          value: `credential.https://github.com${!entry.authorization.delivery.installationId && entry.authorization.delivery.repository ? "/" + entry.authorization.delivery.repository + ".git" : ""}.helper`,
         },
         {
           name: "GIT_CONFIG_VALUE_1",
@@ -972,7 +1031,7 @@ export class OpenShellGitRuntime {
       workspaceId,
       sandbox,
       revision.id,
-      scope.delivery,
+      providerDelivery(scope),
     );
     let binding: OpenShellPreparedGitBinding;
     try {
@@ -1247,7 +1306,13 @@ export class OpenShellGitRuntime {
   async previewEnforcement(context: ProxyRevisionContext, sandboxId: string) {
     const entry = this.states.get(context.revision.id)?.entry;
     const preview = entry?.preview;
-    if (!preview?.hook || !entry || entry.blocked || entry.sandboxId !== sandboxId) {
+    if (
+      !preview?.hook ||
+      !entry ||
+      entry.blocked ||
+      entry.sandboxId !== sandboxId ||
+      !isDeepStrictEqual(context.plan.repositoryGit, entry.revision.repositoryCredentials)
+    ) {
       return;
     }
     await this.fenced(entry, context.signal);
@@ -1345,7 +1410,7 @@ export class OpenShellGitRuntime {
   ): Promise<void> {
     let delivery: OpenShellPreparedGitDelivery | undefined;
     try {
-      delivery = this.scope(revision).delivery;
+      delivery = providerDelivery(this.scope(revision));
     } catch {
       delivery = undefined;
     }
@@ -1757,9 +1822,12 @@ export class OpenShellGitRuntime {
       const install = entry.revision.egressPlan?.repositoryGit
         ? { revisionId: entry.revision.id, fence: entry.fence!, observed: entry.supervisor }
         : undefined;
-      const scopeName = entry.authorization.delivery.installationId
-        ? githubInstallationProfile
-        : undefined;
+      const scopeName =
+        "scope" in entry.authorization.delivery
+          ? githubRepositoryProfile
+          : entry.authorization.delivery.installationId
+            ? githubInstallationProfile
+            : undefined;
       const readMaterial = (route = install) =>
         owner.readOpenShellMaterial(entry.revision.id, signal, route, scopeName);
       const material = await read(readMaterial, signal);
@@ -1793,7 +1861,12 @@ export class OpenShellGitRuntime {
         !isDeepStrictEqual(scope, entry.authorization) ||
         ("scope" in material
           ? material.scope !== scopeName ||
-            material.installationId !== entry.authorization.delivery.installationId
+            material.installationId !== entry.authorization.delivery.installationId ||
+            (material.scope === githubRepositoryProfile &&
+              (!("scope" in scope.delivery) ||
+                material.repositoryId !== scope.delivery.repositoryId ||
+                material.repository !== scope.delivery.repository ||
+                material.repositoryId !== binding.grant.repositoryId))
           : !repository ||
             material.repository !== entry.authorization.delivery.repository ||
             material.repositoryId !== binding.grant.repositoryId ||
@@ -1865,7 +1938,7 @@ export class OpenShellGitRuntime {
                   !this.stopped.signal.aborted &&
                   !signal.aborted
                 ) {
-                  return { value: current.value, expiresAt: current.expiresAt };
+                  return current;
                 }
                 entry.absent = current && "absent" in current ? current.absent : undefined;
               },
@@ -2064,6 +2137,19 @@ export class OpenShellGitRuntime {
           }
           throw error;
         }
+        if (entry.authorization.binding.profile === githubRepositoryProfile) {
+          try {
+            if (!isDeepStrictEqual(this.scope(entry.revision), entry.authorization)) {
+              throw new Error("Repository selection changed.");
+            }
+          } catch (error) {
+            throw new OpenShellGitRouteError(
+              "grant_changed",
+              "OpenShell repository selection changed.",
+              error,
+            );
+          }
+        }
         const observed = await this.observation(entry, signal);
         if (entry.blocked || this.stopped.signal.aborted || signal.aborted) {
           reason = entry.blocked ? "route_blocked" : "lookup_aborted";
@@ -2098,7 +2184,13 @@ export class OpenShellGitRuntime {
           providerInstanceId: material.providerInstanceId,
           grantId: material.grantId,
           ...("scope" in material
-            ? { scope: material.scope, installationId: material.installationId }
+            ? material.scope === githubRepositoryProfile
+              ? {
+                  scope: material.scope,
+                  installationId: material.installationId,
+                  repositoryId: material.repositoryId,
+                }
+              : { scope: material.scope, installationId: material.installationId }
             : {
                 repositoryId: material.repositoryId,
                 repository: material.repository,

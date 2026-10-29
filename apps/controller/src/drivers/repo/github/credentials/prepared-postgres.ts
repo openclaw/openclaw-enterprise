@@ -27,7 +27,7 @@ import type {
 // The provider expiry is an authenticated issuance result. The same clock-skew allowance
 // subtracted for use is added before we can conclude that the provider lifetime elapsed.
 const standingGitExpiry = `CASE WHEN f.source->>'adoption' IN ('prepared_repository_git',
-    'credential_proxy_repository_git','credential_proxy_github_installation')
+    'credential_proxy_repository_git','credential_proxy_github_installation','credential_proxy_github_repository')
   AND f.source #>> '{session,standingApprovalId}' IS NOT NULL AND NOT f.enabled
   AND a.state='committed' AND a.material_version IS NOT NULL
   AND a.admission=f.admission AND isfinite(a.provider_expires_at)

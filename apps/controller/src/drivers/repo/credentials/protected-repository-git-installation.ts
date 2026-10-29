@@ -20,6 +20,7 @@ const matchingAuthorization = `(CASE WHEN p.installation->'plan' ? 'repositoryGi
 const recipient = "p.installation#>'{enforcement,repositoryGitRecipient}'";
 export const releasedGitProfile = `CASE
   WHEN ${recipient}->>'deliveryProfile' = 'github_installation' THEN 'github-installation'
+  WHEN ${recipient}->>'deliveryProfile' = 'github_repository' THEN 'github-repository'
   WHEN NOT (${recipient} ? 'deliveryProfile') THEN 'git-write'
   END`;
 export const registeredGitSelection = `p.installation#>>'{plan,repositoryGit,bindings,0,profile}' = ${releasedGitProfile}
@@ -29,16 +30,22 @@ export const registeredGitSelection = `p.installation#>>'{plan,repositoryGit,bin
 // verifies the complete profile, not just this name. Keep the installed observation schema and
 // existing narrow names; an installation recipient must agree with this distinct profile family.
 export const openShellInstallationGitProviderPrefix = "oce-github-installation-";
+export const openShellRepositoryGitProviderPrefix = "oce-github-repository-";
 export const openShellGitDeliveryTransport = "openshell-repository-git/v1";
 const observedInstallationProfile =
   "r.observed->>'provider' ~ '^" + openShellInstallationGitProviderPrefix + "[0-9a-f]{32}$'";
+
+const observedRepositoryProfile =
+  "r.observed->>'provider' ~ '^" + openShellRepositoryGitProviderPrefix + "[0-9a-f]{32}$'";
+const observedSelectedProfile = `((${recipient}->>'deliveryProfile' = 'github_installation' AND ${observedInstallationProfile})
+  OR (${recipient}->>'deliveryProfile' = 'github_repository' AND ${observedRepositoryProfile}))`;
 
 // The preview correlates a denial at the held launcher with the authenticated callback.
 // It cannot prove an operator will retain that hook. Strict senders never accept this branch.
 const observedHookSelection = `(${admittedAuthorization} = 'request-hook-observed'
   AND ${recipientAuthorization} = 'request-hook-observed' AND ${peerKey} IS NULL
-  AND (${recipient}->>'deliveryProfile') = 'github_installation'
-  AND p.installation#>>'{plan,repositoryGit,bindings,0,profile}' = 'github-installation'
+  AND (${recipient}->>'deliveryProfile') IN ('github_installation','github_repository')
+  AND p.installation#>>'{plan,repositoryGit,bindings,0,profile}' = ${releasedGitProfile}
   AND jsonb_array_length(p.installation#>'{plan,repositoryGit,bindings}')=1
   AND (r.observed#>>'{observedHook,startupId}') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   AND (r.observed#>>'{observedHook,observationId}') ~ '^[a-f0-9]{64}$'
@@ -49,8 +56,8 @@ export const protectedRepositoryGitInstallationSql = `
   AND r.target->>'transport'='${openShellGitDeliveryTransport}'
   AND ((${registeredGitSelection} AND NOT (r.observed ? 'observedHook')) OR ${observedHookSelection})
   AND CASE WHEN ${recipient} ? 'deliveryProfile'
-    THEN ${observedInstallationProfile} AND ${admittedAuthorization} IN ('online-request','request-hook-observed')
-    ELSE NOT (${observedInstallationProfile}) END
+    THEN ${observedSelectedProfile} AND ${admittedAuthorization} IN ('online-request','request-hook-observed')
+    ELSE NOT (${observedInstallationProfile} OR ${observedRepositoryProfile}) END
   AND p.sandbox_id = r.observed->>'sandboxId'
   AND r.binding_id = p.installation#>>'{plan,execution,executionId}'
   AND r.observed->>'executionId' = r.revision_id AND r.observed->>'providerId' = (r.desired->>'providerId')
@@ -73,6 +80,7 @@ export const repositoryGitOwnerPredicate = `f.source #> '{session,credentialProx
 export const legacyAdoption = "prepared_repository_git";
 export const protectedGitAdoption = "credential_proxy_repository_git";
 export const installationGitAdoption = "credential_proxy_github_installation";
+export const repositoryGitAdoption = "credential_proxy_github_repository";
 export const repositoryGitDeliveryTransport = "registered-repository-git/v1";
 
 // The broker owns only its recorded admission, session and generation; the receipt remains after disposal.
@@ -133,7 +141,7 @@ const openShellObserved = `SELECT FROM ${openShellRoute} WHERE revision_id=$1 AN
 export const openShellPreviewEnded = `EXISTS (
   SELECT FROM ${openShellRoute} r JOIN occ.egress_installations p ON ${protectedRepositoryGitInstallationSql}
   WHERE r.blocked IS NOT NULL AND ${admittedAuthorization}='request-hook-observed'
-    AND f.source->>'adoption'='${installationGitAdoption}'
+    AND f.source->>'adoption' IN ('${installationGitAdoption}','${repositoryGitAdoption}')
     AND (r.namespace_id,r.agent_id,r.revision_id,r.binding_id,p.sandbox_id)=
       (f.source#>>'{session,namespaceId}', f.source#>>'{session,agentId}', f.source#>>'{session,revisionId}',
        f.source#>>'{session,credentialProxyExecution,executionId}', f.source#>>'{session,credentialProxyExecution,sandboxId}')

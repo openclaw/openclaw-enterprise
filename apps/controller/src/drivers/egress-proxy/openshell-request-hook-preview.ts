@@ -5,6 +5,7 @@ import type {
   EgressInstallation,
   ProxyRevisionContext,
   RepositoryGitRecipient,
+  RepositoryGitDeliveryProfile,
 } from "@openclaw-enterprise/contracts";
 import type {
   OpenShellGatewayClient,
@@ -259,7 +260,20 @@ export class ObservedHookPreview {
     return op.id;
   }
 
-  constructor(workspace: string, bindingId: string) {
+  private readonly deliveryProfile: Extract<
+    RepositoryGitDeliveryProfile,
+    "github_installation" | "github_repository"
+  >;
+
+  constructor(
+    workspace: string,
+    bindingId: string,
+    deliveryProfile: Extract<
+      RepositoryGitDeliveryProfile,
+      "github_installation" | "github_repository"
+    > = "github_installation",
+  ) {
+    this.deliveryProfile = deliveryProfile;
     this.workspace = workspace;
     this.bindingId = bindingId;
   }
@@ -350,7 +364,7 @@ export class ObservedHookPreview {
         networkInstanceId,
         authorization: observedRequestHook,
         observedHook: hook,
-        deliveryProfile: "github_installation",
+        deliveryProfile: this.deliveryProfile,
       },
     };
   }

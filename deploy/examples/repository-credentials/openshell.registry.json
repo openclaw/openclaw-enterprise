@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "backendId": "repository-backend",
+  "providerInstanceId": "github-team",
+  "appId": "123456",
+  "githubInstallationId": "789012",
+  "maximumDurationSeconds": 3600,
+  "repositories": [
+    {
+      "repositoryRef": "application",
+      "repositoryId": "345678",
+      "repository": "example/project",
+      "namespaces": [
+        {
+          "namespaceId": "replace-with-occ-namespace-id",
+          "profiles": ["github-repository"],
+          "permissions": {
+            "metadata": "read",
+            "contents": "write",
+            "issues": "write",
+            "pull_requests": "write"
+          }
+        }
+      ]
+    }
+  ]
+}

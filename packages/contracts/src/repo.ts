@@ -18,6 +18,13 @@ export interface RepositoryCredentialSessionStatus {
 /** Installation-wide GitHub access must be explicitly selected, never inherited as a default. */
 export const githubInstallationProfile = "github-installation";
 
+/** Explicit collaborator authority for one registry-selected repository. */
+export const githubRepositoryProfile = "github-repository";
+
+export function isProtectedRepositoryProfile(profile: unknown): boolean {
+  return profile === githubInstallationProfile || profile === githubRepositoryProfile;
+}
+
 /** An installation-scoped binding is always explicit, exclusive, and delivered by a protected sender. */
 export function isInstallationRepositoryProfile(
   profile: unknown,
@@ -185,6 +192,9 @@ export function repositoryGitDeliveryProfile(
     return undefined;
   }
   const profile = repository.bindings[0]?.profile;
+  if (profile === githubRepositoryProfile) {
+    return "github_repository";
+  }
   return isInstallationRepositoryProfile(profile)
     ? "github_installation"
     : profile === "git-write"

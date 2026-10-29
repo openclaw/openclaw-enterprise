@@ -7,6 +7,7 @@ import type {
   DriverRegistrationRef,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubPullResult,
   RepositoryGitInstallationFence,
 } from "@openclaw-enterprise/contracts";
@@ -31,8 +32,10 @@ import {
 import {
   protectedGitAdoption,
   installationGitAdoption,
+  repositoryGitAdoption,
   type RepositoryGitRecipientEvidence,
 } from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
+import { createGitHubRepositoryGrant } from "../../drivers/repo/github/credentials/repository-grant.ts";
 import { TokenService } from "../token-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 
@@ -75,9 +78,11 @@ function useRequest(
   input: unknown,
   scope: "github-installation",
 ): PreparedGitHubInstallationUseRequest;
-function useRequest(input: unknown, scope?: "github-installation") {
-  const q = input as PreparedGitHubUseRequest & PreparedGitHubInstallationUseRequest;
-  const installation = scope === "github-installation";
+function useRequest(input: unknown, scope: "github-repository"): PreparedGitHubRepositoryUseRequest;
+function useRequest(input: unknown, scope?: "github-installation" | "github-repository") {
+  const q = input as PreparedGitHubUseRequest & { scope: string; installationId: string };
+  const installation = scope !== undefined;
+  const repository = scope === "github-repository";
   const fields = [
     "providerInstanceId",
     "grantId",
@@ -86,7 +91,9 @@ function useRequest(input: unknown, scope?: "github-installation") {
     "operation",
     "requestDigestSha256",
     "deadlineAt",
-    ...(installation ? ["scope", "installationId"] : ["repositoryId", "pushRef"]),
+    ...(installation
+      ? ["scope", "installationId", ...(repository ? ["repositoryId"] : [])]
+      : ["repositoryId", "pushRef"]),
     ...(!installation && (input as PreparedGitHubUseRequest)?.operation === "create-draft-pull"
       ? ["pull"]
       : []),
@@ -102,7 +109,10 @@ function useRequest(input: unknown, scope?: "github-installation") {
     !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(q.exchangeId) ||
     !/^[0-9a-f]{64}$/.test(q.requestDigestSha256) ||
     (installation
-      ? q.scope !== scope || !/^[1-9]\d*$/.test(q.installationId)
+      ? q.scope !== scope ||
+        !/^[1-9]\d*$/.test(q.installationId) ||
+        (repository &&
+          (!/^[1-9]\d*$/.test(q.repositoryId) || !Number.isSafeInteger(Number(q.repositoryId))))
       : !q.pushRef.startsWith("refs/heads/")) ||
     ![
       "advertise-upload-pack",
@@ -114,7 +124,10 @@ function useRequest(input: unknown, scope?: "github-installation") {
   ) {
     throw new Error("INVALID_PREPARED_GIT_USE");
   }
-  return Object.freeze({ ...q });
+  return Object.freeze({ ...q }) as
+    | PreparedGitHubUseRequest
+    | PreparedGitHubInstallationUseRequest
+    | PreparedGitHubRepositoryUseRequest;
 }
 
 // Kubernetes projects a private 0440 file through a symlink; only the worker mounts it.
@@ -193,8 +206,9 @@ export async function startPreparedGitHubGitOwner(
     if (
       repo.namespaces.some(
         (p) =>
-          !["git-only", "git-and-draft-pr"].includes(p.transport ?? "") ||
-          p.pushRefAllowlist?.length !== 1,
+          !p.profiles.includes("github-repository") &&
+          (!["git-only", "git-and-draft-pr"].includes(p.transport ?? "") ||
+            p.pushRefAllowlist?.length !== 1),
       )
     ) {
       throw new Error("PREPARED_REPOSITORY_REQUIRES_ONE_EXPLICIT_REVIEW_REF");
@@ -223,6 +237,7 @@ export async function startPreparedGitHubGitOwner(
       const pushRef = policy?.pushRefAllowlist?.[0];
       const base = policy?.transport === "git-and-draft-pr" ? policy.pullRequestBase : undefined;
       const installation = profile === "github-installation";
+      const repository = profile === "github-repository";
       const access = registry.installationAccess;
       if (
         driver.id !== options.driverId ||
@@ -233,7 +248,9 @@ export async function startPreparedGitHubGitOwner(
             !access.namespaces.some(
               (p) => p.namespaceId === namespaceId && p.accessMode === "installation",
             )
-          : !repo || !pushRef || profile !== "git-write")
+          : repository
+            ? !options.protectedGitDriver || !repo || !policy?.permissions
+            : !repo || !pushRef || profile !== "git-write")
       ) {
         return;
       }
@@ -262,6 +279,18 @@ export async function startPreparedGitHubGitOwner(
         appId: registry.appId,
         installationId: registry.githubInstallationId,
       };
+      if (repository) {
+        return {
+          ...common,
+          adoption: repositoryGitAdoption,
+          grant: createGitHubRepositoryGrant(
+            registry,
+            { repositoryRef, repositoryId: admitted.grant.repositoryId },
+            { id: admitted.grant.grantId, isolationId: session.revisionId },
+            policy!.permissions!,
+          ),
+        };
+      }
       if (installation) {
         return {
           ...common,

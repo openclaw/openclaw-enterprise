@@ -1,5 +1,11 @@
 export const repositoryProfiles = Object.freeze([
   Object.freeze({
+    id: "github-repository",
+    label: "Repository collaborator",
+    help: "Use the GitHub App repository permissions explicitly approved for this repository. GitHub rules apply.",
+    writes: true,
+  }),
+  Object.freeze({
     id: "git-read",
     label: "Read-only",
     help: "Read code, issues, pull requests, and checks. No writes.",

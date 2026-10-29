@@ -3,7 +3,7 @@ import { providerClockSkewMs, tokenLifetimeMs } from "./driver/lifetime.ts";
 import { isGitHubWireCredential } from "./wire-credential.ts";
 
 type RepositoryPolicy = Readonly<{
-  profile?: never;
+  profile?: "github-repository";
   repositoryId: string;
   repository: string;
   permissions: Readonly<Record<string, string>>;
@@ -138,6 +138,8 @@ function validIssuedScope(
   return (
     reported?.length === expected.length &&
     expected.every(([name, level]) => (permissions as Record<string, unknown>)[name] === level) &&
+    // GitHub's installation-token schema makes repository_selection optional. The
+    // explicit request ID, exact returned repository and permission map establish scope.
     (!Object.hasOwn(packet, "repository_selection") || selection === "selected") &&
     Array.isArray(repositories) &&
     repositories.length === 1 &&

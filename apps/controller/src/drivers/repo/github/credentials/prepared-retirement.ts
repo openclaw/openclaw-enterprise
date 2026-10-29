@@ -1,3 +1,4 @@
+import { preparationIssuerAuthority } from "./grants.ts";
 import { retireToken } from "../../../../backends/token-service/retirement.ts";
 import type { Clock } from "../../credentials/backend-contracts.ts";
 import type { PreparedGitHubPostgres } from "./prepared-postgres.ts";
@@ -13,6 +14,9 @@ export async function retirePreparedGitHubToken(
   clock: Clock,
 ) {
   const result = await retireToken(repository, familyId, async ({ bytes, admission: a }) => {
+    if (a.issuerAuthority !== preparationIssuerAuthority(apiOrigin, ca)) {
+      throw new Error("prepared-issuer-authority-mismatch");
+    }
     const signal = AbortSignal.any([outer, AbortSignal.timeout(25_000)]);
     const assertAdmitted = () => signal.throwIfAborted();
     const attempt: ProviderAttempt = {

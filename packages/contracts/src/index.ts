@@ -71,6 +71,7 @@ export type {
   PreparedGitHubEgressSource,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseResponse,
   PreparedGitHubPullScope,
   PreparedGitHubPullProjection,
@@ -208,6 +209,8 @@ export type {
 } from "./repo.ts";
 export {
   githubInstallationProfile,
+  githubRepositoryProfile,
+  isProtectedRepositoryProfile,
   isInstallationRepositoryProfile,
   repositoryGitDeliveryProfile,
 } from "./repo.ts";
@@ -1492,6 +1495,7 @@ export type {
   RepositoryGitBinding,
   ProtectedRepositoryGitMaterial,
   ProtectedGitHubInstallationMaterial,
+  ProtectedGitHubRepositoryMaterial,
   GitHubInstallationSendDecision,
   GitHubInstallationSendPermit,
   RepositoryGitInstallationFence,

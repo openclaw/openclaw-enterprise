@@ -1,6 +1,8 @@
 import type {
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
+  ProtectedGitHubRepositoryMaterial,
   ProtectedGitHubInstallationMaterial,
   RepositoryGitAuthority,
   RepositoryGitOnlineAllow,
@@ -31,6 +33,7 @@ import {
   legacyAdoption,
   protectedGitAdoption,
   installationGitAdoption,
+  repositoryGitAdoption,
   releasedGitProfile,
   registeredGitSelection,
   openShellGitRecipientEvidence,
@@ -125,7 +128,8 @@ function sessionQuery(proxy: Recipient): string {
   const profile = installationRecipient(proxy) ? releasedGitProfile : "'git-write'";
   // Installation membership can change at GitHub. Across a scope change on this Agent, require
   // disposal and settled custody even when the old and new operator selection names differ.
-  const broad = "s.cleanup_context #>> '{binding,profile}' = 'github-installation'";
+  const broad =
+    "s.cleanup_context #>> '{binding,profile}' IN ('github-installation','github-repository')";
   const execution = `p.installation#>>'{plan,execution,executionId}'`;
   return `SELECT jsonb_build_object(
   'namespaceId',s.namespace_id, 'agentId',s.agent_id, 'revisionId',s.live_revision_id,
@@ -174,7 +178,7 @@ function sessionQuery(proxy: Recipient): string {
     SELECT FROM occ.repository_session_attempts old
     WHERE (old.namespace_id,old.agent_id)=(s.namespace_id,s.agent_id)
       AND old.admission_id<>s.admission_id AND old.phase<>'disposed'
-      AND (old.cleanup_context #>> '{binding,profile}' = 'github-installation'
+      AND (old.cleanup_context #>> '{binding,profile}' IN ('github-installation','github-repository')
         ${proxy ? `OR ${broad} OR old.repository_ref=s.repository_ref` : ""}))
   AND g.status='active' AND g.desired_runtime_state='running' AND g.execution_mode='dedicated'
   AND s.cleanup_context #>> '{binding,profile}' = ${profile}
@@ -187,7 +191,7 @@ function sessionQuery(proxy: Recipient): string {
     WHERE prior.source#>>'{session,namespaceId}'=s.namespace_id AND prior.source#>>'{session,agentId}'=s.agent_id
       AND prior.source#>>'{session,admissionId}'<>s.admission_id
       AND NOT ${preparedAttemptSettled("attempt")}
-      AND (prior.source->>'adoption'='${installationGitAdoption}'
+      AND (prior.source->>'adoption' IN ('${installationGitAdoption}','${repositoryGitAdoption}')
         OR (prior.source->>'adoption' IN ('${legacyAdoption}','${protectedGitAdoption}') AND ${
           proxy
             ? `(${broad} OR prior.source#>>'{session,binding,repositoryRef}'=s.repository_ref)`
@@ -309,17 +313,51 @@ const onlineAllow = (use: GitUse, replyBy: string) => ({ ...use, kind: "allow", 
 
 export interface PreparedRepositoryGitSource {
   readonly adoption:
-    typeof legacyAdoption | typeof protectedGitAdoption | typeof installationGitAdoption;
+    | typeof legacyAdoption
+    | typeof protectedGitAdoption
+    | typeof installationGitAdoption
+    | typeof repositoryGitAdoption;
   readonly key: { source: { id: string } };
   readonly session: PreparedRepositorySession;
   readonly grant: GitHubPreparationAdmission["grant"] &
     (
       | { profile: "git-ref-write" | "git-ref-draft-pr"; pushRef: string }
       | { profile: "github-installation" }
+      | { profile: "github-repository" }
     );
   /** The registry's opt-out of the one-draft limit; honored by the protected sender only. */
   readonly draftPullLimit?: "none";
 }
+function materialScope(
+  grant: PreparedRepositoryGitSource["grant"],
+  binding: PreparedRepositorySession["binding"]["grant"],
+) {
+  if (grant.profile === "github-repository") {
+    return {
+      scope: grant.profile,
+      grantId: grant.id,
+      installationId: grant.installationId,
+      repositoryId: grant.repositoryId,
+      repository: grant.repository,
+      providerInstanceId: binding.providerInstanceId,
+    };
+  }
+  if (grant.profile === "github-installation") {
+    return {
+      scope: grant.profile,
+      grantId: grant.id,
+      installationId: grant.installationId,
+      providerInstanceId: binding.providerInstanceId,
+    };
+  }
+  return {
+    ...binding,
+    repository: grant.repository,
+    pushRef: grant.pushRef,
+    ...(grant.pullRequestBase ? { pullRequestBase: grant.pullRequestBase } : {}),
+  };
+}
+
 type Policy = (session: PreparedRepositorySession) => PreparedRepositoryGitSource | undefined;
 
 /** An ended admission is withdrawn. Incomplete recipient or material evidence is unprepared. */
@@ -360,7 +398,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       driver ? protectedGitAdoption : legacyAdoption,
     ];
     if (installationRecipient(proxy)) {
-      adoption.push(installationGitAdoption);
+      adoption.push(installationGitAdoption, repositoryGitAdoption);
     }
     super(pool, key, authority, {
       active: active(sessionQuery(proxy)),
@@ -480,6 +518,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     checkRequest: {
       (input: unknown): PreparedGitHubUseRequest;
       (input: unknown, scope: "github-installation"): PreparedGitHubInstallationUseRequest;
+      (input: unknown, scope: "github-repository"): PreparedGitHubRepositoryUseRequest;
     },
   ): ProtectedRepositoryGitAuthority | undefined {
     if (!this.proxy?.driver) {
@@ -513,6 +552,39 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
               return { ...decision, scope, operation: q.operation, revisionId, fence };
             },
           } satisfies NonNullable<RepositoryGitAuthority<Allow>["githubInstallation"]>),
+          githubRepository: Object.freeze({
+            readMaterial: (route, signal) =>
+              this.readRecipientMaterial(
+                route.revisionId,
+                lifetime(signal),
+                route,
+                "github-repository",
+                mode,
+              ),
+            authorize: async (request, installed, signal) => {
+              const q = checkRequest(request, "github-repository");
+              const binding = structuredClone(installed);
+              const decision = await this.authorizeProtectedRequest(
+                q,
+                binding,
+                lifetime(signal),
+                mode,
+                decide,
+              );
+              if (decision.kind === "denied") {
+                return decision;
+              }
+              const { revisionId, fence } = binding.route;
+              return {
+                ...decision,
+                scope: "github-repository" as const,
+                repositoryId: q.repositoryId,
+                operation: q.operation,
+                revisionId,
+                fence,
+              };
+            },
+          } satisfies NonNullable<RepositoryGitAuthority<Allow>["githubRepository"]>),
         }),
         readMaterial: (route, signal) =>
           this.readRecipientMaterial(route.revisionId, lifetime(signal), route, undefined, mode),
@@ -532,6 +604,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       online: delivery("online-request", onlineAllow),
       ...(this.proxy.evidence === openShellGitRecipientEvidence && {
         observedHook: delivery("request-hook-observed", onlineAllow).githubInstallation!,
+        observedRepositoryHook: delivery("request-hook-observed", onlineAllow).githubRepository!,
       }),
     });
   }
@@ -655,12 +728,20 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   async readRecipientMaterial(
     revisionId: string,
     signal: AbortSignal,
+    install: RepositoryGitInstallationFence,
+    scope: "github-repository",
+    mode?: Authorization,
+  ): Promise<ProtectedGitHubRepositoryMaterial | RepositoryGitMaterialAbsence | undefined>;
+  async readRecipientMaterial(
+    revisionId: string,
+    signal: AbortSignal,
     install?: RepositoryGitInstallationFence,
-    scope?: "github-installation",
+    scope?: "github-installation" | "github-repository",
     mode: Authorization = null,
   ): Promise<
     | ProtectedRepositoryGitMaterial
     | ProtectedGitHubInstallationMaterial
+    | ProtectedGitHubRepositoryMaterial
     | RepositoryGitMaterialAbsence
     | undefined
   > {
@@ -698,12 +779,21 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           return withdrawn;
         }
         // The compatibility material/online paths never receive the installation credential.
-        const wide = scope === "github-installation";
         const { grant } = source;
+        const expectedAdoption =
+          scope === "github-installation"
+            ? installationGitAdoption
+            : scope === "github-repository"
+              ? repositoryGitAdoption
+              : undefined;
         if (
-          wide !== (source.adoption === installationGitAdoption) ||
-          wide !== (grant.profile === "github-installation") ||
-          (wide && (!install || !installationRecipient(this.proxy)))
+          (scope !== undefined &&
+            (grant.profile !== scope ||
+              source.adoption !== expectedAdoption ||
+              !install ||
+              !installationRecipient(this.proxy))) ||
+          (scope === undefined &&
+            (grant.profile === "github-installation" || grant.profile === "github-repository"))
         ) {
           return unprepared;
         }
@@ -723,19 +813,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           materialVersion,
           sessionId: current.session.sessionId,
           apiOrigin: this.authority.split("#")[0]!,
-          ...(grant.profile === "github-installation"
-            ? {
-                scope: grant.profile,
-                grantId: grant.id,
-                installationId: grant.installationId,
-                providerInstanceId: current.session.binding.grant.providerInstanceId,
-              }
-            : {
-                ...current.session.binding.grant,
-                repository: grant.repository,
-                pushRef: grant.pushRef,
-                ...(grant.pullRequestBase ? { pullRequestBase: grant.pullRequestBase } : {}),
-              }),
+          ...materialScope(grant, current.session.binding.grant),
         };
       });
       signal.throwIfAborted();
@@ -773,7 +851,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private async authorizeProtectedRequest<
     Allow extends RepositoryGitOnlineAllow | RepositoryGitSendPermit,
   >(
-    q: PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest,
+    q:
+      | PreparedGitHubUseRequest
+      | PreparedGitHubInstallationUseRequest
+      | PreparedGitHubRepositoryUseRequest,
     installed: InstalledGitMaterial,
     signal: AbortSignal,
     mode: Authorization,
@@ -861,7 +942,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
 
   private async recordUse(
     c: PostgresClient,
-    q: PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest,
+    q:
+      | PreparedGitHubUseRequest
+      | PreparedGitHubInstallationUseRequest
+      | PreparedGitHubRepositoryUseRequest,
     signal: AbortSignal,
     installed?: InstalledGitMaterial,
     mode: Authorization = null,
@@ -889,7 +973,19 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     const { grant } = source;
     const installation = "installationId" in q;
     let repositoryId;
-    if (installation) {
+    if (installation && q.scope === "github-repository") {
+      if (
+        source.adoption !== repositoryGitAdoption ||
+        grant.profile !== "github-repository" ||
+        !installed ||
+        !installationRecipient(this.proxy) ||
+        grant.installationId !== q.installationId ||
+        grant.repositoryId !== q.repositoryId
+      ) {
+        return fail();
+      }
+      repositoryId = grant.repositoryId;
+    } else if (installation) {
       if (
         source.adoption !== installationGitAdoption ||
         grant.profile !== "github-installation" ||
@@ -903,7 +999,11 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       // The provider request and installation sender port carry the actual installationId.
       repositoryId = "github-installation:" + grant.installationId;
     } else {
-      if (grant.profile === "github-installation" || grant.pushRef !== q.pushRef) {
+      if (
+        grant.profile === "github-installation" ||
+        grant.profile === "github-repository" ||
+        grant.pushRef !== q.pushRef
+      ) {
         return fail();
       }
       repositoryId = q.repositoryId;

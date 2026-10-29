@@ -581,6 +581,10 @@
         "OpenShell direct construction and policy rendering still enforce configuration validation",
         "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
+    },
+    {
+      "path": "tests/integration/repository-credentials-repo-collaboration.test.ts",
+      "expectedTests": ["private repository grant preserves issue, renewal and retirement scope"]
     }
   ]
 }

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-10-27
-last_updated_session: authoring-run/2af9e346-e424-4bb7-8b0e-a6e1126f9832
+updated: 2026-10-29
+last_updated_session: authoring-run/34b2800e-eee1-42e0-a46d-fe4623c6e3f6
 ---
 
 # Repository credential service flow
@@ -20,9 +20,8 @@ covers forwarding, closure and cleanup in the separate credential process. The
 - `apps/controller/src/drivers/repo/github/credentials/client/operator.ts:callControl` carries operator admission/status/close requests over the private Unix socket.
 - `apps/controller/src/drivers/repo/credentials/server.ts:startListeners` accepts HTTPS client traffic after protected startup succeeds.
 
-Standalone configuration selects one repository; the registry supports several
-under one App installation. Sessions bind exactly one repository. Operators own
-protected files and control; clients receive session files and public connection/trust settings.
+Sessions select one repository, including within multi-repository installations.
+Operators own protected inputs; clients receive session files and public trust settings.
 
 ## Flow
 
@@ -95,9 +94,9 @@ until the control socket has mode `0600` and its identity is recorded.
 
 `apps/controller/src/drivers/repo/credentials/control.ts:handleControl` validates the local
 request method, target, content type, and body before invoking the common
-service. The body limit is the smaller of 16,384 bytes and `controlBodyBytes`. `apps/controller/src/drivers/repo/credentials/service.ts:createCredentialService`
+service. Bodies are capped at min(16,384, `controlBodyBytes`). `apps/controller/src/drivers/repo/credentials/service.ts:createCredentialService`
 checks duration, allowed profile and capacity, then freezes the resolved binding.
-Profiles are opaque to the common service. GitHub resolves `git-read`, `git-write`
+GitHub resolves `git-read`, `git-write`
 and `git-full` to the [permission maps](../reference/repository-credentials.md#configuration)
 and includes the profile in grant identity. Startup rejects unknown names,
 including `read-write`; the example defaults to `git-write`. Bearer lookup stores
@@ -106,28 +105,20 @@ a digest; only the original admission response contains the bearer.
 `apps/controller/src/drivers/repo/credentials/server.ts:startListeners` owns the
 correlation registry from
 `apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission`.
-The registry holds at most twice the configured `sessions` count.
+Registry capacity is twice `sessions`.
 Admission IDs bind the complete request: platform Namespace, repository reference,
 normalized profile, expected grant and absolute deadline. Registry mode requires
-this binding and independently resolves its fingerprint. The broker holds one
-local session slot and freezes the selected route before the worker-owned private
-journal reserves the original attempt. It constructs that route only after the
-reservation succeeds, using the original deadline. A capacity or shutdown refusal
-before reservation leaves no receipt; a missing or uncertain reservation creates no
-session. Recovery durably fences a missing admission. If the broker cannot open or
-bind after reservation, it fences its own reservation. An uncommitted fence stays
-with its admission for the next open or recovery; past the admission window a sweep
-retries it and forgets it once committed, so it stops counting toward capacity.
-Known nondelivery closes the session.
-Reconciliation cannot recover a bearer, change its binding or replay provider work.
-Keep the original admission ID and inspect its owner and any known session after an
-uncertain response. Status observes expiry without closing the session or starting
-disposal; clock rollback cannot restore use. If a disposal acknowledgement is lost,
-status, close and shutdown resend the same status; the journal records it once and
-refuses a different one.
+this binding and independently resolves its fingerprint. The broker reserves a session slot and route before the worker journal reserves the
+attempt; construction then uses the original deadline. Refusal before reservation leaves
+no receipt. Missing or uncertain reservation creates no session. Failed construction
+fences its reservation; uncommitted fences remain for recovery or sweeping. Known
+nondelivery closes the session.
+Recovery cannot recover bearers, rebind grants or replay provider work. Retain the
+admission ID and inspect its original owner after uncertainty. Status observes expiry
+without disposal; clock rollback cannot restore use. Lost disposal acknowledgements
+resend the same status, which the journal records once.
 
-The receipt and operator control clients reject private-socket replies over
-16,384 bytes and destroy the response without waiting for its end.
+Receipt and operator clients destroy replies exceeding 16,384 bytes.
 [`RepositoryReceiptClient.call`](../../apps/controller/src/drivers/repo/credentials/receipt-client.ts)
 reports `RECEIPT_UNAVAILABLE`;
 [`callControl`](../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts)
@@ -205,18 +196,14 @@ to classify target, method, profile and query. All profiles admit upload-pack di
 `git-read` rejects receive-pack, including discovery. Git paths match admitted
 owner/repository case-insensitively with one optional `.git` suffix, then use the
 canonical identity upstream. A literal `.git` repository keeps its suffix.
-Raw-target, endpoint, method, media, query and profile checks remain. All profiles
-admit selected repository, README, PR, issue and comment reads, `GET /meta` and
-`POST /graphql`. REST writes require the matching profile permission; Reader
-rejects them before dispatch. The shared PR/issue comment routes also rely on
-GitHub's resource authorization. Raw README and diff/patch replies retain the configured API response-size limit
-and bypass JSON rewriting. GraphQL uses the exact installation-token grant without
-field-level or branch-only authorization. GitHub may return permitted public
-information; every GraphQL POST is a possible write. The GraphQL plan carries
-`apps/controller/src/drivers/repo/github/credentials/graphql-input.ts:allowsGraphqlInput`:
-`apps/controller/src/drivers/repo/credentials/transport/agent.ts:createAgentHandler`
-buffers the body within the input bounds before credential use and refuses
-invalid JSON or any decoded string naming `tempCloneToken` with 400.
+Raw-target, endpoint, method, media, query and profile checks remain. Profiles admit repository, README, PR, issue and comment reads, `GET /meta` and
+`POST /graphql`. REST writes require matching permissions; GitHub also authorizes
+shared comment resources. Raw README and diff/patch responses retain size limits
+without JSON rewriting. GraphQL uses the exact token grant, with no field or branch
+policy; public information may remain accessible and every POST is a possible write.
+`apps/controller/src/drivers/repo/github/credentials/graphql-input.ts:allowsGraphqlInput`
+is applied by `createAgentHandler` before credential use: bounded JSON containing a
+decoded `tempCloneToken` string, or invalid JSON, receives 400.
 
 `apps/controller/src/drivers/repo/credentials/service.ts:createCredentialService`
 reserves the exchange.
@@ -361,6 +348,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 
 ## Changelog
 
+- 2026-10-29: Document explicit repository collaboration and condense lifecycle trace. (authoring-run/34b2800e-eee1-42e0-a46d-fe4623c6e3f6 - 967328e841c77974cc692ff638ae322a4312b9a6)
+
 - 2026-10-27 17:25: Resend a disposal whose acknowledgement was lost with its original status. (fix-3873-dispose)
 
 - 2026-10-27 16:36: Preserve original receipt recovery and observed expiry with prepared route admission. (authoring-run/2af9e346-e424-4bb7-8b0e-a6e1126f9832 - 759e6312f4e5939c17837132ef51d26c84146517)
@@ -380,3 +369,22 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 - 2026-10-27 13:32: Retain observed session expiry through wall-clock correction. (authoring-run/190e7ec1-f80f-46f3-8a1c-06a9976abbc4 - bc4d77fb896d89b02b561a7e5f213e713ee40d13)
 
 - [Earlier entries](repository-credentials/history.md) are preserved in the documentation history.
+
+## Explicit repository collaboration admission
+
+`apps/controller/src/drivers/repo/github/credentials/registry.ts` accepts
+`github-repository` only with a trusted repository-permission map and a stable
+numeric repository ID. It includes that map in the grant fingerprint; changing
+permissions creates a different grant. No omitted profile or existing grant is
+promoted. The Console exposes this choice only among registry-approved profiles.
+
+`packages/occ/src/index.ts:resolveRepositoryBindings` resolves the explicit Agent
+selection. `admitProxyPlan` requires the selected Credential Proxy to confirm the
+matching `github_repository` delivery profile. An older sender's void response
+cannot confirm it. `packages/contracts/src/credential-proxy.ts` keeps observed-hook
+preview admission distinct from online and exact-dispatch authorization.
+
+Migration `0065_github_repository_collaboration.sql` admits the corresponding
+prepared family only with matching profile, repository identity, recipient, and
+repository permissions. Issuance and runtime transport are separate obligations;
+API save and deployment scheduling do not prove a provider send or withdrawal.

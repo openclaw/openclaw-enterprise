@@ -722,7 +722,7 @@ export const agentRevisions = occSchema.table(
                     THEN ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'online-request'
                     WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '6' THEN
                       ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'
-                      AND ${table.admittedSpec} #>> '{egress_plan,repositoryGit,bindings,0,profile}' = 'github-installation'
+                      AND ${table.admittedSpec} #>> '{egress_plan,repositoryGit,bindings,0,profile}' IN ('github-installation','github-repository')
                       AND jsonb_array_length(${table.admittedSpec} #> '{egress_plan,repositoryGit,bindings}') = 1
                     ELSE NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGitAuthorization') END
                 AND
@@ -1959,6 +1959,22 @@ export const preparedGitHubFamilies = occSchema.table(
        AND source #>> '{grant,appId}' ~ '^[1-9][0-9]*$'
        AND source #>> '{grant,installationId}' ~ '^[1-9][0-9]*$'
        AND source #>> '{session,grant,repositoryId}' = 'github-installation:' || (source #>> '{grant,installationId}'))
+   OR (source->>'adoption' = 'credential_proxy_github_repository'
+       AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'
+       AND source #>> '{session,credentialProxyExecution,enforcement,repositoryGitRecipient,deliveryProfile}' = 'github_repository'
+       AND source #>> '{session,binding,profile}' = 'github-repository'
+       AND source #>> '{grant,profile}' = 'github-repository'
+       AND (source->'grant') - ARRAY['id','isolationId','appId','installationId','profile','repositoryId','repository','permissions'] = '{}'::jsonb
+       AND source #>> '{grant,appId}' ~ '^[1-9][0-9]{0,15}$'
+       AND source #>> '{grant,installationId}' ~ '^[1-9][0-9]{0,15}$'
+       AND CASE WHEN source #>> '{grant,repositoryId}' ~ '^[1-9][0-9]{0,15}$'
+           THEN (source #>> '{grant,repositoryId}')::numeric <= 9007199254740991 ELSE false END
+       AND source #>> '{grant,repository}' ~ '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
+       AND source #>> '{session,grant,repositoryId}' = source #>> '{grant,repositoryId}'
+       AND jsonb_typeof(source #> '{grant,permissions}') = 'object'
+       AND source #>> '{grant,permissions,metadata}' = 'read'
+       AND (source #> '{grant,permissions}') - ARRAY['actions','administration','checks','contents','deployments','discussions','issues','metadata','pages','pull_requests','repository_hooks','repository_projects','secret_scanning_alerts','secrets','security_events','statuses','variables','vulnerability_alerts','workflows'] = '{}'::jsonb
+       AND NOT jsonb_path_exists(source #> '{grant,permissions}', '$.* ? (@ != "read" && @ != "write")'))
    )
    AND source_id = 'repository-git:' || (source #>> '{session,admissionId}')
    AND admission->>'familyId' = source_id AND admission->'grant' = source->'grant'

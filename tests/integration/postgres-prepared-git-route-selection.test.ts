@@ -20,7 +20,7 @@ import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs"
 import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
-import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 
 test(
   "prepared Git keeps the reserved route and rechecks a withdrawn grant before origin I/O",
@@ -292,6 +292,99 @@ test(
           await receipts.close();
         }
       }
+    }
+  },
+);
+
+test(
+  "repository collaborator schema binds repository, permission class and recipient",
+  requiresPostgres,
+  async (t) => {
+    const pool = testPool(t, { connectionString: databaseUrl });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const admissionId = randomUUID();
+      const revisionId = `rev_${randomUUID()}`;
+      const sourceId = `repository-git:${admissionId}`;
+      const grant = {
+        id: `sha256:${"a".repeat(64)}`,
+        isolationId: revisionId,
+        appId: "123",
+        installationId: "456",
+        profile: "github-repository",
+        repositoryId: "789",
+        repository: "example/project",
+        permissions: { metadata: "read", contents: "write" },
+      };
+      const source = {
+        key: { source: { id: sourceId } },
+        adoption: "credential_proxy_github_repository",
+        grant,
+        session: {
+          admissionId,
+          revisionId,
+          binding: { profile: "github-repository" },
+          grant: { grantId: grant.id, repositoryId: "789" },
+          credentialProxyExecution: {
+            driver: { id: "sender" },
+            enforcement: { repositoryGitRecipient: { deliveryProfile: "github_repository" } },
+          },
+        },
+      };
+      const insert = (value: typeof source) =>
+        client.query(
+          "INSERT INTO occ.prepared_github_families(source_id,source,issuer,admission) VALUES($1,$2,$3,$4)",
+          [
+            sourceId,
+            value,
+            { kind: "worker-mounted-github-app-key" },
+            { familyId: sourceId, grant: value.grant },
+          ],
+        );
+      await client.query("SAVEPOINT control");
+      await insert(source);
+      await client.query("ROLLBACK TO SAVEPOINT control");
+      const invalid = [
+        { ...source, grant: { ...grant, profile: "git-full" } },
+        { ...source, grant: { ...grant, repositoryId: "790" } },
+        { ...source, grant: { ...grant, repositoryId: "9007199254740992" } },
+        { ...source, grant: { ...grant, pushRef: "refs/heads/main" } },
+        { ...source, grant: { ...grant, permissions: { ...grant.permissions, members: "write" } } },
+        {
+          ...source,
+          grant: { ...grant, permissions: { ...grant.permissions, contents: "admin" } },
+        },
+        {
+          ...source,
+          session: {
+            ...source.session,
+            credentialProxyExecution: {
+              ...source.session.credentialProxyExecution,
+              enforcement: { repositoryGitRecipient: { deliveryProfile: "github_installation" } },
+            },
+          },
+        },
+      ];
+      for (const value of invalid) {
+        await assert.rejects(insert(value), {
+          code: "23514",
+          constraint: "prepared_github_families_check",
+        });
+        await client.query("ROLLBACK TO SAVEPOINT control");
+      }
+      assert.equal(
+        (
+          await client.query(
+            "SELECT count(*)::int AS n FROM occ.prepared_github_families WHERE source_id=$1",
+            [sourceId],
+          )
+        ).rows[0].n,
+        0,
+      );
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
     }
   },
 );

@@ -2,6 +2,7 @@ import type { CredentialProxyBinding } from "./credential-proxy-exchange.ts";
 import type { EgressInstallation } from "./credential-proxy.ts";
 import type {
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseRequest,
 } from "./prepared-github-egress.ts";
 
@@ -36,6 +37,15 @@ export interface ProtectedGitHubInstallationMaterial extends Omit<
   "repositoryId" | "repository" | "pushRef" | "pullRequestBase"
 > {
   readonly scope: "github-installation";
+  readonly installationId: string;
+}
+
+/** Repository-selected material cannot satisfy an installation-wide or ref-scoped request. */
+export interface ProtectedGitHubRepositoryMaterial extends Omit<
+  ProtectedRepositoryGitMaterial,
+  "pushRef" | "pullRequestBase"
+> {
+  readonly scope: "github-repository";
   readonly installationId: string;
 }
 
@@ -100,12 +110,34 @@ interface GitHubInstallationAuthority<
   >;
 }
 
+interface GitHubRepositoryAuthority<
+  Allow extends RepositoryGitSendPermit | RepositoryGitOnlineAllow,
+> {
+  readMaterial(
+    route: Route,
+    signal: AbortSignal,
+  ): Promise<
+    ProtectedGitHubRepositoryMaterial | { readonly absent: "withdrawn" | "unprepared" } | undefined
+  >;
+  authorize(
+    request: PreparedGitHubRepositoryUseRequest,
+    installed: Version & { readonly route: Route },
+    signal: AbortSignal,
+  ): Promise<
+    | RepositoryGitDenied
+    | (Allow &
+        Pick<PreparedGitHubRepositoryUseRequest, "scope" | "operation" | "repositoryId"> &
+        Pick<Route, "revisionId" | "fence">)
+  >;
+}
+
 /** Private port for the trusted sender selected at installation. Never pass it to a workload. */
 export interface ProtectedRepositoryGitAuthority extends RepositoryGitAuthority<RepositoryGitSendPermit> {
   /** Only for recipients admitted and verified for authorization of every new request. */
   readonly online: RepositoryGitAuthority<RepositoryGitOnlineAllow>;
   /** Separately selected, only for a v6 admission on the bundled observed route. */
   readonly observedHook?: GitHubInstallationAuthority<RepositoryGitOnlineAllow>;
+  readonly observedRepositoryHook?: GitHubRepositoryAuthority<RepositoryGitOnlineAllow>;
   readonly recipients: {
     /** Re-observe this exact released recipient. An unresolved installation is not adopted. */
     observe(installation: EgressInstallation): Promise<Route | undefined>;
@@ -121,6 +153,7 @@ export interface RepositoryGitAuthority<
 > {
   /** Neither the other scope nor another sender guarantee can release this material. */
   readonly githubInstallation?: GitHubInstallationAuthority<Allow>;
+  readonly githubRepository?: GitHubRepositoryAuthority<Allow>;
   /** Read eligible committed material only for this verified installation; never issue from here. */
   readMaterial(
     route: Route,

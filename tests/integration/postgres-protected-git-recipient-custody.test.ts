@@ -9,8 +9,12 @@ import type {
   AgentRevision,
   DriverRegistrationRef,
   PreparedGitHubUseRequest,
+  PreparedGitHubRepositoryUseRequest,
 } from "../../packages/contracts/src/index.ts";
-import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import {
+  validateGitHubRepositoryRegistry,
+  resolveGitHubRepositoryBinding,
+} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { fixture } from "../fixtures/prepared-repository-git.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -551,6 +555,123 @@ test(
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
+test(
+  "registered repository authority prepares only its selected grant and fences use and loss",
+  requiresPostgres,
+  async (t) => {
+    const f = await fixture(t);
+    await disposeNativeSession(f);
+    const registry = validateGitHubRepositoryRegistry({
+      ...f.registry,
+      repositories: f.registry.repositories.map((repo) => ({
+        ...repo,
+        namespaces: repo.namespaces.map((policy) => ({
+          namespaceId: policy.namespaceId,
+          profiles: ["github-repository"],
+          permissions: { metadata: "read", contents: "write" },
+        })),
+      })),
+    });
+    const binding = resolveGitHubRepositoryBinding(registry, {
+      namespaceId: f.revision.namespaceId,
+      repositoryRef: f.binding.repositoryRef,
+      profile: "github-repository",
+    });
+    const driver = {
+      id: "repository-custody",
+      implementation: "custody-fixture",
+      configurationId: "d".repeat(64),
+    };
+    const owner = await f.startOwner({
+      registry,
+      controlSocket: undefined,
+      protectedGitDriver: driver,
+    });
+    const host = owner.protectedGit!;
+    const { installation, sessionId, revisionId } = await admitProtectedSession(f, driver, binding);
+    const route = await host.recipients.observe(installation);
+    assert.ok(route);
+    await owner.maintain();
+    const scoped = host.githubRepository!;
+    const material = await scoped.readMaterial(route, t.signal);
+    assert.ok(material && "value" in material);
+    assert.equal(material.scope, "github-repository");
+    assert.equal(material.repositoryId, binding.grant.repositoryId);
+    assert.deepEqual(
+      f.gh.issuesOfTokens.map((issue: { repositoryIds: unknown }) => issue.repositoryIds),
+      [[Number(binding.grant.repositoryId)]],
+    );
+    assert.deepEqual(await host.readMaterial(route, t.signal), { absent: "unprepared" });
+    assert.deepEqual(await host.githubInstallation!.readMaterial(route, t.signal), {
+      absent: "unprepared",
+    });
+    const version = {
+      preparationAttemptId: material.preparationAttemptId,
+      materialVersion: material.materialVersion,
+    };
+    const pending = await host.recipients.beginInstall(route, version);
+    assert.ok(pending);
+    const installed = await host.recipients.confirmInstall(pending);
+    assert.ok(installed);
+    const request = (): PreparedGitHubRepositoryUseRequest => ({
+      scope: "github-repository",
+      installationId: registry.githubInstallationId,
+      repositoryId: binding.grant.repositoryId,
+      providerInstanceId: binding.grant.providerInstanceId,
+      grantId: binding.grant.grantId,
+      sessionId,
+      exchangeId: randomUUID(),
+      requestDigestSha256: "a".repeat(64),
+      operation: "github-rest",
+      deadlineAt: new Date(Date.now() + 5000).toISOString(),
+    });
+    const held = { ...version, route: installed };
+    const allowed = await scoped.authorize(request(), held, t.signal);
+    assert.equal(allowed.kind, "permit");
+    assert.equal(allowed.repositoryId, binding.grant.repositoryId);
+    assert.equal(allowed.revisionId, revisionId);
+    assert.equal(
+      (await scoped.authorize({ ...request(), repositoryId: "999999" }, held, t.signal)).kind,
+      "denied",
+    );
+    assert.equal(
+      (await scoped.authorize(request(), { ...held, materialVersion: randomUUID() }, t.signal))
+        .kind,
+      "denied",
+    );
+    const changedRegistry = validateGitHubRepositoryRegistry({
+      ...registry,
+      repositories: registry.repositories.map((repo) => ({
+        ...repo,
+        namespaces: repo.namespaces.map((policy) => ({
+          ...policy,
+          permissions: { metadata: "read", contents: "read" },
+        })),
+      })),
+    });
+    const changed = await f.startOwner({
+      registry: changedRegistry,
+      controlSocket: undefined,
+      protectedGitDriver: driver,
+    });
+    assert.deepEqual(
+      await changed.protectedGit!.githubRepository!.readMaterial(installed, t.signal),
+      { absent: "withdrawn" },
+    );
+    // A changed policy cannot relabel the original token. Positive Agent loss lets its owner retire custody.
+    await f.pool.query(
+      "UPDATE occ.agents SET desired_runtime_state='stopped' WHERE namespace_id=$1 AND id=$2",
+      [f.revision.namespaceId, f.revision.agentId],
+    );
+    assert.equal((await scoped.authorize(request(), held, t.signal)).kind, "denied");
+    await owner.maintain();
+    assert.equal(
+      f.gh.trace.filter((call: { method: string }) => call.method === "DELETE").length,
+      1,
+    );
+  },
+);
+
 async function disposeNativeSession(f: Fixture) {
   await f.withdraw();
   await f.state.transact(async (u) => {
@@ -618,6 +739,9 @@ async function admitProtectedSession(
         networkInstanceId: "net",
         ...(binding.profile === "github-installation" && {
           deliveryProfile: "github_installation" as const,
+        }),
+        ...(binding.profile === "github-repository" && {
+          deliveryProfile: "github_repository" as const,
         }),
       },
     },

@@ -111,6 +111,15 @@ export interface PreparedGitHubInstallationUseRequest extends Pick<
     | "github-graphql";
 }
 
+/** One repository, with provider permission scope bound by grantId. */
+export interface PreparedGitHubRepositoryUseRequest extends Omit<
+  PreparedGitHubInstallationUseRequest,
+  "scope"
+> {
+  readonly scope: "github-repository";
+  readonly repositoryId: string;
+}
+
 /** A possible disclosure, not evidence that GitHub received or performed the operation. */
 export interface PreparedGitHubUseResponse {
   readonly value: string;

@@ -1,3 +1,4 @@
+import { isGitHubRepositoryPermissions } from "./repository-grant.ts";
 import type { RepositoryGitDeliveryResolver } from "../../credentials/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
@@ -24,13 +25,26 @@ export const GITHUB_REPOSITORY_REGISTRY_MAX_BYTES = 256 * 1024;
 // Keep the credential service's runtime boundary closed while checking the shared profile contract.
 export const githubInstallationProfile: typeof installationProfile = "github-installation";
 
+export const githubRepositoryProfile = "github-repository";
+/** Trusted registry policy, not Agent input or a default permission grant. */
+export function normalizeGitHubRepositoryPermissions(
+  value: unknown,
+): Readonly<Record<string, string>> {
+  if (!isGitHubRepositoryPermissions(value)) {
+    return invalid();
+  }
+  const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b, "en"));
+  return Object.freeze(Object.fromEntries(entries));
+}
+
 export interface GitHubRepositoryRegistration {
   readonly repositoryRef: string;
   readonly repositoryId: string;
   readonly repository: string;
   readonly namespaces: readonly Readonly<{
     namespaceId: string;
-    profiles: readonly GitHubProfile[];
+    profiles: readonly (GitHubProfile | typeof githubRepositoryProfile)[];
+    permissions?: Readonly<Record<string, string>>;
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
     transport?: "git-only" | "git-and-draft-pr";
@@ -96,8 +110,13 @@ function numericId(value: unknown): string {
   return id;
 }
 
-function profile(value: unknown): GitHubProfile {
-  if (value !== "git-read" && value !== "git-write" && value !== "git-full") {
+function profile(value: unknown): GitHubProfile | typeof githubRepositoryProfile {
+  if (
+    value !== githubRepositoryProfile &&
+    value !== "git-read" &&
+    value !== "git-write" &&
+    value !== "git-full"
+  ) {
     return invalid();
   }
   return value;
@@ -184,13 +203,27 @@ export function validateGitHubRepositoryRegistry(
       const policy = object(candidatePolicy, [
         "namespaceId",
         "profiles",
+        "permissions",
         "allowStandingApproval",
         "pushRefAllowlist",
         "transport",
         "pullRequestBase",
         "draftPullLimit",
       ]);
-      const profiles = array(policy.profiles, 3).map(profile).sort();
+      const profiles = array(policy.profiles, 4).map(profile).sort();
+      const collaborator = profiles.includes(githubRepositoryProfile);
+      if (
+        collaborator !== Object.hasOwn(policy, "permissions") ||
+        (collaborator &&
+          ["transport", "pushRefAllowlist", "pullRequestBase", "draftPullLimit"].some((key) =>
+            Object.hasOwn(policy, key),
+          ))
+      ) {
+        return invalid();
+      }
+      const permissions = collaborator
+        ? normalizeGitHubRepositoryPermissions(policy.permissions)
+        : undefined;
       unique(profiles);
       if (Object.hasOwn(policy, "allowStandingApproval") && policy.allowStandingApproval !== true) {
         return invalid();
@@ -245,6 +278,7 @@ export function validateGitHubRepositoryRegistry(
       return Object.freeze({
         namespaceId: text(policy.namespaceId),
         profiles: Object.freeze(profiles),
+        ...(permissions === undefined ? {} : { permissions }),
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
         ...(transport === undefined ? {} : { transport }),
@@ -346,6 +380,40 @@ export function resolveGitHubRepositoryBinding(
   const policy = repository?.namespaces.find((entry) => entry.namespaceId === namespaceId);
   if (!repository || !policy || !policy.profiles.includes(selectedProfile)) {
     throw new Error("repository-binding-not-authorized");
+  }
+  if (selectedProfile === githubRepositoryProfile) {
+    if (!policy.permissions) {
+      return invalid();
+    }
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: registry.version,
+          capabilityPolicy: "github-repository-explicit-permissions-v1",
+          backendId: registry.backendId,
+          providerInstanceId: registry.providerInstanceId,
+          appId: registry.appId,
+          installationId: registry.githubInstallationId,
+          maximumDurationSeconds: registry.maximumDurationSeconds,
+          namespaceId,
+          repositoryRef,
+          repositoryId: repository.repositoryId,
+          repository: repository.repository,
+          profile: selectedProfile,
+          permissions: normalizeGitHubRepositoryPermissions(policy.permissions),
+        }),
+      )
+      .digest("hex");
+    return Object.freeze({
+      repositoryRef,
+      profile: selectedProfile,
+      backendId: registry.backendId,
+      grant: Object.freeze({
+        providerInstanceId: registry.providerInstanceId,
+        repositoryId: repository.repositoryId,
+        grantId: `sha256:${fingerprint}`,
+      }),
+    });
   }
   // Policy changes cannot preserve an earlier grant merely by retaining an operator label.
   const fingerprint = createHash("sha256")
@@ -454,6 +522,25 @@ function standingApprovalScope(
   if (!repository || "accessMode" in policy) {
     return;
   }
+  if (input.binding.profile === githubRepositoryProfile) {
+    if (!policy.permissions) {
+      return;
+    }
+    return Object.freeze({
+      appId: registry.appId,
+      installationId: registry.githubInstallationId,
+      providerInstanceId: registry.providerInstanceId,
+      repositorySelection: "repository",
+      repositoryId: repository.repositoryId,
+      repository: repository.repository,
+      profile: githubRepositoryProfile,
+      capabilityPolicy: "github-repository-explicit-permissions-v1",
+      apiPermissions: normalizeGitHubRepositoryPermissions(policy.permissions),
+      maximumSessionDurationSeconds: registry.maximumDurationSeconds,
+      installationPolicyAllowsStanding: true,
+      namespacePolicyAllowsStanding: true,
+    });
+  }
   return Object.freeze({
     appId: registry.appId,
     installationId: registry.githubInstallationId,
@@ -516,6 +603,17 @@ export function createGitHubRepositoryDeliveryResolver(
     }
     const repository = registry.repositories.find((r) => r.repositoryRef === binding.repositoryRef);
     const policy = repository?.namespaces.find((p) => p.namespaceId === revision.namespaceId);
+    if (binding.profile === githubRepositoryProfile && repository && policy?.permissions) {
+      return Object.freeze({
+        binding: resolved,
+        delivery: Object.freeze({
+          scope: "github-repository" as const,
+          installationId: registry.githubInstallationId,
+          repositoryId: repository.repositoryId,
+          repository: repository.repository,
+        }),
+      });
+    }
     if (
       binding.profile !== "git-write" ||
       !repository ||

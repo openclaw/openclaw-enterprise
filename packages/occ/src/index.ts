@@ -31,7 +31,7 @@ import {
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
-  isInstallationRepositoryProfile,
+  isProtectedRepositoryProfile,
   repositoryGitDeliveryProfile,
   repositoryGitAuthorization,
   credentialFreeMetadataType,
@@ -6265,7 +6265,7 @@ export class OpenClawController {
     // Each refusal below is an Installation property or the Agent's saved bindings, after the
     // deploy grant and the authorization of every bound source: a retry never helps, so each is a
     // 409 with fixed text that names no source or repository (finding 2536).
-    const installationAccess = isInstallationRepositoryProfile(repositoryGit?.bindings[0]?.profile);
+    const installationAccess = isProtectedRepositoryProfile(repositoryGit?.bindings[0]?.profile);
     if (!this.selections.has("credential_proxy")) {
       if (installationAccess) {
         throw new CredentialProxyAdmissionError("installationAccess");
@@ -6318,7 +6318,7 @@ export class OpenClawController {
     );
     if (gitAuthorization === "unavailable") {
       throw new DependencyUnavailableError(
-        "The selected Credential Proxy did not confirm installation-wide repository access.",
+        "The selected Credential Proxy did not confirm the selected repository delivery profile.",
       );
     }
     const reducibleGit =
@@ -14748,7 +14748,7 @@ export class OpenClawController {
         return (
           !requested.has(binding.repositoryRef) ||
           ((requested.get(binding.repositoryRef) !== undefined ||
-            isInstallationRepositoryProfile(binding.profile)) &&
+            isProtectedRepositoryProfile(binding.profile)) &&
             requested.get(binding.repositoryRef) !== binding.profile) ||
           backend === undefined ||
           !("repo" in backend.drivers) ||
@@ -14763,7 +14763,7 @@ export class OpenClawController {
     // Agent save and deploy admission both resolve here, so they refuse the same selections.
     if (
       resolution.bindings.length !== 1 &&
-      resolution.bindings.some((binding) => isInstallationRepositoryProfile(binding.profile))
+      resolution.bindings.some((binding) => isProtectedRepositoryProfile(binding.profile))
     ) {
       throw new RepositoryBindingSelectionError();
     }

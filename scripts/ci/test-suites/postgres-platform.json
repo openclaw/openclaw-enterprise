@@ -326,7 +326,9 @@
       "path": "tests/integration/postgres-protected-git-recipient-custody.test.ts",
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
-        "changing between repository and installation scope waits for the previous owner to settle its token"
+        "changing between repository and installation scope waits for the previous owner to settle its token",
+        "OpenShell custody requires the current fence and the actually observed material generation",
+        "registered repository authority prepares only its selected grant and fences use and loss"
       ]
     },
     {
@@ -346,7 +348,8 @@
     {
       "path": "tests/integration/postgres-prepared-git-route-selection.test.ts",
       "expectedTests": [
-        "prepared Git keeps the reserved route and rechecks a withdrawn grant before origin I/O"
+        "prepared Git keeps the reserved route and rechecks a withdrawn grant before origin I/O",
+        "repository collaborator schema binds repository, permission class and recipient"
       ]
     },
     {
