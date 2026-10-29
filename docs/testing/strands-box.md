@@ -265,8 +265,8 @@ verifier or an in-image record cannot override the host expectations. Missing
 files, later-layer overwrites, wrong users and Pod identity changes fail QA.
 
 QA requires a nonempty image ID for every observed running container and checks
-it against the selected image. An existing fixture works unchanged when the
-selected digest is the running manifest digest. For an image index, add
+it against the selected image. No additional image-document fields are needed
+when the selected digest is the running manifest digest. For an image index, add
 `runtimeImageIndexFile` and `runtimeImageManifestFile` to the fixture, pointing
 to the exact raw OCI index and its Linux ARM64 manifest. QA hashes both documents
 and resolves the index's unique ARM64 descriptor. For runtimes reporting a config
