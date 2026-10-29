@@ -176,6 +176,18 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/retired-openclaw-settings.ts",
+      "specifier": "file:packages/occ/src/retired-openclaw-settings.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console shows the refusal OCC's deploy admission gives a draft that keeps a retired OpenClaw setting, from OCC's dependency-free table, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
       "to": "packages/occ/src/gateway-security-defaults.ts",
       "specifier": "file:packages/occ/src/gateway-security-defaults.ts",
       "kind": "path",

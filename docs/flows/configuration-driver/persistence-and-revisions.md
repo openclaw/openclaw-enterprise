@@ -21,12 +21,12 @@ bundled or installed Configuration Driver: model provider settings,
 an `agents` roster, a model or fallback that is not `<provider>/<model>`
 (OpenClaw's `openrouter:auto` included), or a fallback on another provider than
 its primary's, all of which every deployment refuses, with deployment's own
-text, and
-[the settings rules](../../../packages/occ/src/configuration-settings.ts), which
-refuse a Codex approval policy the Gateway refuses and a literal
-`gateway.auth.password`, and the selected Compute Driver's optional
-[`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
-Kubernetes refuses unsupported channels, model credentials outside the Harness
+text, and [the settings rules](../../../packages/occ/src/configuration-settings.ts).
+These rules reject unsupported Codex approval policies, a literal
+`gateway.auth.password`, and retired settings such as `security.preset`.
+OCC also calls the selected Compute Driver's optional
+[`validateConfiguration`](../../reference/drivers/compute-admission.md). On
+Kubernetes, this check refuses unsupported channels, model credentials outside the Harness
 authentication binding, and model selections or provider `apiKey`s off the
 primary model's provider. Configuration create and update, Agent provisioning and
 Preset save run this one set (`validateConfigurationContent` in
@@ -110,6 +110,9 @@ Agent's exact same-Namespace `configurationId` and ensure its Configuration kind
 is `"agent"`. They also run deployment's checks of the Agent against that
 Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-save)):
 the Sandbox execution mode, the Harness and its mode, and the Compute checks.
+Agent save and deployment also refuse a stored Configuration that still contains
+`security.preset`. The operator can read it and replace the field with
+[explicit settings](../../guides/console/configuration-plugins-and-files.md#configuration-tab).
 With a Compute Driver and a Harness resolver selected, every Agent save reads
 its Configuration once from the Configuration Driver, inside the save's
 transaction; a Driver outage then fails the save with `503`. `deployAgent` then locks the Agent, authorizes a read of the
@@ -125,16 +128,10 @@ When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
 stored reusable Configuration and its generation remain unchanged.
 [`admitGatewaySecurityDefaults`](../../../packages/occ/src/gateway-security-defaults.ts)
-then fills `tools.exec.applyPatch.workspaceOnly`, which OpenClaw's `personal` security preset
-would loosen, `agents.defaults.sandbox.mode: "off"`, which its `corporate` preset would turn
-on although the OCE runtime cannot run OpenClaw's sandbox (an explicit other mode, or a
-`tools.exec.host: "sandbox"`, is refused at save and here), and `tools.exec.mode: "full"` when
-`tools.exec` sets no mode, security or ask, where `corporate` would fill `ask`, which needs an
-approval client OCE does not have, then `tools.exec.strictInlineEval: false` beside mode `full`
-and no security or ask, where `corporate`'s `true` needs that client for each inline program
-(under `corporate`, an Agent entry with its own non-`full` exec policy keeps that `true`, since it
-would otherwise inherit the filled `false`); other unset settings keep the preset's defaults
-([reference](../../reference/configuration.md#agent-references-and-immutable-versions)). Compute then
+then fills the [Gateway security defaults](../../reference/configuration.md#agent-references-and-immutable-versions)
+on the copy. It preserves explicit settings. OCE refuses an explicit OpenClaw
+sandbox mode other than `"off"` or a `tools.exec.host` of `"sandbox"` at save and
+deployment because OCE provides the Agent's sandbox. Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
 [the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)

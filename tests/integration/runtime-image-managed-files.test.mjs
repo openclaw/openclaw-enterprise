@@ -12,7 +12,7 @@ import {
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+  gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   image,
@@ -233,9 +233,9 @@ test(
         ?.enum;
     assert.ok(Array.isArray(files), "the image schema lists the optional bootstrap files");
     assert.deepEqual([...files].sort(), [...OPTIONAL_BOOTSTRAP_FILES].sort());
-    // The core schema holds the agents.defaults settings; a plugin's config has its own schema.
-    for (const [setting] of RETIRED_OPENCLAW_SETTINGS.filter(([path]) =>
-      path.startsWith("agents."),
+    // Plugin settings have their own schemas, separate from the core config schema.
+    for (const [setting] of RETIRED_OPENCLAW_SETTINGS.filter(
+      ([path]) => !path.startsWith("plugins.entries."),
     )) {
       const keys = setting.split(".");
       const parent = keys.slice(0, -1).reduce((node, key) => node?.properties?.[key], schema);
@@ -251,16 +251,22 @@ test(
   async (t) => {
     // An embedded OpenClaw Gateway starts from the Configuration OCC mounts read-only.
     const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
-    const { containerName } = await runGatewaySmoke(t, "openclaw", {
-      configurationPath: "/etc/openclaw/openclaw.json",
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
-      withAppServer: false,
-      // An operator's own Node options on the container.
-      extraEnvironment: ["NODE_OPTIONS=--max-old-space-size=3072"],
-    });
+    const startGateway = (managedMode) =>
+      runGatewaySmoke(t, "openclaw", {
+        configurationPath: "/etc/openclaw/openclaw.json",
+        entrypoint: gatewayRuntimeEntrypoint(managedMode),
+        volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+        withAppServer: false,
+        extraEnvironment: [
+          "NODE_OPTIONS=--max-old-space-size=3072",
+          "OPENCLAW_CONFIG_READONLY_NOTICE=Inherited from the image",
+        ],
+      });
+    const { containerName } = await startGateway(false);
     const environment = await gatewayProcessEnvironment(containerName);
     assert.ok(environment.includes("OPENCLAW_CONFIG_READONLY=1"));
+    // With managed mode off, the independently read-only mount keeps the operator's guidance.
+    assert.ok(environment.includes("OPENCLAW_CONFIG_READONLY_NOTICE=Inherited from the image"));
     // The wrapper caps V8's semi-space for the Gateway (finding 2700) and keeps the
     // operator's options after it, so an operator's own flag still wins.
     assert.ok(
@@ -275,5 +281,12 @@ test(
     // pin moves, since a promotion moved after post-ready work would pass here.
     const logs = await waitForDockerLog(containerName, /remote model catalog refresh failed/);
     assert.doesNotMatch(logs, /last-known-good|EROFS/);
+
+    const managed = await startGateway(true);
+    assert.ok(
+      (await gatewayProcessEnvironment(managed.containerName)).includes(
+        "OPENCLAW_CONFIG_READONLY_NOTICE=OpenClaw Enterprise manages this Gateway’s configuration. In the OCE Console, edit and save the Agent’s draft Configuration, then select Deploy new version. https://docs-enterprise.openclaw.org/reference/agents/gateway-managed-mode/",
+      ),
+    );
   },
 );

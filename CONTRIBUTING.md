@@ -44,10 +44,8 @@ unmanaged hook and does not override `core.hooksPath`. Preserve existing hook
 configuration; run the checks directly when a custom hook path bypasses the
 managed hook.
 
-Dependency installation is setup, not an implicit verification step. Do not
-reconcile dependencies in a shared checkout or worktree while another job uses
-them. If the installed graph does not match the manifests, report the gap or
-use dependency-independent checks rather than installing as an agent side effect.
+Do not reconcile dependencies in a shared checkout or worktree while another
+job uses them.
 
 For a running local platform, follow [Local Setup](docs/guides/quickstart.md).
 It uses Kubernetes; see the [contributor profile](docs/guides/deploy/local-kubernetes-development.md)

@@ -328,10 +328,9 @@ import {
 } from "./errors.ts";
 import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 import {
-  refuseOpenClawSandbox,
-  refuseRetiredOpenClawSettings,
+  refuseStoredConfigurationSettings,
+  refuseUndeployableConfigurationValues,
   validateConfigurationSettings,
-  validateWorkspaceBootstrapSettings,
 } from "./configuration-settings.ts";
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
@@ -584,6 +583,7 @@ export { imageReferenceProblem } from "./image-reference.ts";
 export type { ImageReferenceProblem } from "./image-reference.ts";
 export { DEPLOYMENT_FAILURE_STEPS, deploymentFailureStep } from "./deployment-failure-steps.ts";
 export { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
+export { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
 export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
   environmentReference,
@@ -10289,15 +10289,11 @@ export class OpenClawController {
       // The model provider settings, then the Compute rules, as on Configuration save, so a
       // stored Configuration that predates a rule gets the message its next save would. A
       // baseUrl or api the runtime cannot use would otherwise fail later, as an unexplained
-      // model probe failure (finding 1549).
-      validateModelProviderSettings(configuration.values);
-      // Native workspace setup refuses an invalid bootstrap setting only after the deployment
-      // starts (finding 2699).
-      validateWorkspaceBootstrapSettings(configuration.values);
-      // The Gateway refuses a setting the pinned OpenClaw retired and does not start (finding 2709).
-      refuseRetiredOpenClawSettings(configuration.values);
-      // The Gateway starts, then fails every turn in OpenClaw's sandbox (finding 2767).
-      refuseOpenClawSandbox(configuration.values);
+      // model probe failure (finding 1549). Native workspace setup refuses an invalid bootstrap
+      // setting only after the deployment starts (finding 2699); the Gateway refuses a setting
+      // the pinned OpenClaw retired and does not start (finding 2709), and fails every turn in
+      // OpenClaw's sandbox (finding 2767). The upgrade preflight runs the same values-only rules.
+      refuseUndeployableConfigurationValues(configuration.values);
       this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
@@ -14405,9 +14401,7 @@ export class OpenClawController {
     const configuration = await readConfiguration();
     // Deploy admission's rules for a stored Configuration that predates them (findings 2699, 2709,
     // 2767).
-    validateWorkspaceBootstrapSettings(configuration.values);
-    refuseRetiredOpenClawSettings(configuration.values);
-    refuseOpenClawSandbox(configuration.values);
+    refuseStoredConfigurationSettings(configuration.values);
     let configuredHarnessId: string;
     try {
       configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
