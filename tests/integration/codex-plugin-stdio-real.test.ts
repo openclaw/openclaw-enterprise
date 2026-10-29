@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { CODEX_PLUGIN_STDIO_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -11,8 +12,14 @@ test(
   "native stdio plugin preparation survives WebSocket replacement and drains failed installation",
   { skip: !process.env.OCC_TEST_RUNTIME_IMAGE, timeout: 120_000 },
   async (t) => {
-    const image = process.env.OCC_TEST_RUNTIME_IMAGE!;
-    assert.match(image, /(?:^sha256:|@sha256:)[a-f0-9]{64}$/);
+    // CI supplies an owned local tag. Resolve it once and run the immutable image ID.
+    const { stdout } = await promisify(execFile)(
+      "docker",
+      ["image", "inspect", "--format", "{{.Id}}", "--", process.env.OCC_TEST_RUNTIME_IMAGE!],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    const image = stdout.trim();
+    assert.match(image, /^sha256:[a-f0-9]{64}$/);
     const name = `oce-stdio-plugin-${randomUUID()}`;
     const child = spawn(
       "docker",
