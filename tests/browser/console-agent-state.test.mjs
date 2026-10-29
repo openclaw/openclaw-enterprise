@@ -1601,6 +1601,46 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   assert.equal(iamDenials().length, 1);
 });
 
+// Finding D792. A refusal after the page confirmed administration settles nothing until the
+// permission answer, which audits nothing, says so: a Restriction can refuse one read to an
+// administrator. Opened on the Access tab, the sharing reads confirm her administration; the
+// Configuration tab's bound Secret read, sent after them, is refused. She is still an
+// administrator, so she keeps the Observability link and the Access tab, and that refusal is the
+// only audited one.
+test("A Restriction refusal after confirmed administration keeps an administrator's answer", async (t) => {
+  const url = "https://metrics.example.test/d/operations";
+  const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Confirmed then restricted", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Confirmed model key", "hidden-model");
+  const agent = await fixture.createAgent(namespace.id, "Confirmed Agent", nativeValues("x"), {
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  restrict(fixture.policy, "read", "secret", { namespaceId: namespace.id });
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const observability = page.getByRole("link", { name: "Observability", exact: true });
+  await login(page, fixture, String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
+  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const refusal = page.waitForResponse(
+    (response) => /\/secrets\//.test(new URL(response.url()).pathname) && response.status() === 403,
+  );
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await refusal;
+  await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await observability.getAttribute("href"), url);
+  assert.equal(await page.getByRole("tab", { name: "Access", exact: true }).count(), 1);
+  assert.deepEqual(
+    authorizationDenials(
+      fixture.auditSink,
+      /^openclaw\.(observability|backends|iam|secrets|installation)\./,
+    ).map((event) => event.action),
+    ["openclaw.secrets.read"],
+  );
+});
+
 // Only a Backends refusal settles Installation administration as false (finding 2627). A read that
 // fails for another reason, here an unavailable dependency, says nothing about it: the
 // administrator keeps the Observability link.
@@ -1813,6 +1853,32 @@ test("Agent detail says when the current or requested version cannot be read", a
   await statusLine.getByText(requestedVersionUnavailable(shortId(requested.id))).waitFor();
   await page.getByRole("heading", { name: "Version not found or not shared" }).waitFor();
   await page.getByText(VERSION_UNAVAILABLE, { exact: true }).waitFor();
+});
+
+// After a stop request the Stop row names the current version. One the reader cannot read is
+// named in the page's words there too, not by its raw ID (finding D791).
+test("A requested stop names an unreadable current version in words", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Stopped hidden", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Stopped hidden Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  denyRevisionRead(fixture, namespace, second.revision);
+  const stopped = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+  );
+  assert.equal(stopped.status, 202);
+  assert.equal(stopped.data.activeRevisionId, second.revision.id);
+  const { page } = await newPage(t, fixture);
+  await routeDeploymentStatus(page, fixture, namespace, agent, first.revision, "succeeded");
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion.getByText("Requested runtime state", { exact: true }).waitFor();
+  await stopRegion.getByText("A newer version you cannot read", { exact: true }).waitFor();
+  assert.equal(await stopRegion.getByText(/rev_/).count(), 0);
 });
 
 test("Agent detail says an Agent's versions are hidden, not missing, when none is readable", async (t) => {
