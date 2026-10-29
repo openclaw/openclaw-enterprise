@@ -10,6 +10,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   AGENT_READ,
   detailUrl,
+  denyRevisionRead,
   login,
   nativeValues,
   newPage,
@@ -647,6 +648,7 @@ for (const refusal of [403, 404] as const) {
         );
         const { page } = await newPage(t, fixture);
         await trackSettledFetches(page);
+        await page.clock.install();
         await login(
           page,
           fixture,
@@ -657,6 +659,7 @@ for (const refusal of [403, 404] as const) {
         const activity = page.getByRole("region", { name: "Deployment activity" });
         const refresh = card.getByRole("button", { name: "Refresh record", exact: true });
         await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+        await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
         const held = Promise.withResolvers<void>();
         const release = Promise.withResolvers<void>();
         t.after(() => release.resolve());
@@ -688,16 +691,10 @@ for (const refusal of [403, 404] as const) {
             await route.continue();
           }
         });
+        await page.clock.runFor(DEPLOYMENT_POLL_MS + 1);
         await held.promise;
         if (refusal === 403) {
-          fixture.policy.restrictions.push({
-            id: `deny-${revisionId}`,
-            namespaceId: namespace.id,
-            resourceKind: "agent_revision",
-            resourceId: revisionId,
-            action: "read",
-            effect: "deny",
-          });
+          denyRevisionRead(fixture, namespace, { id: revisionId });
         } else {
           control.missingRevision = true;
         }
@@ -738,8 +735,8 @@ for (const refusal of [403, 404] as const) {
           await card.innerText(),
           /Recorded outcome:|No persisted startup failure/,
         );
-        // Two real poll periods prove revoked data cannot restart automatic reads.
-        await page.waitForTimeout(DEPLOYMENT_POLL_MS * 2 + 100);
+        // Timer-only idle proof uses the clock; private role dogfood uses real time.
+        await page.clock.runFor(DEPLOYMENT_POLL_MS * 2 + 100);
         assert.deepEqual(responses, [refusal, delayed]);
         control.unavailable = false;
         control.claimed = true;
@@ -749,6 +746,7 @@ for (const refusal of [403, 404] as const) {
         await activity.getByRole("button", { name: "Refresh deployment", exact: true }).click();
         await activity.getByText("Recorded status: In progress", { exact: true }).waitFor();
         control.succeeded = true;
+        await page.clock.runFor(DEPLOYMENT_POLL_MS + 1);
         await card.getByText("Recorded outcome: Completed", { exact: true }).waitFor();
         await activity.getByText("Recorded status: Completed", { exact: true }).waitFor();
       },
@@ -771,14 +769,7 @@ test("a selected historical refusal leaves the latest deployment readable", asyn
   const activity = page.getByRole("region", { name: "Deployment activity" });
   await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
   await activity.getByText("Recorded status: Queued", { exact: true }).waitFor();
-  fixture.policy.restrictions.push({
-    id: `deny-old-${revisionId}`,
-    namespaceId: namespace.id,
-    resourceKind: "agent_revision",
-    resourceId: revisionId,
-    action: "read",
-    effect: "deny",
-  });
+  denyRevisionRead(fixture, namespace, { id: revisionId });
   const denied = page.waitForResponse(url);
   await card.getByRole("button", { name: "Refresh record", exact: true }).click();
   assert.equal((await denied).status(), 403);
@@ -794,6 +785,94 @@ test("a selected historical refusal leaves the latest deployment readable", asyn
   await card.getByRole("alert").waitFor();
   assert.doesNotMatch(await card.innerText(), /Recorded outcome:/);
 });
+
+// An earlier activity success may settle while a selected-record refusal is pending.
+// Its render generation must not erase the subsequently delivered authorization decision.
+for (const refusal of [403, 404] as const) {
+  test(`selected ${refusal} survives an earlier activity success`, async (t) => {
+    const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await page.clock.install();
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "deployment").href,
+    );
+    const card = page.locator(".version-deployment-record");
+    const activity = page.getByRole("region", { name: "Deployment activity" });
+    const refresh = card.getByRole("button", { name: "Refresh record", exact: true });
+    await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
+    await waitForIdleFetches(page);
+    const captured = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+    const release = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+    t.after(() => release.forEach((gate) => gate.resolve()));
+    let requests = 0;
+    const replies: number[] = [];
+    page.on("response", (response) => {
+      if (response.url() === url) {
+        replies.push(response.status());
+      }
+    });
+    await page.route(url, async (route) => {
+      const index = requests++;
+      if (index !== 0 && index !== 1) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      assert.equal(response.status(), index === 0 ? 200 : refusal);
+      const body = await response.json();
+      if (index === 0) {
+        assert.equal(body.data.deploymentId, revisionId);
+      } else {
+        assert.equal(body.data, undefined);
+        assert.equal(body.error.code, refusal === 403 ? "FORBIDDEN" : "NOT_FOUND");
+      }
+      captured[index].resolve();
+      await release[index].promise;
+      await route.fulfill({ response });
+    });
+    await page.clock.runFor(DEPLOYMENT_POLL_MS + 1);
+    await captured[0].promise;
+    if (refusal === 403) {
+      denyRevisionRead(fixture, namespace, { id: revisionId });
+    } else {
+      control.missingRevision = true;
+    }
+    await refresh.press("Enter");
+    await captured[1].promise;
+    assert.equal(await card.locator("button").first().getAttribute("aria-disabled"), "true");
+    const accepted = page.waitForResponse(url);
+    release[0].resolve();
+    assert.equal((await accepted).status(), 200);
+    // The shared success has actually rendered, not merely reached the network listener.
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".version-deployment-record button")
+          ?.getAttribute("aria-disabled") !== "true",
+    );
+    const denied = page.waitForResponse(url);
+    release[1].resolve();
+    assert.equal((await denied).status(), refusal);
+    await waitForIdleFetches(page);
+    assert.deepEqual(replies, [200, refusal]);
+    assert.doesNotMatch(await card.innerText(), /Recorded outcome:/);
+    assert.doesNotMatch(await activity.innerText(), /Recorded status:/);
+    assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+    if (refusal === 403) {
+      fixture.policy.restrictions.pop();
+    }
+    control.missingRevision = false;
+    const fresh = page.waitForResponse(url);
+    await activity.getByRole("button", { name: "Refresh deployment", exact: true }).click();
+    assert.equal((await fresh).status(), 200);
+    await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+    await activity.getByText("Recorded status: Queued", { exact: true }).waitFor();
+  });
+}
 
 // This non-browser check proves the fixture's failure injection reaches the real
 // status route and IAM evaluator. It does not prove DOM behavior or runtime work.

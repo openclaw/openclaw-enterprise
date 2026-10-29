@@ -802,12 +802,14 @@ export function createVersionDeploymentEvidence(
         context.onExpired();
         return;
       }
-      if (started === generation) {
+      if (!transientReadError(cause)) {
+        // A shared success can render while this read is pending. Its generation
+        // must not suppress a definitive refusal for the same immutable revision.
+        fail(cause);
+        onRefused(cause);
+      } else if (started === generation) {
         status = null;
         error = cause;
-        if (!transientReadError(cause)) {
-          onRefused(cause);
-        }
       }
     } finally {
       if (context.isCurrent() && started === generation) {

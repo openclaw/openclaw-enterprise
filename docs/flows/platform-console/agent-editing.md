@@ -81,13 +81,13 @@ cleanup, warnings, or overview errors need attention. Pending work and errors
 remain visible outside Deployment; overview errors preserve recorded outcomes.
 
 `createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` until completion
-or refusal. Transient failures retain progress without reflow; initial failures permit
-fallback. Refusals in either panel clear matching records and invalidate older reads
-through `invalidate` and `fail`. Fresh reads recover; other versions remain independent.
-Pending polls preserve disclosure choice; refusals and manual failures open it.
+or refusal. Transient failures retain progress; initial ones permit fallback.
+`invalidate` and `fail` clear matching records and invalidate older reads.
+Definitive refusals override intervening shared successes. Fresh reads recover;
+versions remain independent. Pending polls preserve disclosure; refusals open it.
 Terminal polls reread record, Agent and revisions. **Refresh deployment** queues one
-reread; **Refresh record** preserves focus and ignores repeats. Reserved error space
-protects diagnostics position; one visible matching error owns the alert role.
+reread; **Refresh record** keeps focus and ignores repeats. Reserved error space
+protects diagnostics; one visible matching error owns the alert role.
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
@@ -340,6 +340,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 11:23: Preserve overlapping refusals. (overlap - d8283ec0f55caa496f6e0b750b61a2859fc7e100)
 
 - 2026-10-29 11:19: Clear matching deployment evidence on selected-record refusal. (denial-coherence - e98223e893bcfb3ca23f0fb3ba4ea36af3a41f9d)
 
