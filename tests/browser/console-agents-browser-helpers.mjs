@@ -600,9 +600,10 @@ export async function settlePageRequests(page) {
 // Test-only page hook: counts, per URL path, the page's fetches that have settled, meaning the
 // fetch rejected or the page finished reading the response body. It also counts fetches still
 // in flight, in all and per path; for that count a response without a body ends its fetch at
-// once. Install it before the page loads. A count observed by waitForSettledFetches() or waitForIdleFetches() is read in
-// a later task, so the page's own continuation of that fetch (for example dropping a stale
-// response, or finishing the view's read bookkeeping) has already run.
+// once. Install it before the page loads. A count observed by waitForSettledFetches() or
+// waitForIdleFetches() is read in a later task, so the page's own continuation of that fetch
+// (for example dropping a stale response, or finishing the view's read bookkeeping) has
+// already run.
 export async function trackSettledFetches(page) {
   await page.addInitScript(() => {
     const settled = new Map();
@@ -686,8 +687,9 @@ export async function waitForIdleFetches(page, { except } = {}) {
 // removes the controls the test acts on next and aborts reads the test holds (findings 2156,
 // 2793). `except` names the path of a read the test holds to discover the expiry. The page
 // must run trackSettledFetches(); waitForIdleFetches has the same one-moment limit. Plain
-// expireSessions stays right when the next step reloads or navigates the page, which abandons
-// every read in flight.
+// expireSessions stays right when the next step opens a private page with page.goto(): that
+// abandons every read in flight and finds the expiry wherever the page was. A reload is not
+// enough: after a late 401 the page is /console/login, and a reload of it is a plain sign-in.
 export async function expireSessionsWhenSettled(page, fixture, { except } = {}) {
   await waitForIdleFetches(page, { except });
   expireSessions(fixture);
