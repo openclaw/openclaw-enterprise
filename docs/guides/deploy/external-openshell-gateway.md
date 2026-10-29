@@ -59,8 +59,9 @@ gateway; run them on a profile without this selection.
 
 ## Limits
 
-`OCC_DEVELOPMENT_OPENSHELL_CA_FILE` is the only trust input: it must carry
-every CA the gateway's and the issuer's certificates need, and the controllers'
-system trust store applies otherwise. A production Installation using
-`oidcClientCredentials` must admit the issuer in its own egress configuration
-(`auth.oidc.egressCidrs` covers console sign-in only).
+`OCC_DEVELOPMENT_OPENSHELL_CA_FILE` must carry every CA the gateway's and the
+issuer's certificates need; the controllers' system trust store applies
+otherwise. The same bundle verifies both the gRPC channel and the token
+request, so a private-CA issuer works without extra trust inputs. A production
+Installation using `oidcClientCredentials` must admit the issuer in its own
+egress configuration (`auth.oidc.egressCidrs` covers console sign-in only).

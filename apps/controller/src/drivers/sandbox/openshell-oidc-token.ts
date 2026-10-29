@@ -1,5 +1,8 @@
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import * as tls from "node:tls";
 import { TransientDependencyError } from "@openclaw-enterprise/occ";
 import { OpenShellGatewayFailure } from "./openshell-gateway-errors.ts";
 
@@ -17,6 +20,12 @@ export interface OpenShellOidcClientCredentialsOptions {
   readonly audience?: string;
   readonly scope?: string;
   readonly requestTimeoutMs?: number;
+  /**
+   * Optional PEM bundle added to the token request's TLS trust, beside the system
+   * roots: the Backend's rootCertificatePath file, which for a private-CA gateway
+   * also carries the issuer's CA.
+   */
+  readonly caPath?: string;
 }
 
 interface CachedToken {
@@ -36,6 +45,7 @@ const MAX_TOKEN_RESPONSE_BYTES = 1_048_576;
 export class OpenShellOidcTokenSource {
   private readonly options: OpenShellOidcClientCredentialsOptions;
   private readonly requestTimeoutMs: number;
+  private caBundle: Promise<readonly string[]> | undefined;
   private cached: CachedToken | undefined;
   private refreshing: Promise<string> | undefined;
 
@@ -50,6 +60,9 @@ export class OpenShellOidcTokenSource {
       url = new URL(options.tokenUrl);
     } catch {
       throw new OpenShellGatewayFailure("OpenShell OIDC token URL is invalid.");
+    }
+    if (options.caPath !== undefined && !isAbsolute(options.caPath)) {
+      throw new OpenShellGatewayFailure("OpenShell OIDC token CA path must be absolute.");
     }
     // The parser admits https, or cleartext to a numeric loopback address only; the same
     // rule holds here so a directly constructed client cannot weaken it.
@@ -119,23 +132,23 @@ export class OpenShellOidcTokenSource {
     if (this.options.scope !== undefined) {
       body.set("scope", this.options.scope);
     }
-    let response: Response;
+    let response: TokenHttpResponse;
     try {
-      response = await fetch(this.options.tokenUrl, {
-        method: "POST",
+      response = await postTokenRequest(
+        this.options.tokenUrl,
         headers,
         body,
-        redirect: "error",
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
-      });
+        this.requestTimeoutMs,
+        await this.trustedCertificates(),
+      );
     } catch (error) {
       // A network error or timeout clears without a configuration change; the
       // underlying code (for example ECONNREFUSED or a certificate failure) is
       // the part an operator can act on, because fetch reports only "fetch failed".
       const timedOut = error instanceof Error && error.name === "TimeoutError";
       const cause =
-        typeof error === "object" && error !== null && "cause" in error
-          ? (error as { readonly cause?: { readonly code?: unknown } }).cause?.code
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { readonly code?: unknown }).code
           : undefined;
       const detail =
         typeof cause === "string"
@@ -150,7 +163,13 @@ export class OpenShellOidcTokenSource {
         { cause: error },
       );
     }
-    if (!response.ok) {
+    if (response.status >= 300 && response.status < 400) {
+      const location = headerValue(response.headers, "location");
+      throw new OpenShellGatewayFailure(
+        `OpenShell OIDC token endpoint redirected${location === undefined ? "" : ` to ${location}`}; redirects are not followed.`,
+      );
+    }
+    if (!(response.status >= 200 && response.status < 300)) {
       const detail = await errorDetail(response);
       // 5xx clears without a change; a rejected client is a configuration error.
       if (response.status >= 500) {
@@ -169,7 +188,7 @@ export class OpenShellOidcTokenSource {
         `OpenShell OIDC token endpoint returned ${response.status}${detail}.`,
       );
     }
-    const bodyText = await readBounded(response);
+    const bodyText = await response.text();
     let payload: unknown;
     try {
       payload = JSON.parse(bodyText) as unknown;
@@ -212,6 +231,100 @@ export class OpenShellOidcTokenSource {
       expiresAtMs: now + lifetimeMs,
     };
   }
+
+  /** The selected CA bundle to add beside the compiled-in roots; empty keeps system trust. */
+  private trustedCertificates(): Promise<readonly string[]> {
+    this.caBundle ??= (async () => {
+      if (this.options.caPath === undefined) {
+        return [];
+      }
+      const bundle = await readFile(this.options.caPath, "utf8");
+      if (bundle.trim().length === 0) {
+        throw new OpenShellGatewayFailure("OpenShell OIDC token CA bundle is empty.");
+      }
+      return [bundle];
+    })();
+    return this.caBundle;
+  }
+}
+
+/** One token-endpoint response: a status, headers, and a size-bounded body read. */
+interface TokenHttpResponse {
+  readonly status: number;
+  readonly headers: NodeJS.Dict<string | string[]>;
+  readonly text: () => Promise<string>;
+}
+
+async function postTokenRequest(
+  url: string,
+  headers: Record<string, string>,
+  body: URLSearchParams,
+  timeoutMs: number,
+  certificateAuthorities: readonly string[],
+): Promise<TokenHttpResponse> {
+  const target = new URL(url);
+  const send = target.protocol === "https:" ? httpsRequest : httpRequest;
+  // Providing ca replaces the roots, so the compiled-in list always stays beside
+  // the selected bundle; public-CA issuers keep verifying either way.
+  const authority =
+    certificateAuthorities.length === 0
+      ? {}
+      : { ca: [...certificateAuthorities, ...tls.rootCertificates] };
+  return new Promise<TokenHttpResponse>((resolve, reject) => {
+    const request = send(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port,
+        path: `${target.pathname}${target.search}`,
+        method: "POST",
+        headers: { ...headers, "content-length": String(body.toString().length) },
+        timeout: timeoutMs,
+        ...authority,
+      },
+      (message) => {
+        resolve({
+          status: message.statusCode ?? 0,
+          headers: message.headers,
+          text: () =>
+            readBounded(message as import("node:stream").Readable & NodeJS.ReadableStream),
+        });
+      },
+    );
+    request.on("timeout", () => {
+      const error = new Error("OpenShell OIDC token request timed out.");
+      error.name = "TimeoutError";
+      request.destroy(error);
+    });
+    request.on("error", reject);
+    request.end(body.toString());
+  });
+}
+
+/** Reads one response body, bounded before it can exhaust memory. */
+function readBounded(
+  message: import("node:stream").Readable & NodeJS.ReadableStream,
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let received = 0;
+    message.on("data", (chunk: Buffer) => {
+      received += chunk.length;
+      if (received > MAX_TOKEN_RESPONSE_BYTES) {
+        reject(new OpenShellGatewayFailure("OpenShell OIDC token endpoint response is too large."));
+        message.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    message.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    message.on("error", reject);
+  });
+}
+
+function headerValue(headers: NodeJS.Dict<string | string[]>, name: string): string | undefined {
+  const value = headers[name.toLowerCase()];
+  return Array.isArray(value) ? value[0] : value;
 }
 
 // Strict application/x-www-form-urlencoded encoding: encodeURIComponent leaves
@@ -223,22 +336,10 @@ function formUrlEncode(value: string): string {
   );
 }
 
-async function readBounded(response: Response): Promise<string> {
-  const declared = response.headers.get("content-length");
-  if (declared !== null && Number(declared) > MAX_TOKEN_RESPONSE_BYTES) {
-    throw new OpenShellGatewayFailure("OpenShell OIDC token endpoint response is too large.");
-  }
-  const text = await response.text();
-  if (text.length > MAX_TOKEN_RESPONSE_BYTES) {
-    throw new OpenShellGatewayFailure("OpenShell OIDC token endpoint response is too large.");
-  }
-  return text;
-}
-
-async function errorDetail(response: Response): Promise<string> {
+async function errorDetail(response: TokenHttpResponse): Promise<string> {
   let payload: unknown;
   try {
-    payload = JSON.parse(await readBounded(response));
+    payload = JSON.parse(await response.text()) as unknown;
   } catch {
     return "";
   }
