@@ -233,7 +233,6 @@ test("OIDC CA may share a public trust bundle Secret with the Gateway CA", tooli
   );
 });
 
-// A CA named `name` and a server leaf for `hostname` it signed, as PEM texts.
 async function certificates(directory, name, hostname) {
   const pki = join(directory, `${name}-pki`);
   await mkdir(pki);
