@@ -1899,6 +1899,9 @@ input[type="checkbox"].control-unavailable {
 input[type="checkbox"].control-unavailable:focus-visible {
   outline: none;
 }
+label:has(> input[type="checkbox"].control-unavailable) {
+  width: fit-content;
+}
 label:has(> input[type="checkbox"].control-unavailable:focus-visible) {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
