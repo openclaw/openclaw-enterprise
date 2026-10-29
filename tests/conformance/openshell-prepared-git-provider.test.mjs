@@ -842,16 +842,34 @@ test("completed Git receipt can observe a new aggregate environment without repl
   let completed = true;
   let drift = {};
   const reads = [];
+  const targets = new Map([["original", "101"]]);
+  const applied = new Set(["original"]);
+  let loseResponse = false;
   client.getSandboxProviderStatus = async (_workspace, _sandbox, _provider, _signal, id) => {
     reads.push(id);
-    const target = id === "original" ? "101" : id === "refreshed" ? "102" : environment;
-    const receiptId = id ?? (environment === "101" ? "original" : "refreshed");
+    const receiptId = id ?? (environment === "101" ? "original" : `refreshed-${environment}`);
+    if (!targets.has(receiptId)) {
+      targets.set(receiptId, environment);
+    }
+    const target = targets.get(receiptId);
+    if (completed && target === environment) {
+      applied.add(receiptId);
+    }
+    if (!id && loseResponse) {
+      throw new Error("lost OBSERVE response after acceptance");
+    }
     return {
       ...initial,
       state:
         target === environment
-          ? "PROVIDER_READINESS_STATE_READY"
+          ? completed
+            ? "PROVIDER_READINESS_STATE_READY"
+            : "PROVIDER_READINESS_STATE_PENDING"
           : "PROVIDER_READINESS_STATE_SUPERSEDED",
+      reason:
+        target === environment
+          ? "PROVIDER_READINESS_REASON_UNSPECIFIED"
+          : "PROVIDER_READINESS_REASON_DESIRED_STATE_CHANGED",
       receipt: {
         ...initial.receipt,
         receiptId,
@@ -862,7 +880,7 @@ test("completed Git receipt can observe a new aggregate environment without repl
         desired: { ...initial.receipt.desired, providerEnvRevision: target },
       },
       observed: { ...initial.observed, providerEnvRevision: environment, ...drift },
-      completedOperationId: completed || receiptId === "original" ? receiptId : undefined,
+      completedOperationId: applied.has(receiptId) ? receiptId : undefined,
     };
   };
   assert.equal(await provider.settlePreviewReceipt(active, signal()), true);
@@ -881,7 +899,7 @@ test("completed Git receipt can observe a new aggregate environment without repl
   completed = true;
   assert.equal(await provider.settlePreviewReceipt(active, signal()), true);
   assert.equal((await provider.observe(active, "sandbox-id", signal())).providerEnvRevision, "102");
-  assert.equal(reads.at(-1), "refreshed");
+  assert.equal(reads.at(-1), "refreshed-102");
   environment = "103";
   for (const mismatch of [
     { attachmentEpoch: "other" },
@@ -891,9 +909,34 @@ test("completed Git receipt can observe a new aggregate environment without repl
     drift = mismatch;
     assert.equal(await provider.settlePreviewReceipt(active, signal()), false);
     assert.equal(await provider.observe(active, "sandbox-id", signal()), undefined);
-    assert.equal(reads.at(-1), "refreshed", "identity drift does not create a new observation");
+    assert.equal(reads.at(-1), "refreshed-102", "identity drift does not create a new observation");
   }
   drift = {};
+  completed = false;
+  loseResponse = true;
+  const acceptedBefore = targets.size;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await assert.rejects(provider.settlePreviewReceipt(active, signal()), /lost OBSERVE response/);
+    assert.equal(await provider.observe(active, "sandbox-id", signal()), undefined);
+  }
+  assert.equal(targets.size, acceptedBefore + 1, "same target reuses one accepted OBSERVE");
+  loseResponse = false;
+  assert.equal(await provider.settlePreviewReceipt(active, signal()), false);
+  assert.equal(await provider.settlePreviewReceipt(active, signal()), false);
+  assert.equal(reads.at(-1), "refreshed-103");
+  environment = "104";
+  assert.equal(await provider.settlePreviewReceipt(active, signal()), false);
+  assert.equal(
+    targets.size,
+    acceptedBefore + 2,
+    "known superseded pending OBSERVE advances to a new target",
+  );
+  assert.equal(await provider.observe(active, "sandbox-id", signal()), undefined);
+  completed = true;
+  assert.equal(await provider.settlePreviewReceipt(active, signal()), true);
+  assert.equal((await provider.observe(active, "sandbox-id", signal())).providerEnvRevision, "104");
+  assert.equal(reads.at(-1), "refreshed-104");
+  assert.equal(targets.get("original"), "101", "original UPDATE target remains immutable");
   assert.equal(
     state.requests.filter((r) => r.provider).length,
     writes,

@@ -527,7 +527,7 @@ export class OpenShellPreparedGitProvider {
     if (!receipt || receipt.version !== binding.resourceVersion) {
       return false;
     }
-    if (receipt.complete) {
+    if (receipt.complete || (receipt === this.refreshReceipt && receipt.id)) {
       const current = await this.client.getSandboxProviderStatus(
         binding.workspace,
         binding.sandbox,
@@ -536,29 +536,41 @@ export class OpenShellPreparedGitProvider {
         receipt.id,
       );
       if (current.state !== "PROVIDER_READINESS_STATE_SUPERSEDED") {
-        return true;
+        if (receipt.complete) {
+          return true;
+        }
+      } else {
+        // The original UPDATE remains custody evidence. Only the reconciler creates a
+        // fresh OBSERVE; requests still read a completed receipt and verify live identity.
+        // A changed aggregate environment can supersede an unchanged Git generation.
+        const desired = current.receipt?.desired;
+        const observed = current.observed;
+        // A known pending OBSERVE can terminate SUPERSEDED/IGNORED_STALE without
+        // becoming APPLIED. Replace only that observation; never infer completion
+        // of the original UPDATE or accept this response as installation evidence.
+        if (
+          (receipt.complete
+            ? current.completedOperationId !== receipt.id
+            : current.receipt?.kind !== "PROVIDER_MUTATION_KIND_OBSERVE" ||
+              current.reason !== "PROVIDER_READINESS_REASON_DESIRED_STATE_CHANGED") ||
+          current.receipt?.receiptId !== receipt.id ||
+          !desired ||
+          !observed ||
+          desired.providerId !== binding.providerId ||
+          desired.providerResourceVersion !== binding.resourceVersion ||
+          observed.providerEnvRevision === desired.providerEnvRevision ||
+          observed.attachmentEpoch !== desired.attachmentEpoch ||
+          observed.configRevision !== desired.configRevision ||
+          observed.policyHash !== desired.policyHash
+        ) {
+          return false;
+        }
+        receipt = this.refreshReceipt = { version: binding.resourceVersion };
       }
-      // The original UPDATE remains custody evidence. Only the reconciler creates a
-      // fresh OBSERVE; requests still read a completed receipt and verify live identity.
-      // A changed aggregate environment can supersede an unchanged Git generation.
-      const desired = current.receipt?.desired;
-      const observed = current.observed;
-      if (
-        current.completedOperationId !== receipt.id ||
-        current.receipt?.receiptId !== receipt.id ||
-        !desired ||
-        !observed ||
-        desired.providerId !== binding.providerId ||
-        desired.providerResourceVersion !== binding.resourceVersion ||
-        observed.providerEnvRevision === desired.providerEnvRevision ||
-        observed.attachmentEpoch !== desired.attachmentEpoch ||
-        observed.configRevision !== desired.configRevision ||
-        observed.policyHash !== desired.policyHash
-      ) {
-        return false;
-      }
-      receipt = this.refreshReceipt = { version: binding.resourceVersion };
     }
+    // Stock 0.1.6 keys OBSERVE by the full desired snapshot and capture reason.
+    // Repeating an ID-less read after a lost reply reuses that durable operation;
+    // it never replays the original credential UPDATE.
     const status = await this.client.getSandboxProviderStatus(
       binding.workspace,
       binding.sandbox,
