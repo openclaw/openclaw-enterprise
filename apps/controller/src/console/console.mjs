@@ -3087,8 +3087,41 @@ window.addEventListener("popstate", () => {
     navigation.traverse({ fromNavigation: !resumePending, mountedUrl: mountedRouteKey });
   }
 });
-window.addEventListener("focus", resumePage);
+// Tab past the page's last control moves focus to the browser's own controls, and the next Tab
+// brings it back. That lap is not the reader returning to the page: the refocus recheck it would
+// start holds the page inert, so the lap's next Tabs skipped the page (finding 2879). A return
+// within TAB_LAP_MS of tabbing out, with the page shown throughout, is not rechecked; a later
+// return, or one after the page was hidden, is.
+const TAB_LAP_MS = 10_000;
+let lastTabKey = -Infinity;
+let tabbedOutAt = null;
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key === "Tab") {
+      lastTabKey = event.timeStamp;
+    }
+  },
+  { capture: true },
+);
+window.addEventListener("blur", (event) => {
+  if (event.target === window) {
+    // Focus leaves the page in the Tab key's own default action, right after its keydown.
+    tabbedOutAt = !document.hidden && event.timeStamp - lastTabKey < 1000 ? event.timeStamp : null;
+  }
+});
+window.addEventListener("focus", (event) => {
+  if (event.target !== window) {
+    return;
+  }
+  const lap = tabbedOutAt !== null && event.timeStamp - tabbedOutAt < TAB_LAP_MS;
+  tabbedOutAt = null;
+  if (!lap) {
+    resumePage();
+  }
+});
 document.addEventListener("visibilitychange", () => {
+  tabbedOutAt = null;
   resumePage();
 });
 // Drafts live only in this document, so a reload or tab close would lose unsaved editor work

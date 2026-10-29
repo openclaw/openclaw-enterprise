@@ -12,8 +12,8 @@ import type { NamespacePageContext } from "../namespaces.mjs";
 import {
   element,
   button,
-  describeDisabled,
   field as formField,
+  setUnavailable,
   statusBlock,
   validateFields,
 } from "../dom.mjs";
@@ -424,12 +424,13 @@ export function createPresetFields(
     applyButton,
     feedback,
   );
-  applyButton.disabled = true;
-  // A disabled Use Preset is described by the line that says why (finding D793): the Preset's
-  // load failure, else the status line ("Choose a Preset or start with the default Preset.").
-  // Called wherever either line or the button changes.
+  let applyUnavailable = true;
+  // An unavailable Use Preset is described by the line that says why (finding D793): the
+  // Preset's load failure, else the status line ("Choose a Preset or start with the default
+  // Preset."), and stays in the Tab order while it shows (finding 2878). Called wherever either
+  // line or the button changes.
   const describeApply = () =>
-    describeDisabled(applyButton, feedback.textContent?.trim() ? feedback : status);
+    setUnavailable(applyButton, applyUnavailable, feedback.textContent?.trim() ? feedback : status);
   describeApply();
   selector.addEventListener("change", async () => {
     const version = ++loadVersion;
@@ -445,7 +446,7 @@ export function createPresetFields(
     fields = [];
     inputs.replaceChildren();
     feedback.textContent = "";
-    applyButton.disabled = true;
+    applyUnavailable = true;
     if (!selectedId) {
       status.textContent = chooseHint();
       describeApply();
@@ -596,7 +597,7 @@ export function createPresetFields(
       });
       status.textContent =
         "Fill in the variables, then use this Preset to create an editable draft.";
-      applyButton.disabled = false;
+      applyUnavailable = false;
       describeApply();
       if (applyDefault && fields.length === 0) {
         applyButton.click();

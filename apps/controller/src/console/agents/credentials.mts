@@ -11,7 +11,7 @@ import { sameValue } from "../carry.mjs";
 import {
   element,
   button,
-  describeDisabled,
+  setUnavailable,
   focusSaveOutcome,
   setStatusTone,
   validateFields,
@@ -1014,7 +1014,7 @@ export function createChannelSecretsPanel({
         !state.unsavedSecrets && pendingSecretGrants().length
           ? "Retry Secret access"
           : "Save channel Secrets";
-      save.disabled = !canSaveChannelSecrets();
+      const saveUnavailable = !canSaveChannelSecrets();
       // A session that cannot grant gets no Retry the API would refuse (finding 2263). A reader
       // gets no Save the API would refuse either (finding 2432).
       readOnlyNote.hidden = listOnly || !readOnly();
@@ -1030,7 +1030,7 @@ export function createChannelSecretsPanel({
       // nothing changed. While a save runs, or after one that needs Reload draft, the status or
       // error line says why instead.
       let saveReason = "";
-      if (!save.hidden && save.disabled && canEnterChannelCredentials()) {
+      if (!save.hidden && saveUnavailable && canEnterChannelCredentials()) {
         saveReason = formBindings.some(
           (binding) => secretIdForBinding(draft.secretBindings[binding.key]) === null,
         )
@@ -1039,8 +1039,10 @@ export function createChannelSecretsPanel({
       }
       saveHint.textContent = saveReason;
       saveHint.hidden = saveReason === "";
-      describeDisabled(
+      // Unavailable Save stays in the Tab order while one of these says why (finding 2878).
+      setUnavailable(
         save,
+        saveUnavailable,
         [saveHint, status, error].find((reason) => !reason.hidden && reason.textContent?.trim()),
       );
     };

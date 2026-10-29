@@ -12,10 +12,10 @@ import { sameValue } from "../carry.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import {
   button,
-  describeDisabled,
   element,
   focusSaveOutcome,
   revealStatus,
+  setUnavailable,
   statusBlock,
   validateFields,
 } from "../dom.mjs";
@@ -348,13 +348,15 @@ export function renderAgentPlugins(
       : undefined;
   });
 
+  let saveUnavailable = true;
+  let discardUnavailable = true;
   function updateState() {
     const dirty =
       input.value !== initialText ||
       JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
     onState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-    save.disabled = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
-    discard.disabled = !dirty || pending || outcomeUnknown || reloadRequired;
+    saveUnavailable = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
+    discardUnavailable = !dirty || pending || outcomeUnknown || reloadRequired;
     reload.hidden = !outcomeUnknown && !reloadRequired;
     // Edits that cannot be saved would only block leaving the tab (finding 1539).
     discovery.fields.setDisabled(updateDenied || pending || outcomeUnknown || reloadRequired);
@@ -370,11 +372,12 @@ export function renderAgentPlugins(
     describeControls();
   }
 
-  // Disabled Save and Discard are described by the feedback line that says why, such as "No
-  // plugin changes to save." (finding D793). Called wherever that line or the controls change.
+  // Unavailable Save and Discard are described by the feedback line that says why, such as "No
+  // plugin changes to save." (finding D793), and stay in the Tab order while it shows (finding
+  // 2878). Called wherever that line or the controls change.
   function describeControls() {
-    describeDisabled(save, feedback);
-    describeDisabled(discard, feedback);
+    setUnavailable(save, saveUnavailable, feedback);
+    setUnavailable(discard, discardUnavailable, feedback);
   }
 
   input.addEventListener("input", () => {
