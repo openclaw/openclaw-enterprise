@@ -19,7 +19,11 @@ permissions:
 jobs:
   sender:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -30,10 +34,19 @@ jobs:
       - uses: ./.github/actions/setup-pnpm-store-cache
         with:
           node-version: "24.22.1"
+      - name: Reserve disk for cold native builds
+        run: |
+          # This dedicated hosted runner needs neither Android, .NET nor Haskell.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h "$GITHUB_WORKSPACE"
+          test "$(df --output=avail -B1 "$GITHUB_WORKSPACE" | tail -1)" -ge 21474836480
       - name: Prepare compiler inputs
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y protobuf-compiler strace bubblewrap
+          sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev strace bubblewrap
+          protoc --proto_path=apps/controller/src/drivers/egress-proxy/proto \
+            --descriptor_set_out="$RUNNER_TEMP/supervisor-middleware.pb" --include_imports \
+            apps/controller/src/drivers/egress-proxy/proto/supervisor_middleware.proto
           rustup toolchain install 1.98.1 --profile minimal
           rustup default 1.98.1
           pnpm install --frozen-lockfile
