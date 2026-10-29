@@ -4156,6 +4156,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           read,
         ));
       if (present !== undefined) {
+        const annotations = {
+          "openclaw.dev/namespace-id": context.namespace.id,
+          "openclaw.dev/agent-id": context.revision.agentId,
+          "openclaw.dev/revision-id": context.revision.id,
+        };
+        if (
+          present.name !== sandbox.resourceName ||
+          present.workspace !== workspace ||
+          Object.entries(annotations).some(([key, value]) => present.annotations[key] !== value)
+        ) {
+          throw new OpenShellSandboxConfigurationFailure(
+            `Refusing OpenShell Sandbox ${sandbox.resourceName} without exact AgentRevision ownership.`,
+          );
+        }
         await refused(() => client.deleteSandbox(selector, context.signal));
       }
       const harnessId = context.revision.harness.id;

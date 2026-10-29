@@ -354,8 +354,7 @@ Errors include:
 
 If stop, deletion, or credential withdrawal reports `SANDBOX_GATEWAY_UNAUTHORIZED`,
 check the worker's `sandbox-gateway-identity` hint. A missing Workspace role
-fails immediately. Restore the role, or deploy again to recreate an externally
-removed Workspace. If authentication fails, check the controller's token file
+fails immediately. Restore the role. If authentication fails, check the controller's token file
 and the gateway's signing-key refresh. The worker retries transient failures
 within its attempt budget. Retry the original operation after restoring access.
 
@@ -365,6 +364,17 @@ and reads the resource again. If a delete returns `NOT_FOUND` immediately after
 a read found the target, removal is unconfirmed (`SANDBOX_DELETION_UNCONFIRMED`).
 The worker logs `worker.harness-exposure-withdrawal-unconfirmed` during the
 exposure sweep and retries.
+
+Revision cleanup checks the returned Sandbox name, Workspace, and Namespace,
+Agent, and revision annotations before deleting it. A same-name Sandbox assigned
+to another owner is refused; do not relabel it to force cleanup.
+
+If both Sandbox and Workspace records are missing, revision cleanup cannot confirm
+removal. Stop, retirement, and Agent deletion stay incomplete, even if the provider
+was permanently removed. Restore authoritative provider state and access before
+retrying. Recreating an empty Workspace or deploying a new revision does not prove
+the earlier resources were removed. OCE has no force-completion operation for this
+state; retain the incomplete operation for operator investigation.
 
 For Namespace setup or cleanup, `PERMISSION_DENIED` or `UNAUTHENTICATED`
 raises `SandboxNamespaceRefusedError`. Compute marks the Namespace step as

@@ -359,6 +359,18 @@ function sandboxRecord(name, workspace) {
   );
 }
 
+/** A provider Sandbox carrying the identities written at provisioning. */
+function ownedRevisionSandbox(driver, context, revision) {
+  const ref = driver.harnessResource({ ...context, revision });
+  const record = sandboxRecord(ref.resourceName, context.namespace.name);
+  record.annotations = {
+    "openclaw.dev/namespace-id": context.namespace.id,
+    "openclaw.dev/agent-id": revision.agentId,
+    "openclaw.dev/revision-id": revision.id,
+  };
+  return record;
+}
+
 /** The Codex Harness's bearer-passthrough service at `url`, or none. */
 function harnessService(sandbox, name, url) {
   return url === undefined
@@ -1397,6 +1409,30 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   assert.equal(gatewayClient.profiles.has("oce-openclaw-runtime"), false);
 });
 
+test("OpenShell revision cleanup refuses a reassigned Sandbox before provider deletion", async () => {
+  const gatewayClient = workspaceGatewayClient();
+  const driver = openShellDriver(gatewayClient);
+  const { context, revision } = runtimeSandboxFixture(driver);
+  const ref = driver.harnessResource({ ...context, revision });
+  const owned = ownedRevisionSandbox(driver, context, revision);
+  for (const field of ["namespace-id", "agent-id", "revision-id"]) {
+    const replacement = structuredClone(owned);
+    replacement.annotations[`openclaw.dev/${field}`] = "another-owner";
+    gatewayClient.sandboxes.set(ref.resourceName, replacement);
+    // A retry may see a same-name Sandbox reassigned since the original work.
+    // Refuse it before deleting that Sandbox or any attached provider material.
+    await assert.rejects(
+      driver.cleanup({ ...context, revision }),
+      /without exact AgentRevision ownership/,
+    );
+    assert.deepEqual(gatewayClient.sandboxes.get(ref.resourceName), replacement);
+    assert.equal(callCount(gatewayClient, "deleteProvider"), 0);
+  }
+  gatewayClient.sandboxes.set(ref.resourceName, owned);
+  await driver.cleanup({ ...context, revision });
+  assert.equal(gatewayClient.sandboxes.has(ref.resourceName), false);
+});
+
 // Finding 1676: OpenShell answers NOT_FOUND for a Sandbox this identity may not see exactly as
 // for one that is gone (GetSandbox and DeleteSandbox alike), so a stop, retirement or deletion
 // records the Sandbox removed only once OpenShell confirms it: a present Sandbox is deleted, an
@@ -1409,7 +1445,8 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
   const { context, revision } = runtimeSandboxFixture(driver);
   const { name: workspace, id: namespaceId } = context.namespace;
   gatewayClient.workspaces.set(workspace, ownedWorkspace(workspace, namespaceId));
-  let present = sandboxRecord("sb-live", workspace);
+  const liveRecord = () => ownedRevisionSandbox(driver, context, revision);
+  let present = liveRecord();
   const reads = [];
   const deletions = [];
   const workspaceReads = [];
@@ -1467,7 +1504,7 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
       return answer;
     };
   };
-  answers(undefined, sandboxRecord("sb-live", workspace));
+  answers(undefined, liveRecord());
   await cleanup();
   assert.deepEqual(workspaceReads, [workspace, workspace]);
   assert.equal(reads.length, 5);
@@ -1504,7 +1541,7 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
   await assert.rejects(cleanup(), (error) => error === unanswered);
   gatewayClient.getWorkspace = getWorkspace;
   // A Sandbox that is present but refused on the delete: the same code, nothing recorded.
-  gatewayClient.getSandbox = async () => sandboxRecord("sb-live", workspace);
+  gatewayClient.getSandbox = async () => liveRecord();
   gatewayClient.deleteSandbox = async () => {
     throw refusal(7, "sandbox:delete");
   };
@@ -3839,9 +3876,9 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
   {
     const raw = grpcError("PERMISSION_DENIED", "sandbox:delete");
     const gatewayClient = failing("deleteSandbox", raw);
-    gatewayClient.getSandbox = async () => sandboxRecord("sb-present", "oce-present");
     const driver = openShellDriver(gatewayClient);
     const { context, revision } = runtimeSandboxFixture(driver);
+    gatewayClient.getSandbox = async () => ownedRevisionSandbox(driver, context, revision);
     await assert.rejects(driver.cleanup({ ...context, revision }), (error) => {
       assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
       assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");

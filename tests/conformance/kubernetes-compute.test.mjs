@@ -16550,6 +16550,7 @@ for (const namespaceAbsent of [false, true]) {
     // Credential Gateway attachment lives only in the paired Sandbox, so Sandbox cleanup is the
     // withdrawal; OCC has no withdraw caller, and a failed cleanup must keep the work retryable.
     const cleanupCalls = [];
+    const lifecycle = [];
     let cleanupFailure = new SandboxGatewayUnavailableError("Provider cleanup is unconfirmed.");
     let podObservations = 0;
     const sandboxDriver = {
@@ -16565,6 +16566,7 @@ for (const namespaceAbsent of [false, true]) {
         assert.equal(context.namespace.name, namespace);
         assert.equal(context.revision, revision);
         cleanupCalls.push(context.revision?.id);
+        lifecycle.push("provider-cleanup");
         if (cleanupFailure !== undefined) {
           throw cleanupFailure;
         }
@@ -16660,6 +16662,7 @@ for (const namespaceAbsent of [false, true]) {
       },
       apps: {
         async readNamespacedDeployment() {
+          lifecycle.push("gateway-read");
           throw notFound();
         },
       },
@@ -16686,12 +16689,28 @@ for (const namespaceAbsent of [false, true]) {
     assert.equal(podObservations, namespaceAbsent ? 0 : 1);
 
     // Retirement must also remain retryable until provider cleanup is confirmed.
+    lifecycle.length = 0;
     cleanupFailure = new SandboxGatewayUnauthorizedError(
       "Provider identity lacks its cleanup role.",
     );
     await assert.rejects(driver.retireRevision(revision), (error) => error === cleanupFailure);
+    if (namespaceAbsent) {
+      assert.deepEqual(
+        lifecycle,
+        ["provider-cleanup"],
+        "retirement retains the Gateway when provider cleanup fails",
+      );
+    }
+    lifecycle.length = 0;
     cleanupFailure = undefined;
     await driver.retireRevision(revision);
+    if (namespaceAbsent) {
+      assert.equal(lifecycle[0], "provider-cleanup");
+      assert.ok(
+        lifecycle.includes("gateway-read"),
+        "retirement removes the Gateway only after provider cleanup",
+      );
+    }
     assert.deepEqual(cleanupCalls, [revision.id, revision.id, revision.id, revision.id]);
     assert.equal(podObservations, namespaceAbsent ? 0 : 2);
 

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-29
-last_updated_session: authoring-run/d72e8e1c-56b3-4bba-b7b2-83d6212f5e58
+last_updated_session: authoring-run/652cb088-e8de-4ee4-9970-513a3502d08d
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -313,10 +313,11 @@ strand the Sandbox. Shutdown stops retries.
 
 Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
-fails preparation. Shutdown calls `cleanup` for the version: `GetSandbox`, then
-`DeleteSandbox` (absence needs `GetWorkspace` and a second `GetSandbox`), then
-deletes the runtime provider, then the Git provider and profile. `cleanupNativeWorkspace` retires
-interrupted preparers without a Sandbox, refusing foreign/replaced resources.
+fails preparation. Shutdown reads the Sandbox and checks its name, Workspace,
+Namespace, Agent, and revision annotations before `DeleteSandbox`. Absence needs
+`GetWorkspace` and a second `GetSandbox`. Cleanup then deletes runtime and Git
+providers and profiles. `cleanupNativeWorkspace` retires interrupted preparers,
+refusing foreign or replaced resources.
 
 Namespace `cleanup` then verifies Workspace ownership, removes
 owned runtime/Git providers and profiles, sends idempotent `DeleteWorkspace`, then removes chart
@@ -324,9 +325,8 @@ resources/NetworkPolicies in reverse order. Terminating Workspaces retry after
 lost responses. Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:cleanupRevisionSandbox`
-runs after Namespace loss. Stop removes serving paths first. Retirement and
-`deleteNamespace` clean providers before Gateway deletion. Ownership checks remain;
-missing placement uses the derived name. Unconfirmed removal prevents completion.
+runs after Namespace loss: stop removes serving paths first; retirement cleans
+the provider first. Derived placement requires provider confirmation.
 
 ### 6. Withdraw Git without retiring the execution
 
@@ -382,6 +382,8 @@ fixtures; live provider removal remains unverified.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 16:13: Reject reassigned Sandboxes. (authoring-run/652cb088-e8de-4ee4-9970-513a3502d08d - 5ad9e16de6a249b096d851afe422a00e90eb3473)
 
 - 2026-10-29 15:03: Require provider cleanup after Namespace loss. (authoring-run/d72e8e1c-56b3-4bba-b7b2-83d6212f5e58 - 72dfce5bfdbde5a79f714dc62777425c26619581)
 
