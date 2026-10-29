@@ -17,7 +17,7 @@ workload identity, baseline isolation, routing, and activation.
 
 <a id="driver-interface"></a>
 
-The [exported interface](../../../packages/contracts/src/index.ts) extends `Driver`.
+The [exported interface](../../../packages/contracts/src/sandbox.ts) extends `Driver`.
 
 ### Properties
 
@@ -130,7 +130,7 @@ describes how that provider maps its phases to these states.
 
 Compute supplies the Namespace, Kubernetes client, and cancellation signal.
 For Harness provisioning it also supplies the Agent revision and
-[`HarnessWorkloadRequirements`](../../../packages/contracts/src/index.ts).
+[`HarnessWorkloadRequirements`](../../../packages/contracts/src/sandbox.ts).
 Use the identity, mounts, login mode, and credential references Compute selected.
 
 If `workspaceSetup` is present, read only the specified key of the Agent-owned
