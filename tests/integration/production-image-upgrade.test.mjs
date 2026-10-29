@@ -64,7 +64,8 @@ fi
   *'.info.status'*) printf 'deployed\\n' ;;
   *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
-  '-S '*|'-eS '*) cat ;;
+  '-eS '*) PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
+  '-S '*) cat ;;
   *'.installationId == '*) exit 0 ;;
   *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
@@ -178,6 +179,7 @@ fi
     ...process.env,
     CLUSTER_INSTALLATION_ID: "ins_upgrade_test",
     CURRENT_CONTROLLER_IMAGE: baselineControllerImage,
+    ORIGINAL_TOOL_PATH: process.env.PATH,
     LIVE_INSTALLATION_FILE: liveInstallation,
     LIVE_VALUES_FILE: liveValues,
     OCC_SERVICE_KEY_FILE: protectedFiles["service-key"],
@@ -233,6 +235,39 @@ fi
       return true;
     },
   );
+
+  // Preserve ordered mapping documents, but refuse a scalar hidden before them.
+  const installationDocuments = `${installationDocument}\n${JSON.stringify({ name: "second" })}\n`;
+  try {
+    await writeFile(liveInstallation, installationDocuments, { mode: 0o600 });
+    await writeFile(protectedFiles.installation, installationDocuments, { mode: 0o600 });
+    await assert.rejects(
+      execute(upgradeScript, upgradeArguments(join(directory, "mapping-documents-evidence")), {
+        cwd: repository,
+        env: environment,
+      }),
+      (error) => {
+        assert.equal(error.code, 47);
+        return true;
+      },
+    );
+
+    await writeFile(protectedFiles.installation, `42\n${installationDocuments}`, { mode: 0o600 });
+    await assert.rejects(
+      execute(upgradeScript, upgradeArguments(join(directory, "scalar-document-evidence")), {
+        cwd: repository,
+        env: environment,
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /the protected Installation YAML differs from the live Secret/);
+        return true;
+      },
+    );
+  } finally {
+    await writeFile(liveInstallation, installationDocument, { mode: 0o600 });
+    await writeFile(protectedFiles.installation, installationDocument, { mode: 0o600 });
+  }
 
   const readinessCounter = join(directory, "readiness-counter");
   const runtimeCountCounter = join(directory, "runtime-count-counter");

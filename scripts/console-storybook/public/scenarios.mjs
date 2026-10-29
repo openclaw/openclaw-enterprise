@@ -6607,6 +6607,28 @@ export const scenarios = {
     ],
     description: "The Configuration read fails independently of the Agent header.",
   },
+  configurationReadDeniedReloadRefocus: {
+    group: "Pages/Agent detail",
+    name: "Configuration read denied across reload and refocus",
+    path: draft,
+    rules: [
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        status: 403,
+      },
+    ],
+    description:
+      "The draft Configuration is never readable. Its repeated permission denial preserves the permitted Agent after reload and a fresh refocus check.",
+    steps: [
+      "Confirm the Agent heading and Configuration unavailable are visible together. This is a persistent 403, not a 503 or unreadable saved data.",
+      "Reload the Storybook preview page in the browser. The same tab remembers the exact denied path and still shows the partial Agent.",
+      "Focus another browser tab, then return to the Console preview. Refocus sends a fresh Configuration GET returning 403; the Agent remains visible without draft editors.",
+      "Choose Retry to perform another denied read. Repeat at phone width. No Save action is available for the unreadable draft.",
+      "For Save recovery, follow Channel binding read denied and the binding preflight workflow: Save, inspect the scrubbed refusal, Refresh, then explicitly save again.",
+    ],
+    gap: "Simulated permission responses through the production Console; Native IAM browser regressions cover real authorization. See unreadable-configuration-workflow.md for reload, refocus, and Save recovery instructions.",
+  },
   unreadableAgentConfiguration: {
     group: "Pages/Agent detail",
     name: "Unreadable Agent draft",
@@ -8007,6 +8029,96 @@ export const scenarios = {
     steps: [
       "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying would be refused.",
       "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
+    ],
+  },
+  authenticationReadDenied: {
+    group: "Pages/Agent detail",
+    name: "Authentication Save read denied",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      {
+        method: "GET",
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        status: 403,
+        once: true,
+      },
+    ],
+    description:
+      "The Agent becomes unreadable before authentication Save. The contextual receipt remains while the Agent name, authentication binding and editors are removed.",
+    steps: [
+      "Select Save authentication source. Read the Save refusal and request ID; no editor or binding remains.",
+      "Select Refresh after the one-shot refusal. Saved state returns without replaying Save.",
+    ],
+  },
+  configurationSaveReadDenied: {
+    group: "Pages/Agent detail",
+    name: "Configuration Save read denied",
+    path: draft,
+    rules: [
+      {
+        method: "GET",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        status: 403,
+        once: true,
+      },
+    ],
+    actions: [click("Enable gateway password access")],
+    description:
+      "A staged Configuration edit loses read access before Save. The entire protected editor is retired with its causal receipt, and no PATCH starts.",
+    steps: [
+      "Select Save Configuration. Confirm the staged document disappears and the read-access reason remains.",
+      "Refocus to see the partial Agent with Configuration unavailable. Select Retry after access recovers; the unsaved edit must not return.",
+    ],
+  },
+  credentialsSavedRetryReadDenied: {
+    group: "Components/Credentials",
+    name: "Saved channel bindings, retry read denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      { method: "POST", suffix: "/iam/access-bindings", status: 403, once: true },
+      {
+        method: "GET",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        skip: 2,
+        status: 403,
+        once: true,
+      },
+    ],
+    actions: [
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save channel Secrets"),
+    ],
+    description:
+      "Bindings saved, but their grant failed. Retry then loses Configuration read access. A sanitized receipt preserves the successful save while removing binding metadata.",
+    steps: [
+      "Select Retry Secret access. The receipt says bindings are saved and the Configuration could not be read. No additional PATCH or grant starts.",
+      "Select Refresh, then Retry Secret access after reads recover. The saved replacement remains and only its missing grant is retried.",
+    ],
+  },
+  credentialsBindingReadDenied: {
+    group: "Components/Credentials",
+    name: "Channel binding read denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        status: 403,
+        once: true,
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "The binding preflight is refused once. Its receipt remains visible, but the saved bindings and staged choice are removed. Refresh reads the saved state without repeating a write.",
+    steps: [
+      "Select Save channel Secrets. Check Access denied and the failed preflight receipt; no token picker or saved binding remains.",
+      "Select Refresh. The simulated read succeeds again and restores the saved bindings, without applying the staged choice.",
+      "Select Slack backup token (simulated) again, then Save channel Secrets once. A fresh preflight and one PATCH save that replacement. See unreadable-configuration-workflow.md for the complete walkthrough.",
     ],
   },
   credentialsSlackLeftoverGrantMissing: {

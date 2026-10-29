@@ -131,7 +131,11 @@ import {
   secretSourceForBinding,
 } from "./secret-picker.mjs";
 
-type DetailContext = ConsolePageContext & { namespaceId: string; agentId: string };
+type DetailContext = ConsolePageContext & {
+  namespaceId: string;
+  agentId: string;
+  onProtectedReadDenied(error: unknown, receipt: HTMLElement): void;
+};
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
 type Revision = RevisionPage["revisions"][number];
@@ -633,6 +637,19 @@ export async function renderAgentDetail(
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
+  function retireSaveRead(error: unknown, receipt: string) {
+    const { requestId } = requestFailure(error);
+    context.onProtectedReadDenied(
+      error,
+      element(
+        "section",
+        { className: "agent-card" },
+        element("p", { role: "alert", className: "status", "data-tone": "danger" }, receipt),
+        ...(requestId ? [element("p", { className: "hint" }, requestIdText(requestId))] : []),
+      ),
+    );
+  }
+
   let permissionsReadSettled = false;
   void callerPermissionsRead.then(() => {
     permissionsReadSettled = latestPermissionsRead === callerPermissionsRead;
@@ -2882,6 +2899,7 @@ export async function renderAgentDetail(
                 ),
           bindingsToReplace: channelBindingsReplace,
           bindingRefusal: (secrets) => refusedSecretBinding("configuration", secrets),
+          onReadDenied: context.onProtectedReadDenied,
           isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();
@@ -4871,6 +4889,15 @@ export async function renderAgentDetail(
           }
           if (requestFailure(error).status === 401) {
             context.onExpired();
+          } else if (!mutationStarted && !grantRequested && requestFailure(error).status === 403) {
+            // The read failed before this attempt could write or grant. Keep its causal receipt,
+            // but retire every protected tab before finally can reenable the old controls.
+            retireSaveRead(
+              error,
+              savedAuthentication
+                ? "Authentication source saved. Could not read the Agent before retrying credential access. No access grant was sent."
+                : rejectionMessage(refusedSave(error, "agent", false), false),
+            );
           } else if (savedAuthentication) {
             const { status, requestId } = requestFailure(error);
             const requestNote = requestId ? ` ${requestIdText(requestId)}` : "";
@@ -5635,6 +5662,13 @@ export async function renderAgentDetail(
         }
         if (requestFailure(error).status === 401) {
           context.onExpired();
+          return;
+        }
+        if (!mutationStarted && requestFailure(error).status === 403) {
+          retireSaveRead(
+            error,
+            rejectionMessage(refusedSave(error, "configuration", false), false),
+          );
           return;
         }
         // Every refusal below is a danger block: an alert before its text is written.

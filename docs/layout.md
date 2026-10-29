@@ -77,8 +77,9 @@ owns platform-error mapping, response formatting, and removal of request values
 from verbose validation errors after their details are built.
 
 The [repository capability](reference/repository-credentials.md#repo-driver-contract)
-uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
-`drivers/repo/github/driver.ts` adapter. Under `apps/controller/src/`, its owners are:
+uses `RepositoryPolicyDriver` and `NativeRepositorySender` in
+`packages/contracts/src/repo.ts`, implemented by `drivers/repo/github/policy.ts`
+and `drivers/repo/github/driver.ts`, respectively. Under `apps/controller/src/`, its owners are:
 
 - `drivers/repo/credentials/`: private common sessions, custody, lifecycle,
   transport and contracts, including the private client-configuration type.
@@ -91,7 +92,7 @@ uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
 
 OCC owns immutable Agent bindings and safe session State; worker helpers connect
 those records to Compute delivery. Public status omits private cleanup diagnostics.
-The common engine's `RepositoryBackend` protocol is separate from `RepoDriver`.
+The common engine's `RepositoryBackend` protocol is separate from these interfaces.
 The worker Token Service owns GitHub App signing and provider-token custody.
 The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).

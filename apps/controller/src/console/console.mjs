@@ -2081,6 +2081,7 @@ async function loadPage({
       reusable: true,
       mutations: 0,
       reads: new Map(),
+      readablePaths: new Set(),
       metaReads: new Set(),
       // Each read's Installation-administration option, so a return replays it gated (finding
       // 2636).
@@ -2117,6 +2118,7 @@ async function loadPage({
         // Live reads (runtime status, log pages) differ on every call; replaying them to
         // revalidate a cached view would only spend the reader's rate limit.
         if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
+          viewState.readablePaths.add(path);
           recordRead(readSignature(result, options.includeMeta));
           if (options.includeMeta) {
             viewState.metaReads.add(path);
@@ -2424,8 +2426,20 @@ async function loadPage({
         `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
         JSON.stringify(firstAgent),
       );
+      viewState.readablePaths.add(
+        `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
+      );
       const agent = await renderAgentDetail(
-        { ...agentContext, agentId: current.agentId },
+        {
+          ...agentContext,
+          agentId: current.agentId,
+          onProtectedReadDenied(error, receipt) {
+            if (lifetime.isCurrent(viewState.active)) {
+              agentContext.drafts.clear();
+              showAgentReadFailure(current, namespaceId, error, receipt);
+            }
+          },
+        },
         { agent: firstAgent },
       );
       // The load settles with the Agent's page shown, not its placeholder.
@@ -2711,6 +2725,36 @@ async function locateAgentNamespace(agentId, excluded) {
   return { namespaceId: null, complete };
 }
 
+function showAgentReadFailure(current, selectedNamespace, error, receipt) {
+  resetReads();
+  if ([400, 403, 404].includes(error.status)) {
+    clearRetainedViewsForNamespace(selectedNamespace);
+  }
+  const shell = renderShell(current.feature);
+  panel(
+    shell.view,
+    error.status === 403
+      ? "Access denied"
+      : error.status === 404
+        ? "Resource unavailable"
+        : "Request unavailable",
+    error.status === 403
+      ? agentPageReadRefusal(error)
+      : "The read could not be completed. Retry to check current access and saved state.",
+    // A permission refusal offers the header's Refresh, not a Retry that repeats it.
+    error.status === 403 ? undefined : "Retry",
+    error.status === 403 ? undefined : () => void loadPage(),
+    receipt ? undefined : error.requestId,
+  );
+  if (receipt) {
+    shell.view.append(receipt);
+  }
+  if (error.status === 403) {
+    shell.refresh.disabled = false;
+  }
+  return shell.view;
+}
+
 async function revalidateMountedAgent(current) {
   const key = routeKey(current);
   const view = app.querySelector('.content [aria-live="polite"]');
@@ -2793,13 +2837,28 @@ async function revalidateMountedAgent(current) {
     if (current.url.searchParams.get("tab") !== "workspace") {
       const selected =
         current.url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
+      const snapshotPath =
+        selected === "draft"
+          ? `/namespaces/${encodeURIComponent(selectedNamespace)}/configurations/${encodeURIComponent(agent.configurationId)}`
+          : `${path}/revisions/${encodeURIComponent(selected)}`;
+      const previousSnapshotRead = mountedViewState?.reads.get(snapshotPath);
+      const snapshotWasReadable = mountedViewState?.readablePaths.has(snapshotPath);
       await Promise.all([
         request(`${path}/revisions`),
-        request(
-          selected === "draft"
-            ? `/namespaces/${encodeURIComponent(selectedNamespace)}/configurations/${encodeURIComponent(agent.configurationId)}`
-            : `${path}/revisions/${encodeURIComponent(selected)}`,
-        ),
+        request(snapshotPath).catch((error) => {
+          // Initial admission can show an Agent with its draft Configuration denied. Keep
+          // that same refusal, but scrub a page whose previously readable data was revoked.
+          if (
+            selected === "draft" &&
+            error.status === 403 &&
+            (previousSnapshotRead === refusedRead(403) ||
+              deniedReadsFor(owner).has(snapshotPath)) &&
+            snapshotWasReadable === false
+          ) {
+            return;
+          }
+          throw error;
+        }),
       ]);
     }
   } catch (error) {
@@ -2810,35 +2869,14 @@ async function revalidateMountedAgent(current) {
       showExpiredLogin();
       return;
     }
-    resetReads();
     if (checking !== "detail") {
+      resetReads();
       // Drafts survive an unavailable check, as in loadPage (finding 1935).
       clearPrivate();
       showAdmissionUnavailable(checking !== "session", error.status);
       return;
     }
-    if ([400, 403, 404].includes(error.status)) {
-      clearRetainedViewsForNamespace(selectedNamespace);
-    }
-    const shell = renderShell(current.feature);
-    panel(
-      shell.view,
-      error.status === 403
-        ? "Access denied"
-        : error.status === 404
-          ? "Resource unavailable"
-          : "Request unavailable",
-      error.status === 403
-        ? agentPageReadRefusal(error)
-        : "The read could not be completed. Retry to check current access and saved state.",
-      // A permission refusal offers the header's Refresh, not a Retry that repeats it.
-      error.status === 403 ? undefined : "Retry",
-      error.status === 403 ? undefined : () => void loadPage(),
-      error.requestId,
-    );
-    if (error.status === 403) {
-      shell.refresh.disabled = false;
-    }
+    showAgentReadFailure(current, selectedNamespace, error);
   } finally {
     clearTimeout(stillChecking);
     clearStillChecking?.();

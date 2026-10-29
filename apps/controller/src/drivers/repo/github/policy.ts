@@ -1,4 +1,3 @@
-import type { RepositoryGitDeliveryResolver } from "../credentials/delivery.ts";
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
 import type {
   Backend,
@@ -13,7 +12,6 @@ import type {
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   githubInstallationProfile,
-  createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
   validateGitHubRepositoryRegistry,
@@ -60,7 +58,6 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   readonly capability = "repo" as const;
   readonly implementation = "github";
   readonly id: string;
-  readonly resolveDelivery: RepositoryGitDeliveryResolver;
   readonly #registry: GitHubRepositoryRegistry;
   readonly #duration: number;
   constructor(
@@ -74,7 +71,6 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     }
     this.id = id;
     this.#registry = validateGitHubRepositoryRegistry(registry, backend.id);
-    this.resolveDelivery = createGitHubRepositoryDeliveryResolver(this.#registry);
     if (
       !Number.isSafeInteger(options.sessionDurationSeconds) ||
       options.sessionDurationSeconds < 1 ||

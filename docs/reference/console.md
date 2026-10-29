@@ -79,6 +79,12 @@ Slack searches, focus, and the Namespace selector; at phone width, focus in the 
 **Open navigation**. Views belong to one account, session, route,
 and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
+A previously shown Configuration denial can leave Agent metadata visible after
+reload and refocus. Refocus still checks current access. If the read before a
+channel Secret save is denied, the Console clears the binding controls and keeps
+the failed attempt's message. No save is sent. After access is restored, use
+**Refresh** to read saved state before retrying.
+
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.
 

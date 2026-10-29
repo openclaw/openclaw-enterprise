@@ -7,11 +7,22 @@ import {
 } from "../helpers/controlled-tls-origin-scenario.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 
+type FixtureResult = Awaited<
+  ReturnType<typeof staticEgressFixture<ReturnType<typeof singleRequestTlsOrigin>>>
+>;
+type Fixture = Extract<FixtureResult, { beginExchange: unknown }> & {
+  provider: ReturnType<typeof singleRequestTlsOrigin>;
+};
+type Exchange = Awaited<ReturnType<Fixture["beginExchange"]>>;
+type Capture = ReturnType<Fixture["capture"]>;
+
 // Two authorized sinks multiplexed on the real TLS gRPC client connection. We own
 // only this synthetic peer and downstream. The installed lane separately holds two
 // real executions' replies; it does not extract or replace a supervisor's private key.
 test("authorized wrong sink presents copied opening first and splices a pending real reply", async (t) => {
-  const f = await staticEgressFixture(t, { providerServer: singleRequestTlsOrigin });
+  const fixture = await staticEgressFixture(t, { providerServer: singleRequestTlsOrigin });
+  assertObservedFixture(fixture);
+  const f = fixture;
   const origin = () => f.provider.snapshot();
   const before = f.secretReads;
   const lostBearer = f.metadata();
@@ -64,7 +75,12 @@ test("authorized wrong sink presents copied opening first and splices a pending 
     ),
   );
 
-  async function sendAllowed(exchange, capture, ready, expectedBytes) {
+  async function sendAllowed(
+    exchange: Exchange,
+    capture: Capture,
+    ready: unknown,
+    expectedBytes: number,
+  ) {
     return observeGrantedSend(
       f.provider,
       expectedBytes,
@@ -76,7 +92,10 @@ test("authorized wrong sink presents copied opening first and splices a pending 
       () => f.send(capture, ready),
     );
   }
-  async function expectActualReply(exchange, completeReply) {
+  async function expectActualReply(exchange: Exchange, completeReply: unknown) {
+    assert.ok(
+      completeReply && typeof completeReply === "object" && "response_complete" in completeReply,
+    );
     assert.equal(completeReply.response_complete, true);
     exchange.stream.write({ response: completeReply });
     const { response } = await exchange.next();
@@ -91,13 +110,15 @@ test("authorized wrong sink presents copied opening first and splices a pending 
 });
 
 test("two live authorized streams cannot cross their resolved dispatch handles", async (t) => {
-  const f = await staticEgressFixture(t, { providerServer: singleRequestTlsOrigin });
+  const fixture = await staticEgressFixture(t, { providerServer: singleRequestTlsOrigin });
+  assertObservedFixture(fixture);
+  const f = fixture;
   const before = f.secretReads;
   // Cross both signed openings *before* either is presented to the proper sink.
   // Check authority refusals and material access. Origin counters also detect
   // unexpected background traffic; this case does not invoke an outbound sender.
   const [left, right] = await Promise.all([f.beginExchange(), f.beginExchange()]);
-  const swapped = [
+  const swapped: [Exchange, ReturnType<Exchange["opening"]>][] = [
     [left, right.opening(f.capture())],
     [right, left.opening(f.capture())],
   ];
@@ -112,7 +133,7 @@ test("two live authorized streams cannot cross their resolved dispatch handles",
   for (const [wrong, original] of [
     [b, a],
     [a, b],
-  ]) {
+  ] satisfies [typeof a, typeof a][]) {
     wrong.exchange.stream.write({ authorize: f.permitRequest(original.capture, original.ready) });
     const { authorized } = await wrong.exchange.next();
     assert.ok(authorized.refused);
@@ -125,7 +146,10 @@ test("two live authorized streams cannot cross their resolved dispatch handles",
   assert.equal(f.provider.snapshot().decryptedBytes, 0, "unexpected origin traffic");
 });
 
-async function expectStreamRefused(exchange, message) {
+async function expectStreamRefused(
+  exchange: Exchange,
+  message: ReturnType<Exchange["opening"]> | { response: unknown },
+) {
   exchange.stream.write(message);
   await assert.rejects(exchange.next(), { code: 7, details: "Installation exchange refused." });
   assert.deepEqual(
@@ -134,11 +158,16 @@ async function expectStreamRefused(exchange, message) {
   );
 }
 
-async function openExchange(f, metadata) {
+async function openExchange(f: Fixture, metadata?: unknown) {
   const exchange = await f.beginExchange(metadata);
   const capture = f.capture();
   exchange.stream.write(exchange.opening(capture));
   const { resolved } = await exchange.next();
   assert.ok(resolved.ready);
   return { exchange, capture, ready: resolved.ready };
+}
+
+function assertObservedFixture(fixture: FixtureResult): asserts fixture is Fixture {
+  assert.ok("beginExchange" in fixture);
+  assert.ok("snapshot" in fixture.provider);
 }

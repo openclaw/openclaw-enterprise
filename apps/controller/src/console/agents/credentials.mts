@@ -230,6 +230,7 @@ export function hasRequiredChannelCredentials(values: unknown, configuration: Ch
 type SaveFailure = ReturnType<typeof requestFailure> & {
   step: "configuration" | "preflight" | "grant";
   refusal?: string | undefined;
+  retryRead?: "Agent" | "Configuration";
 };
 
 // Where to fix a channel setting a channel Secret save was refused for. A refusal that asks only
@@ -642,6 +643,7 @@ export function createChannelSecretsPanel({
   bindingsToReplace = () => null,
   bindingRefusal = async () => undefined,
   isCurrent = () => true,
+  onReadDenied,
   onOutstandingGrants,
   onConfigurationChange,
   onChange,
@@ -657,6 +659,7 @@ export function createChannelSecretsPanel({
   // Grants an earlier save on this page left outstanding, and where to keep the current ones.
   outstandingGrants?: OutstandingSecretGrants | null;
   onOutstandingGrants?(grants: OutstandingSecretGrants | null): void;
+  onReadDenied(error: unknown, receipt: HTMLElement): void;
   // Whether to read the Namespace's IAM policy for bound Secrets the Agent has no grant for.
   checkGrants?: boolean;
   // False when this session is known not to administer the Installation, so it cannot grant.
@@ -708,6 +711,12 @@ export function createChannelSecretsPanel({
     const { saveError, saveGrantWarning } = state;
     if (!saveError || saveError.step === "grant") {
       return saveGrantWarning;
+    }
+    if (saveError.retryRead) {
+      return (
+        `Channel Secret bindings are saved. Could not read the ${saveError.retryRead} before retrying Secret access. No binding changes or access grants were sent.` +
+        (saveError.requestId ? ` Request ID: ${saveError.requestId}` : "")
+      );
     }
     const message =
       saveError.step === "preflight"
@@ -860,6 +869,7 @@ export function createChannelSecretsPanel({
   } = {};
   // Saves started, so a grant check that a save overtook drops its answer.
   let saveCount = 0;
+  let readDenied = false;
   // Grant reads started: only the latest one clears the Deploy hold or changes the panel.
   let grantRead = 0;
   // A save or Retry overtook a grant read, so the panel reads the grants again once it ends:
@@ -1060,6 +1070,7 @@ export function createChannelSecretsPanel({
       onChange();
       let mutationStarted = false;
       let configurationSaved = false;
+      let failedRead: "Agent" | "Configuration" | undefined;
       // A conflict keeps these choices for Reload draft instead of dropping them (finding 1512).
       const carryChoices = () => {
         state.reloadRequired = true;
@@ -1073,8 +1084,20 @@ export function createChannelSecretsPanel({
       try {
         const configurationPath = `${namespacePath(context.namespaceId)}/configurations/${encodeURIComponent(state.configuration.id)}`;
         const [freshAgent, freshConfiguration] = await Promise.all([
-          context.request(path).then(responseFields),
-          context.request(configurationPath).then(responseFields),
+          context
+            .request(path)
+            .then(responseFields)
+            .catch((error: unknown) => {
+              failedRead ??= "Agent";
+              throw error;
+            }),
+          context
+            .request(configurationPath)
+            .then(responseFields)
+            .catch((error: unknown) => {
+              failedRead ??= "Configuration";
+              throw error;
+            }),
         ]);
         if (!context.isCurrent()) {
           return;
@@ -1186,7 +1209,27 @@ export function createChannelSecretsPanel({
         if (!context.isCurrent()) {
           return;
         }
-        state.saveError = { ...failure, step, refusal };
+        state.saveError = {
+          ...failure,
+          step,
+          refusal,
+          ...(retry && step === "preflight" && failedRead ? { retryRead: failedRead } : {}),
+        };
+        if (step === "preflight" && failure.status === 403) {
+          // This read authorizes the binding editor. Retire it before finally or a pending
+          // grant check can recreate protected controls, but retain this attempt's receipt.
+          readDenied = true;
+          section.replaceChildren(
+            element("h2", {}, "Channel Secrets"),
+            element(
+              "p",
+              { role: "alert", className: "status", "data-tone": "danger" },
+              saveErrorText(),
+            ),
+          );
+          onReadDenied(cause, section);
+          return;
+        }
         state.saveMessage = "";
         state.outcomeUnknown =
           step === "configuration" &&
@@ -1196,7 +1239,7 @@ export function createChannelSecretsPanel({
         setStatusTone(error, saveErrorTone());
         error.textContent = saveErrorText();
       } finally {
-        if (context.isCurrent()) {
+        if (context.isCurrent() && !readDenied) {
           state.saving = false;
           if (grantRecheck || state.checkingGrants) {
             // Deploy stays held until the new read lands.
@@ -1340,7 +1383,7 @@ export function createChannelSecretsPanel({
       return;
     }
     // A newer read replaced this one, and a rebuilt panel no longer speaks for the page.
-    if (!context.isCurrent() || read !== grantRead || !isCurrent()) {
+    if (!context.isCurrent() || readDenied || read !== grantRead || !isCurrent()) {
       return;
     }
     // A save since the read began may have granted or replaced these Secrets. The save reads

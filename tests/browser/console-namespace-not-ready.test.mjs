@@ -792,6 +792,9 @@ for (const kind of ["stop", "delete"]) {
         `dialog open=${await dialog.count()}, submission enabled=${outcome === "unsubmitted" && (await dialog.count()) ? await confirm.isEnabled() : false}`,
       );
       assert.equal(await dialog.count(), 0);
+      // The closed dialog leaves the page in its close event, a task after it closes. The page
+      // text checked below includes hidden elements, so wait until it is gone.
+      await page.locator(`dialog.agent-${kind}-dialog`).waitFor({ state: "detached" });
       const search = page.getByRole("searchbox", { name: "Search Agents" });
       assert.equal(
         await search.evaluate((node) => node === globalThis.document.activeElement),
