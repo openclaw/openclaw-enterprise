@@ -20,6 +20,17 @@ for infrastructure prerequisites and supported Harness authentication.
 These commands create resources and can start billable model workloads.
 Run them in a development Installation. Keep shell tracing disabled.
 
+Save the Bash blocks from **Connect and prepare the files** through **Deploy and
+inspect the result**, in order, as `create-agent.sh`. Replace the connection
+placeholders, then run `bash create-agent.sh` from the directory containing the
+downloaded OpenAPI JSON. Do not source the file or paste these blocks into your
+interactive shell. A failed command stops the script without closing your shell.
+
+The script pauses before submitting the Configuration so you can inspect and
+edit it. It preserves response files in a private directory for cleanup after
+success or failure. Fix a failure and clean up existing resources before
+rerunning: creation requests are not automatically resumed.
+
 ## Connect and prepare the files
 
 Store the full service-key issuance response in an owner-readable file.
@@ -30,8 +41,9 @@ set -euo pipefail
 export OCC_URL='http://127.0.0.1:3000'
 export OCC_SERVICE_KEY_FILE='/private/path/occ-service-key.json'
 umask 077
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+work="$(mktemp -d "$PWD/occ-api-example.XXXXXX")"
+printf 'Results for cleanup: %s\n' "$work"
+trap 'rm -f "$work/secret.json"' EXIT
 
 occ_request() {
   local method="$1" path="$2" input="${3:-}" key status
@@ -100,6 +112,8 @@ secret_id="$(jq -er '.data.id' "$work/secret-result.json")"
 jq '.paths["/namespaces/{namespaceId}/configurations"].post.requestBody
     .content["application/json"].examples.example.value' \
   occ-api.openapi.json > "$work/configuration.json"
+printf 'Inspect and edit: %s\n' "$work/configuration.json"
+read -r -p 'Press Enter after choosing a supported model: '
 ```
 
 Inspect `configuration.json` and replace its model with a supported selection in
@@ -138,7 +152,8 @@ role_id="$(jq -er '.data.id' "$work/role-result.json")"
 jq -n --arg principal "$principal_id" --arg role "$role_id" --arg secret "$secret_id" \
   '{subjectKind:"identity",subjectId:$principal,roleId:$role,
     resourceKind:"secret",resourceId:$secret}' > "$work/binding.json"
-occ_request POST "/namespaces/$namespace_id/iam/access-bindings" "$work/binding.json"
+occ_request POST "/namespaces/$namespace_id/iam/access-bindings" "$work/binding.json" \
+  > "$work/binding-result.json"
 ```
 
 The binding grants `operate` on this exact Secret. It does not grant access to
@@ -178,10 +193,18 @@ resource state. Do not blindly retry creation or deployment requests.
 
 ## Remove the example resources
 
-Keep the IDs above until cleanup finishes. Stop and delete the Agent, then wait
+Use the response files in the printed results directory to recover resource IDs.
+For example, set `work` to that directory and read the Agent ID with
+`jq -r '.data.id' "$work/agent-result.json"`. The Namespace, Configuration, Secret,
+role, and access binding have their own `*-result.json` files.
+
+Keep those files until cleanup finishes. Stop and delete the Agent, then wait
 until its exact read returns `404` before deleting its Configuration and Secret.
 A deletion accepted with `202` is still asynchronous.
 
 Use the explorer's delete operations to remove the access binding and role,
 then the empty Namespace. If Secret deletion reports a conflict, inspect its
 `consumers`; do not delete resources belonging to other users.
+
+Delete the saved results directory only after the resources are gone. The script
+removes the temporary model-key request file on exit and keeps the other files.
