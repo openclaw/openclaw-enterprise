@@ -1039,5 +1039,23 @@ test(
       ).rows,
       jobs.rows,
     );
+    // Finding 2151: a deployer without SandboxPolicy read gets the read refusal. The ceiling's
+    // named 409 would tell them that saved additions exist.
+    await pool.query(
+      "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'read','sandbox_policy',$3,'deny')",
+      [`restriction-${randomUUID()}`, namespace.id, previous.id],
+    );
+    const unreadable = await inject(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+      undefined,
+      app,
+    );
+    assert.equal(unreadable.statusCode, 403, unreadable.body);
+    assert.equal(Object.hasOwn(unreadable.json().error, "details"), false, unreadable.body);
+    assert.deepEqual(
+      await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
+      revisions,
+    );
   },
 );

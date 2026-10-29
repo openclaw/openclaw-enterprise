@@ -1526,7 +1526,7 @@ export const scenarios = {
       { click: "Delete Namespace" },
     ],
     description:
-      "A simulated NAMESPACE_NOT_EMPTY response names remaining resources. Open Agents or Secrets, or inspect Configuration cleanup commands.",
+      "A simulated NAMESPACE_NOT_EMPTY response names remaining resources the caller can read and counts the rest. Open Agents or Secrets, or inspect Configuration cleanup commands.",
   },
   namespaceDeleteDenied: {
     group: "Pages/Namespaces",

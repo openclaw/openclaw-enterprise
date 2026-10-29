@@ -1048,10 +1048,11 @@ export function installFixture(scenario, evidence) {
               { kind: "Agents", count: 1, ids: ["agt_00000000-0000-4000-8000-000000000003"] },
               {
                 kind: "Configurations",
-                count: 1,
+                count: 3,
                 ids: ["cfg_00000000-0000-4000-8000-000000000004"],
               },
-              { kind: "Secrets", count: 1, ids: ["sec_00000000-0000-4000-8000-000000000005"] },
+              // The caller cannot read this Secret, so the API counts it without its ID.
+              { kind: "Secrets", count: 1, ids: [] },
             ],
           );
         }

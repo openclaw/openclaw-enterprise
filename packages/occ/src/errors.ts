@@ -895,12 +895,18 @@ export class AgentDeletingError extends ResourceConflictError {
 export class NamespaceNotEmptyError extends ResourceConflictError {
   /** Public resource kinds that still occupy the Namespace, such as "Presets". */
   readonly contents: readonly string[];
-  /** IDs of the remaining resources of each kind, so an operator can delete them. */
+  /**
+   * IDs of remaining resources of each kind that the caller may read, so an operator can
+   * delete them. Unreadable resources are only counted (finding 2724).
+   */
   readonly ids: Readonly<Record<string, readonly string[]>>;
+  /** How many resources of each kind remain, named or not; defaults to the named IDs. */
+  readonly counts: Readonly<Record<string, number>>;
 
   constructor(
     contents: readonly string[] = [],
     ids: Readonly<Record<string, readonly string[]>> = {},
+    counts: Readonly<Record<string, number>> = {},
   ) {
     super("The Namespace must be empty before deletion.");
     this.name = "NamespaceNotEmptyError";
@@ -908,6 +914,14 @@ export class NamespaceNotEmptyError extends ResourceConflictError {
     this.ids = Object.freeze(
       Object.fromEntries(
         Object.entries(ids).map(([kind, list]) => [kind, Object.freeze([...list])]),
+      ),
+    );
+    this.counts = Object.freeze(
+      Object.fromEntries(
+        this.contents.map((kind) => [
+          kind,
+          Math.max(counts[kind] ?? 0, this.ids[kind]?.length ?? 0),
+        ]),
       ),
     );
   }

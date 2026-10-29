@@ -259,16 +259,19 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         heading,
         ...resource.ids.map((id) => element("code", { className: "resource-id" }, id)),
       );
-      if (resource.count > resource.ids.length) {
+      const unlisted = resource.count - resource.ids.length;
+      if (unlisted > 0) {
+        // The API names at most 20 IDs per kind, and only those the caller can read (finding 2724).
+        const lead = resource.ids.length ? `And ${unlisted} more not listed.` : "None listed.";
         item.append(
           element(
             "p",
             { className: "muted" },
-            `And ${resource.count - resource.ids.length} more. Retry after cleanup to see remaining IDs.`,
+            `${lead} The list shows up to 20 IDs that you can read; retry after cleanup to see more.`,
           ),
         );
       }
-      if (resource.kind === "Configurations") {
+      if (resource.kind === "Configurations" && resource.ids.length) {
         item.append(
           element(
             "details",
