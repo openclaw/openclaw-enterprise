@@ -12,7 +12,9 @@ export async function harnessTlsFixture(t) {
   const ca = await certificateAuthority(directory, { caName: "Harness fixture CA", days: 1 });
   const leaf = await signedLeaf(directory, ca, {
     name: "server",
-    commonName: "localhost",
+    // Not a host name: clients fall back to the CN when a leaf has no SAN, so only
+    // the SAN may name localhost.
+    commonName: "Harness fixture server",
     subjectAltName: "DNS:localhost",
     days: 1,
   });
