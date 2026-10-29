@@ -9131,9 +9131,23 @@ export class OpenClawController {
    * a repository binding saved beside the Agent's network grants gets the Driver's overlap
    * check here, before deploy. Other policy refusals stay with save, apply and deploy.
    */
-  private refuseRepositoryNetworkOverlap(policy: Readonly<SandboxPolicy> | undefined): void {
+  private async refuseRepositoryNetworkOverlap(
+    principalId: string,
+    policy: Readonly<SandboxPolicy> | undefined,
+  ): Promise<void> {
+    if (policy === undefined || policy.additions.length === 0) {
+      return;
+    }
+    // Finding 2881: the overlap refusal names a saved grant, so it comes after SandboxPolicy
+    // read, as deploy's admission does when saved additions exist (finding 2151). An Agent
+    // update without that read learns nothing from it.
+    await this.authorize(principalId, "read", {
+      kind: "sandbox_policy",
+      id: policy.id,
+      namespaceId: policy.namespaceId,
+    });
     const driver = this.sandboxDriver();
-    if (policy === undefined || policy.additions.length === 0 || !driver?.admitNetworkPolicy) {
+    if (!driver?.admitNetworkPolicy) {
       return;
     }
     try {
@@ -9955,7 +9969,8 @@ export class OpenClawController {
       // The reverse of the policy save's check: a binding added beside a saved grant that
       // reaches the repository hosts (finding 2144).
       if ((repositoryBindings ?? agent.repositoryBindings ?? []).length > 0) {
-        this.refuseRepositoryNetworkOverlap(
+        await this.refuseRepositoryNetworkOverlap(
+          principalId,
           await state.sandboxPolicies.find(namespace.id, agent.id),
         );
       }

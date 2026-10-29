@@ -2920,7 +2920,7 @@ Replace an exact Namespace-owned Agent's editable draft
 
 **Operation ID:** `updateAgent`
 
-**Permissions:** Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update.
+**Permissions:** Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -2930,6 +2930,7 @@ Replace an exact Namespace-owned Agent's editable draft
 | `read` | `service_account` | `requested` (when associated) |
 | `operate` | `secret` | `requested` (when bound) |
 | `operate` | `credential_source` | `requested` (when bound) |
+| `read` | `sandbox_policy` | `requested` (when saved network policy additions exist) |
 
 ##### Parameters
 
@@ -3131,7 +3132,7 @@ Save an Agent revision from the Agent's saved settings
 
 **Operation ID:** `deployAgent`
 
-**Permissions:** Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.
+**Permissions:** Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -3142,6 +3143,7 @@ Save an Agent revision from the Agent's saved settings
 | `read` | `service_account` | `requested` (when associated) |
 | `operate` | `secret` | `requested` (when bound) |
 | `operate` | `credential_source` | `requested` (when bound) |
+| `read` | `sandbox_policy` | `requested` (when saved network policy additions exist) |
 
 ##### Parameters
 
