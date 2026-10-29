@@ -9639,6 +9639,7 @@ for (const [id, state, name] of [
     "Policy application refused by a changed ceiling",
   ],
   ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
+  ["policyDenialsApplyDenied", "applyDenied", "Policy saved but live application refused access"],
   ["policyIncompletePreview", "incompletePreview", "Policy preview omits the validated rules"],
   ["policyUnconfirmedSave", "unconfirmedSave", "Policy save returns different rules than reviewed"],
   ["policyDenialsEditDenied", "editDenied", "Independent policy permission denied"],
@@ -9745,6 +9746,22 @@ for (const [id, state, name] of [
           steps: [
             "Review a suggestion, then choose Review changes and Save and apply to current revision.",
             "Confirm the alert states the policy was saved but application was not confirmed. The saved version increases and the rule remains saved; do not infer live enforcement.",
+          ],
+        }
+      : {}),
+    ...(state === "applyDenied"
+      ? {
+          rules: [
+            {
+              method: "POST",
+              suffix: "/sandbox-policy/networking/apply",
+              status: 403,
+              code: "FORBIDDEN",
+            },
+          ],
+          steps: [
+            "Review a suggestion, then choose Review changes and Save and apply to current revision.",
+            "The simulated apply answers 403, as when SandboxPolicy read is revoked while the page is open. Confirm the alert says the policy was saved but not applied, and names Agent manage_policy and SandboxPolicy update and read.",
           ],
         }
       : {}),

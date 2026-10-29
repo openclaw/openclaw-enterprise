@@ -231,6 +231,7 @@ export const PolicyDenialsMissingMetadata = story("policyDenialsMissingMetadata"
 export const PolicyDenialsFailed = story("policyDenialsFailed");
 export const PolicyApplicationCeilingChanged = story("policyApplicationCeilingChanged");
 export const PolicyDenialsApplyRejected = story("policyDenialsApplyRejected");
+export const PolicyDenialsApplyDenied = story("policyDenialsApplyDenied");
 export const PolicyIncompletePreview = story("policyIncompletePreview");
 export const PolicyUnconfirmedSave = story("policyUnconfirmedSave");
 export const PolicyDenialsEditDenied = story("policyDenialsEditDenied");
