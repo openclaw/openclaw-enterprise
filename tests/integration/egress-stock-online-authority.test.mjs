@@ -213,7 +213,12 @@ test(
         phase: 1,
         middleware_name: registrationName,
         context: { request_id: `request-${requests}`, sandbox_id: sandboxId },
-        config: binding,
+        // The server's decoder names the set oneof member, as the wire call would.
+        config: {
+          fields: {
+            binding_id: { stringValue: binding.fields.binding_id.stringValue, kind: "stringValue" },
+          },
+        },
         target: {
           scheme: "https",
           host: "api.example.test",
