@@ -695,6 +695,7 @@ export {
 } from "./state/postgres-work-queue.ts";
 export {
   CREDENTIAL_WITHDRAWAL_TARGET,
+  controllerWorkDeploymentStatus,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
   revisionAdmittedBeforeWork,

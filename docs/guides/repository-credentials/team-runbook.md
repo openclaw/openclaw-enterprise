@@ -219,8 +219,9 @@ Check the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` reason (`quarantined`, th
 `blocked`) for the affected revision and repository. That version has no usable
 Git token and the worker does not retry it. An active Agent or a working model
 reply does not prove Git access. On the native broker route, a new deployment
-fails with `REPOSITORY_GIT_TOKEN_QUARANTINED` and the Agent stops until a
-deployment succeeds. On the OpenShell route, it can
+fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`. A new Agent then stops until a
+deployment succeeds; an Agent that ran an earlier version keeps the failed
+version running without Git. On the OpenShell route, it can
 wait at `REPOSITORY_GIT_MATERIAL_PENDING` and fail at its convergence deadline.
 
 Put a key GitHub accepts in `private-key.pem` of the Secret selected by

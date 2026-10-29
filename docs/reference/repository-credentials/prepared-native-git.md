@@ -156,17 +156,24 @@ the App key or the registry names the wrong App or installation, and also when
 GitHub is unreachable, does not answer within 25 seconds, or its answer is lost.
 The deployment then fails at once with `REPOSITORY_GIT_TOKEN_QUARANTINED`, and
 the worker log names the revision and `repositoryRef`
-(`PREPARED_GITHUB_RECOVERY_REQUIRED`). As for any repository version that fails,
-the controller then retires the failed version and stops its runtime. The
-earlier version stopped when the new version was published, so the Agent has no
-running version, and no chat, until a deployment succeeds. Correct the key or
-registry, then deploy a new version; if both are correct, deploy a new version. See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+(`PREPARED_GITHUB_RECOVERY_REQUIRED`). What happens to the version then depends
+on the Agent:
 
-Any other wait, for example an issuer change before the new version gets a token
-or an attempt whose result the worker did not record, ends at the deployment's
-convergence deadline with `CONVERGENCE_DEADLINE_EXCEEDED`. This check runs only
-for a deployment. A running version whose token renewal fails reports it only in
-the worker log.
+| Agent                                                       | Result                                                                                                                                                                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| New: no earlier version was activated by its own deployment | The controller retires the failed version and stops its runtime. The Agent has no running version until a deployment succeeds.                                                                                     |
+| Existing: an earlier version was activated                  | The failed version keeps running without Git, so users can still chat with the Agent and it can report the problem. Its maintenance continues. The earlier version stopped serving when the new one was published. |
+
+A version stopped or superseded before activation does not make the Agent
+existing. Any other wait, for example an issuer change before the new version
+gets a token or an attempt whose result the worker did not record, ends at the
+deployment's convergence deadline with `CONVERGENCE_DEADLINE_EXCEEDED`. That
+version could still get a token later, so the controller retires it for every
+Agent. Correct the key or registry, then deploy a new version; if both are
+correct, deploy a new version. See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
+This check runs only for a deployment. A running version whose token renewal
+fails reports it only in the worker log.
 
 ## Change the issuer
 

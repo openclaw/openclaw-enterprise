@@ -379,7 +379,7 @@ test(
   },
 );
 
-for (const { name, crashes, finish } of [
+for (const { name, crashes, finish, newAgent } of [
   {
     name: "a deployment whose lease expires on its last attempt after publishing its revision gets one more attempt",
     crashes: 1,
@@ -395,12 +395,26 @@ for (const { name, crashes, finish } of [
     crashes: 1,
     finish: "dependency-unavailable",
   },
+  // Owner decision 2026-10-28 (finding 2425): a new Agent whose native version has no Git token
+  // fails and is retired, also when its published deployment recovered from a lost lease.
+  {
+    name: "a new Agent's recovered native deployment fails and retires when its Git token is quarantined",
+    crashes: 1,
+    finish: "quarantined",
+    newAgent: true,
+  },
+  {
+    name: "a new Agent's recovered native deployment whose extra attempt fails retires without a Git token",
+    crashes: 1,
+    finish: "dependency-unavailable",
+    newAgent: true,
+  },
 ]) {
   test(name, requiresPostgres, async (context) => {
     const repository = repositoryBoundary();
     const fixture = await setup(context, { repoDriver: repository.driver, maxAttempts: 1 });
     const { owner, candidate: first } = await fixture.admitInitialRevision(
-      `publish-crash-${crashes}-${finish === "dependency-unavailable"}`,
+      `publish-crash-${crashes}-${finish}-${newAgent === true}`,
       { revision: { repositoryCredentials: repository.snapshot } },
     );
     const stopped = [];
@@ -417,13 +431,18 @@ for (const { name, crashes, finish } of [
         return fixture.compute.retireRevision(revision);
       },
     };
-    await fixture.start(compute);
-    await fixture.work(first, "succeeded");
-    await fixture.stop();
+    if (!newAgent) {
+      await fixture.start(compute);
+      await fixture.work(first, "succeeded");
+      await fixture.stop();
+    }
 
-    // A worker claims the replacement on its last attempt, publishes the active pointer and
-    // crashes before activation, predecessor retirement and completion.
-    const second = await fixture.revision(owner, 2, { repositoryCredentials: repository.snapshot });
+    // A worker claims the replacement (a new Agent's first version) on its last attempt,
+    // publishes the active pointer and crashes before activation, predecessor retirement and
+    // completion.
+    const second = newAgent
+      ? first
+      : await fixture.revision(owner, 2, { repositoryCredentials: repository.snapshot });
     const queue = new fixture.PostgresWorkQueue(fixture.observerPool, {
       leaseDurationMs: 30_000,
       maxAttempts: 1,
@@ -436,7 +455,12 @@ for (const { name, crashes, finish } of [
       assert.equal((await queue.recoverStale()).recovered, 1);
     };
     await fixture.state.transact((unit) =>
-      unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, first.id, second.id),
+      unit.agents.compareAndSetActiveRevision(
+        fixture.namespace.id,
+        owner.id,
+        newAgent ? undefined : first.id,
+        second.id,
+      ),
     );
     for (let crash_ = 0; crash_ < crashes; crash_ += 1) {
       await crash();
@@ -480,6 +504,33 @@ for (const { name, crashes, finish } of [
       view.operations.findWorkAttempt(second.idempotencyKey),
     );
     assert.equal(progress?.code, "ACTIVE_REVISION_RECOVERY");
+
+    if (newAgent) {
+      // The version never got its first token: GitHub's answer quarantined it, or the extra
+      // attempt ends on an unavailable dependency before it committed.
+      iamUnavailable = finish === "dependency-unavailable";
+      await fixture.start(compute, {
+        transformDrivers: withUnavailableIAM(() => iamUnavailable),
+        repositoryGitMaterial: async () => (finish === "quarantined" ? "quarantined" : "pending"),
+      });
+      await fixture.work(second, "failed_permanent");
+      iamUnavailable = false;
+      assert.equal(
+        (await row()).reason_code,
+        finish === "quarantined" ? "REPOSITORY_GIT_TOKEN_QUARANTINED" : "DEPENDENCY_UNAVAILABLE",
+      );
+      await waitFor("the new Agent's failed version retirement", async () => {
+        const retire = await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE idempotency_key LIKE $1",
+          [`agent_revision:${second.id}:repository_cleanup:retire:%`],
+        );
+        return retire.rows[0]?.state === "succeeded" ? true : undefined;
+      });
+      await fixture.stop();
+      assert.deepEqual(stopped, [second.id]);
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+      return;
+    }
 
     if (finish === "dependency-unavailable") {
       // A retry outcome on the extra (last) attempt fails the deployment but keeps the

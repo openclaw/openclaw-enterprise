@@ -88,6 +88,7 @@ import {
   TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
+  controllerWorkDeploymentStatus,
   credentialWithdrawalCompanionRevisions,
   isCredentialWithdrawalWork,
   isRepositoryCleanupWork,
@@ -3660,11 +3661,25 @@ export class ControllerWorker {
     this.emit({ event: "worker.harness-exposure-withdrawn", ...fields });
   }
 
+  /** Whether this deployment waits for its native version's first GitHub token (finding 2415). */
+  private gatesRepositoryGitMaterial(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): boolean {
+    return (
+      this.repositoryGitMaterial !== undefined &&
+      revision.repositoryCredentials !== undefined &&
+      !protectedRepositoryGitAdmission(revision.executionAdmission) &&
+      isCandidateDeployment(claim)
+    );
+  }
+
   /**
    * Native prepared Git issues a version's first GitHub token only after its active pointer is
    * published, so a ready runtime alone would report success before GitHub answered. Hold the
    * deployment until the token commits, and fail it when GitHub's answer quarantined the
-   * preparation: no later pass prepares that version again (finding 2415). Maintenance of a
+   * preparation: no later pass prepares that version again (finding 2415). finalizeRevision then
+   * keeps an existing Agent's version running (continueRevisionWithoutGit). Maintenance of a
    * running version is unchanged; its renewal failures stay in the worker log.
    */
   private async assertRepositoryGitMaterial(
@@ -3672,12 +3687,7 @@ export class ControllerWorker {
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
     const material = this.repositoryGitMaterial;
-    if (
-      material === undefined ||
-      revision.repositoryCredentials === undefined ||
-      protectedRepositoryGitAdmission(revision.executionAdmission) ||
-      !isCandidateDeployment(claim)
-    ) {
+    if (material === undefined || !this.gatesRepositoryGitMaterial(claim, revision)) {
       return;
     }
     const state = await this.withClaimHeartbeat(claim, () => material(revision.id));
@@ -4302,7 +4312,10 @@ export class ControllerWorker {
           return;
         }
         if (
-          original.state === "failed_permanent" ||
+          (original.state === "failed_permanent" &&
+            // An existing Agent's version kept running without Git (continueRevisionWithoutGit)
+            // is maintained: that failure queued this chain while the version was active.
+            original.reasonCode !== "REPOSITORY_GIT_TOKEN_QUARANTINED") ||
           original.reasonCode === "REVISION_SUPERSEDED"
         ) {
           // Maintenance must never prepare or reactivate a terminally failed deployment.
@@ -5875,6 +5888,13 @@ export class ControllerWorker {
     ) {
       return;
     }
+    if (
+      resolved.code === "REPOSITORY_GIT_TOKEN_QUARANTINED" &&
+      isCandidateDeployment(claim) &&
+      (await this.continueRevisionWithoutGit(claim, resolved.code, failureLogFields))
+    ) {
+      return;
+    }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
@@ -6645,7 +6665,8 @@ export class ControllerWorker {
   // deadline, and the next pass re-checks authority before any new material.
   // The same holds for a deployment that already published the active pointer
   // (for example one recovered after its lease expired): its last retry fails
-  // the deployment without retiring the runtime it activated.
+  // the deployment without retiring the runtime it activated, unless it is a new
+  // Agent's native version without its first Git token (finding 2425).
   private async continueExhaustedActiveRevision(
     claim: ClaimedWork,
     code: string,
@@ -6665,35 +6686,37 @@ export class ControllerWorker {
     if (!maintenance && claim.idempotencyKey !== `agent_revision:${revisionId}:reconcile`) {
       return false;
     }
+    // Read outside the locks; an unreadable state counts as no token.
+    const material = this.repositoryGitMaterial;
+    const gitReady =
+      maintenance ||
+      material === undefined ||
+      (await material(revisionId).then(
+        (state) => state === "ready",
+        () => false,
+      ));
     let continued = false;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
-      const agent = await this.lockClaimAgent(unit, claim);
-      if (agent?.activeRevisionId !== revisionId || agent.desiredRuntimeState !== "running") {
-        return;
-      }
-      const namespace = await unit.namespaces.findNamespace(claim.namespaceId);
-      const revision = await unit.revisions.findRevision(
-        claim.namespaceId,
-        claim.agentId!,
-        revisionId,
-      );
+      const continuing = await this.lockContinuingRevision(unit, queue, claim);
       if (
-        namespace?.status !== "ready" ||
-        revision === undefined ||
-        revision.servicePrincipalId !== agent.servicePrincipalId ||
-        (maintenance && this.revisionMaintenanceInterval(revision) === undefined) ||
-        (revision.repositoryCredentials !== undefined &&
-          revision.repositoryCredentials.standingApprovalId === undefined &&
-          Date.now() >= revision.repositoryCredentials.deadlineWallMs)
+        continuing === undefined ||
+        (maintenance && this.revisionMaintenanceInterval(continuing.revision) === undefined) ||
+        // Owner decision 2026-10-28: a new Agent with no Git access fails; only an existing
+        // Agent keeps a version that has none.
+        (!gitReady &&
+          this.gatesRepositoryGitMaterial(claim, continuing.revision) &&
+          !(await this.activatedEarlierRevision(
+            unit,
+            queue,
+            continuing.agent,
+            continuing.revision,
+          )))
       ) {
         return;
       }
       await queue.fail(claim, { code }, { continuingRevision: true });
       if (maintenance) {
-        await this.enqueueMaintenance(queue, claim, revision);
+        await this.enqueueMaintenance(queue, claim, continuing.revision);
       }
       continued = true;
     }, this.queueOptions);
@@ -6715,6 +6738,135 @@ export class ControllerWorker {
       ...this.deployTimingFields(claim),
     });
     return true;
+  }
+
+  /**
+   * The claim's revision, under Namespace then Agent locks, if it may keep running after its
+   * work fails: the running Agent's active revision, of the Agent's service principal, in a
+   * ready Namespace and within its repository deadline. The queue's continuation repeats these
+   * checks on the database clock.
+   */
+  private async lockContinuingRevision(
+    unit: PlatformUnitOfWork,
+    queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
+    claim: ClaimedWork,
+  ): Promise<
+    { readonly agent: Readonly<Agent>; readonly revision: Readonly<AgentRevision> } | undefined
+  > {
+    if ((await queue.heartbeat(claim)) === undefined) {
+      throw new WorkClaimLostError();
+    }
+    const agent = await this.lockClaimAgent(unit, claim);
+    if (
+      agent === undefined ||
+      agent.activeRevisionId !== claim.revisionId ||
+      agent.desiredRuntimeState !== "running"
+    ) {
+      return undefined;
+    }
+    const namespace = await unit.namespaces.findNamespace(claim.namespaceId);
+    const revision = await unit.revisions.findRevision(
+      claim.namespaceId,
+      claim.agentId!,
+      claim.revisionId!,
+    );
+    if (
+      namespace?.status !== "ready" ||
+      revision === undefined ||
+      revision.servicePrincipalId !== agent.servicePrincipalId ||
+      (revision.repositoryCredentials !== undefined &&
+        revision.repositoryCredentials.standingApprovalId === undefined &&
+        Date.now() >= revision.repositoryCredentials.deadlineWallMs)
+    ) {
+      return undefined;
+    }
+    return { agent, revision };
+  }
+
+  /**
+   * Owner decision 2026-10-28 (finding 2425): a native deployment whose first repository Git
+   * token GitHub's answer quarantined fails. A new Agent's version is then retired like any
+   * failed repository version. An existing Agent keeps this version running without Git, so it
+   * can still chat and report the problem: the earlier version stopped serving when this one
+   * was published, and no Driver can bring it back. A quarantined version is never prepared
+   * again, so it cannot regain Git unsupervised. Fails the deployment and starts this version's
+   * maintenance chain in one transaction, under Namespace then Agent locks. Returns false when
+   * the Agent has no earlier activated version or no longer runs this one; the caller then
+   * fails it for good. A token still pending at the convergence deadline is not continued: it
+   * could still commit, so that version is retired.
+   */
+  private async continueRevisionWithoutGit(
+    claim: ClaimedWork,
+    code: string,
+    failureLogFields?: Readonly<Record<string, string | number>>,
+  ): Promise<boolean> {
+    if (claim.agentId === undefined || claim.revisionId === undefined) {
+      return false;
+    }
+    let continued = false;
+    await this.state.transactWithQueue(async (unit, queue) => {
+      const continuing = await this.lockContinuingRevision(unit, queue, claim);
+      if (
+        continuing === undefined ||
+        !this.gatesRepositoryGitMaterial(claim, continuing.revision) ||
+        this.revisionMaintenanceInterval(continuing.revision) === undefined ||
+        !(await this.activatedEarlierRevision(unit, queue, continuing.agent, continuing.revision))
+      ) {
+        return;
+      }
+      await queue.fail(claim, { code }, { continuingRevision: true });
+      await this.enqueueMaintenance(queue, claim, continuing.revision);
+      continued = true;
+    }, this.queueOptions);
+    if (!continued) {
+      return false;
+    }
+    this.passOutcome = "permanent";
+    this.emit({
+      event: "worker.completed",
+      ...workLogFields(claim),
+      namespaceId: claim.namespaceId,
+      agentId: claim.agentId,
+      revisionId: claim.revisionId,
+      result: "permanent",
+      outcome: "permanent",
+      code,
+      ...failureLogFields,
+      ...this.deployTimingFields(claim),
+    });
+    return true;
+  }
+
+  /**
+   * Whether an earlier version of the Agent's service principal was activated by its own
+   * deployment. A stopped or superseded deployment completes without activation and does not
+   * count (controllerWorkDeploymentStatus). Newest first; a fail path, so the linear scan is
+   * bounded by the Agent's revision history.
+   */
+  private async activatedEarlierRevision(
+    unit: PlatformUnitOfWork,
+    queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
+    agent: Readonly<Agent>,
+    revision: Readonly<AgentRevision>,
+  ): Promise<boolean> {
+    const earlier = (
+      await unit.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId)
+    ).filter((candidate) => candidate.revision < revision.revision);
+    for (const listed of earlier.reverse()) {
+      const deployment = await queue.findWork(`agent_revision:${listed.id}:reconcile`);
+      if (deployment === undefined || controllerWorkDeploymentStatus(deployment) !== "succeeded") {
+        continue;
+      }
+      const prior = await unit.revisions.findRevision(
+        listed.namespaceId,
+        listed.agentId,
+        listed.id,
+      );
+      if (prior?.servicePrincipalId === agent.servicePrincipalId) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Lock the claim's Agent in admission order: Namespace, then Agent. These

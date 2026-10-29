@@ -315,7 +315,13 @@ The deployment's own Work then runs
 `REPOSITORY_GIT_MATERIAL_PENDING` until each open session has a committed token and fails with
 `REPOSITORY_GIT_TOKEN_QUARANTINED` when one holds a quarantined attempt, which is never
 prepared again. An unfinished attempt stays pending because its own run can still commit it.
-The failed version is then retired like any failed repository version; maintenance skips this check
+On that failure `ControllerWorker.finalizeRevision` calls `continueRevisionWithoutGit`. If an
+earlier revision's own deployment activated it (`activatedEarlierRevision`), it fails the
+deployment with `continuingRevision` and queues maintenance in one transaction under Namespace
+then Agent locks; the version keeps running and maintenance accepts that failure code.
+Otherwise, and at the convergence deadline, the failed version is retired like any failed
+repository version. An exhausted deployment of a new Agent without a token is retired too.
+Maintenance skips this check
 ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
 If standing Git evidence is missing, the worker keeps Git closed and observes the existing
@@ -390,7 +396,7 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
-- 2026-10-29 18:00: Hold a native deployment until its first GitHub token commits; on a quarantined token fail a first deployment and keep an existing Agent's new version running. (finding 2415, finding 2425)
+- 2026-10-29 18:00: Hold a native deployment until its first GitHub token commits; on a quarantined token fail a new Agent's deployment and keep an existing Agent's new version running. (finding 2415, finding 2425)
 
 - 2026-10-29 14:26: Narrow sender binding and remove fresh legacy Git composition. (authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf - ea84f8a9595fc57e2b35bab4f9ad45f9174c8319)
 
