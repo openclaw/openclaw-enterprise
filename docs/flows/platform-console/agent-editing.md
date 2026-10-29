@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-29
-last_updated_session: authoring-run/26ccef3f-405c-4275-bef6-7c1722ae15c8
+last_updated_session: authoring-run/22e56d10-b3c5-43f9-b088-c060fbfbe64f
 ---
 
 # Console Agent editing and runtime requests
@@ -74,18 +74,18 @@ superseded/stopped outcomes.
 **Deployment** mounts activity, the selected record, and diagnostics
 (`agents/deployment-evidence.mts`); polling continues across tabs.
 `detail.mts:renderTab` offers **Retry** for transient snapshot errors.
-Completion and late reads after `FIRST_ACTIVITY_WAIT_MS` start folded unless
-cleanup, warnings, or overview errors need attention. Pending work/errors
-remain visible across tabs; overview errors preserve outcomes.
+Completion and reads after `FIRST_ACTIVITY_WAIT_MS` fold unless cleanup, warnings,
+or overview errors need attention. Overview errors preserve outcomes.
 
 `createDeploymentStatusPanel` polls until completion/refusal. Transient errors retain
-progress. `invalidate`/`fail` clear denied caches and pending reads. `onFreshRecord`
-shares matching GETs; `show` never republishes. Refusals override older successes.
-`terminalOverview` tracks reconciliation without retaining denied records. Initial or
-unreconciled terminal data reads Agent/revisions once. Matching in-flight reads share
-work; settled records skip it. Failed overviews wait for explicit retry.
+progress; `invalidate`/`fail` clear caches and reads. `onFreshRecord` shares matching
+GETs; `show` never republishes. Refusals override successes; any `401` expires the session.
+`terminalOverview` tracks reconciliation without denied records. Unreconciled terminal
+data reads Agent/revisions once; matching reads share work. Failures require explicit retry.
+`readingOverview` protects explicit reads; `recordGeneration` rejects stale payloads.
+Fresh evidence renders while Refresh stays busy.
 **Refresh deployment** queues one full reread; **Refresh record** preserves focus
-and ignores repeats. Refusals open details; matching errors share one alert.
+and ignores repeats. Refusals open details; matching errors share an alert.
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
@@ -102,9 +102,8 @@ Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read
 Configuration/plugins. **Edit current Configuration** never copies historical
 values. Deploy stays disabled while the Secret permission answer names a bound
 Secret the caller may not `operate`, or counts one the caller may neither `read`
-nor `operate`; that reason names no Secret (finding D756). After a deploy, a version that the
-newest page of versions leaves out is shown as unreadable without its read,
-which would be audited (finding D758).
+nor `operate`; that reason names no Secret (finding D756). After deployment, versions omitted from the newest page appear unreadable without
+an audited read (finding D758).
 
 **Edit Configuration** rereads the Agent and Configuration, then PATCHes only
 `{ values, expectedGeneration }`, preserving `secretBindings`. A changed ID or stale
@@ -315,8 +314,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Debugging and Verification
 
-- Run `node --test tests/browser/console-deployment-activity.test.ts` for
-  Controller-backed desktop/phone disclosure and refusal checks, not runtime proof.
+- Run `node --test tests/browser/console-deployment-activity.test.ts`: Controller-backed
+  disclosure, overlap, and refusal checks, not runtime proof.
 
 - A denied Secret list requires collection `read`; a missing menu entry may lack
   exact Secret `read`.
@@ -338,6 +337,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 12:43: Preserve overlapping overview and record reads. (authoring-run/22e56d10-b3c5-43f9-b088-c060fbfbe64f - 4af87e8139aafb7469b60cf38846935c1266baed)
 
 - 2026-10-29 11:50: Track terminal overview reconciliation. (terminal-regrant - 1a16ee6c8ff11aaa0b8ea2451aabbc5445d8a72c)
 

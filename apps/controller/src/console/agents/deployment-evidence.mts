@@ -333,7 +333,9 @@ export function createDeploymentStatusPanel(
   // pending or how it ended, and its warning count.
   let previousSettled: string | undefined;
   let loading = false;
+  let readingOverview = false;
   let generation = 0;
+  let recordGeneration = 0;
   // Quiet polls and their overview rereads leave Refresh alone until the reader presses it.
   let polling = false;
   let refreshQueued = false;
@@ -404,6 +406,8 @@ export function createDeploymentStatusPanel(
     clearTimeout(pollTimer);
     pollTimer = undefined;
     const started = generation;
+    const startedRecord = recordGeneration;
+    readingOverview = refreshAgent;
     // A failed background check does not change recorded progress. A definitive refusal
     // clears both copies so a later transient failure cannot restore revoked evidence.
     loading = true;
@@ -439,7 +443,7 @@ export function createDeploymentStatusPanel(
         return;
       }
       if (statusResult.status === "fulfilled") {
-        if (!verifiedRecord) {
+        if (!verifiedRecord && startedRecord === recordGeneration) {
           if (
             lastRecord?.status !== statusResult.value.status ||
             deploymentPending(statusResult.value.status)
@@ -449,13 +453,14 @@ export function createDeploymentStatusPanel(
           record = statusResult.value;
           lastRecord = statusResult.value;
         }
-      } else {
+      } else if (!transientReadError(statusResult.reason)) {
+        // A definitive refusal also cancels the accompanying overview. Publish it
+        // before a newer revision could replace this panel and hide the refusal.
+        invalidate(statusResult.reason);
+        return;
+      } else if (startedRecord === recordGeneration) {
         error = statusResult.reason;
-        record = poll && transientReadError(error) ? lastRecord : null;
-        if (!transientReadError(error)) {
-          lastRecord = null;
-          terminalOverview = "unread";
-        }
+        record = poll ? lastRecord : null;
       }
       if (refreshAgent) {
         if (
@@ -501,13 +506,14 @@ export function createDeploymentStatusPanel(
     } finally {
       if (context.isCurrent() && started === generation) {
         loading = false;
+        readingOverview = false;
         publish(poll);
         finishRecord(refreshAgent);
       }
     }
   }
 
-  function publish(poll: boolean) {
+  function publish(poll: boolean, freshRecord = false) {
     // Revealing a final refusal can push the next focused control off screen.
     // Keep it visible only if the reader could see it before the poll completed.
     const focused = document.activeElement;
@@ -520,7 +526,7 @@ export function createDeploymentStatusPanel(
       section.parentElement?.contains(focused)
         ? focused.getBoundingClientRect()
         : null;
-    render();
+    render(freshRecord);
     onStatusChange({
       outcome: record ? deploymentOutcome(record) : null,
       record,
@@ -609,14 +615,14 @@ export function createDeploymentStatusPanel(
     );
   }
 
-  function render() {
+  function render(freshRecord = false) {
     // Keep both controls mounted during reads. Fold routine completion and a first outcome
     // that arrives after the page is visible; the summary above already shows that outcome.
     const busy = String((loading && !polling) || refreshQueued);
     if (refresh.getAttribute("aria-disabled") !== busy) {
       refresh.setAttribute("aria-disabled", busy);
     }
-    if (loading) {
+    if (loading && !freshRecord) {
       return;
     }
     const outcome = record ? deploymentOutcome(record) : null;
@@ -747,6 +753,7 @@ export function createDeploymentStatusPanel(
     clearTimeout(pollTimer);
     pollTimer = undefined;
     loading = false;
+    readingOverview = false;
     refreshQueued = false;
     record = null;
     lastRecord = null;
@@ -767,13 +774,15 @@ export function createDeploymentStatusPanel(
         return;
       }
       const sameTerminal = !deploymentPending(next.status) && lastRecord?.status === next.status;
-      if (sameTerminal && terminalOverview === "reading") {
-        // A second fresh record shares this terminal lifetime's overview read.
-        // Keep its newer payload without invalidating the guarded read in flight.
+      recordGeneration += 1;
+      if (sameTerminal && loading && readingOverview) {
+        // A matching record shares explicit as well as automatic overview reads.
+        // Its generation keeps the older status payload from replacing this one.
         record = next;
         lastRecord = next;
         error = null;
-        publish(true);
+        // Only a freshly accepted matching record may render during this read.
+        publish(true, true);
         return;
       }
       if (!sameTerminal) {

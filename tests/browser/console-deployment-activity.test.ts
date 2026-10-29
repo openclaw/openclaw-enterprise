@@ -11,6 +11,7 @@ import {
   AGENT_READ,
   detailUrl,
   denyRevisionRead,
+  expireSessions,
   revokeMemberGrant,
   login,
   nativeValues,
@@ -1214,3 +1215,266 @@ test("deployment activity fixture returns real scoped Controller responses", asy
     }
   }
 });
+
+// An already reconciled record must not cancel a separate user-requested overview read.
+for (const scenario of ["selected first", "overview first", "newer cleanup"] as const) {
+  test(`settled terminal overlap preserves ${scenario}`, async (t) => {
+    const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+    await fixture.activateRevision(namespace.id, agent.id, revisionId, undefined);
+    control.succeeded = true;
+    control.cleanup = "queued";
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await page.clock.install();
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "deployment"),
+    );
+    const card = page.locator(".version-deployment-record");
+    const activity = page.getByRole("region", { name: "Deployment activity" });
+    const refresh = activity.getByRole("button", { name: "Refresh deployment" });
+    const selectedRefresh = card.getByRole("button", { name: "Refresh record" });
+    await card.getByText("Recorded outcome: Completed", { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
+    const location = page.url();
+    // A real admission changes the overview; the same-version control isolates cleanup
+    // freshness without replacing the activity panel under test.
+    const next =
+      scenario === "newer cleanup" ? null : await fixture.deployAgent(namespace.id, agent.id);
+    const agentUrl = url.split("/deployments/")[0]!;
+    const release = Promise.withResolvers<void>();
+    const selectedRelease = Promise.withResolvers<void>();
+    const selectedCaptured = Promise.withResolvers<void>();
+    t.after(() => {
+      release.resolve();
+      selectedRelease.resolve();
+    });
+    const captured = [
+      Promise.withResolvers<void>(),
+      Promise.withResolvers<void>(),
+      Promise.withResolvers<void>(),
+    ];
+    const counts = { record: 0, agent: 0, revisions: 0, next: 0 };
+    page.on("request", (request) => {
+      if (request.url() === url) {
+        counts.record++;
+      }
+      if (request.url() === agentUrl) {
+        counts.agent++;
+      }
+      if (request.url().split("?")[0] === `${agentUrl}/revisions`) {
+        counts.revisions++;
+      }
+      if (next && request.url() === `${agentUrl}/deployments/${next.id}`) {
+        counts.next++;
+      }
+    });
+    for (const [index, target] of [url, agentUrl, `${agentUrl}/revisions*`].entries()) {
+      let first = true;
+      await page.route(target, async (route) => {
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        const body = (await response.json()).data;
+        if (!first) {
+          assert.equal(index, 0, "overview must not be reread to resolve an overlap");
+          assert.equal(body.cleanup.status, "succeeded");
+          selectedCaptured.resolve();
+          if (scenario === "overview first") {
+            await selectedRelease.promise;
+          }
+          await route.fulfill({ response });
+          return;
+        }
+        first = false;
+        if (index === 0) {
+          assert.equal(body.cleanup.status, "queued");
+        }
+        if (index === 1) {
+          assert.equal(body.activeRevisionId, revisionId);
+        }
+        if (index === 2 && next) {
+          assert.ok(body.some((item: { id: string }) => item.id === next.id));
+        }
+        captured[index]!.resolve();
+        await release.promise;
+        await route.fulfill({ response });
+      });
+    }
+    await refresh.click();
+    await Promise.all(captured.map((item) => item.promise));
+    assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+    // This later genuine GET has the same terminal status but newer cleanup evidence.
+    control.cleanup = "succeeded";
+    const selected = page.waitForResponse(url);
+    await selectedRefresh.press("Enter");
+    await selectedCaptured.promise;
+    if (scenario === "overview first") {
+      release.resolve();
+      await page
+        .getByLabel("Viewing version")
+        .locator(`option[value="${next!.id}"]`)
+        .waitFor({ state: "attached" });
+      selectedRelease.resolve();
+    }
+    assert.equal((await selected).status(), 200);
+    if (scenario !== "overview first") {
+      await selectedRefresh.waitFor();
+      if (scenario === "newer cleanup") {
+        assert.match(await activity.innerText(), /Revision cleanup completed for this version\./);
+        assert.doesNotMatch(await activity.innerText(), /Revision cleanup pending/);
+        assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+        assert.equal(
+          await selectedRefresh.evaluate((node) => node === document.activeElement),
+          true,
+        );
+      }
+      release.resolve();
+    }
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), location);
+    assert.equal(await selectedRefresh.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await refresh.getAttribute("aria-disabled"), "false");
+    if (next) {
+      assert.match(await page.locator("main").innerText(), /v2/);
+      assert.equal(await page.getByLabel("Viewing version").inputValue(), revisionId);
+    } else {
+      await activity
+        .getByText("Revision cleanup completed for this version.", { exact: true })
+        .waitFor();
+      assert.doesNotMatch(await activity.innerText(), /Revision cleanup pending/);
+    }
+    await card.getByText("Recorded outcome: Completed", { exact: true }).waitFor();
+    assert.deepEqual(counts, { record: 2, agent: 1, revisions: 1, next: next ? 1 : 0 });
+    t.diagnostic(
+      JSON.stringify({
+        scenario,
+        counts,
+        selected: await page.getByLabel("Viewing version").inputValue(),
+      }),
+    );
+  });
+}
+
+// These settled overlaps exercise the overview path, including its ability to
+// replace the activity panel. A refusal must win before that replacement occurs.
+for (const scenario of [
+  "old 403",
+  "old 404",
+  "new 403",
+  "new 404",
+  "mixed 401",
+  "navigation",
+] as const) {
+  test(`settled terminal overlap honors ${scenario}`, async (t) => {
+    const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+    await fixture.activateRevision(namespace.id, agent.id, revisionId, undefined);
+    control.succeeded = true;
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await page.clock.install();
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "deployment"),
+    );
+    const card = page.locator(".version-deployment-record");
+    const activity = page.getByRole("region", { name: "Deployment activity" });
+    await card.getByText("Recorded outcome: Completed", { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
+    await fixture.deployAgent(namespace.id, agent.id);
+    const agentUrl = url.split("/deployments/")[0]!;
+    const release = Promise.withResolvers<void>();
+    const captured = [
+      Promise.withResolvers<void>(),
+      Promise.withResolvers<void>(),
+      Promise.withResolvers<void>(),
+    ];
+    t.after(() => release.resolve());
+    const oldRefusal = scenario.startsWith("old") || scenario === "mixed 401";
+    const refusalStatus = scenario.endsWith("404") ? 404 : 403;
+    const deny = () => {
+      if (scenario.endsWith("404")) {
+        control.missingRevision = true;
+      } else {
+        denyRevisionRead(fixture, namespace, { id: revisionId });
+      }
+    };
+    if (oldRefusal) {
+      deny();
+    }
+    const delivered: number[] = [];
+    page.on("response", (response) => {
+      if (response.url() === url) {
+        delivered.push(response.status());
+      }
+    });
+    for (const [index, target] of [url, agentUrl, `${agentUrl}/revisions*`].entries()) {
+      let first = true;
+      await page.route(target, async (route) => {
+        if (!first) {
+          await route.continue();
+          return;
+        }
+        first = false;
+        // Obtain the real denial before expiring sessions. The same read batch
+        // then contains both 403 and 401; authentication must take precedence.
+        if (scenario === "mixed 401" && index !== 0) {
+          await captured[0]!.promise;
+          expireSessions(fixture);
+        }
+        const response = await route.fetch();
+        let expected = 200;
+        if (index === 0 && oldRefusal) {
+          expected = refusalStatus;
+        } else if (scenario === "mixed 401" && index !== 0) {
+          expected = 401;
+        }
+        assert.equal(response.status(), expected);
+        const body = await response.json();
+        if (expected !== 200) {
+          assert.ok(body.error.code);
+        } else if (index === 0) {
+          assert.equal(body.data.status, "succeeded");
+        }
+        captured[index]!.resolve();
+        await release.promise;
+        await route.fulfill({ response });
+      });
+    }
+    await activity.getByRole("button", { name: "Refresh deployment" }).click();
+    await Promise.all(captured.map((item) => item.promise));
+    if (scenario === "navigation") {
+      await page.getByRole("link", { name: "Agents", exact: true }).click();
+    } else if (scenario !== "mixed 401") {
+      if (oldRefusal) {
+        control.missingRevision = false;
+        if (scenario.endsWith("403")) {
+          fixture.policy.restrictions.pop();
+        }
+      } else {
+        deny();
+      }
+      const response = page.waitForResponse(url);
+      await card.getByRole("button", { name: "Refresh record" }).press("Enter");
+      assert.equal((await response).status(), oldRefusal ? 200 : refusalStatus);
+      // Wait for the selected response handler before delivering the older batch.
+      await card.getByRole("button", { name: "Refresh record", exact: true }).waitFor();
+    }
+    release.resolve();
+    await waitForIdleFetches(page);
+    if (scenario === "mixed 401") {
+      await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+    } else if (scenario === "navigation") {
+      assert.equal(new URL(page.url()).pathname, "/console/agents");
+      assert.equal(await activity.count(), 0);
+    } else {
+      assert.doesNotMatch(await card.innerText(), /Recorded outcome:/);
+      assert.doesNotMatch(await activity.innerText(), /Recorded status:/);
+      assert.deepEqual(delivered, oldRefusal ? [200, refusalStatus] : [refusalStatus, 200]);
+    }
+    t.diagnostic(JSON.stringify({ scenario, delivered }));
+  });
+}
