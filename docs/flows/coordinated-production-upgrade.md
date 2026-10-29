@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-10-29"
-last_updated_session: "authoring-run/35ed2337-614f-4587-a16d-7c1973bb4819"
+last_updated_session: "authoring-run/729e3e30-1ab9-4e2c-bae2-42834bf535c4"
 ---
 
 # Production image upgrade flow
@@ -147,7 +147,11 @@ be resumed.
 
 An upgrade saves candidate inputs, inventory, target identity, and parameter
 hashes before marking preparation complete. A directory lock prevents concurrent
-use. Operators freeze other writers, autoscalers, Helm changes, and runtime draft
+use. `scripts/upgrade-production-images:interrupted_upgrade` retains this lock
+and skips automatic preflight cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`. The
+operator must establish that child commands stopped and reconcile unfinished
+operations before removing the lock; caller interruption is not cancellation
+of an accepted remote operation. Operators freeze other writers, autoscalers, Helm changes, and runtime draft
 edits per the
 [production guide](../guides/deploy/production-upgrade.md).
 
@@ -330,6 +334,8 @@ Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 23:05: Retain the upgrade lock after interruption until operations are reconciled. (authoring-run/729e3e30-1ab9-4e2c-bae2-42834bf535c4 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
 
 - 2026-10-29 12:28: Validate baseline mapping streams. (authoring-run/b9a98c72-bd73-45d4-b50d-f12d185f39b5 - 389a51336cd5)
 - 2026-10-29 11:04: Document protected baseline comparison. (authoring-run/35ed2337-614f-4587-a16d-7c1973bb4819 - 51de7c164aab)
