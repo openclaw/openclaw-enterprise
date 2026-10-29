@@ -41,7 +41,9 @@ function refusedFocusLook(control: Locator) {
     focus.remove();
     const style = getComputedStyle(node);
     const icon = node.querySelector("svg");
-    const alpha = /[/,]\s*([\d.]+)\)$/.exec(style.color)?.[1];
+    // An opaque colour serializes as rgb(r, g, b), a faded one as rgba(...) or color(... / a).
+    const alpha = (/\/\s*([\d.]+)\)$/.exec(style.color) ??
+      /^rgba\(.*,\s*([\d.]+)\)$/.exec(style.color))?.[1];
     return {
       ariaDisabled: node.getAttribute("aria-disabled"),
       focusVisible: node.matches(":focus-visible"),
