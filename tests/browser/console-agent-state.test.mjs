@@ -1606,7 +1606,8 @@ test("A return to the Access tab after a revoke shows the member notice, audited
 // administers the Installation, her open page kept the administrator's controls until Refresh:
 // Deploy new version, Stop and Delete stayed enabled, and Plugins sent a capabilities read the
 // API refused and audited. The page now reads her permission answer again, which audits
-// nothing, and shows the member's controls as Refresh would, without a reload.
+// nothing, and shows the member's controls as Refresh would, without a reload. Plugins opened
+// while that answer is in flight waits for it instead of reading.
 test("A revoke the Access tab settles takes away administrator controls without Refresh", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1643,15 +1644,23 @@ test("A revoke the Access tab settles takes away administrator controls without 
   revoke();
   const audited = authorizationDenials(fixture.auditSink).length;
   const sent = requests.length;
+  const reread = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    { once: true },
+  );
   await accessTab.click();
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await reread.requested;
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
+  reread.release();
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
   // She holds Agent read only: no deploy, operate or delete.
   await stop.waitFor({ state: "hidden" });
   await remove.waitFor({ state: "hidden" });
   assert.equal(await deploy.isDisabled(), true);
-  const plugins = page.getByRole("tab", { name: "Plugins", exact: true });
-  await plugins.click();
-  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
   await waitForIdleFetches(page);
   assert.equal(
     requests.slice(sent).filter(({ path }) => path.endsWith("/plugins/capabilities")).length,
