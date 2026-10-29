@@ -87,7 +87,7 @@ async function failedRedeploy(fixture: ConsoleFixture, namespace: NamespaceWire)
   return { agent, active, route };
 }
 
-test("Agents, Agent detail, Create Agent and Logs each show at most one primary action at 1440 and 390", async (t) => {
+test("Agents, Agent detail, Workspace, Create Agent and Logs each show at most one primary action at 1440 and 390", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Primary actions", {
     computeDriver: createRuntimeLogComputeDriver(),
     agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
@@ -129,6 +129,29 @@ test("Agents, Agent detail, Create Agent and Logs each show at most one primary 
         url: detailUrl(fixture, namespace.id, failed.id, "draft", "configuration"),
         ready: async () => {
           await page.getByRole("button", { name: "Deploy new version" }).waitFor();
+          await page
+            .getByRole("region", { name: "Deployment needs attention" })
+            .getByRole("link", { name: "Deploy again" })
+            .waitFor();
+        },
+        primary: "Deploy again",
+      },
+      {
+        // Each Workspace file's Save is secondary: the draft's Deploy new version stays the one
+        // primary (finding 1968).
+        name: "Agent detail, draft, Workspace",
+        url: detailUrl(fixture, namespace.id, draft.id, "draft", "workspace"),
+        ready: async () => {
+          await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).waitFor();
+          await page.getByRole("button", { name: "Deploy new version" }).waitFor();
+        },
+        primary: "Deploy new version",
+      },
+      {
+        name: "Agent detail, failed, Workspace",
+        url: detailUrl(fixture, namespace.id, failed.id, active.revision.id, "workspace"),
+        ready: async () => {
+          await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).waitFor();
           await page
             .getByRole("region", { name: "Deployment needs attention" })
             .getByRole("link", { name: "Deploy again" })

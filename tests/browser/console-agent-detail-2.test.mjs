@@ -49,6 +49,7 @@ import {
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   expectNativeAdminHidden,
+  expectNativeAdminUnavailable,
   withholdPermissionSummary,
   assertRevisionUrl,
   agentDeleteRequests,
@@ -1086,10 +1087,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(initiallyStopped.status, 200);
   assert.deepEqual(initiallyStopped.data, { status: "stopped" });
   await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  assert.equal(
-    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
-    false,
-  );
+  await expectNativeAdminUnavailable(page, "Start this Agent before opening its native admin UI.");
 
   // A real deployment requests running before reconciliation selects the admitted revision.
   const pending = await fixture.deployAgent(namespace.id, agent.id);
@@ -1105,9 +1103,9 @@ test("Agent detail opens native admin UI only after real API access checks pass"
       "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor({ timeout: 5_000 });
-  assert.equal(
-    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
-    false,
+  await expectNativeAdminUnavailable(
+    page,
+    "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
   );
 
   let active = { revision: pending };

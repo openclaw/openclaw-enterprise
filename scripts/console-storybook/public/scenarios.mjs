@@ -9408,7 +9408,7 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row.",
+      "A failed first deployment leaves the Agent requested to run with no selected version. Stop stays, because a newer deployment that this viewer cannot read can be queued; its row and confirmation say it cancels a deployment or stops a started version.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopFirstDeploymentQueued: {

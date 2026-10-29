@@ -521,8 +521,8 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
   );
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.waitFor();
-  // A failed first deployment leaves nothing to stop (finding D691).
-  assert.equal(await stopAgentButton(page).count(), 0);
+  // A failed first deployment keeps Stop: a newer deployment may be queued (finding 2764).
+  await stopAgentButton(page).waitFor();
 
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);

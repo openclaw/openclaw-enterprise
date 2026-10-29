@@ -1874,6 +1874,14 @@ select:not([multiple])[size="1"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The unavailable Open Agent UI stays focusable so its reason is reachable (finding 2714). It
+   looks like button:disabled, but its fill and edge fade instead of the button, so its focus ring
+   keeps full contrast (finding 2863). */
+.agent-ui-unavailable[aria-disabled="true"] {
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--color-accent) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-surface));
+}
 .native-admin-access .overview-text-button {
   margin-top: var(--space-1);
   text-decoration: underline;

@@ -61,9 +61,12 @@ export function renderNativeAdminAccess(
   );
   const error = element("p", { id: "native-admin-error", className: "error", role: "alert" });
   const target = element("p", { id: "native-admin-target", className: "native-admin-target" });
+  // aria-disabled, not disabled: the control stays in the Tab order, so a keyboard user reaches
+  // the reason it describes (finding 2714). It has no action.
   const unavailable = button("Open Agent UI", () => {}, {
     tone: "primary",
-    disabled: true,
+    className: "agent-ui-unavailable",
+    "aria-disabled": "true",
     hidden: true,
     "aria-describedby": `${status.id} ${error.id}`,
   });
