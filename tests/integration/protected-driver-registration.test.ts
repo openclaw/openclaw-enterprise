@@ -485,11 +485,17 @@ test("protected Git resolves repository and installation grants without granting
     },
   };
   assert.deepEqual(resolve(standing), resolve(revision));
-  // Removing the approval policy does not change the finite grant's identity.
+  // Composition from a registry that withdrew standing approval keeps the finite grant's
+  // identity and refuses the standing revision itself, so the worker's
+  // REPOSITORY_STANDING_POLICY_CHANGED recheck is not the only refusal.
   const { allowStandingApprovals: _standing, ...finiteRegistry } = registry;
-  const noStanding = createGitHubRepositoryDeliveryResolver(finiteRegistry);
-  assert.deepEqual(noStanding(revision), resolve(revision));
-  assert.throws(() => noStanding(standing), /Standing repository policy is unavailable/);
+  await writeFile(registryPath, JSON.stringify(finiteRegistry));
+  const finite = await compose();
+  assert.deepEqual(finite.resolveRepositoryDelivery(revision), resolve(revision));
+  assert.throws(
+    () => finite.resolveRepositoryDelivery(standing),
+    /Standing repository policy is unavailable/,
+  );
   for (const changed of [
     { ...binding, repositoryRef: "other" },
     { ...binding, grant: { ...binding.grant, repositoryId: "99999" } },
