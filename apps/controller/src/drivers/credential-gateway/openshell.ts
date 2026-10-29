@@ -33,11 +33,8 @@ import {
 } from "../plugin/managed-catalog.ts";
 
 import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
-import {
-  exactDnsName,
-  normalizeOpenAiBaseUrl,
-  validateOpenAiSourceBaseUrl,
-} from "../openai-endpoint.ts";
+import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-endpoint.ts";
+import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 
 import {
   openShellProviderName,

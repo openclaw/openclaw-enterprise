@@ -85,7 +85,7 @@ rejects invalid values with `CredentialSourceConfigError` (`400 INVALID_REQUEST`
 before Secret reads, record creation, or gateway writes. OCC checks any returned
 normalized configuration against the catalog and stores it in the source record.
 
-`apps/controller/src/drivers/openai-endpoint.ts:validateOpenAiSourceBaseUrl` shares
+`apps/controller/src/drivers/credential-source-endpoint.ts:validateOpenAiSourceBaseUrl` shares
 OpenShell's strict source endpoint decision between request validation and stored-source
 use. Requests retain field-specific `400` errors; invalid stored endpoints retain `409`
 errors. Explicit URLs are normalized; an omitted URL stays omitted. Sources require an
