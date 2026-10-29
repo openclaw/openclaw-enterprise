@@ -39,16 +39,15 @@ token for the deployed binding or refuses the request. [Credential access and li
 
 The administrator enters the MCP server URL. OCE uses the official TypeScript
 MCP client to discover the protected resource and its authorization server under
-the Installation's management egress policy. The administrator can supply a
-preregistered client ID and any required secret, or allow the SDK to choose
-from the issuer's advertised methods.
+the Installation's management egress policy. The administrator supplies a
+preregistered client ID and any required secret, or approves Dynamic Client
+Registration (DCR) at the issuer's advertised `registration_endpoint`. If the
+issuer omits that endpoint or refuses registration, Console asks for a
+preregistered client.
 
-- **Client ID Metadata Document (CIMD).** Prefer this when
-  `client_id_metadata_document_supported` is true and the issuer can fetch
-  OCE's HTTPS client document. Its URL is the client ID.
-- **Dynamic Client Registration (DCR).** Otherwise, register at the advertised
-  `registration_endpoint` after the administrator approves it. If automatic
-  setup is unavailable, Console asks for a preregistered client.
+Client ID Metadata Documents (CIMD) are deferred. Supporting CIMD would require
+a stable HTTPS document the issuer can fetch, listing the installation's exact
+callback URI.
 
 At setup, the template version records the resolved client, server URL, resource,
 issuer, approved endpoints, and at least one scope approved from the challenge
@@ -191,8 +190,8 @@ issue seven-day refresh tokens.
   worker request with the same placeholder and verify that OpenShell presents
   the new access token. With no eligible prepared token, verify that OpenShell
   refuses the request without contacting the issuer.
-- **MCP.** Exercise supplied clients, CIMD, DCR, and the manual fallback. On a
-  dedicated worker, verify a Console tool call uses the selected scopes and that
+- **MCP.** Verify supplied clients, successful DCR, and the prompt for a supplied
+  client when DCR is unavailable or refused. On a dedicated worker, verify a Console tool call uses the selected scopes and that
   an unselected scope stays unavailable after refresh.
 - **Client registrations.** Two connection templates with the same `clientId` in
   two Keycloak realms keep independent secrets: rotating one leaves the other's

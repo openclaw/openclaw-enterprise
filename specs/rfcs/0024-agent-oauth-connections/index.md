@@ -97,7 +97,7 @@ Namespace.
 | `displayName`                       | The label on the **Connect** button and consent warning.                                                                                        |
 | `issuer`                            | The authorization server's identifier, an exact `https` URL. It scopes the client ID and is the expected `iss` for `accountIdentity: oidc`.     |
 | `authorizationUrl`, `tokenUrl`      | Where OCC sends the user, and where the Driver exchanges the code. Exact `https` URLs.                                                          |
-| `clientId`, `clientSecret`          | For a supplied client, its ID and any required secret. MCP also supports automatic client setup.                                                |
+| `clientId`, `clientSecret`          | For a preregistered client, its ID and any required secret. DCR supplies these for an MCP client registered at setup.                           |
 | `scopes`, `authorizationParameters` | Fixed scopes for configured OAuth. MCP owners pick a subset. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
 | `endpoint`                          | Credential destination (`host`, `port`, `path`). `access` is `read-only` or `full` for `oauth2`, and `full` for `mcp_oauth`.                    |
 | `envVar`, `binary`                  | The placeholder variable and the one executable that may send it.                                                                               |
@@ -105,10 +105,9 @@ Namespace.
 | `jwksUri`                           | Optional with `oidc`. Without it, the Driver discovers the signing keys from `issuer`.                                                          |
 
 Existing templates use configured `oauth2` endpoints. For an `mcp_oauth`
-template, the administrator enters the MCP server URL and supplies a client or
-allows automatic setup. The issuer's metadata determines whether OCE can use
-CIMD or DCR. At **Connect**, the owner chooses from the template's approved
-scopes. [MCP authorization contract](contracts.md#mcp-authorization)
+template, the administrator enters the MCP server URL and supplies a preregistered
+client or approves Dynamic Client Registration (DCR) when the issuer advertises
+it. At **Connect**, the owner chooses from the template's approved scopes. [MCP authorization contract](contracts.md#mcp-authorization)
 
 OCC rejects non-HTTPS URLs. Where OpenShell supplies a configured list of tool
 binaries, OCC also rejects a binary outside that list. Admission must separately
@@ -116,7 +115,7 @@ verify that the runtime can enforce the consented restriction.
 
 The callback URI is derived from the console origin as
 `https://<console-host>/oauth/callback`. The template response shows the exact URI
-for manual registration. Automatic setup includes it in the client metadata.
+for manual registration. OCE includes the same URI in its DCR request.
 
 With `accountIdentity: oidc`, the Refresh Driver verifies the provider before it
 accepts the connection template version, and verifies each ID token against it
