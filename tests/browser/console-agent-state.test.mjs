@@ -1654,6 +1654,45 @@ test("A first Access open after a revoke shows the member notice, audited once",
   );
 });
 
+// Finding D804, the reread before a write. A share or removal reads the policy again before it
+// writes. An administrator revoked with the Access tab open was refused, and audited, twice when
+// she shared: that reread sent both lists at once. It reads one list at a time, so the revoke
+// costs one audited refusal, no write is sent, and the panel asks for Refresh sharing.
+test("A share after a revoke rereads the policy one list at a time, audited once", async (t) => {
+  const { fixture, page, requests, revoke } = await openAsRevocableAdministrator(
+    t,
+    "Revoked share",
+    "draft",
+  );
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
+
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  // No write is sent, so the Principal ID only has to pass the console's format check.
+  await panel.getByLabel("Existing person’s Principal ID").fill("prn_revoked-share-target");
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await panel
+    .getByText("Sharing policy requires Installation administration.", { exact: false })
+    .waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+  assert.deepEqual(
+    requests
+      .slice(sent)
+      .filter(({ path }) => path.includes("/iam/"))
+      .map(({ method, path }) => `${method} ${path.replace(/^\/namespaces\/[^/]+/, "")}`),
+    ["GET /iam/roles"],
+  );
+});
+
 // Finding D795. Once the Access tab's recheck settled that a revoked administrator no longer
 // administers the Installation, her open page kept the administrator's controls until Refresh:
 // Deploy new version, Stop and Delete stayed enabled, and Plugins sent a capabilities read the
