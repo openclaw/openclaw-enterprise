@@ -49,9 +49,9 @@ the public external-auth attachment fields or their ownership.
 
 | Boundary | Old rule | Proposed rule |
 | --- | --- | --- |
-| Sandbox admission | `provisionHarness` rejects every nonempty `credentialAttachments` array. | Admit an external-auth attachment only when the selected OCE supplier and native sender support it and the execution's protected route is established. Reject other unsupported attachments. |
+| Sandbox admission | `provisionHarness` rejects every nonempty `credentialAttachments` array. | When the selected OCE supplier and sender support the attachment, stage its validated, non-secret configuration and provision the supervisor with the workload held. Reject unsupported attachments. Staging grants no credential use. |
 | Box resource preparation | `strandsBoxResources` accepts only `api_key` and `codex_pat`, with no credential attachments. | Also accept `chatgptAuthTokens` with a validated protected attachment. Forward the exact non-secret marker and authenticated account metadata; never project a real access token. |
-| Startup release | Ordinary Box starts the supplied command without establishing a protected credential route. | Hold both Codex consumers until the native supervisor and OCE sender establish the admitted execution and route. An absent or mismatched route fails closed. |
+| Startup release | Ordinary Box starts the supplied command without establishing a protected credential route. | Release neither Codex consumer and permit no credential use until OCE verifies the live route for this execution and commits its activation. Missing or stale acknowledgment leaves the workload held. |
 | Supplier custody | The existing OpenShell OAuth supplier owns refresh and token injection. | The selected OCE supplier owns the access-only token and account binding; its trusted sender alone applies it at the approved destination. Box does not resolve or renew it. |
 
 The [Compute attachment validation](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
@@ -86,6 +86,9 @@ Use the actual supported OCE supplier, attachment preparation, Box launch and
 pinned native Codex entrypoints. A hand-written replacement supplier or a hosted
 login RPC acceptance is insufficient.
 
+- On a cold start with no enrolled supervisor, provisioning may start the held
+  supervisor. Neither the probe nor the hosted process may send before activation.
+  A missing or mismatched route must leave both held with zero credential use.
 - A synthetic local allowed case must pass the separate startup probe and then
   reach the hosted process through the same binding. Verify the controlled origin
   sees the expected account and that Box and the Harness cannot read the token.
