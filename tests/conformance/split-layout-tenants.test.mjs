@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
@@ -16,6 +20,7 @@ import {
   discardTenants,
   exportTenants,
   importTenants,
+  main,
   remap,
 } from "../../scripts/split-layout-tenants.mjs";
 
@@ -39,17 +44,19 @@ async function createFixture() {
   });
   assert.equal(bootstrap.response.status, 201);
   // The script's own transport, sent to the real app as the signed-in administrator.
-  fixture.api = createOccApi({
-    baseUrl: "http://127.0.0.1",
-    fetchImpl: (url, init) =>
-      fixture.app.fetch(
-        new Request(url, {
-          ...init,
-          headers: authenticatedHeaders(fixture.app.defaultSession, init.headers),
-        }),
-      ),
-  });
+  fixture.api = createOccApi({ baseUrl: "http://127.0.0.1", fetchImpl: asAdministrator(fixture) });
   return fixture;
+}
+
+/** A fetch function that sends each request to the fixture's real app as its administrator. */
+function asAdministrator(fixture) {
+  return (url, init) =>
+    fixture.app.fetch(
+      new Request(url, {
+        ...init,
+        headers: authenticatedHeaders(fixture.app.defaultSession, init.headers),
+      }),
+    );
 }
 
 async function created(fixture, pathname, body) {
@@ -127,12 +134,7 @@ test("export reads every tenant resource the import needs, without Secret values
     const api = createOccApi({
       baseUrl: "http://127.0.0.1",
       async fetchImpl(url, init) {
-        const response = await fixture.app.fetch(
-          new Request(url, {
-            ...init,
-            headers: authenticatedHeaders(fixture.app.defaultSession, init.headers),
-          }),
-        );
+        const response = await asAdministrator(fixture)(url, init);
         assert.equal(response.status, 200);
         const text = await response.text();
         const payload = JSON.parse(text);
@@ -320,6 +322,62 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
     bindingCount,
   );
 
+  // Released forms belong only in the bundle; the live grant inventory must not grow.
+  const resourceLess = { ...seeded.binding, id: "legacy-resource-less" };
+  delete resourceLess.resourceKind;
+  delete resourceLess.resourceId;
+  const manual = [
+    { ...seeded.binding, id: "legacy-group", subjectKind: "group" },
+    {
+      ...seeded.binding,
+      id: "legacy-installation",
+      resourceKind: "installation",
+      resourceId: installationId,
+    },
+    resourceLess,
+  ];
+  const revisions = ["identity", "group", "service_account"].map((subjectKind) => ({
+    ...seeded.binding,
+    id: `legacy-revision-${subjectKind}`,
+    subjectKind,
+    resourceKind: "agent_revision",
+    resourceId: "old-revision",
+  }));
+  const legacy = structuredClone(bundle);
+  legacy.namespaces.find(({ id }) => id === seeded.namespace.id).accessBindings = [
+    seeded.binding,
+    ...manual,
+    ...revisions,
+  ];
+  const state = structuredClone(saved);
+  const messages = [];
+  const beforeLegacy = (await fixture.api.expect("GET", `${base}/iam/access-bindings`)).data;
+  const result = await importTenants(fixture.api, legacy, values, {
+    ...options,
+    state,
+    save: () => {},
+    log: (message) => messages.push(message),
+  });
+  assert.equal(result.complete, true);
+  assert.deepEqual(
+    result.skippedBindings.map((entry) => entry.split(":")[0]),
+    manual.map(({ id }) => `team-a/${id}`),
+  );
+  const revisionLogs = messages.filter((message) => message.includes("legacy-"));
+  assert.equal(revisionLogs.length, revisions.length);
+  for (const { id } of revisions) {
+    assert.ok(
+      revisionLogs.some((message) => message.includes(id)),
+      id,
+    );
+  }
+  assert.deepEqual(state, saved);
+  assert.ok(beforeLegacy.some(({ id }) => id === state.ids[seeded.binding.id]));
+  assert.deepEqual(
+    (await fixture.api.expect("GET", `${base}/iam/access-bindings`)).data,
+    beforeLegacy,
+  );
+
   // Renaming onto a populated live Namespace is refused instead of merging into it.
   await assert.rejects(
     importTenants(fixture.api, bundle, values, {
@@ -328,6 +386,108 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
       names: { "team-a": "team-a restored" },
     }),
     /Namespace team-a restored already exists and holds Agents or Secrets; add --rename/u,
+  );
+});
+
+test("import command exits 4 while bindings need manual recovery, again on rerun", async (t) => {
+  const fixture = await createFixture();
+  const seeded = await seedTenant(fixture);
+  const exported = await exportTenants(fixture.api);
+  const directory = mkdtempSync(join(tmpdir(), "split-layout-tenants-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const key = "service-key-from-file";
+  writeFileSync(join(directory, "key.json"), JSON.stringify({ data: { key } }));
+  writeFileSync(join(directory, "values.json"), JSON.stringify({ "team-a": { "model-key": "v" } }));
+
+  // A thin loopback adapter, not the production listener: it checks that the command sends
+  // the service key from OCC_SERVICE_KEY_FILE, then forwards the request to the real app as
+  // the signed-in administrator. It proves the command's exit codes and saved map only.
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(chunk);
+    }
+    if (request.headers["x-api-key"] !== key) {
+      response.writeHead(401).end();
+      return;
+    }
+    const answer = await asAdministrator(fixture)(`http://127.0.0.1${request.url}`, {
+      method: request.method,
+      headers: request.headers["content-type"]
+        ? { "content-type": request.headers["content-type"] }
+        : {},
+      body: chunks.length > 0 ? Buffer.concat(chunks) : undefined,
+    });
+    response.writeHead(answer.status, { "content-type": "application/json" });
+    response.end(await answer.text());
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  for (const [name, value] of Object.entries({
+    OCC_URL: `http://127.0.0.1:${server.address().port}`,
+    OCC_SERVICE_KEY_FILE: join(directory, "key.json"),
+  })) {
+    const previous = process.env[name];
+    process.env[name] = value;
+    t.after(() =>
+      previous === undefined ? delete process.env[name] : (process.env[name] = previous),
+    );
+  }
+  const lines = [];
+  t.mock.method(console, "log", (line) => lines.push(line));
+
+  const extras = {
+    // Old Agent revisions are intentionally not carried over: logged, not reported.
+    revision: { ...seeded.binding, id: "old-revision", resourceKind: "agent_revision" },
+    // Only an operator can re-create a group grant.
+    group: { ...seeded.binding, id: "group-grant", subjectKind: "group" },
+    // A supported shape whose resource the import cannot map: the API refuses the create.
+    refused: {
+      ...seeded.binding,
+      id: "refused-grant",
+      resourceId: "cfg_00000000-0000-4000-8000-0000000000ff",
+    },
+  };
+  const run = async (name, extra) => {
+    const bundle = structuredClone(exported);
+    bundle.namespaces = bundle.namespaces.filter(({ id }) => id === seeded.namespace.id);
+    bundle.namespaces[0].accessBindings = [seeded.binding, ...extra.map((kind) => extras[kind])];
+    writeFileSync(join(directory, `${name}.json`), JSON.stringify(bundle));
+    lines.length = 0;
+    return main([
+      "import",
+      ...["--bundle", join(directory, `${name}.json`)],
+      ...["--secret-values", join(directory, "values.json")],
+      ...["--map", join(directory, `${name}-map.json`)],
+      ...["--rename", `team-a=${name}`],
+      "--no-deploy",
+    ]);
+  };
+  const savedIds = (name) =>
+    JSON.parse(readFileSync(join(directory, `${name}-map.json`), "utf8")).ids;
+
+  for (const [name, extra, code] of [
+    ["clean", [], 0],
+    // Exit 0 can still omit old Agent revision bindings; the guide says so.
+    ["revision-only", ["revision"], 0],
+    ["group", ["group"], 4],
+    ["refused", ["refused"], 4],
+  ]) {
+    // An empty, ready destination stands in for one whose tenant RoleBindings were granted.
+    await markReady(fixture, (await created(fixture, "/namespaces", { name })).id);
+    assert.equal(await run(name, extra), code, `${name}: ${lines.join("\n")}`);
+    assert.ok(savedIds(name)[seeded.binding.id], name);
+    for (const kind of extra) {
+      assert.equal(savedIds(name)[extras[kind].id], undefined, `${name}: ${kind}`);
+    }
+  }
+
+  // Reported bindings are never saved, so a rerun lists them again and still exits 4, even
+  // after the operator re-created them by hand.
+  assert.equal(await run("group", ["group"]), 4);
+  assert.ok(
+    lines.some((line) => line.includes("access binding not re-created: team-a/group-grant: ")),
+    lines.join("\n"),
   );
 });
 

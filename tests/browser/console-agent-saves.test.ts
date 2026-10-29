@@ -48,6 +48,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
+  LIVE_BUTTON,
   createRepositoryLaunchFixture,
   focusedDescription,
   focusedText,
@@ -313,7 +314,9 @@ test("collaboration and safety toggles stage their settings in the Configuration
 
   // Returning steering to its default removes only that setting and preserves the fallback.
   await json.fill(JSON.stringify(rejectSteering, null, 2));
-  await page.locator("#gateway-safety-strict:checked:enabled").waitFor();
+  await page
+    .locator('#gateway-safety-strict:checked:enabled:not([aria-disabled="true"])')
+    .waitFor();
   await steering.check();
   const edited = JSON.parse(await json.inputValue());
   assert.deepEqual(edited, {
@@ -524,11 +527,7 @@ const inPlaceCases: {
     viewport: { width: 1280, height: 720 },
     async prepare(page) {
       await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLButtonElement>(".agent-draft-actions .primary")
-            ?.disabled === false,
-      );
+      await page.locator(".agent-draft-actions .primary").and(page.locator(LIVE_BUTTON)).waitFor();
       await page.getByRole("button", { name: "Edit Configuration" }).click();
       await openAdvancedSettings(page);
       const editor = page.getByLabel("Configuration JSON");

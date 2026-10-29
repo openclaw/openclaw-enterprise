@@ -3349,7 +3349,7 @@ export class OpenClawController {
         principalId,
         namespace.id,
         workId,
-        "Only the initiating actor can retry provisioning.",
+        "retry",
       );
       const agent =
         record.agentId === undefined
@@ -9132,9 +9132,23 @@ export class OpenClawController {
    * a repository binding saved beside the Agent's network grants gets the Driver's overlap
    * check here, before deploy. Other policy refusals stay with save, apply and deploy.
    */
-  private refuseRepositoryNetworkOverlap(policy: Readonly<SandboxPolicy> | undefined): void {
+  private async refuseRepositoryNetworkOverlap(
+    principalId: string,
+    policy: Readonly<SandboxPolicy> | undefined,
+  ): Promise<void> {
+    if (policy === undefined || policy.additions.length === 0) {
+      return;
+    }
+    // Finding 2881: the overlap refusal names a saved grant, so it comes after SandboxPolicy
+    // read, as deploy's admission does when saved additions exist (finding 2151). An Agent
+    // update without that read learns nothing from it.
+    await this.authorize(principalId, "read", {
+      kind: "sandbox_policy",
+      id: policy.id,
+      namespaceId: policy.namespaceId,
+    });
     const driver = this.sandboxDriver();
-    if (policy === undefined || policy.additions.length === 0 || !driver?.admitNetworkPolicy) {
+    if (!driver?.admitNetworkPolicy) {
       return;
     }
     try {
@@ -9961,7 +9975,8 @@ export class OpenClawController {
       // The reverse of the policy save's check: a binding added beside a saved grant that
       // reaches the repository hosts (finding 2144).
       if ((repositoryBindings ?? agent.repositoryBindings ?? []).length > 0) {
-        this.refuseRepositoryNetworkOverlap(
+        await this.refuseRepositoryNetworkOverlap(
+          principalId,
           await state.sandboxPolicies.find(namespace.id, agent.id),
         );
       }
@@ -12114,9 +12129,9 @@ export class OpenClawController {
     principalId: string,
     record: Readonly<AgentProvisioningRecord>,
     {
-      statusRead = false,
+      statusRead,
       admission = false,
-    }: { readonly statusRead?: boolean; readonly admission?: boolean } = {},
+    }: { readonly statusRead?: "status" | "retry"; readonly admission?: boolean } = {},
   ): Promise<void> {
     const namespaceId = record.namespaceId;
     await this.authorizeProvisioningRequest(principalId, namespaceId);
@@ -12280,7 +12295,8 @@ export class OpenClawController {
         this.validateRepositoryBrokerNetworkProxy(harness, plugins, configuration, sandbox);
       }
     }
-    if (agent !== undefined) {
+    // Retry keeps this admission before its lifecycle checks; status only reads saved progress.
+    if (agent !== undefined && statusRead !== "status") {
       this.admitRepositoryCredentials(
         agent,
         compute,
@@ -12296,8 +12312,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     workId: string,
-    // What another actor is told: a retry says so, a status read says so (finding 2588).
-    otherActorDenial = "Only the initiating actor can read provisioning status.",
+    operation: "status" | "retry" = "status",
   ) {
     if (!isNonEmptyString(workId)) {
       throw new ScopeViolationError("The exact provisioning work identity is missing.");
@@ -12311,11 +12326,17 @@ export class OpenClawController {
       );
     }
     if (found.record.actorId !== principalId) {
-      throw new CallerStateDeniedError(otherActorDenial);
+      throw new CallerStateDeniedError(
+        operation === "retry"
+          ? "Only the initiating actor can retry provisioning."
+          : "Only the initiating actor can read provisioning status.",
+      );
     }
     // Retry repeats the full check, native support, plugin policy, the Compute plan and Harness
     // authentication checks included, after its lifecycle checks.
-    await this.authorizeProvisioningRecord(state, principalId, found.record, { statusRead: true });
+    await this.authorizeProvisioningRecord(state, principalId, found.record, {
+      statusRead: operation,
+    });
     return found;
   }
 

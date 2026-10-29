@@ -4,6 +4,10 @@ inputs:
   lane:
     description: Lane name passed to the CI runner.
     required: true
+  test-file:
+    description: Exact manifest file for focused proof. Empty runs the complete lane.
+    required: false
+    default: ""
   profile:
     description: Tool setup profile passed to scripts/ci/setup-tools.sh.
     required: true
@@ -46,6 +50,13 @@ runs:
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: ${{ inputs.node-version }}
+    - name: Validate focused test selection
+      if: inputs.test-file != ''
+      shell: bash
+      env:
+        CI_SELECTED_LANE: ${{ inputs.lane }}
+        CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
+      run: node scripts/ci/run-tests.mjs check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
     - id: pnpm-store
       uses: ./.github/actions/setup-pnpm-store-cache
       with:
@@ -199,8 +210,13 @@ runs:
         # atomically, so concurrent files share it. No test forwards it into a
         # container.
         NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
+        CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: |
         launch=()
+        selection=()
+        if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
+          selection=(--file "$CI_SELECTED_TEST_FILE")
+        fi
         if [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
           # Hosted runners have been lost mid-lane (suspected memory pressure); a
           # lost runner skips every later step, so the sampler also logs live.
@@ -212,7 +228,7 @@ runs:
           # runner receive it directly so it can stop its detached test processes.
           launch=(exec)
         fi
-        "${launch[@]}" node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+        "${launch[@]}" node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json" "${selection[@]}"
     - name: Show last memory samples
       if: (failure() || cancelled()) && inputs.lane == 'k3d-fixture-configuration'
       continue-on-error: true

@@ -22,11 +22,13 @@ import {
   element,
   fieldError,
   focusSaveOutcome,
+  isUnavailable,
   jsonObjectProblem,
   revealStatus,
   setHidden,
   setStatusTone,
   setText,
+  setUnavailable,
   statusBlock,
   validateFields,
   requestIdLine,
@@ -1685,7 +1687,7 @@ export async function renderAgentDetail(
       );
     }
     const deployButton = actions?.querySelector<HTMLButtonElement>("button.primary");
-    if (deployButton && !deployButton.disabled) {
+    if (deployButton && !isUnavailable(deployButton)) {
       deployButton.focus({ preventScroll: true });
     } else {
       tabControls.get(selectedTab)?.focus({ preventScroll: true });
@@ -3183,7 +3185,7 @@ export async function renderAgentDetail(
           Boolean(draftEditorNavigationBlock) ||
           Boolean(credentials?.mutationPending());
       }
-      deploy.disabled = deployIsDisabled();
+      const deployUnavailable = deployIsDisabled();
       const rejectedAccess =
         !runtimeAuth && credentialRejected()
           ? credentialFixAccess(agent.harnessAuth, callerPermissions)
@@ -3292,9 +3294,14 @@ export async function renderAgentDetail(
           }
         }
       }
-      // A disabled Deploy is described by the line that says why, or by a refused deployment's
-      // alert when that line defers to it (finding D749).
-      describeDisabled(deploy, deployStatus.textContent ? deployStatus : deployFeedback);
+      // An unavailable Deploy is described by the line that says why, or by a refused
+      // deployment's alert when that line defers to it (finding D749), and stays in the Tab order
+      // while one of them shows (finding 2878).
+      setUnavailable(
+        deploy,
+        deployUnavailable,
+        deployStatus.textContent ? deployStatus : deployFeedback,
+      );
       updateChecklist();
     }
     // The last deployment's model credential was rejected and the draft still uses it.
@@ -3935,7 +3942,7 @@ export async function renderAgentDetail(
     const named = [...content.querySelectorAll("button")].find(
       (candidate) =>
         [focus].flat().includes(candidate.textContent) &&
-        !candidate.disabled &&
+        !isUnavailable(candidate) &&
         !candidate.closest("[hidden]"),
     );
     const status = saved

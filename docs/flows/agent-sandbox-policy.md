@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-10-29"
-last_updated_session: "fix-2874"
+last_updated_session: "fix-2881"
 ---
 
 # Agent sandbox policy flow
@@ -85,6 +85,9 @@ For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an
 IP address, with a `409` naming it. Adding a binding beside such a saved grant, deploy, and provisioning refuse it too.
+With saved additions, deploy and an Agent update that leaves repository bindings
+authorize SandboxPolicy `read` first, so only a caller who may read the grant
+sees it named (findings 2151, 2881).
 `apps/controller/src/http/sandbox-policy.ts` records the
 nonsecret approved additions with their version in the same transaction.
 The required facet argument currently admits `networking` only. Other facets
@@ -239,6 +242,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-29 18:30: An Agent update with repository bindings authorizes SandboxPolicy `read` before the overlap refusal that names a saved grant (finding 2881).
 
 - 2026-10-29 12:00: Live application authorizes SandboxPolicy `read` before admitting the saved additions (finding 2874).
 

@@ -9,9 +9,11 @@ Run Kubernetes installation and runtime tests on a disposable local k3d cluster 
 Install k3d, kubectl, Helm, `certutil`, and Chromium with sandbox support.
 Use a disposable container engine with enough capacity to build images. The
 Keycloak cases need free, bindable loopback port 443 and must not run beside
-the standalone Keycloak lane. Build the CLI before running:
+the standalone Keycloak lane. From the root of a trusted repository checkout,
+install the dependencies and build the CLI before running:
 
 ```sh
+pnpm install --frozen-lockfile
 pnpm exec playwright install chromium
 pnpm cli:build
 OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs

@@ -124,7 +124,8 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.deepEqual(setupRequests, [
     {
       url: driver.getGatewayEndpoint(revision),
-      nodeUrl: `ws://${gatewayName}.${gatewayNamespace}.svc.cluster.local:8080/node`,
+      // The node needs the scoped TLS route for HTTP transfers and proxy attribution.
+      nodeUrl: `wss://agents.example.internal/namespaces/${revision.namespaceId}/agents/${revision.agentId}/node`,
     },
   ]);
   assert.equal(provisions.length, 1);

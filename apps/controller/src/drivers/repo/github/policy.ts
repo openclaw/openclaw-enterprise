@@ -61,7 +61,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   readonly #registry: GitHubRepositoryRegistry;
   readonly #duration: number;
   constructor(
-    backend: Backend<unknown>,
+    backend: Pick<Backend, "id" | "drivers">,
     registry: GitHubRepositoryRegistry,
     options: { readonly sessionDurationSeconds: number },
   ) {

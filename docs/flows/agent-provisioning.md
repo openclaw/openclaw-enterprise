@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-10-26
-last_updated_session: create-deployment-superseded
+updated: 2026-10-29
+last_updated_session: provisioning-status-repository-policy
 ---
 
 # Agent provisioning flow
@@ -149,7 +149,7 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 ## Debugging and Verification
 
 - Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`; failed work reports a safe error. Status checks stored ownership and provisioning grants, while retry also revalidates the accepted plan. See [admission](#2-occ-admits-one-job) for refusal rules. Explicit pre-handoff retry uses the same URL plus `/retry` and an empty body; only the initiating actor can read or retry work. Match request IDs in `agent_provisioning.compute_refused` and `worker.completed`.
-- Status does not repeat plugin policy, runtime-image support, Compute plan validation or Harness authentication checks; retry can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
+- Status does not repeat repository admission, plugin policy, runtime-image support, Compute plan validation or Harness authentication checks. If the Agent already exists, retry rechecks its repository selections before the lifecycle checks and can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
@@ -168,6 +168,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29: Keep saved provisioning status readable after repository policy changes. Retry still checks current policy.
 
 - 2026-10-25: Name Slack's whole `${NAME}` token reading; move older entries to the history page. (finding 2512)
 - 2026-10-25: Check Configuration rules before channel credentials. (finding 2506)

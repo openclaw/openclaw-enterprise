@@ -8,6 +8,7 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-29 18:30: A Tab lap past the page end starts no refocus check. (fix-keyboard-sweep)
 - 2026-10-25 20:40: Activate a shell control whose mouse press a load render replaced before release. (fix-2505)
 - 2026-10-20 15:53: Add Namespace Secret management and uncertain-write recovery in the accompanying console change. (authoring-run/9b10a6df-a6ce-4d38-859d-480a59d95cf0 - e8185dac8)
 - 2026-10-20 14:55: Add startup-loaded console themes and public asset confinement with accompanying source changes. (authoring-run/485ab8a9-4293-44df-a85f-f8f051b74bf8 - e8185dac805b737363c7178d3068b310a53a7c24)

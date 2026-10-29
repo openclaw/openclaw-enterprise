@@ -1895,6 +1895,9 @@ export const scenarios = {
     name: "Choose a starting point",
     path: create,
     description: "Choose a Preset or start with standard defaults.",
+    steps: [
+      "Tab to Use Preset. It takes focus and looks unavailable; its description is the status line under the chooser, and Enter or Space does nothing until a Preset is chosen.",
+    ],
   },
   createForm: {
     group: "Pages/Create Agent",
@@ -4053,6 +4056,9 @@ export const scenarios = {
     pluginDiscovery,
     description:
       "Plugin browsing uses the Agent's saved credential source without another login. Saving plugin selections never replaces authentication.",
+    steps: [
+      "Tab to Save plugin selections and Discard changes. Each takes focus, looks unavailable and is described by No plugin changes to save.; Enter or Space does nothing. Edit the JSON: both become live.",
+    ],
   },
   authOAuthReconnect: {
     group: "Components/Credentials",
@@ -4801,6 +4807,9 @@ export const scenarios = {
     messageQueue: { allowCollaborativeSteering: false },
     description:
       "A viewer sees the saved strict settings, with every toggle unavailable and the reason linked to each. The note above them names the grant to ask for.",
+    steps: [
+      "Tab to Strict mode and on through each toggle. Each takes focus, its label draws the focus ring, its description ends with These settings are read-only with your access., and Space leaves it unchanged.",
+    ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   pluginsUpdateDenied: {
@@ -4832,7 +4841,7 @@ export const scenarios = {
     steps: [
       "Read the notice: Version draft · read-only with your access.",
       "Find no Edit Configuration button; View native Configuration opens the saved JSON.",
-      "The draft card reads Version draft, with Deploy disabled and its reason, and no Prepare this version steps.",
+      "The draft card reads Version draft, with Deploy unavailable and its reason, and no Prepare this version steps. Tab reaches Deploy new version: it looks unavailable, its description is the reason, and Enter or Space does nothing.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
@@ -7887,6 +7896,9 @@ export const scenarios = {
     slack: true,
     description:
       "Readable Secret names show existing bindings. The console does not retrieve stored token values.",
+    steps: [
+      "Tab to Save channel Secrets. It takes focus, looks unavailable and is described by No channel Secret changes to save.; Enter submits nothing.",
+    ],
   },
   credentialsSlackReplacement: {
     group: "Components/Credentials",
@@ -8595,6 +8607,25 @@ export const scenarios = {
     steps: [
       "Tab to Refresh access and press Enter. While Checking access… shows, focus stays on the button and Enter again sends nothing.",
     ],
+  },
+  nativeAvailableAfterDeploy: {
+    group: "Components/Native admin",
+    name: "Available once a deployment completes",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    nativeAdmin: "available",
+    // The first access check finds no version serving; the reread after the deployment completes
+    // finds the new version available.
+    rules: [{ suffix: "/native-admin", once: true, data: { status: "unavailable" } }],
+    description:
+      "v7 is deploying, so Open Agent UI is unavailable. When the next status poll records success, the page rereads access and the live Open Agent UI link replaces the button in the same place. Keyboard focus moves with it.",
+    steps: [
+      "Before the status poll lands, Tab to Open Agent UI in the header. It is unavailable and its description says no version is serving.",
+      "Wait for the poll. The live Open Agent UI link replaces the button and keeps focus: press Tab once and focus moves to the next header control, not to the start of the page.",
+    ],
+    gap: "The deployment, its activation and native admin access are simulated.",
   },
   agentDetailLayout: {
     group: "Pages/Agent detail",

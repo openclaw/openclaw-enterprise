@@ -152,8 +152,8 @@ interrupt loading. Other Agent routes preserve the page or show loading after
 400 ms. Visible loading lasts at least 300 ms (`loadingMinimumMs`). Other first
 visits and Refresh show loading after 250 ms.
 
-Return and refocus checks keep the page inert, its header visible, and Namespace selection disabled;
-after one second they show **Still checking…**. The Console retains up to 16 views by
+Return and refocus checks, not Tab laps, hold the page inert (header visible, Namespace selection
+disabled), showing **Still checking…** after one second. The Console retains up to 16 views by
 route, Namespace, and session owner. Matching user and GET dependencies restore
 DOM, handlers, drafts, and debug disclosures. Changed data, newly readable
 Namespaces, and Refresh rebuild. Discovery state is not retained. Pending/failed reads, passwords, and

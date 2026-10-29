@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
@@ -64,11 +63,6 @@ export async function standingExecutionFixture(
   const driver = new GitHubRepositoryPolicy(
     {
       id: registry.backendId,
-      client: external?.protectedDriver
-        ? undefined
-        : new UnixRepositoryCredentialControlClient({
-            controlSocket: external?.controlSocket ?? "/unused-execution-contract/control.sock",
-          }),
       drivers: { repo: registry.backendId },
     },
     registry,

@@ -18,6 +18,7 @@
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
     "helpers/credential-source-owner-upgrade.ts",
+    "helpers/provisioning-repository-status.ts",
     "helpers/codex-preparation-caller.ts",
     "helpers/controlled-tls-origin.ts",
     "helpers/controlled-tls-origin-scenario.ts",

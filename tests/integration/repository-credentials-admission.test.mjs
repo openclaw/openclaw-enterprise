@@ -43,7 +43,7 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { grantRole, restrict } from "../helpers/iam-grants.mjs";
+import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 import {
   BROKER_PROXY_DISABLED,
   BROKER_PROXY_DOMAIN_DECISION,
@@ -1600,6 +1600,34 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   });
   assert.equal(binding.status, 409, JSON.stringify(binding));
   assert.equal(binding.error.message, message);
+  assert.equal(
+    (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryBindings,
+    undefined,
+  );
+  // Finding 2881: that refusal names a saved grant, so an Agent update without SandboxPolicy
+  // read gets the read refusal first, as deploy does when saved additions exist (finding 2151).
+  // Each Restriction names one exact SandboxPolicy, so the check must target the Agent's own.
+  const plain = await f.createAgent({ executionMode: "dedicated" });
+  const plainPolicyId = (await f.request("GET", policyPath(plain))).data.policy.id;
+  const unreadable = [granted.data.id, plainPolicyId].map((resourceId) =>
+    restrict(f.iamState, "read", "sandbox_policy", { namespaceId: f.namespace.id, resourceId }),
+  );
+  const hidden = await f.request("PATCH", `${f.collection}/${unbound.id}`, {
+    configurationId: f.configuration.id,
+    repositoryBindings: selection,
+  });
+  assert.equal(hidden.status, 403, JSON.stringify(hidden));
+  assert.match(hidden.error.message, /needs SandboxPolicy read on /);
+  assert.doesNotMatch(JSON.stringify(hidden), /git-direct|github\.com/);
+  // An Agent with no saved additions has nothing to name, so its binding saves without read.
+  const plainBinding = await f.request("PATCH", `${f.collection}/${plain.id}`, {
+    configurationId: f.configuration.id,
+    repositoryBindings: selection,
+  });
+  assert.equal(plainBinding.status, 200, JSON.stringify(plainBinding));
+  for (const restriction of unreadable) {
+    liftRestriction(f.iamState, restriction);
+  }
   assert.equal(
     (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryBindings,
     undefined,
