@@ -91,28 +91,35 @@ func Up(ctx context.Context, opts Options) (result error) {
 	state.SandboxNetworkPolicies = networkPolicies
 	state.SandboxNetworkPolicyCeiling = ceiling
 	if sandboxDriver == "openshell" {
-		browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
-		if err != nil {
-			return err
-		}
-		if browserPort == port {
-			return fmt.Errorf("browser and Kubernetes API ports must differ")
-		}
-		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
-		state.BrowserPort = browserPort
-		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
-		state.NativeAdminDomain = agentDomain
-		r.env["OCC_DEVELOPMENT_BROWSER_PORT"] = strconv.Itoa(browserPort)
-		r.env["OCC_DEVELOPMENT_BROWSER_ORIGIN"] = state.BrowserOrigin
-		r.env["OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN"] = agentDomain
-		r.env["OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"] = cookieDomain
-		r.env["OCC_DEVELOPMENT_BROWSER_TLS_CERT"] = filepath.Join(directory, "browser-tls.crt")
-		r.env["OCC_DEVELOPMENT_BROWSER_TLS_KEY"] = filepath.Join(directory, "browser-tls.key")
 		external, err := selectExternalOpenShell(r.env, state.ProtectedEgress)
 		if err != nil {
 			return err
 		}
 		state.openShellExternal = external
+		if external == nil {
+			browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
+			if err != nil {
+				return err
+			}
+			if browserPort == port {
+				return fmt.Errorf("browser and Kubernetes API ports must differ")
+			}
+			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+			state.BrowserPort = browserPort
+			state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
+			state.NativeAdminDomain = agentDomain
+			r.env["OCC_DEVELOPMENT_BROWSER_PORT"] = strconv.Itoa(browserPort)
+			r.env["OCC_DEVELOPMENT_BROWSER_ORIGIN"] = state.BrowserOrigin
+			r.env["OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN"] = agentDomain
+			r.env["OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"] = cookieDomain
+			r.env["OCC_DEVELOPMENT_BROWSER_TLS_CERT"] = filepath.Join(directory, "browser-tls.crt")
+			r.env["OCC_DEVELOPMENT_BROWSER_TLS_KEY"] = filepath.Join(directory, "browser-tls.key")
+		} else if r.env["OCC_DEVELOPMENT_BROWSER_PORT"] != "" {
+			// The native-admin browser domain routes through the profile's in-cluster
+			// gateway relay; an external gateway has none, so fail closed here instead
+			// of silently ignoring the selection.
+			return fmt.Errorf("OCC_DEVELOPMENT_BROWSER_PORT requires the profile's in-cluster OpenShell gateway; unset it to use an external gateway")
+		}
 	}
 
 	if err := validateClusterName(state.Cluster); err != nil {
@@ -166,9 +173,15 @@ func Up(ctx context.Context, opts Options) (result error) {
 	// The path must be set before the Compose configuration is rendered below; the
 	// file itself is written once the state directory exists.
 	secret := []byte("")
+	var caBundle []byte
 	if state.openShellExternal != nil {
 		if secret, err = os.ReadFile(state.openShellExternal.clientSecretPath); err != nil {
 			return fmt.Errorf("read the OpenShell OIDC client secret: %w", err)
+		}
+		if state.openShellExternal.caPath != "" {
+			if caBundle, err = os.ReadFile(state.openShellExternal.caPath); err != nil {
+				return fmt.Errorf("read the OpenShell external CA bundle: %w", err)
+			}
 		}
 	}
 	r.env["OCC_DEVELOPMENT_OPENSHELL_CLIENT_SECRET"] = filepath.Join(directory, "openshell-client-secret")
@@ -190,10 +203,14 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	if sandboxDriver == "openshell" {
-		if err := addComposeGatewayRouting(rendered, state); err != nil {
-			return err
-		}
-		if err := validateComposeNativeAdmin(rendered, state); err != nil {
+		if state.openShellExternal == nil {
+			if err := addComposeGatewayRouting(rendered, state); err != nil {
+				return err
+			}
+			if err := validateComposeNativeAdmin(rendered, state); err != nil {
+				return err
+			}
+		} else if err := addComposeExternalOpenShell(rendered, state); err != nil {
 			return err
 		}
 	}
@@ -244,6 +261,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 	// directory itself is private to this developer.
 	if err := exclusiveWrite(filepath.Join(directory, "openshell-client-secret"), secret, 0644); err != nil {
 		return err
+	}
+	if caBundle != nil {
+		if err := exclusiveWrite(filepath.Join(directory, "openshell-ca.crt"), caBundle, 0644); err != nil {
+			return err
+		}
 	}
 	started, clusterAttempted, clusterCreationFailed, keyWritten := false, false, false, false
 	defer func() {

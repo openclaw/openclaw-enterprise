@@ -510,17 +510,22 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 		}
 	}
 	if s.openShellExternal != nil {
+		// The optional CA bundle trusts the gateway's TLS for gRPC; the same mounted
+		// bundle is exported through NODE_EXTRA_CA_CERTS so the client-credentials
+		// token request to the issuer verifies too.
+		configuration := map[string]any{
+			"endpoint":         s.openShellExternal.endpoint,
+			"auth":             openShellOidcAuthConfiguration(s.openShellExternal),
+			"requestTimeoutMs": 30000,
+		}
+		if s.openShellExternal.caPath != "" {
+			configuration["rootCertificatePath"] = openShellExternalCAContainerPath
+		}
 		return map[string]any{
-			"id":   "openshell",
-			"type": "openshell",
-			// The external gateway authenticates OCC through an OIDC client-credentials
-			// grant; the secret is mounted read-only beside the development kubeconfig.
-			"configuration": map[string]any{
-				"endpoint":         s.openShellExternal.endpoint,
-				"auth":             openShellOidcAuthConfiguration(s.openShellExternal),
-				"requestTimeoutMs": 30000,
-			},
-			"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+			"id":            "openshell",
+			"type":          "openshell",
+			"configuration": configuration,
+			"drivers":       map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
 		}
 	}
 	endpoint := fmt.Sprintf("http://k3d-%s-server-0:%d", s.Cluster, openShellNodePort)

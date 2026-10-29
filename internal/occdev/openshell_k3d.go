@@ -833,6 +833,20 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "openshell-oidc-client-secret", oidcSecret); err != nil {
 			return err
 		}
+		if state.openShellExternal.caPath != "" {
+			caBundle, err := os.ReadFile(state.openShellExternal.caPath)
+			if err != nil {
+				return fmt.Errorf("read the OpenShell external CA bundle: %w", err)
+			}
+			caSecret := map[string]any{
+				"apiVersion": "v1", "kind": "Secret",
+				"metadata":   kubernetesMetadata("occ-openshell-ca", namespace, labels),
+				"stringData": map[string]string{"ca.crt": string(caBundle)},
+			}
+			if err := r.writeAndApply(ctx, state, "openshell-external-ca", caSecret); err != nil {
+				return err
+			}
+		}
 	}
 	values := map[string]any{
 		"images":       map[string]string{"controller": controllerImage},
@@ -851,11 +865,17 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		values["egressAuthority"] = developmentEgressChartValues(state)
 	}
 	if state.openShellExternal != nil {
-		values["backend"] = map[string]any{"openshell": map[string]any{
+		openshell := map[string]any{
 			"oidcSecretName": "occ-openshell-oidc",
 			"oidcSecretKey":  "client-secret",
 			"oidcFilePath":   openShellClientSecretContainerPath,
-		}}
+		}
+		if state.openShellExternal.caPath != "" {
+			openshell["caSecretName"] = "occ-openshell-ca"
+			openshell["caSecretKey"] = "ca.crt"
+			openshell["caFilePath"] = openShellExternalCAContainerPath
+		}
+		values["backend"] = map[string]any{"openshell": openshell}
 	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()

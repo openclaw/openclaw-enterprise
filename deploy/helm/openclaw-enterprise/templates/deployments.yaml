@@ -245,6 +245,15 @@ spec:
               - key: {{ $openshell.oidcSecretKey | quote }}
                 path: {{ base $openshell.oidcFilePath | quote }}
         {{- end }}
+        {{- if $.Values.backend.openshell.caSecretName }}
+        - name: openshell-external-ca
+          secret:
+            secretName: {{ $.Values.backend.openshell.caSecretName | quote }}
+            defaultMode: 288 # 0440: root and the Pod filesystem group only.
+            items:
+              - key: {{ $.Values.backend.openshell.caSecretKey | quote }}
+                path: {{ base $.Values.backend.openshell.caFilePath | quote }}
+        {{- end }}
         {{- if $.Values.database.caSecretName }}
         - name: database-ca
           secret:
@@ -399,6 +408,11 @@ spec:
             {{- else if $gatewayCa }}
             - name: NODE_EXTRA_CA_CERTS
               value: /etc/openclaw/gateway-ca/ca.crt
+            {{- else if $.Values.backend.openshell.caSecretName }}
+            # An external OpenShell gateway connection: the mounted bundle trusts the
+            # gateway's TLS and the OIDC issuer that mints the connection's tokens.
+            - name: NODE_EXTRA_CA_CERTS
+              value: {{ $.Values.backend.openshell.caFilePath | quote }}
             {{- end }}
             {{- if eq $component "api" }}
             - name: OCC_HOST
@@ -583,6 +597,11 @@ spec:
             {{- if $.Values.backend.openshell.oidcSecretName }}
             - name: openshell-oidc-client-secret
               mountPath: {{ dir $.Values.backend.openshell.oidcFilePath }}
+              readOnly: true
+            {{- end }}
+            {{- if $.Values.backend.openshell.caSecretName }}
+            - name: openshell-external-ca
+              mountPath: {{ dir $.Values.backend.openshell.caFilePath }}
               readOnly: true
             {{- end }}
             {{- if $.Values.database.caSecretName }}
