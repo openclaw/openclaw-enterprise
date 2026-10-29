@@ -6146,6 +6146,28 @@ export const scenarios = {
       "A newer version the viewer cannot read superseded v7 before it became current. Latest visible deployment reads v7 · Superseded with neutral stages and no failure banner, and nothing names the newer version.",
     gap: "The superseded record is simulated UI evidence; it does not verify a live deployment.",
   },
+  agentCurrentVersionHidden: {
+    group: "Pages/Agent detail",
+    name: "Current version newer and unreadable",
+    // No version in the link: the page opens the current one, v8, which the viewer cannot read.
+    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    candidateSuperseded: true,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "Every version the reader can read is on the first page of versions, and the current one is not among them, so the page names it as the Agents list does and does not read it. v7's deployment succeeded, so the current version is newer.",
+    steps: [
+      'Selected for service reads "A newer version you cannot read"; the line under the version chooser reads "A newer version you cannot read remains selected for service." and the status line "The current version is one you cannot read; v7 is an older version." No raw version ID shows.',
+      "The request log shows no read of the current version.",
+    ],
+  },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
     name: "New version activated",

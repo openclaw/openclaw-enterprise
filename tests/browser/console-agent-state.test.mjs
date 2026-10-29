@@ -1578,6 +1578,27 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   assert.equal(await remove.count(), 0);
   assert.equal(policyReads(sent).length, 1);
   assert.equal(iamDenials().length, 1);
+
+  // Finding D792. Credentials then read the IAM policy for the model credential's grant, as an
+  // administrator's Credentials tab does: two more refusals, audited, with nothing shown. The
+  // refusal above settled that this reader no longer administers the Installation, so the tab
+  // sends no read that needs it.
+  sent = requests.length;
+  const credentialsTab = page.getByRole("tab", { name: "Credentials", exact: true });
+  await credentialsTab.click();
+  await page.getByRole("tab", { name: "Credentials", selected: true }).waitFor();
+  await page.locator("#harness-auth-method").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(policyReads(sent).length, 0);
+  assert.equal(iamDenials().length, 1);
+
+  // Access that returns is used again: Refresh asks again, and the Access tab is back.
+  grantInstallationAdministration(fixture, account.principal);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await accessTab.click();
+  await loaded.waitFor();
+  await waitForEnabled(remove.first());
+  assert.equal(iamDenials().length, 1);
 });
 
 // Only a Backends refusal settles Installation administration as false (finding 2627). A read that
@@ -1738,15 +1759,31 @@ test("Agent detail says when the current or requested version cannot be read", a
   // Revision read is granted per version: v2 is current, but this reader cannot read it.
   const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
   denyRevisionRead(fixture, namespace, second.revision);
+  const requests = apiRequests(page, fixture.origin);
+  const versionReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/revisions/${second.revision.id}`)).length;
+  const versionDenials = () =>
+    authorizationDenials(fixture.auditSink, "openclaw.agent_revisions.read").length;
   await page.goto(
     detailUrl(fixture, namespace.id, agent.id, second.revision.id, "configuration").href,
   );
+  // The page named that version by its raw ID in four places and read it once per tab, an
+  // audited refusal. The newest page of versions lists every version this reader can read and
+  // leaves v2 out, so, as on the Agents list, the page names it in words and does not read it.
+  // Beside v1's completed deployment it is newer (finding D791).
+  const NEWER_UNREADABLE = "A newer version you cannot read";
   await summary.getByText("Newer version hidden", { exact: true }).waitFor();
-  await summary.getByText("Selected for service · you cannot read this version").waitFor();
+  await summary.getByText(NEWER_UNREADABLE, { exact: true }).waitFor();
   assert.equal(await summary.getByText("v1 · Completed").count(), 0);
   await page
     .locator(".agent-status-line")
-    .getByText(/The current version, rev_.*, is one you cannot read; v1 is an older version\./)
+    .getByText(/^The current version is one you cannot read; v1 is an older version\./)
+    .waitFor();
+  await page
+    .getByText(
+      `${NEWER_UNREADABLE} remains selected for service. Browsing does not deploy or roll back.`,
+      { exact: true },
+    )
     .waitFor();
   // Members have no chat or native admin surface, so the hint names only paths that work.
   await page
@@ -1759,6 +1796,10 @@ test("Agent detail says when the current or requested version cannot be read", a
     .waitFor();
   await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   assert.equal(await page.getByText("Configuration unavailable").count(), 0);
+  // The settled denial panel shows once the page decided whether to read the version.
+  assert.equal(await page.locator("main").getByText(/rev_/).count(), 0);
+  assert.equal(versionReads(), 0);
+  assert.equal(versionDenials(), 0);
 
   // After a deploy the console opens the requested version; its outcome stays hidden too.
   const requested = await fixture.deployAgent(namespace.id, agent.id);

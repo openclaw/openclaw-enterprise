@@ -18,6 +18,18 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
+// Socket Mode Slack reading its two tokens from SLACK_APP_TOKEN and SLACK_BOT_TOKEN.
+const SLACK_CHANNEL = {
+  enabled: true,
+  mode: "socket",
+  appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+  botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+  dmPolicy: "allowlist",
+  groupPolicy: "allowlist",
+  allowFrom: ["U123"],
+  channels: { C123: { requireMention: true } },
+};
+
 // A disabled control whose reason sits nearby but is not linked to it leaves a screen reader
 // user with a dead control and no why (finding D749). Each disabled control below is described
 // by the sentence a sighted reader sees beside it.
@@ -99,4 +111,73 @@ test("the Namespace selector names no missing reason on a page without the no-Na
     ),
     [],
   );
+});
+
+// Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
+// disabled with a sentence beside them that no control named. Each is described by it now.
+test("a draft's disabled Save, Discard and Use Preset name their reasons", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Described draft", { ready: true });
+  const tokens = [
+    await fixture.createSecret(namespace.id, "Described Slack app token", "xapp-described"),
+    await fixture.createSecret(namespace.id, "Described Slack bot token", "xoxb-described"),
+  ];
+  const bound = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Described Slack Agent",
+    nativeValues("slack", { harnessId: "codex", channels: { slack: SLACK_CHANNEL } }),
+    {
+      executionMode: "dedicated",
+      secretBindings: { SLACK_APP_TOKEN: bound(tokens[0]), SLACK_BOT_TOKEN: bound(tokens[1]) },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  const describedBy = async (control, reason) => {
+    await control.waitFor();
+    assert.equal(await control.isDisabled(), true);
+    assert.equal(await accessibleDescription(control), reason);
+    assert.equal(await page.getByText(reason, { exact: true }).isVisible(), true);
+  };
+
+  // Both Slack tokens are bound, and nothing changed.
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await describedBy(
+    page.getByRole("button", { name: "Save channel Secrets" }),
+    "No channel Secret changes to save.",
+  );
+
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  for (const name of ["Save plugin selections", "Discard changes"]) {
+    await describedBy(page.getByRole("button", { name }), "No plugin changes to save.");
+  }
+
+  // Use Preset waits for a Preset; the status line under the chooser says so.
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  const status = page.getByText(/^Choose a Preset/);
+  await status.waitFor();
+  await describedBy(page.getByRole("button", { name: "Use Preset" }), await status.textContent());
+});
+
+// A Slack token without a Secret is the reason too.
+test("Save channel Secrets names an unbound Slack token as its reason", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unbound Slack", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unbound Slack Agent",
+    nativeValues("unbound", { harnessId: "codex", channels: { slack: SLACK_CHANNEL } }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  const save = page.getByRole("button", { name: "Save channel Secrets" });
+  await save.waitFor();
+  assert.equal(await save.isDisabled(), true);
+  const reason = "Choose a Secret for each Slack token to save.";
+  assert.equal(await accessibleDescription(save), reason);
+  assert.equal(await page.getByText(reason, { exact: true }).isVisible(), true);
 });
