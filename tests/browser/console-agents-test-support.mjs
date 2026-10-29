@@ -144,6 +144,34 @@ export async function expectNativeAdminHidden(page) {
   );
 }
 
+// Unavailable native admin access keeps an "Open Agent UI" button in the Tab order, marked
+// aria-disabled and described by its reason, so a keyboard user reaches why it cannot open
+// (finding 2714). A natively disabled button takes no focus.
+export async function expectNativeAdminUnavailable(page, reason) {
+  const control = page.getByRole("button", { name: "Open Agent UI", exact: true });
+  await control.focus();
+  assert.deepEqual(
+    await control.evaluate((node) => {
+      const document = node.ownerDocument;
+      const description = (node.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent?.trim() ?? "")
+        .filter(Boolean)
+        .join(" ");
+      return {
+        focused: document.activeElement === node,
+        ariaDisabled: node.getAttribute("aria-disabled"),
+        description,
+      };
+    }),
+    { focused: true, ariaDisabled: "true", description: reason },
+  );
+  assert.equal(
+    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
+    false,
+  );
+}
+
 export function assertRevisionUrl(page, revisionId) {
   const url = new URL(page.url());
   assert.equal(url.searchParams.get("revision"), revisionId);
@@ -525,6 +553,10 @@ function repositoryPolicyDriver(
   );
 }
 
+// A button the reader can press: an unavailable one is natively disabled, or aria-disabled
+// while a visible reason says why (finding 2878).
+export const LIVE_BUTTON = 'button:not([disabled], [aria-disabled="true"])';
+
 // Back, in-app navigation and reloads can first restore an inert copy of the old view with its
 // controls disabled, until revalidation re-enables it or replaces it with a rebuilt view. Only a
 // live control shows the current view, including any draft it restored.
@@ -533,7 +565,12 @@ export async function waitForLiveControls(page, ids) {
     (controlIds) =>
       controlIds.every((id) => {
         const control = globalThis.document.getElementById(id);
-        return control && !control.disabled && !control.closest("[inert]");
+        return (
+          control &&
+          !control.disabled &&
+          control.getAttribute("aria-disabled") !== "true" &&
+          !control.closest("[inert]")
+        );
       }),
     ids,
   );

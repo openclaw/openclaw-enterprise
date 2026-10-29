@@ -63,9 +63,27 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  async function checkPolicySupport(pluginName) {
+    const policies = dialog.getByRole("group", { name: "Plugin policies" });
+    for (const label of ["tools enabled by default", "require approval for", "default reviewer"]) {
+      const field = policies.getByRole("combobox", { name: `${pluginName} ${label}`, exact: true });
+      assert.equal(await field.isDisabled(), true);
+      assert.equal(await field.locator("option:checked").textContent(), "Not supported");
+    }
+    await dialog
+      .getByRole("group", { name: "Driver policy" })
+      .getByText(/driver-specific settings are not supported/i)
+      .waitFor();
+    await dialog.getByRole("heading", { name: "Tools", exact: true }).waitFor();
+    await dialog.getByText(/per-tool policies are not supported/i).waitFor();
+  }
   await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
   await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
-  assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
+  assert.equal(await dialog.getByLabel("Google account", { exact: true }).inputValue(), "");
+  await dialog
+    .getByRole("option", { name: "Install without an account" })
+    .waitFor({ state: "attached" });
+  await checkPolicySupport("Google Workspace");
   async function save(enabled) {
     await dialog.getByRole("button", { name: "Done", exact: true }).click();
     const saved = page.waitForResponse(
@@ -87,7 +105,7 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   await dialog.getByRole("button", { name: id, exact: true }).click();
   const enabled = dialog.getByLabel(`Enable ${id}`, { exact: true });
   assert.equal(await enabled.isChecked(), true);
-  assert.equal(await dialog.getByRole("group", { name: "Plugin policies" }).count(), 0);
+  await checkPolicySupport(id);
   assert.equal(await dialog.getByLabel(/plugin approvers mode/).count(), 0);
   assert.equal(await dialog.getByLabel("Filter tools").count(), 0);
   await enabled.uncheck();
@@ -924,4 +942,51 @@ test("No Slack approvers does not ask the operator to select hidden people", asy
     "No Slack user can approve. 1 other channel entries are preserved.",
   );
   assert.equal(hints.preserved.pickerHidden, true);
+});
+
+test("plugin prefetch remains usable after leaving during its debounce", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Plugin return", { ready: true });
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-plugin-return"),
+  ]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Plugin return Agent",
+    nativeValues("package"),
+    { executionMode: "dedicated", harnessAuth: null },
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const initialSelections = { "occ-plugin:google@1.0.0": { enabled: false } };
+  const saved = await fixture.request("PATCH", agentPath, {
+    body: { configurationId: agent.configurationId, plugins: initialSelections },
+  });
+  assert.equal(saved.status, 200);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("tab", { name: "Configuration", exact: true }).waitFor();
+  // Leave after capabilities arrive but before the deferred read, then expire it while hidden.
+  await page.clock.install();
+  await page.clock.pauseAt(Date.now() + 1000);
+  const capabilities = page.waitForResponse((r) => r.url().endsWith("/plugins/capabilities"));
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await (await capabilities).finished();
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.clock.runFor(400);
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await page.clock.runFor(1000);
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).waitFor();
+  assert.equal(
+    await dialog.getByRole("button", { name: "Loading plugins…", exact: true }).count(),
+    0,
+  );
+  assert.deepEqual((await fixture.request("GET", agentPath)).data.plugins, initialSelections);
 });

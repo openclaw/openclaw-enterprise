@@ -1723,6 +1723,64 @@ test("runtime log polling suppresses a forgotten timestamp group when completene
   ]);
 });
 
+// A frontier line that de-duplication cannot prove delivered is withheld until time
+// advances, and is unreadable after that. The page that moves the frontier must say
+// so with a gap dated at the old frontier, once.
+test("runtime log polling reports withheld frontier lines once the frontier moves past them", async () => {
+  const frontierGap = ["window_exceeded", retrying(0).time];
+  const gaps = (page) =>
+    page.records.filter(({ type }) => type === "gap").map(({ reason, time }) => [reason, time]);
+
+  // Identical text: the first poll's tail clipped the group, so copies past the two it
+  // delivered may be old or new. Later reads start a second earlier; the gap is dated
+  // at the frontier, not at the read's start.
+  const repeats = pollReader();
+  const old = Array.from({ length: 3 }, () => retrying(0));
+  await repeats.poll(old.slice(-2), { query: { tailLines: 2 } });
+  const boot = timedLog("boot", -1);
+  const joined = timedLog("worker joined", 0);
+  // New text at the frontier time is shown; the extra identical copies are not.
+  const withheld = await repeats.poll([boot, ...old, retrying(0), joined]);
+  assert.deepEqual(summary(withheld), ["worker joined"], "no gap while time is unchanged");
+  const connected = timedLog("worker connected", 1);
+  const moved = await repeats.poll([boot, ...old, retrying(0), joined, connected]);
+  assert.deepEqual(summary(moved), ["window_exceeded", "worker connected"]);
+  assert.deepEqual(gaps(moved), [frontierGap]);
+  const later = [boot, ...old, retrying(0), joined, connected, timedLog("worker idle", 2)];
+  assert.deepEqual(summary(await repeats.poll(later)), ["worker idle"], "no gap without one");
+
+  // More than 16 lines at one time: the cursor's hashes forgot the group's start, and
+  // rotation removed it from the read, so new text at that time cannot be told apart.
+  const group = pollReader();
+  const workersAtZero = workers(20);
+  assert.equal((await group.shown([timedLog("boot", -1), ...workersAtZero])).length, 21);
+  const rejoined = Array.from({ length: 5 }, (_, index) => timedLog(`worker ${index} rejoined`, 0));
+  const rotated = [...workersAtZero.slice(5), ...rejoined];
+  assert.deepEqual(summary(await group.poll(rotated)), []);
+  const advanced = await group.poll([...rotated, connected]);
+  assert.deepEqual(summary(advanced), ["window_exceeded", "worker connected"]);
+  assert.deepEqual(gaps(advanced), [frontierGap]);
+
+  // The page that moves the frontier is cut by the page budget: its continuation page
+  // does not repeat the gap.
+  const paged = pollReader();
+  await paged.poll(old.slice(-2), { query: { tailLines: 2 } });
+  const big = Array.from({ length: 100 }, (_, index) => bigLine(`line ${index}`, index + 1));
+  const first = await paged.poll([...old, retrying(0), ...big]);
+  assert.equal(first.truncated, true);
+  assert.deepEqual(
+    gaps(first).filter(([reason]) => reason === "window_exceeded"),
+    [frontierGap],
+  );
+  const rest = await paged.poll([...old, retrying(0), ...big]);
+  assert.deepEqual(
+    gaps(rest).filter(([reason]) => reason === "window_exceeded"),
+    [],
+    "the continuation page already moved past the frontier",
+  );
+  assert.equal(messages(first).length + messages(rest).length, big.length);
+});
+
 test("runtime log polling checks a counted timestamp group against its hashes", async () => {
   const reader = pollReader();
   const group = workers(10);
@@ -3030,6 +3088,24 @@ test("container checkpoint recovery discloses frontier rows its hash history can
   );
   assert.ok(rowIds(first).length > 3 + 16);
   assert.ok(gapCount(second, "window_exceeded") > 0);
+});
+
+test("container checkpoint recovery reports a lost window and withheld frontier rows once", async () => {
+  const start = Date.now() - 120_000;
+  // As above, with a later row that moves the frontier past the withheld group rows.
+  // The lost checkpoint and the unreadable frontier rows are one gap, not two.
+  const [, second] = await rotatedWindow(
+    "wire-cut-frontier-history-advance",
+    groupedRows(start, 3),
+    (lines) => [
+      ...lines.slice(1, 3),
+      { time: lines[3].time, raw: gatewayJson("changed group row") },
+      ...lines.slice(3),
+      ordinaryRow(start, 80),
+    ],
+  );
+  assert.deepEqual(rowIds(second), [80]);
+  assert.equal(gapCount(second, "window_exceeded"), 1);
 });
 
 test("container checkpoint recovery discloses a window whose clock stepped back", async () => {

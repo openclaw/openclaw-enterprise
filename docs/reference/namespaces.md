@@ -124,6 +124,9 @@ exact dedicated existing namespace selected by `existingNamespace`; see the
 
 `DELETE /namespaces/:namespaceId` starts deletion of an empty Namespace.
 
+The Console exposes this operation through each Namespace row's trash icon.
+See [Delete a Namespace in the console](../guides/console/delete-namespace.md).
+
 A successful request returns `202` and the Namespace with `status: "deleting"`.
 Repeating the request while teardown is in progress changes nothing.
 After teardown completes, the controller retains a durable internal tombstone;
@@ -141,8 +144,12 @@ A Namespace containing any Agent, Configuration, Preset, service account, Secret
 or [credential source](credential-sources.md) cannot be deleted and returns
 `409 NAMESPACE_NOT_EMPTY`. The error message lists the kinds that remain and
 the IDs of their resources, as far as the 256-character message
-allows; a kind with more says how many are left. Configurations have no list
-route, so this message is where their IDs appear. Delete
+allows; a kind with more says how many are left. The error also includes
+`remainingResources`: up to seven entries with `kind`, `count`, and up to 20
+`ids` each. Pending Agent provisioning has no resource IDs. Configurations have
+no list route, so the deletion conflict provides their IDs. Namespace `delete`
+does not grant reads: of the first 20 resources of each kind, the conflict
+names only those that you can read, and it counts the others without IDs. Delete
 unreferenced Agents, Configurations, [Presets](presets.md), service accounts,
 Secrets, and credential sources before deleting their Namespace. A credential
 source in `deleting` still counts; retry its deletion until it disappears.
@@ -181,8 +188,8 @@ workload is ready.
   operation.
 - `404`: The Namespace does not exist, belongs outside the requested scope, or
   has already been tombstoned.
-- `409 NAMESPACE_NOT_EMPTY`: The message names what remains, with resource
-  IDs. Delete the named resources and retry to see any others. Remove the
+- `409 NAMESPACE_NOT_EMPTY`: The message names what remains, with the IDs
+  that you can read. Delete the named resources and retry to see any others. Remove the
   Namespace's unreferenced Agents, Configurations, edited or custom Presets,
   service accounts, Secrets, and credential sources before deletion. An Agent
   whose teardown is still in progress, or a credential source in `deleting`,

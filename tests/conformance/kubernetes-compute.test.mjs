@@ -1703,6 +1703,17 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   nativeConfiguration.models.providers.openai.models[0].baseUrl =
     "https://models.example.test:443/inference/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-completions";
+  const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
+  // The worker gets every selected model; the startup probe checks only the primary.
+  nativeConfiguration.agents.defaults.model = {
+    primary: "openai/team/model",
+    fallbacks: ["openai/team/fallback"],
+  };
+  // An unselected entry for another endpoint reaches neither the worker nor the startup probe.
+  nativeConfiguration.models.providers.openai.models.push(
+    { ...selectedEntry, id: "team/fallback", name: "team/fallback" },
+    { id: "unselected", baseUrl: "https://other.example.test/v1" },
+  );
   const sourceType = {
     type: "openai",
     config: [],
@@ -1834,8 +1845,16 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   });
   assert.deepEqual(
     nativeConfig.models.providers.openai.models.map(({ id }) => id),
-    ["team/model"],
+    ["team/model", "team/fallback"],
   );
+  // OpenClaw merges catalog entries whose ids match after trimming, so the startup probe gets
+  // only the primary model's entry, as written (findings 2882, 2883).
+  const probeConfig = JSON.parse(
+    provisions[0].requirements.environment.find(
+      ({ name }) => name === "OPENCLAW_HARNESS_PROBE_CONFIG",
+    ).value,
+  );
+  assert.deepEqual(probeConfig.models.providers.openai.models, [selectedEntry]);
   // The provider's observed Pod readiness and enrolled node are independent of provisioning.
   // Until the provider's Pod is Ready, the wait has no named reason.
   const podPending = await prepare();
@@ -9274,6 +9293,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
   const first = source("cs_00000000-0000-4000-8000-000000000851");
   const second = source("cs_00000000-0000-4000-8000-000000000852");
   const revision = {
+    harness: { id: "codex", mode: "dedicated" },
     namespaceId: tenant.id,
     credentialSources: [first, second].map(({ id }) => ({
       sourceId: id,
@@ -9300,6 +9320,49 @@ test("non-model credential sources resolved at dispatch must match the revision'
       why,
     );
   }
+
+  // Plugin selection references an Agent credential. Compute always passes every
+  // active source to its owner, including when a selected source has been withdrawn.
+  const accounts = [first, second].map((tool) => ({
+    ...tool,
+    type: "oauth2-refresh-token",
+    config: {
+      env_var: "GOG_ACCESS_TOKEN",
+      host: "gmail.googleapis.com",
+      path: "/gmail/v1/users/me/messages",
+      token_url: "https://oauth2.googleapis.com/token",
+      scope: "https://www.googleapis.com/auth/gmail.readonly",
+    },
+  }));
+  const native = {
+    ...revision,
+    harness: { id: "openclaw", mode: "dedicated" },
+    harnessAuth: { method: "api_key" },
+    credentialSources: revision.credentialSources.map((ref) => ({
+      ...ref,
+      sourceType: "oauth2-refresh-token",
+    })),
+  };
+  const context = { credentialSources: accounts };
+  const { id, releaseSha256 } = managedGoogleInstall;
+  const bound = {
+    ...native,
+    plugins: {
+      driver: { implementation: "occ/openclaw-plugin" },
+      plugins: {
+        [id]: {
+          enabled: true,
+          driverPolicy: { releaseSha256, credentials: { account: second.id } },
+        },
+      },
+    },
+  };
+  assert.deepEqual(driver.credentialSourcesForRevision(bound, context), accounts);
+  assert.deepEqual(driver.credentialSourcesForRevision(native, context), accounts);
+  assert.deepEqual(
+    driver.credentialSourcesForRevision(bound, { credentialSources: [accounts[0]] }),
+    [accounts[0]],
+  );
 });
 
 test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin selections", () => {
@@ -14376,6 +14439,19 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       "models.providers.openai.models",
       "must hold exactly one entry for each selected openai model on Dedicated OpenClaw",
     ],
+    // OpenClaw merges entries whose ids match after trimming, so an unselected entry with a
+    // padded id and its own endpoint would still give the Secret-backed key that endpoint.
+    [
+      withOpenAI({
+        ...openaiRow,
+        models: [
+          openaiRow.models[0],
+          { id: ` ${openaiRow.models[0].id}`, baseUrl: "https://other.example.test/v1" },
+        ],
+      }),
+      "models.providers.openai.models",
+      "must hold exactly one entry for each selected openai model on Dedicated OpenClaw",
+    ],
     [
       withEntry({ headers: { "x-feature": "on" } }),
       "models.providers.openai.models.0.headers",
@@ -14559,20 +14635,50 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       }),
     );
   }
-  for (const transport of [
-    { baseUrl: "${PROVIDER_URL}" },
-    { headers: { "x-provider-feature": "${HEADER}" } },
-    { headers: { "x-provider-feature": { source: "env", provider: "model", id: "HEADER" } } },
+  // The startup model probe receives only the binding's credential, so a reference in the
+  // selected provider's settings or the primary model's entry cannot resolve. The refusal names
+  // the setting, never its value (finding 2828).
+  const probeReference = (setting) =>
+    `Configuration setting ${setting} must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential.`;
+  for (const [transport, setting, modelEntry] of [
+    [{ baseUrl: "${PROVIDER_URL}" }, "models.providers.openai.baseUrl"],
+    [
+      { headers: { "x-provider-feature": "${HEADER}" } },
+      "models.providers.openai.headers.x-provider-feature",
+    ],
+    [
+      { headers: { "x-provider-feature": { source: "env", provider: "model", id: "HEADER" } } },
+      "models.providers.openai.headers.x-provider-feature",
+    ],
+    [{}, 'agents.defaults.models["openai/gpt-5"].params.user', { params: { user: "${USER}" } }],
+    // The first reference is named: list entries by index, a key that is not a plain ID
+    // quoted, and the provider before the model entry.
+    [{ models: [{ id: "gpt-5", name: "${MODEL_NAME}" }] }, "models.providers.openai.models.0.name"],
+    [
+      { headers: { "x-feature.v2": "${HEADER}" } },
+      'models.providers.openai.headers["x-feature.v2"]',
+    ],
+    [
+      { baseUrl: "${PROVIDER_URL}" },
+      "models.providers.openai.baseUrl",
+      { params: { user: "${USER}" } },
+    ],
   ]) {
-    await assert.rejects(
-      production.prepareRevision({
-        ...embeddedRevision,
-        configuration: {
-          ...embeddedRevision.configuration,
-          models: { providers: { openai: { apiKey: "${OPENAI_API_KEY}", ...transport } } },
-        },
-      }),
-      /transport configuration cannot require additional Secret or environment references/i,
+    const configuration = {
+      ...embeddedRevision.configuration,
+      models: { providers: { openai: { apiKey: "${OPENAI_API_KEY}", ...transport } } },
+    };
+    if (modelEntry !== undefined) {
+      configuration.agents = {
+        defaults: { ...configuration.agents.defaults, models: { "openai/gpt-5": modelEntry } },
+      };
+    }
+    await assert.rejects(production.prepareRevision({ ...embeddedRevision, configuration }), {
+      message: probeReference(setting),
+    });
+    assert.throws(
+      () => production.validateHarnessAuth(embeddedRevision.harness, apiKeyAuth, configuration),
+      { name: "ConfigurationHarnessError", message: probeReference(setting) },
     );
   }
   for (const conflicting of [

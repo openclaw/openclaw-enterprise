@@ -20,6 +20,7 @@ import {
   apiRequests,
   expectNoText,
   expireSessions,
+  expireSessionsWhenSettled,
   login,
   loginThroughForm,
   newPage,
@@ -1284,7 +1285,10 @@ test("console retained views clear after session expiry and exact Agent denial",
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
-  expireSessions(fixture);
+  // Each row reads its Namespace delete permission after the list shows, so wait for the view
+  // to settle before expiring: the held return, not a row read, must find the expiry.
+  await waitForSettledView(page);
+  await expireSessionsWhenSettled(page, fixture);
   const sessionPattern = "**/api/auth/session";
   const expiredSession = await holdRoute(t, page, sessionPattern, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),
@@ -2128,7 +2132,7 @@ test("Namespaces rows open their Agents and status badges use words with a tone"
   for (const [namespace, label, tone] of [
     [ready, "Ready", "success"],
     [provisioning, "Provisioning", "warning"],
-    [retiring, "Deleting", "warning"],
+    [retiring, "Deleting…", "warning"],
   ]) {
     const row = list.getByRole("listitem").filter({ hasText: namespace.id });
     const link = row.getByRole("link", { name: namespace.name, exact: true });
@@ -2327,6 +2331,8 @@ test("header Namespace selection leaves Agent detail and creation for the select
 // admission or navigation, including a reload of the same Namespace already in the URL.
 async function rejectStaleNamespaceOption(page, selector, staleId, requests) {
   const url = page.url();
+  // Count after a settle, so requests the page started earlier are already logged.
+  await settlePageRequests(page);
   const count = requests.length;
   await selector.evaluate((select, id) => {
     const option = new globalThis.Option("Stale selection", id);
@@ -2459,6 +2465,9 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       );
       assert.equal(readable.includes(beta.id), true, "fresh admission includes readable Namespace");
       await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).waitFor();
+      // The inline heading already shows while admission is pending. Wait for the admitted
+      // render, whose list reads each row's permission answer, before the stale-option check.
+      await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
       assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 0);
       await rejectStaleNamespaceOption(page, selector, alpha.id, requests);
       await selector.selectOption(beta.id);
@@ -3002,12 +3011,10 @@ test("a naturally expired session returns to the requested page after sign-in", 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  // The button shows before the Namespace's Preset read returns. If that read reached the API
-  // after the expiry below, its 401 would show the expired sign-in on this page before the click,
-  // and the Namespaces link would be gone. Expire only once the page has no read in flight.
-  await waitForIdleFetches(page);
-  // Expire the actual session: the controller must reject it before returning to login.
-  expireSessions(fixture);
+  // The button shows before the Namespace's Preset read returns, and that read must not find
+  // the expiry. Expire the actual session: the controller must reject it before returning to
+  // login.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByLabel("Email", { exact: true }).waitFor();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
@@ -3022,6 +3029,7 @@ test("session expiry after a failed check returns to the requested page", async 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Interrupted expiry", { ready: true });
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   await page.route(
@@ -3036,7 +3044,8 @@ test("session expiry after a failed check returns to the requested page", async 
   );
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByText("Session unavailable", { exact: true }).waitFor();
-  expireSessions(fixture);
+  // The Preset read may still be out (see the test above); Retry must find the expiry.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("button", { name: "Retry" }).click();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
@@ -3059,7 +3068,7 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   const requests = apiRequests(page, fixture.origin);
 
   // A foreground recheck discovers real expiry without navigating away from this Agent.
-  expireSessions(fixture);
+  await expireSessionsWhenSettled(page, fixture);
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Expired page Agent/, () => waitForIdleFetches(page));

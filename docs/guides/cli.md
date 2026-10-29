@@ -61,7 +61,10 @@ go install ./cmd/occ
 ```
 
 Ensure that directory is on `PATH`. To use the binary inside the checkout
-instead, run `pnpm cli:build` and substitute `./bin/occ` for `occ` below.
+instead, use the Go version in `go.mod`, run
+`go build -trimpath -o bin/occ ./cmd/occ` from the repository root, and substitute
+`./bin/occ` for `occ` below. Building the CLI does not require Node.js, pnpm, or
+installed JavaScript dependencies.
 `occ dev up` and `occ dev down` still require a source checkout even when the
 binary came from a GitHub Release.
 

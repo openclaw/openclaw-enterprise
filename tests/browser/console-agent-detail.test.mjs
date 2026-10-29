@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -17,7 +20,7 @@ import {
   deploymentStatusResponse,
   detailUrl,
   expectNoText,
-  expireSessions,
+  expireSessionsWhenSettled,
   grantMember,
   grantSecretOperate,
   hasFocus,
@@ -61,6 +64,7 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
 import {
+  LIVE_BUTTON,
   openAdvancedSettings,
   withholdPermissionSummary,
   assertRevisionUrl,
@@ -75,7 +79,6 @@ import {
   AGENT_SAVE_DENIED,
   AGENT_SOURCES_DENIED,
   askForGrant,
-  callerDenied,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_UPDATE_DENIED,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -816,6 +819,71 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
   );
   assert.deepEqual(revisions.data, []);
+});
+
+// A draft an older release saved with a setting the pinned OpenClaw has since retired: save
+// refuses the setting, and deploy admission refuses the stored row with the same message. The
+// draft's next step says that message with Deploy held, instead of "Ready to deploy." and a
+// refusal only after Deploy (finding 2810). Removing the setting makes the draft ready again.
+test("A draft that keeps a retired OpenClaw setting shows deployment's refusal before Deploy", async (t) => {
+  const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+  const fixture = await createConsoleAppFixture(t, { configurationDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Retired setting", { ready: true });
+  const values = nativeValues("retired-setting");
+  const agent = await fixture.createAgent(namespace.id, "Retired setting Agent", values);
+  const retired = { ...values, security: { preset: "corporate" } };
+  const reason =
+    "Configuration setting security.preset must be removed: the OpenClaw runtime retired it (configure the individual security controls explicitly).";
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const refusedSave = await fixture.request("PATCH", configurationPath, {
+    body: { values: retired },
+  });
+  assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+  assert.equal(refusedSave.body.error.message, reason);
+  // A row an older release saved with it still reads; the server refuses to deploy it.
+  const stored = configurationDriver.stored({
+    namespaceId: namespace.id,
+    id: agent.configurationId,
+  });
+  assert.ok(stored);
+  await configurationDriver.update({ ...stored, values: retired });
+
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const card = page.locator(".agent-draft-actions");
+  const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
+  await card.getByText(reason, { exact: true }).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await card.getByText("Ready to deploy.").count(), 0);
+  // The Configuration step stays open and says what to do.
+  const configurationStep = card.getByRole("listitem").first();
+  assert.notEqual(await configurationStep.getAttribute("data-state"), "done");
+  assert.match(
+    await configurationStep.locator(".checklist-detail").textContent(),
+    /^Remove the retired setting · Configuration /,
+  );
+  // Reading the draft sent no deployment.
+  assert.deepEqual(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`),
+    [],
+  );
+
+  // Deploy admission gives this exact text for the stored row (the page shows what it would say).
+  const refusedDeploy = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
+  assert.equal(refusedDeploy.body.error.message, reason);
+
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await page.getByLabel("Configuration JSON", { exact: true }).fill(JSON.stringify(values));
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+  await waitForEnabled(deploy);
+  assert.equal(await card.getByText(reason).count(), 0);
 });
 
 test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed success", async (t) => {
@@ -1694,7 +1762,10 @@ test("Agent detail saves plugin changes for the next revision without changing a
 
   // A catalog entry is not a Configured selection after removal. Restoring the
   // original draft through its supported JSON editor must not revive stale UI.
-  await dialog.getByRole("button", { name: "Remove Calendar", exact: true }).click();
+  const removeCalendar = dialog.getByRole("button", { name: "Remove Calendar", exact: true });
+  assert.equal(await removeCalendar.isVisible(), false);
+  await dialog.getByRole("button", { name: "More actions", exact: true }).click();
+  await removeCalendar.click();
   assert.equal(await dialog.getByRole("heading", { name: "Calendar", exact: true }).count(), 0);
   await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
   await dialog.getByRole("heading", { name: "Calendar", exact: true }).waitFor();
@@ -2021,8 +2092,15 @@ test("Agent draft plugin picker warns that API-key Codex Agents cannot use plugi
     .waitFor();
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  const unavailable = "Plugin browsing is unavailable with API-key authentication.";
+  await dialog.getByText(unavailable).waitFor();
+  // Load plugins and the pager are disabled for the reason that line gives, and each is
+  // described by it (finding D796).
+  for (const name of ["Load plugins", "Previous page", "Next page"]) {
+    const control = dialog.getByRole("button", { name, exact: true });
+    assert.equal(await control.isDisabled(), true, name);
+    assert.equal(await accessibleDescription(control), unavailable, name);
+  }
   // The empty list must not tell the user to load a catalog they cannot load.
   await dialog
     .getByText("To add a plugin by ID, choose Done and edit Plugin selections JSON.")
@@ -2034,6 +2112,44 @@ test("Agent draft plugin picker warns that API-key Codex Agents cannot use plugi
   );
   await dialog.getByRole("button", { name: "Done" }).click();
   assert.equal(await page.getByLabel("Plugin selections JSON").isEnabled(), true);
+});
+
+test("Agent draft plugin browsing names the Plugin Driver, not API-key auth, under occ-plugin", async (t) => {
+  // Finding 2791: only the Codex Plugin Driver's catalog depends on Codex auth. Under the OCC
+  // Plugin Driver an API-key Codex Agent has no catalog because of the Driver.
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("OCC plugins on Codex", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "API-key Codex Agent",
+    nativeValues("occ-plugins-codex", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  assert.equal(agent.harnessAuth.method, "api_key");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  await login(page, fixture, url);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog
+    .getByText(
+      "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections.",
+    )
+    .waitFor();
+  assert.equal(
+    await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").count(),
+    0,
+  );
+  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/plugins`).length,
+    0,
+  );
 });
 
 test("Agent draft browses the curated catalog without a saved Secret", async (t) => {
@@ -2379,6 +2495,7 @@ test("Tab leaves a scrolling Secret list for the next control, and the list keep
   assert.deepEqual(await listbox.getByRole("option").allTextContents(), [
     secrets[8].name,
     "Create new Secret...",
+    "Refresh Secret list",
   ]);
   await page.keyboard.press("Escape");
   await listbox.waitFor({ state: "hidden" });
@@ -2424,7 +2541,14 @@ for (const listOutcome of ["arrives", "fails"]) {
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
     const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
     await apiKeySecret.fill("no matching create target");
-    await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+    const create = page.getByRole("option", { name: "Create new Secret...", exact: true });
+    await apiKeySecret.press("ArrowDown");
+    assert.equal(
+      await apiKeySecret.getAttribute("aria-activedescendant"),
+      await create.getAttribute("id"),
+    );
+    assert.equal(await hasFocus(apiKeySecret), true);
+    await apiKeySecret.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
     await dialog.getByLabel("Name", { exact: true }).fill("Created while loading");
     await dialog.getByLabel("Value", { exact: true }).fill("created-while-loading");
@@ -2432,11 +2556,15 @@ for (const listOutcome of ["arrives", "fails"]) {
     await dialog.waitFor({ state: "detached" });
     const staged = page.getByText("Secret binding staged. Save changes to apply it.");
     await staged.waitFor();
+    assert.equal(await hasFocus(apiKeySecret), true);
+    assert.equal(await apiKeySecret.getAttribute("aria-expanded"), "false");
     assert.ok(listReads > 0);
     releaseList();
     // Every held list read and the create have now reached the page's own code.
     await waitForSettledFetches(page, secretsPath, listReads + 1);
     assert.equal(await staged.count(), 1);
+    assert.equal(await hasFocus(apiKeySecret), true);
+    assert.equal(await apiKeySecret.getAttribute("aria-expanded"), "false");
     assert.deepEqual(await statusTone(staged), { className: "hint", tone: null, role: "status" });
     const created = (await fixture.request("GET", secretsPath)).data.find(
       (secret) => secret.name === "Created while loading",
@@ -2561,6 +2689,7 @@ test("session expiry clears the unsent value in the Secret picker dialog", async
     { executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   // Let the picker open before its list read discovers the session has expired.
   const path = `/namespaces/${namespace.id}/secrets`;
@@ -2572,7 +2701,9 @@ test("session expiry clears the unsent value in the Secret picker dialog", async
   const field = dialog.getByLabel("Value", { exact: true });
   await field.fill("synthetic-unsent-value");
   const input = await field.evaluateHandle((node) => node);
-  expireSessions(fixture);
+  // Only the held list read may find the expiry: another read that found it first would sign
+  // the page out and abort the held read, which then never answers.
+  await expireSessionsWhenSettled(page, fixture, { except: path });
   const refused = page.waitForResponse((response) => new URL(response.url()).pathname === path);
   list.release();
   assert.equal((await refused).status(), 401);
@@ -2836,25 +2967,40 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     [[agent.servicePrincipalId, replacementSecret.id]],
   );
 
-  // Retry rereads the Agent before any grant request. Native IAM now refuses that read: the
-  // warning is about the read, not a grant refusal, and Retry stays for when the read works.
+  // A denied retry read must retain the prior saved fact, but retire revoked metadata.
   const deniedRead = restrict(fixture.policy, "read", "agent", { resourceId: agent.id });
   requests.length = 0;
+  const refusedRead = page.waitForResponse(
+    (response) => response.url().endsWith(`/agents/${agent.id}`) && response.status() === 403,
+  );
   await page.getByRole("button", { name: "Retry credential access" }).click();
-  // The read's own refusal, named by the API (finding 2534), not grant advice such as "this
-  // write may have succeeded".
+  const requestId = (await (await refusedRead).json()).meta.requestId;
   await page
     .getByText(
-      new RegExp(
-        `^${RegExp.escape(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${callerDenied("Agent read", `Agent ${agent.id}`)}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
-      ),
+      "Authentication source saved. Could not read the Agent before retrying credential access. No access grant was sent.",
+      { exact: true },
     )
     .waitFor();
-  assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
-  await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
+  await page.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+  assert.equal((await page.locator("body").innerText()).split(requestId).length - 1, 1);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  const html = await page.content();
+  for (const value of [
+    agent.name,
+    originalSecret.name,
+    originalSecret.id,
+    replacementSecret.name,
+    replacementSecret.id,
+  ]) {
+    assert.equal(html.includes(value), false);
+  }
+  assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
   liftRestriction(fixture.policy, deniedRead);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await waitForEnabled(page.getByRole("button", { name: "Save authentication source" }));
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 
-  // A retry after this denial must not grant the Secret to a different service principal.
+  // Freshly read saved authentication must still refuse a changed service principal.
   const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
   assert.notEqual(other.servicePrincipalId, agent.servicePrincipalId);
   const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -2870,7 +3016,7 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   });
   requests.length = 0;
   const reread = page.waitForResponse(agentUrl);
-  const retry = page.getByRole("button", { name: "Retry credential access" });
+  const retry = page.getByRole("button", { name: "Save authentication source" });
   await retry.click();
   assert.equal((await reread).status(), 200);
   await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
@@ -3156,7 +3302,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   requests.length = 0;
 
   const nextValues = nativeValues("after-unknown");
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nextValues, null, 2));
@@ -3236,6 +3382,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   });
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
 
   await login(
@@ -3245,6 +3392,14 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  // A slow permission answer reveals the page at FIRST_ACTIVITY_WAIT_MS, before the native admin
+  // status read it gates is sent. Clear the log only after that first read, so the reread below
+  // is the only one after the stop.
+  await waitForSettledFetches(
+    page,
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+    1,
+  );
   requests.length = 0;
 
   await page.getByRole("button", { name: "Stop Agent" }).click();

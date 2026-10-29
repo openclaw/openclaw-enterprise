@@ -1178,15 +1178,8 @@ test("Agent deployment keeps the display name its Configuration sets", async () 
   assert.deepEqual(revision.configuration, admittedConfiguration(values, "info"));
 });
 
-// OpenClaw's default personal security preset fills unset settings: it lets another participant
-// steer a running turn under the first requester's authority and lets apply_patch write outside
-// the workspace; its corporate preset turns on OpenClaw's Docker sandbox, which the OCE runtime
-// cannot run (finding 2767), and its exec mode "ask" and strictInlineEval, which need an approval
-// client the OCE Console does not have, so every shell command, then every inline program such as
-// `python3 -c`, failed (finding 2771). Admission fills each GATEWAY_SECURITY_DEFAULTS setting the
-// Configuration leaves unset in the document every Compute Driver renders, for embedded and
-// dedicated Gateways, and leaves steering unset so the preset's default (on) applies. The
-// Configuration's value wins, so a strict Configuration stays strict.
+// Every Compute Driver renders the defaults OCE admits. Embedded and dedicated Gateways
+// keep explicit choices about steering, workspace access, and command approvals.
 test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable and steering to the Configuration", async () => {
   const { agent, configuration, controller, namespace } = await fixture();
   const codexValues = {
@@ -1215,18 +1208,13 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       resolveApprovedDevelopmentHarness,
     );
   };
-  const corporate = { security: { preset: "corporate" } };
   const cases = {
     // Admission fills each default, keeps the settings beside them (the base's sandbox scope, an
     // empty applyPatch, the queue mode), and adds no steering value.
     unset: { messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
-    // The corporate preset fills only what is still unset, so the Gateway runs without its
-    // sandbox and runs shell commands and inline programs without waiting for an approval.
-    "the corporate preset": corporate,
     // An explicit strictInlineEval `true` is kept beside the filled mode: inline programs then wait
     // for an approval, as that Configuration asks.
     "an explicit inline-program rule": {
-      ...corporate,
       tools: { exec: { strictInlineEval: true } },
     },
     // Explicit values reach the Gateway as written; inline programs need no approval in an
@@ -1235,18 +1223,18 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       messages: { queue: { allowCollaborativeSteering: true } },
       tools: { exec: { mode: "full", applyPatch: { enabled: true, workspaceOnly: false } } },
     },
-    // A strict steering `false` is kept, not replaced by the preset's default, and so is an exec
+    // An explicit steering restriction is kept, and so is an exec
     // mode "ask" for an operator who connects an approval channel; beside it admission fills no
     // strictInlineEval.
     "explicit stricter values": {
       messages: { queue: { allowCollaborativeSteering: false } },
       tools: { exec: { mode: "ask", applyPatch: { enabled: true, workspaceOnly: true } } },
     },
-    // A legacy exec security or ask value is an explicit policy too: like the preset, admission
+    // A legacy exec security or ask value is an explicit policy too: admission
     // fills no mode beside it, since the Gateway would apply a mode over it, and no
     // strictInlineEval.
-    "a legacy exec security": { ...corporate, tools: { exec: { security: "allowlist" } } },
-    "a legacy exec ask": { ...corporate, tools: { exec: { ask: "always" } } },
+    "a legacy exec security": { tools: { exec: { security: "allowlist" } } },
+    "a legacy exec ask": { tools: { exec: { ask: "always" } } },
   };
   for (const [executionMode, base] of [
     ["embedded", configuration.values],
@@ -1263,7 +1251,21 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       );
     }
   }
-  // Like the preset, admission fills only unset settings. A value of the wrong type, or a
+  // An owner can keep inline approvals for one Agent while other entries inherit the default.
+  const entryExec = { mode: "allowlist", strictInlineEval: true };
+  const revision = await deploy(
+    {
+      agents: {
+        ...codexValues.agents,
+        entries: { main: { tools: { exec: entryExec } } },
+      },
+    },
+    "dedicated",
+  );
+  assert.equal(revision.configuration.tools.exec.strictInlineEval, false);
+  assert.deepEqual(revision.configuration.agents.entries.main.tools.exec, entryExec);
+
+  // Admission fills only unset settings. A value of the wrong type, or a
   // non-object on the path, stays for the Gateway's own validation, which refuses it at startup,
   // so it cannot loosen the setting.
   for (const tools of [{ exec: { mode: 1, applyPatch: { workspaceOnly: "no" } } }, ["read"]]) {
@@ -1303,14 +1305,8 @@ test("Configuration save refuses OpenClaw's sandbox and keeps the values the OCE
       assert.deepEqual((await save(values)).values, values, JSON.stringify(values));
     }
   }
-  // The settings beside an accepted mode save, and so does a corporate security preset, which
-  // turns the sandbox on only where the Configuration leaves the mode unset.
-  for (const values of [
-    { agents: { defaults: { sandbox: { mode: "off", scope: "session" } } } },
-    { security: { preset: "corporate" } },
-  ]) {
-    assert.deepEqual((await save(values)).values, values);
-  }
+  const values = { agents: { defaults: { sandbox: { mode: "off", scope: "session" } } } };
+  assert.deepEqual((await save(values)).values, values);
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {

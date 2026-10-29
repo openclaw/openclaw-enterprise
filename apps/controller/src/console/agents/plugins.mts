@@ -15,6 +15,7 @@ import {
   element,
   focusSaveOutcome,
   revealStatus,
+  setUnavailable,
   statusBlock,
   validateFields,
 } from "../dom.mjs";
@@ -233,14 +234,15 @@ export function renderAgentPlugins(
       // A caller who may not update the Agent is not told to edit its selections (finding 2436).
       updateDenied
         ? "Plugin browsing needs Agent update access."
-        : apiKeyAuth
-          ? "Plugin browsing is unavailable with API-key authentication."
-          : !catalogCapabilityChecked
-            ? "Checking plugin catalog availability…"
-            : catalogCapabilityError
-              ? "Plugin browsing needs the plugin capabilities, which could not be read. Refresh this page, or edit existing plugin selections."
-              : !codex || openClawDriver
-                ? "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections."
+        : !catalogCapabilityChecked
+          ? "Checking plugin catalog availability…"
+          : catalogCapabilityError
+            ? "Plugin browsing needs the plugin capabilities, which could not be read. Refresh this page, or edit existing plugin selections."
+            : !codex || openClawDriver
+              ? "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections."
+              : // Only the Codex Plugin Driver's catalog depends on Codex auth (finding 2791).
+                apiKeyAuth
+                ? "Plugin browsing is unavailable with API-key authentication."
                 : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
@@ -346,13 +348,15 @@ export function renderAgentPlugins(
       : undefined;
   });
 
+  let saveUnavailable = true;
+  let discardUnavailable = true;
   function updateState() {
     const dirty =
       input.value !== initialText ||
       JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
     onState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-    save.disabled = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
-    discard.disabled = !dirty || pending || outcomeUnknown || reloadRequired;
+    saveUnavailable = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
+    discardUnavailable = !dirty || pending || outcomeUnknown || reloadRequired;
     reload.hidden = !outcomeUnknown && !reloadRequired;
     // Edits that cannot be saved would only block leaving the tab (finding 1539).
     discovery.fields.setDisabled(updateDenied || pending || outcomeUnknown || reloadRequired);
@@ -365,6 +369,15 @@ export function renderAgentPlugins(
       // A caller who may not save reads the selections; nothing addresses an editor.
       feedback.textContent = updateDenied ? "" : "No plugin changes to save.";
     }
+    describeControls();
+  }
+
+  // Unavailable Save and Discard are described by the feedback line that says why, such as "No
+  // plugin changes to save." (finding D793), and stay in the Tab order while it shows (finding
+  // 2878). Called wherever that line or the controls change.
+  function describeControls() {
+    setUnavailable(save, saveUnavailable, feedback);
+    setUnavailable(discard, discardUnavailable, feedback);
   }
 
   input.addEventListener("input", () => {
@@ -457,6 +470,7 @@ export function renderAgentPlugins(
       if (context.isCurrent()) {
         // The controls stay disabled until the owner rebuilds this tab from the saved Agent.
         feedback.textContent = "Plugin selections saved.";
+        describeControls();
         context.drafts.forget("plugins");
         void onSaved(savedAgent);
       }
@@ -510,6 +524,7 @@ export function renderAgentPlugins(
   updateState();
   if (savedNotice) {
     feedback.textContent = savedNotice;
+    describeControls();
   }
   function readCapabilities() {
     void context.request(`${path}/plugins/capabilities`).then(

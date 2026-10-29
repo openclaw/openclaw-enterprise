@@ -872,7 +872,26 @@
                 "maxItems": 32,
                 "type": "array"
               },
-              "message": { "maxLength": 256, "minLength": 1, "type": "string" }
+              "message": { "maxLength": 256, "minLength": 1, "type": "string" },
+              "remainingResources": {
+                "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": { "minimum": 0, "type": "integer" },
+                    "ids": {
+                      "items": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "maxItems": 20,
+                      "type": "array"
+                    },
+                    "kind": { "maxLength": 64, "minLength": 1, "type": "string" }
+                  },
+                  "required": ["kind", "count", "ids"],
+                  "type": "object"
+                },
+                "maxItems": 7,
+                "type": "array"
+              }
             },
             "required": ["code", "message"],
             "type": "object"
@@ -17454,7 +17473,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update.",
+        "description": "Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.",
         "operationId": "updateAgent",
         "parameters": [
           {
@@ -18131,6 +18150,12 @@
             "condition": "bound_credential_source",
             "resourceKind": "credential_source",
             "scope": "requested"
+          },
+          {
+            "action": "read",
+            "condition": "saved_sandbox_policy_additions",
+            "resourceKind": "sandbox_policy",
+            "scope": "requested"
           }
         ]
       }
@@ -18465,7 +18490,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgent",
         "parameters": [
           {
@@ -18891,6 +18916,12 @@
             "action": "operate",
             "condition": "bound_credential_source",
             "resourceKind": "credential_source",
+            "scope": "requested"
+          },
+          {
+            "action": "read",
+            "condition": "saved_sandbox_policy_additions",
+            "resourceKind": "sandbox_policy",
             "scope": "requested"
           }
         ]
@@ -22212,6 +22243,35 @@
                           "required": ["agent", "plugin", "tools"],
                           "type": "object"
                         },
+                        "credentialSlots": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": { "type": "string" },
+                              "label": { "type": "string" },
+                              "pluginId": { "type": "string" },
+                              "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                              "sources": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "name": { "type": "string" }
+                                  },
+                                  "required": ["id", "name"],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": ["pluginId", "releaseSha256", "id", "label", "sources"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "discoveryCredential": {
                           "anyOf": [
                             { "const": "required", "type": "string" },
@@ -25129,7 +25189,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/apply": {
       "post": {
-        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy. Requires read permission on the requested SandboxPolicy.",
         "operationId": "applyAgentSandboxPolicy",
         "parameters": [
           {
@@ -25400,7 +25460,8 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
-          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" },
+          { "action": "read", "resourceKind": "sandbox_policy", "scope": "requested" }
         ]
       }
     },
@@ -30084,6 +30145,10 @@
                           "required": ["create"],
                           "type": "object"
                         },
+                        "delete": {
+                          "description": "Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion.",
+                          "type": "boolean"
+                        },
                         "installation": {
                           "additionalProperties": false,
                           "properties": {
@@ -30107,7 +30172,7 @@
                           "type": "object"
                         }
                       },
-                      "required": ["agents", "secrets", "installation"],
+                      "required": ["delete", "agents", "secrets", "installation"],
                       "type": "object"
                     },
                     "meta": {

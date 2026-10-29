@@ -11,6 +11,7 @@ packages:
 minimumReleaseAge: 10080
 minimumReleaseAgeStrict: true
 minimumReleaseAgeIgnoreMissingTime: false
+verifyDepsBeforeRun: error
 
 allowBuilds:
   esbuild: true

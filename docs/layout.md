@@ -66,7 +66,10 @@ owning Driver or Backend and wire it through composition. See
 status, and remaining design requirements.
 
 Within `packages/contracts/src/`, `runtime-logs.ts` owns runtime inspection and
-container/Sandbox log types. `index.ts` remains their public export entrypoint.
+container/Sandbox log types. `driver.ts` owns the base `Driver` and registry types.
+Each Driver capability has one interface file named for it, such as `compute.ts` or
+`iam.ts`, with the request, context, and result types of that Driver. `index.ts`
+remains the public export entrypoint for all of them.
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
@@ -77,8 +80,9 @@ owns platform-error mapping, response formatting, and removal of request values
 from verbose validation errors after their details are built.
 
 The [repository capability](reference/repository-credentials.md#repo-driver-contract)
-uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
-`drivers/repo/github/driver.ts` adapter. Under `apps/controller/src/`, its owners are:
+uses `RepositoryPolicyDriver` and `NativeRepositorySender` in
+`packages/contracts/src/repo.ts`, implemented by `drivers/repo/github/policy.ts`
+and `drivers/repo/github/driver.ts`, respectively. Under `apps/controller/src/`, its owners are:
 
 - `drivers/repo/credentials/`: private common sessions, custody, lifecycle,
   transport and contracts, including the private client-configuration type.
@@ -91,7 +95,7 @@ uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
 
 OCC owns immutable Agent bindings and safe session State; worker helpers connect
 those records to Compute delivery. Public status omits private cleanup diagnostics.
-The common engine's `RepositoryBackend` protocol is separate from `RepoDriver`.
+The common engine's `RepositoryBackend` protocol is separate from these interfaces.
 The worker Token Service owns GitHub App signing and provider-token custody.
 The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).
@@ -102,6 +106,7 @@ See the [Agent repository flow](flows/agent-repository-credentials.md).
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `deploy/helm/openclaw-enterprise/`                       | Helm chart for Kubernetes installation.                                                          |
 | `deploy/helm/openclaw-execution/`                        | Execution-cluster access roles and authenticated Harness routing infrastructure.                 |
+| `deploy/helm/openclaw-plugin-request-guard/`             | Shared OpenShell request middleware for managed plugins in an execution cluster.                 |
 | `deploy/runtime/`, `deploy/logging/`, `deploy/examples/` | Runtime packaging, logging configuration, and deployment examples.                               |
 | `deploy/presets/`                                        | Installable Agent Preset requests; see [standard Codex](guides/topics/standard-codex-preset.md). |
 | `Dockerfile`, `compose*.yaml`                            | Controller image and local stack definitions or overlays.                                        |
@@ -132,7 +137,6 @@ and are embedded in rendered container commands; they ship with the chart.
 Select checks using the [testing guide](testing/README.md). Follow AGENTS.md's
 integration requirements for runtime changes. For documentation-only changes,
 use formatting, builds, and link checks; do not add or run tests solely for prose.
-Do not install dependencies as a verification side effect.
 
 ## Code conventions
 

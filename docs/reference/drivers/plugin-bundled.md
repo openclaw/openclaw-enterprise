@@ -75,6 +75,7 @@ clears results and preloads a fresh first page; selections remain. Search waits
 once) and resets pagination for a new query. Loading feedback lasts until the
 response, even with no earlier entries; tool lookups show it until details
 arrive. Closing the picker or changing its credential cancels pending searches.
+Hidden tabs cancel deferred prefetches; reopening the picker can request the catalog again.
 Configured-plugin and tool filters stay instant and local. Requests have a 15-second deadline and 4 MiB response limit.
 Discovery does not read Codex home, install plugins, or return download URLs.
 Plugin details show available website, privacy-policy, and terms-of-service

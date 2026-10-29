@@ -35,7 +35,7 @@ selected Kubernetes Compute Driver and the
   from the repository root, followed by authenticated Namespace operations.
 - Source: `scripts/dev-up:require_command`, `internal/occdev/up.go:Up`, and
   `internal/occdev/openshell.go:prepareOpenShell`.
-- Assumptions: Docker Engine with Compose, or Podman with `podman-compose`;
+- Assumptions: Docker Engine with Compose, or Podman with `docker-compose` or `podman-compose` (Docker Compute requires `podman-compose`);
   Bash, curl, Python 3, and `yq` v4 for the Docker profile; writable PostgreSQL
   and Configuration volumes; loopback API publication; executable `bin/occ`
   built with `pnpm cli:build`. Startup needs no model credential.

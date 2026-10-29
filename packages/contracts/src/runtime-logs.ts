@@ -1,5 +1,6 @@
 import type { SandboxPolicyDecision } from "./sandbox-policy.ts";
-import type { AgentRevision, Namespace, SandboxHarnessLostCode } from "./index.ts";
+import type { AgentRevision, Namespace } from "./index.ts";
+import type { SandboxHarnessLostCode } from "./sandbox.ts";
 
 /**
  * Runtime log classes. OCC classifies every record; a source never sets the class.

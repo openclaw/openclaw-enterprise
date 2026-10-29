@@ -14,7 +14,7 @@ starts a private k3d cluster, PostgreSQL, the OCE control plane, and the
 OpenShell Gateway. It does not create an Agent or require a model credential.
 
 ```sh
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_STATE_DIRECTORY="$(mktemp -d)/state"
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes

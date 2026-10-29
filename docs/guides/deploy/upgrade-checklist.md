@@ -80,6 +80,19 @@ Create a private evidence directory and record these values before mutation.
 - [ ] PVC names and UIDs, PV names, representative workspace file hashes,
       session counts, and gateway state. Back up volumes when recovery could
       require restoring Agent data.
+- [ ] If recovery needs both PostgreSQL and Agent storage, capture the database
+      and affected volumes at one consistent point. Pause all relevant writers
+      throughout capture, or use storage tooling that guarantees consistency
+      across those stores. A PostgreSQL recovery window spanning two disk
+      snapshots does not prove their contents agree.
+      Before booking downtime, restore the database, Gateway state, and
+      workspaces together on an isolated copy. Before starting restored
+      services, block production traffic and outbound access to production
+      repository, channel, and model providers. A restored worker can otherwise
+      revoke credentials still in use or send live deliveries. Use isolated test
+      endpoints and credentials for checks that need a provider. Through the
+      restored application, verify a known Agent revision, reopen an existing
+      session, and check a known workspace file. Record the recovery time.
 - [ ] Authentication origin, cookie domain, auth-secret identity, TLS material,
       bootstrap key storage, service-principal and service-key identities,
       repository registry metadata, broker sessions, and external provider or
@@ -178,6 +191,9 @@ considering rollback. Do not run an older controller against state it cannot
 read. After a partial runtime failure, keep the healthy control plane and recover
 the affected Agents individually. Never delete persistent resources to make the
 upgrade appear clean.
+
+If the candidate accepted writes, preserve them before restoring older data and
+reconcile them before reopening traffic, or repair the candidate in place.
 
 ## Related guides
 

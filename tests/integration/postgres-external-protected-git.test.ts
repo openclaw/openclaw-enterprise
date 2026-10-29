@@ -615,7 +615,7 @@ function externalGitJourney(
     prepared = await startOwner();
     transport = await bindRepositoryGitTransport(
       drivers,
-      prepared,
+      prepared.protectedGit,
       f.observerPool,
       emit,
       transportOptions,
@@ -1571,7 +1571,7 @@ function externalGitJourney(
           prepared = await startOwner();
           transport = await bindRepositoryGitTransport(
             drivers,
-            prepared,
+            prepared.protectedGit,
             pool,
             emit,
             transportOptions,
@@ -1870,7 +1870,7 @@ function externalGitJourney(
         prepared = await startOwner();
         transport = await bindRepositoryGitTransport(
           drivers,
-          prepared,
+          prepared.protectedGit,
           pool,
           emit,
           transportOptions,

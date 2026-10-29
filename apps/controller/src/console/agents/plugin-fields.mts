@@ -1,15 +1,24 @@
 import type {
+  AgentPluginCredentialSlot,
   InstallationCapabilities,
   PluginApprovalMode,
   PluginApprovers,
   PluginCatalogEntry,
   PluginCatalogPage,
   PluginDesiredSelection,
+  PluginPolicyCapabilities,
   PluginReviewer,
   PluginToolCatalogEntry,
   PluginToolPolicy,
 } from "@openclaw-enterprise/contracts";
-import { element, button, dismissOnBackdrop, setText } from "../dom.mjs";
+import {
+  element,
+  button,
+  describeDisabled,
+  dismissOnBackdrop,
+  mayReturnFocus,
+  setText,
+} from "../dom.mjs";
 
 export type CatalogDirection = "search" | "refresh" | "next" | "previous";
 export type CatalogEntry = PluginCatalogEntry & {
@@ -43,7 +52,11 @@ export interface ApproverFieldOptions {
 export interface PluginFieldsOptions {
   input: HTMLTextAreaElement;
   catalog?: PluginFieldCatalog | null;
-  capabilities?: NonNullable<InstallationCapabilities["pluginPolicies"]> | null;
+  capabilities?:
+    | (NonNullable<InstallationCapabilities["pluginPolicies"]> & {
+        credentialSlots?: readonly AgentPluginCredentialSlot[];
+      })
+    | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
   onCancelDiscovery?: (() => void) | null;
   onLoadTools?: ((id: string) => void) | null;
@@ -236,6 +249,15 @@ export function createPluginFields({
   const previous = button("Previous page", () => loadPage("previous"));
   const next = button("Next page", () => loadPage("next"));
   const pagination = element("div", { className: "plugin-pagination" }, previous, next);
+  // While the catalog cannot load, Load plugins and the pager are disabled and the status line
+  // says why, such as "Plugin browsing is unavailable with API-key authentication.": each is
+  // described by it (finding D796). Called wherever the status line or the controls change.
+  function describeCatalogControls() {
+    const reason = configuredOnly || catalog?.canLoad ? null : status;
+    for (const control of [loadPlugins, previous, next]) {
+      describeDisabled(control, reason);
+    }
+  }
   const available = button("Available plugins", () => showConfigured(false));
   const configured = button("Configured plugins", () => showConfigured(true));
   available.setAttribute("aria-label", "Available plugins");
@@ -305,7 +327,9 @@ export function createPluginFields({
   dialog.addEventListener("close", () => {
     waitingForCatalog = false;
     onCancelDiscovery?.();
-    configure.focus();
+    if (mayReturnFocus(dialog)) {
+      configure.focus();
+    }
   });
   // A search Enter must not submit a surrounding form.
   dialog.addEventListener("keydown", (event) => {
@@ -451,21 +475,23 @@ export function createPluginFields({
     onChange: (value: Value) => void,
     supported = true,
   ) {
+    const choices: readonly Choice<Value>[] =
+      !supported && capabilities && !value ? [[value, "Not supported"]] : options;
     const control = element(
       "select",
       { "aria-label": label },
-      ...options.map(([key, text, disabled = false]) =>
+      ...choices.map(([key, text, disabled = false]) =>
         element("option", { value: key, disabled }, disabled ? `${text} (unsupported)` : text),
       ),
     );
-    if (!options.some(([key]) => key === value)) {
+    if (!choices.some(([key]) => key === value)) {
       control.append(element("option", { value, disabled: true }, `${value} (unsupported)`));
     }
     control.dataset.policyUnsupported = String(!supported);
     control.value = value;
     control.addEventListener("change", () => {
-      const choice = options.find(([key]) => key === control.value);
-      if (choice && !choice[2]) {
+      const choice = choices.find(([key]) => key === control.value);
+      if (supported && choice && !choice[2]) {
         onChange(choice[0]);
       }
     });
@@ -476,9 +502,9 @@ export function createPluginFields({
     name: string,
     value: PluginApprovalMode | undefined,
     scope: PolicyScope,
+    modes: readonly PluginApprovalMode[],
     onChange: (value: PluginApprovalMode | "") => void,
   ) {
-    const modes = capabilities?.[scope].approval ?? [];
     const options = approvalOptions.map(
       ([mode, label]) => [mode, label, !modes.includes(mode)] as const,
     );
@@ -518,10 +544,11 @@ export function createPluginFields({
     name: string,
     policy: PluginToolPolicy,
     scope: PolicyScope,
-    reviewers: readonly Choice<PluginReviewer>[],
+    supported: PluginPolicyCapabilities[PolicyScope] | undefined,
     writePolicy: WritePolicy,
   ) {
     const defaults = scope === "toolDefaults";
+    const reviewers = reviewerOptions.filter(([mode]) => supported?.reviewer?.includes(mode));
     const canSelectReviewer = reviewers.length > 0 || policy.reviewer !== undefined;
     const reviewer =
       defaults || canSelectReviewer
@@ -549,9 +576,9 @@ export function createPluginFields({
             ["false", "Disabled"],
           ],
           (value) => writePolicy("enabled", value === "" ? undefined : value === "true"),
-          capabilities?.[scope].enabled === true,
+          supported?.enabled === true,
         ),
-        approvalSelect(name, policy.approval, scope, (value) =>
+        approvalSelect(name, policy.approval, scope, supported?.approval ?? [], (value) =>
           writePolicy("approval", value || undefined),
         ),
         reviewer,
@@ -697,12 +724,8 @@ export function createPluginFields({
         ? ""
         : "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.",
     );
-    const defaultReviewers = reviewerOptions.filter(([mode]) =>
-      capabilities?.toolDefaults.reviewer?.includes(mode),
-    );
-    const toolReviewers = reviewerOptions.filter(([mode]) =>
-      capabilities?.tools.reviewer?.includes(mode),
-    );
+    const hasDefaultReviewers = Boolean(capabilities?.toolDefaults.reviewer?.length);
+    const hasToolReviewers = Boolean(capabilities?.tools.reviewer?.length);
     setText(
       feedback,
       values === null
@@ -769,6 +792,7 @@ export function createPluginFields({
       statusText = `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
     setText(status, statusText);
+    describeCatalogControls();
     workspace.dataset.showDetails = String(tabState().activeId !== null);
     renderPluginList(values, entries, catalogLoading);
     const activeId = tabState().activeId;
@@ -824,30 +848,96 @@ export function createPluginFields({
         enabled.addEventListener("change", () =>
           updateSelection(entry.id, (selection) => {
             selection.enabled = enabled.checked;
+            if (
+              !enabled.checked &&
+              capabilities?.credentialSlots?.some((slot) => slot.pluginId === entry.id)
+            ) {
+              delete selection.driverPolicy;
+            }
           }),
         );
+        const actionsId = `${input.id}-plugin-actions`;
         details.append(
           element(
             "div",
             { className: "plugin-controls" },
             element("label", { className: "plugin-toggle" }, enabled, "Enable plugin"),
-            button(`Remove ${entry.name}`, () =>
-              update((all) => {
-                delete all[entry.id];
-              }),
+            element(
+              "button",
+              {
+                type: "button",
+                className: "button button--sm plugin-actions-trigger",
+                popovertarget: actionsId,
+              },
+              "More actions",
+            ),
+            element(
+              "div",
+              { id: actionsId, className: "menu plugin-actions", popover: "auto" },
+              button(`Remove ${entry.name}`, () =>
+                update((all) => {
+                  delete all[entry.id];
+                }),
+              ),
             ),
           ),
         );
       }
+      if (selected?.enabled) {
+        for (const slot of capabilities?.credentialSlots ?? []) {
+          if (slot.pluginId !== entry.id) {
+            continue;
+          }
+          const bindings = selected.driverPolicy?.credentials;
+          const current = isObject(bindings) ? bindings[slot.id] : undefined;
+          const stale =
+            typeof current === "string" &&
+            selected.driverPolicy?.releaseSha256 !== slot.releaseSha256;
+          const options: Choice[] = [
+            ["", "Install without an account"],
+            ...slot.sources.map(({ id, name }) => [id, name] as const),
+          ];
+          if (stale) {
+            options.push(["stale", "Release changed — select an account again", true]);
+          }
+          details.append(
+            select(
+              slot.label,
+              stale ? "stale" : typeof current === "string" ? current : "",
+              options,
+              (sourceId) =>
+                updateSelection(entry.id, (selection) => {
+                  if (sourceId) {
+                    selection.driverPolicy = {
+                      releaseSha256: slot.releaseSha256,
+                      credentials: { [slot.id]: sourceId },
+                    };
+                  } else {
+                    delete selection.driverPolicy;
+                  }
+                }),
+            ),
+          );
+          if (!slot.sources.length) {
+            details.append(
+              element(
+                "p",
+                { className: "hint" },
+                "No compatible, ready credential is available to both you and this Agent.",
+              ),
+            );
+          }
+        }
+      }
       const enablementOnly = capabilities?.policyScopeByPlugin?.[entry.id] === "enablement_only";
-      if (selected && !enablementOnly) {
-        const defaults = selected.toolDefaults ?? {};
+      if (selected) {
+        const defaults = enablementOnly ? {} : (selected.toolDefaults ?? {});
         const writeDefault: WritePolicy = (key, value) => writeToolPolicy(entry.id, key, value);
         const fields = toolPolicyFields(
           entry.name,
           defaults,
           "toolDefaults",
-          defaultReviewers,
+          enablementOnly ? undefined : capabilities?.toolDefaults,
           writeDefault,
         );
         defaultReviewer = fields.reviewer;
@@ -859,13 +949,15 @@ export function createPluginFields({
             element(
               "p",
               { className: "hint" },
-              "Approval applies to current and future actions unless a tool overrides it. Reviewer selects who reviews; automatic review may deny a call.",
+              enablementOnly
+                ? "Enable plugin controls whether the next deployment includes this plugin."
+                : "Approval applies to current and future actions unless a tool overrides it. Reviewer selects who reviews; automatic review may deny a call.",
             ),
             fields.controls,
-            fields.hint,
+            enablementOnly ? null : fields.hint,
           ),
         );
-        if (createApproverField && capabilities?.approvers?.plugin === true) {
+        if (!enablementOnly && createApproverField && capabilities?.approvers?.plugin === true) {
           details.append(
             createApproverField({
               label: `${entry.name} plugin approvers`,
@@ -884,7 +976,7 @@ export function createPluginFields({
         }
         const driverFields = [];
         for (const [key, schema] of Object.entries(
-          capabilities?.driverPolicySchema.properties ?? {},
+          enablementOnly ? {} : (capabilities?.driverPolicySchema.properties ?? {}),
         )) {
           if (!isObject(schema)) {
             continue;
@@ -927,17 +1019,23 @@ export function createPluginFields({
             ),
           );
         }
-        if (driverFields.length) {
+        if (enablementOnly || driverFields.length) {
           details.append(
             element(
               "fieldset",
               { className: "plugin-tool", disabled: !selected.enabled },
               element("legend", {}, "Driver policy"),
-              element("div", { className: "plugin-controls" }, ...driverFields),
+              enablementOnly
+                ? element(
+                    "p",
+                    { className: "hint" },
+                    "Driver-specific settings are not supported for this plugin.",
+                  )
+                : element("div", { className: "plugin-controls" }, ...driverFields),
             ),
           );
         }
-      } else if (!selected) {
+      } else {
         const add = button(`Add ${entry.name}`, () =>
           update((all) => {
             all[entry.id] = { enabled: true };
@@ -967,10 +1065,11 @@ export function createPluginFields({
       }
       if (enablementOnly) {
         details.append(
+          element("h4", {}, "Tools"),
           element(
             "p",
             { className: "hint" },
-            "Enable or disable the whole plugin on the next deployment.",
+            "Per-tool policies are not supported for this plugin.",
           ),
         );
       }
@@ -1062,8 +1161,8 @@ export function createPluginFields({
         const policy = selected?.tools?.[tool.id] ?? {};
         const writeTool: WritePolicy = (key, value) =>
           writeToolPolicy(entry.id, key, value, tool.id);
-        const fields = toolPolicyFields(tool.name, policy, "tools", toolReviewers, writeTool);
-        if (!fields.reviewer && selected && defaultReviewers.length > 0) {
+        const fields = toolPolicyFields(tool.name, policy, "tools", capabilities?.tools, writeTool);
+        if (!fields.reviewer && selected && hasDefaultReviewers) {
           fields.controls.append(
             button("Set reviewer for all tools", () =>
               defaultReviewer?.querySelector("select")?.focus(),
@@ -1168,7 +1267,7 @@ export function createPluginFields({
         if (toolDetails.open) {
           toolApprovers?.refreshNames?.();
         }
-        if (capabilities && !toolReviewers.length && defaultReviewers.length > 0) {
+        if (capabilities && !hasToolReviewers && hasDefaultReviewers) {
           row.append(
             element(
               "p",
@@ -1235,6 +1334,7 @@ export function createPluginFields({
         value || !catalog?.canLoad || !catalog?.hasPrevious || catalog?.status === "loading";
       next.disabled =
         value || !catalog?.canLoad || !catalog?.nextCursor || catalog?.status === "loading";
+      describeCatalogControls();
       updateDetailDisabled(selections() === null);
     },
     resetSearch() {
@@ -1249,7 +1349,7 @@ export function createPluginFields({
     // `unread` says the capabilities read failed, so nothing is known about Installation support;
     // the owner shows why (finding 2538).
     setCapabilities(
-      value: NonNullable<InstallationCapabilities["pluginPolicies"]> | null,
+      value: NonNullable<PluginFieldsOptions["capabilities"]> | null,
       unread = false,
     ) {
       capabilities = value;

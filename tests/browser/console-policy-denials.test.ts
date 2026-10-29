@@ -10,6 +10,8 @@ import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   detailUrl,
+  focusKeptOverClose,
+  hasFocus,
   login,
   newPage,
   nextFrames,
@@ -115,21 +117,34 @@ test("the Policy denials page controls policy editing and disabling preserves sa
   await limits.getByText(grants[0]!.binary, { exact: true }).first().waitFor();
   assert.equal(await limits.getByRole("button", { name: "Add rule", exact: true }).count(), 0);
   await limits.getByRole("button", { name: "Done", exact: true }).click();
+  const viewLimits = card.getByRole("button", { name: "View network limits", exact: true });
+  assert.equal(await hasFocus(viewLimits), true);
+  // Focus the reader moves on before the close event fires stays where they put it.
+  const tab = page.getByRole("tab", { selected: true });
+  await viewLimits.click();
   assert.equal(
-    await card
-      .getByRole("button", { name: "View network limits", exact: true })
-      .evaluate((node) => node === document.activeElement),
+    await focusKeptOverClose(limits.getByRole("button", { name: "Done", exact: true }), tab),
     true,
+    "closing Network limits keeps focus on the tab",
   );
   assert.equal(await page.getByLabel("Select page", { exact: true }).isVisible(), false);
-  await card.getByRole("button", { name: /^(Manage|View) rules$/ }).click();
+  const manage = card.getByRole("button", { name: /^(Manage|View) rules$/ });
+  await manage.click();
   const dialog = page.getByRole("dialog", { name: /^(Manage|View) network rules$/ });
   assert.equal(await dialog.getByRole("switch", { name: "Policy editing" }).count(), 0);
   assert.equal(
     await dialog.getByRole("button", { name: "Add rule", exact: true }).isVisible(),
     false,
   );
+  // Closing redraws the policy card, which moves its rules button, yet focus returns to it.
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.equal(await hasFocus(manage), true);
+  await manage.click();
+  assert.equal(
+    await focusKeptOverClose(dialog.getByRole("button", { name: "Done", exact: true }), tab),
+    true,
+    "closing the rules dialog keeps focus on the tab",
+  );
   await enable.click();
   const disable = card.getByRole("switch", { name: "Policy editing", checked: true });
   await disable.waitFor();
@@ -646,4 +661,35 @@ test("an older version and a same-version apply do not claim the deployed policy
     "Saved version: v1",
     "Live version unconfirmed",
   ]);
+});
+
+// Finding 2874: live application also needs SandboxPolicy read, since it admits and returns the
+// saved rules. A read revoked after the page loaded is refused by the real API, and the refusal
+// names every grant apply checks, not only the ones a save checks.
+test("an application refused for a revoked SandboxPolicy read names the read grant", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  assert.equal(
+    (await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [grants[0]] } }))
+      .status,
+    200,
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  const card = page.locator(".sandbox-network-card");
+  const apply = card.getByRole("button", { name: "Apply saved rules", exact: true });
+  await apply.waitFor();
+  restrict(fixture.policy, "read", "sandbox_policy", { namespaceId: namespace.id });
+  await apply.click();
+  await card
+    .getByRole("alert")
+    .filter({
+      hasText:
+        "Your access does not include applying this Agent’s policy. Ask an Installation administrator for Agent manage_policy and SandboxPolicy update and read on it.",
+    })
+    .waitFor();
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
+  fixture.policy.restrictions.pop();
+  assert.equal((await fixture.request("GET", base)).data.policy.application, undefined);
 });

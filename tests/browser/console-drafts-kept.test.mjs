@@ -23,6 +23,7 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
+  LIVE_BUTTON,
   configurationPostRequests,
   createModelCredentialSecret,
   createRepositoryLaunchFixture,
@@ -335,7 +336,7 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
   await openTab("Channels", "channels");
   assert.equal(await disableSlack.getAttribute("data-retained"), "true");
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   const held = await holdRequests(
     t,
     page,
@@ -459,7 +460,7 @@ for (const pending of [
       await page.getByRole("tab", { name: tabLabel, exact: true }).click();
       await page.waitForURL((url) => url.searchParams.get("tab") === pending.tab);
     }
-    await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+    await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
     const held = await holdRequests(t, page, ...pending.hold({ namespace, agent }));
     await pending.start(page, { replacement });
     await held.requested;
@@ -558,7 +559,7 @@ test("a plugin save that settles after Delete lets the page go", async (t) => {
   const { agent } = await createSlackAgent(fixture, namespace, "Plugin Delete Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   // The controller applies the save; its answer waits until after Delete.
   const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
     method: "PATCH",

@@ -82,6 +82,10 @@ verify the previous Pod's owner. An older image may also lack a record of the
 original PID 1 start time. If the replacement reports an unverifiable owner,
 use the following procedure.
 
+A dedicated Gateway does not recover its locks. After an unclean exit it stays
+unready with the failed check `gateway-state-lock`, and its log quotes the
+holder. Use the same procedure.
+
 1. Record the Agent, state volume and original container ID. On Kubernetes,
    also record the Pod UID and node. Stop the Agent in OCC and verify with the
    compute provider that the exact container exited. A missing Pod or expired

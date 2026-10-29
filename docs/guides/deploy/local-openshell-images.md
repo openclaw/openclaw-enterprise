@@ -23,7 +23,7 @@ From the repository root, rebuild the CLI and replace every placeholder below
 with the reviewed source commit and local image references:
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell

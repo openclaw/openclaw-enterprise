@@ -150,7 +150,11 @@ normalized model HTTPS endpoints (port 443, paths ending in `/v1`), using the fi
 as provider default. Custom endpoints require `credential_source`; Secret-backed
 keys stay OpenAI-only. Invalid URLs fail admission.
 `apps/controller/src/drivers/credential-gateway/openshell.ts:attachForRevision`
-checks every model against the immutable source endpoint before attachment.
+checks each selected model (`apps/controller/src/drivers/native-openai-catalog.ts:nativeOpenAiModelSelections`,
+the selection Compute renders) against the immutable source endpoint before
+attachment, and a refusal names the `baseUrl` setting and both hosts. Catalog
+ids match after trimming, as OpenClaw merges such entries, so a second match
+fails. The startup model probe gets only the primary model's entry.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
 writes capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`;
 Compute and Sandbox supply private temporary directories.
