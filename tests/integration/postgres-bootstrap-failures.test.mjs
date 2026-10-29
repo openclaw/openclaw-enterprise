@@ -543,6 +543,7 @@ test(
         name: "Logging Agent",
         configurationId: configuration.body.data.id,
         harnessAuth: { method: "api_key", source: secret.body.data.ref },
+        gatewayManagedMode: false,
       },
     );
     assert.equal(agent.status, 201, JSON.stringify(agent.body));

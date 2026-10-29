@@ -17,6 +17,7 @@ import {
   stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const SESSION = "**/api/auth/session";
 const activeView = '.content [aria-live="polite"]:not([inert])';
@@ -189,16 +190,6 @@ function goTo(page, url) {
   }, url);
 }
 
-function revokeNamespace(fixture, namespace, id) {
-  fixture.policy.restrictions.push({
-    id,
-    namespaceId: namespace.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
-}
-
 // Marks the content view node, so a test can tell a remounted retained node from a rebuild.
 function tagView(page, tag) {
   return page.evaluate((value) => {
@@ -254,7 +245,7 @@ for (const moveToSidebar of [false, true]) {
       running: true,
     });
     await openAgent(page, "Header Agent");
-    const action = page.locator(".page-header").getByRole("button", { name: "Create new version" });
+    const action = page.locator(".page-header").getByRole("button", { name: "Open draft" });
     const sidebar = page.getByRole("link", NAMESPACES);
     await action.focus();
     assert.equal(await hasFocus(action), true);
@@ -334,7 +325,7 @@ test("Back to a retained Agent page after access was revoked never shows the cac
   await page.getByRole("link", { name: "Revoked Agent" }).waitFor();
   await page.locator(activeView).waitFor();
 
-  revokeNamespace(fixture, namespace, "revoke-retained-agent-namespace");
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // Record every DOM state and painted frame from Back until the refusal.
   await page.evaluate((configurationId) => {
     const seen = [];
@@ -563,15 +554,12 @@ for (const c of [
     ],
   },
   {
-    title: "Create new version keeps the Agent page until the draft's overview reveals",
+    title: "Open draft keeps the Agent page until the draft's overview reveals",
     namespace: "Draft reveal",
     agents: ["Draft Agent"],
     prepare: (page) => openAgent(page, "Draft Agent"),
     enter: (page) =>
-      page
-        .locator(".content .page-header")
-        .getByRole("button", { name: "Create new version" })
-        .click(),
+      page.locator(".content .page-header").getByRole("button", { name: "Open draft" }).click(),
     revision: /revision=draft/,
     frames: [
       "agents | Draft Agent | selector | Agent",
@@ -1645,7 +1633,7 @@ test("A chat link's Agent lookup that answers after a manual navigation is ignor
 test("A Namespace revoked during a first visit's admission is not repainted by Back", async (t) => {
   const { fixture, namespace, page } = await openList(t, "Revoked during visit", "Revoked Agent");
   await tagView(page, "list");
-  revokeNamespace(fixture, namespace, "revoke-during-first-visit");
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // The first visit's admission read drops the Namespace, so its retained list is discarded.
   await page.getByRole("link", NAMESPACES).click();
   await page.locator(settledView).waitFor();
@@ -1730,10 +1718,10 @@ test("A double press on Back to Agents goes back once and stays in the console",
   read.release();
 });
 
-test("A chat link that cannot be resolved says so on the Agents list, once", async (t) => {
+test("A Gateway link that cannot be resolved says so on the Agents list, once", async (t) => {
   const { page } = await openList(t, "Chat link", "Listed Agent", { running: true });
   const notice = page.getByText(
-    "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
+    "This Gateway link could not be opened. It may be out of date, or you may not have access to the Gateway.",
     { exact: true },
   );
   assert.equal(await notice.count(), 0);
@@ -1761,7 +1749,7 @@ test("A chat link that cannot be resolved says so on the Agents list, once", asy
     route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Unavailable.")),
   );
   await openChatLink(page, key);
-  await page.getByText("This Agent chat link could not be opened. Try the link again.").waitFor();
+  await page.getByText("This Gateway link could not be opened. Try the link again.").waitFor();
   assert.equal(await notice.count(), 0);
 });
 

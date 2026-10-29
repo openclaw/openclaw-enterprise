@@ -54,7 +54,9 @@ answer already showed the person lacks Installation administration: the policy
 endpoints require it and the API audits each denial. The panel reads the selected Namespace's existing
 `/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
 panel and the tab, opens Configuration, and leaves the other panels usable; a current `401` retains global
-session expiry.
+session expiry. The panel is built once per page. A return to the tab reads the
+policy again, one list at a time, with the controls disabled, so a `403` after
+administration ends takes the same path.
 
 ### 2. Serialize Role and binding writes
 

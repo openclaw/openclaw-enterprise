@@ -136,12 +136,37 @@ export async function waitForCreateFormReads(page) {
 }
 
 export async function expectNativeAdminHidden(page) {
+  assert.equal(await page.locator(".native-admin-access").isVisible(), false);
   assert.equal(
-    await page.getByRole("heading", { name: "Gateway administration" }).isVisible(),
+    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
     false,
   );
+}
+
+// Unavailable native admin access keeps an "Open Agent UI" button in the Tab order, marked
+// aria-disabled and described by its reason, so a keyboard user reaches why it cannot open
+// (finding 2714). A natively disabled button takes no focus.
+export async function expectNativeAdminUnavailable(page, reason) {
+  const control = page.getByRole("button", { name: "Open Agent UI", exact: true });
+  await control.focus();
+  assert.deepEqual(
+    await control.evaluate((node) => {
+      const document = node.ownerDocument;
+      const description = (node.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent?.trim() ?? "")
+        .filter(Boolean)
+        .join(" ");
+      return {
+        focused: document.activeElement === node,
+        ariaDisabled: node.getAttribute("aria-disabled"),
+        description,
+      };
+    }),
+    { focused: true, ariaDisabled: "true", description: reason },
+  );
   assert.equal(
-    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
+    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
     false,
   );
 }

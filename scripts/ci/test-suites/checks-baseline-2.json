@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
@@ -20,12 +21,16 @@
     "tests/integration/container-resume.test.mjs",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
     "tests/integration/repository-credentials-control.test.mjs",
+    "tests/integration/repository-credential-operator-recovery.test.ts",
+    "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
+    "tests/integration/codex-plugin-preparation.test.ts",
     "tests/integration/container-release.test.mjs",
     "tests/integration/password-sign-in-audit.test.mjs",
     "tests/integration/ci-impact-gate.test.mjs",
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
+    "tests/integration/console-storybook-workflow.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
     "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/repository-credentials-service-loss.test.mjs",
@@ -39,7 +44,8 @@
     "tests/integration/repository-credentials-driver.test.mjs",
     "tests/integration/known-device-cookie.test.mjs",
     "tests/conformance/postgres-controller-auth-binding.test.mjs",
-    "tests/integration/repository-credentials-package.test.mjs",
+    "tests/integration/repository-credentials-package.test.ts",
+    "tests/integration/package-prepack.test.ts",
     "tests/integration/repository-credentials-restart.test.mjs",
     "tests/conformance/plugin-driver.test.mjs",
     "tests/integration/ci-image-reconciliation.test.mjs",
@@ -47,6 +53,7 @@
     "tests/integration/repository-credentials-server-timeout.test.mjs",
     "tests/integration/protected-repository-metadata-read.test.mjs",
     "tests/integration/repository-credentials-http.test.mjs",
+    "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
@@ -95,9 +102,10 @@
     "tests/integration/ci-go-test.test.mjs",
     "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
-    "tests/conformance/repository-credentials-custody.test.mjs",
+    "tests/conformance/repository-credentials-custody.test.ts",
     "tests/conformance/repository-credentials-receive-pack.test.mjs",
     "tests/integration/runtime-assets.test.mjs",
+    "tests/integration/openclaw-source.test.ts",
     "tests/conformance/repository-client-environment.test.mjs",
     "tests/conformance/repository-credentials-tool-evidence.test.mjs",
     "tests/integration/client-address.test.mjs",
@@ -106,15 +114,20 @@
     "tests/conformance/controller-stop-yields.test.mjs",
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
-    "tests/integration/credential-proxy-configuration.test.ts"
+    "tests/integration/credential-proxy-configuration.test.ts",
+    "tests/helpers/socket-relay.test.mjs"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    { "path": "tests/integration/controlled-tls-origin.test.ts" },
     {
       "path": "tests/integration/tls-peer-certificate.test.mjs"
+    },
+    {
+      "path": "tests/helpers/socket-relay.test.mjs"
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
@@ -325,6 +338,9 @@
       "path": "tests/integration/console-theme.test.ts"
     },
     {
+      "path": "tests/integration/console-storybook-workflow.test.ts"
+    },
+    {
       "path": "tests/integration/workspace-setup-api.test.mjs"
     },
     {
@@ -352,7 +368,7 @@
       "path": "tests/conformance/repository-credentials-sessions.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-custody.test.mjs"
+      "path": "tests/conformance/repository-credentials-custody.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-lifecycle.test.mjs"
@@ -384,6 +400,16 @@
       "path": "tests/integration/repository-credentials-http.test.mjs"
     },
     {
+      "path": "tests/integration/repository-original-lease.test.ts",
+      "expectedTests": [
+        "an owned exchange keeps its original lease through replacement and an injected standing callback fences the first write",
+        "standing denial prevents eager Expect headers",
+        "authentication rejection closes a pending dispatch",
+        "a confirmed TLS close before the first write is not dispatched",
+        "authentication rejection after the first write remains uncertain"
+      ]
+    },
+    {
       "path": "tests/integration/public-github-read-http.test.mjs"
     },
     {
@@ -396,13 +422,22 @@
       "path": "tests/integration/repository-credentials-control.test.mjs"
     },
     {
+      "path": "tests/integration/repository-credential-operator-recovery.test.ts"
+    },
+    {
+      "path": "tests/integration/repository-receipt-observation.test.ts"
+    },
+    {
       "path": "tests/integration/repository-credentials-shutdown.test.mjs"
     },
     {
       "path": "tests/integration/repository-credentials-router.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-package.test.mjs"
+      "path": "tests/integration/repository-credentials-package.test.ts"
+    },
+    {
+      "path": "tests/integration/package-prepack.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-service-loss.test.mjs",
@@ -434,7 +469,10 @@
       "path": "tests/integration/repository-credentials-admission.test.mjs"
     },
     {
-      "path": "tests/integration/repository-native-cutover.test.ts"
+      "path": "tests/integration/repository-native-cutover.test.ts",
+      "expectedTests": [
+        "prepared OPEN constructs only the selected route after its original reservation"
+      ]
     },
     {
       "path": "tests/integration/repository-credentials-driver.test.mjs"
@@ -452,6 +490,12 @@
       "path": "tests/integration/codex-plugin-startup-reads.test.mjs"
     },
     {
+      "path": "tests/integration/codex-plugin-preparation.test.ts",
+      "expectedTests": [
+        "Codex no-account preparation uses its supplied caller for disable and readback"
+      ]
+    },
+    {
       "path": "tests/integration/kubernetes-peer-status.test.mjs",
       "expectedTests": [
         "real peer-status HTTPS transport authenticates its revision and verifies server trust"
@@ -459,6 +503,9 @@
     },
     {
       "path": "tests/integration/runtime-assets.test.mjs"
+    },
+    {
+      "path": "tests/integration/openclaw-source.test.ts"
     },
     {
       "path": "tests/conformance/module-boundaries.test.mjs"
@@ -531,7 +578,8 @@
         "external-repository-fixture registers its real structured validator and rejects malformed input safely",
         "github registers its real structured validator and rejects malformed input safely",
         "openshell registers its real structured validator and rejects malformed input safely",
-        "OpenShell direct construction and policy rendering still enforce configuration validation"
+        "OpenShell direct construction and policy rendering still enforce configuration validation",
+        "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
     }
   ]

@@ -239,6 +239,98 @@ test("saving a Configuration with negative zero confirms the value sent as JSON"
   assert.equal(await saved.isVisible(), true);
 });
 
+// The collaboration and safety toggles stage each change in the Configuration JSON, through the
+// editor's own draft and save checks, so the two never disagree and one Save keeps both. Unset
+// settings show what a deployment runs with: OpenClaw leaves collaborative steering on,
+// and deployment admission keeps apply_patch in the workspace.
+test("collaboration and safety toggles stage their settings in the Configuration JSON and save with it", async (t) => {
+  const c = await plainAgent(t, "Gateway Safety");
+  const page = await openTab(t, c.fixture, c.namespace, c.agent, "configuration");
+  const toggle = (name: string) => page.getByRole("checkbox", { name, exact: true });
+  const strict = toggle("Strict mode");
+  const steering = toggle("Other participants can steer a running turn");
+  const applyPatch = toggle("apply_patch changes files only in the workspace");
+  const source = (id: string) => page.locator(`#gateway-safety-${id}-hint .gateway-safety-source`);
+  await steering.waitFor();
+  assert.deepEqual(
+    [await strict.isChecked(), await steering.isChecked(), await applyPatch.isChecked()],
+    [false, true, true],
+  );
+  assert.equal(await source("collaborative-steering").textContent(), "Default: on. ");
+  assert.equal(await source("apply-patch-workspace").textContent(), "Default: on. ");
+
+  // Strict mode opens the editor with every locked-down value written, and keeps focus.
+  await strict.check();
+  const json = page.getByLabel("Configuration JSON");
+  await json.waitFor();
+  const strictValues = JSON.parse(await json.inputValue());
+  assert.deepEqual(strictValues, {
+    ...nativeValues("before"),
+    messages: { queue: { allowCollaborativeSteering: false } },
+    tools: { exec: { applyPatch: { workspaceOnly: true } } },
+  });
+  assert.equal(await strict.evaluate((node) => node === globalThis.document.activeElement), true);
+  assert.equal(await steering.isChecked(), false);
+  assert.equal(await source("collaborative-steering").textContent(), "Set in Configuration. ");
+
+  // A JSON edit shows in the toggles; unreadable JSON leaves them unavailable, with the reason.
+  await json.fill(
+    JSON.stringify({ ...strictValues, messages: { queue: { allowCollaborativeSteering: true } } }),
+  );
+  await page.locator("#gateway-safety-collaborative-steering:checked").waitFor();
+  assert.equal(await strict.isChecked(), false);
+  // The Gateway queues another participant's message unless the owner explicitly selects reject.
+  const steeringHint = page.locator("#gateway-safety-collaborative-steering-hint");
+  const sharedIdentityHelp =
+    "OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users.";
+  assert.match(
+    (await steeringHint.textContent()) ?? "",
+    /Participants are channel users or local operators with distinct Gateway identities\./,
+  );
+  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
+  assert.match(
+    (await steeringHint.textContent()) ?? "",
+    /Off: their message runs as a separate turn after it\.$/,
+  );
+  const rejectSteering = {
+    ...strictValues,
+    messages: {
+      queue: { allowCollaborativeSteering: false, collaborativeSteeringFallback: "reject" },
+    },
+  };
+  await json.fill(JSON.stringify(rejectSteering));
+  await steeringHint.filter({ hasText: "Off: the Gateway refuses their message" }).waitFor();
+  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
+  await json.fill("{");
+  await page
+    .getByText("Correct the Configuration JSON to change these settings.", { exact: true })
+    .waitFor();
+  assert.equal(await steering.isDisabled(), true);
+  assert.match(
+    (await steering.getAttribute("aria-describedby")) ?? "",
+    /\bgateway-safety-reason\b/,
+  );
+
+  // Returning steering to its default removes only that setting and preserves the fallback.
+  await json.fill(JSON.stringify(rejectSteering, null, 2));
+  await page.locator("#gateway-safety-strict:checked:enabled").waitFor();
+  await steering.check();
+  const edited = JSON.parse(await json.inputValue());
+  assert.deepEqual(edited, {
+    ...nativeValues("before"),
+    messages: { queue: { collaborativeSteeringFallback: "reject" } },
+    tools: { exec: { applyPatch: { workspaceOnly: true } } },
+  });
+  const url = c.fixture.origin + configurationPath(c);
+  const patched = page.waitForResponse((r) => r.url() === url && r.request().method() === "PATCH");
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  assert.deepEqual((await patched).request().postDataJSON().values, edited);
+  await page.getByText("Configuration saved.", { exact: true }).waitFor();
+  // The saved Configuration now sets apply_patch; steering follows the default again.
+  assert.equal(await source("apply-patch-workspace").textContent(), "Set in Configuration. ");
+  assert.equal(await source("collaborative-steering").textContent(), "Default: on. ");
+});
+
 // Configuration save refuses an enabled channel's token reference without a Secret binding
 // (finding 2319). The Slack drawer names the missing token under its picker and sends nothing; the
 // JSON editor, which cannot bind Secrets, shows the API's refusal, naming the setting and the
@@ -2380,7 +2472,9 @@ test("Edit current Configuration opens the draft's Configuration editor in view 
   // Unsaved edits keep the draft in its editor: going to v1 and back through Edit current
   // Configuration brings that editor, with the edits, into view and focus.
   await editor.fill(`${await editor.inputValue()}\n`);
-  await page.locator('.revision-selector [aria-label$=", current version"]').click();
+  await page
+    .getByRole("combobox", { name: "Viewing version", exact: true })
+    .selectOption(revision.id);
   await page.waitForURL((next) => next.searchParams.get("revision") === revision.id);
   await start.scrollIntoViewIfNeeded();
   await start.click();

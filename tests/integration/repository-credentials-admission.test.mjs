@@ -32,7 +32,6 @@ import {
   CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
-  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
@@ -44,7 +43,7 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 import {
   BROKER_PROXY_DISABLED,
   BROKER_PROXY_DOMAIN_DECISION,
@@ -62,6 +61,7 @@ import {
   PROXY_REGISTRATION_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
+  REPOSITORY_SETTINGS_MISSING,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
@@ -447,13 +447,7 @@ test("Repository options expose only Namespace-approved display choices behind A
   const removedQuery = await f.request("GET", `${path}?descriptionRefs=project`);
   assert.equal(removedQuery.status, 400, JSON.stringify(removedQuery));
 
-  f.iamState.restrictions.push({
-    id: "deny-repository-options",
-    namespaceId: f.namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(f.iamState, "create", "agent", { namespaceId: f.namespace.id });
   const denied = await f.request("GET", path);
   assert.equal(denied.status, 403, JSON.stringify(denied));
   assert.equal(denied.error.code, "FORBIDDEN");
@@ -489,13 +483,7 @@ test("Exact-Agent repository choices require Agent update authorization", async 
   const agent = await f.createAgent();
   const path = `${f.collection}/${agent.id}/repository-options`;
   assert.equal((await f.request("GET", path)).status, 200);
-  f.iamState.restrictions.push({
-    id: "deny-repository-options-update",
-    namespaceId: f.namespace.id,
-    resourceKind: "agent",
-    action: "update",
-    effect: "deny",
-  });
+  restrict(f.iamState, "update", "agent", { namespaceId: f.namespace.id });
   const denied = await f.request("GET", path);
   assert.equal(denied.status, 403, JSON.stringify(denied));
   assert.equal(denied.error.code, "FORBIDDEN");
@@ -613,13 +601,7 @@ test("Missing repository composition cannot hide denied or unavailable IAM", asy
   assert.deepEqual(notConfigured.data, []);
   assert.equal(notConfigured.meta.notConfigured, true);
 
-  f.iamState.restrictions.push({
-    id: "deny-create-without-repositories",
-    namespaceId: f.namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(f.iamState, "create", "agent", { namespaceId: f.namespace.id });
   const denied = await f.request("GET", path);
   assert.equal(denied.status, 403, JSON.stringify(denied));
   assert.equal(denied.error.code, "FORBIDDEN");
@@ -650,12 +632,9 @@ test("Successful repository discovery does not authorize later writes", async (t
     { action: "deploy", method: "POST", target: `${path}/deploy` },
   ]) {
     // Fresh NativeIAM policy must win over an earlier successful discovery.
-    f.iamState.restrictions.push({
+    restrict(f.iamState, scenario.action, "agent", {
       id: `deny-${scenario.action}-after-discovery`,
       namespaceId: f.namespace.id,
-      resourceKind: "agent",
-      action: scenario.action,
-      effect: "deny",
     });
     const response = await f.request(
       scenario.method,
@@ -1081,6 +1060,7 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
   const agent = await f.createAgent({
     repositoryBindings: selection,
     harnessAuth: { method: "runtime" },
+    gatewayManagedMode: false,
   });
   await f.prepareDeployment(agent);
   const path = `${f.collection}/${agent.id}`;
@@ -1369,7 +1349,10 @@ test("Provisioning refuses a Codex network proxy that blocks the repository brok
 
 test("Repository capability remains optional when no repository Backend or Driver is configured", async (t) => {
   const f = await fixture(t, { compute: sshCompute(), repositories: false });
-  const agent = await f.createAgent({ harnessAuth: { method: "runtime" } });
+  const agent = await f.createAgent({
+    harnessAuth: { method: "runtime" },
+    gatewayManagedMode: false,
+  });
   await f.prepareDeployment(agent);
   const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed));
@@ -1395,7 +1378,8 @@ test("Repository capability remains optional when no repository Backend or Drive
     const missingDriver = await f.request(method, path, body);
     assert.equal(missingDriver.status, 409, `${method}: ${JSON.stringify(missingDriver)}`);
     assert.equal(missingDriver.error.code, "RESOURCE_CONFLICT", method);
-    assert.equal(missingDriver.error.message, RepositoryDriverNotConfiguredError.description);
+    // Names the missing settings and who adds them (finding D763).
+    assert.equal(missingDriver.error.message, REPOSITORY_SETTINGS_MISSING);
   }
   assert.equal((await f.request("GET", f.collection)).data.length, 1, "no Agent was created");
   const unchanged = await f.request("GET", `${f.collection}/${agent.id}`);
@@ -1616,6 +1600,34 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   });
   assert.equal(binding.status, 409, JSON.stringify(binding));
   assert.equal(binding.error.message, message);
+  assert.equal(
+    (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryBindings,
+    undefined,
+  );
+  // Finding 2881: that refusal names a saved grant, so an Agent update without SandboxPolicy
+  // read gets the read refusal first, as deploy does when saved additions exist (finding 2151).
+  // Each Restriction names one exact SandboxPolicy, so the check must target the Agent's own.
+  const plain = await f.createAgent({ executionMode: "dedicated" });
+  const plainPolicyId = (await f.request("GET", policyPath(plain))).data.policy.id;
+  const unreadable = [granted.data.id, plainPolicyId].map((resourceId) =>
+    restrict(f.iamState, "read", "sandbox_policy", { namespaceId: f.namespace.id, resourceId }),
+  );
+  const hidden = await f.request("PATCH", `${f.collection}/${unbound.id}`, {
+    configurationId: f.configuration.id,
+    repositoryBindings: selection,
+  });
+  assert.equal(hidden.status, 403, JSON.stringify(hidden));
+  assert.match(hidden.error.message, /needs SandboxPolicy read on /);
+  assert.doesNotMatch(JSON.stringify(hidden), /git-direct|github\.com/);
+  // An Agent with no saved additions has nothing to name, so its binding saves without read.
+  const plainBinding = await f.request("PATCH", `${f.collection}/${plain.id}`, {
+    configurationId: f.configuration.id,
+    repositoryBindings: selection,
+  });
+  assert.equal(plainBinding.status, 200, JSON.stringify(plainBinding));
+  for (const restriction of unreadable) {
+    liftRestriction(f.iamState, restriction);
+  }
   assert.equal(
     (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryBindings,
     undefined,

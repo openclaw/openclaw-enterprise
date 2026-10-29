@@ -193,7 +193,7 @@ export function prepareGhCommand(
     timeout: 5000,
     maxBuffer: 4096,
   });
-  if (version.status !== 0 || !/^gh version 2\.100\.0(?:\s|$)/.test(version.stdout)) {
+  if (version.status !== 0 || !/^gh version 2\.103\.2(?:\s|$)/.test(version.stdout)) {
     throw new Error("unsupported-gh-version");
   }
   // Unlike issue/pr commands, repo view can inspect remotes despite GH_REPO.

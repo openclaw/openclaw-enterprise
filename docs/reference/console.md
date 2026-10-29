@@ -54,6 +54,8 @@ hidden. Namespace rows open their Agents.
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
 [Create a Namespace](../guides/console/create-namespace.md) explains creation and recovery.
+[Delete a Namespace](../guides/console/delete-namespace.md) explains the trash
+control, cleanup blockers, and deletion recovery.
 
 The Console uses light appearance and OCC-served fonts. Navigation focuses the
 destination heading; **Open navigation** opens the mobile drawer.
@@ -62,12 +64,26 @@ Click an Agent name or an open area of its row to open its details. Version link
 and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
 the Agent name and press Enter.
 
+While a Namespace provisions, the Agents list checks its status every ten seconds.
+If that check no longer lists the Namespace, the Console removes its Agent rows
+and previous row feedback, and disables Create Agent. Open row confirmations close
+and focus Search Agents. The unavailable status replaces empty-list messages.
+Submitted requests report acceptance, refusal or an unknown outcome without Agent
+names or IDs and without replay. Session expiry still requires sign-in.
+Clearing search does not restore the removed rows.
+
 Opening an Agent shows its details page immediately. While it loads, **Back to
 Agents** returns to your place. A slow return to a retained page says **Still
 checking…** after one second. Refresh rebuilds; refocusing an unchanged page preserves edits,
 Slack searches, focus, and the Namespace selector; at phone width, focus in the open drawer moves to
 **Open navigation**. Views belong to one account, session, route,
 and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
+
+A previously shown Configuration denial can leave Agent metadata visible after
+reload and refocus. Refocus still checks current access. If the read before a
+channel Secret save is denied, the Console clears the binding controls and keeps
+the failed attempt's message. No save is sent. After access is restored, use
+**Refresh** to read saved state before retrying.
 
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.
@@ -110,9 +126,10 @@ replacement delivery, deletion effects, and uncertain-write recovery.
 
 ## Agent creation and deployment
 
-Dedicated provisioning waits for first activation; failure links the original
-request’s existing Agent and version. Otherwise, creation
-saves a draft: provide model and channel credentials when prompted, then select
+Dedicated provisioning waits for first activation. If the first deployment fails, Create links
+to the original Agent and version. If a newer deployment takes over, Create explains the change and
+stays open without a deployment link. Ordinary creation saves a draft. Provide model
+and channel credentials when prompted, then select
 **Deploy new version**. If the Compute Driver requires them, OCC generates
 missing connection credentials during that first deployment.
 See [Create and deploy Agents](console/create-and-deploy.md) for the full
@@ -142,7 +159,7 @@ again** confirms a new stop intent, even without a selected version, but not
 when you can read no version, as before a first deploy (the list then shows no
 Stop icon). That does not prove cleanup finished.
 
-To resume, open **Create new version** and select **Deploy new version**. See
+To resume, open **Open draft** and select **Deploy new version**. See
 [Stop and resume](agents/deployment.md#stop-and-resume) for worker lifecycle and
 preservation.
 
@@ -237,8 +254,8 @@ For an unavailable gateway, follow the
 ## Open the native admin UI
 
 When [Agent native admin UI access](agent-native-admin.md) is enabled, all Agent
-detail tabs, including Configuration and Workspace files, show a **Native admin
-UI** panel to callers with exact Agent `administer`.
+detail tabs, including Configuration and Workspace files, show **Open Agent UI**
+in the header and its availability information to callers with exact Agent `administer`.
 It is hidden otherwise, when the Installation disables the feature, and until
 the next sign-in or new tab after a denial. The panel reports a stopped Agent
 (including before first deployment) as needing to be started, asks you to check
@@ -246,10 +263,10 @@ deployment and refresh access when a desired-running Agent has no selected versi
 administrators can [share an Agent](console/agent-sharing.md) with an existing
 person.
 
-**Open admin console** opens the Agent's selected version in a new tab, even
-from a draft or older version. Its visible warning is part of the operator
-contract: native UI changes to the gateway bypass OCE and are not recorded in
-AgentRevisions. Use OCE for durable configuration. The tab shares
+**Open Agent UI** opens the Agent's selected version in a new tab, even
+from a draft or older version. Its visible warning explains that Gateway managed mode restricts
+administrative changes by default. OCE deployments can overwrite changes made
+while managed mode is off. Use OCE for durable configuration. The tab shares
 the console's OCE session cookie through the configured shared cookie parent
 domain; native chat or other Agent-host activity does not extend that session.
 

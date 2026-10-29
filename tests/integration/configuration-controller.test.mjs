@@ -4,14 +4,13 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import {
-  admitLoggingConfiguration,
-  renderPresetTemplate,
-} from "../../packages/contracts/src/index.ts";
+import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
@@ -35,6 +34,13 @@ import {
   codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import {
+  OPENCLAW_SANDBOX_SETTINGS,
+  admittedConfiguration,
+  openClawSandboxRefusal,
+  withGatewaySecurityDefaults,
+} from "../helpers/admitted-configuration.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -265,7 +271,7 @@ function createOpenClawConfiguration() {
       defaults: { store: "teamstore" },
       credential_proxy: { enabled: true },
     },
-    agents: { defaults: { sandbox: { mode: "all" } } },
+    agents: { defaults: { sandbox: { mode: "off", scope: "agent" } } },
     plugins: {
       entries: {
         knowledge: {
@@ -994,6 +1000,477 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     });
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.deepEqual(saved.body.data.values, values);
+  }
+});
+
+test("Configuration save refuses a Gateway tool policy that every OpenClaw topology refuses, with deployment's text", async () => {
+  // Findings 2688 and 2689. Save and deployment run the real Kubernetes Compute rules. The
+  // Agent is embedded, the default: its Gateway applies the policy natively, so a policy only
+  // dedicated admission refused saved, deployed and then failed every turn.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-tool-policy-integration", ...configurationRules),
+  });
+  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Tool policy consumer",
+    secretName: "tool-policy-key",
+  });
+  const administrative = setting(
+    "tools.gatewayPolicy.allow",
+    "must not grant Gateway administrative tools",
+  );
+  const sessionsActions = setting(
+    "tools.gatewayPolicy.actions.sessions",
+    "must list the permitted actions",
+  );
+  // Each refused policy is refused at Configuration create and update. A row stored before the
+  // rule still reads; deployment of the embedded Agent refuses it with the same text.
+  for (const [gatewayPolicy, message] of [
+    [{ allow: ["gateway"] }, administrative],
+    [{ allow: ["sessions_list", "nodes"] }, administrative],
+    [{ allow: ["sessions"] }, sessionsActions],
+    [
+      { allow: ["sessions"], actions: { sessions: ["bogus"] } },
+      setting("tools.gatewayPolicy.actions.sessions", "must use reviewed task actions"),
+    ],
+    [
+      { allow: ["group:fs"] },
+      setting("tools.gatewayPolicy.allow", "must name a concrete tool or action"),
+    ],
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, withPolicy(gatewayPolicy), message);
+  }
+
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(
+    configurationDriver,
+    agent.configurationId,
+    withPolicy({ allow: ["sessions"] }),
+  );
+  const saved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assertRefused(saved, sessionsActions, { label: "Agent save" });
+  // An administrator repairs the row by saving a policy that lists the actions.
+  const repairedValues = withPolicy({ allow: ["sessions"], actions: { sessions: ["patch"] } });
+  const repaired = await request(context.app, "PATCH", agent.item, {
+    body: { values: repairedValues },
+  });
+  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
+  assert.deepEqual(repaired.body.data.values, repairedValues);
+  const resaved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
+
+  // A Preset save refuses the same text. A tool that waits on a variable without a default is
+  // checked when a Configuration is created from the Preset; a default fills it here.
+  await refusedOnSave(context, withPolicy({ allow: ["gateway"] }), administrative);
+  const waiting = withPolicy({ allow: ["{{ vars.tool }}"] });
+  const filled = await savePreset(context, {
+    variables: { tool: { type: "string", default: "terminal" } },
+    configuration: { values: waiting },
+  });
+  assertRefused(filled, administrative);
+  const deferred = await savePreset(
+    context,
+    { variables: { tool: { type: "string" } }, configuration: { values: waiting } },
+    "Tool-deferred",
+  );
+  assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
+  // A variable can also name an action key; that policy waits too.
+  const keyed = await savePreset(
+    context,
+    {
+      variables: { tool: { type: "string" } },
+      configuration: {
+        values: withPolicy({ allow: ["dashboard"], actions: { "{{ vars.tool }}": ["read"] } }),
+      },
+    },
+    "Tool-key-deferred",
+  );
+  assert.equal(keyed.status, 201, JSON.stringify(keyed.body));
+});
+
+test("Configuration save refuses workspace bootstrap settings native setup refuses, with deployment's text", async () => {
+  // Finding 2699. Compute copies agents.defaults.skipBootstrap and skipOptionalBootstrapFiles into
+  // native workspace setup, which refused an invalid one only after deployment started. Every
+  // save path and deployment now refuse it, naming the setting and what it accepts.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-bootstrap-integration", ...configurationRules),
+  });
+  const withDefaults = (defaults) => ({
+    ...runtimeSelected,
+    agents: { defaults: { ...runtimeDefaults, ...defaults } },
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Bootstrap consumer",
+    secretName: "bootstrap-key",
+  });
+  const skipBootstrap = setting("agents.defaults.skipBootstrap", "must be true or false");
+  const optionalFiles = setting(
+    "agents.defaults.skipOptionalBootstrapFiles",
+    'must be a list of "SOUL.md", "USER.md", "HEARTBEAT.md" or "IDENTITY.md"',
+  );
+  // Each value is refused at Configuration create and update. A row stored before the rule still
+  // reads; deployment refuses it with the same text.
+  for (const [defaults, message] of [
+    [{ skipOptionalBootstrapFiles: ["NOPE.md"] }, optionalFiles],
+    [{ skipOptionalBootstrapFiles: ["SOUL.md", "AGENTS.md"] }, optionalFiles],
+    [{ skipOptionalBootstrapFiles: "SOUL.md" }, optionalFiles],
+    [{ skipOptionalBootstrapFiles: true }, optionalFiles],
+    [{ skipBootstrap: "true" }, skipBootstrap],
+    [{ skipBootstrap: null }, skipBootstrap],
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, withDefaults(defaults), message);
+  }
+
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(
+    configurationDriver,
+    agent.configurationId,
+    withDefaults({ skipOptionalBootstrapFiles: ["NOPE.md"] }),
+  );
+  const saved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assertRefused(saved, optionalFiles, { label: "Agent save" });
+  // Saving the accepted values repairs the row, and the Agent saves again.
+  const repairedValues = withDefaults({
+    skipBootstrap: false,
+    skipOptionalBootstrapFiles: ["SOUL.md", "USER.md", "HEARTBEAT.md", "IDENTITY.md"],
+  });
+  const repaired = await request(context.app, "PATCH", agent.item, {
+    body: { values: repairedValues },
+  });
+  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
+  assert.deepEqual(repaired.body.data.values, repairedValues);
+  const resaved = await request(context.app, "PATCH", agent.agentPath, {
+    body: { configurationId: agent.configurationId },
+  });
+  assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
+
+  // A Preset save refuses the same text. A value that waits on a variable without a default is
+  // checked when a Configuration is created from the Preset; a default fills it here.
+  await refusedOnSave(
+    context,
+    withDefaults({ skipOptionalBootstrapFiles: ["NOPE.md"] }),
+    optionalFiles,
+  );
+  await acceptedOnSave(
+    context,
+    withDefaults({ skipBootstrap: true, skipOptionalBootstrapFiles: [] }),
+  );
+  const waitingFile = withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}"] });
+  assertRefused(
+    await savePreset(context, {
+      variables: { file: { type: "string", default: "NOPE.md" } },
+      configuration: { values: waitingFile },
+    }),
+    optionalFiles,
+  );
+  const deferredFile = await savePreset(
+    context,
+    { variables: { file: { type: "string" } }, configuration: { values: waitingFile } },
+    "File-deferred",
+  );
+  assert.equal(deferredFile.status, 201, JSON.stringify(deferredFile.body));
+  // Written text around the variable that no accepted name can spell is refused now.
+  assertRefused(
+    await savePreset(
+      context,
+      {
+        variables: { file: { type: "string" } },
+        configuration: {
+          values: withDefaults({ skipOptionalBootstrapFiles: ["{{ vars.file }}.txt"] }),
+        },
+      },
+      "File-suffix",
+    ),
+    optionalFiles,
+  );
+  // A boolean variable fills skipBootstrap with a boolean; a string variable cannot.
+  const waitingSkip = withDefaults({ skipBootstrap: "{{ vars.skip }}" });
+  const deferredSkip = await savePreset(
+    context,
+    { variables: { skip: { type: "boolean" } }, configuration: { values: waitingSkip } },
+    "Skip-deferred",
+  );
+  assert.equal(deferredSkip.status, 201, JSON.stringify(deferredSkip.body));
+  assertRefused(
+    await savePreset(
+      context,
+      { variables: { skip: { type: "string" } }, configuration: { values: waitingSkip } },
+      "Skip-string",
+    ),
+    skipBootstrap,
+  );
+});
+
+test("Configuration save and deployment refuse settings the pinned OpenClaw retired", async () => {
+  // Finding 2709. The OpenClaw pin removed these settings; its config validation refuses them,
+  // and doctor --fix cannot rewrite OCE's read-only Configuration, so a saved one failed only
+  // when the Gateway started. Every save path and deployment refuse each, whatever its value.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-retired-integration", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Retired settings consumer",
+    secretName: "retired-key",
+  });
+  const flushes = "memory flushes use the session model and its fallbacks";
+  const retries = "cyber-policy retries use the active model";
+  const explicitControls = "configure the individual security controls explicitly";
+  for (const [path, replacement, value] of [
+    ["security.preset", explicitControls, "personal"],
+    ["agents.defaults.compaction.memoryFlush.model", flushes, "openai/gpt-4.1"],
+    ["agents.defaults.embeddedAgent.cyberFailover.model", retries, "openai/gpt-4.1"],
+    ["plugins.entries.codex.config.appServer.cyberFailover.model", retries, null],
+  ]) {
+    const values = { ...runtimeSelected };
+    const keys = path.split(".");
+    let parent = values;
+    for (const key of keys.slice(0, -1)) {
+      parent = parent[key] = { ...parent[key] };
+    }
+    parent[keys.at(-1)] = value;
+    const message = setting(
+      path,
+      `must be removed: the OpenClaw runtime retired it (${replacement})`,
+    );
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+    await refusedOnSave(context, values, message);
+  }
+  // Agent save refuses a stored row the same way, before any deployment.
+  const retired = {
+    ...runtimeSelected,
+    agents: { defaults: { ...runtimeDefaults, compaction: { memoryFlush: { model: "x/m" } } } },
+  };
+  await writePastOcc(configurationDriver, agent.configurationId, retired);
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    setting(
+      "agents.defaults.compaction.memoryFlush.model",
+      `must be removed: the OpenClaw runtime retired it (${flushes})`,
+    ),
+    { label: "Agent save" },
+  );
+  // A saved corporate draft remains editable. A deploy must fail before enqueuing a replacement.
+  const corrected = {
+    ...runtimeSelected,
+    security: { audit: { suppressions: [{ checkId: "example.check" }] } },
+    messages: { queue: { allowCollaborativeSteering: false } },
+  };
+  const legacy = { ...corrected, security: { ...corrected.security, preset: "corporate" } };
+  await writePastOcc(configurationDriver, agent.configurationId, legacy);
+  const operations = context.controller.pendingOperations();
+  assertRefused(
+    await request(context.app, "POST", `${agent.agentPath}/deploy`),
+    setting(
+      "security.preset",
+      `must be removed: the OpenClaw runtime retired it (${explicitControls})`,
+    ),
+  );
+  assert.deepEqual(context.controller.pendingOperations(), operations);
+  const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
+  assert.deepEqual(revisions.body.data, []);
+  const read = await request(context.app, "GET", agent.item);
+  assert.deepEqual(read.body.data.values, legacy);
+  const saved = await request(context.app, "PATCH", agent.item, {
+    body: { values: corrected, expectedGeneration: read.body.data.generation },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  assert.deepEqual(deployed.body.data.configuration.security, corrected.security);
+  assert.deepEqual(deployed.body.data.configuration.messages, corrected.messages);
+
+  // The settings beside them still save.
+  await acceptedOnSave(context, {
+    ...runtimeSelected,
+    agents: {
+      defaults: {
+        ...runtimeDefaults,
+        compaction: { memoryFlush: { enabled: false } },
+        embeddedAgent: { cyberFailover: { mode: "off", cooloffMs: 1000 } },
+      },
+    },
+  });
+});
+
+test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE runtime cannot run", async () => {
+  // Finding 2767. The pinned OpenClaw runs sandboxed tools in Docker, which the OCE runtime does
+  // not have: a Configuration that turned the sandbox on saved and deployed, then failed every
+  // turn. Finding 2773: exec host "sandbox" sends shell commands to that sandbox, so each one
+  // failed. Every save path, Agent save and deployment run the rule, for the defaults and for one
+  // Agent's entry, which overrides them; configuration-occ.test.mjs proves each refused and
+  // accepted value.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-sandbox-integration", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Sandbox consumer",
+    secretName: "sandbox-key",
+  });
+  const [sandboxMode, execHost] = OPENCLAW_SANDBOX_SETTINGS;
+  const defaultsMode = openClawSandboxRefusal(sandboxMode, sandboxMode.path);
+  const defaultsHost = openClawSandboxRefusal(execHost, execHost.path);
+  const entryHost = openClawSandboxRefusal(execHost, [
+    "agents",
+    "entries",
+    "main",
+    ...execHost.entry,
+  ]);
+  const withSandbox = (sandbox) => ({
+    agents: { defaults: { ...runtimeDefaults, ...(sandbox === undefined ? {} : { sandbox }) } },
+  });
+  // The exec host for every Agent (top-level tools), and for one Agent's entry.
+  const withHost = (host, agentHost) => ({
+    agents: {
+      defaults: runtimeDefaults,
+      ...(agentHost === undefined
+        ? {}
+        : { entries: { main: { tools: { exec: { host: agentHost } } } } }),
+    },
+    ...(host === undefined ? {} : { tools: { exec: { host } } }),
+  });
+  // One setting for every Agent, the other on one Agent's entry.
+  for (const [values, message] of [
+    [withSandbox({ mode: "all", scope: "session" }), defaultsMode],
+    [withHost("gateway", "sandbox"), entryHost],
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+    assertRefused(await savePreset(context, { configuration: { values } }), message, {
+      label: "Preset save",
+    });
+  }
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(configurationDriver, agent.configurationId, withSandbox({ mode: "all" }));
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    defaultsMode,
+    { label: "Agent save" },
+  );
+  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
+  // Accepted values save, with the sandbox settings beside them.
+  await acceptedOnSave(context, {
+    agents: {
+      defaults: { ...runtimeDefaults, sandbox: { mode: "off", scope: "session" } },
+      entries: { main: { sandbox: { mode: "off" }, tools: { exec: { host: "node" } } } },
+    },
+    tools: { exec: { host: "auto" } },
+  });
+  // A Preset value that waits on a string variable is checked once filled when its written text
+  // can still spell "off"; a default fills it here, and a boolean variable never can.
+  const waiting = withSandbox({ mode: "{{ vars.mode }}" });
+  assertRefused(
+    await savePreset(context, {
+      variables: { mode: { type: "string", default: "all" } },
+      configuration: { values: waiting },
+    }),
+    defaultsMode,
+  );
+  const deferred = await savePreset(
+    context,
+    { variables: { mode: { type: "string" } }, configuration: { values: waiting } },
+    "Mode-deferred",
+  );
+  assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
+  assertRefused(
+    await savePreset(
+      context,
+      { variables: { mode: { type: "boolean" } }, configuration: { values: waiting } },
+      "Mode-boolean",
+    ),
+    defaultsMode,
+  );
+  // The exec host follows the same rule, for every Agent and for one Agent's entry.
+  for (const [values, message] of [
+    [withHost("{{ vars.host }}"), defaultsHost],
+    [withHost(undefined, "{{ vars.host }}"), entryHost],
+  ]) {
+    assertRefused(
+      await savePreset(context, {
+        variables: { host: { type: "string", default: "sandbox" } },
+        configuration: { values },
+      }),
+      message,
+    );
+  }
+  const deferredHost = await savePreset(
+    context,
+    {
+      variables: { host: { type: "string" } },
+      configuration: { values: withHost("{{ vars.host }}") },
+    },
+    "Host-deferred",
+  );
+  assert.equal(deferredHost.status, 201, JSON.stringify(deferredHost.body));
+});
+
+test("SSH and Docker Compute refuse at save and deployment a Gateway tool policy their embedded Gateway refuses", async () => {
+  // Finding 2695. SSH Compute (embedded only) and Docker's embedded Gateway apply
+  // tools.gatewayPolicy natively too, so a policy they cannot assemble saved, deployed and then
+  // failed every turn. Save and deployment run each real Driver's Configuration rule.
+  const computes = [
+    [
+      "ssh",
+      new SshComputeDriver({
+        ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
+        hosts: { "tool-policy": { address: "127.0.0.1", user: "root" } },
+        runtime: {
+          nodePath: "/usr/bin/node",
+          openclawPath: "/opt/openclaw/index.js",
+          user: "openclaw",
+          root: "/var/lib/ssh-runtime-test",
+        },
+        network: { gatewayPortRange: { start: 18800, end: 18899 } },
+      }),
+    ],
+    ["docker", new DockerComputeDriver({ images: { gateway: "gateway", agent: "agent" } })],
+  ];
+  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
+  for (const [name, driver] of computes) {
+    const configurationDriver = createConfigurationBackend();
+    const context = await fixture({
+      configurationDriver,
+      computeDriver: createReadyComputeDriver(`compute-tool-policy-${name}`, {
+        implementation: "integration-compute-substrate",
+        validateConfiguration: (...args) => driver.validateConfiguration(...args),
+      }),
+    });
+    const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+      name: `Tool policy consumer ${name}`,
+      secretName: `tool-policy-key-${name}`,
+    });
+    await refusedAtSaveAndDeploy(
+      context,
+      agent,
+      withPolicy({ allow: ["sessions"] }),
+      setting("tools.gatewayPolicy.actions.sessions", "must list the permitted actions"),
+    );
+    await refusedOnSave(
+      context,
+      withPolicy({ allow: ["gateway"] }),
+      setting("tools.gatewayPolicy.allow", "must not grant Gateway administrative tools"),
+    );
+    // A policy that lists the actions saves, as a Configuration and as a Preset.
+    await acceptedOnSave(
+      context,
+      withPolicy({ allow: ["sessions"], actions: { sessions: ["patch"] } }),
+    );
   }
 });
 
@@ -2603,8 +3080,8 @@ for (const runtimeLogging of [undefined, "driver"]) {
     assert.deepEqual(
       deployed.body.data.configuration,
       runtimeLogging === "driver"
-        ? initialValues
-        : admitLoggingConfiguration(initialValues, "info"),
+        ? withGatewaySecurityDefaults(servedAs(initialValues, "Configuration consumer"))
+        : admittedConfiguration(servedAs(initialValues, "Configuration consumer")),
     );
 
     const source = await request(context.app, "GET", `${collection}/${configurationId}`);

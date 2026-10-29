@@ -1,6 +1,9 @@
 package occcli
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Refusal sentences occ writes itself, built once so a wording change is one
 // edit here instead of a hunt through pasted copies. Each builder mirrors one
@@ -16,6 +19,20 @@ func nameNotIDRefusal(value, kind, prefix, lookup string) string {
 // UUID shape the API accepts (finding D744).
 func malformedIDRefusal(value, kind, prefix string) string {
 	return fmt.Sprintf("%q is not a valid %s ID: expected %s followed by a UUID", value, kind, prefix)
+}
+
+// wrongKindIDRefusal is the refusal for an ID of another kind (finding D765).
+// other names that kind, such as "a Configuration ID", or is "" for an
+// unknown prefix.
+func wrongKindIDRefusal(value, other, kind, prefix, lookup string) string {
+	article := "a "
+	if strings.ContainsRune("AEIOU", rune(kind[0])) {
+		article = "an "
+	}
+	if other == "" {
+		return fmt.Sprintf("%q is not %s%s ID: %s IDs start with %q; run %q to find the ID", value, article, kind, kind, prefix, lookup)
+	}
+	return fmt.Sprintf("%q is %s, not %s%s ID: %s IDs start with %q; run %q to find the ID", value, other, article, kind, kind, prefix, lookup)
 }
 
 // opaqueIDRefusal is the refusal for a server-issued ID without a fixed shape

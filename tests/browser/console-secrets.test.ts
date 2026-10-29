@@ -22,7 +22,11 @@ import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_NOT_FOUND,
   SECRET_CREATE_DENIED,
+  SECRET_DELETE_DENIED,
+  SECRET_LINK_UNLISTED,
+  secretLinkUnlistedAdministrator,
   SECRET_NAME_CONFLICT,
+  SECRET_UPDATE_DENIED,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -106,12 +110,14 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   );
   await page.getByRole("button", { name: "Shared model", exact: true }).click();
   const detail = dialog(page, "Shared model");
-  await detail.getByRole("link", { name: agent.id, exact: true }).waitFor();
+  // Consumers name the Agent, its ID beside it (finding D761).
+  await detail.getByRole("link", { name: agent.name, exact: true }).waitFor();
+  await detail.getByText(agent.id, { exact: true }).waitFor();
   assert.equal(
     await detail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
     true,
   );
-  await detail.getByRole("link", { name: agent.id, exact: true }).click();
+  await detail.getByRole("link", { name: agent.name, exact: true }).click();
   await page.waitForURL(new RegExp(`/console/agents/${agent.id}`));
   await page.getByRole("heading", { name: "Shared model consumer", exact: true }).waitFor();
 
@@ -144,6 +150,21 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     );
   }
   assert.doesNotMatch(JSON.stringify(audit.list()), /synthetic-console-(credential|replacement)/);
+
+  // An administrator's link to a Secret the list leaves out, here the one just deleted, says it
+  // is not in her readable list and asks nothing: she is the administrator the member text
+  // sends readers to (finding D769). A malformed ID is not repeated on the page.
+  for (const [linkedId, shown] of [
+    [secret.id, `Secret ${secret.id}`],
+    ["sec_not-a-secret-id", "such Secret"],
+  ]) {
+    await page.goto(`${fixture.origin}${secretsUrl(namespace)}&secret=${linkedId}`);
+    await page
+      .getByRole("status")
+      .getByText(secretLinkUnlistedAdministrator(shown), { exact: true })
+      .waitFor();
+    assert.equal(await page.getByRole("dialog").count(), 0);
+  }
 });
 
 test("unknown console Secret writes erase entered material and never replay mutations", async (t) => {
@@ -295,6 +316,17 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     {},
     { harnessAuth: { method: "api_key", source: privateSecret.ref } },
   );
+  const sharedAgent = await fixture.createAgent(
+    namespace.id,
+    "Shared Agent",
+    {},
+    { harnessAuth: { method: "api_key", source: privateSecret.ref } },
+  );
+  const hiddenSecret = await fixture.createSecret(
+    namespace.id,
+    "Hidden credential",
+    "synthetic-hidden-value",
+  );
   const [member] = fixture.provisionedAccounts;
   assert.ok(member, "the fixture must provision the Secret reader");
   const memberId = member.principal.id;
@@ -326,6 +358,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await grant("read", "namespace", namespace.id);
   await grant("read", "secret", privateSecret.id);
   await grant("read", "secret", secret.id);
+  await grant("read", "agent", sharedAgent.id);
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, secretsUrl(namespace), member.credentials);
   // Without Secret create the page never offers creation that the API would refuse after the
@@ -342,11 +375,41 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   const privateDetail = dialog(page, privateSecret.name);
   await privateDetail.getByText(/1 additional consumer/).waitFor();
   assert.equal(await privateDetail.getByText(privateAgent.id, { exact: true }).count(), 0);
+  // A consumer the member may read shows by name, its ID beside it (finding D761).
+  await privateDetail.getByRole("link", { name: sharedAgent.name, exact: true }).waitFor();
+  await privateDetail.getByText(sharedAgent.id, { exact: true }).waitFor();
   assert.equal(
     await privateDetail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
     true,
   );
   await privateDetail.getByRole("button", { name: "Close" }).click();
+
+  // The Secret read's answer disables what the member may not do, and each button names why,
+  // before any value is typed (finding D761).
+  await page.getByRole("button", { name: secret.name, exact: true }).click();
+  const readOnly = dialog(page, secret.name);
+  for (const [name, reason] of [
+    ["Replace value", SECRET_UPDATE_DENIED],
+    ["Delete Secret", SECRET_DELETE_DENIED],
+  ] as const) {
+    const action = readOnly.getByRole("button", { name, exact: true, description: reason });
+    await action.waitFor();
+    assert.equal(await action.isDisabled(), true, name);
+  }
+  await readOnly.getByRole("button", { name: "Close" }).click();
+
+  // A link to a Secret the member may not read, or to none at all, opens nothing and says why,
+  // in the same words, without reading it.
+  for (const linkedId of [hiddenSecret.id, "sec_00000000-0000-4000-8000-000000000999"]) {
+    await page.goto(`${fixture.origin}${secretsUrl(namespace)}&secret=${linkedId}`);
+    await page.getByRole("status").getByText(SECRET_LINK_UNLISTED, { exact: true }).waitFor();
+    assert.equal(await page.getByRole("dialog").count(), 0);
+  }
+  assert.deepEqual(
+    audit.list().filter((event) => event.outcome === "denied"),
+    [],
+    "reading the answers, the consumers' names and the links audits no denial",
+  );
 
   // Match the browser's 403 to the exact IAM denial. A denial returned after a storage
   // side effect would still look correct in the dialog, even if the write were then undone.
@@ -426,11 +489,26 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     await page.getByRole("button", { name: secret.name, exact: true }).click();
     await dialog(page, secret.name).getByRole("button", { name, exact: true }).click();
   }
+  // A dialog whose answer predates a revocation still offers both writes; the API refuses each.
+  const secretUrl = `**${secretPath(namespace)}/${secret.id}`;
+  await page.route(secretUrl, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...body, data: { ...body.data, callerPermissions: { update: true, delete: true } } },
+    });
+  });
   await openAction("Replace value");
   await value.fill("synthetic-denied-replacement");
   await expectDenied("Replace value", "PATCH", "update");
   await openAction("Delete Secret");
   await expectDenied("Permanently delete Secret", "DELETE", "delete");
+  await page.unroute(secretUrl);
 
   // This member can now replace this Secret. Remove just that grant while the next edit is
   // open: the same session and Secret must use the permission in effect when Save is pressed.

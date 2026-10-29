@@ -15,7 +15,13 @@ export async function createRuntimeAuthFixture(t, namespaceName, fixtureOptions 
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
   const state = new InMemoryPlatformState();
-  const fixture = await createConsoleAppFixture(t, { ...fixtureOptions, computeDriver, state });
+  // SSH does not support managed Gateway deployments; these cases exercise runtime auth and lifecycle.
+  const fixture = await createConsoleAppFixture(t, {
+    ...fixtureOptions,
+    computeDriver,
+    state,
+    agentGatewayManagedMode: false,
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(namespaceName);
   await state.transact((unit) =>

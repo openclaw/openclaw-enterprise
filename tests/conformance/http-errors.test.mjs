@@ -82,8 +82,11 @@ import {
 import {
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
+  AUTHORIZATION_HEADER_REFUSED,
   callerDenied,
   CONSOLE_ACCESS_DENIED,
+  CREDENTIAL_GATEWAY_NOT_CONFIGURED,
+  CREDENTIAL_REQUIRED,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
@@ -93,8 +96,10 @@ import {
   PROXY_REGISTRATION_UNAVAILABLE,
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
+  runtimeLogSourceUnavailable,
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
+  serviceKeyOutsideNamespace,
   storedCredentialSourceConfig,
 } from "../helpers/refusal-text.mjs";
 
@@ -221,7 +226,7 @@ const cases = [
     {
       status: 409,
       code: "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
-      message: new CredentialGatewayNotConfiguredError().message,
+      message: CREDENTIAL_GATEWAY_NOT_CONFIGURED,
     },
   ],
   [
@@ -281,7 +286,7 @@ const cases = [
       status: 409,
       code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
       message:
-        "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+        "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An Installation administrator must configure it and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
     },
   ],
   [
@@ -291,7 +296,7 @@ const cases = [
       status: 409,
       code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
       message:
-        "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+        "ChatGPT Harness authentication needs an issued access-token credential, and this Installation has no ChatGPT Backend to issue one. An Installation administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
     },
   ],
   [
@@ -793,7 +798,7 @@ const cases = [
       400,
       "The requested Pod is not a current Pod of this Agent version and source.",
     ],
-    ["RUNTIME_LOGS_SOURCE_UNAVAILABLE", 400, "This Agent version has no such runtime log source."],
+    ["RUNTIME_LOGS_SOURCE_UNAVAILABLE", 400, runtimeLogSourceUnavailable("such")],
     [
       "RUNTIME_LOGS_RATE_LIMITED",
       429,
@@ -820,6 +825,15 @@ const cases = [
     new RuntimeLogsError(code),
     { status, code, message },
   ]),
+  [
+    "a runtime log source the version does not have names it and each source's versions",
+    new RuntimeLogsError("RUNTIME_LOGS_SOURCE_UNAVAILABLE", undefined, "sandbox"),
+    {
+      status: 400,
+      code: "RUNTIME_LOGS_SOURCE_UNAVAILABLE",
+      message: runtimeLogSourceUnavailable("sandbox"),
+    },
+  ],
   [
     "a runtime log cursor from another view",
     new RuntimeLogsError("RUNTIME_LOGS_CURSOR_INVALID"),
@@ -934,12 +948,12 @@ const cases = [
   [
     "a 401 admission failure",
     admissionFailure({ statusCode: 401 }),
-    {
-      status: 401,
-      code: "UNAUTHENTICATED",
-      message:
-        "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Send service API keys in the x-api-key header; Authorization bearer tokens are not accepted.",
-    },
+    { status: 401, code: "UNAUTHENTICATED", message: CREDENTIAL_REQUIRED },
+  ],
+  [
+    "a 401 admission failure of a request that sent an Authorization header",
+    admissionFailure({ statusCode: 401, reason: "authorization_header" }),
+    { status: 401, code: "UNAUTHENTICATED", message: AUTHORIZATION_HEADER_REFUSED },
   ],
   [
     "a refused admission boundary",
@@ -1631,8 +1645,8 @@ test("an Agent principal denial names a bound resource only when the caller sent
     answer(source, false).message,
     agentPrincipalDenied(
       `Agent ${agentId}`,
-      "one of its bound credential sources",
-      "credential source operate",
+      "one of its bound CredentialSources",
+      "CredentialSource operate",
     ),
   );
   // An ID outside the plain shape is never echoed, even when the caller may read it.
@@ -1732,7 +1746,7 @@ test("the console shows a named denial unless the view names the grant itself", 
   const denial = (serverMessage) => ({ status: 403, code: "FORBIDDEN", serverMessage });
   assert.equal(message(denial(named)), named);
   assert.equal(message(denial(GENERIC_DENIAL)), CONSOLE_ACCESS_DENIED);
-  assert.equal(message(denial("The admitted Namespace does not match.")), CONSOLE_ACCESS_DENIED);
+  assert.equal(message(denial(serviceKeyOutsideNamespace("ns_1"))), CONSOLE_ACCESS_DENIED);
   const need = namespaceListNeed("Secrets");
   assert.equal(message(denial(named), false, need), namespaceListDenied("Secrets"));
   assert.equal(message({ ...denial(named), refusal: "View refusal." }), "View refusal.");

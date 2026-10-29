@@ -215,6 +215,8 @@ test(
     ];
     for (const [index, roster] of cases.entries()) {
       const configuration = structuredClone(createAdmittedRuntimeImageConfiguration("openclaw"));
+      // Background memory indexing is separate from the file API's no-turn guarantee.
+      configuration.memory = { search: { enabled: false } };
       const { explicitAgentId, ...agents } = roster;
       configuration.agents = { ...configuration.agents, ...agents };
       configuration.gateway = {

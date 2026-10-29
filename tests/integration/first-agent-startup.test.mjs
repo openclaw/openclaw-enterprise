@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { cp, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -15,6 +15,12 @@ import {
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import {
+  GATEWAY_SECURITY_DEFAULTS,
+  withGatewaySecurityDefaults,
+  withSetting,
+} from "../helpers/admitted-configuration.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.mjs");
@@ -98,11 +104,17 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
 
   // Run real sources outside the checkout so installed workspace packages cannot
   // hide import failures in the host-run command used by First Agent Smoke.
+  // plain-text.ts and gateway-security-defaults.ts have no imports; first-agent loads the Name
+  // rule and the defaults deployment admission fills from them.
+  await mkdir(join(directory, "packages/contracts/src/api"), { recursive: true });
+  await mkdir(join(directory, "packages/occ/src"), { recursive: true });
   for (const path of [
     "package.json",
     "scripts/first-agent.mjs",
     "scripts/first-agent-database.mjs",
     "scripts/first-agent-model.mjs",
+    "packages/contracts/src/api/plain-text.ts",
+    "packages/occ/src/gateway-security-defaults.ts",
     "apps/controller/src",
   ]) {
     await cp(join(repository, path), join(directory, path), { recursive: true });
@@ -123,6 +135,29 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   assert.match(result.stdout, /Usage: node scripts\/first-agent\.mjs/);
   assert.match(result.stdout, /--control-ui/);
+});
+
+test("first-Agent applies the Name rule before local setup", () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  // A missing directory keeps a name that passes the rule from touching a real cluster.
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = "/tmp/oce-first-agent-name-rule-absent";
+  const run = (name) =>
+    spawnSync(process.execPath, [firstAgent, name], {
+      cwd: repository,
+      encoding: "utf8",
+      env,
+      timeout: 10_000,
+    });
+  const accepted = run("🙂".repeat(200));
+  assert.equal(accepted.status, 1);
+  assert.match(accepted.stderr, /Local Kubernetes state or its recorded key was not found/);
+  for (const name of ["🙂".repeat(201), "hello\u2028world", " padded"]) {
+    const refused = run(name);
+    assert.equal(refused.status, 1, name);
+    assert.match(refused.stderr, /line or paragraph separators/, name);
+    assert.doesNotMatch(refused.stderr, /Local Kubernetes state/, name);
+  }
 });
 
 test("first-Agent accepts current Compose-backed Kubernetes development state", async (t) => {
@@ -162,11 +197,23 @@ test("first-Agent requires dedicated Codex for OpenShell before external calls",
 });
 
 test("first-Agent recognizes the prior OpenShell PAT policy only on an identified revision", () => {
-  const values = (sandbox, approvalsReviewer = "user") => ({
+  const record = {
+    name: "first-agent",
+    harness: "codex",
+    sandboxDriver: "openshell",
+    authMethod: "codex_pat",
+  };
+  const settings = (sandbox, approvalsReviewer = "user") => ({
     plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
   });
-  const configured = values("read-only");
-  const record = { harness: "codex", sandboxDriver: "openshell", authMethod: "codex_pat" };
+  // Deployment adds the Agent name to the sole main entry of each revision snapshot and fills
+  // the Gateway security defaults the Configuration leaves unset (all of them unless given).
+  const values = (sandbox, approvalsReviewer, defaults) =>
+    withGatewaySecurityDefaults(
+      servedAs(settings(sandbox, approvalsReviewer), record.name),
+      defaults,
+    );
+  const configured = settings("read-only");
   const matches = (snapshot, priorRevisionId) =>
     firstAgentRevisionValuesMatch(snapshot, configured, record, "rev_saved", priorRevisionId);
 
@@ -196,8 +243,33 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     false,
     "the historical exception must retain unrelated configuration drift checks",
   );
+  // Each admission fill landed separately, so a saved revision can lack any subset of the
+  // defaults (finding 2770). Only the identified prior revision gets them filled before comparing.
+  for (let mask = 0; mask < 2 ** GATEWAY_SECURITY_DEFAULTS.length - 1; mask += 1) {
+    const filled = GATEWAY_SECURITY_DEFAULTS.filter((_, index) => mask & (1 << index));
+    const snapshot = values("danger-full-access", undefined, filled);
+    const missing = `without ${GATEWAY_SECURITY_DEFAULTS.filter((row) => !filled.includes(row))
+      .map(({ path }) => path.join("."))
+      .join(", ")}`;
+    assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision ${missing}`);
+    assert.equal(matches(snapshot, "rev_other"), false, `another revision ${missing}`);
+    assert.equal(matches(snapshot), false, `a new deployment ${missing}`);
+  }
+  // The fill keeps explicit values, so a prior revision with another value is still drift.
+  for (const { path, explicit } of GATEWAY_SECURITY_DEFAULTS) {
+    const snapshot = withSetting(values("danger-full-access"), path, explicit);
+    assert.equal(matches(snapshot, "rev_saved"), false, `an explicit ${path.join(".")}`);
+  }
+  assert.equal(
+    matches({
+      ...values("danger-full-access"),
+      messages: { queue: { allowCollaborativeSteering: false } },
+    }),
+    false,
+    "admission leaves collaborative steering unset, so a strict value is drift",
+  );
   assert.deepEqual(prior, values("workspace-write"), "reading never rewrites a frozen revision");
-  assert.deepEqual(configured, values("read-only"), "reading never rewrites configured settings");
+  assert.deepEqual(configured, settings("read-only"), "reading never rewrites configured settings");
 });
 
 test("first-Agent flags a prior OpenShell PAT revision and points at --replace-key", () => {
@@ -378,6 +450,51 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
   );
 });
 
+test(
+  "first-Agent keeps its saved record readable after a restrictive-umask attempt",
+  { skip: process.platform === "win32" ? "Unix file modes are required" : false },
+  async (t) => {
+    const { directory, engineLog, env } = await k3dFixture(t);
+    // Existing Local Setup files retain their original permissions. Only the new
+    // helper process inherits the real kernel umask; no model credential is used.
+    await writeFile(engineLog, "", { mode: 0o600 });
+    for (const key of [
+      "CODEX_ACCESS_TOKEN",
+      "CODEX_ACCESS_TOKEN_FILE",
+      "OPENAI_API_KEY",
+      "OPENAI_API_KEY_FILE",
+    ]) {
+      delete env[key];
+    }
+    const strict = {
+      ...env,
+      NODE_OPTIONS:
+        `${env.NODE_OPTIONS ?? ""} --import=data:text/javascript,process.umask(0o777)`.trim(),
+    };
+    const first = await runFirstAgentAsync(strict);
+    assert.match(first, /kubectl did not complete successfully \(exit 23\)/);
+    const path = join(
+      directory,
+      `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json`,
+    );
+    const readRecord = async () => {
+      const file = await open(path, "r");
+      try {
+        return { mode: (await file.stat()).mode & 0o777, content: await file.readFile("utf8") };
+      } finally {
+        await file.close();
+      }
+    };
+    const saved = await readRecord();
+    assert.equal(saved.mode, 0o600);
+    await writeFile(engineLog, "", { mode: 0o600 });
+    const retry = await runFirstAgentAsync(env);
+    assert.match(retry, /kubectl did not complete successfully \(exit 23\)/);
+    assert.match(await readFile(engineLog, "utf8"), /exec -i statefulset\/postgres/);
+    assert.deepEqual(await readRecord(), saved);
+  },
+);
+
 test("first-Agent refuses an unrecognized saved record without calling it old", async (t) => {
   const { directory, engineLog, env } = await k3dFixture(t);
   const recordPath = join(
@@ -437,4 +554,32 @@ test("first-Agent refuses an unrecognized saved record without calling it old", 
     await run({ ...current, harness: "codex" }),
     /recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs/,
   );
+});
+
+test("first-Agent does not take the next flag as the prompt or harness", () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = "/tmp/oce-first-agent-prompt-flag-absent";
+  const run = (args) =>
+    spawnSync(process.execPath, [firstAgent, ...args], {
+      cwd: repository,
+      encoding: "utf8",
+      env,
+      timeout: 10_000,
+    });
+  const promptFlag = run(["MyAgent", "--prompt", "--replace-key"]);
+  assert.equal(promptFlag.status, 1);
+  assert.match(promptFlag.stderr, /--prompt requires text/);
+  assert.doesNotMatch(promptFlag.stderr, /Local Kubernetes state/);
+  const controlFlag = run(["MyAgent", "--prompt", "--control-ui"]);
+  assert.equal(controlFlag.status, 1);
+  assert.match(controlFlag.stderr, /--prompt requires text/);
+  const harnessFlag = run(["MyAgent", "--harness", "--prompt", "hello"]);
+  assert.equal(harnessFlag.status, 1);
+  assert.match(harnessFlag.stderr, /--harness requires openclaw or codex/);
+  assert.doesNotMatch(harnessFlag.stderr, /Local Kubernetes state/);
+  const kept = run(["MyAgent", "--prompt", "hello", "--replace-key"]);
+  assert.equal(kept.status, 1);
+  assert.match(kept.stderr, /Local Kubernetes state or its recorded key was not found/);
+  assert.doesNotMatch(kept.stderr, /--prompt requires text/);
 });

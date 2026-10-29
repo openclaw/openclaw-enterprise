@@ -14,6 +14,7 @@ import {
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { DEVICE_LOGIN_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const plugin = {
@@ -678,4 +679,22 @@ test("a failed Refresh login start retains a manageable source and sanitizes the
   );
   assert.equal(fixture.gateway.sources.size, 0);
   assertNoCredentials(fixture);
+});
+
+// Finding D762: an Installation that does not select both Drivers device login needs names them
+// and who selects them, after the caller's grants and before any Gateway I/O.
+test("device login without a Credential Gateway and Refresh Driver names them and who selects them", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No device login", { ready: true });
+  const refused = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/device-authorizations`,
+    { body: { harnessId: "codex" } },
+  );
+  assert.equal(refused.status, 501, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error, {
+    code: "NOT_IMPLEMENTED",
+    message: DEVICE_LOGIN_NOT_CONFIGURED,
+  });
 });

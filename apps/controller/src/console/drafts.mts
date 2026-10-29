@@ -62,6 +62,17 @@ export function createDraftStore() {
     scope(namespaceId: string | null, ...parts: string[]) {
       const keyFor = (name: string) => JSON.stringify([namespaceId, ...parts, name]);
       return {
+        // A confirmed read denial retires this Agent's drafts, including parked tabs.
+        clear() {
+          for (const entries of [captures, snapshots, unsavedChecks]) {
+            for (const key of entries.keys()) {
+              const scope = JSON.parse(key).slice(0, -1);
+              if (JSON.stringify(scope) === JSON.stringify([namespaceId, ...parts])) {
+                entries.delete(key);
+              }
+            }
+          }
+        },
         get: (name: string) => snapshots.get(keyFor(name)),
         track(name: string, capture: () => unknown) {
           captures.set(keyFor(name), capture);

@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { lstat, open, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { accessSync, constants } from "node:fs";
+import { lstat, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -11,6 +12,7 @@ import { isDeepStrictEqual } from "node:util";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
 import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
+import { isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import {
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
@@ -60,9 +62,20 @@ function parseArguments(argv) {
       result.replaceKey = true;
     } else if (value === "--control-ui" && !result.controlUi) {
       result.controlUi = true;
-    } else if (value === "--harness" && argv[index + 1]) {
+    } else if (value === "--harness") {
+      const next = argv[index + 1];
+      if (!next || next.startsWith("--")) {
+        throw new Error("--harness requires openclaw or codex.");
+      }
       result.harness = argv[++index];
-    } else if (value === "--prompt" && result.prompt === undefined && argv[index + 1]) {
+    } else if (value === "--prompt") {
+      if (result.prompt !== undefined) {
+        throw new Error("--prompt may be given once.");
+      }
+      const next = argv[index + 1];
+      if (!next || next.startsWith("--")) {
+        throw new Error("--prompt requires text.");
+      }
       result.prompt = argv[++index];
     } else if (!value.startsWith("-") && result.name === undefined) {
       result.name = value;
@@ -70,15 +83,10 @@ function parseArguments(argv) {
       throw new Error(`Unexpected argument. ${usage().split("\n")[0]}`);
     }
   }
-  if (
-    !result.name ||
-    result.name.length > 200 ||
-    result.name.trim() !== result.name ||
-    /\p{Cc}/u.test(result.name)
-  ) {
-    throw new Error(
-      "Provide an Agent name of 1–200 characters without surrounding whitespace or control characters.",
-    );
+  // The create-Agent body uses the Name schema. Count code points and refuse line
+  // and paragraph separators, matching isName, before Local Setup is consulted.
+  if (!isName(result.name)) {
+    throw new Error(`Provide an Agent name of ${NAME_RULE}.`);
   }
   if (result.prompt !== undefined && (!result.prompt.trim() || result.prompt.length > 4_000)) {
     throw new Error("The prompt must contain 1–4,000 characters.");
@@ -110,6 +118,23 @@ async function exists(path) {
     }
     throw error;
   }
+}
+
+function availableInPath(name) {
+  // Match Go's exec.LookPath: a provider exists only when a PATH entry holds
+  // an executable file with that name, not when a non-executable one does.
+  const directories = (process.env.PATH ?? "").split(delimiter);
+  return directories.some((directory) => {
+    if (!directory) {
+      return false;
+    }
+    try {
+      accessSync(join(directory, name), constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function parseJson(value, description) {
@@ -245,8 +270,12 @@ async function loadLocalInstallation(harness, controlUi) {
   delete environment.OPENAI_API_KEY_FILE;
   delete environment.CODEX_ACCESS_TOKEN;
   delete environment.CODEX_ACCESS_TOKEN_FILE;
-  if (state.containerEngine === "podman") {
-    environment.PODMAN_COMPOSE_PROVIDER ||= "podman-compose";
+  if (state.containerEngine === "podman" && !environment.PODMAN_COMPOSE_PROVIDER) {
+    // The Compose command uses --project-directory, which podman-compose does not
+    // support; docker-compose reaches Podman through the recorded DOCKER_HOST.
+    environment.PODMAN_COMPOSE_PROVIDER = availableInPath("docker-compose")
+      ? "docker-compose"
+      : "podman-compose";
   }
   const composeBase = [
     "compose",
@@ -744,6 +773,7 @@ async function withRecord(directory, name, action) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       handle = await open(lockPath, "wx", 0o600);
+      await handle.chmod(0o600);
       await handle.writeFile(String(process.pid));
       break;
     } catch (error) {
@@ -786,8 +816,15 @@ async function withRecord(directory, name, action) {
   try {
     const save = async (value) => {
       const temporary = `${path}.${randomUUID()}`;
-      await writeFile(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600, flag: "wx" });
       try {
+        const file = await open(temporary, "wx", 0o600);
+        try {
+          // Creation mode is filtered by umask; retries and stale-lock recovery need reads.
+          await file.chmod(0o600);
+          await file.writeFile(`${JSON.stringify(value)}\n`);
+        } finally {
+          await file.close();
+        }
         await rename(temporary, path);
       } finally {
         await unlink(temporary).catch(() => {});

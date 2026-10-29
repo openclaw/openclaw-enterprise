@@ -211,6 +211,29 @@ test(
       },
     );
 
+    // A State failure while consuming the attempt or capturing the identity reaches the
+    // controller unchanged (github-login-transport), which reports an outage, not a refusal.
+    for (const [method, remoteAddress] of [
+      ["consumeAttempt", "192.0.2.61"],
+      ["snapshotExternal", "192.0.2.62"],
+    ]) {
+      await t.test(`a callback whose ${method} fails says sign-in is unavailable`, async (t) => {
+        provider.mode = "up";
+        t.mock.method(PostgresHumanAuthentication.prototype, method, () =>
+          Promise.reject(new Error("fixture State outage")),
+        );
+        const before = await sessionCount();
+        const callback = await memberGitHubSignIn(remoteAddress);
+        assert.equal(callback.statusCode, 302);
+        assert.equal(
+          callback.headers.location,
+          "/console/?authError=github&authReason=unavailable",
+        );
+        assert.equal(callback.headers["set-cookie"], undefined);
+        assert.equal(await sessionCount(), before, "no session is issued");
+      });
+    }
+
     await t.test("GitHub sign-in recovers without a restart", async () => {
       provider.mode = "up";
       const callback = await memberGitHubSignIn("192.0.2.60");

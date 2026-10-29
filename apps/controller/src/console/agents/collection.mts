@@ -9,15 +9,19 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
-import { button, element, setText, statusBlock, requestIdLine } from "../dom.mjs";
+import { resourceActionIcon } from "../resource-actions.mjs";
+import { button, element, mayReturnFocus, setText, statusBlock, requestIdLine } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
+import { credentialRejectedAsk } from "./deployment-recovery.mjs";
 import {
-  AGENT_CREATE_DENIED,
+  agentCreateDenied,
   AGENT_DELETE_DENIED,
   AGENT_STOP_DENIED,
-  askForGrant,
+  deleteRefused,
   notIncluded,
+  stopRefused,
+  unreadableCurrentVersion,
 } from "./access-reasons.mjs";
 import {
   type AgentNavigation,
@@ -59,48 +63,10 @@ interface AgentListContext extends AgentNavigation {
   ): Promise<unknown>;
 }
 
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-
-// Stroke icons on a 24-unit grid: a square for Stop and a trash can for Delete.
-const ACTION_ICONS = {
-  stop: [["rect", { x: 6, y: 6, width: 12, height: 12, rx: 1.5 }]],
-  delete: [
-    ["path", { d: "M4 7h16" }],
-    ["path", { d: "M10 11v6M14 11v6" }],
-    ["path", { d: "M6 7l1 13h10l1-13" }],
-    ["path", { d: "M9 7V4h6v3" }],
-  ],
-} as const;
-
-function actionIcon(name: RowAction) {
-  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
-  const attributes = {
-    class: "action-icon",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    "stroke-width": 2,
-    "stroke-linecap": "round",
-    "stroke-linejoin": "round",
-    "aria-hidden": "true",
-    focusable: "false",
-  };
-  for (const [key, value] of Object.entries(attributes)) {
-    svg.setAttribute(key, String(value));
-  }
-  for (const [tag, shapeAttributes] of ACTION_ICONS[name]) {
-    const shape = document.createElementNS(SVG_NAMESPACE, tag);
-    for (const [key, value] of Object.entries(shapeAttributes)) {
-      shape.setAttribute(key, String(value));
-    }
-    svg.append(shape);
-  }
-  return svg;
-}
-
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
-// Returns it with the rest of its page.
+// Returns it with the rest of its page, and whether that page lists every readable version: the
+// API sends a cursor only when it found an older one the caller can read.
 async function latestReadableRevision(context: AgentListContext, path: string) {
   let cursor: string | null = null;
   do {
@@ -108,32 +74,39 @@ async function latestReadableRevision(context: AgentListContext, path: string) {
       cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
       { ...rowRead, includeMeta: true },
     )) as AgentRevisionListResponse;
+    cursor = page.meta?.nextCursor ?? null;
     const [latest] = page.data;
     if (latest) {
-      return { latest, page: page.data };
+      return { latest, page: page.data, complete: cursor === null };
     }
-    cursor = page.meta?.nextCursor ?? null;
   } while (cursor);
-  return { latest: null, page: [] };
+  return { latest: null, page: [], complete: true };
 }
 
+// A current version the caller cannot read, and whether it is newer than every version they can.
+const UNREADABLE = "unreadable";
+const NEWER_UNREADABLE = "newer-unreadable";
+type CurrentVersion = AgentRevisionMetadata | typeof UNREADABLE | typeof NEWER_UNREADABLE | null;
+
 // The current version, `activeId`, for the Agents list (finding 2093). It is usually on the
-// newest readable page; otherwise it is older or unreadable, so it is read on its own. That page
-// lists only readable versions, so a refusal is remembered like the Agent page's denied reads
-// (an audited 403 per list view otherwise). An unreadable or unread version is null.
+// newest readable page. When that page lists every readable version, one it does not list is
+// unreadable, and the list says so without reading it, as the Agent page does: the read was an
+// audited 403 on every list load (finding D789). Otherwise it may be on an older page, so it is
+// read on its own, and a refusal is remembered like the Agent page's denied reads. A version
+// that could not be read for another reason is null.
 async function currentRevision(
   context: AgentListContext,
   path: string,
   activeId: string | undefined,
-  page: readonly AgentRevisionMetadata[],
-) {
+  { page, complete }: { page: readonly AgentRevisionMetadata[]; complete: boolean },
+): Promise<Exclude<CurrentVersion, typeof NEWER_UNREADABLE>> {
   const listed = page.find((revision) => revision.id === activeId);
-  if (!activeId || listed || !page.length) {
+  if (!activeId || listed) {
     return listed ?? null;
   }
   const activePath = `${path}/${encodeURIComponent(activeId)}`;
-  if (context.deniedReads?.has(activePath)) {
-    return null;
+  if (complete || context.deniedReads?.has(activePath)) {
+    return UNREADABLE;
   }
   try {
     return (await context.request(activePath, rowRead)) as AgentRevisionMetadata;
@@ -144,6 +117,7 @@ async function currentRevision(
     }
     if (status === 403) {
       context.deniedReads?.remember(activePath);
+      return UNREADABLE;
     }
     return null;
   }
@@ -190,22 +164,14 @@ export function renderAgentList(context: AgentListContext) {
   // Agents whose last row action had a conflicting or unconfirmed outcome. Their actions stay
   // disabled until Refresh rereads the list, so the console never repeats an uncertain write.
   const unsettled = new Set<string>();
-  // Each row's latest deployment outcome, once its read shows one. With no version selected, a
-  // failed one leaves nothing to stop, as on Agent detail (finding 2385), and one queued or in
-  // progress makes the row's Stop dialog say it cancels that deployment (finding D691). A row
-  // without one (no visible deployment, or a failed read) keeps Stop: the API answers.
+  // Keep the latest readable outcome for the Stop confirmation copy. It cannot establish
+  // whether newer work exists: a queued deployment may be hidden by revision read permissions.
   const latestDeployments = new Map<string, string>();
-  const failedFirst = (item: AgentRead) =>
-    !item.activeRevisionId && latestDeployments.get(item.id) === "failed";
   function setLatestDeployment(item: AgentRead, outcome: string | null) {
-    const before = failedFirst(item);
     if (outcome) {
       latestDeployments.set(item.id, outcome);
     } else {
       latestDeployments.delete(item.id);
-    }
-    if (failedFirst(item) !== before) {
-      updateRowActions(item.id);
     }
   }
   const rowControls = new Map<
@@ -219,13 +185,18 @@ export function renderAgentList(context: AgentListContext) {
   // row's icon before confirmation; a failed read keeps the usual path, and the API still
   // authorizes every write.
   const permissionReads = new Set<string>();
+  // Each row's permission answer as it settles (null when it failed), for text that depends on it.
+  const permissionAnswers = new Map<string, Promise<AgentPermissions | null>>();
   const permissions = new Map<string, AgentPermissions>();
   type RestrictDialog = (id: string, answer: AgentPermissions) => void;
   let restrictOpenDialog: RestrictDialog | null = null;
+  let dismissOpenDialog: (() => void) | null = null;
   // The page renders with the caller's permission answer, so Create Agent is never painted
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.agents?.create === false;
+  // An administrator a Restriction keeps from creating still reads every Agent here (finding D759).
+  const sharedOnly = createDenied && context.permissions?.installation?.administer !== true;
   // A Namespace that is not ready names its status here, so the first sign is never a refused
   // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
   let notReady = namespaceCreation(context.namespace);
@@ -268,7 +239,7 @@ export function renderAgentList(context: AgentListContext) {
           element(
             "p",
             { className: "muted", role: "status", id: "agents-create-denied" },
-            AGENT_CREATE_DENIED,
+            agentCreateDenied(context.permissions),
           ),
         ]
       : []),
@@ -284,19 +255,45 @@ export function renderAgentList(context: AgentListContext) {
   function readDeployment(item: AgentRead) {
     const agentPath = agentRequestPath(item.id);
     const revisions = latestReadableRevision(context, `${agentPath}/revisions`);
+    const deployment = revisions.then(async ({ latest }) => {
+      if (!latest) {
+        return null;
+      }
+      const status = (await context.request(
+        `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
+        rowRead,
+      )) as AgentDeploymentStatusWire;
+      // A rejected model credential is worded for the caller, as on the Agent's page (finding
+      // D752), so that row waits for its permission answer.
+      const code = status.status === "failed" ? status.error?.code : undefined;
+      const credentialAsk =
+        code === "RUNTIME_AUTHENTICATION_FAILED"
+          ? credentialRejectedAsk(
+              code,
+              "harnessAuth" in item ? item.harnessAuth : undefined,
+              await permissionAnswers.get(item.id),
+            )
+          : undefined;
+      return { revision: latest, status, credentialAsk };
+    });
     return {
-      current: revisions.then(({ page }) =>
-        currentRevision(context, `${agentPath}/revisions`, item.activeRevisionId, page),
-      ),
-      deployment: revisions.then(async ({ latest }) => {
-        if (!latest) {
-          return null;
+      deployment,
+      current: revisions.then(async (found): Promise<CurrentVersion> => {
+        const active = await currentRevision(
+          context,
+          `${agentPath}/revisions`,
+          item.activeRevisionId,
+          found,
+        );
+        if (active !== UNREADABLE) {
+          return active;
         }
-        const status = (await context.request(
-          `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
-          rowRead,
-        )) as AgentDeploymentStatusWire;
-        return { revision: latest, status };
+        // A succeeded deployment makes its version current, so an unreadable current version
+        // beside the newest readable one's succeeded deployment is newer, as on the Agent page.
+        const latest = await deployment.catch(() => null);
+        return latest && deploymentOutcome(latest.status) === "succeeded"
+          ? NEWER_UNREADABLE
+          : UNREADABLE;
       }),
     };
   }
@@ -338,14 +335,27 @@ export function renderAgentList(context: AgentListContext) {
       });
     }
   }
-  // Fills a row's Current version cell: the version's number once its row's read finds it, else
-  // its ID as before, for a current version the reader cannot read (finding 2093).
-  function fillCurrent(
-    current: HTMLTableCellElement,
-    item: AgentRead,
-    active: AgentRevisionMetadata | null,
-  ) {
+  // Fills a row's Current version cell: the version's number once its row's read finds it
+  // (finding 2093), words for one the reader cannot read (finding D789), else its ID.
+  function fillCurrent(current: HTMLTableCellElement, item: AgentRead, active: CurrentVersion) {
     if (!item.activeRevisionId) {
+      return;
+    }
+    if (active === UNREADABLE || active === NEWER_UNREADABLE) {
+      const text = unreadableCurrentVersion(active === NEWER_UNREADABLE);
+      const shown = current.querySelector(".agent-version-unreadable");
+      if (shown) {
+        setText(shown, text);
+        return;
+      }
+      // A retained row's link gives way to the words; focus on it moves to the row's Agent link.
+      const focused = current.contains(current.ownerDocument.activeElement);
+      current.replaceChildren(
+        element("span", { className: "muted agent-version-unreadable" }, text),
+      );
+      if (focused) {
+        current.closest("tr")?.querySelector("a")?.focus({ preventScroll: true });
+      }
       return;
     }
     const label = active ? `v${active.revision}` : shortId(item.activeRevisionId);
@@ -375,7 +385,7 @@ export function renderAgentList(context: AgentListContext) {
     );
     const fillVersion = fillAfterReading(
       current.querySelector(".delayed-status"),
-      (active: AgentRevisionMetadata | null) => fillCurrent(current, item, active),
+      (active: CurrentVersion) => fillCurrent(current, item, active),
     );
     void reads.current.then(
       (active) => context.isCurrent() && fillVersion(active),
@@ -392,12 +402,11 @@ export function renderAgentList(context: AgentListContext) {
           return;
         }
         const neutral = neutralDeploymentOutcome(result.status);
-        // Each read decides again: a retained list rereads on resume, and a first deployment
-        // retried since then (queued or deploying) keeps Stop, as on Agent detail (finding 2580).
+        // A retained list rereads on resume so the confirmation uses the latest readable outcome.
         setLatestDeployment(item, deploymentOutcome(result.status));
         const failure =
           !neutral && result.status.status === "failed"
-            ? (result.status.error?.message ?? "Deployment failed.")
+            ? (result.credentialAsk ?? result.status.error?.message ?? "Deployment failed.")
             : null;
         // A long failure fits one line; its title and the Agent page give the whole text.
         fill(
@@ -493,12 +502,18 @@ export function renderAgentList(context: AgentListContext) {
       return;
     }
     permissionReads.add(item.id);
-    void context.request(`${agentRequestPath(item.id)}/permissions`, rowRead).then(
-      (result) => {
+    const read = context
+      .request(`${agentRequestPath(item.id)}/permissions`, rowRead)
+      .then((result) => result as AgentPermissions);
+    permissionAnswers.set(
+      item.id,
+      read.catch(() => null),
+    );
+    void read.then(
+      (answer) => {
         if (!context.isCurrent()) {
           return;
         }
-        const answer = result as AgentPermissions;
         const previous = permissions.get(item.id);
         permissions.set(item.id, answer);
         if (restricts(answer) || restricts(previous)) {
@@ -519,12 +534,18 @@ export function renderAgentList(context: AgentListContext) {
       context.onExpired();
       return;
     }
+    if (notReady?.missing) {
+      const refused = [400, 403, 404, 409, 429].includes(error.status ?? 0);
+      showOutcome({
+        error: refused
+          ? "The request was not accepted. This Namespace is no longer available."
+          : "Outcome unknown. The request may have been accepted. This Namespace is no longer available; the request has not been repeated.",
+      });
+      return;
+    }
     let text;
     if (error.status === 403) {
-      text =
-        kind === "stop"
-          ? `You do not have permission to stop ${item.name}. ${askForGrant("Agent operate on it")}`
-          : `You do not have permission to delete ${item.name}. ${askForGrant("Agent delete on it")}`;
+      text = kind === "stop" ? stopRefused(item.name) : deleteRefused(item.name);
     } else if (error.status === 400 || error.status === 429) {
       text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true })}`;
     } else {
@@ -557,6 +578,10 @@ export function renderAgentList(context: AgentListContext) {
         throw new Error("Invalid Agent stop response");
       }
       replaceItem(item.id, stopped);
+      if (notReady?.missing) {
+        showOutcome({ notice: "Stop request accepted. This Namespace is no longer available." });
+        return;
+      }
       showOutcome({
         notice:
           stopped.status === "deleting"
@@ -581,7 +606,9 @@ export function renderAgentList(context: AgentListContext) {
       }
       replaceItem(item.id, deleting);
       showOutcome({
-        notice: `Deletion requested for ${item.name}. It leaves this list once cleanup finishes; select Refresh to check.`,
+        notice: notReady?.missing
+          ? "Deletion request accepted. This Namespace is no longer available."
+          : `Deletion requested for ${item.name}. It leaves this list once cleanup finishes; select Refresh to check.`,
       });
     } catch (error) {
       reportFailure(item, error, "delete");
@@ -608,7 +635,7 @@ export function renderAgentList(context: AgentListContext) {
     const confirm = button(
       stopping ? "Stop Agent" : "Permanently delete Agent",
       async () => {
-        if (permissions.get(item.id)?.[permission] === false) {
+        if (notReady?.missing || pending || permissions.get(item.id)?.[permission] === false) {
           return;
         }
         pending = true;
@@ -635,6 +662,8 @@ export function renderAgentList(context: AgentListContext) {
       cancel.focus();
     };
     restrictOpenDialog = restrict;
+    const dismiss = () => dialog.close();
+    dismissOpenDialog = dismiss;
     dialog.append(
       element(
         "h2",
@@ -656,8 +685,11 @@ export function renderAgentList(context: AgentListContext) {
         if (restrictOpenDialog === restrict) {
           restrictOpenDialog = null;
         }
+        if (dismissOpenDialog === dismiss) {
+          dismissOpenDialog = null;
+        }
         dialog.remove();
-        if (!context.isCurrent()) {
+        if (!context.isCurrent() || !mayReturnFocus(dialog)) {
           return;
         }
         // A redraw while the dialog was open (a permission refusal, for example) replaces the
@@ -680,9 +712,9 @@ export function renderAgentList(context: AgentListContext) {
     // A deleting Agent keeps its retry and status controls on its detail page.
     const available = item.status !== "deleting" && !unsettled.has(item.id);
     const stopped = item.desiredRuntimeState === "stopped";
-    // New Agents start stopped with no version, and a first deployment that failed selects none,
-    // so there is nothing to stop yet; Agent detail shows no Stop control then either.
-    const neverStarted = !item.activeRevisionId && (stopped || failedFirst(item));
+    // A failed readable deployment can hide a newer queued one. Agent operate is sufficient
+    // to stop that work, even with no selected version.
+    const neverStarted = stopped && !item.activeRevisionId;
     const allowed = permissions.get(item.id);
     const canStop = neverStarted || allowed?.operate !== false;
     const canDelete = allowed?.delete !== false;
@@ -715,7 +747,7 @@ export function renderAgentList(context: AgentListContext) {
     const stop = neverStarted
       ? null
       : button(
-          actionIcon("stop"),
+          resourceActionIcon("stop"),
           (event) => confirmAction(item, "stop", event.currentTarget as HTMLButtonElement),
           {
             className: "icon-button",
@@ -727,7 +759,7 @@ export function renderAgentList(context: AgentListContext) {
           },
         );
     const remove = button(
-      actionIcon("delete"),
+      resourceActionIcon("delete"),
       (event) => confirmAction(item, "delete", event.currentTarget as HTMLButtonElement),
       {
         className: "icon-button",
@@ -755,7 +787,7 @@ export function renderAgentList(context: AgentListContext) {
     return [
       element(
         "div",
-        { className: "agent-row-actions" },
+        { className: "resource-row-actions" },
         actions.stop ?? element("span", { className: "icon-button-spacer" }),
         actions.delete,
       ),
@@ -786,6 +818,10 @@ export function renderAgentList(context: AgentListContext) {
   function render() {
     cells.clear();
     rowControls.clear();
+    if (notReady?.missing) {
+      rows.replaceChildren();
+      return;
+    }
     const query = search.value.trim().toLowerCase();
     const matches = items
       .filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query))
@@ -802,7 +838,7 @@ export function renderAgentList(context: AgentListContext) {
             {},
             query
               ? "No matching Agents"
-              : createDenied
+              : sharedOnly
                 ? "No Agents are shared with you"
                 : "No Agents yet",
           ),
@@ -814,7 +850,9 @@ export function renderAgentList(context: AgentListContext) {
               : createDenied
                 ? // Under the note above: say what the reader can expect, not invite creating
                   // (finding 1521).
-                  "Agents in this Namespace that are shared with you appear here."
+                  sharedOnly
+                  ? "Agents in this Namespace that are shared with you appear here."
+                  : "Agents in this Namespace appear here."
                 : notReady?.blocked
                   ? context.namespace?.status === "provisioning" && !notReady.missing
                     ? "You can create Agents here once this Namespace is ready."
@@ -1008,8 +1046,23 @@ export function renderAgentList(context: AgentListContext) {
           );
       notReadyNote?.replaceWith(replacement);
       notReadyNote = replacement;
-      // Only the empty state's sentence depends on the Namespace; rows keep their focus.
-      if (!rows.querySelector("table")) {
+      if (!namespace) {
+        // A lost Namespace also removes its retained rows, so search cannot reveal them again.
+        const focused =
+          rows.contains(document.activeElement) ||
+          feedback.contains(document.activeElement) ||
+          document.activeElement === create ||
+          dismissOpenDialog !== null;
+        items.length = 0;
+        feedback.replaceChildren();
+        render();
+        // Dismiss stale confirmation without aborting or replaying an already submitted write.
+        dismissOpenDialog?.();
+        if (focused) {
+          search.focus({ preventScroll: true });
+        }
+      } else if (!rows.querySelector("table")) {
+        // Status changes affect the empty state's sentence; readable rows keep their focus.
         render();
       }
     };

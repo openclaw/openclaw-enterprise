@@ -2,10 +2,11 @@
 
 This page is part of the [Kubernetes storage and credentials](storage-and-credentials.md) reference.
 
-Ordinary runtime gateways read the managed ConfigMap at
-`/etc/openclaw/openclaw.json`. Native admin editing uses a writable copy only
-when runtime gateway images and private `gatewayRouting` are configured and
-the saved native Configuration explicitly enables the pilot shape:
+With [Gateway managed mode](../../agent-native-admin.md#gateway-managed-mode) off,
+Kubernetes gives the Gateway a writable copy of its native configuration.
+With managed mode on, Kubernetes creates that copy only when the deployment uses
+runtime Gateway images and private `gatewayRouting`, and the saved Configuration
+meets the following native admin requirements.
 
 - Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
   with `operator.admin` identity scopes.
@@ -16,8 +17,8 @@ the saved native Configuration explicitly enables the pilot shape:
 For those gateways, the managed ConfigMap remains read-only at
 `/etc/openclaw-managed/openclaw.json`. The nonroot init container copies it to
 `/home/node/.openclaw/openclaw.json` on the Pod-local `emptyDir`, and
-`OPENCLAW_CONFIG_PATH` points to that writable copy. Gateways without the full
-opt-in shape, including ordinary routed gateways, keep the read-only path.
+`OPENCLAW_CONFIG_PATH` points to that writable copy. Other managed Gateways read the ConfigMap directly at
+`/etc/openclaw/openclaw.json`.
 
 Native edits change only the copy; Pod replacement or Agent redeployment
 restores the managed snapshot, while the persistent gateway and workspace claims

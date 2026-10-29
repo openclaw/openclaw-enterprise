@@ -37,7 +37,7 @@ type SlackRecord = Record<string, unknown>;
 export class SlackRouteNotConfiguredError extends ResourceStateConflictError {
   constructor() {
     super(
-      "OCC could not reach Slack, and the API has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask the Installation operator to set Helm slackProxy.enabled or api.channelDirectoryProxyUrl; see the Slack integration guide.",
+      "The API could not reach Slack and has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask an Installation administrator to give the API a route to Slack; the Slack integration guide lists the Helm settings.",
     );
     this.name = "SlackRouteNotConfiguredError";
   }
@@ -419,7 +419,7 @@ export class SlackChannelDriver implements ChannelDriver {
         }
       }
       const nextCursor = asRecord(reply.response_metadata)?.next_cursor;
-      if (nextCursor !== undefined && typeof nextCursor !== "string") {
+      if (nextCursor != null && typeof nextCursor !== "string") {
         throw new ChannelDirectoryError("invalid_response");
       }
       cursor = nextCursor ?? "";

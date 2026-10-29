@@ -162,10 +162,11 @@ test(
                     "console-secrets",
                     async (agent, step) => {
                       await step(
-                        "console Secret lifecycle and Agent Configuration references",
+                        "console Secret lifecycle, Agent references and Namespace deletion blockers",
                         async () => {
                           assert.ok(browser, "blocked by browser setup failure");
                           await browser.verifySecrets(agent);
+                          await browser.verifyNamespaceDeletionBlockers(agent);
                         },
                       );
                     },
@@ -198,6 +199,7 @@ test(
                               (await f.pod(agent, "gateway")).metadata.uid,
                               gateway.pod.metadata.uid,
                             );
+                            assert.equal(agent.revision.gatewayManagedMode, true);
                             assert.equal(
                               (
                                 await f.api(
@@ -212,6 +214,7 @@ test(
                             await f.record(`${preset}-model`, {
                               agentId: agent.id,
                               revisionId: agent.revision.id,
+                              gatewayManagedMode: agent.revision.gatewayManagedMode,
                               podUid: gateway.pod.metadata.uid,
                               nativePodUid: nativePod.metadata.uid,
                               images: gateway.pod.status.containerStatuses.map(

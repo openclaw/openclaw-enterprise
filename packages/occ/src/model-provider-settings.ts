@@ -15,8 +15,8 @@ import {
 
 /**
  * Model API adapter ids the pinned OpenClaw runtime accepts: `MODEL_DATA_APIS` in
- * openclaw/openclaw `packages/llm-core/src/model-data.ts` at the `OPENCLAW_COMMIT` in
- * `deploy/runtime/Dockerfile`. Update this list when that pin changes.
+ * openclaw/openclaw `packages/llm-core/src/model-data.ts` at the commit in
+ * `deploy/runtime/openclaw-source.json`. Update this list when that pin changes.
  */
 const RUNTIME_MODEL_APIS: readonly string[] = Object.freeze([
   "openai-completions",

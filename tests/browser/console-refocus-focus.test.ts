@@ -5,15 +5,22 @@ import type { Locator, Page } from "playwright";
 import type { NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 
 import {
+  apiRequests,
+  detailUrl,
   fileBrowser,
   hasFocus,
   holdRequests,
   login,
   nativeValues,
   newPage,
+  nonAuthWriteRequests,
+  secretOptionLabel,
+  selectSecret,
+  waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -247,3 +254,146 @@ test("refocusing at phone width with the navigation drawer open focuses the draw
     assert.equal(await drawer.isVisible(), false, "the drawer is closed");
   }
 });
+
+// Initial admission allows Agent metadata without Configuration read. Refocus must preserve
+// that same partial view instead of replacing the accessible Agent with a page-wide denial.
+test("mounted Agent refocus preserves a stable Configuration denial", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Partial Agent refocus");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Partial Agent",
+    nativeValues("private-model"),
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  restrict(fixture.policy, "read", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+  );
+  const unavailable = page.getByRole("heading", { name: "Configuration unavailable", exact: true });
+  await unavailable.waitFor();
+  await page.locator(settledView).waitFor();
+  // Reload admits the partial view from the same owner's remembered exact-path refusal.
+  // Refocus must still ask the server again when this new view has no read signature.
+  await page.reload();
+  await unavailable.waitFor();
+  await page.locator(settledView).waitFor();
+  await page
+    .locator(settledView)
+    .evaluate((node) => node.setAttribute("data-partial-agent", "true"));
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const checked = page.waitForResponse((response) => response.url().endsWith(configurationPath));
+    await refocus(page);
+    assert.equal((await checked).status(), 403);
+    await page.locator(settledView).waitFor();
+    assert.equal(await unavailable.isVisible(), true);
+    assert.equal(await page.locator('[data-partial-agent="true"]').count(), 1);
+    assert.equal(
+      await page.getByRole("heading", { name: "Partial Agent", exact: true }).isVisible(),
+      true,
+    );
+  }
+});
+
+for (const revoked of ["configuration", "agent"] as const) {
+  test(`Credentials preflight scrubs bindings when ${revoked} read is revoked`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(
+      t,
+      `Revoked ${revoked} preflight`,
+    );
+    const appSecret = await fixture.createSecret(
+      namespace.id,
+      "Original app binding",
+      "xapp-original",
+    );
+    const botSecret = await fixture.createSecret(
+      namespace.id,
+      "Original bot binding",
+      "xoxb-original",
+    );
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement app binding",
+      "xapp-replacement",
+    );
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Credential refocus Agent",
+      nativeValues("binding-review", {
+        harnessId: "codex",
+        channels: {
+          slack: {
+            enabled: true,
+            mode: "socket",
+            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+            dmPolicy: "allowlist",
+            groupPolicy: "allowlist",
+            allowFrom: ["U123"],
+            channels: { C123: { requireMention: true } },
+          },
+        },
+      }),
+      {
+        executionMode: "dedicated",
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+        },
+      },
+    );
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+    await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
+    await page.locator(settledView).waitFor();
+
+    // A granted administrator keeps the readable form on refocus. Only the later exact
+    // read restriction changes admission; Configuration update and Secret operate stay granted.
+    await refocusHeld(t, page);
+    await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
+    await selectSecret(page, "Slack app token", replacement);
+    restrict(fixture.policy, "read", revoked, {
+      namespaceId: namespace.id,
+      resourceId: revoked === "agent" ? agent.id : agent.configurationId,
+    });
+    await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
+    await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+    const assertScrubbed = async () => {
+      assert.equal(await page.getByLabel("Slack bot token").count(), 0);
+      const html = await page.content();
+      for (const secret of [appSecret, botSecret, replacement]) {
+        assert.equal(html.includes(secret.name), false, "no cached binding name remains");
+        assert.equal(html.includes(secret.id), false, "no cached binding reference remains");
+      }
+      assert.deepEqual(nonAuthWriteRequests(requests), [], "denied preflight sends no write");
+    };
+    await assertScrubbed();
+
+    // Re-admission and history must not recover the now-revoked form from a retained view.
+    const sessionRead = page.waitForResponse("**/api/auth/session");
+    await refocus(page);
+    await sessionRead;
+    const heading = revoked === "agent" ? "Access denied" : "Configuration unavailable";
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    await assertScrubbed();
+    await page.reload();
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    const deniedPath = `/namespaces/${namespace.id}/${revoked === "agent" ? "agents" : "configurations"}/${revoked === "agent" ? agent.id : agent.configurationId}`;
+    const deniedRead = page.waitForResponse((response) => response.url().endsWith(deniedPath));
+    await refocus(page);
+    assert.equal((await deniedRead).status(), 403);
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    await assertScrubbed();
+    await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    await page.goBack();
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    await assertScrubbed();
+  });
+}

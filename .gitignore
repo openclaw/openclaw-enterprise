@@ -27,6 +27,7 @@ output/playwright/
 !.agents/skills/deslop/
 !.agents/skills/enterprise-testing/
 !.agents/skills/oceinteg/
+!.agents/skills/oce-cookbook/
 !.agents/skills/mermaid-diagrams/
 !.agents/skills/local-dev/
 !.agents/skills/technical-writing/

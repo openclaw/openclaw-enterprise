@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-25"
-last_updated_session: authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4
+updated: "2026-10-29"
+last_updated_session: authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf
 ---
 
 # Agent repository credential flow
@@ -288,15 +288,25 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-`apps/controller/src/composition/repository-credentials/transport.ts:bindRepositoryGitTransport`
-calls `RepositoryGitBinding.reconcile` serially with 25-second abort signals and
-one-second delays. Close aborts and joins. Independent readback settles the original
-OCC delivery without reinstalling or restoring withdrawn access. OpenShell is unchanged.
+The [worker](../../apps/controller/src/worker.mjs) passes only the selected `ProtectedRepositoryGitAuthority`
+to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
+The worker retains maintenance and shutdown. Missing authority or mismatched Drivers stop
+binding before route-store or sender calls.
+Bundled OpenShell connects its route store before binding; a bare Sandbox runs without Git.
 
-The worker commits activation and next maintenance together, preserving the actor.
-Maintenance uses 30 seconds, the selected native sender interval or a shorter Compute
-interval. A missing known session is invalidated, never reminted after restart.
-Users may deploy another version during cleanup.
+If an external binding provides `reconcile`, the worker calls it serially with a 25-second abort
+signal and a one-second delay between calls.
+Close aborts and joins. Independent readback settles the original OCC delivery without
+reinstalling or restoring withdrawn access.
+
+The worker commits activation and next maintenance together, preserving the actor. Maintenance uses
+30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing known sessions without reminting. Users can deploy during cleanup.
+
+[Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
+permission and current scope for standing approval. The
+[worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
+[eligibility](../../packages/occ/src/repository-approval.ts) under Namespace then Agent locks.
+Withdrawal or a changed scope fingerprint raises `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 
 If standing Git evidence is missing, the worker keeps Git closed and observes the existing
 Harness without preparing or activating it. It checks again within five seconds, rechecking
@@ -370,6 +380,8 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
+- 2026-10-29 14:26: Narrow sender binding and remove fresh legacy Git composition. (authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf - ea84f8a9595fc57e2b35bab4f9ad45f9174c8319)
+
 - 2026-10-25 00:30: Answer repository options without a repository Driver with no options and `meta.notConfigured`. (finding 2387)
 
 - 2026-10-24 22:30: Name the missing repository Driver. (fix-2361-2362 - 476c1b350)
@@ -390,13 +402,4 @@ denied before reaching the provider, and chat continues.
 
 - 2026-10-21 22:10: Document standing Git supervision with the accompanying uncommitted worker change. (authoring-run/5f4d0dab-1a03-4fa9-a469-a8778c8ad3d4 - 390a3627b97535f4d21107001efda8af6152355d)
 
-- 2026-10-17 06:00: Keep joiners in words and emoji and the three subdivision flags in repository descriptions. (lows-1017h - 49397a014)
-
-- 2026-10-17 05:00: Replace invisible and bidi characters in repository descriptions; escape them in the picker. (lows-1017g - 3a02bef00)
-
-- 2026-10-17 00:15: Preserve Unicode repository descriptions across truncation and discovery. (authoring-run/f538c999-f9bf-4549-ba36-19dca6101420 - 42fb0a90337209e28318765c1b537bc4f3623506)
-
-- 2026-10-16 21:13: Restrict prepared Git draft body input to explicit text; bind prepared Git session origins to the Helm-owned broker Service before ingress admission. (authoring-run/97826393-386f-4988-ace7-afc669f1922f - dac53babe; authoring-run/c21f74f4-95aa-4ba6-878d-84586bd6ecb7 - d2200df9a)
-- 2026-10-12 07:39: Recovery fences a reserved receipt whose fence did not commit. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
-
-- 2026-10-03 16:30: Log a stuck repository cleanup's cause once and slow its rechecks with age. (fix-repo-cleanup-backoff)
+[Agent repository credential documentation history](agent-repository-credentials/history.md) preserves the older dated entries.

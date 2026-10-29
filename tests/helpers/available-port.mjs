@@ -67,6 +67,18 @@ export function reservedPortArgs(reservation) {
   return ["--import", preload.href];
 }
 
+// The in-process counterpart of reservedPortArgs(): this process's own listen() on the
+// reservation's port then sets `reusePort`, so a listener that does not set it itself (such as
+// a product server started in-process) binds the held port. The patch stays for the
+// process's lifetime and applies to that port only. Release the reservation once the real
+// listener is up.
+export async function bindReservedPortInProcess(reservation) {
+  const [, preload] = reservedPortArgs(reservation);
+  if (preload !== undefined) {
+    await import(preload);
+  }
+}
+
 // Holds a port on `host` that refuses connections until release(). A connected client
 // socket stays bound to it and nothing listens there. On Linux the kernel skips the port
 // for every bind to port 0 that could accept on `host` and for every outgoing

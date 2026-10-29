@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-10-25
-last_updated_session: fix-postland-1025b
+updated: 2026-10-29
+last_updated_session: provisioning-status-repository-policy
 ---
 
 # Agent provisioning flow
@@ -33,6 +33,7 @@ graph TD
   Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe saved version"]
   Observe -->|Pending| Observe
   Observe -->|Activated| UI["<b>Agent deployment view</b><br/>Open existing version"]
+  Observe -->|Superseded| Superseded["<b>Create stays open</b><br/>Newer deployment took over"]
   Observe -->|Failed| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
   Claim -->|Failure| Failed["<b>Retain outputs</b><br/>Retry known failures"]
   Failed -->|Uncertain write| Recovery["<b>Recovery required</b><br/>Do not repeat blindly"]
@@ -42,7 +43,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI operation
-  class Failed,Recovery,Terminal condition
+  class Failed,Recovery,Terminal,Superseded condition
 ```
 
 ## Execution Trace
@@ -117,7 +118,9 @@ wait and waits one second between status reads, spending it on details such as a
 at the next poll. Admission, status and retry report the stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
 `meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
-If the first deployment fails, correct the cause and deploy again; after a Stop, deploy when ready.
+If a newer deployment takes over, Create explains what happened without a retry or a link:
+the job identifies only the deployment that ended. For a failure, follow the linked version's
+recovery guidance. After a Stop, deploy when ready.
 Reconciliation owns startup and activation; later versions use Deploy.
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
@@ -146,7 +149,7 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 ## Debugging and Verification
 
 - Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`; failed work reports a safe error. Status checks stored ownership and provisioning grants, while retry also revalidates the accepted plan. See [admission](#2-occ-admits-one-job) for refusal rules. Explicit pre-handoff retry uses the same URL plus `/retry` and an empty body; only the initiating actor can read or retry work. Match request IDs in `agent_provisioning.compute_refused` and `worker.completed`.
-- Status does not repeat plugin policy, runtime-image support, Compute plan validation or Harness authentication checks; retry can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
+- Status does not repeat repository admission, plugin policy, runtime-image support, Compute plan validation or Harness authentication checks. If the Agent already exists, retry rechecks its repository selections before the lifecycle checks and can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
@@ -165,6 +168,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29: Keep saved provisioning status readable after repository policy changes. Retry still checks current policy.
 
 - 2026-10-25: Name Slack's whole `${NAME}` token reading; move older entries to the history page. (finding 2512)
 - 2026-10-25: Check Configuration rules before channel credentials. (finding 2506)

@@ -1236,13 +1236,18 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 // query, fragment, or userinfo with the service key.
 func TestOCCURLMustBeABareOrigin(t *testing.T) {
 	const origin = "OCC URL must be an origin without credentials, a path, a query, or a fragment"
+	// The refusal names what to drop and the origin to use (finding D765), but
+	// never echoes credentials, a query or a fragment, which may hold secrets.
+	use := func(has string) string {
+		return origin + "; it has " + has + ". Set OCC_URL (or --url) to https://occ.example.test if that origin serves the OCC API"
+	}
 	for _, testCase := range []struct{ url, want string }{
 		{"ftp://occ.example.test", "OCC URL must use http or https"},
-		{"https://occ.example.test/api", origin},
-		{"https://occ.example.test?", origin},
-		{"https://occ.example.test?region=1", origin},
-		{"https://occ.example.test#top", origin},
-		{"https://user@occ.example.test", origin},
+		{"https://occ.example.test/api", use(`the path "/api"`)},
+		{"https://occ.example.test?", use("a query")},
+		{"https://occ.example.test?token=1", use("a query")},
+		{"https://occ.example.test#top", use("a fragment")},
+		{"https://user:pass@occ.example.test/occ?x=1", use(`credentials and the path "/occ" and a query`)},
 		{"https:///", origin},
 	} {
 		if _, _, err := runHelp(t, "installation", "get", "--url", testCase.url, "--service-key-file", "unused"); err == nil || err.Error() != testCase.want {
@@ -1286,7 +1291,8 @@ func TestUnknownTopLevelCommandFailsInsteadOfPrintingHelp(t *testing.T) {
 		command := New(&out, &errOut)
 		command.SetArgs(args)
 		err := command.Execute()
-		if want := fmt.Sprintf("unknown command %q for \"occ\"", args[0]); err == nil || err.Error() != want {
+		// A close command name may follow as a suggestion (TestMissingCommandsPointAtWhatOCCOffers).
+		if want := fmt.Sprintf("unknown command %q for \"occ\"", args[0]); err == nil || !strings.HasPrefix(err.Error(), want) {
 			t.Fatalf("occ %v error = %v, want %q", args, err, want)
 		}
 		if out.Len() != 0 {

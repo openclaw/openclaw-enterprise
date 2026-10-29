@@ -19,6 +19,7 @@ import {
   CredentialSourceRegistrationConfigError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
+  CredentialWithdrawalNotFoundError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
   IAMAccessBindingRoleError,
@@ -34,6 +35,7 @@ import {
   NativeWorkerSupportError,
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
+  QualifiedAuthorizationDeniedError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
@@ -73,6 +75,11 @@ export class RequestFailure extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: readonly ErrorDetail[];
+  remainingResources?: readonly {
+    kind: string;
+    count: number;
+    ids: readonly string[];
+  }[];
 
   constructor(status: number, code: string, message: string, details?: readonly ErrorDetail[]) {
     super(message);
@@ -96,6 +103,22 @@ export function failure(
 
 export function dependencyUnavailable(): RequestFailure {
   return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+}
+
+/**
+ * A workspace file read or write on an Agent with no active version: a lifecycle state the caller
+ * can change, not an outage (finding D768). `stopped` is an Agent that is stopped or was never
+ * deployed; otherwise its deployment is still activating. Raised only after the Agent grant, for
+ * the Agent ID the request named.
+ */
+export function workspaceWithoutRunningVersion(agentId: string, stopped: boolean): RequestFailure {
+  return failure(
+    409,
+    "RESOURCE_CONFLICT",
+    stopped
+      ? `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`
+      : `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`,
+  );
 }
 
 /**
@@ -160,6 +183,9 @@ export function canonicalFailure(reply: FastifyReply, error: RequestFailure): vo
       // Some messages come from Drivers or name submitted values; none may break the cap.
       message: capped(error.message),
       ...(error.details === undefined ? {} : { details: error.details }),
+      ...(error.remainingResources === undefined
+        ? {}
+        : { remainingResources: error.remainingResources }),
     },
     meta: { requestId: reply.request.id },
   });
@@ -423,8 +449,8 @@ export function unstorableTextFailure(
 }
 
 /**
- * Names each remaining kind and as many of its resource IDs as fit the 256-character
- * message contract; a kind whose IDs do not all fit says how many are left.
+ * Names each remaining kind and as many of its readable resource IDs as fit the 256-character
+ * message contract; a kind with more resources than it names says how many are left.
  */
 function namespaceNotEmptyMessage(error: NamespaceNotEmptyError): string {
   const prefix = "The requested Namespace is not empty.";
@@ -435,14 +461,15 @@ function namespaceNotEmptyMessage(error: NamespaceNotEmptyError): string {
   const render = (): string => {
     const parts = error.contents.map((kind) => {
       const ids = error.ids[kind] ?? [];
+      const total = error.counts[kind] ?? 0;
       const count = shown.get(kind) ?? 0;
-      if (ids.length === 0) {
+      if (total === 0) {
         return kind;
       }
       if (count === 0) {
-        return `${kind} (${ids.length})`;
+        return `${kind} (${total})`;
       }
-      const more = ids.length - count;
+      const more = total - count;
       return `${kind} (${ids.slice(0, count).join(", ")}${more === 0 ? "" : ` and ${more} more`})`;
     });
     return `${prefix} It still contains: ${parts.join(", ")}.`;
@@ -553,6 +580,11 @@ export function dependencyUnavailableLogFields(error: Error): {
   };
 }
 
+// Names the requested source and which versions have each source (finding D762). The source is
+// one the contract accepts, so the text never echoes free input.
+const runtimeLogSourceUnavailable = (source: string) =>
+  `This Agent version has no ${source} log source. Every version has gateway; only a Dedicated Agent has agent, and only a version deployed with a Sandbox Driver has sandbox.`;
+
 const RUNTIME_LOG_FAILURES: Readonly<
   Record<RuntimeLogsErrorCode, { readonly status: number; readonly message: string }>
 > = Object.freeze({
@@ -566,7 +598,7 @@ const RUNTIME_LOG_FAILURES: Readonly<
   },
   RUNTIME_LOGS_SOURCE_UNAVAILABLE: {
     status: 400,
-    message: "This Agent version has no such runtime log source.",
+    message: runtimeLogSourceUnavailable("such"),
   },
   RUNTIME_LOGS_RATE_LIMITED: {
     status: 429,
@@ -662,7 +694,13 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof RuntimeLogsError) {
     const mapped = RUNTIME_LOG_FAILURES[error.code];
-    return failure(mapped.status, error.code, mapped.message);
+    return failure(
+      mapped.status,
+      error.code,
+      error.code === "RUNTIME_LOGS_SOURCE_UNAVAILABLE"
+        ? runtimeLogSourceUnavailable(error.source ?? "such")
+        : mapped.message,
+    );
   }
   if (error instanceof RuntimeCredentialsForbiddenByClusterError) {
     return failure(
@@ -823,7 +861,13 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(409, "NAMESPACE_NOT_READY", "The requested Namespace is not ready.");
   }
   if (error instanceof NamespaceNotEmptyError) {
-    return failure(409, "NAMESPACE_NOT_EMPTY", namespaceNotEmptyMessage(error));
+    const result = failure(409, "NAMESPACE_NOT_EMPTY", namespaceNotEmptyMessage(error));
+    result.remainingResources = error.contents.slice(0, 7).map((kind) => ({
+      kind,
+      count: error.counts[kind] ?? 0,
+      ids: (error.ids[kind] ?? []).slice(0, 20),
+    }));
+    return result;
   }
   if (error instanceof AgentDeletingError) {
     return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");
@@ -884,6 +928,10 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof ScopeViolationError) {
     return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
   }
+  if (error instanceof CredentialWithdrawalNotFoundError) {
+    // Raised only after Agent read, with a fixed message about that Agent's active version.
+    return failure(404, "NOT_FOUND", error.message);
+  }
   if (error instanceof DeletionRetryOwnedError) {
     // The caller holds delete on this exact resource; only the retry condition is named.
     return failure(403, "FORBIDDEN", error.message);
@@ -910,7 +958,17 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       "FORBIDDEN",
       error.authorization === undefined || !own
         ? GENERIC_DENIAL
-        : capped(callerDenialMessage(error.authorization, denied?.requested)),
+        : capped(
+            callerDenialMessage(
+              error.authorization,
+              denied?.requested,
+              error instanceof QualifiedAuthorizationDeniedError
+                ? error.qualifier
+                : denied?.administratorRestricted === true
+                  ? "administrator_restricted"
+                  : undefined,
+            ),
+          ),
     );
   }
   if (error instanceof Error) {
@@ -973,7 +1031,10 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
           ? reason === "untrusted_origin"
             ? UNTRUSTED_ORIGIN_MESSAGE
             : "The request did not satisfy the configured admission boundary."
-          : "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Send service API keys in the x-api-key header; Authorization bearer tokens are not accepted.",
+          : // Header advice only for a request that sent an Authorization header (finding D762).
+            reason === "authorization_header"
+            ? "The API does not accept an Authorization header. Send a service API key in the x-api-key header, or sign in for a session cookie."
+            : "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Sign in again, or use a current service API key.",
       );
     }
   }

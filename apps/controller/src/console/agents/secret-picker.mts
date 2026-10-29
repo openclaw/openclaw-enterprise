@@ -3,7 +3,12 @@ import type {
   SecretMetadata,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import {
+  ADMINISTRATOR_PATH,
+  refusedAsNonAdministrator,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import {
   dismissOnBackdrop,
@@ -47,6 +52,8 @@ type SecretContext = Partial<AgentAccessContext> & {
 // A bound Secret the caller's readable Secret list leaves out (finding 2619).
 export const SECRET_UNLISTED =
   "A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted.";
+// A disabled field's hint for a bound Secret the caller may read.
+const BOUND_SECRET_METADATA = "Secret metadata is bound. Values are never shown.";
 
 // Shown on a listed Secret the caller may read but not operate: a save that binds it would be
 // refused (finding 2453).
@@ -114,6 +121,13 @@ export function secretMetadataPath(namespaceId: string, secretId: string) {
   return `${namespacePath(namespaceId)}/secrets/${encodeURIComponent(secretId)}`;
 }
 
+// The console's Secrets page with one Secret's metadata and consumers open. A link to the API
+// path opened raw JSON, or a raw 403 body that was audited as a denial (finding D757).
+export function secretPageHref(namespaceId: string, secretId: string) {
+  const query = new URLSearchParams({ namespace: namespaceId, secret: secretId });
+  return `/console/secrets?${query}`;
+}
+
 // Carry only the public identity, even if a response unexpectedly contains a value.
 export function secretMetadata(
   value: unknown,
@@ -164,9 +178,9 @@ const secretMetadataReads = new WeakMap<SecretRequest, Map<string, Promise<unkno
 // as missing. Null when the list is not used or unknown (no readable Namespace, or a failed read,
 // which is dropped so the next render asks again); then each Secret is read.
 const readableSecretLists = new WeakMap<SecretRequest, Promise<ReadonlySet<string> | null>>();
-function readableSecretIds(context: SecretContext, request: SecretRequest) {
+function readableSecretIds(context: SecretContext, request: SecretRequest, administrator: boolean) {
   const { namespaceId } = context;
-  if (!namespaceId || context.namespace?.id !== namespaceId || context.installationAdmin === true) {
+  if (!namespaceId || context.namespace?.id !== namespaceId || administrator) {
     return Promise.resolve(null);
   }
   const known = readableSecretLists.get(request);
@@ -207,10 +221,22 @@ function readSecretMetadata(
   if (known) {
     return known;
   }
-  const read = readableSecretIds(context, request).then((readable) =>
-    readable && !readable.has(secretId)
-      ? Promise.reject(Object.assign(new Error("Secret not listed."), { unlisted: true }))
-      : request(href),
+  // An Installation administrator reads the Secret by ID. A refusal that settles the caller is
+  // no administrator after all (finding D760) takes the member path instead: the readable list,
+  // which audits nothing, then a read only of a listed Secret. Without the list it reads nothing.
+  const attempt = (administrator: boolean, refused?: unknown): Promise<unknown> =>
+    readableSecretIds(context, request, administrator).then((readable) =>
+      readable === null && refused !== undefined
+        ? Promise.reject(refused)
+        : readable && !readable.has(secretId)
+          ? Promise.reject(Object.assign(new Error("Secret not listed."), { unlisted: true }))
+          : request(href, administrator ? ADMINISTRATOR_PATH : undefined),
+    );
+  const administrator = context.installationAdmin === true;
+  const read = attempt(administrator).catch((cause: unknown) =>
+    administrator && refusedAsNonAdministrator(cause)
+      ? attempt(false, cause)
+      : Promise.reject(cause),
   );
   reads.set(href, read);
   read.catch(() => {
@@ -233,11 +259,11 @@ function forgetSecretMetadata(context: SecretContext, secretId: string) {
   }
 }
 
-function secretMetadataLink(href: string, name: string) {
+function secretMetadataLink(namespaceId: string, secretId: string, name: string) {
   return element(
     "a",
     {
-      href,
+      href: secretPageHref(namespaceId, secretId),
       target: "_blank",
       rel: "noopener",
       title: "View Secret metadata (opens in new tab)",
@@ -268,7 +294,7 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
   if (known === undefined) {
     node.textContent = `${bound} · Loading metadata…`;
   } else {
-    node.replaceChildren(secretMetadataLink(href, known));
+    node.replaceChildren(secretMetadataLink(source.namespaceId, source.id, known));
   }
   readSecretMetadata(context, context.request, href, source.id)
     .then((value) => {
@@ -288,7 +314,7 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
         resolvedSecretNames.set(key, name);
       }
       if (name !== known) {
-        node.replaceChildren(secretMetadataLink(href, name));
+        node.replaceChildren(secretMetadataLink(source.namespaceId, source.id, name));
       }
     })
     .catch((cause: unknown) => {
@@ -301,8 +327,9 @@ export function renderSecretReference(context: SecretContext, source?: SecretRef
       const { status } = requestFailure(cause);
       // A refused read hides the Secret's name; the ID stays in the title for the administrator
       // who grants read on it (finding 2549). A Secret the readable list leaves out was not read:
-      // it is unreadable, or deleted after a historical version bound it (finding 2619).
-      if (responseFields(cause).unlisted === true) {
+      // it is unreadable, or deleted after a historical version bound it (finding 2619). A caller
+      // just found to be no administrator gets the same sentence as any member (finding D760).
+      if (responseFields(cause).unlisted === true || refusedAsNonAdministrator(cause)) {
         node.textContent = `${SECRET_UNLISTED} ${askForGrant("Secret read on it")}`;
         node.title = source.id;
       } else if (status === 403) {
@@ -399,15 +426,25 @@ export function createSecretReferenceField({
   const labelNode = element("label", { for: id }, label);
   const metadataLink = credentialLink("#", metadataLabel);
   const secrets: SecretMetadata[] = [];
+  // Whether the list read settled: `secrets` then holds every Secret the field knows the caller
+  // may read (none after a refused read). Until it settles, nothing is known to be unlisted, and
+  // the link stays as it was first drawn.
+  let secretsListed = false;
+  // A pending choice cannot restore metadata invalidated by a later list refusal.
+  let listRefusalVersion = 0;
   // Set once a binding is staged, so a Secret list that arrives later keeps its hint.
   let staged = false;
   // Set while the hint describes the loaded Secret list, which follows the field's state.
   let listedHint = false;
+  let selectionVersion = 0;
+  let bindingPending = false;
   let manuallyDisabled = disabled;
   let requiredWhenEnabled = required;
   let listboxOpen = false;
-  let activeOptionIndex = -1;
+  let activeOptionKey: string | null = null;
+  let activeOptionLost = false;
   let searchQuery = "";
+  let loadingSecrets = false;
   // Closing the create dialog returns focus to the input; that must not reopen the listbox.
   let suppressFocusOpen = false;
   // Set when the permission answer denies Secret create: the inline create action stays listed,
@@ -469,15 +506,29 @@ export function createSecretReferenceField({
     return source && source.namespaceId === context.namespaceId ? source.id : null;
   }
 
+  // A Secret the caller's list leaves out gets no link: the Secrets page shows nothing for one
+  // they may not read (finding D757).
   function updateMetadataLink() {
-    const href = sameNamespaceSecretHref(getCurrentSource(), context.namespaceId);
-    if (href === null) {
+    const selectedSecretId = currentSecretId();
+    if (!context.namespaceId || selectedSecretId === null || unlisted(selectedSecretId)) {
       metadataLink.hidden = true;
       metadataLink.removeAttribute("href");
       return;
     }
     metadataLink.hidden = false;
-    metadataLink.href = href;
+    metadataLink.href = secretPageHref(context.namespaceId, selectedSecretId);
+  }
+  // A bound Secret the loaded list leaves out: the caller may not read it, or it was deleted.
+  // The field says so as Secret summaries do, instead of "Secret metadata is bound" (finding
+  // D757).
+  function unlistedBinding() {
+    const selectedSecretId = currentSecretId();
+    return selectedSecretId !== null && unlisted(selectedSecretId)
+      ? `${SECRET_UNLISTED} ${askForGrant("Secret read on it")}`
+      : null;
+  }
+  function unlisted(secretId: string) {
+    return secretsListed && !secrets.some((secret) => secret.id === secretId);
   }
 
   function currentSecretLabel() {
@@ -530,6 +581,14 @@ export function createSecretReferenceField({
       label: syntheticLabel("Create new Secret...", "action"),
       searchText: "create new secret",
     });
+    options.push({
+      kind: "refresh",
+      label: syntheticLabel(
+        loadingSecrets ? "Loading Secrets..." : "Refresh Secret list",
+        "action",
+      ),
+      searchText: "refresh secret list",
+    });
     return options;
   }
 
@@ -537,26 +596,39 @@ export function createSecretReferenceField({
     const query = searchQuery.trim().toLowerCase();
     return allSecretOptions().filter((option) => {
       return (
-        option.kind === "create" || query === "" || option.searchText.toLowerCase().includes(query)
+        option.kind === "create" ||
+        option.kind === "refresh" ||
+        query === "" ||
+        option.searchText.toLowerCase().includes(query)
       );
     });
   }
 
-  function setActiveOption(index: number) {
-    activeOptionIndex = index;
-    for (const [optionIndex, option] of [
-      ...listbox.querySelectorAll("[role='option']"),
-    ].entries()) {
-      const active = optionIndex === activeOptionIndex;
+  function optionKey(option: SecretOption) {
+    return option.kind === "secret" ? `secret:${option.secret.id}` : option.kind;
+  }
+
+  function optionId(key: string) {
+    return `${id}-option-${encodeURIComponent(key)}`;
+  }
+
+  function showActiveOption() {
+    input.removeAttribute("aria-activedescendant");
+    for (const option of listbox.querySelectorAll("[role='option']")) {
+      const active = activeOptionKey !== null && option.id === optionId(activeOptionKey);
       option.classList.toggle("secret-typeahead-active", active);
       if (active) {
         input.setAttribute("aria-activedescendant", option.id);
         option.scrollIntoView?.({ block: "nearest" });
       }
     }
-    if (activeOptionIndex < 0) {
-      input.removeAttribute("aria-activedescendant");
-    }
+  }
+
+  function setActiveOption(index: number) {
+    const option = filteredSecretOptions()[index];
+    activeOptionKey = option ? optionKey(option) : null;
+    activeOptionLost = false;
+    showActiveOption();
   }
 
   function closeListbox({ restoreSelection = true } = {}) {
@@ -573,12 +645,14 @@ export function createSecretReferenceField({
   function renderListbox() {
     const options = filteredSecretOptions();
     const selectedSecretId = currentSecretId();
-    const hasReadableMatches = options.some((option) => option.kind !== "create");
+    const hasReadableMatches = options.some(
+      (option) => option.kind !== "create" && option.kind !== "refresh",
+    );
     const nodes = [
       ...(hasReadableMatches || input.value.trim() === ""
         ? []
         : [element("div", { className: "secret-typeahead-empty" }, "No matching Secrets.")]),
-      ...options.map((option, index) => {
+      ...options.map((option) => {
         const selected =
           (option.kind === "secret" && option.secret.id === selectedSecretId) ||
           (option.kind === "current" && selectedSecretId !== null);
@@ -591,9 +665,13 @@ export function createSecretReferenceField({
         const node = element(
           "div",
           {
-            id: `${id}-option-${index}`,
+            id: optionId(optionKey(option)),
             role: "option",
-            className: option.kind === "create" ? "secret-typeahead-create" : "",
+            className:
+              option.kind === "create" || option.kind === "refresh"
+                ? "secret-typeahead-create"
+                : "",
+            ...(option.kind === "refresh" && loadingSecrets ? { "aria-disabled": "true" } : {}),
             "aria-selected": selected ? "true" : "false",
             ...(reason ? { "aria-disabled": "true" } : {}),
           },
@@ -608,14 +686,20 @@ export function createSecretReferenceField({
       }),
     ];
     listbox.replaceChildren(...nodes);
-    if (activeOptionIndex >= options.length) {
-      activeOptionIndex = options.length - 1;
+    // A refreshed list can move or remove a row. Keep intent attached to its identity,
+    // never to a neighbor (including an action) that inherits its old position.
+    if (
+      activeOptionKey !== null &&
+      !options.some((option) => optionKey(option) === activeOptionKey)
+    ) {
+      activeOptionKey = null;
+      activeOptionLost = true;
     }
-    setActiveOption(activeOptionIndex);
+    showActiveOption();
   }
 
   function openListbox() {
-    if (manuallyDisabled) {
+    if (manuallyDisabled || bindingPending) {
       return;
     }
     // Opening the list asks for the answer again. Create Agent rereads it in place, so a grant or
@@ -644,7 +728,7 @@ export function createSecretReferenceField({
 
   function updateValidity() {
     input.required = requiredWhenEnabled;
-    input.disabled = manuallyDisabled;
+    input.disabled = manuallyDisabled || bindingPending;
     const missing = `${labelNode.textContent.trim() || label} is required.`;
     input.setCustomValidity(
       requiredWhenEnabled && !manuallyDisabled && currentSecretId() === null ? missing : "",
@@ -665,13 +749,18 @@ export function createSecretReferenceField({
   }
 
   function listedStatus() {
+    const unlisted = unlistedBinding();
     // A disabled field offers no choice: it says what is bound, not how to choose or create a
     // Secret (finding 2438).
     if (manuallyDisabled) {
       return currentSecretId() === null
         ? "No Secret is bound."
-        : "Secret metadata is bound. Values are never shown.";
+        : (unlisted ?? BOUND_SECRET_METADATA);
     }
+    return unlisted ? `${unlisted} ${choiceStatus()}` : choiceStatus();
+  }
+
+  function choiceStatus() {
     // The list holds only the Secrets this account may read. Someone the session knows is not
     // an Installation administrator may not see Secrets that exist (finding 2111).
     if (createDenied) {
@@ -690,19 +779,22 @@ export function createSecretReferenceField({
   }
 
   async function bindSecret(secret: SecretMetadata) {
-    if (!isCurrent()) {
+    if (!isCurrent() || manuallyDisabled || bindingPending) {
       return;
     }
     if (secret.id === currentSecretId()) {
       return;
     }
+    const startedRefusal = listRefusalVersion;
+    bindingPending = true;
+    selectionVersion += 1;
     input.disabled = true;
     closeListbox({ restoreSelection: false });
     setStatusTone(status, null);
     try {
       // A choice made before the answer arrived waits for it, so no refused binding is staged.
       await (operateRead ?? readOperateAnswer());
-      if (!isCurrent()) {
+      if (!isCurrent() || manuallyDisabled || startedRefusal !== listRefusalVersion) {
         return;
       }
       if (secretOperateDenied(secret)) {
@@ -721,13 +813,15 @@ export function createSecretReferenceField({
       if (!isCurrent()) {
         return;
       }
-      if (!secrets.some((item) => item.id === secret.id)) {
+      if (startedRefusal === listRefusalVersion && !secrets.some((item) => item.id === secret.id)) {
         secrets.push(secret);
       }
       setSecretOptions();
       staged = true;
+      listedHint = false;
       status.textContent = stagedHint;
     } finally {
+      bindingPending = false;
       updateValidity();
     }
   }
@@ -735,6 +829,10 @@ export function createSecretReferenceField({
   // Typing a Secret's exact name selects it, as clicking its suggestion would; names are
   // unique in a Namespace. Anything else still restores the current binding.
   function typedSecret() {
+    // After the active row disappears, only new typing or navigation establishes intent.
+    if (activeOptionLost) {
+      return undefined;
+    }
     const query = searchQuery.trim();
     return query === ""
       ? undefined
@@ -742,9 +840,17 @@ export function createSecretReferenceField({
   }
 
   type SecretOption =
-    { kind: "create" | "current" | "none" } | { kind: "secret"; secret: SecretMetadata };
+    | { kind: "create" | "refresh" | "current" | "none" }
+    | { kind: "secret"; secret: SecretMetadata };
 
   function selectOption(option: SecretOption) {
+    if (!isCurrent() || manuallyDisabled || bindingPending || input.disabled) {
+      return;
+    }
+    if (option.kind === "refresh") {
+      void loadSecrets(true);
+      return;
+    }
     if (option.kind === "create") {
       if (newSecretDenied()) {
         return;
@@ -977,19 +1083,29 @@ export function createSecretReferenceField({
     name.focus();
   }
 
-  if (!context.namespaceId || typeof context.request !== "function") {
-    setSecretOptions();
-    status.textContent =
-      currentSecretId() === null
-        ? "No Secret is bound."
-        : "Secret metadata is bound. Values are never shown.";
-    manuallyDisabled = true;
-    updateValidity();
-  } else {
-    setSecretOptions();
-    readCreateAnswer();
-    status.textContent = "Loading available Secrets...";
-    context
+  // Only the explicit picker action rereads the list. Keep the query, staged binding,
+  // and input focus; this does not reload the owning form or save its choices.
+  async function loadSecrets(explicit = false) {
+    if (
+      !context.namespaceId ||
+      !context.request ||
+      !isCurrent() ||
+      loadingSecrets ||
+      (explicit && (manuallyDisabled || bindingPending || input.disabled))
+    ) {
+      return;
+    }
+    const startedSelection = selectionVersion;
+    const loadingHint = `${staged ? `${stagedHint} ` : ""}Loading available Secrets...`;
+    const previousSecretIds = new Set(secrets.map((secret) => secret.id));
+    loadingSecrets = true;
+    if (explicit) {
+      listedHint = false;
+      setStatusTone(status, null);
+      status.textContent = loadingHint;
+      renderListbox();
+    }
+    await context
       .request(`${namespacePath(context.namespaceId)}/secrets`)
       .then((items) => {
         if (!isCurrent()) {
@@ -1001,12 +1117,17 @@ export function createSecretReferenceField({
               .filter((secret) => secret !== null)
           : [];
         // A Secret created or chosen while this read was pending is newer than the list.
-        const added = secrets.filter((secret) => !listed.some((item) => item.id === secret.id));
+        const added = secrets.filter(
+          (secret) =>
+            !previousSecretIds.has(secret.id) && !listed.some((item) => item.id === secret.id),
+        );
         secrets.splice(0, secrets.length, ...listed, ...added);
+        secretsListed = true;
         setSecretOptions({ preserveSearch: true });
-        if (!staged) {
+        if (!bindingPending && selectionVersion === startedSelection && (explicit || !staged)) {
           setStatusTone(status, null);
-          listedHint = true;
+          listedHint = !staged;
+          status.textContent = staged ? stagedHint : listedStatus();
         }
         updateValidity();
       })
@@ -1014,21 +1135,62 @@ export function createSecretReferenceField({
         if (!isCurrent()) {
           return;
         }
-        const expired = requestFailure(error).status === 401;
+        const failureStatus = requestFailure(error).status;
+        const expired = failureStatus === 401;
+        if (failureStatus === 403) {
+          // Readability was revoked, even if a newer choice owns the status hint.
+          listRefusalVersion += 1;
+          secrets.length = 0;
+          secretsListed = true;
+          listedHint = false;
+          setSecretOptions({ preserveSearch: true });
+          if (!listboxOpen) {
+            renderListbox();
+          }
+        }
         // A binding staged while this read was pending keeps its hint, as on success: Save
         // still applies it (finding 1748). A lost session is still reported.
-        if (staged && !expired) {
+        if (
+          !expired &&
+          (bindingPending || selectionVersion !== startedSelection || (staged && !explicit))
+        ) {
           return;
         }
         listedHint = false;
+        // A binding with no loaded readable metadata must remain unlinked.
+        secretsListed = true;
+        updateMetadataLink();
         setStatusTone(status, "danger");
         status.textContent = expired
           ? "Your session has expired."
-          : `Secrets unavailable. ${message(error, false, namespaceListNeed("Secrets"))}`;
+          : `${staged ? `${stagedHint} ` : ""}Secrets unavailable. ${message(error, false, namespaceListNeed("Secrets"))}`;
         if (expired) {
           context.onExpired?.();
         }
+      })
+      .finally(() => {
+        loadingSecrets = false;
+        // Clear only this refresh's still-visible hint; a newer binding or failure owns its own status.
+        if (isCurrent() && explicit && status.textContent === loadingHint) {
+          listedHint = !staged;
+          status.textContent = staged ? stagedHint : listedStatus();
+        }
+        if (isCurrent() && listboxOpen) {
+          renderListbox();
+        }
       });
+  }
+
+  if (!context.namespaceId || typeof context.request !== "function") {
+    setSecretOptions();
+    status.textContent = currentSecretId() === null ? "No Secret is bound." : BOUND_SECRET_METADATA;
+    manuallyDisabled = true;
+    updateValidity();
+  } else {
+    setSecretOptions();
+    readCreateAnswer();
+    status.textContent = "Loading available Secrets...";
+    void loadSecrets();
   }
 
   const withinListbox = (node: EventTarget | null) =>
@@ -1063,12 +1225,13 @@ export function createSecretReferenceField({
   });
   input.addEventListener("input", () => {
     searchQuery = input.value;
-    activeOptionIndex = -1;
+    setActiveOption(-1);
     openListbox();
     updateValidity();
   });
   input.addEventListener("keydown", (event) => {
     const options = filteredSecretOptions();
+    const activeOptionIndex = options.findIndex((option) => optionKey(option) === activeOptionKey);
     if (event.key === "ArrowDown") {
       event.preventDefault();
       if (!listboxOpen) {

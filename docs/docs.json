@@ -79,6 +79,10 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/gateway-managed-mode",
+                    "label": "Gateway managed mode"
+                  },
+                  {
                     "page": "guides/topics/agent-presets",
                     "label": "Presets"
                   },
@@ -113,6 +117,10 @@
                   {
                     "page": "guides/console/create-namespace",
                     "label": "Create a Namespace"
+                  },
+                  {
+                    "page": "guides/console/delete-namespace",
+                    "label": "Delete a Namespace"
                   },
                   {
                     "page": "guides/console/agent-details",
@@ -195,6 +203,14 @@
                   {
                     "page": "guides/topics/secrets",
                     "label": "Secrets"
+                  },
+                  {
+                    "page": "design/credential-proxy",
+                    "label": "Credential Proxy"
+                  },
+                  {
+                    "page": "reference/security/credential-proxy",
+                    "label": "Credential Proxy Threat Model"
                   },
                   {
                     "page": "reference/credential-sources",
@@ -512,50 +528,6 @@
                   {
                     "page": "guides/deploy/installation-profiles",
                     "label": "Profiles"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes",
-                    "label": "Breaking Changes"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-later-2026-10-24",
-                    "label": "Later Breaking Changes 2026-10-24"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-earlier-2026-10-24",
-                    "label": "Earlier Breaking Changes 2026-10-24"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-24",
-                    "label": "Breaking Changes Before 2026-10-24"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-23",
-                    "label": "Breaking Changes Before 2026-10-23"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-15",
-                    "label": "Breaking Changes Before 2026-10-15"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-archive",
-                    "label": "Earlier Breaking Changes"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-13",
-                    "label": "Breaking Changes Before 2026-10-13"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-12",
-                    "label": "Breaking Changes Before 2026-10-12"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-11",
-                    "label": "Breaking Changes Before 2026-10-11"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-10",
-                    "label": "Breaking Changes Before 2026-10-10"
                   },
                   {
                     "page": "guides/deploy/split-layout-upgrade",
@@ -1012,6 +984,10 @@
                     "label": "Overview"
                   },
                   {
+                    "page": "taxonomy",
+                    "label": "Document Types"
+                  },
+                  {
                     "page": "local-preview",
                     "label": "Preview and Validate"
                   },
@@ -1044,6 +1020,7 @@
               "flows/platform-startup",
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
+              "flows/tenant-restore",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/keycloak",
               "flows/docker-compose-development/agent-execution",

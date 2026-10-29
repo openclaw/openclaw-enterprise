@@ -175,8 +175,6 @@ const AGENT_MODEL_SETTINGS: readonly (readonly string[])[] = [
   ["subagents", "model"],
   ["heartbeat", "model"],
   ["compaction", "model"],
-  ["compaction", "memoryFlush", "model"],
-  ["embeddedAgent", "cyberFailover", "model"],
   ["tools", "exec", "reviewer", "model"],
   ["tts", "summaryModel"],
 ];

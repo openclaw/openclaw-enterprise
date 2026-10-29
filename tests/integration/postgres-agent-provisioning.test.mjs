@@ -22,6 +22,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { assertProvisioningRepositoryStatus } from "../helpers/provisioning-repository-status.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
 import {
   conformanceKubernetesOptions,
@@ -810,6 +811,7 @@ test(
     assert.equal(row.configuration_id, null);
     assert.equal(row.status, "queued");
     assert.equal(row.completed_phase, "admitted");
+    assert.equal(row.plan.gatewayManagedMode, true);
     assert.equal(JSON.stringify(row).includes("model-api-key"), false);
 
     const resources = await fixture.pool.query(
@@ -1042,7 +1044,7 @@ test(
     const secretCreateCallCount = fixture.secretDriver.calls.filter(
       ({ operation }) => operation === "create",
     ).length;
-    const body = repositoryProvisioningBody(namespace.id, secrets);
+    const body = repositoryProvisioningBody(namespace.id, secrets, { gatewayManagedMode: false });
     const { repositoryAccess } = body;
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
@@ -1116,12 +1118,14 @@ test(
     const agentPath = `/namespaces/${namespace.id}/agents/${status.agentId}`;
     const agent = await fixture.request("GET", agentPath);
     assert.equal(agent.status, 200, JSON.stringify(agent.body));
+    assert.equal(agent.data.gatewayManagedMode, false);
     assert.deepEqual(agent.data.repositoryBindings, repositoryBindings);
     assert.deepEqual(agent.data.repositoryAccess, repositoryAccess);
     assert.deepEqual(agent.data.pluginApprovers, []);
     const revisionPath = `${agentPath}/revisions/${status.revisionId}`;
     const revision = await fixture.request("GET", revisionPath);
     assert.equal(revision.status, 200, JSON.stringify(revision.body));
+    assert.equal(revision.data.gatewayManagedMode, false);
     assert.deepEqual(revision.data.repositoryCredentials.bindings, repositoryBindings);
     assert.equal(revisions[0].repositoryCredentials.bindings[0].grant.repositoryId, "789");
     // Persist explicit intent even when equal to the default, then change only that default.
@@ -4481,6 +4485,7 @@ test(
     const account = created.data;
     // Admission would reject this account, which has no Backend-issued credential, so store
     // the plan directly; the worker fails it for the same reason before any effect.
+    // Omit Gateway managed mode as in plans accepted before that field existed.
     const actorId = await fixture.administratorPrincipalId();
     const body = provisioningBody(namespace.id, secrets);
     const workId = `agent-provisioning:${randomUUID().replaceAll("-", "")}`;
@@ -4600,6 +4605,7 @@ test(
             source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
           },
           executionMode: body.executionMode,
+          gatewayManagedMode: true,
           drivers: {
             compute: fixture.computeDriver.id,
             configuration: fixture.configurationDriver.id,
@@ -4849,10 +4855,10 @@ test(
   },
 );
 
-async function createFailedPreHandoffAgent(fixture) {
+async function createFailedPreHandoffAgent(fixture, overrides = {}) {
   const namespace = await fixture.bootstrapNamespace();
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
-  const body = provisioningBody(namespace.id, secrets);
+  const body = provisioningBody(namespace.id, secrets, overrides);
   const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
     body,
   });
@@ -5772,6 +5778,16 @@ test(
     const gone = await fixture.request("GET", configurationPath);
     assert.equal(gone.status, 404, JSON.stringify(gone.body));
   },
+);
+
+test(
+  "existing Agent provisioning status survives repository policy refusal while retry and IAM remain enforced",
+  { ...requiresPostgres, timeout: 60_000 },
+  (context) =>
+    assertProvisioningRepositoryStatus(failingTransportDriver(), async (options, overrides) => {
+      const fixture = await createFixture(context, options);
+      return { fixture, ...(await createFailedPreHandoffAgent(fixture, overrides)) };
+    }),
 );
 
 test(

@@ -7,7 +7,7 @@ Kubernetes context. For Secret-backed authentication, you or an Installation
 administrator must [grant the Agent access to the model Secret](#grant-the-agent-access-to-its-model-secret)
 before deployment.
 
-The command path below uses Bash, Python 3, kubectl, the OCC CLI, and Node.js 24
+The command path below uses Bash, Python 3, kubectl, the OCC CLI, and Node.js 24.22.1
 or newer for transport provisioning. If Node is unavailable, use the
 [console deployment workflow](../../reference/console/create-and-deploy.md) after
 preparing the Namespace. Its **Deploy new version** action provisions transport

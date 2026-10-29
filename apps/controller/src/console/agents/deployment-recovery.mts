@@ -8,8 +8,12 @@ import type { Static } from "typebox";
 import { requestFailure } from "../api-client.mjs";
 import { deploymentFailureStep } from "../deployment-failure-steps.mjs";
 import { element, setHidden, setText } from "../dom.mjs";
-import { modelCredentialRejectedAsk } from "./access-reasons.mjs";
-import { agentSaveDenial, namespacePath } from "./list.mjs";
+import {
+  type CredentialFixAccess,
+  MODEL_CREDENTIAL_REJECTED_DEPLOY_DENIED,
+  modelCredentialRejectedAsk,
+} from "./access-reasons.mjs";
+import { agentSaveDenial, agentSaveGap, namespacePath } from "./list.mjs";
 import { logTextDenied } from "./logs.mjs";
 
 type RecoveryTab = "credentials" | "configuration" | "logs";
@@ -44,6 +48,38 @@ const DEPLOYMENT_FAILURE_LINKS: Readonly<Record<string, Exclude<RecoveryTab, "lo
   // The stored Harness authentication is unusable; the step is choosing it again.
   INVALID_HARNESS_AUTH: "credentials",
 };
+
+// The API's step for a rejected model credential is to update it in Credentials, which needs Agent
+// update and the grants each Agent update checks. A caller whose permission answer denies that is
+// told which grant it lacks and which grants fix it, and who gives them, instead: a Secret-backed
+// credential can also be replaced in place with Secret update, which the answer does not cover
+// (finding D750). The recovery banner, the deployment record and the Agents list say it in the
+// same words (finding D752). The API still authorizes each save.
+export function credentialRejectedAsk(
+  code: string | null | undefined,
+  harnessAuth: Parameters<typeof secretBackedCredential>[0],
+  permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null | undefined,
+) {
+  if (code !== "RUNTIME_AUTHENTICATION_FAILED" || harnessAuth?.method === "runtime") {
+    return undefined;
+  }
+  const access = credentialFixAccess(harnessAuth, permissions);
+  if (access) {
+    return modelCredentialRejectedAsk(access);
+  }
+  return permissions?.deploy === false ? MODEL_CREDENTIAL_REJECTED_DEPLOY_DENIED : undefined;
+}
+
+/** What the permission answer says the caller lacks to fix a rejected model credential. */
+export function credentialFixAccess(
+  harnessAuth: Parameters<typeof secretBackedCredential>[0],
+  permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null | undefined,
+): CredentialFixAccess | undefined {
+  const gap = agentSaveGap(permissions, { harnessAuth });
+  return gap === undefined
+    ? undefined
+    : { secretBacked: secretBackedCredential(harnessAuth), gap, deploy: permissions?.deploy };
+}
 
 /** A model credential held in an OCC Secret, whose value Secret update replaces in place. */
 export function secretBackedCredential(
@@ -184,20 +220,9 @@ export function createDeploymentRecovery(
     const generic = logsAllowed
       ? "Check the failed version’s logs before deploying a new version."
       : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
-    // The API's step for a rejected model credential is to update it in Credentials, which needs
-    // Agent update. A caller whose permission answer denies that is told which grants fix it and
-    // who gives them instead: a Secret-backed credential can also be replaced in place with
-    // Secret update, which the answer does not cover (finding D750). The API still authorizes
-    // each save.
     const harnessAuth = "harnessAuth" in agent ? agent.harnessAuth : undefined;
-    const credentialFixDenied =
-      code === "RUNTIME_AUTHENTICATION_FAILED" &&
-      harnessAuth?.method !== "runtime" &&
-      permissions !== null &&
-      !(permissions.update === true && agentSaveDenial(permissions) === undefined);
-    const failureText = credentialFixDenied
-      ? modelCredentialRejectedAsk(secretBackedCredential(harnessAuth))
-      : errorMessage;
+    const credentialFixAsk = credentialRejectedAsk(code, harnessAuth, permissions);
+    const failureText = credentialFixAsk ?? errorMessage;
     let impact = failureText || generic;
     if (servingImpact === "replacement-failed") {
       impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failureText ? ` ${failureText}` : ""}`;
@@ -234,7 +259,7 @@ export function createDeploymentRecovery(
       permissions?.configurationUpdate === true &&
       permissions.configurationSecretsOperate !== false;
     // Without them, the draft's only step is Deploy new version, which it builds only from a
-    // readable Configuration, so "Open version draft" waits for the same read (finding 1944).
+    // readable Configuration, so "Open draft" waits for the same read (finding 1944).
     const openDraftAllowed =
       guidance === "configuration" &&
       configurationAvailable &&
@@ -255,7 +280,7 @@ export function createDeploymentRecovery(
     const nextLabel =
       tab &&
       (canOpenConfiguration && !configurationEditable
-        ? "Open version draft"
+        ? "Open draft"
         : DEPLOYMENT_FAILURE_LINK_LABELS[tab]);
     const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;
     if (recoveryTarget !== actionsFor) {
@@ -277,7 +302,7 @@ export function createDeploymentRecovery(
   }
 
   // Another version's tabs have no reason to read the Configuration, so recovery reads it once
-  // before offering Deploy again or Open version draft. A denial is remembered like the draft's;
+  // before offering Deploy again or Open draft. A denial is remembered like the draft's;
   // any other failure leaves the links hidden for this page view. The draft's own read decides
   // there.
   function checkConfigurationReadable(configurationId: string) {

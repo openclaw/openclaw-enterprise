@@ -308,9 +308,10 @@ func (app *application) configurationCommand() *cobra.Command {
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Update a Configuration from a JSON document",
-		Args:  idArgs(configurationIDArg),
+		Use:     "update ID",
+		Short:   "Update a Configuration from a JSON document",
+		Example: configurationUpdateExample,
+		Args:    idArgs(configurationIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
@@ -665,7 +666,7 @@ func (app *application) serviceAccountCommand() *cobra.Command {
 		Short: "Delete an unreferenced ServiceAccount",
 		Long: "Delete an unreferenced ServiceAccount, revoking its issued access token.\n" +
 			"--force also deletes an account whose token no ChatGPT Backend can revoke, because\n" +
-			"the Backend is gone; an administrator must then revoke the token at the provider.\n" +
+			"the Backend is gone; a ChatGPT workspace administrator must then revoke it at the provider.\n" +
 			"With a ChatGPT Backend configured, --force changes nothing: the token is revoked.",
 		Args: idArgs(serviceAccountIDArg),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -760,9 +761,10 @@ func (app *application) agentCommand() *cobra.Command {
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Update an Agent from a JSON document",
-		Args:  idArgs(agentIDArg),
+		Use:     "update ID",
+		Short:   "Update an Agent's draft from a JSON document",
+		Example: agentUpdateExample,
+		Args:    idArgs(agentIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
@@ -887,12 +889,15 @@ func (app *application) agentCommand() *cobra.Command {
 			}
 			// Only an Agent the caller can already read tells whether anything ran:
 			// stopped with no active revision is a never-deployed or already
-			// stopped Agent (finding D746). A failed read keeps the plain notice.
-			idle := false
+			// stopped Agent (finding D746); stopped with an active revision is a
+			// stop requested earlier that has not finished, still running or
+			// failed (finding D765). A failed read keeps the plain notice.
+			idle, stopping := false, false
 			if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
 				resource, _ := before.(map[string]any)
 				active, _ := resource["activeRevisionId"].(string)
 				idle = resource["desiredRuntimeState"] == "stopped" && active == ""
+				stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
 			}
 			agent, err := client.StopAgent(namespace, args[0])
 			if err != nil {
@@ -903,6 +908,10 @@ func (app *application) agentCommand() *cobra.Command {
 			}
 			if idle {
 				fmt.Fprintf(command.ErrOrStderr(), "notice: No version is running, so there is nothing to stop. Run \"occ --namespace %s agent deploy %s\" to start the Agent.\n", namespace, args[0])
+				return nil
+			}
+			if stopping {
+				fmt.Fprintf(command.ErrOrStderr(), "notice: a stop of Agent %s was already requested and has not finished; run \"occ --namespace %s agent get %s\" to see its state, or \"occ --namespace %s agent deploy %s\" to start it again\n", args[0], namespace, args[0], namespace, args[0])
 				return nil
 			}
 			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
@@ -1114,7 +1123,7 @@ func commandGroup(use, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:         use,
 		Short:       short,
-		Args:        cobra.NoArgs,
+		Args:        missingCommandArgs(nil),
 		Annotations: map[string]string{helpOnlyAnnotation: "true"},
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
@@ -1130,16 +1139,65 @@ var signInCommands = func() map[string]string {
 }()
 
 // missingCommandArgs refuses positional arguments like cobra.NoArgs, but a
-// command name in missing gets its own explanation after cobra's text.
+// command name in missing gets its own explanation after cobra's text, and a
+// one-letter typo of a subcommand gets a suggestion (finding D765).
 func missingCommandArgs(missing map[string]string) cobra.PositionalArgs {
 	return func(command *cobra.Command, args []string) error {
 		if len(args) > 0 {
 			if explanation, ok := missing[args[0]]; ok {
 				return fmt.Errorf("unknown command %q for %q. %s", args[0], command.CommandPath(), explanation)
 			}
+			if suggestion := suggestSubcommand(command, args[0]); suggestion != "" {
+				return fmt.Errorf("unknown command %q for %q; did you mean %q?", args[0], command.CommandPath(), command.CommandPath()+" "+suggestion)
+			}
 		}
 		return cobra.NoArgs(command, args)
 	}
+}
+
+// suggestSubcommand returns the subcommand a typo most likely meant, or "".
+// It suggests only a name one edit away ("lst" for "list", never "get"), or
+// else the one name that a typed prefix of at least two characters starts
+// ("de" alone matches both delete and deploy, so it gets nothing). An empty
+// argument is never one edit from a name and is too short for a prefix.
+func suggestSubcommand(command *cobra.Command, typed string) string {
+	var prefixed []string
+	for _, child := range command.Commands() {
+		if !child.IsAvailableCommand() {
+			continue
+		}
+		if editDistance(typed, child.Name()) <= 1 {
+			return child.Name()
+		}
+		if len(typed) >= 2 && strings.HasPrefix(child.Name(), typed) {
+			prefixed = append(prefixed, child.Name())
+		}
+	}
+	if len(prefixed) == 1 {
+		return prefixed[0]
+	}
+	return ""
+}
+
+// editDistance is the Levenshtein distance between two command names.
+func editDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			current[j] = min(previous[j]+1, current[j-1]+1, previous[j-1]+cost)
+		}
+		previous = current
+	}
+	return previous[len(b)]
 }
 
 // printsTextOnly reports commands that never call OCC: the root and command
@@ -1308,6 +1366,15 @@ func (app *application) client() (*occclient.Client, error) {
 
 func (app *application) requiredNamespace() (string, error) {
 	if app.namespace == "" {
+		// A Namespace-scoped key file records its one Namespace; offer it
+		// without a request (finding D765).
+		namespace := ""
+		if app.serviceKeyFile != "" {
+			namespace = occclient.ServiceKeyNamespace(app.serviceKeyFile)
+		}
+		if namespaceIDArg.check(namespace, "") == nil {
+			return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace; this service key works only in Namespace %s, so pass --namespace %s", namespace, namespace)
+		}
 		return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace")
 	}
 	if err := namespaceIDArg.check(app.namespace, ""); err != nil {

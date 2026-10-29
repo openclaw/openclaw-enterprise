@@ -34,6 +34,7 @@ import {
   SECRET_CREATE_DENIED,
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // The Agent's grant of a saved Slack Secret was refused, or the IAM policy shows none (finding 1920).
 const GRANT_REFUSED =
@@ -192,8 +193,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
       await statusTone(dialog.getByText(/^New version\. Changes affect future deployments/)),
       { className: "status", tone: "info", role: "status" },
     );
-    const appSecretPath = `/namespaces/${namespace.id}/secrets/${slackAppSecret.id}`;
-    const botSecretPath = `/namespaces/${namespace.id}/secrets/${slackBotSecret.id}`;
+    // Each link opens the console's Secrets page with that Secret, not the API's JSON (finding
+    // D757).
+    const appSecretPath = `/console/secrets?namespace=${namespace.id}&secret=${slackAppSecret.id}`;
+    const botSecretPath = `/console/secrets?namespace=${namespace.id}&secret=${slackBotSecret.id}`;
     const appSecretLink = dialog.getByRole("link", {
       name: "View app token Secret metadata (opens in new tab)",
     });
@@ -240,9 +243,15 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const appSecretPopupPromise = page.waitForEvent("popup");
     await appSecretLink.click();
     const appSecretPopup = await appSecretPopupPromise;
-    await appSecretPopup.waitForLoadState("domcontentloaded");
-    assert.equal(new URL(appSecretPopup.url()).pathname, appSecretPath);
-    await appSecretPopup.getByText("Slack app token").waitFor();
+    // The Secrets page opens the linked Secret's metadata, then drops the `secret` parameter so
+    // its Refresh does not reopen the Secret.
+    const appSecretDialog = appSecretPopup.getByRole("dialog", { name: "Slack app token" });
+    await appSecretDialog.getByText(slackAppSecret.id, { exact: true }).waitFor();
+    const popupUrl = new URL(appSecretPopup.url());
+    assert.equal(
+      `${popupUrl.pathname}${popupUrl.search}`,
+      `/console/secrets?namespace=${namespace.id}`,
+    );
     const secretMetadataText = await appSecretPopup.locator("body").textContent();
     assert.match(secretMetadataText, new RegExp(slackAppSecret.id));
     assert.doesNotMatch(secretMetadataText, new RegExp(slackAppSecretValue));
@@ -1208,13 +1217,9 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const writer = await fixture.createNamespaceMember("inline-writer", namespace.id, MEMBER_WRITE);
     // The member reads the Namespace's Secrets except the bound bot token, so her list leaves it
     // out; a Secret she creates is readable to her.
-    fixture.policy.restrictions.push({
-      id: "deny-bot-token-read",
+    restrict(fixture.policy, "read", "secret", {
       namespaceId: namespace.id,
-      resourceKind: "secret",
       resourceId: botSecret.id,
-      action: "read",
-      effect: "deny",
     });
     const { page } = await newPage(t, fixture, { browser });
     await login(

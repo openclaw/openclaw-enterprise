@@ -92,6 +92,10 @@ export const CreatePending = story("createPending");
 export const CreateDeploymentNamedWait = story("createDeploymentNamedWait");
 export const CreateDeploymentPodQuotaFull = story("createDeploymentPodQuotaFull");
 export const CreateDeploymentImagePullFailed = story("createDeploymentImagePullFailed");
+export const CreateDeploymentSuperseded = {
+  ...story("createDeploymentSuperseded"),
+  name: "A newer deployment took over",
+};
 export const CreateDeploymentFailed = story("createDeploymentFailed");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
@@ -342,3 +346,9 @@ export const RosterModelPrimary = {
   ...story("createRosterModelSelection"),
   name: "Change a roster's shared primary model",
 };
+
+export const PasswordSecretConflict = story("createPasswordSecretConflict");
+
+export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat");
+
+export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");

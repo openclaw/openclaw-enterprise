@@ -8,6 +8,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  collectNativeWorkerFailure,
+  nativeWorkerPlacementObservation,
+  nativeWorkerTurnObservation,
+} from "../helpers/local-first-agent-native.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
@@ -291,6 +296,94 @@ test("run resolves lane documents relative to the manifest and preserves ordered
   assert.deepEqual(summary.files[1].imageDigests, pairDigests);
   assert.doesNotMatch(JSON.stringify(summary), /private\.example|untrusted-image-value/);
   assert.match(await readFile(statePath, "utf8"), /first\.test\.mjs/);
+});
+
+test("focused runs retain case enforcement and cleanup but cannot complete a full lane", async (t) => {
+  const root = await fixture(t);
+  await writePrepare(root);
+  const selectedPath = "tests/integration/first.test.mjs";
+  const selected = { path: selectedPath, expectedTests: ["required case"] };
+  await writeFile(
+    join(root, selectedPath),
+    'import test from "node:test"; test("required case", () => {});\n',
+  );
+  await writeFile(
+    join(root, "tests/integration/second.test.mjs"),
+    'throw new Error("unselected file executed");\n',
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      baseline: { files: [selected, { path: "tests/integration/second.test.mjs" }] },
+      single: { files: [selected] },
+    },
+    groups: { ci: ["baseline"] },
+  });
+  const args = (lane) => [
+    "run",
+    lane,
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    `state/${lane}.jsonl`,
+    "--results",
+    `results/${lane}.json`,
+    "--file",
+    selectedPath,
+  ];
+  for (const lane of ["baseline", "single"]) {
+    const result = run(root, args(lane));
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(await readFile(join(root, `results/${lane}.json`), "utf8"));
+    assert.equal(summary.scope, "focused");
+    assert.deepEqual(
+      summary.files.map((file) => file.path),
+      [selectedPath],
+    );
+    assert.equal(summary.files[0].cleanup.status, "passed");
+    assert.equal(await readFile(join(root, `state/${lane}.jsonl`), "utf8"), `${selectedPath}\n`);
+    // Even a one-file lane cannot turn explicitly focused proof into full qualification.
+    const aggregated = run(root, [
+      "aggregate",
+      lane,
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--results-dir",
+      "results",
+    ]);
+    assert.equal(aggregated.status, 1, aggregated.stderr);
+    const evidence = JSON.parse(aggregated.stdout);
+    assert.ok(evidence.issues.some(({ code }) => code === "focused-lane-evidence"));
+    if (lane === "baseline") {
+      assert.ok(evidence.issues.some(({ code }) => code === "missing-lane-evidence"));
+    }
+  }
+  // A green Node process is insufficient when the selected file omits its required case.
+  await writeFile(
+    join(root, selectedPath),
+    'import test from "node:test"; test("different case", () => {});\n',
+  );
+  const missing = run(root, args("baseline"));
+  assert.equal(missing.status, 1, missing.stderr);
+  const summary = JSON.parse(await readFile(join(root, "results/baseline.json"), "utf8"));
+  assert.ok(summary.issues.some(({ code }) => code === "missing-expected-test"));
+  assert.equal(summary.files[0].cleanup.status, "passed");
+  const stateBefore = await readFile(join(root, "state/baseline.jsonl"), "utf8");
+  for (const path of [
+    "tests/integration/unknown.test.mjs",
+    "tests/integration/../integration/first.test.mjs",
+  ]) {
+    const invalid = run(root, [...args("baseline").slice(0, -1), path]);
+    assert.equal(invalid.status, 1, invalid.stderr);
+    const rejected = JSON.parse(await readFile(join(root, "results/baseline.json"), "utf8"));
+    assert.deepEqual(rejected.files, []);
+    assert.ok(rejected.issues.some(({ code }) => code === "invalid-file-selection"));
+    assert.equal(await readFile(join(root, "state/baseline.jsonl"), "utf8"), stateBefore);
+  }
 });
 
 test("run preserves nonzero child Node exits and rejects zero-case files", async (t) => {
@@ -1165,6 +1258,226 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   const root = await fixture(t);
   const resultsPath = join(root, "results/redacted.json");
   const secret = "secretauthvalue";
+  // This marker is deliberately absent from the redactor's environment secrets.
+  // The native projector and reporter must remove it themselves.
+  const nativePrivate = "private-native-observation-marker";
+  const nativeWorker = nativeWorkerPlacementObservation({
+    placement: {
+      state: "failed",
+      recoveryError: `Worker tunnel did not connect within 3 minutes; ${nativePrivate}`,
+      terminalReason: { message: nativePrivate },
+      remoteWorkspaceDir: nativePrivate,
+      session: nativePrivate,
+    },
+    environment: {
+      id: nativePrivate,
+      worker: {
+        state: "failed",
+        tunnelStatus: "stopped",
+        error: nativePrivate,
+        attachedSessionIds: [nativePrivate],
+      },
+    },
+    nodes: [
+      { nodeId: "unrelated-node", connected: true, caps: [nativePrivate] },
+      {
+        nodeId: nativePrivate,
+        connected: false,
+        paired: true,
+        sessionHost: true,
+        caps: ["system", nativePrivate],
+        commands: [nativePrivate],
+        workerBundle: { status: "installed", version: nativePrivate },
+      },
+    ],
+    expectedNodeId: nativePrivate,
+    sessionId: nativePrivate,
+    environmentLookup: "found",
+    nodeLookup: "found",
+    elapsedMs: 180488,
+  });
+  const wrappedNativeWorker = nativeWorkerPlacementObservation({
+    placement: {
+      state: "failed",
+      recoveryError: `Worker node bootstrap failed: OpenClaw worker deploy artifact is missing; build the running package at ${nativePrivate}`,
+      terminalReason: `Worker node bootstrap failed: Device worker bundle installation failed: ${nativePrivate}`,
+    },
+    environment: {
+      worker: {
+        error:
+          "Worker provider preparation failed: Device worker node is not connected with the installer dialect",
+      },
+    },
+  });
+  // A retained session can acquire a new owner during send. Exercise the real
+  // collector with public RPC-shaped observations, then retain its result through CI.
+  const nativeSession = { key: "agent:main:retained-proof", sessionId: "retained-proof" };
+  const lastPlacement = { state: "active", environmentId: "previous-owner" };
+  const collectRetained = (refresh) =>
+    collectNativeWorkerFailure({
+      session: nativeSession,
+      lastPlacement,
+      elapsedMs: 3000,
+      request: async (method, params) => {
+        if (method === "node.list") {
+          return { nodes: [] };
+        }
+        if (method === "sessions.describe") {
+          if (refresh === "rejected") {
+            throw new Error(nativePrivate);
+          }
+          return {
+            session: {
+              sessionId: refresh === "mismatched" ? "different-session" : nativeSession.sessionId,
+              placement: { state: "failed", environmentId: "replacement-owner" },
+            },
+          };
+        }
+        if (method === "environments.status") {
+          return params.environmentId === "replacement-owner"
+            ? { id: "replacement-owner", worker: { state: "failed", tunnelStatus: "stopped" } }
+            : { id: "previous-owner", worker: { state: "attached", tunnelStatus: "connected" } };
+        }
+        throw new Error("Unexpected diagnostic RPC");
+      },
+    });
+  const freshNativeWorker = await collectRetained("fresh");
+  const fallbackNativeWorker = await collectRetained("rejected");
+  const mismatchedNativeWorker = await collectRetained("mismatched");
+  const diagnosticSignals = new Set();
+  const collectedTurn = await collectNativeWorkerFailure({
+    session: nativeSession,
+    runId: "selected-run",
+    outcome: { status: "error", error: `fetch failed: ${nativePrivate}` },
+    request: async (method, params, options) => {
+      diagnosticSignals.add(options.signal);
+      assert.equal(options.timeoutMs, 5000);
+      if (method === "node.list") {
+        return { nodes: [] };
+      }
+      if (method === "sessions.describe") {
+        return { session: { sessionId: nativeSession.sessionId } };
+      }
+      assert.equal(method, "chat.history");
+      assert.deepEqual(params, { sessionKey: nativeSession.key, limit: 30 });
+      return { messages: [] };
+    },
+  });
+  assert.equal(diagnosticSignals.size, 1, "Failure reads must share one deadline");
+  // Keep foreign turns and private error suffixes out of the real reporter artifact.
+  const turnCases = [
+    ["Incorrect API key provided", "model-authentication"],
+    ["insufficient_quota", "model-rate-or-quota"],
+    ["Worker model is not approved for this session", "model-unavailable"],
+    ["exec denied by security policy", "tool-policy"],
+    ["EACCES: permission denied", "filesystem-permission"],
+    ["Cannot find module", "file-or-command-missing"],
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "tls-validation"],
+    ["fetch failed", "network-connection"],
+    ["Worker turn authority changed while preparing its launch", "worker-authority"],
+    ["Worker tunnel does not support worker turns", "worker-transport"],
+    ["HTTP 401", "http-unauthorized"],
+    ["HTTP 403", "http-forbidden"],
+    ["HTTP 429", "http-rate-limit"],
+  ];
+  const turnDiagnostics = turnCases.map(([message, category]) => ({
+    name: `native turn ${category}`,
+    diagnostic: {
+      kind: "native-first-agent-proof",
+      failureStage: "model-outcome",
+      worker: nativeWorkerTurnObservation({
+        outcome: { status: "error", error: `${message}: ${nativePrivate}`, stopReason: "error" },
+        error: new Error(nativePrivate),
+        runId: "selected-run",
+        historyLookup: "found",
+        messages: [
+          { role: "assistant", errorMessage: nativePrivate, __openclaw: { runId: "foreign-run" } },
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: `${message}: ${nativePrivate}`,
+            __openclaw: { runId: "selected-run" },
+          },
+          {
+            role: "toolResult",
+            toolName: "exec",
+            isError: true,
+            content: [{ type: "text", text: `${message}: ${nativePrivate}` }],
+            __openclaw: { runId: "selected-run" },
+          },
+          {
+            role: "toolResult",
+            toolName: "exec",
+            isError: true,
+            content: nativePrivate,
+            __openclaw: { runId: "foreign-run" },
+          },
+        ],
+      }),
+    },
+  }));
+  // Installer errors add one more fixed wrapper. Exercise distinct transfer,
+  // extraction, storage and prewarm failures without retaining their private details.
+  const nativeLeafCases = [
+    ["gateway returned 401", "bundle-http-401"],
+    ["gateway returned 403", "bundle-http-403"],
+    ["gateway returned 404", "bundle-http-404"],
+    ["gateway returned 429", "bundle-http-client-error"],
+    ["gateway returned 503", "bundle-http-server-error"],
+    ["gateway returned 0", "bundle-http-unexpected-status"],
+    ["gateway returned an unexpected worker bundle range", "bundle-range-invalid"],
+    ["gateway returned an unexpected worker bundle length", "bundle-transfer-length-invalid"],
+    [
+      "worker bundle download stopped after 3 consecutive no-progress failures",
+      "bundle-download-no-progress",
+    ],
+    ["prepared worker bundle archive has an unexpected length", "bundle-archive-length-invalid"],
+    ["worker bundle archive exceeded its byte limit", "bundle-archive-too-large"],
+    ["worker bundle transfer response exceeded its byte limit", "bundle-response-too-large"],
+    ["worker bundle archive failed integrity validation", "bundle-archive-integrity-failed"],
+    ["published worker bundle failed validation", "bundle-published-invalid"],
+    ["gateway TLS fingerprint mismatch", "bundle-tls-mismatch"],
+    ["Cloudflare Access credentials require HTTPS", "bundle-https-required"],
+    ["gateway transfer is unavailable", "bundle-transfer-unavailable"],
+    [
+      "Worker bundle archive manifest does not match its expected hash",
+      "bundle-manifest-hash-mismatch",
+    ],
+    ["Extracted worker bundle does not match its expected hash", "bundle-extracted-hash-mismatch"],
+    ["Invalid worker bundle archive path:", "bundle-entry-invalid"],
+    ["Worker bundle archive exceeds its entry limit", "bundle-extraction-limit"],
+    ["Worker bundle contains a symbolic link:", "bundle-symlink-refused"],
+    ["Worker bundle file changed while hashing:", "bundle-file-changed"],
+    ["EACCES: permission denied", "bundle-storage-access-denied"],
+    ["EPERM: operation not permitted", "bundle-operation-denied"],
+    ["EROFS: read-only file system", "bundle-storage-readonly"],
+    ["ENOSPC: no space left on device", "bundle-storage-full"],
+    ["ENOENT: no such file or directory", "bundle-file-missing"],
+    ["Command failed:", "bundle-prewarm-failed"],
+    ["INVALID_REQUEST: invalid node worker bundle install request", "bundle-request-invalid"],
+  ];
+  const nativeLeafDiagnostics = nativeLeafCases.map(([message, category]) => ({
+    name: `native installer ${category}`,
+    diagnostic: {
+      kind: "native-first-agent-proof",
+      failureStage: "required-placement-terminal-failed",
+      worker: nativeWorkerPlacementObservation({
+        placement: {
+          state: "failed",
+          recoveryError: `Worker node bootstrap failed: Device worker bundle installation failed: ${category === "bundle-request-invalid" ? "" : "worker-bundle-install-failed: "}${message} ${nativePrivate}`,
+        },
+      }),
+    },
+  }));
+  // An unknown outer message is not permission to search arbitrary private text for a cause.
+  assert.equal(
+    nativeWorkerPlacementObservation({
+      placement: {
+        recoveryError: `${nativePrivate}: Worker node bootstrap failed: OpenClaw worker deploy artifact is missing; build the running package`,
+      },
+    }).recoveryError,
+    "other",
+  );
   const relayPodCases = [
     {
       name: "retains closed relay Pod status without payloads",
@@ -1602,6 +1915,64 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           },
         },
         {
+          name: "retains native worker placement observations through CI",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement-terminal-failed",
+            worker: { ...nativeWorker, recoveryErrorDetail: nativePrivate, session: nativePrivate },
+            environmentId: nativePrivate,
+            workspace: nativePrivate,
+          },
+        },
+        {
+          name: "rejects hostile native worker diagnostic fields",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement",
+            worker: {
+              placementState: nativePrivate,
+              recoveryError: { message: nativePrivate },
+              environmentLookup: { value: nativePrivate },
+              expectedNodeConnected: nativePrivate,
+              expectedNodeMatches: 4097,
+              nodeCount: -1,
+              elapsedMs: 3_600_001,
+              session: nativePrivate,
+              turnStatus: nativePrivate,
+              turnError: { message: nativePrivate },
+              assistantError: nativePrivate,
+              execError: nativePrivate,
+              execResultCount: 4097,
+            },
+          },
+        },
+        {
+          name: "retains wrapped native worker bootstrap causes through CI",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement-terminal-failed",
+            worker: wrappedNativeWorker,
+          },
+        },
+        ...[
+          ["refreshes retained native placement", freshNativeWorker],
+          ["labels fallback after failed native placement refresh", fallbackNativeWorker],
+          ["rejects another session during native placement refresh", mismatchedNativeWorker],
+        ].map(([name, worker]) => ({
+          name,
+          diagnostic: { kind: "native-first-agent-proof", failureStage: "model-and-exec", worker },
+        })),
+        ...nativeLeafDiagnostics,
+        ...turnDiagnostics,
+        {
+          name: "collects native turn failure within the shared read budget",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: collectedTurn,
+          },
+        },
+        {
           name: "rejects unknown native first-Agent proof stage",
           diagnostic: { kind: "native-first-agent-proof", failureStage: `${secret}-stage` },
         },
@@ -1721,6 +2092,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   const details = await readFile(join(root, "state/redacted.jsonl.diagnostics.json"), "utf8");
   const cliAndArtifact = `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}\n${details}`;
   assert.doesNotMatch(cliAndArtifact, /secretauthvalue|strippedjobvalue42/);
+  assert.ok(!cliAndArtifact.includes(nativePrivate));
   assert.ok(JSON.parse(details).failures[0].tests.length > 0);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].tests[0].name, "redacted failure locator");
@@ -1847,6 +2219,96 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     kind: "native-first-agent-proof",
     failureStage: "required-placement-terminal-reclaimed",
   });
+  const retainedNative = summary.files[0].tests.find(
+    (entry) => entry.name === "retains native worker placement observations through CI",
+  ).error.diagnostic;
+  assert.deepEqual(retainedNative, {
+    kind: "native-first-agent-proof",
+    failureStage: "required-placement-terminal-failed",
+    worker: {
+      placementState: "failed",
+      recoveryError: "tunnel-timeout",
+      terminalReason: "other",
+      workspaceReferencePresent: true,
+      environmentLookup: "found",
+      environmentState: "failed",
+      environmentError: "other",
+      tunnelStatus: "stopped",
+      attachedSessionCount: 1,
+      attachedSessionMatches: true,
+      nodeLookup: "found",
+      nodeCount: 2,
+      connectedNodeCount: 1,
+      expectedNodeIdPresent: true,
+      expectedNodeMatches: 1,
+      expectedNodeConnected: false,
+      expectedNodePaired: true,
+      expectedNodeSessionHost: true,
+      expectedNodeCaps: 2,
+      expectedNodeCommands: 1,
+      expectedNodeWorkerBundle: "installed",
+      elapsedMs: 180488,
+    },
+  });
+  assert.deepEqual(
+    summary.files[0].tests.find(
+      (entry) => entry.name === "rejects hostile native worker diagnostic fields",
+    ).error.diagnostic.worker,
+    {
+      placementState: "other",
+      recoveryError: "other",
+      environmentLookup: "other",
+      turnStatus: "other",
+      turnError: "other",
+      assistantError: "other",
+      execError: "other",
+    },
+  );
+  for (const [, category] of turnCases) {
+    const turn = summary.files[0].tests.find((entry) => entry.name === `native turn ${category}`)
+      .error.diagnostic.worker;
+    assert.equal(turn.turnStatus, "error");
+    assert.equal(turn.turnError, category);
+    assert.equal(turn.assistantError, category);
+    assert.equal(turn.execError, category);
+    assert.equal(turn.proofError, "other");
+    assert.equal(turn.execResultCount, 1);
+    assert.equal(turn.execFailureCount, 1);
+  }
+  const collected = summary.files[0].tests.find(
+    (entry) => entry.name === "collects native turn failure within the shared read budget",
+  ).error.diagnostic.worker;
+  assert.equal(collected.turnError, "network-connection");
+  assert.equal(collected.historyLookup, "found");
+  const wrapped = summary.files[0].tests.find(
+    (entry) => entry.name === "retains wrapped native worker bootstrap causes through CI",
+  ).error.diagnostic.worker;
+  assert.equal(wrapped.recoveryError, "worker-deploy-artifact-missing");
+  assert.equal(wrapped.terminalReason, "bundle-install-failed");
+  assert.equal(wrapped.environmentError, "node-installer-disconnected");
+  const fresh = summary.files[0].tests.find(
+    (entry) => entry.name === "refreshes retained native placement",
+  ).error.diagnostic.worker;
+  assert.equal(fresh.placementLookup, "fresh");
+  assert.equal(fresh.placementState, "failed");
+  assert.equal(fresh.environmentState, "failed");
+  assert.equal(fresh.tunnelStatus, "stopped");
+  for (const name of [
+    "labels fallback after failed native placement refresh",
+    "rejects another session during native placement refresh",
+  ]) {
+    const fallback = summary.files[0].tests.find((entry) => entry.name === name).error.diagnostic
+      .worker;
+    assert.equal(fallback.placementLookup, "fallback");
+    assert.equal(fallback.placementState, "active");
+    assert.equal(fallback.environmentState, "attached");
+  }
+  for (const [, category] of nativeLeafCases) {
+    const leaf = summary.files[0].tests.find(
+      (entry) => entry.name === `native installer ${category}`,
+    );
+    assert.equal(leaf.error.diagnostic.worker.recoveryError, category);
+  }
   const monitoringFailure = summary.files[0].tests.find(
     (entry) => entry.name === "retains safe monitoring readiness evidence",
   );
@@ -2013,6 +2475,52 @@ test("failure text is bounded and redacts env values and credential shapes", asy
   assert.doesNotMatch(straddle.message, /jobonly/);
   assert.equal((await render("thrown string")).message, "thrown string");
   assert.equal((await render(undefined)).message, undefined);
+  assert.equal((await render(42)).message, "42");
+});
+
+// Finding 2785: a DOMException (a fetch timeout or abort) crosses node:test's process
+// boundary as a bare stack with an empty message, so its failure had no text at all.
+test("run names DOMException and empty-message failures", async (t) => {
+  const root = await fixture(t);
+  const file = "tests/integration/errors.test.mjs";
+  const resultsPath = join(root, "results/errors.json");
+  await writeFile(
+    join(root, file),
+    [
+      'import test from "node:test";',
+      'test("timeout", () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); });',
+      'test("abort", () => { const controller = new AbortController(); controller.abort(); throw controller.signal.reason; });',
+      'test("empty", () => { throw new Error(""); });',
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { errors: { files: [{ path: file }] } },
+    groups: { ci: ["errors"] },
+  });
+
+  const result = run(root, laneArgs(root, "errors", "state/errors.jsonl", resultsPath));
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const failure = (name) => summary.files[0].tests.find((entry) => entry.name === name).error;
+  // The stack header names the exception, and the frame skips Node's DOMException constructor.
+  for (const [name, message, line] of [
+    ["timeout", "TimeoutError: The operation was aborted due to timeout", 2],
+    ["abort", "AbortError: This operation was aborted", 3],
+    ["empty", "Error", 4],
+  ]) {
+    assert.equal(failure(name).message, message);
+    assert.match(
+      failure(name).frame,
+      new RegExp(`\\(${file.replaceAll(".", "\\.")}:${line}:\\d+\\)$`),
+    );
+  }
+  // The job log names the failure too.
+  assert.match(
+    result.stderr,
+    /run-tests: failed tests\/integration\/errors\.test\.mjs:2 "timeout": TimeoutError: The operation was aborted due to timeout \(at /,
+  );
 });
 
 test("the reporter forwards a failed file's output tail and whole stack only", async () => {
