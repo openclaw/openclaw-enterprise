@@ -192,7 +192,10 @@ export function createAgentDeletion(
     render();
     document.addEventListener("focusin", trackFocus, true);
     try {
-      const current = responseFields(await context.request(path, { expectedStatus: 200 }));
+      // Deletion owns its terminal 404 and access-ended feedback, including after acceptance.
+      const current = responseFields(
+        await context.request(path, { expectedStatus: 200, revalidate: false }),
+      );
       if (!context.isCurrent()) {
         return;
       }

@@ -2140,6 +2140,7 @@ async function loadPage({
           // A denied preflight must retire the readable Agent view before its caller can
           // rebuild controls from cached Configuration data in a catch or finally block.
           if (
+            options.revalidate !== false &&
             lifetime.isCurrent(viewState.active) &&
             firstAgent &&
             viewState.readablePaths.has(path) &&
@@ -2851,7 +2852,8 @@ async function revalidateMountedAgent(current) {
           if (
             selected === "draft" &&
             error.status === 403 &&
-            previousSnapshotRead === refusedRead(403) &&
+            (previousSnapshotRead === refusedRead(403) ||
+              deniedReadsFor(owner).has(snapshotPath)) &&
             snapshotWasReadable === false
           ) {
             return;

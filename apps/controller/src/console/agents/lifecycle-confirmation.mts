@@ -1,11 +1,11 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import type { createApiClient } from "../api-client.mjs";
+import type { ConsolePageContext } from "../page-context.mjs";
 import { button, element } from "../dom.mjs";
 import type { AgentNavigation } from "./list.mjs";
 
 /** Stop and Delete follow the selected Agent until the operator leaves its detail page. */
 export interface AgentLifecycleContext extends Pick<AgentNavigation, "navigate"> {
-  request: ReturnType<typeof createApiClient>;
+  request: ConsolePageContext["request"];
   isCurrent(): boolean;
   onExpired(): void;
 }

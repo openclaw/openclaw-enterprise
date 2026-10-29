@@ -278,6 +278,11 @@ test("mounted Agent refocus preserves a stable Configuration denial", async (t) 
   const unavailable = page.getByRole("heading", { name: "Configuration unavailable", exact: true });
   await unavailable.waitFor();
   await page.locator(settledView).waitFor();
+  // Reload admits the partial view from the same owner's remembered exact-path refusal.
+  // Refocus must still ask the server again when this new view has no read signature.
+  await page.reload();
+  await unavailable.waitFor();
+  await page.locator(settledView).waitFor();
   await page
     .locator(settledView)
     .evaluate((node) => node.setAttribute("data-partial-agent", "true"));
@@ -375,6 +380,14 @@ for (const revoked of ["configuration", "agent"] as const) {
     await refocus(page);
     await sessionRead;
     const heading = revoked === "agent" ? "Access denied" : "Configuration unavailable";
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    await assertScrubbed();
+    await page.reload();
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    const deniedPath = `/namespaces/${namespace.id}/${revoked === "agent" ? "agents" : "configurations"}/${revoked === "agent" ? agent.id : agent.configurationId}`;
+    const deniedRead = page.waitForResponse((response) => response.url().endsWith(deniedPath));
+    await refocus(page);
+    assert.equal((await deniedRead).status(), 403);
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();
     await assertScrubbed();
     await page.getByRole("link", { name: "Namespaces", exact: true }).click();
