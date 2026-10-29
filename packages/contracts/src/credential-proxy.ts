@@ -152,7 +152,7 @@ export const repositoryGitRecipientFields = Object.freeze([
 export type RepositoryGitRecipient = Readonly<
   Record<(typeof repositoryGitRecipientFields)[number], string> & {
     /** Absent on the original repository Git wire. Installation scope needs positive evidence. */
-    deliveryProfile?: "github_installation";
+    deliveryProfile?: "github_installation" | "github_repository";
     /** v5 requires online authorization before injection for every new request. In v6 we
      * observed that hook at startup; a trusted operator could subsequently make stock skip it.
      * Both require verified TLS, a dedicated fresh recipient, and no bypass in the admitted
@@ -163,7 +163,8 @@ export type RepositoryGitRecipient = Readonly<
   }
 >;
 
-export type RepositoryGitDeliveryProfile = "repository_git" | "github_installation";
+export type RepositoryGitDeliveryProfile =
+  "repository_git" | "github_installation" | "github_repository";
 
 export function validRepositoryGitRecipient(
   value: RepositoryGitRecipient | undefined,
@@ -183,7 +184,10 @@ export function validRepositoryGitRecipient(
         /^[0-9a-f]{64}$/.test(value.observedHook?.observationId ?? ""))) &&
     value.authorization === authorization &&
     (authorization === "request-hook-observed" || value.observedHook === undefined) &&
-    value.deliveryProfile === (profile === "github_installation" ? profile : undefined) &&
+    value.deliveryProfile ===
+      (profile === "github_installation" || profile === "github_repository"
+        ? profile
+        : undefined) &&
     repositoryGitRecipientFields.every(
       (key) => typeof value[key] === "string" && value[key].trim().length > 0,
     )
@@ -349,7 +353,9 @@ export async function repositoryGitAuthorization(
       ? "online-request"
       : "unavailable";
   }
-  return (confirmed === undefined && profile !== "github_installation") ||
+  return (confirmed === undefined &&
+    profile !== "github_installation" &&
+    profile !== "github_repository") ||
     (profile === "github_installation" && confirmed === profile)
     ? "exact-dispatch"
     : "unavailable";

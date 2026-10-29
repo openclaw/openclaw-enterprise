@@ -564,3 +564,101 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
   await lookupAborted.promise;
   assert.equal(approvals, 0);
 });
+
+// Strong provider permissions do not authorize issuing a new portable credential.
+// Exercise the signed production RPC and prove refusal precedes the material owner.
+test("repository API credential issuance is refused while ordinary collaboration stays available", async (t) => {
+  let approvals = 0;
+  let scope = "github-repository";
+  const { client, keys } = await openShellOnlineGitWire(t, {
+    lookupBinding: async () => ({
+      ...binding,
+      scope,
+      installationId: "71",
+      apiOrigin: "https://api.github.com",
+      repositories: [{ repositoryId: binding.repositoryId, repository: binding.repository }],
+      installed: { ...binding.installed, route: { revisionId: binding.executionId, fence: 1 } },
+    }),
+    authorizeOnlineRequest: async (q, installed) => {
+      approvals++;
+      return {
+        kind: "allow",
+        exchangeId: q.exchangeId,
+        requestDigestSha256: q.requestDigestSha256,
+        preparationAttemptId: installed.preparationAttemptId,
+        materialVersion: installed.materialVersion,
+        replyBy: q.deadlineAt,
+      };
+    },
+  });
+  const evaluate = async (path, method = "POST", body) => {
+    const input = request(
+      path,
+      method,
+      body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body)),
+      body === undefined ? [] : [{ name: "content-type", value: "application/json" }],
+    );
+    input.target.host = "api.github.com";
+    return invoke(
+      client,
+      "EvaluateHttpRequest",
+      input,
+      token(keys, "supervisor", binding.sandboxId),
+    );
+  };
+  for (scope of ["github-repository", "github-installation"]) {
+    for (const prefix of ["/repos/example/project", "/orgs/example"]) {
+      for (const endpoint of ["registration-token", "remove-token", "generate-jitconfig"]) {
+        for (const body of [
+          undefined,
+          { name: "runner", runner_group_id: 1, labels: ["self-hosted"] },
+        ]) {
+          const before = approvals;
+          const result = await evaluate(`${prefix}/actions/runners/${endpoint}`, "POST", body);
+          assert.equal(result.decision, 2, `${scope}: ${endpoint}`);
+          assert.equal(result.reason_code, "request_not_allowed");
+          assert.equal(
+            approvals,
+            before,
+            "credential issuer refusal must precede durable owner approval",
+          );
+        }
+      }
+    }
+    for (const [path, method, body] of [
+      ["/repos/example/project", "GET"],
+      ["/repos/example/project/actions/runners", "GET"],
+      ["/repos/example/project/actions/runners/12/labels", "POST", { labels: ["ordinary-label"] }],
+      ["/repos/example/project/issues", "POST", { title: "ordinary issue" }],
+      [
+        "/repos/example/project/pulls",
+        "POST",
+        { title: "ordinary pull", head: "feature", base: "main" },
+      ],
+      [
+        "/graphql",
+        "POST",
+        { query: 'query { repository(owner: "example", name: "project") { name } }' },
+      ],
+      [
+        "/graphql",
+        "POST",
+        { query: 'mutation { addStar(input: {starrableId: "node"}) { starrable { id } } }' },
+      ],
+    ]) {
+      assert.equal((await evaluate(path, method, body)).decision, 1, `${scope}: ${path}`);
+    }
+    const git = pushRequest();
+    assert.equal(
+      (
+        await invoke(
+          client,
+          "EvaluateHttpRequest",
+          git,
+          token(keys, "supervisor", binding.sandboxId),
+        )
+      ).decision,
+      1,
+    );
+  }
+});

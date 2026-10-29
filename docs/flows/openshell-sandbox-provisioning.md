@@ -92,13 +92,15 @@ graph TD
 and require Landlock.
 
 `scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
-Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
+`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
 Before state creation, Kubernetes-only rejects API-port collisions and records
-engine, cluster, namespace, port and key destination. Both verify archives,
-package charts and import digest-pinned OpenShell images. Kubernetes-only
-builds/selects OCE images, imports PostgreSQL and resolves cluster digests.
+engine, cluster, namespace, port and key path. Both install verified 0.1.6
+charts and digest-pinned Gateway/supervisor/sandbox images.
+Protected preflight (`internal/occdev/egress_openshell_chart.go:checkProtectedOpenShellChart`)
+requires native TOML pre-credentials bindings and read-only CA mounts.
+Kubernetes-only builds/selects OCE images and imports PostgreSQL.
 
-Both import OCE images first, preventing k3s garbage collection of idle OpenShell images.
+Both import OCE images first to prevent k3s garbage collection.
 
 After Agent Sandbox rollout failure, `prepareOpenShell` invokes
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`

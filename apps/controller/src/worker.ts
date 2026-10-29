@@ -5214,10 +5214,13 @@ export class ControllerWorker {
       );
       // v6 needs its current active pointer to select credential material. Commit that pointer
       // only for the observed, still-held launcher; the ordinary active pass must later see
-      // the real Harness serving before it completes activation. No v4/v5 admission uses this.
+      // the real Harness serving before it completes activation. Mandatory online Git uses
+      // the same held challenge before releasing credentials.
       const held =
-        revision.executionAdmission.version === 6 &&
-        revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed" &&
+        ((revision.executionAdmission.version === 6 &&
+          revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
+          (revision.executionAdmission.version === 5 &&
+            revision.egressPlan?.repositoryGitAuthorization === "online-request")) &&
         this.compute.activationOrder !== "beforeCommit" &&
         !observation.ready &&
         observation.heldForRepositoryGitMaterial === true &&

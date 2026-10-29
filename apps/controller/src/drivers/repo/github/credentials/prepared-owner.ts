@@ -34,13 +34,15 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
   const { grant } = admission;
   const exchange = createProviderTransport(options.apiOrigin, options.ca, clock, grant);
   const scope =
-    grant.profile === "github-installation"
-      ? { profile: grant.profile }
-      : {
-          repositoryId: grant.repositoryId,
-          repository: grant.repository,
-          permissions: permissionsForProfile(grant.profile),
-        };
+    grant.profile === "github-repository"
+      ? { profile: grant.profile, repositories: grant.repositories, permissions: grant.permissions }
+      : grant.profile === "github-installation"
+        ? { profile: grant.profile }
+        : {
+            repositoryId: grant.repositoryId,
+            repository: grant.repository,
+            permissions: permissionsForProfile(grant.profile),
+          };
 
   return createTokenPreparation({
     admission,

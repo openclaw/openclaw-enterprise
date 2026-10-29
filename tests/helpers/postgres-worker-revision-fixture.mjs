@@ -265,6 +265,7 @@ export function createWorkerRevisionFixtures(
       metrics,
       repoDriver,
       driverSelections = {},
+      backends = /** @type {import("../../packages/contracts/src/index.ts").BackendDefinition[]} */ ([]),
       secretAuthMethod = "api_key",
       // Shorter teardown step limits, for a test of the teardown itself.
       disposeLimitsMs: limitsMs,
@@ -342,7 +343,7 @@ export function createWorkerRevisionFixtures(
     const controller = createBackendController(
       { installation, state },
       {
-        backends: [],
+        backends,
         driverConfigurations: installationDriverConfigurations({ drivers: driverSelections }),
       },
     );

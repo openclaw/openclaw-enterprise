@@ -3666,9 +3666,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const git = this.openShellGit;
     if (
       !git ||
-      revision.executionAdmission.version !== 6 ||
-      plan?.repositoryGitAuthorization !== "request-hook-observed" ||
-      workspaceName(context.namespace) !== git.configuration.observedHookPreviewWorkspace
+      !(
+        plan?.repositoryGitAuthorization === "online-request" ||
+        (revision.executionAdmission.version === 6 &&
+          plan?.repositoryGitAuthorization === "request-hook-observed" &&
+          workspaceName(context.namespace) === git.configuration.observedHookPreviewWorkspace)
+      )
     ) {
       return;
     }
@@ -3748,7 +3751,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     );
     // A service may still be starting, or may already serve Codex/a held failure.
     // Normal Harness observation decides readiness; none of these answers releases startup.
-    const preview = installation.plan.repositoryGitAuthorization === "request-hook-observed";
+    const preview =
+      installation.plan.repositoryGitAuthorization === "request-hook-observed" ||
+      installation.plan.repositoryGitAuthorization === "online-request";
     if (document.status !== 200) {
       if (
         preview &&

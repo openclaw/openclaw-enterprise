@@ -20,10 +20,12 @@ const matchingAuthorization = `(CASE WHEN p.installation->'plan' ? 'repositoryGi
 const recipient = "p.installation#>'{enforcement,repositoryGitRecipient}'";
 export const releasedGitProfile = `CASE
   WHEN ${recipient}->>'deliveryProfile' = 'github_installation' THEN 'github-installation'
+  WHEN ${recipient}->>'deliveryProfile' = 'github_repository' THEN 'github-repository'
   WHEN NOT (${recipient} ? 'deliveryProfile') THEN 'git-write'
   END`;
 export const registeredGitSelection = `p.installation#>>'{plan,repositoryGit,bindings,0,profile}' = ${releasedGitProfile}
-  AND jsonb_array_length(p.installation#>'{plan,repositoryGit,bindings}')=1 AND ${matchingAuthorization}`;
+  AND (jsonb_array_length(p.installation#>'{plan,repositoryGit,bindings}')=1 OR
+    (${recipient}->>'deliveryProfile'='github_repository' AND NOT EXISTS (SELECT FROM jsonb_array_elements(p.installation#>'{plan,repositoryGit,bindings}') b WHERE b->>'profile'<>'github-repository'))) AND ${matchingAuthorization}`;
 
 // The route stores the observed provider name, id, resource and profile versions. Its owner
 // verifies the complete profile, not just this name. Keep the installed observation schema and
@@ -72,6 +74,7 @@ export const repositoryGitOwnerPredicate = `f.source #> '{session,credentialProx
 
 export const legacyAdoption = "prepared_repository_git";
 export const protectedGitAdoption = "credential_proxy_repository_git";
+export const selectedGitAdoption = "credential_proxy_github_repository";
 export const installationGitAdoption = "credential_proxy_github_installation";
 export const repositoryGitDeliveryTransport = "registered-repository-git/v1";
 
@@ -91,12 +94,32 @@ export const repositoryGitAdmissionEnded = `EXISTS (
     (f.source#>>'{session,admissionId}',f.source#>>'{session,revisionId}',f.source#>>'{session,sessionId}')
     AND (s.phase IN ('closing','disposed','invalidated') OR s.live_revision_id IS NULL
       OR to_timestamp(s.deadline_wall_ms / 1000.0) <= clock_timestamp()
+      OR (f.source->>'adoption'='${selectedGitAdoption}' AND (
+        EXISTS (SELECT FROM jsonb_array_elements(f.source#>'{session,bindings}') b
+          WHERE NOT EXISTS (SELECT FROM occ.repository_session_attempts m
+            WHERE (m.namespace_id,m.agent_id,m.revision_id,m.live_revision_id)=
+              (s.namespace_id,s.agent_id,s.revision_id,s.revision_id)
+            AND m.repository_ref=b->>'repositoryRef' AND m.cleanup_context->'binding'=b
+            AND m.cleanup_context->'driver'=s.cleanup_context->'driver'
+            AND m.broker_protocol=2 AND m.phase='open' AND m.session_id IS NOT NULL
+            AND clock_timestamp() < to_timestamp(m.deadline_wall_ms / 1000.0)))
+        OR EXISTS (SELECT FROM jsonb_array_elements(f.source#>'{session,memberSessions}') member
+          WHERE NOT EXISTS (SELECT FROM occ.repository_session_attempts m
+            WHERE (m.namespace_id,m.agent_id,m.revision_id,m.live_revision_id)=
+              (s.namespace_id,s.agent_id,s.revision_id,s.revision_id)
+            AND (m.repository_ref,m.admission_id,m.session_id)=
+              (member->>'repositoryRef',member->>'admissionId',member->>'sessionId')
+            AND m.phase='open'))))
       OR EXISTS (SELECT FROM occ.repository_standing_executions e
         WHERE e.revision_id=s.revision_id AND e.closed)
       OR EXISTS (SELECT FROM occ.repository_standing_approvals a
         WHERE a.id=f.source#>>'{session,standingApprovalId}' AND a.revoked_at IS NOT NULL)
       OR EXISTS (SELECT FROM occ.agents g WHERE (g.namespace_id,g.id)=(s.namespace_id,s.agent_id)
-        AND (g.active_revision_id IS DISTINCT FROM s.revision_id OR g.desired_runtime_state <> 'running')))
+        AND (g.active_revision_id IS DISTINCT FROM s.revision_id OR g.desired_runtime_state <> 'running'
+          OR (f.source->>'adoption'='${selectedGitAdoption}' AND EXISTS (
+            SELECT FROM jsonb_array_elements(f.source#>'{session,bindings}') b
+            WHERE (g.repository_bindings @> jsonb_build_array(jsonb_build_object(
+              'repositoryRef',b->>'repositoryRef','profile',b->>'profile'))) IS NOT TRUE)))))
   )`;
 
 /** Alongside matchingAuthorization, require the policy and every stable recipient identity. */
@@ -132,8 +155,9 @@ const openShellObserved = `SELECT FROM ${openShellRoute} WHERE revision_id=$1 AN
  * material. Lost evidence stays unknown; neither strict mode nor another recipient matches. */
 export const openShellPreviewEnded = `EXISTS (
   SELECT FROM ${openShellRoute} r JOIN occ.egress_installations p ON ${protectedRepositoryGitInstallationSql}
-  WHERE r.blocked IS NOT NULL AND ${admittedAuthorization}='request-hook-observed'
-    AND f.source->>'adoption'='${installationGitAdoption}'
+  WHERE r.blocked IS NOT NULL
+    AND ((${admittedAuthorization}='request-hook-observed' AND f.source->>'adoption'='${installationGitAdoption}')
+      OR (${admittedAuthorization}='online-request' AND f.source->>'adoption' IN ('${selectedGitAdoption}','${protectedGitAdoption}')))
     AND (r.namespace_id,r.agent_id,r.revision_id,r.binding_id,p.sandbox_id)=
       (f.source#>>'{session,namespaceId}', f.source#>>'{session,agentId}', f.source#>>'{session,revisionId}',
        f.source#>>'{session,credentialProxyExecution,executionId}', f.source#>>'{session,credentialProxyExecution,sandboxId}')

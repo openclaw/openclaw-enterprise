@@ -6706,7 +6706,9 @@ test(
       keyId: "gateway-key",
     };
     const gateway = workspaceGatewayClient();
+    let repositoryGatewayVersion = "0.1.5";
     gateway.getGatewayInfo = async () => ({
+      gateway_version: repositoryGatewayVersion,
       extensions: [{ configured_name: "oce-prepared-git", kind: 4, protocol_major: 1 }],
     });
     const originalGetWorkspace = gateway.getWorkspace;
@@ -6880,14 +6882,24 @@ test(
     assert.equal(protectedGit.nativeRepositorySender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
     assert.equal(protectedGit.sandboxDriver.openShellGit.configuration.protectedExecution, true);
-    // Finding 2199: no OpenShell release is qualified to enforce git-write, so the bundled sender
-    // refuses the profile before it reads the gateway, instead of admitting a revision that waits
-    // at enrollment until the convergence deadline.
+    // Old releases retain their refusal; stock 0.1.6 admits the normal explicit git-write
+    // profile as well as selected-set delivery. Installation still needs the held challenge.
     await assert.rejects(
       protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git"),
       { name: "RepositoryGitSenderUnqualifiedError", code: "REPOSITORY_GIT_SENDER_UNQUALIFIED" },
     );
+    repositoryGatewayVersion = "0.1.6";
+    for (const profile of ["repository_git", "github_repository"]) {
+      assert.deepEqual(
+        await protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, profile),
+        {
+          profile,
+          authorization: "online-request",
+        },
+      );
+    }
 
+    repositoryGatewayVersion = "0.1.5";
     protectedGit.computeDriver.validateRepositoryCredentials(
       { id: "codex", mode: "dedicated" },
       protectedGit.sandboxDriver.id,

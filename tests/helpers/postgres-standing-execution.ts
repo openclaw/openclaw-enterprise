@@ -189,6 +189,7 @@ export async function standingExecutionPlatform(
   t: TestContext,
   testUrl: string,
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  backends: import("../../packages/contracts/src/index.ts").BackendDefinition[] = [],
 ) {
   await ensurePostgresAgentBootstrap(t, {
     label: "standing-execution",
@@ -206,6 +207,6 @@ export async function standingExecutionPlatform(
       }
     }
   });
-  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections };
+  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections, backends };
   return createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
 }

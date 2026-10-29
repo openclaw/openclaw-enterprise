@@ -387,7 +387,8 @@
     {
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
-        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub"
+        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub",
+        "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C"
       ]
     },
     {

@@ -5,6 +5,7 @@ import type {
   RepositoryGitOnlineDecision,
   PreparedGitHubPullScope,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseRequest,
 } from "@openclaw-enterprise/contracts";
 import type { RequestHead } from "../repo/credentials/backend-contracts.ts";
@@ -12,6 +13,7 @@ import { decodePushedBranchRef } from "../repo/credentials/client-contracts.ts";
 import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
 import { planDraftPull } from "../repo/github/credentials/prepared-draft-pull.ts";
 import { classifyRoute } from "../repo/github/credentials/routes/classification.ts";
+import { allowsGraphqlInput } from "../repo/github/credentials/graphql-input.ts";
 import { allowsReceivePackInput } from "../repo/github/credentials/routes/receive-pack.ts";
 import {
   createOpenShellOnlineHttpAuthority,
@@ -56,9 +58,18 @@ export type OpenShellOnlineGitBinding =
       readonly scope: "github-installation";
       readonly installationId: string;
       readonly apiOrigin: string;
+    })
+  | (GitBindingIdentity & {
+      readonly scope: "github-repository";
+      readonly installationId: string;
+      readonly apiOrigin: string;
+      readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
     });
 
-type Use = PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest;
+type Use =
+  | PreparedGitHubUseRequest
+  | PreparedGitHubInstallationUseRequest
+  | PreparedGitHubRepositoryUseRequest;
 
 export type OpenShellOnlineGitAuthorityOptions = Omit<
   OpenShellOnlineHttpAuthorityOptions,
@@ -204,7 +215,7 @@ function validBinding(
       binding.installed?.preparationAttemptId,
       binding.installed?.materialVersion,
     ].every((id) => typeof id === "string" && /^[\x21-\x7e]{1,256}$/.test(id)) &&
-    (binding.scope === "github-installation"
+    (binding.scope !== undefined
       ? /^[1-9][0-9]{0,15}$/.test(binding.installationId) &&
         binding.apiOrigin === "https://api.github.com" &&
         binding.installed.route?.revisionId === binding.executionId &&
@@ -330,6 +341,11 @@ function installationApiOperation(request: OpenShellOnlineHttpRequest, head: Req
   const read = method === "GET" || method === "HEAD";
   if (
     head.contentEncoding !== "identity" ||
+    // Dedicated credential issuance is not ordinary repository collaboration.
+    (method === "POST" &&
+      /^\/(?:repos\/[\w-]+\/[\w.-]+|orgs\/[\w-]+)\/actions\/runners\/(?:registration-token|remove-token|generate-jitconfig)$/i.test(
+        path,
+      )) ||
     headers["git-protocol"] !== undefined ||
     (graph
       ? method !== "POST" || query !== ""
@@ -365,7 +381,10 @@ function installationApiOperation(request: OpenShellOnlineHttpRequest, head: Req
     if (!graph) {
       return "github-rest";
     }
-    return "query" in body && typeof body.query === "string" && body.query.trim()
+    return allowsGraphqlInput(request.body) &&
+      "query" in body &&
+      typeof body.query === "string" &&
+      body.query.trim()
       ? "github-graphql"
       : undefined;
   } catch {
@@ -399,8 +418,17 @@ function operation(
   binding: OpenShellOnlineGitBinding,
   head: RequestHead,
 ): Selection {
-  if (binding.scope === "github-installation") {
+  if (binding.scope !== undefined) {
     if (matchesOrigin("https://api.github.com", request)) {
+      if (binding.scope === "github-repository" && request.target.path.startsWith("/repos/")) {
+        const repo = /^\/repos\/([^/]+\/[^/]+)(?:\/|$)/.exec(request.target.path)?.[1];
+        if (
+          !repo ||
+          !binding.repositories.some((r) => r.repository.toLowerCase() === repo.toLowerCase())
+        ) {
+          return { denied: "route_unsupported" };
+        }
+      }
       const api = installationApiOperation(request, head);
       return api ? { selected: { operation: api } } : { denied: "route_unsupported" };
     }
@@ -412,6 +440,15 @@ function operation(
     const repo = /^\/([a-zA-Z0-9_-]{1,100}\/[a-zA-Z0-9_.-]{1,100})(?:\.git)?\//.exec(
       request.target.path,
     )?.[1];
+    if (
+      binding.scope === "github-repository" &&
+      (!repo ||
+        !binding.repositories.some(
+          (r) => r.repository.toLowerCase() === repo.replace(/\.git$/, "").toLowerCase(),
+        ))
+    ) {
+      return { denied: "route_unsupported" };
+    }
     return repo ? gitOperation(request, head, repo) : { denied: "route_unsupported" };
   }
   if (request.target.path.startsWith("/repos/")) {
@@ -580,13 +617,15 @@ export function createOpenShellOnlineGitAuthority(
         deadlineAt: request.deadlineAt,
       };
       let q: Use;
-      if (binding.scope === "github-installation") {
+      if (binding.scope !== undefined) {
         if (selected.operation === "create-draft-pull" || !options.authorizeOnlineRequest) {
           return deny("binding_mismatch");
         }
         q = {
           ...use,
-          scope: binding.scope,
+          ...(binding.scope === "github-repository"
+            ? { scope: binding.scope, repositories: binding.repositories }
+            : { scope: binding.scope }),
           installationId: binding.installationId,
           operation: selected.operation,
         };

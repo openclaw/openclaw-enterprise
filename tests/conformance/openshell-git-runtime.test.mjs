@@ -2203,7 +2203,7 @@ test("protected material selection is serialized with the reservation fence at t
   assert.equal(f.runtime.route(revision.id).state, "installed");
 });
 
-test("an admitted preview rotates at its new fence only in the original worker", async () => {
+async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
   const previewRegistry = validateGitHubRepositoryRegistry(
     {
       version: 1,
@@ -2212,7 +2212,16 @@ test("an admitted preview rotates at its new fence only in the original worker",
       appId: registry.appId,
       githubInstallationId: registry.githubInstallationId,
       maximumDurationSeconds: 86400,
-      repositories: registry.repositories,
+      repositories: mandatoryPolicy
+        ? registry.repositories.map((r) => ({
+            ...r,
+            namespaces: r.namespaces.map((n) => ({
+              namespaceId: n.namespaceId,
+              profiles: ["github-repository"],
+              permissions: { metadata: "read", contents: "write" },
+            })),
+          }))
+        : registry.repositories,
       installationAccess: {
         repositoryRef: "installation",
         namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
@@ -2224,18 +2233,18 @@ test("an admitted preview rotates at its new fence only in the original worker",
   const f = fixture({ store: routeStore(), resolveDelivery: resolve });
   const binding = resolveGitHubRepositoryBinding(previewRegistry, {
     namespaceId: "namespace-a",
-    repositoryRef: "installation",
-    profile: "github-installation",
+    repositoryRef: mandatoryPolicy ? registry.repositories[0].repositoryRef : "installation",
+    profile: mandatoryPolicy ? "github-repository" : "github-installation",
   });
   const credentials = { ...f.revision.repositoryCredentials, bindings: [binding] };
   const revision = {
     ...f.revision,
     repositoryCredentials: credentials,
-    executionAdmission: { version: 6, mode: "protected" },
+    executionAdmission: { version: mandatoryPolicy ? 5 : 6, mode: "protected" },
     egressPlan: {
       driver: { id: "openshell" },
       execution: { executionId: f.entry.bindingId },
-      repositoryGitAuthorization: "request-hook-observed",
+      repositoryGitAuthorization: mandatoryPolicy ? "online-request" : "request-hook-observed",
       repositoryGit: credentials,
     },
   };
@@ -2244,7 +2253,11 @@ test("an admitted preview rotates at its new fence only in the original worker",
   f.runtime.configuration.protectedExecution = true;
   f.runtime.configuration.observedHookPreviewWorkspace = f.sandbox.workspace;
   f.runtime.configuration.authority.audience = "preview";
-  const preview = new ObservedHookPreview(f.sandbox.workspace, f.entry.bindingId);
+  const preview = new ObservedHookPreview(
+    f.sandbox.workspace,
+    f.entry.bindingId,
+    !!mandatoryPolicy,
+  );
   f.entry.preview = preview;
   f.store.rows.get(revision.id).workerInstance = f.runtime.instance;
   f.entry.continuity = { model: "openai", workload: async () => "original-pods" };
@@ -2290,6 +2303,9 @@ test("an admitted preview rotates at its new fence only in the original worker",
     ...(await sandbox(...args)),
     configurationAdmission: admission(),
   });
+  f.client.getGatewayInfo = async () => ({
+    gateway_version: mandatoryPolicy ? "0.1.6" : legacyVersion,
+  });
   f.client.readExclusivePreviewWorkspace = async () => true;
   f.client.getSandboxConfig = async () => ({
     policy: {
@@ -2318,6 +2334,8 @@ test("an admitted preview rotates at its new fence only in the original worker",
     supervisor_middleware_services: [
       {
         name: "oce-prepared-git",
+        binding_policy: mandatoryPolicy ?? (legacyVersion === "0.1.6" ? 2 : undefined),
+        bindings: [1],
         audience: "preview",
         request_timeout: { seconds: "5" },
         grpc_endpoint: "https://middleware.example.test",
@@ -2327,7 +2345,8 @@ test("an admitted preview rotates at its new fence only in the original worker",
   f.owner.material = {
     ...binding.grant,
     value: "synthetic-installation-token",
-    scope: "github-installation",
+    scope: mandatoryPolicy ? "github-repository" : "github-installation",
+    ...(mandatoryPolicy && { repositories: resolve(revision).delivery.repositories }),
     installationId: registry.githubInstallationId,
     expiresAt: new Date(Date.now() + 600_000).toISOString(),
     sessionId: "preview-session",
@@ -2335,7 +2354,31 @@ test("an admitted preview rotates at its new fence only in the original worker",
     materialVersion: "preview-material",
     apiOrigin: "https://api.github.com",
   };
+  if (mandatoryPolicy || legacyVersion === "0.1.6") {
+    const config = f.client.getSandboxConfig;
+    for (const [binding_policy, bindings] of [
+      [0, [1]],
+      [1, [1]],
+      [2, [2]],
+      [2, [1, 2]],
+      [3, [1, 2]],
+      [3, []],
+    ]) {
+      f.client.getSandboxConfig = async () => {
+        const value = await config();
+        value.supervisor_middleware_services[0].binding_policy = binding_policy;
+        value.supervisor_middleware_services[0].bindings = bindings;
+        return value;
+      };
+      await f.reconcile();
+      assert.equal(preview.recipient, undefined, "dynamic or response-only must not qualify");
+      assert.equal(f.calls.rotate, 0);
+    }
+    f.client.getSandboxConfig = config;
+  }
   await f.reconcile();
+  assert.equal(f.calls.rotate, 0, "ACCEPTED and effective config cannot release material");
+  assert.equal(preview.hook, undefined);
   assert.ok(preview.recipient, "the original bootstrap observation qualifies the recipient");
   const startupId = randomUUID();
   const signal = AbortSignal.timeout(5000);
@@ -2382,4 +2425,12 @@ test("an admitted preview rotates at its new fence only in the original worker",
   f.faults.observe = false;
   await f.reconcile();
   assert.equal(f.calls.rotate, 1, "neither the replacement nor the fenced original can replay");
-});
+}
+
+for (const policy of [undefined, 2, 3]) {
+  test(`an observed Git route (${policy ?? "preview"}) rotates only after its challenge in the original worker`, () =>
+    observedGitRoute(policy));
+}
+
+test("an explicit installation preview on stock 0.1.6 retains its scope and requires the held challenge", () =>
+  observedGitRoute(undefined, "0.1.6"));

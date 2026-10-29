@@ -16,6 +16,8 @@ request against the live grant without returning a token.
 See [service forwarding and retirement](repository-credentials.md) and
 [runtime qualification](../testing/repository-credentials.md).
 
+For selected repository sets and mandatory-hook setup, see [OpenShell enrollment](../guides/repository-credentials/openshell-enrollment.md).
+
 ## Entry Points
 
 - `apps/controller/src/index.ts:createFastifyApp` registers repository-option and

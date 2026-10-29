@@ -176,7 +176,9 @@ function validOptions(value: unknown): value is RepositoryOption[] {
       (description !== undefined && typeof description !== "string") ||
       !Array.isArray(allowedProfiles) ||
       allowedProfiles.length === 0 ||
-      !allowedProfiles.every((id: unknown) => repositoryProfile(id)) ||
+      !allowedProfiles.every(
+        (id: unknown) => id === "github-installation" || repositoryProfile(id),
+      ) ||
       refs.has(repositoryRef)
     ) {
       return false;
@@ -217,7 +219,6 @@ export function createRepositoryFields(
     expanded: new Set(),
     undo: undefined,
   };
-  const initialAccess = JSON.stringify(accessIntent());
   let searchState: SearchState;
   let loadGeneration = 0;
   const status = element(
@@ -290,7 +291,15 @@ export function createRepositoryFields(
     ),
   );
   const option = (ref: string) => state.options.find((entry) => entry.repositoryRef === ref);
-  const effective = (ref: string) => state.selected.get(ref) ?? state.profile;
+  // Only new selections may derive the collaborator profile from the Contributor default.
+  // Keep this intent through remove/undo; saved inheritance is never inferred from discovery.
+  const newCollaborators = new Set<string>();
+  const effective = (ref: string) =>
+    state.selected.get(ref) ??
+    (newCollaborators.has(ref) && state.profile === "git-full"
+      ? "github-repository"
+      : state.profile);
+  const initialAccess = JSON.stringify(accessIntent());
   const invalid = (ref: string) => !option(ref)?.allowedProfiles.includes(effective(ref));
   const profileLabel = (profile: string) =>
     repositoryProfile(profile)?.label ?? "Unknown access level";
@@ -354,7 +363,11 @@ export function createRepositoryFields(
     change: (profile: string) => void,
   ) {
     const group = element("div", { className: "repository-profiles" });
-    const contributor = allowed.includes("git-full") ? "git-full" : "git-write";
+    const contributor = allowed.includes("github-repository")
+      ? "github-repository"
+      : allowed.includes("git-full")
+        ? "git-full"
+        : "git-write";
     for (const [value, title, help] of [
       ["git-read", "Read-only", "Read code, pull requests, and issues."],
       [
@@ -410,7 +423,7 @@ export function createRepositoryFields(
       {
         className: "repository-customize",
         "data-access-customize": id,
-        hidden: profile === "git-read",
+        hidden: profile === "git-read" || profile === "github-repository",
       },
       element(
         "summary",
@@ -440,7 +453,7 @@ export function createRepositoryFields(
   function renderAccess() {
     access.hidden = !state.options.length && !state.selected.size;
     const expanded = access.querySelector("details")?.open;
-    const allowed = repositoryProfiles.map((p) => p.id);
+    const allowed = repositoryProfiles.filter((p) => p.id !== "github-repository").map((p) => p.id);
     const custom = [...state.selected].filter(
       ([ref, profile]) =>
         profile !== null &&
@@ -486,6 +499,12 @@ export function createRepositoryFields(
     if (state.undo?.ref === ref) {
       restoreUndo();
     } else {
+      const profiles = option(ref)?.allowedProfiles;
+      if (profiles?.length === 1 && profiles[0] === "github-repository") {
+        newCollaborators.add(ref);
+      } else {
+        newCollaborators.delete(ref);
+      }
       state.selected.set(ref, null);
     }
     state.undo = undefined;
@@ -979,7 +998,11 @@ export function createRepositoryFields(
       defaultProfile: state.profile,
       repositories: [...state.selected].map(([repositoryRef, profile]) => ({
         repositoryRef,
-        ...(profile === null ? {} : { profile }),
+        ...(profile !== null
+          ? { profile }
+          : effective(repositoryRef) !== state.profile
+            ? { profile: effective(repositoryRef) }
+            : {}),
       })),
     };
   }
@@ -1003,6 +1026,7 @@ export function createRepositoryFields(
     if (clearSelections) {
       state.options = [];
       state.selected.clear();
+      newCollaborators.clear();
       state.undo = undefined;
       state.expanded.clear();
       state.showAll = false;
@@ -1029,7 +1053,10 @@ export function createRepositoryFields(
           false,
         );
       }
-      state.options = options;
+      state.options = options.flatMap((option) => {
+        const allowedProfiles = option.allowedProfiles.filter((id) => id !== "github-installation");
+        return allowedProfiles.length ? [{ ...option, allowedProfiles }] : [];
+      });
       state.discovery = "ready";
       choices.setAttribute("aria-busy", "false");
       if (clearSelections) {

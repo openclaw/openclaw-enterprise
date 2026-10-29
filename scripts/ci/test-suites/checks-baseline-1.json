@@ -127,7 +127,8 @@
     "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.mjs",
     "tests/integration/refusal-answers.test.mjs",
-    "tests/integration/namespace-deletion-console-api.test.ts"
+    "tests/integration/namespace-deletion-console-api.test.ts",
+    "tests/integration/github-selected-repositories.test.ts"
   ],
   "files": [
     {
@@ -563,7 +564,10 @@
       "expectedTests": [
         "a gateway that does not answer closes the Git route and restores it without a tombstone",
         "the Git route tombstone stays for a replaced execution, an unknown write and withdrawal",
-        "the Git route reports bootstrap, material and binding states for Compute readiness"
+        "the Git route reports bootstrap, material and binding states for Compute readiness",
+        "an observed Git route (2) rotates only after its challenge in the original worker",
+        "an observed Git route (3) rotates only after its challenge in the original worker",
+        "an explicit installation preview on stock 0.1.6 retains its scope and requires the held challenge"
       ]
     },
     {
@@ -641,6 +645,14 @@
     },
     {
       "path": "tests/integration/namespace-deletion-console-api.test.ts"
+    },
+    {
+      "path": "tests/integration/github-selected-repositories.test.ts",
+      "expectedTests": [
+        "selected repository issuance sends every selected stable ID and explicit permissions",
+        "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
+        "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
+      ]
     }
   ]
 }
