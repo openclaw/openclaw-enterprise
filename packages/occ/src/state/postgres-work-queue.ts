@@ -65,6 +65,8 @@ export interface PostgresWorkQueueOptions {
   readonly leaseDurationMs?: number;
   readonly claimRaceRetries?: number;
   readonly random?: () => number;
+  /** Restrict scheduling and recovery to this logical Namespace when supplied. */
+  readonly namespaceId?: string;
   readonly workKind?: "all" | "namespace";
 }
 
@@ -792,6 +794,7 @@ export class PostgresWorkQueue {
   private readonly leaseDurationMs: number;
   private readonly claimRaceRetries: number;
   private readonly random: () => number;
+  private readonly namespaceId: string | null;
   private readonly workKind: "all" | "namespace";
 
   constructor(client: PostgresQueryClient, options: PostgresWorkQueueOptions = {}) {
@@ -809,6 +812,10 @@ export class PostgresWorkQueue {
       "Maximum controller work claim races",
     );
     this.random = options.random ?? Math.random;
+    this.namespaceId =
+      options.namespaceId === undefined
+        ? null
+        : nonempty(options.namespaceId, "Controller work Namespace ID");
     this.workKind = options.workKind ?? "all";
     if (this.workKind !== "all" && this.workKind !== "namespace") {
       throw new ScopeViolationError("The controller work kind must be all or namespace.");
@@ -1074,7 +1081,7 @@ export class PostgresWorkQueue {
           `WITH candidate AS (
              SELECT work.idempotency_key
              FROM occ.controller_work AS work
-             WHERE ${this.claimablePredicate("$2")}
+             WHERE ${this.claimablePredicate("$2", "$4")}
              ORDER BY work.available_at, work.created_at, work.idempotency_key
              FOR UPDATE OF work SKIP LOCKED
              LIMIT 1
@@ -1090,7 +1097,7 @@ export class PostgresWorkQueue {
            FROM candidate
            WHERE work.idempotency_key = candidate.idempotency_key
            RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
-          [claimToken, this.maxAttempts, this.leaseDurationMs],
+          [claimToken, this.maxAttempts, this.leaseDurationMs, this.namespaceId],
         );
         return claimed.rows[0] === undefined ? undefined : asClaimedWork(claimed.rows[0]);
       } catch (error) {
@@ -1138,10 +1145,10 @@ export class PostgresWorkQueue {
       `SELECT EXISTS (
          SELECT 1
          FROM occ.controller_work AS work
-         WHERE ${this.claimablePredicate("$1")}
+         WHERE ${this.claimablePredicate("$1", "$3")}
            AND work.idempotency_key <> ALL($2::text[])
        ) AS waiting`,
-      [this.maxAttempts, except],
+      [this.maxAttempts, except, this.namespaceId],
     );
     const value = (waiting.rows[0] as { waiting?: unknown } | undefined)?.waiting;
     if (typeof value !== "boolean") {
@@ -1150,12 +1157,32 @@ export class PostgresWorkQueue {
     return value;
   }
 
+  /** Read original database-clock age without claiming, renewing or recovering work. */
+  async startupWorkAge(ageMs: number): Promise<"current" | "old" | "unknown"> {
+    positiveInteger(ageMs, "Worker startup age bound");
+    const result = await this.client.query(
+      `SELECT
+         COALESCE(bool_or(NOT isfinite(created_at) OR created_at > clock_timestamp()), false) AS unknown,
+         COALESCE(bool_or(created_at <= clock_timestamp() - $1::double precision * interval '1 millisecond'), false) AS old
+       FROM occ.controller_work WHERE state IN ('queued', 'claimed')
+         AND ($2::text IS NULL OR namespace_id = $2)`,
+      [ageMs, this.namespaceId],
+    );
+    const row = result.rows[0] as { unknown?: unknown; old?: unknown } | undefined;
+    if (typeof row?.unknown !== "boolean" || typeof row.old !== "boolean" || row.unknown) {
+      return "unknown";
+    }
+    return row.old ? "old" : "current";
+  }
+
   async pending(): Promise<number> {
     const pending = await this.client.query(
       `SELECT count(*)::integer AS count
        FROM occ.controller_work
        WHERE ${PENDING_WORK_PREDICATE}
-         ${this.namespaceFilter()}`,
+         AND ($1::text IS NULL OR namespace_id = $1)
+         ${this.workKindFilter()}`,
+      [this.namespaceId],
     );
     const count = (pending.rows[0] as { count?: unknown } | undefined)?.count;
     if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
@@ -1566,7 +1593,8 @@ export class PostgresWorkQueue {
          FROM occ.controller_work
          WHERE state = 'claimed'
            AND lease_expires_at <= clock_timestamp()
-           ${this.namespaceFilter()}
+           AND ($8::text IS NULL OR namespace_id = $8)
+           ${this.workKindFilter()}
          ORDER BY lease_expires_at, idempotency_key
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
@@ -1632,6 +1660,7 @@ export class PostgresWorkQueue {
         MAX_BACKOFF_MS,
         INITIAL_BACKOFF_MS,
         this.nextRandom(),
+        this.namespaceId,
       ],
     );
 
@@ -1642,7 +1671,8 @@ export class PostgresWorkQueue {
          WHERE state = 'queued'
            AND attempt_count >= $2::integer
            AND NOT ${repositoryCleanupSql("work")}
-           ${this.namespaceFilter()}
+           AND ($6::text IS NULL OR work.namespace_id = $6)
+           ${this.workKindFilter()}
          ORDER BY available_at, created_at, idempotency_key
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
@@ -1672,7 +1702,14 @@ export class PostgresWorkQueue {
          `CASE WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
        )}
        SELECT transitioned.* FROM transitioned`,
-      [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED", MAX_BACKOFF_MS],
+      [
+        requestedLimit,
+        this.maxAttempts,
+        "failure",
+        "MAX_ATTEMPTS_EXHAUSTED",
+        MAX_BACKOFF_MS,
+        this.namespaceId,
+      ],
     );
 
     const recovered = stale.rows.map(asWork);
@@ -1703,11 +1740,12 @@ export class PostgresWorkQueue {
   }
 
   // Queued Work a worker may claim now; `maxAttempts` names the bound parameter.
-  private claimablePredicate(maxAttempts: string): string {
+  private claimablePredicate(maxAttempts: string, namespaceId: string): string {
     return `work.state = 'queued'
                AND work.available_at <= clock_timestamp()
                AND (work.attempt_count < ${maxAttempts}::integer OR ${repositoryCleanupSql("work")})
-               ${this.namespaceFilter("work")}
+               AND (${namespaceId}::text IS NULL OR work.namespace_id = ${namespaceId})
+               ${this.workKindFilter("work")}
                AND NOT EXISTS (
                  SELECT 1
                  FROM occ.controller_work AS in_flight
@@ -1717,7 +1755,7 @@ export class PostgresWorkQueue {
                )`;
   }
 
-  private namespaceFilter(alias?: string): string {
+  private workKindFilter(alias?: string): string {
     if (this.workKind === "all") {
       return "";
     }

@@ -1,3 +1,4 @@
+{{- if ne .Values.namedWorkspace.stage "runtime" }}
 {{- if not .Values.preprovisionedNamespace }}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . -}}
 {{- $jobName := printf "%s-initialization" .Release.Name | trunc 63 | trimSuffix "-" -}}
@@ -187,4 +188,6 @@ spec:
               mountPath: {{ .Values.database.caMountPath | quote }}
               readOnly: true
             {{- end }}
+{{- end }}
+
 {{- end }}

@@ -1718,6 +1718,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "claim",
       "heartbeat",
       "pending",
+      "startupWorkAge",
       "claimableWorkWaiting",
       "complete",
       "completeAgentDeletion",

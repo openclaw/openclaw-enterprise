@@ -21,6 +21,7 @@
     "tests/integration/postgres-worker-stale-claim.test.mjs",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
     "tests/integration/workspace-setup-worker.test.mjs",
+    "tests/integration/named-workspace-runtime.test.ts",
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
     "tests/integration/postgres-service-account-deletion.test.mjs",
@@ -258,6 +259,12 @@
       "expectedTests": [
         "worker retains exact-Agent workspace input through activation failure and purges it only after success",
         "worker rejects unsupported workspace setup before Compute preparation and retains pending files"
+      ]
+    },
+    {
+      "path": "tests/integration/named-workspace-runtime.test.ts",
+      "expectedTests": [
+        "named runtime uses real API readiness, immutable identity and authenticated startup reads before claims and recovery"
       ]
     },
     {

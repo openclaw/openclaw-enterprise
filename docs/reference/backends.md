@@ -192,14 +192,14 @@ Its closed `configuration` accepts:
   supervisors. Credential registration sends resolved values over this
   connection, and OCC cannot verify the NetworkPolicy itself.
 
-Either `endpoint` or `serviceName` is required. Both `drivers.sandbox` and
-`drivers.credential_gateway` are required and must match the selected bundled
-[OpenShell SandboxDriver](drivers/openshell-sandbox.md) and
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). The
-optional `drivers.credential_refresh` member must match the selected
-[Credential Refresh Driver](drivers/credential-refresh.md); OpenShell keeps
-refresh state on the gateway's provider records, so the two roles share this
-Backend. One
+Either `endpoint` or `serviceName` is required. `drivers.sandbox` must match the
+selected bundled [OpenShell SandboxDriver](drivers/openshell-sandbox.md).
+`drivers.credential_gateway` is optional for a sandbox-only connection; when
+present it must match the selected [Credential Gateway](drivers/openshell-credential-gateway.md).
+The optional `drivers.credential_refresh` requires that gateway member and must
+match the selected [Credential Refresh Driver](drivers/credential-refresh.md).
+OpenShell keeps refresh state on the gateway's provider records.
+One
 OpenShell Backend is supported. Composition builds one gateway client object
 and injects it into all members. It caches ordinary and credential-export
 clients separately per resolved endpoint. The API and worker each construct it,

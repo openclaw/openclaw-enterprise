@@ -41,6 +41,12 @@ Choose the guide for your cluster:
 Both paths use the same Helm chart and shared installation procedure. Cluster
 hosting does not select the Agent model provider.
 
+For an already bootstrapped single-namespace installation, use the
+[named runtime attachment contract](../reference/settings/named-workspace.md).
+Record the original Installation ID, logical Namespace ID and independently
+verified physical UID before selecting it. This path omits initialization and
+requires operator-managed private routing; it does not provide a bootstrap stage.
+
 ### Production prerequisites
 
 - Kubernetes 1.35 or later, an explicit context, enforcing NetworkPolicies,

@@ -20,6 +20,9 @@ spec:
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Ingress]
+  {{- if eq .Values.namedWorkspace.stage "runtime" }}
+  ingress: []
+  {{- else }}
   ingress:
     - from:
         {{- range $index, $client := .Values.api.clients }}
@@ -33,6 +36,7 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.api.port }}
+  {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -368,6 +368,10 @@ spec:
             {{- end }}
             - name: OCC_CONFIG_PATH
               value: /etc/openclaw/installation/installation.yaml
+            {{- if eq $.Values.namedWorkspace.stage "runtime" }}
+            - name: OCC_NAMED_WORKSPACE
+              value: {{ $.Values.namedWorkspace | toJson | quote }}
+            {{- end }}
             {{- include "openclaw.listenerEnv" $ | trim | nindent 12 }}
             {{- with $.Values.preprovisionedNamespace }}
             - name: OCC_PREPROVISIONED_NAMESPACE
