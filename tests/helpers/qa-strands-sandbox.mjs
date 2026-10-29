@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { protectedText, redactQaError } from "./qa-secrets.mjs";
 import { runQaCheck } from "./qa-check.mjs";
+import { strandsImageIdentity, assertStrandsRunningImage } from "./qa-strands-image.ts";
 
 const execute = promisify(execFile);
 const text = (message) =>
@@ -28,13 +29,14 @@ export async function verifyQaStrandsSandbox(artifacts) {
   assert.match(fixture.agentId, /^agt_[a-f0-9-]+$/u);
   assert.match(fixture.modelSecretId, /^sec_[a-f0-9-]+$/u);
   assert.match(fixture.runtimeImage, /@sha256:[a-f0-9]{64}$/u);
+  const imageIdentity = await strandsImageIdentity(fixture);
   const operatorKey = await protectedText(fixture.apiKeyFile, "local OCE operator key");
   const modelKey = await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model API key");
   const base = `/namespaces/${fixture.namespaceId}/agents/${fixture.agentId}`;
   const secretPath = `/namespaces/${fixture.namespaceId}/secrets/${fixture.modelSecretId}`;
   let fixtureConfigurationId;
   let fixtureConfigurationGeneration;
-  const result = { startedAt: new Date().toISOString(), checks: [], revisions: [] };
+  const result = { startedAt: new Date().toISOString(), imageIdentity, checks: [], revisions: [] };
   const evidence = join(artifacts, "strands-sandbox.json");
   async function save() {
     await writeFile(evidence, JSON.stringify(result, null, 2) + "\n", { mode: 0o600 });
@@ -211,6 +213,30 @@ export async function verifyQaStrandsSandbox(artifacts) {
       ),
     );
   }
+  function observeRuntimeImages(pods, revisionId) {
+    assert.equal(pods.length, 2, "dedicated Gateway and Box workloads");
+    for (const pod of pods) {
+      for (const container of pod.spec.containers) {
+        assert.equal(container.image, fixture.runtimeImage, "test the selected immutable runtime");
+      }
+    }
+    (result.runtimeObservations ??= []).push({
+      revisionId,
+      pods: pods.map((pod) => ({
+        name: pod.metadata.name,
+        uid: pod.metadata.uid,
+        role: pod.metadata.labels["openclaw.dev/workload-role"],
+        securityContext: pod.spec.securityContext,
+        containers: pod.spec.containers.map((container) => ({
+          name: container.name,
+          image: container.image,
+          imageId: assertStrandsRunningImage(pod, container, imageIdentity),
+          resources: container.resources,
+          securityContext: container.securityContext,
+        })),
+      })),
+    });
+  }
   async function deploy(expectedConfigurationId = fixtureConfigurationId) {
     assert.equal(
       (await api("GET", base)).configurationId,
@@ -231,29 +257,7 @@ export async function verifyQaStrandsSandbox(artifacts) {
       420000,
     );
     const pods = owned(await objects("pods"));
-    assert.equal(pods.length, 2, "dedicated Gateway and Box workloads");
-    for (const pod of pods) {
-      for (const container of pod.spec.containers) {
-        assert.equal(container.image, fixture.runtimeImage, "test the selected immutable runtime");
-      }
-    }
-    (result.runtimeObservations ??= []).push({
-      revisionId: revision.id,
-      pods: pods.map((pod) => ({
-        name: pod.metadata.name,
-        uid: pod.metadata.uid,
-        role: pod.metadata.labels["openclaw.dev/workload-role"],
-        securityContext: pod.spec.securityContext,
-        containers: pod.spec.containers.map((container) => ({
-          name: container.name,
-          image: container.image,
-          imageId: pod.status.containerStatuses?.find((item) => item.name === container.name)
-            ?.imageID,
-          resources: container.resources,
-          securityContext: container.securityContext,
-        })),
-      })),
-    });
+    observeRuntimeImages(pods, revision.id);
     const configuration = await gateway("config.get");
     assert.equal(
       configuration.config.plugins.entries.codex.config.appServer.sandbox,
@@ -715,6 +719,7 @@ export async function verifyQaStrandsSandbox(artifacts) {
       memoryFact,
       deploy,
       assertModelSecretConsumers,
+      observeRuntimeImages,
     });
     const { verifyStrandsSemanticMemory } = await import("./qa-strands-semantic-memory.mjs");
     await verifyStrandsSemanticMemory({

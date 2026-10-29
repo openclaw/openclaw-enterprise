@@ -99,30 +99,106 @@ bounded IPC streams: a slow downstream closes only its channel; temporary
 shared-pipe pressure pauses the source without truncation; malformed framing
 fails the shared transport closed. Neither suite changes sandbox permissions.
 
-Build optional Box artifacts with the pinned source's Rust toolchain using
-`cargo build --locked --release --workspace --bins`. Keep the reviewed local
-patch beside its source; this candidate is not stock Box. Prepare an artifact
-directory with `strands-box`, `strands-box-sock-alias`,
-`strands-box-contain-trampoline` and `bridge/*.mjs` from
-`deploy/runtime/strands-box/`. Set `STRANDS_BOX_SOURCE_REVISION` to the reviewed
-Box source commit used to build those binaries, and record any local patch
-separately. The recipe requires this value and records it in the image label.
-Package with:
+## Prepare and package the Box comparison
+
+Use `deploy/runtime/strands-box/build.ts` from a clean OCE checkout. It accepts
+an existing local Box Git repository containing these commits; it never fetches:
+
+| Input            | Commit                                     |
+| ---------------- | ------------------------------------------ |
+| Refresh base     | `1ad7e987af6db807d66d896600c76a7d8d100b32` |
+| Container change | `05efc455d65dfea67734f5cb71ca27b0ff5e9582` |
+| Stdin change     | `aa1b8e419cf0deaad25113ab68d45451fef05450` |
+
+Preparation checks merge base `069c39cfd29f830aaadd2a1af362753a57c7b202`,
+composes the changes and materializes candidate tree
+`57c4375a447f16f7b281cf0f4c590c351965af3a` in a new directory. Local source
+preparation works on x86; native compilation requires Linux ARM64 GNU and the
+already-installed Rust 1.98.1 toolchain. Cargo uses locked dependencies and an
+explicit target. The build verifies the output ELF architecture. Do not use
+emulation to claim native qualification.
+
+From the OCE repository root, set `BOX_GIT` to that local repository and
+`OCE_RUNTIME_IMAGE` to the immutable `repository@sha256:digest` of the matching
+local ARM64 runtime. Keep OpenClaw
+`f8386bc7df0a6c9eda7a28ae81943c5c06a414ff` and the patches in
+`deploy/runtime/Dockerfile`. The build checks the base image's platform and
+OpenClaw label. The operator must select the base produced by this recipe,
+including its reviewed patch set. The optional local-memory layer is permitted.
 
 ```sh
-docker buildx build --load --platform linux/arm64 \
-  -f deploy/runtime/strands-box/Dockerfile \
-  --build-arg OCE_RUNTIME_IMAGE="$OCE_RUNTIME_IMAGE" \
-  --build-arg STRANDS_BOX_SOURCE_REVISION="$STRANDS_BOX_SOURCE_REVISION" \
-  -t oce-runtime:strands-box "$BOX_ARTIFACTS"
+node deploy/runtime/strands-box/build.ts prepare \
+  --source "$BOX_GIT" --out .build/box-candidate
+node deploy/runtime/strands-box/build.ts build \
+  --out .build/box-candidate --runtime-image "$OCE_RUNTIME_IMAGE"
+node deploy/runtime/strands-box/build.ts package \
+  --artifacts .build/box-candidate/artifacts --out .build/box-image
 ```
 
-The base is the matching OCE runtime, optionally with the documented local
-memory layer. Apply the code-mode layer last and select the resulting immutable
-image for both runtime roles. Install the reviewed Localhost setup seccomp
-profile through the node administrator's normal provisioning path before
-deploying; never substitute an unconfined profile or a privileged installer Pod.
-The acceptance login scope is `api_key`; PAT and Credential Proxy are excluded.
+Use fresh output directories. A failed operation retains its directory for
+inspection; select a new directory for a retry. `build` creates artifacts only
+after verifying the source and host. `package` verifies artifact hashes before
+invoking Docker Buildx, then writes a single-platform OCI `image.tar` without
+publishing. Docker also verifies installed hashes, architecture and modes as
+`node`: binaries are `0555`, bridges are `0444`. Buildx must have access to the
+selected base image. No command provisions a cluster or installs a toolchain.
+
+The artifacts' `build-record.json` records input commits, composed tree, actual
+Rust version and target, OCE revision, base image digest and every binary/bridge
+hash. Inspect the same record at `/opt/strands-box/build-record.json` in the image.
+`image-record.json` records the image manifest/config digests, archive hash and
+build-record hash outside the image. These records describe the controlled build;
+they are not cryptographic attestations or a claim of deterministic binaries.
+The supported source-to-artifact guarantee requires the `build` command. Direct
+Dockerfile use verifies the supplied record and bytes but cannot establish who
+produced them.
+
+Apply the [code-mode layer](../guides/deploy/strands-code-mode.md) last, preserving
+the existing layers and labels, and export its result as a single-platform OCI
+archive. Record that final archive before selecting the image for both runtime roles:
+
+```sh
+node deploy/runtime/strands-box/build.ts record-image \
+  --artifacts .build/box-candidate/artifacts \
+  --archive "$FINAL_OCI_ARCHIVE" --out .build/box-final-receipt
+```
+
+After separately authorized publication, verify the registry's manifest digest
+against this receipt. If publication changes the digest, investigate and capture
+the actual final manifest; do not substitute a local image/config ID. Publication
+is outside this entrypoint. Hand the QA owner the final immutable reference,
+build record and hash, final manifest, OCE revision, unchanged OpenClaw revision,
+and the node setup seccomp profile and its hash.
+
+For the historical comparison, prepare a separate directory with
+`--variant baseline`; its expected tree is
+`7cafba29bdc8cb7db1b2db9512bb2a4bd0c15d20`. The reported 37-check ARM64 run is
+historical evidence, not qualification of either new build. Newer Box main
+`3724c130` and an OpenClaw refresh are separate follow-ups.
+
+Exercise the actual mismatch path with a new output directory; this must fail
+before Cargo runs:
+
+```sh
+node deploy/runtime/strands-box/build.ts prepare \
+  --source "$BOX_GIT" --out .build/box-wrong \
+  --expected-tree 0000000000000000000000000000000000000000
+```
+
+After compilation, copy the artifacts to a disposable directory, change one
+bridge file, and run `package` on that copy. It must report a SHA-256 mismatch
+before Docker runs. Missing files, symbolic links and non-ARM64 executables also
+fail. Run the independent source checks with:
+
+```sh
+node --test tests/conformance/strands-box-build.test.ts \
+  tests/conformance/strands-box-transport.test.mjs
+```
+
+Install the reviewed Localhost setup seccomp profile through the node
+administrator's normal provisioning path before deploying; never substitute an
+unconfined profile or privileged installer Pod. The acceptance login scope is
+`api_key`; PAT and Credential Proxy are excluded.
 
 Generate the setup profile with
 `scripts/generate-strands-box-seccomp.mjs <RuntimeDefault.json> <new-profile.json>`.
@@ -174,6 +250,16 @@ OCC_TEST_QA_OPENAI_KEY_FILE="$MODEL_KEY_FILE" \
 OCC_TEST_QA_ARTIFACTS="$EVIDENCE_DIRECTORY" \
 node --test tests/integration/qa-matrix-real.test.mjs
 ```
+
+QA requires a nonempty image ID for every observed running container and checks
+it against the selected image. An existing fixture works unchanged when the
+selected digest is the running manifest digest. For an image index, add
+`runtimeImageIndexFile` and `runtimeImageManifestFile` to the fixture, pointing
+to the exact raw OCI index and its Linux ARM64 manifest. QA hashes both documents
+and resolves the index's unique ARM64 descriptor. For runtimes reporting a config
+digest, supply `runtimeImageManifestFile` even with a single-manifest reference.
+QA accepts only the verified manifest or its config digest and records the mapping.
+Missing identities, digest mismatches and stopped containers fail acceptance.
 
 Require zero failures and zero skips, plus all checks passed in
 `strands-sandbox.json`. An assistant's reply alone cannot pass the tool assertion.

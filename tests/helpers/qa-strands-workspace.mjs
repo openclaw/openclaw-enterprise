@@ -138,6 +138,7 @@ export async function verifyStrandsWorkspaceWorkflows(f) {
         ? next
         : undefined;
     });
+    f.observeRuntimeImages(owned(await objects("pods")), before.activeRevisionId);
     await wait("replacement workspace enrolled", async () => {
       const nodes = await gateway("node.list");
       return nodes.nodes.some(
@@ -273,6 +274,7 @@ export async function verifyStrandsWorkspaceWorkflows(f) {
         ),
       );
       const pods = await objects("pods");
+      f.observeRuntimeImages(owned(pods, second.id), revision.id);
       const claims = (id) =>
         owned(pods, id).flatMap((pod) =>
           pod.spec.volumes
