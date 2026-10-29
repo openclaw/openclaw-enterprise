@@ -338,16 +338,21 @@ fs.copyFileSync(
   path.join(assets, "compute-matrix-browser.mjs"),
   path.join(output, "assets/compute-matrix-browser.mjs"),
 );
-fs.copyFileSync(
-  path.join(assets, "api-explorer.mjs"),
-  path.join(output, "assets/api-explorer.mjs"),
-);
-const scalar = path.dirname(fileURLToPath(import.meta.resolve("@scalar/api-reference")));
-fs.copyFileSync(path.join(scalar, "browser/standalone.js"), path.join(output, "assets/scalar.js"));
-fs.copyFileSync(
-  path.join(root, "packages/contracts/openapi/occ-api.openapi.json"),
-  path.join(output, "assets/occ-api.openapi.json"),
-);
+if (pages.has("reference/api-explorer.md")) {
+  fs.copyFileSync(
+    path.join(assets, "api-explorer.mjs"),
+    path.join(output, "assets/api-explorer.mjs"),
+  );
+  const scalar = path.dirname(fileURLToPath(import.meta.resolve("@scalar/api-reference")));
+  fs.copyFileSync(
+    path.join(scalar, "browser/standalone.js"),
+    path.join(output, "assets/scalar.js"),
+  );
+  fs.copyFileSync(
+    path.join(root, "packages/contracts/openapi/occ-api.openapi.json"),
+    path.join(output, "assets/occ-api.openapi.json"),
+  );
+}
 const mermaid = path.dirname(fileURLToPath(import.meta.resolve("mermaid")));
 fs.cpSync(mermaid, path.join(output, "assets/mermaid"), {
   recursive: true,
