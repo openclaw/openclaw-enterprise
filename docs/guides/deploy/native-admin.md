@@ -4,34 +4,16 @@ Enable Agent native admin UI access only for a trusted-operator pilot. The featu
 
 ## Local development
 
-Local setup prepares private routing and the browser endpoint. To opt a selected
-Agent into native admin access:
+Local setup prepares private routing and the browser endpoint. When you
+[create an Agent in the console](../../reference/console/create-and-deploy.md),
+select **Enable Native admin UI** before **Create Agent**. After deployment,
+select **Open Agent UI** on the Agent detail page. Your account needs
+`administer` permission on that exact Agent.
 
-1. [Create and deploy an Agent](../../reference/console/create-and-deploy.md) in the
-   console, for example with the Standard Codex Preset. Wait for its active
-   version. The account opening the UI needs `administer` permission on that
-   exact Agent.
-2. In the authenticated console session, follow [Configure each Agent](native-admin.md#configure-each-agent)
-   to obtain the exact `data.origin` and selected version ID from the status
-   route. Include the returned port; do not construct or reuse another Agent's
-   origin. An `unsupported` response can include the origin. If the Agent has no
-   selected version, resolve that first.
-3. Use **Open draft** → **Configuration** → **Edit Configuration** to
-   merge the documented native policy and origin into the existing JSON. Review
-   other Agents that share the Configuration: they use its new values on their
-   next deployment. Preserve existing origins, gateway settings, and Secret
-   references. Resolve explicit opt-outs or conflicting policy before changing
-   them; do not silently replace them. Recheck the selected version before saving;
-   if it changed, refresh and review the current Configuration again.
-4. Save the Configuration and select **Deploy new version**. After its deployment succeeds,
-   request status again and expect `available` with the same origin. Open
-   **Native admin UI** on the Agent detail page. For stale drafts or uncertain
-   saves, follow the [Configuration editor recovery](../console/configuration-plugins-and-files.md#configuration-tab).
-
+The checkbox requires supported Dedicated provisioning and installation native
+admin access. For an existing Agent, follow [Configure each Agent](#configure-each-agent).
 For the Compose control plane with Kubernetes Compute and OpenShell, the
-[first-Agent command](../first-agent.md) can perform these per-Agent steps with
-`--control-ui`. Other local profiles still require the console-managed workflow
-above. The helper refuses to reuse its Agent after outside Configuration edits.
+[first-Agent command](../first-agent.md) also supports `--control-ui`.
 
 <a id="requirements"></a>
 
@@ -148,7 +130,7 @@ its matching identity fields and opt-in settings in the saved Configuration.
 
 ## Configure each Agent
 
-Configure each pilot Agent after the API feature and wildcard route are enabled. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
+For a new Agent, use **Enable Native admin UI** on Create Agent. Use the procedure below for existing Agents after the API feature and wildcard route are enabled. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
 
 ```text
 https://occ.example.com/namespaces/<namespaceId>/agents/<agentId>/native-admin
@@ -162,7 +144,7 @@ await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
 }).then((response) => response.json());
 ```
 
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/configuration-plugins-and-files.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
+A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. Select **Open draft** → **Configuration** → **Edit Configuration** to open the [console Configuration editor](../console/configuration-plugins-and-files.md#configuration-tab), then merge the following JSON fields into the selected Agent's existing Configuration:
 
 ```json
 {

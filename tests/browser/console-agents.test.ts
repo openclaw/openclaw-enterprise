@@ -2598,3 +2598,45 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
     assert.equal(savedModel.name, selectedModel);
   }
 });
+
+test("Create Agent offers native admin only on an enabled installation and submits an explicit opt-in", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    https: true,
+    development: { enabled: false },
+    originHost: "console.example.test",
+    publicOrigin: true,
+    authCookieDomain: "example.test",
+    authSecureCookies: true,
+    nativeAdmin: {
+      enabled: true,
+      domain: "agents.example.test",
+      sharedCookieDomain: "example.test",
+    },
+    nativeAdminGatewayApiKey: async () => "synthetic-native-admin-gateway-key",
+    agentProvisioning: true,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Native admin create", { ready: true });
+  const { page } = await newPage(t, fixture, {
+    args: [...fixture.browserArgs, "--host-resolver-rules=MAP console.example.test 127.0.0.1"],
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await waitForCreateFormReads(page);
+  const toggle = page.getByRole("checkbox", { name: "Enable Native admin UI" });
+  assert.equal(await toggle.isChecked(), false);
+  assert.equal(await toggle.isEnabled(), true);
+  await page.getByLabel("Agent name", { exact: true }).fill("Native admin test");
+  await enterManualModel(page, "synthetic-model-key");
+  await toggle.check();
+  await toggle.uncheck();
+  await toggle.check();
+  // This browser fixture has no durable provisioning queue. Exercise the real API's
+  // refusal without claiming a deployment; PostgreSQL coverage proves the saved version.
+  const response = await submitCreateAgent(page, fixture, namespace.id, {
+    path: "agents/provision",
+  });
+  assert.equal(response.request().postDataJSON().nativeAdmin, true);
+  assert.equal(response.status(), 503);
+  assert.equal(await toggle.isChecked(), true, "a refused create retains the opt-in");
+});

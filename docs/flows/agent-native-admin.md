@@ -12,7 +12,7 @@ The console checks exact-Agent `administer` access and returns a stable native a
 
 ## Entry Points
 
-- Trigger: Console opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
+- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
@@ -22,6 +22,11 @@ The console checks exact-Agent `administer` access and returns a stable native a
 
 ```mermaid
 graph TD
+  C0["Create Agent opts into Native admin UI"] --> C1["Authorize provisioning and reserve Agent identity"]
+  C1 --> C2["Prepare exact origin and trusted-proxy policy"]
+  C2 -->|conflicting policy or feature disabled| C3["Refuse before queueing work"]
+  C2 -->|valid| C4["Save prepared plan, Configuration and first version"]
+  C4 --> A
   L["Local first-Agent selects Control UI"] --> L2["Create Agent, derive exact origin,<br/>and save Configuration generation 2"]
   L2 --> A
   A["Console opens Agent detail tab"] --> P{"administer answer false?"}
@@ -66,7 +71,25 @@ graph TD
 
 ## Execution Trace
 
-### 0. Local first-Agent opts into native admin
+### 0. Console opts in before the first deployment
+
+`apps/controller/src/console/agents/create.mts:renderCreateAgent`
+`apps/controller/src/http/agents.ts:createAgentHandlers`
+`apps/controller/src/gateway/native-admin.ts:prepareNativeAdminConfiguration`
+`packages/occ/src/index.ts:provisionAgent`
+
+The unchecked checkbox becomes available when Installation discovery reports
+native admin support and the selected runtime supports provisioning. The form
+sends `nativeAdmin: true`. After authorization, provisioning reserves an Agent ID
+and asks the HTTP adapter to prepare its Configuration. The adapter uses the
+configured public origin and Agent domain; no browser-supplied origin is trusted.
+The native gateway adapter merges the required policy or refuses a conflict
+before work is queued. The request fingerprint includes the preparation choice.
+Retries reuse the saved plan and identity. The worker creates the Agent with
+that reserved ID and deploys its initial Configuration through the normal
+provisioning lifecycle. No later patch or second deployment is needed.
+
+### 0a. Local first-Agent opts into native admin
 
 `scripts/first-agent.mjs:loadLocalInstallation`
 `scripts/first-agent.mjs:nativeConfiguration`
@@ -257,6 +280,7 @@ admin Configuration remains Pod-local.
 
 - 2026-10-28 19:58: Document how managed deployments supply read-only configuration guidance. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf - aa352e92bcdc7cab58364c692a01042c5e459db0)
 
+- 2026-10-27 11:18: Added creation-time native admin preparation before the first deployment. (authoring-run/5809f10b-3a85-4a0a-8cce-2d3ba6714791 - b91dc40eaaa6e5d29759f5cf4e9dada5a36be86e)
 - 2026-10-27 09:30: Document direct Open Agent UI navigation and availability recovery. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 
 - 2026-10-26 22:00: Close refused sockets and denied leases before their denial audit settles; track admission through its audit attempt and bound the shutdown drain. (wf-land-1707 - #1707)

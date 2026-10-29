@@ -335,6 +335,8 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
+  /** The API offers native admin configuration during Agent provisioning. */
+  readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };

@@ -1901,6 +1901,36 @@ export const scenarios = {
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
   },
+  createNativeAdmin: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI opt-in",
+    path: create,
+    nativeAdminSetup: true,
+    actions: readyForm,
+    description:
+      "Enable native administration during the first deployment. Simulated UI proof; no runtime is deployed.",
+    steps: [
+      "Check Enable Native admin UI, then uncheck it. It starts off and explains the required Agent administer permission.",
+      "Check it again and create the Agent. The provisioning request includes nativeAdmin: true.",
+    ],
+  },
+  createNativeAdminSelected: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI selected",
+    path: create,
+    nativeAdminSetup: true,
+    actions: [...readyForm, { selector: "#native-admin", click: true }],
+    description:
+      "The explicit opt-in is selected before creation. The API prepares the exact Agent origin; this preview does not prove deployment or authentication.",
+  },
+  createNativeAdminDisabled: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI unavailable",
+    path: create,
+    actions: form,
+    description:
+      "The installation has not enabled native admin access. The unchecked control is disabled with an explanation; Agent creation remains available.",
+  },
   createSecretCreateNotPermitted: {
     group: "Pages/Create Agent",
     name: "Secret creation not permitted",

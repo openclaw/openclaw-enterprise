@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 
+import {
+  deriveNativeAdminHost,
+  nativeAdminConfigurationSupported,
+} from "../../apps/controller/src/gateway/native-admin.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -45,6 +51,7 @@ import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   AGENT_NAME_CONFLICT,
@@ -469,17 +476,31 @@ async function createFixture(context, options = {}) {
     sandboxDriver: options.sandboxDriver,
     credentialGatewayDriver: options.credentialGatewayDriver,
   });
-  const app = await composePostgresDevelopment(
-    {
-      mode: "development",
-      host: "127.0.0.1",
-      databaseUrl,
-      authSecret,
-      authBaseURL,
-    },
-    drivers,
-  );
-  const session = await signInToControllerApp(app, credentials);
+  const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
+  let nativeAdminSettings = {};
+  if (options.nativeAdmin) {
+    const directory = await temporaryDirectory(context, "native-admin-provisioning-");
+    const gatewayApiKeyPath = join(directory, "gateway-key");
+    await writeFile(gatewayApiKeyPath, `test-gateway-${randomUUID()}`, { mode: 0o600 });
+    nativeAdminSettings = {
+      nativeAdmin: {
+        enabled: true,
+        domain: "agents.oce.localhost",
+        sharedCookieDomain: "oce.localhost",
+      },
+      gatewayApiKeyPath,
+    };
+  }
+  const settings = {
+    mode: "development",
+    host: "127.0.0.1",
+    databaseUrl,
+    authSecret,
+    authBaseURL: origin,
+    ...nativeAdminSettings,
+  };
+  let app = await composePostgresDevelopment(settings, drivers);
+  const session = await signInToControllerApp(app, credentials, { origin });
 
   context.after(async () => {
     for (const binding of revokedBindings) {
@@ -525,8 +546,8 @@ async function createFixture(context, options = {}) {
     const headers = {
       ...(selectedSession === null ? {} : authenticatedHeaders(selectedSession)),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
-      ...(method === "GET" ? {} : { origin: "http://127.0.0.1" }),
-      host: "127.0.0.1",
+      ...(method === "GET" ? {} : { origin }),
+      host: new URL(origin).host,
     };
     const response = await app.inject({
       method,
@@ -607,6 +628,11 @@ async function createFixture(context, options = {}) {
     workerCompletion = undefined;
   }
 
+  async function restartApi() {
+    await app.close();
+    app = await composePostgresDevelopment(settings, drivers);
+  }
+
   // The signed-in administrator's Principal, whose subject is its account: a test may add
   // other administrators, so the first better-auth Principal is not necessarily this one.
   async function administratorPrincipalId() {
@@ -657,6 +683,7 @@ async function createFixture(context, options = {}) {
     pool,
     configurationDriver,
     revokeCurrentPrincipal,
+    restartApi,
     request,
     secretDriver,
     session,
@@ -760,6 +787,18 @@ test(
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     const body = provisioningBody(namespace.id, secrets);
 
+    const nativeAdminRefused = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/provision`,
+      {
+        body: { ...body, nativeAdmin: true },
+      },
+    );
+    assert.equal(
+      nativeAdminRefused.status,
+      400,
+      "disabled installation refuses native admin opt-in",
+    );
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
@@ -1055,11 +1094,19 @@ test(
     assert.deepEqual(queued.plan.repositoryAccess, repositoryAccess);
     assert.deepEqual(queued.plan.pluginApprovers, []);
     assert.equal(queued.agent_id, null);
+    assert.equal(Object.hasOwn(queued.plan, "reservedAgentId"), false);
+    // Ordinary admission retains the pre-opt-in plan shape. Reopen the API before
+    // a new worker consumes it, without rewriting persisted work or signing in again.
+    await fixture.restartApi();
     const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
     assert.equal(replay.status, 202, JSON.stringify(replay.body));
     assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+    assert.deepEqual(
+      (await provisioningRow(fixture.pool, namespace.id, body.requestId)).plan,
+      queued.plan,
+    );
     const changed = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: { ...body, repositoryAccess: { ...repositoryAccess, defaultProfile: "git-write" } },
     });
@@ -1113,6 +1160,15 @@ test(
     assert.equal(revisions.length, 1);
     assert.equal(revisions[0].id, status.revisionId);
     assert.equal(revisions[0].configurationGeneration, 1);
+    await fixture.restartApi();
+    const restartedReplay = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/provision`,
+      { body },
+    );
+    assert.equal(restartedReplay.status, 202, JSON.stringify(restartedReplay.body));
+    assert.equal(restartedReplay.data.provisioning.agentId, status.agentId);
+    assert.equal(restartedReplay.data.provisioning.revisionId, status.revisionId);
     assert.deepEqual(revisions[0].pluginApprovers, []);
     const agentPath = `/namespaces/${namespace.id}/agents/${status.agentId}`;
     const agent = await fixture.request("GET", agentPath);
@@ -5933,5 +5989,101 @@ test(
       [namespace.id, failed.agentId],
     );
     assert.equal(revisions.rowCount, 1);
+  },
+);
+
+test(
+  "native admin opt-in provisions the exact origin in the first version and preserves retry identity",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context, {
+      nativeAdmin: true,
+      stopAfterProvisioning: true,
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const path = `/namespaces/${namespace.id}/agents/provision`;
+    const body = provisioningBody(namespace.id, secrets, { nativeAdmin: true });
+    body.configuration.secretBindings.EXTERNAL_SERVICE_TOKEN.delivery = { type: "env" };
+    const existingOrigin = "http://localhost:18789";
+    body.configuration.values.gateway = {
+      controlUi: { enabled: false, allowedOrigins: [existingOrigin] },
+      auth: { password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+    };
+    assert.equal(
+      (await fixture.request("GET", "/installation")).data.capabilities.nativeAdmin,
+      true,
+    );
+    // An incompatible policy must fail before a durable job or Configuration is created.
+    const conflict = structuredClone(body);
+    conflict.configuration.values.gateway.auth.mode = "token";
+    const refused = await fixture.request("POST", path, { body: conflict });
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 0,
+      agents: 0,
+    });
+    const admitted = await fixture.request("POST", path, { body });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    assert.equal(
+      admitted.data.provisioning.agentId,
+      undefined,
+      "reserved identity is not a created Agent",
+    );
+    const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.match(queued.plan.reservedAgentId, identifier("agt"));
+    // The reserved identity and prepared policy must survive API restart before
+    // the first worker claim; replay must not reserve another Agent or origin.
+    await fixture.restartApi();
+    const replay = await fixture.request("POST", path, { body });
+    assert.equal(replay.status, 202, JSON.stringify(replay.body));
+    assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+    assert.deepEqual(
+      (await provisioningRow(fixture.pool, namespace.id, body.requestId)).plan,
+      queued.plan,
+    );
+    const changed = await fixture.request("POST", path, { body: { ...body, nativeAdmin: false } });
+    assert.equal(
+      changed.status,
+      409,
+      "opting out cannot replay a different plan under the same request ID",
+    );
+    await fixture.startWorker();
+    const status = await waitFor("native admin first revision handoff", async () => {
+      const result = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.notEqual(result.data.status, "failed", JSON.stringify(result.body));
+      return result.data.revisionId ? result.data : undefined;
+    });
+    await fixture.stopWorker();
+    assert.equal(status.agentId, queued.plan.reservedAgentId);
+    const installation = await fixture.state.loadInstallation();
+    const origin = `https://${deriveNativeAdminHost(installation.id, { id: status.agentId, namespaceId: namespace.id }, "agents.oce.localhost")}:9443`;
+    const configuration = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${status.configurationId}`,
+    );
+    assert.equal(configuration.data.generation, 1);
+    assert.deepEqual(configuration.data.values.gateway.controlUi.allowedOrigins, [
+      existingOrigin,
+      origin,
+    ]);
+    assert.equal(configuration.data.values.gateway.publicOrigin, origin);
+    assert.deepEqual(
+      configuration.data.values.gateway.auth.password,
+      body.configuration.values.gateway.auth.password,
+    );
+    assert.deepEqual(configuration.data.secretBindings, body.configuration.secretBindings);
+    const revisions = await fixture.state.read((view) =>
+      view.revisions.listRevisions(namespace.id, status.agentId),
+    );
+    assert.equal(revisions.length, 1);
+    assert.equal(nativeAdminConfigurationSupported(revisions[0], origin), true);
+    // Replay after the worker handoff must still refer to the same Agent and first revision.
+    await fixture.restartApi();
+    const completedReplay = await fixture.request("POST", path, { body });
+    assert.equal(completedReplay.status, 202, JSON.stringify(completedReplay.body));
+    assert.equal(completedReplay.data.provisioning.agentId, status.agentId);
+    assert.equal(completedReplay.data.provisioning.revisionId, status.revisionId);
   },
 );

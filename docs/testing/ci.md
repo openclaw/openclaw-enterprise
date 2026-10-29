@@ -186,7 +186,9 @@ not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
 The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
-and checks its branding through sign-in and the Agent workflow. Other scenarios
+and checks its branding through sign-in and the Agent workflow. For Dedicated Agents
+on Kubernetes, it provisions with `nativeAdmin: true`, checks Configuration
+generation 1 and one revision, then exercises native browser chat. Other scenarios
 do not require the theme or an extra API rollout.
 
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the

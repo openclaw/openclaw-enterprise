@@ -2978,6 +2978,13 @@ export class OpenClawController {
     principalId: string,
     input: ProvisionAgentInput,
     auditEvent?: (result: Readonly<ProvisionAgentResult>) => AuditEvent,
+    configurationPreparation?: {
+      readonly key: string;
+      readonly prepare: (
+        agent: Pick<Agent, "id" | "namespaceId">,
+        values: Readonly<OpenClawConfigurationDocument>,
+      ) => Readonly<OpenClawConfigurationDocument>;
+    },
   ): Promise<Readonly<ProvisionAgentResult>> {
     // Authorize the Namespace-level grants before reading the plan, as status and retry do: a
     // caller without them gets the same audited denial whatever the body says, and never a
@@ -2988,7 +2995,7 @@ export class OpenClawController {
     if (!isName(input.name)) {
       throw new ScopeViolationError("The Agent name is invalid.");
     }
-    const configurationInput = normalizeProvisioningConfiguration(input.configuration);
+    let configurationInput = normalizeProvisioningConfiguration(input.configuration);
     const harnessAuth = normalizeProvisioningHarnessAuth(input.harnessAuth ?? null);
     const executionMode = input.executionMode ?? "embedded";
     if (!validExecutionMode(executionMode)) {
@@ -3037,6 +3044,9 @@ export class OpenClawController {
       namespaceId: input.namespaceId,
       name: input.name,
       configuration: configurationInput,
+      ...(configurationPreparation === undefined
+        ? {}
+        : { configurationPreparation: configurationPreparation.key }),
       ...(workspace.initialWorkspaceFiles === undefined
         ? {}
         : { initialWorkspaceFiles: workspace.initialWorkspaceFiles }),
@@ -3080,7 +3090,21 @@ export class OpenClawController {
     const replay = await this.read((state) =>
       state.provisioning.findByRequest(input.namespaceId, principalId, requestId),
     );
+    // Reserve identity before preparing values, but expose agentId only after the Agent exists.
+    // The request fingerprint covers the original input and preparation choice, so retries
+    // reuse the saved plan even if Installation routing changes.
+    let reservedAgentId: string | undefined;
     if (replay === undefined) {
+      if (configurationPreparation !== undefined) {
+        reservedAgentId = this.nextIdentifier("agent");
+        configurationInput = normalizeProvisioningConfiguration({
+          ...configurationInput,
+          values: configurationPreparation.prepare(
+            { id: reservedAgentId, namespaceId: input.namespaceId },
+            configurationInput.values,
+          ),
+        });
+      }
       // A replay is checked against the current Installation by authorizeProvisioningRecord.
       this.requireSavedHarnessAuth(
         input.namespaceId,
@@ -3213,6 +3237,7 @@ export class OpenClawController {
         requestFingerprint: requestFingerprintHex,
         plan: {
           name: input.name,
+          ...(reservedAgentId === undefined ? {} : { reservedAgentId }),
           configuration: configurationInput,
           harnessAuth,
           executionMode,
@@ -13004,7 +13029,11 @@ export class OpenClawController {
             : { secretBindings: plan.configuration.secretBindings }),
           createdAt: configuration.createdAt,
         }));
-      const agentId = current.agentId ?? this.nextIdentifier("agent");
+      const agentId =
+        current.agentId ??
+        (isNonEmptyString(planRecord.reservedAgentId)
+          ? planRecord.reservedAgentId
+          : this.nextIdentifier("agent"));
       let agent = await state.agents.lockAgent(namespace.id, agentId);
       const createdAgent = agent === undefined;
       if (agent === undefined) {

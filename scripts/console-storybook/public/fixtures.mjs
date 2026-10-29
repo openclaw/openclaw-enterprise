@@ -977,6 +977,7 @@ export function installFixture(scenario, evidence) {
         name: "Demo installation",
         createdAt,
         capabilities: {
+          ...(scenario.nativeAdminSetup ? { nativeAdmin: true } : {}),
           ...(scenario.unsupportedProvisioning === true
             ? {}
             : { agentProvisioning: { executionModes: ["dedicated"] } }),
