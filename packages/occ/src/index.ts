@@ -10287,8 +10287,12 @@ export class OpenClawController {
       // missing Sandbox Driver is a permanent 409 here; provisioning handoff reaches this only
       // after fenceAgentProvisioning applied the stored-work check, which stays a retryable 503.
       requireDedicatedNativeSupport(revisionHarness, sandbox, this.nativeWorkers);
-      const harnessAuth = await this.admitHarnessAuth(state, principalId, lockedAgent);
-      const credentialSourceType = await this.admittedCredentialSourceType(harnessAuth, sandbox);
+      const [harnessAuth, credentialSourceType] = await this.admitHarnessAuth(
+        state,
+        principalId,
+        lockedAgent,
+      );
+      this.requireCredentialSourceDrivers(harnessAuth, sandbox);
       const credentialSources = await this.admitCredentialSources(
         state,
         principalId,
@@ -12205,12 +12209,20 @@ export class OpenClawController {
       throw new ScopeViolationError("The provisioning Agent is unavailable.");
     }
     let auth: HarnessAuthSnapshot;
+    let credentialSourceType: CredentialSourceType | undefined;
     if (isSecretHarnessAuth(binding)) {
       auth = this.secretHarnessAuthSnapshot(binding);
     } else if (agent !== undefined) {
-      auth = await this.admitHarnessAuth(state, principalId, { ...agent, harnessAuth: binding });
+      [auth, credentialSourceType] = await this.admitHarnessAuth(state, principalId, {
+        ...agent,
+        harnessAuth: binding,
+      });
     } else if (binding.method === "credential_source") {
-      auth = await this.credentialSourceHarnessAuthSnapshot(state, namespaceId, binding);
+      [auth, credentialSourceType] = await this.credentialSourceHarnessAuthSnapshot(
+        state,
+        namespaceId,
+        binding,
+      );
     } else {
       auth = await this.serviceAccountHarnessAuthSnapshot(state, namespaceId, backendId, binding);
     }
@@ -12220,7 +12232,7 @@ export class OpenClawController {
       mode: plan.executionMode,
     };
     const sandbox = this.sandboxDriver();
-    const credentialSourceType = await this.admittedCredentialSourceType(auth, sandbox);
+    this.requireCredentialSourceDrivers(auth, sandbox);
     // Runtime image native worker support is admission for writes (replay, retry, the worker), like
     // the plugin policy below: a status read still reports the stored work after the image loses it.
     requireDedicatedNativeSupport(harness, sandbox, this.nativeWorkers, {
@@ -13410,7 +13422,7 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
-  ): Promise<HarnessAuthSnapshot> {
+  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType?]> {
     const binding = this.harnessAuthBinding(agent.harnessAuth);
     if (binding === null) {
       throw new ResourceStateConflictError(
@@ -13419,7 +13431,7 @@ export class OpenClawController {
     }
     await this.authorizeHarnessAuthSource(state, principalId, agent.namespaceId, binding);
     if (binding.method === "runtime") {
-      return immutableCopy(binding);
+      return [immutableCopy(binding)];
     }
     if (isSecretHarnessAuth(binding)) {
       await this.authorizeAgentPrincipal(principalId, agent, "operate", binding.source);
@@ -13438,7 +13450,7 @@ export class OpenClawController {
       ) {
         throw new DependencyUnavailableError("The Harness Secret backend identity changed.");
       }
-      return immutableCopy({ ...binding, secretDriverId: driver.id });
+      return [immutableCopy({ ...binding, secretDriverId: driver.id })];
     }
     if (binding.method === "credential_source") {
       await this.authorizeAgentPrincipal(principalId, agent, "operate", {
@@ -13466,18 +13478,20 @@ export class OpenClawController {
         "The Harness ServiceAccount Driver does not match the admitted Backend.",
       );
     }
-    return immutableCopy({
-      ...binding,
-      credential: { kind: "access_token" as const, secretRef: account.credential.secretRef },
-      backendBinding,
-    });
+    return [
+      immutableCopy({
+        ...binding,
+        credential: { kind: "access_token" as const, secretRef: account.credential.secretRef },
+        backendBinding,
+      }),
+    ];
   }
 
   private async credentialSourceHarnessAuthSnapshot(
     state: PlatformUnitOfWork,
     namespaceId: string,
     binding: Extract<HarnessAuthBinding, { readonly method: "credential_source" }>,
-  ): Promise<Extract<HarnessAuthSnapshot, { readonly method: "credential_source" }>> {
+  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType]> {
     const source = await state.credentialSources.lockCredentialSource(
       namespaceId,
       binding.sourceId,
@@ -13492,13 +13506,16 @@ export class OpenClawController {
         "The credential source type cannot authenticate a Harness.",
       );
     }
-    return immutableCopy({
-      method: "credential_source" as const,
-      sourceId: source.id,
-      credentialGatewayId: gateway.id,
-      sourceType: source.type,
-      loginMode: type.harnessAuth.loginMode,
-    });
+    return immutableCopy([
+      {
+        method: "credential_source" as const,
+        sourceId: source.id,
+        credentialGatewayId: gateway.id,
+        sourceType: source.type,
+        loginMode: type.harnessAuth.loginMode,
+      },
+      type,
+    ] as const);
   }
 
   /** A selected Credential Gateway replaces Secret-backed model delivery; no env fallback. */
@@ -13515,23 +13532,19 @@ export class OpenClawController {
     }
   }
 
-  /** Credential sources are injected by the paired Sandbox, so one must be selected. */
-  private async admittedCredentialSourceType(
+  /** Credential sources require a paired Sandbox and their original Gateway. */
+  private requireCredentialSourceDrivers(
     auth: HarnessAuthSnapshot,
     sandbox: SandboxDriver | undefined,
-  ): Promise<CredentialSourceType | undefined> {
+  ): void {
     if (auth.method === "credential_source") {
       if (sandbox === undefined) {
         throw new ResourceStateConflictError(
           "Credential-source Harness authentication requires a selected Sandbox Driver.",
         );
       }
-      return this.credentialSourceType(
-        this.credentialGatewayDriver(auth.credentialGatewayId),
-        auth.sourceType,
-      );
+      this.credentialGatewayDriver(auth.credentialGatewayId);
     }
-    return undefined;
   }
 
   private validateSecretValue(value: unknown): asserts value is string {
