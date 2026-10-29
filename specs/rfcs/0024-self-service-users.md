@@ -4,7 +4,7 @@ implementation_status: Not implemented
 author: mrunalp
 ---
 
-# Proposal: Self-service users create and own their Namespaces
+# Proposal: Signed-in users get the Default User Role and own their Namespaces
 
 - **ID:** RFC-0024 (provisional; renumber before merge)
 - **Created:** 2026-10-29
@@ -20,11 +20,12 @@ author: mrunalp
 
 ## Summary
 
-Add an opt-in **self-service** mode. When an Installation enables it, a person
-whom the sign-in allowlist admits gets an OCC account at first sign-in, bound to
-a built-in **Self-service user** Role. That Role lets them create Namespaces and
-nothing else. When they create a Namespace, OCC makes them its **owner** in the
-same transaction. The owner can create Agents, Configurations, Secrets, and
+Every person who signs in to OCC gets the built-in **Default User** Role. This
+is standard OCE behavior, not a mode that an Installation turns on. A person
+whom the sign-in provider admits gets an OCC account at first sign-in, bound to
+the Default User Role. That Role lets them create Namespaces and nothing else.
+When they create a Namespace, OCC makes them its **owner** in the same
+transaction. The owner can create Agents, Configurations, Secrets, and
 credential sources in that Namespace, deploy and chat with those Agents, and
 connect each Agent to its own Slack app. The Namespace is the isolation
 boundary, so OCE does not need a first-class personal Agent.
@@ -49,9 +50,9 @@ Today every capability starts with an Installation administrator:
   other users. Guided provisioning also requires Installation `administer`.
 
 RFC-0024 (#4045) removes the third gap for a person whom an administrator
-assigns the managed Agent Author Role in one Namespace. Self-service removes the
-administrator from the first two steps for people the Installation already
-trusts to sign in.
+assigns the managed Agent Author Role in one Namespace. The Default User Role
+removes the administrator from the first two steps for every person the
+Installation lets sign in.
 
 The personal-Agent design in #3068 protects a connected account with checks on
 each Agent: owner-only deploy and native admin, no other grantees, no channels,
@@ -63,26 +64,26 @@ the same protection with one boundary.
 
 ## Goals
 
-- An Installation administrator can enable self-service. It is off by default,
-  and enabling it changes no existing account or grant.
-- An admitted person who signs in for the first time gets an account and the
-  Self-service user Role, without administrator action.
-- A self-service user can create up to a configured number of Namespaces and
-  becomes the owner of each one.
+- A person whom the sign-in provider admits gets an account and the Default
+  User Role at first sign-in, without administrator action.
+- Every human account holds the Default User Role, including accounts that an
+  administrator creates.
+- A user can create up to a configured number of Namespaces and becomes the
+  owner of each one.
 - An owner completes the regular Agent workflow in their Namespace: create,
   configure, add Secrets and credential sources, deploy, chat in the native
   admin UI, read logs, stop, and delete.
 - An owner can use their own Slack app with an Agent, through Namespace Secrets.
-- Another self-service user cannot read or change that Namespace.
+- Another user cannot read or change that Namespace.
 - An Agent with a connected OAuth account is protected by its Namespace, not by
   per-Agent ownership checks.
 
 ## Non-goals
 
+- An Installation setting that turns the Default User Role off.
 - Groups, claim-to-Role mapping, or a general Role catalog.
 - Owners sharing a Namespace or delegating IAM. Administrators keep the
   existing IAM APIs.
-- Self-service for password accounts or for OIDC without an allowlist.
 - Billing, chargeback, or per-user resource accounting beyond the Namespace
   count limit and the existing Kubernetes ResourceQuota.
 - Kubernetes API access for users.
@@ -93,31 +94,57 @@ the same protection with one boundary.
 
 ### Owners and state
 
-| Concern                         | Owner                                                                                          |
-| ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Enable self-service, set limits | Installation settings (Helm `selfService.*`), read at startup                                  |
-| Admit a person at sign-in       | Existing provider allowlists: GitHub organizations or teams, Google hosted domains             |
-| Create the account and binding  | Controller auth path, through the selected IAM Driver, in one transaction with its audit event |
-| Owner binding and limit check   | `createNamespace`, in the Namespace creation transaction                                       |
-| Agent credential grants         | RFC-0024 reconciliation of exact `operate` grants for the Agent's ServicePrincipal             |
-| Namespace isolation at runtime  | Existing Kubernetes namespace per OCC Namespace, with ResourceQuota and NetworkPolicies        |
+| Concern                        | Owner                                                                                          |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- |
+| Admit a person at sign-in      | Provider admission: GitHub organizations or teams, Google hosted domains, the OIDC issuer      |
+| Create the account and binding | Controller auth path, through the selected IAM Driver, in one transaction with its audit event |
+| The Default User Role          | Built-in Installation Role, created at bootstrap, like the Installation administrator Role     |
+| Namespace limit                | Installation setting (Helm `defaultUser.namespaceLimit`), read at startup, always set          |
+| Owner binding and limit check  | `createNamespace`, in the Namespace creation transaction                                       |
+| Agent credential grants        | RFC-0024 reconciliation of exact `operate` grants for the Agent's ServicePrincipal             |
+| Namespace isolation at runtime | Existing Kubernetes namespace per OCC Namespace, with ResourceQuota and NetworkPolicies        |
 
 ### Sign-in creates the account
 
-When self-service is enabled and the provider's allowlist admits an identity
-with no account, OCC creates the account, its Principal, the provider
-attachment, and an Installation-wide binding to the built-in Self-service user
-Role. The audit event records the provider, the subject, and the reason
-(`self_service_sign_in`). Startup refuses self-service when no allowlist is
-configured, so enabling it never opens sign-up to every GitHub or Google
-account. OIDC has no allowlist today and is not supported.
+When the provider admits an identity that has no account, OCC creates the
+account, its Principal, the provider attachment, and an Installation-wide
+binding to the Default User Role. The audit event records the provider, the
+subject, and the reason (`default_user_sign_in`).
 
-The Self-service user Role has one permission: `namespace:create`. It binds
+Because sign-in now creates accounts, provider admission decides who can use
+OCE:
+
+- **GitHub and Google.** Anyone can hold a GitHub or Google account, so startup
+  refuses either provider without its allowlist: GitHub organizations or teams
+  (`OCC_AUTH_GITHUB_ALLOWED_ORGS`, `OCC_AUTH_GITHUB_ALLOWED_TEAMS`), or Google
+  hosted domains (`OCC_AUTH_GOOGLE_ALLOWED_DOMAINS`). Today these allowlists are
+  optional.
+- **OIDC.** The operator configures one issuer and client, usually the
+  enterprise identity provider. Every identity that the issuer authenticates for
+  that client is admitted. The operator limits access in the identity provider,
+  for example with client assignments.
+
+An identity that the provider refuses gets no account, and the refusal is
+audited as today.
+
+### Every human account holds the Default User Role
+
+The Default User Role has one permission: `namespace:create`. It binds
 Installation-wide because the Namespace collection is not inside any Namespace.
 It must never hold a permission on a resource inside a Namespace, because an
 Installation-wide binding would then apply in every Namespace. Validation and a
-database constraint enforce this. An administrator can still remove the binding
-or disable the account; the existing account controls apply.
+database constraint enforce this.
+
+Account creation by an administrator (`POST /api/auth/accounts`) also writes the
+Default User binding. The optional `roleId` adds the Installation administrator
+binding; it does not replace the Default User binding. Accounts that exist when
+this change ships receive the binding with it. ServicePrincipals and service
+keys do not receive it.
+
+An administrator can remove a person's Default User binding with the existing
+IAM APIs, or disable the account. Removing the binding stops new Namespaces and
+changes no existing owner binding. A later sign-in does not restore a removed
+binding: OCC writes it only when it creates the account.
 
 ### Creating a Namespace makes the creator its owner
 
@@ -131,26 +158,28 @@ The Namespace owner Role is the RFC-0024 Agent Author permission set plus
 `namespace:read`, `namespace:delete`, and `agent:administer`. Agent Author does
 not include `agent:administer`, which the native admin UI requires for chat. The
 owner Role excludes IAM administration, ServiceAccount creation, and Sandbox
-Policy changes, as Agent Author does. Default Presets are
-created by OCC itself after the owner binding, not with the caller's authority;
-today that step fails for a caller without `preset:create`.
+Policy changes, as Agent Author does. Default Presets are created by OCC itself
+after the owner binding, not with the caller's authority; today that step fails
+for a caller without `preset:create`.
 
 The limit counts Namespaces whose `createdBy` is the caller and whose status is
 not `deleting`. The check runs under the same lock as the insert, so concurrent
 requests cannot exceed it. A refused request creates nothing and returns `409`
-with the limit in the message.
+with the limit in the message. The Installation administrator's unscoped
+binding is not subject to the limit.
 
 ```mermaid
 sequenceDiagram
-  participant User as Self-service user
+  participant User
   participant Auth as Controller auth
   participant OCC as OCC controller
   participant IAM as IAM Driver and State
   participant K8s as Kubernetes Compute
-  User->>Auth: First sign-in (GitHub or Google)
-  Auth->>IAM: Account, Principal, attachment, Self-service user binding
-  alt Allowlist refuses or self-service is off
+  User->>Auth: First sign-in (GitHub, Google, or OIDC)
+  alt Provider admission refuses
     Auth-->>User: Sign-in refused, nothing created
+  else Admitted
+    Auth->>IAM: Account, Principal, attachment, Default User binding
   end
   User->>OCC: POST /namespaces
   OCC->>IAM: Check namespace:create and the limit, then write the Namespace, createdBy, and owner binding
@@ -195,10 +224,10 @@ Namespace boundary does not cover them:
 - **Disabled account.** Sign-in and API requests fail. Bindings, Namespaces,
   and running Agents remain until an administrator deletes the Namespaces, the
   same revocation semantics as RFC-0024.
-- **Removed allowlist entry.** The person can no longer sign in. Their existing
-  account and grants are unchanged.
-- **Self-service turned off.** New sign-ins and new Namespaces fail for
-  self-service users; existing owners keep their Namespaces.
+- **Removed allowlist entry or identity provider access.** The person can no
+  longer sign in. Their existing account and grants are unchanged.
+- **Removed Default User binding.** The person can still sign in and use the
+  Namespaces they own, but cannot create more.
 - **Partial writes.** Each transaction writes all of its rows or none. A
   Namespace whose Kubernetes setup fails stays `provisioning` or `failed`, as
   today, and still counts against the limit until it is deleted.
@@ -208,8 +237,8 @@ Namespace boundary does not cover them:
 The feature depends on RFC-0024 for the Namespace-wide managed binding and the
 Agent credential grants. A separate implementation plan will list the steps:
 
-1. Installation setting, the Self-service user Role, and account creation at
-   sign-in.
+1. The Default User Role, its binding on every human account, account creation
+   at sign-in, and required GitHub and Google allowlists.
 2. `createdBy`, the Namespace owner Role and binding, the limit, and default
    Presets under OCC's authority.
 3. Guided provisioning for owners, and console changes: Create Namespace and an
@@ -219,15 +248,16 @@ Agent credential grants. A separate implementation plan will list the steps:
 Required outcomes, each proved with PostgreSQL integration tests and the
 regular Kubernetes Agent workflow:
 
-- With self-service off, an unknown identity still fails sign-in and nothing is
-  created.
-- With it on, an admitted identity gets exactly one account and one
-  Self-service user binding; a refused identity gets nothing; each outcome is
-  audited.
+- An admitted identity gets exactly one account and one Default User binding;
+  a refused identity gets nothing; each outcome is audited.
+- Startup fails for GitHub or Google sign-in without an allowlist.
+- An account that an administrator creates also holds the Default User binding.
 - The owner creates a Namespace, sees it, and completes the Agent workflow with
   a Secret-based model credential and a Slack app, without administrator action.
-- A second self-service user is refused every read and write in that Namespace.
+- A second user is refused every read and write in that Namespace.
 - The limit refuses the next Namespace, including under concurrent requests.
+- After an administrator removes the Default User binding, the person keeps
+  their Namespaces and cannot create another, including after a new sign-in.
 - An owner connects an OAuth account in their own Namespace and is refused in a
   Namespace where another person holds a grant.
 
@@ -235,6 +265,12 @@ regular Kubernetes Agent workflow:
 
 ## Rationale and alternatives
 
+- **An opt-in self-service mode.** An Installation setting would leave two
+  supported authorization models to document and test, and the default would
+  keep the administrator-per-user work. OCE's intended use is people creating
+  their own Agents, so the Default User Role is standard behavior. Provider
+  admission decides who signs in, and an administrator can remove the binding
+  from one account.
 - **Keep the current model plus RFC-0024.** An administrator creates each
   account and Namespace and assigns Agent Author. It is safe but needs an
   administrator per user, which is the work this proposal removes.
@@ -247,22 +283,25 @@ regular Kubernetes Agent workflow:
   decides access.
 - **Creator-only ownership of individual resources (RFC-0006).** Finer-grained
   but needs an ownership contract on every resource kind. The Namespace owner
-  covers the self-service case with existing scopes.
+  covers this case with existing scopes.
 - **Claim or Group mapping to Roles.** Useful later, but OCC has no Group writer
-  or claim mapping, and an allowlist plus one fixed Role is enough to start.
+  or claim mapping, and one fixed Role for every admitted person is enough to
+  start.
 
 ## Unresolved questions
 
 - **Default Namespace limit.** One per user keeps the model simple; a small
-  number allows separate work and test Namespaces. Product decides; the limit
-  must always exist when self-service is on.
+  number allows separate work and test Namespaces. Product decides.
+- **OIDC admission.** Is the identity provider's client assignment enough, or
+  should OCC also require a configured group or role claim before it creates an
+  account?
 - **Administrator access to owners' Namespaces.** Administrators can operate
   every Namespace today. Should they keep deploy and native-admin access to an
   owner's Agents, especially Agents holding a connected account? IAM model owners
   decide; Secret values stay undisclosed either way.
-- **Connection templates.** Should self-service users receive `use` on
-  connection templates by default, or should administrators keep granting it per
-  template? The Installation administrator decides per template today.
+- **Connection templates.** Should the Default User Role include `use` on
+  connection templates, or should administrators keep granting it per template?
+  The Installation administrator decides per template today.
 - **Slack for Agents with connected accounts.** Keep the channel restriction, or
   allow Slack when the Agent accepts direct messages only from its owner? This
   needs a Slack-side identity rule that OCC can verify.
