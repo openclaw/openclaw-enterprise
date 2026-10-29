@@ -10000,7 +10000,10 @@ export class OpenClawController {
           const binding = resolved?.resolution.bindings[0];
           const scope =
             binding &&
-            eligibleRepositoryApprovalScope(resolved!.driver, { namespaceId: namespace.id, binding });
+            eligibleRepositoryApprovalScope(resolved!.driver, {
+              namespaceId: namespace.id,
+              binding,
+            });
           if (requested.duration !== "until-removed" || !binding || !scope) {
             throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.notPermitted);
           }
