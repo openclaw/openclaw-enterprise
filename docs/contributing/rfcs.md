@@ -3,7 +3,10 @@
 Write a request for comments (RFC) when a change makes an architectural decision
 the team needs to understand. An RFC explains the problem, the proposed decision,
 and its consequences so that people can give useful feedback while work proceeds.
-Start with the [RFC template](rfc-template.md) and adapt it to the change.
+Start with the [RFC template](rfc-template.md) and adapt its content to the change.
+Preserve the template's section headings, order, and hierarchy; put topic-specific
+detail in subsections under Proposal. Retain sections that do not apply with a
+brief explanation rather than removing them.
 [RFCs and implementation plans](specifications.md) owns file placement,
 numbering, status, and when to create a separate delivery plan.
 
