@@ -3652,6 +3652,31 @@ export const scenarios = {
     ],
     gap: "Simulated UI proof only; this walkthrough does not save or deploy an Agent.",
   },
+  createPasswordSecretConflict: {
+    group: "Pages/Create Agent",
+    name: "Password Secret conflict recovery",
+    path: create,
+    standardCodexPreset: true,
+    actions: [...passwordPresetForm, click("Create Agent")],
+    rules: [
+      {
+        suffix: "/secrets",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "A Secret with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    description:
+      "A confirmed duplicate model Secret keeps the draft and offers deliberate existing Secret selection or a separate new Secret name.",
+    steps: [
+      "Choose existing Secret and select a readable model credential. Confirm the Agent name, model and other draft fields remain.",
+      "Reset the story. Choose Use another Secret name and enter an alternate name. Create Agent without changing its name.",
+    ],
+    gap: "Simulated UI proof; native controller browser tests exercise duplicate rejection and recovery.",
+  },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
     name: "Password Secret creation denied",

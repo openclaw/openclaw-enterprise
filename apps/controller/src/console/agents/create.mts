@@ -880,7 +880,7 @@ function renderAgentForm(
   const auth = responseFields(agent.harnessAuth);
   const method = auth.method;
   const keyMethod = method === "api_key" || method === "codex_pat" ? method : undefined;
-  const passwordAuth = Object.hasOwn(auth, "secret");
+  let passwordAuth = Object.hasOwn(auth, "secret");
   const authDefault = keyMethod && Object.keys(auth).length === 1 ? keyMethod : undefined;
   let binding: HarnessAuthBinding | undefined;
   if (passwordAuth) {
@@ -1139,6 +1139,51 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  let secretNameConflict = false;
+  const alternateSecretName = element("input", {
+    id: "alternate-model-secret-name",
+    autocomplete: "off",
+  });
+  alternateSecretName.addEventListener("input", () => {
+    alternateSecretName.setCustomValidity(namespaceNameProblem(alternateSecretName.value));
+  });
+  const alternateSecretField = field("New Secret name", alternateSecretName);
+  alternateSecretField.hidden = true;
+  const chooseExistingSecret = button("Choose existing Secret", () => {
+    if (pending || outcomeUnknown || savedSecret || !secretNameConflict) {
+      return;
+    }
+    passwordAuth = false;
+    operateAnswer.reset();
+    apiKey.value = "";
+    alternateSecretField.hidden = true;
+    alternateSecretName.required = false;
+    alternateSecretName.setCustomValidity("");
+    secretConflictRecovery.hidden = true;
+    feedback.textContent =
+      "Choose an existing model credential Secret, then select Create Agent. Your other draft fields are unchanged.";
+    updateControls();
+    modelCredentialField.querySelector("input")?.focus();
+  });
+  const chooseAlternateName = button("Use another Secret name", () => {
+    if (pending || outcomeUnknown || savedSecret || !secretNameConflict) {
+      return;
+    }
+    alternateSecretField.hidden = false;
+    alternateSecretName.required = true;
+    alternateSecretName.focus();
+  });
+  const secretConflictRecovery = element(
+    "div",
+    { hidden: true },
+    element(
+      "p",
+      { className: "hint" },
+      "Select an existing Secret deliberately, or save the entered key under another Secret name. Other draft fields stay unchanged.",
+    ),
+    element("div", { className: "status-actions" }, chooseExistingSecret, chooseAlternateName),
+    alternateSecretField,
+  );
   const oauthLogin = createDeviceLogin({
     context,
     initial: draft.oauthLogin,
@@ -1199,6 +1244,7 @@ function renderAgentForm(
           modelCredentialField,
           oauthLogin.section,
           passwordAuth ? transientCredentialField : pluginDiscoveryTokenDetails,
+          secretConflictRecovery,
         ]
       : []),
     modelSection,
@@ -2750,7 +2796,10 @@ function renderAgentForm(
         : "API key"
       : "Token for plugin discovery";
     modelCredentialField.hidden = Boolean(binding || passwordAuth || usesOAuth);
-    transientCredentialField.hidden = usesOAuth;
+    transientCredentialField.hidden =
+      usesOAuth || (!passwordAuth && transientCredentialField.parentElement === authSection);
+    secretConflictRecovery.hidden =
+      !secretNameConflict || !passwordAuth || Boolean(savedSecret) || outcomeUnknown;
     pluginDiscoveryTokenDetails.hidden = Boolean(
       binding || passwordAuth || !usesPat || pluginDiscoveryCredential === "none",
     );
@@ -3476,6 +3525,9 @@ function renderAgentForm(
     context.setDraftCapture(null);
     let mutationStarted = false;
     let creatingSecret = false;
+    const requestedSecretName = alternateSecretField.hidden
+      ? body.name
+      : alternateSecretName.value.trim();
     let refusedInConfiguration = false;
     try {
       if (passwordAuth && !usesOAuth && !savedSecret) {
@@ -3484,10 +3536,10 @@ function renderAgentForm(
         const result = await request(`${namespacePath(namespaceId)}/secrets`, {
           method: "POST",
           expectedStatus: 201,
-          body: { name: body.name, value: apiKey.value },
+          body: { name: requestedSecretName, value: apiKey.value },
         });
         apiKey.value = "";
-        const secret = secretMetadata(result, namespaceId, body.name);
+        const secret = secretMetadata(result, namespaceId, requestedSecretName);
         if (!secret) {
           throw new Error("The create response did not identify the requested Secret.");
         }
@@ -3728,6 +3780,13 @@ function renderAgentForm(
         context.onExpired();
         return;
       }
+      const confirmedSecretConflict =
+        creatingSecret &&
+        error.status === 409 &&
+        error.code === "RESOURCE_CONFLICT" &&
+        error.serverMessage ===
+          "A Secret with this name already exists in this Namespace. Choose a different name.";
+      secretNameConflict ||= confirmedSecretConflict;
       const registrationProblem =
         error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";
       // A refused grant on a saved Agent shows this text only to an Installation administrator (a
@@ -3736,8 +3795,8 @@ function renderAgentForm(
         ? `Credential Source registration could not be confirmed.${registrationProblem} Check credential registration before retrying; the selected Secret remains saved.`
         : savedAgent
           ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets.`
-          : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
-            ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
+          : confirmedSecretConflict
+            ? `A Secret named "${requestedSecretName}" already exists in this Namespace. Choose an existing Secret or use another Secret name below Model provider.`
             : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
               ? error.serverMessage === AGENT_NAME_CONFLICT
                 ? AGENT_NAME_CONFLICT

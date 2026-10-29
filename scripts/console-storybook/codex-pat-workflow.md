@@ -22,3 +22,12 @@ prove account issuance, credential delivery, or native Codex login.
 Capture the managed, imported, empty, and denied states and a short recording
 of switching and saving both sources. Keep captures outside the checkout and
 label them simulated UI proof.
+
+## Model Secret name recovery
+
+Open **Pages/Create Agent → Password Secret conflict recovery**. At desktop and
+phone widths, select **Choose existing Secret**, select a readable credential,
+and confirm the Agent name and model remain. Reset the story, select
+**Use another Secret name**, enter a new name, and submit. The Agent name remains
+unchanged. This story simulates API responses; native browser tests verify the
+controller's duplicate rejection, denied writes, and lost replies.

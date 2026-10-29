@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-24
-last_updated_session: authoring-run/f070add2-5557-42f3-a399-1af757d219cd
+updated: 2026-10-29
+last_updated_session: authoring-run/daf33de1-41b3-4148-86b6-62eade385b72
 ---
 
 # Agent Presets flow
@@ -239,7 +239,12 @@ grants access; dedicated provisioning follows its existing flow. Password bytes
 reach only Secret creation. Each API request performs schema, native credential
 and authorization admission before persistence.
 
-If Secret creation fails, the masked input remains for correction or retry.
+A confirmed duplicate-name Secret response offers the existing permission-aware
+picker or an independent new Secret name in the same form. Selection clears the
+entered key; neither path deletes or reads the existing value. Other draft fields
+remain. Other known refusals keep the masked input for correction or retry;
+uncertain writes clear it and lock creation. Agent-name conflicts do not enable
+Secret recovery.
 If a later save fails, its saved Secret reference is reused.
 If Configuration creation succeeds but Agent creation fails, the form retains
 the Configuration ID and locks Configuration-affecting controls. A safe retry
@@ -286,6 +291,8 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-29 10:28: Add deliberate model Secret conflict recovery in the current draft. (authoring-run/daf33de1-41b3-4148-86b6-62eade385b72 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 - 2026-10-24 14:11: Align Console roster model selections and local policies. (authoring-run/f070add2-5557-42f3-a399-1af757d219cd - de058b77e4f996c848520d8bee2e9c6122d3e2e1)
 
