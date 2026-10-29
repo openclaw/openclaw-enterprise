@@ -70,6 +70,19 @@ test("Namespace deletion reports authorized blockers through the Agent workflow 
   assert.equal(configurations.count, 22);
   assert.equal(configurations.ids.length, 20);
   assert.ok(configurations.ids.every((id) => configurationIds.has(id)));
+  // Each kind needs its own read: a read on Agents and Configurations does not name the Secret.
+  assert.deepEqual(
+    resources.find(({ kind }) => kind === "Secrets"),
+    { kind: "Secrets", count: 1, ids: [] },
+  );
+  // An IAM outage on those reads hides the IDs (fails closed) but not the conflict or counts.
+  const outage = await fixture.withIamOutage(
+    (request: { action: string; resource: { kind: string } }) =>
+      request.action === "read" && request.resource.kind !== "namespace",
+    () => fixture.request("DELETE", path, { session }),
+  );
+  assertApiError(outage, 409, "NAMESPACE_NOT_EMPTY");
+  assert.deepEqual(outage.body.error.remainingResources, unreadable.body.error.remainingResources);
 
   // Deleting the Agent does not empty its Namespace until teardown actually removes the Agent.
   assert.equal((await fixture.request("DELETE", `${path}/agents/${agent.id}`)).status, 202);
