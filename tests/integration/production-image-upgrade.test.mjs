@@ -242,7 +242,14 @@ fi
   await writeCommand(
     bin,
     "helm",
-    `if [[ "$*" == *'get values'* ]]; then
+    `printf 'helm %s\\n' "$*" >>"$COMMAND_LOG"
+if [[ "$1" == status ]]; then
+  state=deployed
+  if [[ -n "\${CURRENT_HELM_EVIDENCE:-}" && -f "$CURRENT_HELM_EVIDENCE/prepared" ]]; then
+    state="$CURRENT_HELM_STATE"
+  fi
+  printf '{"info":{"status":"%s"},"version":1}\\n' "$state"
+elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == template ]]; then
   printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
@@ -258,17 +265,22 @@ fi
   exit 0
 fi
 case "$*" in
-  *'.info.status'*) printf 'deployed\\n' ;;
+  *'.info.status'*) node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).info.status' "\${!#}" ;;
   *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
   *'.installationId == '*) exit 0 ;;
   *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
+  *'.configurationId | select'*) printf 'cfg_test\\n' ;;
+  *'configurationId: $configurationId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","name":"Test","configurationId":"cfg_test","values":{}}' ;;
   *'namespaceId: $namespace.id'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","baselineRevisionId":"rev_test"}' ;;
-  *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0,"gatewayUid":"gateway-test-uid"}' ;;
+  *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0,"gatewayUid":"gateway-test-uid","revisionPods":[{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}]}' ;;
   *'{namespaceId: $namespaceId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","deploymentId":"rev_candidate"}' ;;
+  *'role: $role'*) printf '%s\\n' '[{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}]' ;;
+  *'.revisionPods'*) printf '%s\\n' '{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}' ;;
   *'{namespace: .metadata.namespace, name: .metadata.name,'*) printf '%s\\n' '{"namespace":"tenant-test","name":"gateway-test","restarts":0,"uid":"gateway-test-uid"}' ;;
   *' .uid') cat >/dev/null; printf '"gateway-test-uid"\\n' ;;
+  *'was replaced by a new Pod'*) exit 0 ;;
   *'.restarts'*|*'.gatewayRestarts'*) cat >/dev/null; printf '0\\n' ;;
   *'.lastState.terminated.reason'*) cat >/dev/null; printf '0\\tnone\\n' ;;
   *'spec.containers'*'length'*)
@@ -289,6 +301,7 @@ case "$*" in
   *'.activeRevisionId'*) cat >/dev/null; printf 'rev_candidate\\n' ;;
   *'.executionMode'*) cat >/dev/null; printf 'dedicated\\n' ;;
   *'.deploymentId'*) printf 'rev_candidate\\n' ;;
+  *'.role'*) cat >/dev/null; printf 'gateway\\n' ;;
   *'.gatewayNamespace'*) cat >/dev/null; printf 'tenant-test\\n' ;;
   *'.gatewayName'*) cat >/dev/null; printf 'gateway-test\\n' ;;
   *'.namespaceId'*) cat >/dev/null; printf 'ns_test\\n' ;;
@@ -319,7 +332,7 @@ case "$*" in
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
-  *' logs pod/'*) printf 'installation-startup-ready\\n' ;;
+  *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
 esac
 `,
     { interpreter: "bash" },
@@ -332,12 +345,50 @@ case "$*" in
   *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false}]}]}' ;;
   *'agent deploy'*) printf '%s\\n' '{"id":"rev_candidate"}' ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
-  *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate"}' ;;
+  *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate","configurationId":"cfg_test"}' ;;
+  *'configuration get'*) printf '%s\\n' '{"id":"cfg_test","values":{}}' ;;
   *) printf '%s\\n' '{"id":"ins_upgrade_test","name":"Production"}' ;;
 esac
 `,
     { interpreter: "bash" },
   );
+
+  // Preparation sees a deployed baseline; the common live reread sees a state
+  // that must stop the attempt before another sensitive read or mutation.
+  for (const [state, refusal] of [
+    [
+      "pending-upgrade",
+      /Helm reports pending-upgrade; resolve the in-progress or unknown release/u,
+    ],
+    ["failed", /the Helm release changed before this upgrade started/u],
+  ]) {
+    await t.test(`current Helm status ${state} refuses before further reads`, async () => {
+      const evidence = join(directory, `status-${state}`);
+      await assert.rejects(
+        execute(upgradeScript, upgradeArguments(evidence, ["controller"]), {
+          cwd: repository,
+          env: {
+            ...environment,
+            COMMAND_LOG: commandLog,
+            CURRENT_HELM_EVIDENCE: evidence,
+            CURRENT_HELM_STATE: state,
+            OBSERVED_CONTROLLER_IMAGE: controllerImage,
+          },
+        }),
+        refusal,
+      );
+      assert.equal(
+        JSON.parse(await readFile(join(evidence, "current-helm-status.json"), "utf8")).info.status,
+        state,
+      );
+      assert.match(
+        await readFile(commandLog, "utf8"),
+        /helm status [^\n]* --output json\n$/u,
+        "no values, Secret, or mutating command may follow the refused current status",
+      );
+      await rm(commandLog);
+    });
+  }
 
   // A controller release changes only the Helm-owned image. It must not replace
   // the Installation Secret, request fleet inventory, or create Agent revisions.

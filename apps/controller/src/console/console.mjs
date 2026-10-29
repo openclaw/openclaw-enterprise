@@ -9,7 +9,11 @@ import {
   renderAgentDetail,
 } from "./agents.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
-import { ASK_INSTALLATION_ADMINISTRATOR, askForGrant } from "./agents/access-reasons.mjs";
+import {
+  ASK_INSTALLATION_ADMINISTRATOR,
+  askForGrant,
+  NAMESPACE_UNAVAILABLE,
+} from "./agents/access-reasons.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
@@ -30,14 +34,8 @@ const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
 let session = null;
 let namespaces = [];
-// Namespaces a list read in this sign-in returned: only those can be ones the reader "no
-// longer" has access to (finding 2550).
-const listedNamespaceIds = new Set();
 function setNamespaces(readable) {
   namespaces = sorted(readable);
-  for (const item of namespaces) {
-    listedNamespaceIds.add(item.id);
-  }
 }
 let namespaceId = null;
 let observabilityUrl = null;
@@ -746,10 +744,9 @@ const { publicPanel, renderRows, switchNamespace } = shellUI;
 // selector, which is disabled when no Namespace is readable (a member whose only grant was
 // revoked, on a bookmarked link), so the panel then points at the header's Refresh, as the
 // no-readable-Namespace panel does (findings 2371, 2393).
-function namespaceUnavailablePanel(view, unavailableId) {
-  const why = listedNamespaceIds.has(unavailableId)
-    ? "This Namespace is missing or you no longer have access"
-    : "This Namespace is missing or not shared with you";
+function namespaceUnavailablePanel(view) {
+  // Deleted, never shared and no longer shared read alike: one sentence for every page (D753).
+  const why = NAMESPACE_UNAVAILABLE;
   if (namespaces.length) {
     panel(
       view,
@@ -1147,7 +1144,6 @@ function clearPrivate() {
   session = null;
   backendsDenied = false;
   namespaces = [];
-  listedNamespaceIds.clear();
   namespaceId = null;
   observabilityUrl = null;
   observabilityOwner = null;
@@ -1338,7 +1334,7 @@ function showLogin(message = "", destination = null) {
                 ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
                 : "Could not sign in. Check your email and password."
               : error.status === undefined
-                ? "Could not reach the sign-in service. Check your connection, then try again."
+                ? "Could not confirm whether sign-in completed. Reload the page to check your session before trying your password again."
                 : error.status >= 500
                   ? signInOutage
                   : "Sign-in is unavailable. Try again.";
@@ -2187,7 +2183,7 @@ async function loadPage({
           "Ask an Installation administrator to create a Namespace or to give you access to one, then Refresh.",
         );
       } else {
-        namespaceUnavailablePanel(shell.view, namespaceId);
+        namespaceUnavailablePanel(shell.view);
       }
       return;
     }
@@ -2455,9 +2451,27 @@ async function loadPage({
       showChatLinkFailure(shell.view, chatLinkFailure);
     } else if (current.feature === "namespaces") {
       renderNamespaces(
-        { ...agentContext, reload: () => loadPage(), fromRefresh },
+        {
+          ...agentContext,
+          reload: () => loadPage(),
+          fromRefresh,
+          sorted,
+          onRemoved(namespace) {
+            clearRetainedViewsForNamespace(namespace.id);
+            setNamespaces(namespaces.filter((item) => item.id !== namespace.id));
+            if (namespaceId === namespace.id) {
+              namespaceId =
+                (
+                  namespaces.find((item) => item.status === "ready") ??
+                  namespaces.find((item) => item.status !== "deleting") ??
+                  namespaces[0]
+                )?.id ?? null;
+              replaceUrl(pageUrl("namespaces"));
+            }
+            shellUI.updateNamespaces(namespaces);
+          },
+        },
         items,
-        renderRows,
       );
     } else if (current.feature === "secrets") {
       renderSecrets({
@@ -2767,10 +2781,7 @@ async function revalidateMountedAgent(current) {
     if (!namespaces.some((item) => item.id === selectedNamespace)) {
       clearRetainedViewsForNamespace(selectedNamespace);
       resetReads();
-      namespaceUnavailablePanel(
-        renderShell(current.feature, false, { page: null }).view,
-        selectedNamespace,
-      );
+      namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
       return;
     }
     checking = "detail";

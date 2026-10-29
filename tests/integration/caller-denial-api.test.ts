@@ -16,6 +16,7 @@ import {
   INSTALLATION_ADMINISTER_DENIED,
   NAMESPACE_CREATE_DENIED,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 type Body = Record<string, unknown> | undefined;
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -119,13 +120,9 @@ test("a caller's own denial names the missing grant without disclosing what the 
     ["read", "namespace"],
     ["read", "agent"],
   ]);
-  fixture.policy.restrictions.push({
-    id: "deny-restricted-agent-read",
+  restrict(fixture.policy, "read", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: restricted.id,
-    action: "read",
-    effect: "deny",
   });
   const restrictedPath = `${agents}/${restricted.id}`;
   const byRestriction = await refusal("GET", restrictedPath, undefined, readerSession);
@@ -465,13 +462,7 @@ test("a create a Restriction denies names it only to an Installation administrat
   const member = await memberSession(fixture, "restricted-member", namespace.id, [
     ["read", "namespace"],
   ]);
-  fixture.policy.restrictions.push({
-    id: "deny-agent-create",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   const path = `/namespaces/${namespace.id}/agents`;
   const body = {
     name: "Refused Agent",

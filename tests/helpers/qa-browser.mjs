@@ -6,7 +6,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:tls";
 import { chromium } from "playwright";
-import { availablePort } from "./available-port.mjs";
 import { prepareQaConsoleTheme } from "./qa-installation.mjs";
 import { waitFor } from "./qa-utils.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
@@ -16,8 +15,7 @@ export async function createQaBrowser(f, { themed }) {
     await prepareQaConsoleTheme(f);
   }
   const nativeHost = `native.${f.cluster}.oce.localhost`;
-  const port = await availablePort();
-  const nativeOrigin = `https://${nativeHost}:${port}`;
+  let nativeOrigin;
   const ca = f.browserCA ?? join(f.directory, "browser-ca.crt");
   let relay;
   let upstream;
@@ -63,8 +61,10 @@ export async function createQaBrowser(f, { themed }) {
     );
     await new Promise((accept, reject) => {
       relay.once("error", reject);
-      relay.listen(port, "127.0.0.1", accept);
+      // Port 0: the relay's port is read once bound, so nothing else can take it first.
+      relay.listen(0, "127.0.0.1", accept);
     });
+    nativeOrigin = `https://${nativeHost}:${relay.address().port}`;
     f.resources.after(async () => {
       for (const socket of sockets) {
         socket.destroy();
@@ -227,6 +227,43 @@ export async function createQaBrowser(f, { themed }) {
         } finally {
           await secretsPage.close();
         }
+      }
+    },
+    async verifyNamespaceDeletionBlockers(agent) {
+      const namespacesPage = await browser.newPage();
+      try {
+        const namespace = await f.api("GET", `/namespaces/${agent.namespaceId}`);
+        await namespacesPage.goto(`${f.consoleUrl}/console/namespaces?namespace=${namespace.id}`);
+        await namespacesPage
+          .getByRole("button", { name: `Delete ${namespace.name}`, exact: true })
+          .click();
+        const refused = namespacesPage.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === `/namespaces/${namespace.id}` &&
+            response.request().method() === "DELETE",
+        );
+        await namespacesPage.getByRole("button", { name: "Delete Namespace", exact: true }).click();
+        assert.equal((await refused).status(), 409);
+        // A deployed Agent in this run's Namespace must block real teardown and appear in the dialog.
+        const blockers = namespacesPage.getByRole("dialog", {
+          name: "Namespace still contains resources",
+          exact: true,
+        });
+        await blockers.getByText(agent.id, { exact: true }).waitFor();
+        await blockers.getByText(agent.configurationId, { exact: true }).waitFor();
+        assert.equal((await f.api("GET", `/namespaces/${namespace.id}`)).status, "ready");
+        await blockers.getByRole("button", { name: "View Agents", exact: true }).click();
+        assert.equal(new URL(namespacesPage.url()).searchParams.get("namespace"), namespace.id);
+        await namespacesPage.getByRole("link", { name: agent.name, exact: true }).waitFor();
+        await f.record(`${agent.preset}-console-namespace-deletion`, {
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          configurationId: agent.configurationId,
+          nonemptyDeletionRefused: true,
+          cleanupNavigationScoped: true,
+        });
+      } finally {
+        await namespacesPage.close();
       }
     },
     async verify(agent) {

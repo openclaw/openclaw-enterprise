@@ -635,6 +635,9 @@ test("Docker prepares configuration before starting a managed Gateway", async ()
   assert.equal(gatewayLaunch.env.OPENCLAW_CONFIG_READONLY, "1");
   assert.equal(gatewayLaunch.env.OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS, "1");
   assert.equal(gatewayLaunch.env.OPENCLAW_DISABLE_CRON_HOST_EXECUTION, "1");
+  // OCE replaces the Gateway image to upgrade it: OpenClaw runs no update check or
+  // install count request of its own (finding 2779).
+  assert.equal(gatewayLaunch.env.OPENCLAW_NO_AUTO_UPDATE, "1");
 });
 
 async function gatewayContainerLaunch(configuration = {}) {

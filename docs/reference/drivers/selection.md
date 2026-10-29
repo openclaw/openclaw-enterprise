@@ -242,8 +242,7 @@ releases, and the only way to read a detected format without running the file
 is Node's process-lifetime module hooks. Node itself treats the shape as a
 mistake: outside `node_modules` it warns about such a file and asks for
 `"type": "module"`. To fix a refusal, add `"type": "module"` to the
-`package.json` it names, or rename the entry to `.mjs`. See the
-[breaking-change notices](../../guides/deploy/breaking-changes.md).
+`package.json` it names, or rename the entry to `.mjs`.
 
 The entry point exports the existing Driver contract, not a separate plugin
 manifest or public plugin SDK. The controller validates its closed JSON Schema

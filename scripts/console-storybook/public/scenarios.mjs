@@ -15,6 +15,11 @@ const soulVersion = (version) =>
   ).join("");
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
+const submitPassword = [
+  { selector: "#username", value: "operator@example.com" },
+  { selector: "#password", value: "demo-only" },
+  click("Sign in"),
+];
 const runtimeLogsPage = {
   group: "Pages/Agent detail",
   path: `${candidateVersion}&tab=logs`,
@@ -896,12 +901,18 @@ export const scenarios = {
     path: "/console/login",
     signedOut: true,
     rules: [{ path: "/api/auth/sign-in/email", method: "POST", status: 401 }],
-    actions: [
-      { selector: "#username", value: "operator@example.com" },
-      { selector: "#password", value: "demo-only" },
-      click("Sign in"),
-    ],
+    actions: submitPassword,
     description: "A rejected sign-in leaves the form available for retry.",
+  },
+  passwordSignInUnconfirmed: {
+    group: "Pages/Sign in",
+    name: "Password sign-in unconfirmed",
+    path: "/console/login",
+    signedOut: true,
+    rules: [{ path: "/api/auth/sign-in/email", method: "POST", bodyError: true }],
+    actions: submitPassword,
+    description:
+      "An interrupted password response leaves the result unknown. Reload to check the session before entering the password again.",
   },
   expired: {
     group: "Pages/Sign in",
@@ -1419,6 +1430,101 @@ export const scenarios = {
       "Select Create Namespace, enter a unique name, and submit. The success dialog explains provisioning; Open Agents selects the created Namespace.",
       "Reset, then cancel a new form with Escape. No Namespace is created and focus returns to Create Namespace.",
     ],
+  },
+  namespaceDelete: {
+    group: "Pages/Namespaces",
+    name: "Delete Namespace",
+    path: "/console/namespaces",
+    emptyAgents: true,
+    namespaceDeleteOutcome: "complete",
+    description:
+      "Use the same trash icon as the Agents table, confirm the exact Namespace, and watch simulated cleanup finish.",
+    steps: [
+      "Select Engineering's trash icon, then Delete Namespace. The row stays Deleting until the next status reads confirm removal.",
+    ],
+  },
+  namespaceDeleteConfirmation: {
+    group: "Pages/Namespaces",
+    name: "Delete confirmation",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "complete",
+    actions: [{ selector: '[aria-label="Delete Engineering"]', click: true }],
+    description:
+      "The confirmation identifies the Namespace and explains reserved names, asynchronous cleanup, and default Presets. Cancel restores focus to the trash icon.",
+  },
+  namespaceDeleteMobile: {
+    group: "Pages/Namespaces",
+    name: "Delete confirmation mobile",
+    path: "/console/namespaces",
+    mobile: true,
+    namespaceDeleteOutcome: "complete",
+    actions: [{ selector: '[aria-label="Delete Engineering"]', click: true }],
+    description: "The same confirmation becomes a bottom sheet at phone width.",
+  },
+  namespaceDeleteBlocked: {
+    group: "Pages/Namespaces",
+    name: "Delete blocked by resources",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "blocked",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "A simulated NAMESPACE_NOT_EMPTY response names remaining resources. Open Agents or Secrets, or inspect Configuration cleanup commands.",
+  },
+  namespaceDeleteDenied: {
+    group: "Pages/Namespaces",
+    name: "Delete permission denied",
+    path: "/console/namespaces",
+    namespaceDeleteDenied: true,
+    description:
+      "The advisory permission answer disables deletion and explains the exact required grant.",
+  },
+  namespaceDeleteRefused: {
+    group: "Pages/Namespaces",
+    name: "Delete permission changed",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "forbidden",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "A write can still be refused after the advisory read. The row shows the reason and request ID.",
+  },
+  namespaceDeletePending: {
+    group: "Pages/Namespaces",
+    name: "Delete request pending",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "pending",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "The pending write blocks dismissal and navigation. Its timeout requires a status read before another attempt.",
+  },
+  namespaceDeleteUnknown: {
+    group: "Pages/Namespaces",
+    name: "Delete outcome unknown",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "unknown",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "An unconfirmed write requires Refresh status. The Console does not replay deletion or assume it started.",
+  },
+  namespaceDeleteRetry: {
+    group: "Pages/Namespaces",
+    name: "Delete cleanup recovery",
+    path: "/console/namespaces",
+    namespaceStatus: "deleting",
+    namespaceDeleteOutcome: "stalled",
+    description:
+      "An existing deleting Namespace keeps status and deliberate retry controls. Only the backend decides whether retry is allowed.",
   },
   namespacesUnavailable: {
     group: "Pages/Namespaces",
@@ -2054,7 +2160,7 @@ export const scenarios = {
     steps: [
       "Review the reminder before deployment: catalog availability does not confirm linked credentials, and OCE policies do not configure them.",
       "Open Plugin selections JSON and confirm that Calendar has only enabled: true; presentation links and setup guidance are not stored in selections.",
-      "Reopen Configure plugins, remove Calendar, and click Done. With no configured plugins, the reminder is hidden.",
+      "Reopen Configure plugins, open More actions on Calendar, choose Remove Calendar, and click Done. With no configured plugins, the reminder is hidden.",
     ],
     gap: pluginDiscoveryGap,
   },
@@ -2357,6 +2463,36 @@ export const scenarios = {
       "Without a Driver capability descriptor, saved policies remain visible and policy controls stay disabled. The component does not assume policy support from the catalog.",
     gap: pluginPreviewGap,
   },
+  managedGoogleInstall: {
+    group: "Components/Plugins",
+    name: "Install Google Workspace",
+    component: "plugins",
+    pluginCapabilities: {
+      ...pluginCapabilities,
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
+    },
+    pluginCatalog: {
+      status: "ready",
+      entries: [
+        {
+          id: "occ-plugin:google@1.0.0",
+          name: "Google Workspace",
+          description:
+            "Install the pinned gog Google Workspace CLI on a dedicated OpenClaw worker using Kubernetes Compute.",
+          selectableWithoutTools: true,
+          tools: [],
+        },
+      ],
+    },
+    actions: [
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Google Workspace"]', click: true },
+      click("Add Google Workspace"),
+    ],
+    description:
+      "Toggle Enable plugin. Open More actions to find Remove Google Workspace. Compare the Plugin policies, Driver policy, and Tools sections. Each shows which settings Google Workspace supports. This fixture simulates the catalog.",
+  },
   pluginsNativeLimited: {
     group: "Components/Plugins",
     name: "Native Driver with unsupported saved policy",
@@ -2581,6 +2717,10 @@ export const scenarios = {
     ],
     description:
       "The create form opens the same modal before an Agent exists. The default simulated Secret name follows the current Agent name.",
+    steps: [
+      "Enter a synthetic value, then click the gray backdrop. Only Create Secret closes; the Slack editor stays open.",
+      "Open Create new Secret again and confirm Value is empty. Press Escape, then cancel the Slack editor without creating an Agent.",
+    ],
   },
   createSecretRequiredFields: {
     group: "Pages/Create Agent",
@@ -4452,6 +4592,51 @@ export const scenarios = {
     description:
       "A pending save blocks further Configuration edits and deployment; a timed-out write requires draft readback.",
   },
+  gatewaySafety: {
+    group: "Pages/Agent detail",
+    name: "Collaboration and safety settings",
+    path: draft,
+    deployed: true,
+    description:
+      "The Configuration tab shows the Gateway collaboration and safety settings a deployment runs with. By default, other participants can steer a running turn, and apply_patch changes files only in the workspace.",
+    steps: [
+      "Read each toggle's state and where it comes from: Default: on. Check that steering help distinguishes channel users and local operators from OCE users who share one Gateway identity.",
+      "Turn on Strict mode. The Configuration JSON opens with both locked-down values written, and focus stays on Strict mode.",
+      "Turn steering back on. Its value leaves the JSON and Strict mode turns off. Cancel, or Save Configuration and deploy a new version.",
+    ],
+    gap: "Simulated UI proof; does not show a deployed Gateway steering a turn.",
+  },
+  gatewaySafetyStrict: {
+    group: "Pages/Agent detail",
+    name: "Strict mode staged in the Configuration JSON",
+    path: draft,
+    deployed: true,
+    actions: [{ selector: "#gateway-safety-strict", click: true }],
+    description:
+      "Strict mode writes every locked-down value into the Configuration JSON; Save Configuration keeps them, and the next deployment applies them.",
+    gap: "Simulated UI proof; does not show a deployed Gateway steering a turn.",
+  },
+  gatewaySafetyRejectSteering: {
+    group: "Pages/Agent detail",
+    name: "Collaboration and safety, reject steering",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    messageQueue: { allowCollaborativeSteering: false, collaborativeSteeringFallback: "reject" },
+    description:
+      "The Configuration disables collaborative steering and sets its fallback to reject. The help explains that another participant must resend their message with /followup.",
+    gap: "Simulated UI proof; does not show a deployed Gateway refusing a message.",
+  },
+  gatewaySafetyReader: {
+    group: "Pages/Agent detail",
+    name: "Collaboration and safety, viewer can only read",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    messageQueue: { allowCollaborativeSteering: false },
+    description:
+      "A viewer sees the saved strict settings, with every toggle unavailable and the reason linked to each. The note above them names the grant to ask for.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   pluginsUpdateDenied: {
     group: "Pages/Agent detail",
     name: "Plugin selections, viewer cannot update the Agent",
@@ -4555,7 +4740,7 @@ export const scenarios = {
       "The first catalog page loads in the background when the Plugins tab opens, using the saved Service Accounts token. Open Configure plugins to review Calendar's saved policy.",
       "Open Calendar and inspect the tool IDs beneath their titles. Type create into Filter tools, then clear it; filtering should keep the cursor in the search box.",
       "In Available, select Calendar, filter tools by create, and expand Create event. Switch to Configured, filter plugins by Calendar, and choose Calendar with a different tool filter. Round-trip the tabs: each keeps its selection, query, tool filter, and expanded rows without another catalog request.",
-      "Remove Calendar from Configured: its details clear even though Available still lists it. Add Calendar again from Available; Configured must not restore the removed detail state.",
+      "In Configured, open More actions and choose Remove Calendar. Its details clear even though Available still lists it. Add Calendar again from Available; Configured must not restore the removed detail state.",
       "In Configure plugins, change Calendar's tool policy, add Documents from the next page, and select Done.",
       "Select Save plugin selections. The tab updates in place: the page keeps its scroll and focus moves to Plugin selections saved. Then select Deploy new version and compare the new version with the earlier immutable plugin snapshot.",
     ],
@@ -4940,6 +5125,7 @@ export const scenarios = {
     description:
       "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified. Deployment details keep Last recorded result, Reason and Since rows (not recorded yet), so the first result fills them in place.",
     steps: [
+      "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
       'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
     ],
   },
@@ -4962,12 +5148,23 @@ export const scenarios = {
     deployed: true,
     candidateDeploymentStatus: "running",
     candidateActivates: true,
+    // Keep the automatic full reread visible long enough to inspect its quiet presentation.
+    rules: [
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        delayMs: 2500,
+        once: true,
+      },
+    ],
     description:
       "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
     steps: [
       'On arrival the notice begins "Deploying version" and Selected for service reads v6.',
       "Before the status poll lands, focus Viewing version without changing its v7 selection.",
-      'Within about 5 s the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
+      'After the next poll and its delayed overview reread, the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
+      "Reset. Open Deployment and hover Refresh deployment before the next poll. Keep the pointer still: completion and the delayed overview reread preserve the hover fill without marking the button busy.",
+      "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
     ],
   },
   deploymentCompletesRereadFails: {
@@ -5005,6 +5202,7 @@ export const scenarios = {
     description:
       "One deployment status read fails while v7 is deploying. The notice keeps Deploying version rather than turning Historical, polling continues, and the next read records success and makes v7 current. The deployment, failure and activation are simulated.",
     steps: [
+      "Open Deployment before the first poll, choose folded or expanded details, and Tab to Run diagnostics for this version. The transient failure preserves that choice and the visible focused control; the selected record clears its old outcome and shows the error outside the fold. Reset to repeat the other choice. The later completion is a terminal result, not routine pending recovery.",
       'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment reads "v7 · Unavailable" and the notice still begins "Deploying version".',
       'Within about 10 s the notice begins "Current version" and Selected for service reads v7, with no "Historical version" in between.',
     ],
@@ -5389,6 +5587,86 @@ export const scenarios = {
     ],
     gap: "The rejected credential is simulated deployment evidence; this story does not call a model provider.",
   },
+  draftRetiredSetting: {
+    group: "Pages/Agent detail",
+    name: "Next step for a draft with a retired setting",
+    path: draft,
+    deployed: true,
+    retiredSetting: true,
+    description:
+      "An older release saved this draft's security.preset, which the pinned OpenClaw has since retired. OCC refuses to deploy it, so Prepare this version shows OCC's refusal beside a disabled Deploy instead of Ready to deploy.",
+    steps: [
+      "In Prepare this version, the first step has an open ring with the detail Remove the retired setting.",
+      "Beside Deploy new version the status reads Configuration setting security.preset must be removed: the OpenClaw runtime retired it (configure the individual security controls explicitly). Deploy is disabled.",
+      "Open Configuration, remove security.preset and save: the status returns to Ready to deploy.",
+    ],
+    gap: "The stored setting is simulated; this story does not call OCC's deploy admission.",
+  },
+  credentialRejectedBindingEditor: {
+    group: "Pages/Agent detail",
+    name: "Rejected credential, binding editor cannot deploy",
+    path: draft,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateCredentialRejected: true,
+    agentPermissionSummary: {
+      update: true,
+      deploy: false,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: false,
+      configurationRead: true,
+      configurationSecretsOperate: true,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: true,
+      sandboxPolicyRead: false,
+      readLogs: true,
+    },
+    secretCallerPermissions: { update: false, delete: false },
+    description:
+      "Simulated recovery for an editor with Agent update, Configuration read and bound-source operate, but no Agent deploy. Secret metadata is readable; Secret update is not needed to choose an authentication source.",
+    steps: [
+      "Read Deployment needs attention: choose a valid authentication source in Credentials, and ask an Installation administrator for Agent deploy on it. It must not instruct this actor to deploy or offer Deploy again.",
+      "Select Open Credentials. Confirm the draft Credentials tab is selected and focused, and Save authentication source is enabled. Save the selected source and check the saved feedback; Deploy new version remains unavailable.",
+      "Repeat at 390px. Check the recovery message, link and keyboard focus remain usable.",
+    ],
+    gap: "Simulated UI proof only. Fixture saves do not enforce IAM; this story does not prove authorization, persistence, credential validity or deployment.",
+  },
+  credentialRejectedHiddenSecretUpdater: {
+    group: "Pages/Agent detail",
+    name: "Rejected credential, hidden Secret updater cannot rebind",
+    path: draft,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateCredentialRejected: true,
+    unreadableSecretId: "sec_demo_model",
+    secretCallerPermissions: { update: true, delete: false },
+    secretOperateDenied: ["sec_demo_model"],
+    agentPermissionSummary: {
+      update: true,
+      deploy: true,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: true,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+      readLogs: true,
+    },
+    description:
+      "Simulated recovery for a known-Secret updater without Secret read or operate. Agent update and Configuration editing do not permit rebinding without source operate. Agent deploy alone does not supply Secret operate.",
+    steps: [
+      "Check recovery explains that replacing the value needs Secret update, choosing another credential needs operate on bound sources, and deploying also needs Secret operate. It must offer no Open Credentials recovery link.",
+      "Check the draft deployment guidance also names the missing grants instead of saying update or replace it in Credentials, even though Configuration editing is available.",
+      "Check recovery and draft guidance expose neither sec_demo_model nor Demo model API key (simulated). Open Credentials through its tab only to inspect the disabled authentication editor; recovery must not send the actor there.",
+      "Repeat at 390px and check that the grant guidance remains readable.",
+    ],
+    gap: "Simulated UI proof only. The unreadableSecretId fixture hides metadata and returns 404 before Secret PATCH handling, so it cannot demonstrate a known-Secret update. secretCallerPermissions describes update separately but is not delivered for this hidden Secret. Real IAM and in-place updates require owner-run integration proof.",
+  },
   deploymentFailedLogsFromDraft: {
     group: "Pages/Agent detail",
     name: "Failed deployment logs from draft",
@@ -5684,8 +5962,20 @@ export const scenarios = {
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        method: "GET",
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        delayMs: 1800,
+      },
+    ],
     description:
       "v7 is now selected and its original deployment recorded success. This remains historical evidence, not a live probe.",
+    steps: [
+      "Focus Refresh record and press Enter. While Refreshing… is shown, the button keeps focus and repeated Enter or Space does not start another read. Completion leaves focus on Refresh record.",
+      "Refresh again and press Tab before the response arrives. Completion leaves focus on the control you moved to.",
+    ],
   },
   deploymentActivityLoading: {
     group: "Pages/Agent detail",
@@ -5718,6 +6008,10 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007",
         status: 503,
       },
+    ],
+    steps: [
+      "Fold Deployment details. The selected record still shows the read error outside the fold with one visible alert. Expand again: the activity owns that alert instead of announcing it twice.",
+      "Fold and press Refresh deployment. The same failed read opens the details again; this explicit action differs from a routine transient poll.",
     ],
     description:
       "The latest deployment record cannot be read. Version history and the selected version remain distinct from the status error.",
@@ -5886,6 +6180,18 @@ export const scenarios = {
       "At 1440 the two cards sit side by side and together fill the panel; no blank column is left beside them.",
       "At 390 each card spans the panel, one under the other.",
     ],
+  },
+  runtimeLogsMissingAgentPod: {
+    ...runtimeLogsPage,
+    name: "Gateway logs with no current Agent Pod",
+    runtimePod: "missingAgent",
+    actions: [{ selector: "#runtime-log-source", value: "gateway" }],
+    description:
+      "A simulated dedicated Agent source remains listed when no current Agent Pod is reported. Gateway logs show the note without claiming the Agent never started.",
+    steps: [
+      "Keep Gateway selected and check the note: No current Agent (Harness) Pod was reported. Check Deployment activity for the latest status.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
   },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
@@ -6739,15 +7045,17 @@ export const scenarios = {
     name: "Slack create Secret modal",
     path: `${draft}&tab=channels`,
     slack: true,
+    agentName: "Research " + "engineering ".repeat(15) + "review team",
     actions: [
       click("Edit Slack"),
       { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
     ],
     description:
-      "Create new Secret opens a modal with an editable Agent-prefixed Name, a fixed Slack binding key, and a masked Secret value. Values are simulated and never read back.",
+      "A long Agent name produces a shortened, editable Secret Name that retains the Slack bot token purpose. Creation uses only the simulated service.",
     steps: [
-      "Enter a dummy value, then click the gray backdrop. Only Create Secret closes; the Slack editor stays open.",
-      "Open Create new Secret again and confirm Value is empty. Close it, then click the backdrop again to dismiss the Slack editor.",
+      "Inspect Name before editing: it contains an ellipsis, ends with Slack bot token, and fits the 200-character limit.",
+      "Replace Name with Walkthrough Slack bot token and enter synthetic-demo-token as Value. Select Create Secret.",
+      "Confirm Create Secret closes and Walkthrough Slack bot token is selected in the Slack editor. The binding is staged until you save the editor.",
     ],
   },
   slackDuplicateSecret: {
@@ -7397,6 +7705,47 @@ export const scenarios = {
     ],
     description:
       "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
+  },
+  credentialsSecretListRefresh: {
+    group: "Components/Credentials",
+    name: "Refresh Secret list without saving",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    // Setup makes three exact collection reads; the permission endpoint is separate.
+    rules: [{ path: presetSecretsPath, method: "GET", skip: 3, once: true, delayMs: 3000 }],
+    description:
+      "The first explicit refresh waits three seconds, preserving query, focus and the staged app token. Save channel Secrets applies the choices.",
+    steps: [
+      "Type a nonmatching name in Slack bot token. ArrowDown highlights Create; a second ArrowDown highlights Refresh Secret list. Press Enter.",
+      "Loading Secrets is disabled during the three-second read. Check that query, focus and staged app token remain. Afterward, choose a Secret; only Save channel Secrets saves bindings. Existing access restrictions still apply.",
+    ],
+    gap: "The delay is simulated. Real two-tab persistence, races and grants require the browser test; no provider readiness is established.",
+  },
+  credentialsSecretListRetry: {
+    group: "Components/Credentials",
+    name: "Retry Secret list without losing a choice",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    // Fail the first explicit collection read, after the three successful setup reads.
+    rules: [
+      {
+        path: presetSecretsPath,
+        method: "GET",
+        skip: 3,
+        once: true,
+        status: 503,
+        code: "UNAVAILABLE",
+      },
+    ],
+    description:
+      "The first explicit refresh fails; retry succeeds without clearing the query or staged app token, or saving bindings.",
+    steps: [
+      "Type a nonmatching name in Slack bot token. Press ArrowDown twice to pass Create and highlight Refresh Secret list, then Enter. Check Secrets unavailable, retained query/focus and the staged app token.",
+      "Choose Refresh Secret list again. The read succeeds with query, focus and staged app token intact. Clear the query to choose a Secret; Save channel Secrets alone persists the choices.",
+    ],
+    gap: "The one-shot failure is simulated. Real staged-choice preservation, late responses and grants require the browser test; no provider readiness is established.",
   },
   credentialsSecretListScrolling: {
     group: "Components/Credentials",
@@ -8692,7 +9041,7 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row, as the Agents list has no Stop icon.",
+      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopFirstDeploymentQueued: {
@@ -8988,7 +9337,7 @@ for (const [id, source, name, theme] of [
     name,
     theme,
     description:
-      "Deployment branding from the production theme loader. Resource, session, and runtime states are simulated.",
+      "Deployment branding from the production theme loader. Navigation logos fit within 48 × 48 px; sign-in logos use 40 × 40 px. Resource, session, and runtime states are simulated.",
   };
 }
 

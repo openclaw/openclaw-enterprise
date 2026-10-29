@@ -163,7 +163,7 @@ test("Agent plugin and first deployment operations document conditional grants",
   }
 });
 
-test("credential source grants appear on the Agent and source operations that check them", async () => {
+test("Agent and CredentialSource operations document the permissions they check", async () => {
   const document = JSON.parse(await readFile(contractPath, "utf8"));
   const operations = new Map(
     contractOperations(document).map((operation) => [operation.operationId, operation]),
@@ -173,6 +173,22 @@ test("credential source grants appear on the Agent and source operations that ch
     assert.ok(operation, `${operationId} OpenAPI operation is missing`);
     return operation["x-openclaw-permissions"];
   };
+  const installationGrants = (operationId) =>
+    permissions(operationId).filter((permission) => permission.resourceKind === "installation");
+  for (const [operationId, condition] of [
+    ["createAgent", "gateway_managed_mode_disabled"],
+    ["validateAgentCreate", "gateway_managed_mode_disabled"],
+    ["updateAgent", "gateway_managed_mode_changed"],
+  ]) {
+    assert.deepEqual(
+      installationGrants(operationId),
+      [{ action: "administer", resourceKind: "installation", scope: "installation", condition }],
+      operationId,
+    );
+  }
+  // Deploy applies the mode already authorized on the saved draft.
+  assert.deepEqual(installationGrants("deployAgent"), []);
+
   const sourceOperate = (scope) => ({
     action: "operate",
     resourceKind: "credential_source",

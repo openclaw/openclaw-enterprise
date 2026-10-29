@@ -33,3 +33,41 @@ simulated API state; they do not prove persistence or live runtime behavior.
    missing file shows **Missing** in the tabs and phone picker. The browser
    regression also checks that a later missing-file response clears a previous
    **Needs attention** indicator.
+7. Open **Pages / Agent detail / New version in progress, then current**. Follow
+   its reset steps to check **Refresh deployment** with a stationary pointer
+   through completion and the delayed overview reread. Repeat with a click during
+   that reread: busy feedback is immediate and only one user refresh follows.
+
+8. In **New version queued**, fold **Deployment details**, then Tab to **Run
+   diagnostics for this version**. Routine polls keep the fold and the visible
+   focused button in place. Repeat expanded, at desktop and phone widths.
+   In **New version in progress, one status read fails**, open Deployment before
+   the failed poll. The fold stays as chosen through the transient error; the
+   selected record shows the error outside it, with one visible alert. Completion
+   is a terminal result and can expand the details. In **Deployment activity
+   unavailable**, fold the error and press **Refresh deployment**: the repeated
+   error is revealed again.
+   These stories simulate responses. The real Controller browser regression in
+   `tests/browser/console-deployment-activity.test.ts` additionally checks queued →
+   503 → queued, queued → running, a final 403/404, and a delayed success delivered
+   after refusal. Run it for the actual controls and response envelopes; Storybook
+   is not proof of those Controller responses.
+
+9. Open **Rejected credential, binding editor cannot deploy**
+   (`credentialRejectedBindingEditor`). Recovery must offer **Open Credentials**
+   and ask for Agent deploy, without instructing the actor to deploy. Follow the
+   link, check tab focus, and save the authentication source. Agent update,
+   Configuration read and source operate permit this binding edit; Secret update
+   is separate. Deployment remains unavailable. Repeat at phone width.
+10. Open **Rejected credential, hidden Secret updater cannot rebind**
+    (`credentialRejectedHiddenSecretUpdater`). Recovery and draft guidance must
+    explain Secret update for replacement and source operate for rebinding and
+    deployment. Configuration editing and Agent deploy do not supply that grant.
+    Recovery must not link to the disabled authentication editor or expose the
+    hidden Secret ID or name. Inspect Credentials through its tab and repeat at
+    phone width. This is simulated guidance and non-disclosure proof only: the
+    fixture's hidden-Secret flag also blocks its PATCH path. It cannot establish
+    that an actor with update but no read can replace a known Secret in place.
+
+These two previews require an owner build and walkthrough. Fixture permission
+answers are not IAM enforcement; saved feedback is not backend persistence proof.

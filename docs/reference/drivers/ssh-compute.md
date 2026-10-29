@@ -182,8 +182,9 @@ five seconds. Hooks must observe that signal. Only successful readiness writes
 Activation restarts the gateway and interrupts Agent service.
 
 The unit runs `<nodePath> <openclawPath> gateway --port <port>` as the Agent's private Unix account,
-with `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, and
-`OPENCLAW_GATEWAY_PORT`. It uses `Restart=always`, `RestartSec=2`, `SIGTERM`,
+with `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`,
+`OPENCLAW_GATEWAY_PORT`, and `OPENCLAW_NO_AUTO_UPDATE=1`, so OpenClaw does not
+check for or install its own updates. It uses `Restart=always`, `RestartSec=2`, `SIGTERM`,
 `TimeoutStopSec=30`, `NoNewPrivileges=true`, and `PrivateTmp=true`. The saved
 document owns logging; the Driver sets no `OPENCLAW_LOG_LEVEL`. Logs go to journald.
 

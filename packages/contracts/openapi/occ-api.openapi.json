@@ -872,7 +872,26 @@
                 "maxItems": 32,
                 "type": "array"
               },
-              "message": { "maxLength": 256, "minLength": 1, "type": "string" }
+              "message": { "maxLength": 256, "minLength": 1, "type": "string" },
+              "remainingResources": {
+                "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": { "minimum": 0, "type": "integer" },
+                    "ids": {
+                      "items": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "maxItems": 20,
+                      "type": "array"
+                    },
+                    "kind": { "maxLength": 64, "minLength": 1, "type": "string" }
+                  },
+                  "required": ["kind", "count", "ids"],
+                  "type": "object"
+                },
+                "maxItems": 7,
+                "type": "array"
+              }
             },
             "required": ["code", "message"],
             "type": "object"
@@ -11505,6 +11524,13 @@
                                   "additionalProperties": {},
                                   "type": "object"
                                 },
+                                "policyScopeByPlugin": {
+                                  "additionalProperties": {
+                                    "const": "enablement_only",
+                                    "type": "string"
+                                  },
+                                  "type": "object"
+                                },
                                 "toolDefaults": {
                                   "additionalProperties": false,
                                   "properties": {
@@ -11862,6 +11888,13 @@
                                 "driver": { "$ref": "#/components/schemas/def-1" },
                                 "driverPolicySchema": {
                                   "additionalProperties": {},
+                                  "type": "object"
+                                },
+                                "policyScopeByPlugin": {
+                                  "additionalProperties": {
+                                    "const": "enablement_only",
+                                    "type": "string"
+                                  },
                                   "type": "object"
                                 },
                                 "toolDefaults": {
@@ -13371,7 +13404,7 @@
         ]
       },
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.",
         "operationId": "createAgent",
         "parameters": [
           {
@@ -13986,6 +14019,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "administer",
+            "condition": "gateway_managed_mode_disabled",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
           { "action": "read", "resourceKind": "configuration", "scope": "requested" },
           {
             "action": "read",
@@ -16283,7 +16322,7 @@
     },
     "/namespaces/{namespaceId}/agents/validate": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false.",
         "operationId": "validateAgentCreate",
         "parameters": [
           {
@@ -16578,7 +16617,13 @@
         "summary": "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "administer",
+            "condition": "gateway_managed_mode_disabled",
+            "resourceKind": "installation",
+            "scope": "installation"
+          }
         ]
       }
     },
@@ -17428,7 +17473,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update.",
+        "description": "Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update.",
         "operationId": "updateAgent",
         "parameters": [
           {
@@ -18081,6 +18126,12 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "administer",
+            "condition": "gateway_managed_mode_changed",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
           { "action": "read", "resourceKind": "configuration", "scope": "requested" },
           {
             "action": "read",
@@ -22180,6 +22231,35 @@
                           "required": ["agent", "plugin", "tools"],
                           "type": "object"
                         },
+                        "credentialSlots": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": { "type": "string" },
+                              "label": { "type": "string" },
+                              "pluginId": { "type": "string" },
+                              "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                              "sources": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "name": { "type": "string" }
+                                  },
+                                  "required": ["id", "name"],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": ["pluginId", "releaseSha256", "id", "label", "sources"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "discoveryCredential": {
                           "anyOf": [
                             { "const": "required", "type": "string" },
@@ -22188,6 +22268,10 @@
                         },
                         "driver": { "$ref": "#/components/schemas/def-1" },
                         "driverPolicySchema": { "additionalProperties": {}, "type": "object" },
+                        "policyScopeByPlugin": {
+                          "additionalProperties": { "const": "enablement_only", "type": "string" },
+                          "type": "object"
+                        },
                         "toolDefaults": {
                           "additionalProperties": false,
                           "properties": {
@@ -30048,6 +30132,10 @@
                           "required": ["create"],
                           "type": "object"
                         },
+                        "delete": {
+                          "description": "Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion.",
+                          "type": "boolean"
+                        },
                         "installation": {
                           "additionalProperties": false,
                           "properties": {
@@ -30071,7 +30159,7 @@
                           "type": "object"
                         }
                       },
-                      "required": ["agents", "secrets", "installation"],
+                      "required": ["delete", "agents", "secrets", "installation"],
                       "type": "object"
                     },
                     "meta": {

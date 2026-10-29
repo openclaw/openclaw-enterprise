@@ -183,6 +183,28 @@ test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => 
   });
 });
 
+test("dedicated OpenClaw offers the pinned Google package and refuses unsupported selection fields", async () => {
+  const driver = new OCCPluginDriver();
+  const dedicated = context("dedicated");
+  const [google] = await driver.listCatalog({
+    ...dedicated,
+    harness: { ...dedicated.harness, id: "openclaw" },
+  });
+  assert.equal(google.id, "occ-plugin:google@1.0.0");
+  driver.validatePolicies({ [google.id]: { enabled: true } });
+  assert.throws(
+    () => driver.validatePolicies({ ...occSelection(), [google.id]: { enabled: true } }),
+    /must be the only plugin selected/,
+  );
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        [google.id]: { enabled: true, credentialSourceId: "src_personal" },
+      }),
+    /optional credential slot/,
+  );
+});
+
 test("OpenClaw plugin startup translation renders native install and enablement", () => {
   const enabled = openClawRuntimeArtifact(occSelection());
   assert.deepEqual(enabled.installs, [

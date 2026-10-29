@@ -41,11 +41,15 @@ const appliedPatches = [
   },
   {
     file: "openclaw-control-ui-browser-reconnect.patch",
-    sha256: "48dbcb32c453861b8d8facf9d1fd62003a994c234289270727eb41763b8b8d9c",
+    sha256: "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
     sha256: "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+  },
+  {
+    file: "openclaw-google-worker-placeholder.patch",
+    sha256: "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);

@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentRevision,
   Configuration,
+  InstallationCapabilities,
   PluginApprovers,
   PluginDeploymentWarning,
   PluginDriver,
@@ -31,9 +32,9 @@ import { configuredHarnessId } from "./harness-auth.mjs";
 
 type PluginAgent = Pick<
   Agent,
-  "id" | "configurationId" | "harnessAuth" | "plugins" | "pluginApprovers"
+  "id" | "configurationId" | "executionMode" | "harnessAuth" | "plugins" | "pluginApprovers"
 >;
-type PluginCapabilities = PluginDriver["policyCapabilities"] & {
+type PluginCapabilities = NonNullable<InstallationCapabilities["pluginPolicies"]> & {
   discoveryCredential: NonNullable<PluginDriver["discoveryCredential"]>;
 };
 
@@ -200,7 +201,10 @@ export function renderAgentPlugins(
   const hasBoundCredential =
     agent.harnessAuth?.method === "credential_source" ||
     (agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret");
-  const codex = configuredHarnessId(snapshot.values) === "codex";
+  const harnessId = configuredHarnessId(snapshot.values);
+  const codex = harnessId === "codex";
+  const dedicatedOpenClaw = harnessId === "openclaw" && agent.executionMode === "dedicated";
+  let openClawDriver = false;
   // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
   // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
   const apiKeyAuth = codex && agent.harnessAuth?.method === "api_key";
@@ -217,23 +221,27 @@ export function renderAgentPlugins(
     requestBody: (body) => body,
     canDiscover: () =>
       !updateDenied &&
-      codex &&
-      !apiKeyAuth &&
-      (catalogCredential === "none" || (catalogCredential === "required" && hasBoundCredential)),
-    canPrefetch: () => !updateDenied && codex && !apiKeyAuth && hasBoundCredential,
+      (openClawDriver
+        ? dedicatedOpenClaw && catalogCredential === "none"
+        : codex &&
+          !apiKeyAuth &&
+          (catalogCredential === "none" ||
+            (catalogCredential === "required" && hasBoundCredential))),
+    canPrefetch: () => openClawDriver || hasBoundCredential,
     isPending: () => pending,
     unavailableMessage: () =>
       // A caller who may not update the Agent is not told to edit its selections (finding 2436).
       updateDenied
         ? "Plugin browsing needs Agent update access."
-        : !codex
-          ? "Plugin browsing requires the Codex harness. You can still edit existing plugin selections."
-          : apiKeyAuth
-            ? "Plugin browsing is unavailable with API-key authentication."
-            : !catalogCapabilityChecked
-              ? "Checking plugin catalog availability…"
-              : catalogCapabilityError
-                ? "Plugin browsing needs the plugin capabilities, which could not be read. Refresh this page, or edit existing plugin selections."
+        : !catalogCapabilityChecked
+          ? "Checking plugin catalog availability…"
+          : catalogCapabilityError
+            ? "Plugin browsing needs the plugin capabilities, which could not be read. Refresh this page, or edit existing plugin selections."
+            : !codex || openClawDriver
+              ? "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections."
+              : // Only the Codex Plugin Driver's catalog depends on Codex auth (finding 2791).
+                apiKeyAuth
+                ? "Plugin browsing is unavailable with API-key authentication."
                 : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
@@ -300,7 +308,7 @@ export function renderAgentPlugins(
     "section",
     { className: "agent-card" },
     intro,
-    ...(agent.harnessAuth?.method === "credential_source"
+    ...(codex && agent.harnessAuth?.method === "credential_source"
       ? [
           statusBlock(
             "info",
@@ -510,6 +518,7 @@ export function renderAgentPlugins(
         if (context.isCurrent()) {
           const capabilities = response as PluginCapabilities;
           catalogCredential = capabilities.discoveryCredential;
+          openClawDriver = capabilities.driver?.implementation === "occ/openclaw-plugin";
           catalogCapabilityChecked = true;
           discovery.fields.setCapabilities(capabilities);
           discovery.update();

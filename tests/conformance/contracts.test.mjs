@@ -30,6 +30,7 @@ import {
   validateRuntimeFailureEvidence,
 } from "../../packages/occ/src/state/controller-work.ts";
 import {
+  assertConfigurationSchema,
   validateConfiguration,
   requireConfiguration,
   CONFIGURATION_KINDS,
@@ -1015,6 +1016,22 @@ test("configuration diagnostics collapse extra-field noise without accepting fal
     assert.equal(result.success, false);
     assert.equal(result.error.details[0].message, "Configuration does not satisfy boolean.");
   }
+});
+
+// Schema checks are cached per process by full JSON text: a schema that passed once and
+// then changes must be checked again, never admitted by object identity.
+test("a Driver configuration schema that changes after a passing check is checked again", () => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: { endpoint: { type: "string" } },
+  };
+  assertConfigurationSchema(schema);
+  assertConfigurationSchema(schema);
+  schema.properties.endpoint.type = "not-a-schema-type";
+  assert.throws(() => assertConfigurationSchema(schema), /Unsupported Driver configuration schema/);
+  schema.properties.endpoint.type = "string";
+  assertConfigurationSchema(schema);
 });
 
 test("configuration admission retains original values while isolating semantic callback references", () => {

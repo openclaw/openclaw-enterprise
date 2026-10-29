@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import {
   isCredentialLine,
   maskPrivateKeyLines,
@@ -15,6 +16,46 @@ const logLineChars = 400;
 const maxPods = 5;
 const maxLogContainers = 6;
 const credentialLineMarker = "[redacted credential-bearing line]";
+
+export async function assertGatewayPolicyRunSucceeded(client, outcome, protectedUpdate) {
+  if (outcome.status === "ok") {
+    return;
+  }
+
+  const details = [];
+  if (protectedUpdate) {
+    const { attempt, before } = protectedUpdate;
+    let state = "unavailable";
+    try {
+      const after = await client.request("cron.get", { id: before.id }, { timeoutMs: 3_000 });
+      state = isDeepStrictEqual(after, before) ? "unchanged" : "changed";
+    } catch {
+      // A failed diagnostic read must preserve the original terminal failure.
+    }
+    details.push(`attempt=${attempt}`, `job=${state}`);
+  }
+  // A provider can put arbitrary text in error, stopReason, or terminalReply.
+  // Preserve only bounded Gateway facts. Job state alone cannot prove a denial.
+  if (typeof outcome.error === "string" && outcome.error.length > 0) {
+    details.push("errorText=present");
+  }
+  for (const [field, known] of [
+    ["stopReason", ["error", "timeout", "aborted", "restart", "superseded", "rpc", "stop"]],
+    ["timeoutPhase", ["queue", "preflight", "provider", "post_turn", "gateway_draining"]],
+  ]) {
+    if (outcome[field] !== undefined) {
+      details.push(`${field}=${known.includes(outcome[field]) ? outcome[field] : "other"}`);
+    }
+  }
+  if (typeof outcome.providerStarted === "boolean") {
+    details.push(`providerStarted=${outcome.providerStarted}`);
+  }
+  assert.equal(
+    ["pending", "timeout", "error"].includes(outcome.status) ? outcome.status : "other",
+    "ok",
+    `Gateway policy run ${outcome.runId} must succeed${details.length ? ` (${details.join(", ")})` : ""}`,
+  );
+}
 
 function containerState(state, secrets) {
   const message = (text) =>

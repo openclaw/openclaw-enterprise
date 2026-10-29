@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { admittedConfiguration } from "./admitted-configuration.mjs";
 import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
@@ -411,7 +411,7 @@ async function createKubernetesConfiguredAgent(pool, api, namespaceId, name, val
 }
 
 function admitted(values) {
-  return admitLoggingConfiguration(values, "info");
+  return admittedConfiguration(values);
 }
 
 async function startController(context, { kubernetesDrivers = false } = {}) {

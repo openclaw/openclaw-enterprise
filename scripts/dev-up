@@ -267,11 +267,37 @@ if [ -z "$container_engine" ] && [ "$requested_container_engine" != docker ] && 
 
     compose_file_selected=0
     if [ "${#compose_args[@]}" -gt 0 ]; then
+      podman_compose_args=()
+      expect_file_value=0
       for arg in "${compose_args[@]}"; do
-        case "$arg" in
-          -f | -f?* | --file | --file=*) compose_file_selected=1 ;;
-        esac
+        if [ "$expect_file_value" -eq 1 ]; then
+          [ -n "$arg" ] || fail "configuration" "--file requires a Compose file path"
+          expect_file_value=0
+        else
+          case "$arg" in
+            -f | --file)
+              compose_file_selected=1
+              expect_file_value=1
+              ;;
+            -f?*)
+              # Podman can read an "h" in -fFILE as help. Keep the value attached
+              # to --file so the provider also accepts filenames starting with "-".
+              compose_file_selected=1
+              file_value="${arg#-f}"
+              file_value="${file_value#=}"
+              [ -n "$file_value" ] || fail "configuration" "--file requires a Compose file path"
+              arg="--file=$file_value"
+              ;;
+            --file=*)
+              compose_file_selected=1
+              [ -n "${arg#--file=}" ] || fail "configuration" "--file requires a Compose file path"
+              ;;
+          esac
+        fi
+        podman_compose_args+=("$arg")
       done
+      [ "$expect_file_value" -eq 0 ] || fail "configuration" "--file requires a Compose file path"
+      compose_args=("${podman_compose_args[@]}")
     fi
     if [ "$compose_file_selected" -eq 0 ]; then
       compose_file_args=()
