@@ -179,6 +179,7 @@ export const DeployAgentPrincipalDenied = {
   ...story("deployAgentPrincipalDenied"),
   name: "Deployment denied for the Agent's service principal",
 };
+export const DeploySandboxPolicyReadDenied = story("deploySandboxPolicyReadDenied");
 
 export const RepositoryEditor = story("repositoryEditor");
 export const RepositoryEditorUpdateDenied = story("repositoryEditorUpdateDenied");
