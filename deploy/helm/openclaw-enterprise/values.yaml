@@ -146,14 +146,6 @@ backend:
     # Mount a dedicated administrator mTLS Secret only in API and worker.
     # Keys: ca.crt, tls.crt, tls.key. Configure the Backend paths separately.
     clientSecretName: ""
-  chatgpt:
-    enabled: false
-    secretName: occ-chatgpt-admin
-    key: admin-key
-    # IPv4 /32 destination seen by the pod network for api.chatgpt.com:443.
-    # This permits network egress; it does not configure a forward proxy.
-    providerCidr: ""
-  openshell:
     # Mounts the OIDC client secret for an external OpenShell gateway connection
     # into the API and worker Deployments. The Installation's Backend references
     # the exact file at oidcFilePath; empty disables the mount, and the openshell
@@ -161,6 +153,13 @@ backend:
     oidcSecretName: ""
     oidcSecretKey: client-secret
     oidcFilePath: /etc/openclaw/openshell/client-secret
+  chatgpt:
+    enabled: false
+    secretName: occ-chatgpt-admin
+    key: admin-key
+    # IPv4 /32 destination seen by the pod network for api.chatgpt.com:443.
+    # This permits network egress; it does not configure a forward proxy.
+    providerCidr: ""
 
 repositoryCredentials:
   # Deploy the native repository sender. Select repository.nativeSender in Installation YAML.
