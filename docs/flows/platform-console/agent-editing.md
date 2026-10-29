@@ -239,6 +239,8 @@ grant leaves Configuration saved; a 403 names the Installation administrator, wh
 says access was not verified until **Reload draft**. An administrator's console checks every
 bound Secret's grant, as deployment does; Deploy waits for those reads and rechecks before its
 POST, and a save or Retry during one reads again before naming Deploy.
+`credential-access.mjs:credentialOperateGrants` reads the Namespace roles, then the access
+bindings, so a person whose administration ended after the page loaded gets one audited `403`.
 `agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
 Driver does; pickers appear only for standard keys. A 400 that
 `agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH

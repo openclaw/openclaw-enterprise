@@ -1376,6 +1376,118 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
   await backThreeTimes(2);
 });
 
+// The IAM policy reads among `requests`, without their Namespace prefix.
+function iamReads(requests) {
+  return requests
+    .filter(({ path }) => path.includes("/iam/"))
+    .map(({ method, path }) => `${method} ${path.replace(/^\/namespaces\/[^/]+/, "")}`);
+}
+
+// Finding 2919. An Installation administrator's Credentials tab reads whether the Agent may use
+// its harness authentication Secret, from the Namespace's roles and access bindings. The page
+// confirms her administration when it loads, and she opens Credentials later. Revoked in between,
+// her first open was refused, and audited, twice: the grant read sent both lists at once. It reads
+// one list at a time, so the revoke costs one audited refusal and the bindings are never sent.
+test("A first Credentials open after a revoke reads the grant policy once, audited once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked credentials", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Revoked model key", "hidden-model");
+  const agent = await fixture.createAgent(namespace.id, "Credentials Agent", nativeValues("x"), {
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  const account = await fixture.createNamespaceMember("revoked-creds", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
+    account.credentials,
+  );
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version", exact: true }));
+  await waitForIdleFetches(page);
+  // The page load's probe confirmed administration, so the console sends the grant read.
+  assert.equal(requests.filter(({ path }) => path === "/observability").length, 1);
+
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", selected: true }).waitFor();
+  await page.locator("#harness-auth-method").waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+  assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
+});
+
+// Finding 2919, bound Slack Secrets. An administrator's console reads each bound Slack Secret's
+// grant from the same two lists. A revoke that lands while that read is in flight was refused,
+// and audited, twice; reading one list at a time costs one refusal and sends no bindings read.
+test("A bound Slack Secret grant read after a revoke is refused and audited once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked Slack grants", { ready: true });
+  const secretBindings = {};
+  for (const token of ["app", "bot"]) {
+    const secret = await fixture.createSecret(
+      namespace.id,
+      `Revoked Slack ${token} token`,
+      `hidden-${token}-token`,
+    );
+    secretBindings[`SLACK_${token.toUpperCase()}_TOKEN`] = {
+      source: secret.ref,
+      delivery: { type: "env" },
+    };
+  }
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Slack grants Agent",
+    nativeValues("slack-grants", { harnessId: "codex", channels: { slack } }),
+    { executionMode: "dedicated", secretBindings },
+  );
+  const account = await fixture.createNamespaceMember("revoked-slack", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  // The browser holds both policy reads, so the API answers them only after the revoke.
+  const iam = `${fixture.origin}/namespaces/${namespace.id}/iam`;
+  const roles = await holdRequests(t, page, `${iam}/roles`, { once: true });
+  const bindings = await holdRequests(t, page, `${iam}/access-bindings`, { once: true });
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", "channels")),
+    account.credentials,
+  );
+  await roles.requested;
+  revoke();
+  roles.release();
+  bindings.release();
+  await waitForIdleFetches(page);
+  // Only the grant read's IAM denials count: the bound Secrets' metadata reads, sent alongside
+  // it on the same page load, are a separate case (finding 2920).
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink, /^openclaw\.iam\./).map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+  assert.deepEqual(iamReads(requests), ["GET /iam/roles"]);
+});
+
 // Finding 2637. A Restriction refuses an administrator's bound Secret read, and the permission
 // answer that would confirm her administration fails (here a 503). A failed answer is unknown, not
 // a refusal: she keeps the Observability link and the Access tab, and the next page load asks again.
