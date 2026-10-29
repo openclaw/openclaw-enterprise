@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-28
-last_updated_session: authoring-run/b0d7dda7-f5c2-4314-a2ae-bd0c8cdfbd6f
+updated: 2026-10-29
+last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
 ---
 
 # Agent Plugin Deployment Flow
@@ -204,7 +204,8 @@ describe the generated bridge.
 <!-- Internal preparation threads one explicit RPC caller through these reads,
 writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
 
-After `plugin/list`, `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
+After `plugin/search` resolves each selected ID,
+`runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
 selections concurrently before and after installs. Batches preserve order and drain
 before retries and final verification; writes stay sequential.
 `codexRuntimeArtifact` uses `detail.apps`, excluding `appTemplates`.

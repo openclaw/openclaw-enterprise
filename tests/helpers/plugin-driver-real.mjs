@@ -2814,6 +2814,40 @@ export async function createPluginDriverRealFixture(
         };
       }),
       workerEvents: sanitizedPluginProofWorkerEvents(workerEvents, revisionId),
+      runtime: await safeDiagnostic(async () => {
+        const pods = (await resources("pods", gatewayPlacement)).filter(
+          (pod) => pod.metadata.labels?.["openclaw.dev/agent"] === agent.id,
+        );
+        const privateDiagnostics = await mkdtemp(join(tmpdir(), "occ-plugin-proof-failure-"));
+        // Keep raw native logs private and outside the fixture directory that cleanup removes.
+        for (const pod of pods) {
+          try {
+            const logs = await kubectl(
+              "logs",
+              pod.metadata.name,
+              "--namespace",
+              gatewayPlacement,
+              "--all-containers=true",
+              "--tail=200",
+            );
+            await writeFile(join(privateDiagnostics, `${pod.metadata.name}.log`), logs, {
+              mode: 0o600,
+            });
+          } catch {
+            // Preserve the deployment failure when a removed Pod has no logs.
+          }
+        }
+        return {
+          privateDiagnostics,
+          pods: pods.map((pod) => ({
+            name: pod.metadata.name,
+            revisionId: pod.metadata.labels?.["openclaw.dev/revision"],
+            role: pod.metadata.labels?.["openclaw.dev/workload-role"],
+            phase: pod.status?.phase,
+            ready: isPodReady(pod),
+          })),
+        };
+      }),
     };
   }
 

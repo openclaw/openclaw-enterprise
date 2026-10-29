@@ -1905,12 +1905,7 @@ async function readCodexPluginDetails(readParamsList, read = (params) => codexAp
   return details;
 }
 
-async function readCodexSelectionParams(selections, request) {
-  const listed = await request("plugin/list", {});
-  return pluginRuntimeTranslator.codexReadParamsForSelections(selections, listed);
-}
-
-async function searchCodexSelectionParams(selections, request) {
+async function searchCodexSelectionParams(selections, request, deadline) {
   const resolved = [];
   for (const selection of pluginRuntimeTranslator.codexSearchPlan(selections)) {
     let cursor;
@@ -1924,6 +1919,7 @@ async function searchCodexSelectionParams(selections, request) {
       if (typeof response.nextCursor !== "string" || response.nextCursor.length === 0) {
         throw new Error("Codex plugin catalog did not contain the selected plugin.");
       }
+      if (Date.now() >= deadline) throw new Error("Codex plugin search deadline expired.");
       if (seen.has(response.nextCursor)) throw new Error("Codex plugin search repeated its cursor.");
       cursor = response.nextCursor;
       seen.add(cursor);
@@ -1932,10 +1928,10 @@ async function searchCodexSelectionParams(selections, request) {
   return resolved;
 }
 
-async function installCodexSelectionSet(selections, failures, request, resolveSelections = readCodexSelectionParams) {
+async function installCodexSelectionSet(selections, failures, request, deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS) {
   if (Object.keys(selections).length === 0) return { successfulPluginIds: [], failures: [] };
   const enabledPluginIds = enabledCodexSelectionIds(selections);
-  const readParamsList = await resolveSelections(selections, request);
+  const readParamsList = await searchCodexSelectionParams(selections, request, deadline);
   const resolvedDetails = await readCodexPluginDetails(readParamsList, (params) => request("plugin/read", params));
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
@@ -2126,7 +2122,7 @@ async function installCodexPlugins(runtime, failures = [], request) {
   let result = { successfulPluginIds: [], failures };
   while (Date.now() < deadline) {
     try {
-      result = await installCodexSelectionSet(selections, failures, request);
+      result = await installCodexSelectionSet(selections, failures, request, deadline);
       lastError = undefined;
       break;
     } catch (error) {
@@ -4261,7 +4257,7 @@ ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_re
     try {
       await withCodexPluginStdio(codexExecutable(), nativeArguments,
         { cwd: workspaceDirectory, env: codexChildEnvironment() }, (request) =>
-          installCodexSelectionSet(pluginRuntime.manifest.selections, [], request, searchCodexSelectionParams));
+          installCodexSelectionSet(pluginRuntime.manifest.selections, [], request));
       logStartupPhase("plugin-install", preparationStartedAt);
     } catch (error) {
       logStartupPhase("plugin-install", preparationStartedAt, "failed", codexPluginStartupFailureCode(error));

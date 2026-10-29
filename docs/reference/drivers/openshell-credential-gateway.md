@@ -115,14 +115,11 @@ Codex PATs (personal or service-account) use `CODEX_ACCESS_TOKEN` at these HTTPS
 - `POST /backend-api/ps/apps/batch` on `chatgpt.com` for app metadata lookup.
 - `POST /backend-api/ps/mcp` on `chatgpt.com` for native hosted-app MCP transport.
 
-For plugin rules, `*` matches one path segment; GET also permits HEAD. This
-source-wide allowance applies to every Agent using the source, not only one
-Agent's selected plugin IDs. It excludes nested sharing and suggestions routes
-and uninstall mutations. Package downloads require separate credential-free
-egress. Other routes remain denied.
-
-The MCP allowance does not filter app IDs or tool names and is not read-only.
-Managed Agent app/tool selections and approval settings still govern native use.
+`*` matches one path segment; GET includes HEAD. These source-wide routes apply
+to all Agents using the source. The MCP rule does not filter apps or tools or
+enforce read-only access; native managed policy enforces Agent selections and
+approvals. Direct Plugin Service sharing, suggestions and uninstall routes remain
+denied. Package downloads use separate credential-free egress. Other routes remain denied.
 
 The Harness stores only an opaque `personal_access_token`. Readiness requires
 native login and model execution
