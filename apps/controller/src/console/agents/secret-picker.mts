@@ -14,9 +14,11 @@ import {
   dismissOnBackdrop,
   element,
   field as formField,
+  isUnavailable,
   revealStatus,
   setFieldError,
   setStatusTone,
+  setUnavailable,
   statusBlock,
   validateFields,
 } from "../dom.mjs";
@@ -727,8 +729,13 @@ export function createSecretReferenceField({
   }
 
   function updateValidity() {
-    input.required = requiredWhenEnabled;
-    input.disabled = manuallyDisabled || bindingPending;
+    if (listedHint && !staged) {
+      status.textContent = listedStatus();
+    }
+    // A disabled field stays in the Tab order while its status says what is bound (finding 2899),
+    // and, as a natively disabled one, is not required.
+    setUnavailable(input, manuallyDisabled || bindingPending, manuallyDisabled ? status : null);
+    input.required = requiredWhenEnabled && !manuallyDisabled;
     const missing = `${labelNode.textContent.trim() || label} is required.`;
     input.setCustomValidity(
       requiredWhenEnabled && !manuallyDisabled && currentSecretId() === null ? missing : "",
@@ -742,9 +749,6 @@ export function createSecretReferenceField({
     }
     if (manuallyDisabled) {
       closeListbox({ restoreSelection: true });
-    }
-    if (listedHint && !staged) {
-      status.textContent = listedStatus();
     }
   }
 
@@ -844,7 +848,7 @@ export function createSecretReferenceField({
     | { kind: "secret"; secret: SecretMetadata };
 
   function selectOption(option: SecretOption) {
-    if (!isCurrent() || manuallyDisabled || bindingPending || input.disabled) {
+    if (!isCurrent() || manuallyDisabled || bindingPending || isUnavailable(input)) {
       return;
     }
     if (option.kind === "refresh") {
@@ -1091,7 +1095,7 @@ export function createSecretReferenceField({
       !context.request ||
       !isCurrent() ||
       loadingSecrets ||
-      (explicit && (manuallyDisabled || bindingPending || input.disabled))
+      (explicit && (manuallyDisabled || bindingPending || isUnavailable(input)))
     ) {
       return;
     }
@@ -1197,7 +1201,7 @@ export function createSecretReferenceField({
     node instanceof Node && listbox.contains(node);
   // Pressing the list's scrollbar can still focus it; hand focus back without closing the list.
   listbox.addEventListener("focus", () => {
-    if (input.disabled) {
+    if (isUnavailable(input)) {
       closeListbox({ restoreSelection: true });
     } else {
       input.focus();

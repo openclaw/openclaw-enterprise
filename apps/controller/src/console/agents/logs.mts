@@ -10,10 +10,10 @@ import type {
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import {
   button,
-  describeDisabled,
   element,
   replaceChildrenIfChanged,
   setText,
+  setUnavailable,
   statusBlock,
   withRequestId,
 } from "../dom.mjs";
@@ -296,6 +296,12 @@ export function renderAgentLogs(
   // Status refreshes rebuild the picker enabled-state. A download still in flight
   // must stay disabled across those refreshes (issue 3387).
   let downloadPending = false;
+  // Whether each log control is unavailable; describeDeniedControls applies it.
+  const unavailable = new Map<HTMLButtonElement | HTMLInputElement | HTMLSelectElement, boolean>(
+    [sourceSelect, previous, includeDebug, followButton, refreshButton, downloadButton].map(
+      (control) => [control, true],
+    ),
+  );
   const hiddenLevels = new Set<string>();
   const levelChips = LEVELS.map((level) =>
     button(
@@ -465,17 +471,10 @@ export function renderAgentLogs(
   }
 
   // A refused log read disables every log control; each is described by the refusal that says
-  // why (finding D749).
+  // why (finding D749) and stays in the Tab order while it shows (finding 2899).
   function describeDeniedControls() {
-    for (const control of [
-      sourceSelect,
-      previous,
-      includeDebug,
-      followButton,
-      refreshButton,
-      downloadButton,
-    ]) {
-      describeDisabled(control, logsDenied ? logError : null);
+    for (const [control, off] of unavailable) {
+      setUnavailable(control, off, logsDenied ? logError : null);
     }
   }
 
@@ -619,16 +618,16 @@ export function renderAgentLogs(
       : statusDenied && lastStream !== null && lastStream.source === source?.id
         ? lastStream.restartCount
         : 0;
-    previous.disabled = logsDenied || restarts === 0;
-    if (previous.disabled) {
+    unavailable.set(previous, logsDenied || restarts === 0);
+    if (unavailable.get(previous)) {
       previous.checked = false;
     }
     const readable = !logsDenied && readableSelection();
-    sourceSelect.disabled = logsDenied || description.sources.length === 0;
-    includeDebug.disabled = logsDenied || description.sources.length === 0;
-    refreshButton.disabled = !readable;
-    downloadButton.disabled = downloadPending || !readable;
-    followButton.disabled = !readable || previous.checked;
+    unavailable.set(sourceSelect, logsDenied || description.sources.length === 0);
+    unavailable.set(includeDebug, logsDenied || description.sources.length === 0);
+    unavailable.set(refreshButton, !readable);
+    unavailable.set(downloadButton, downloadPending || !readable);
+    unavailable.set(followButton, !readable || previous.checked);
     describeDeniedControls();
   }
 
@@ -899,7 +898,8 @@ export function renderAgentLogs(
     const query = logQuery(source, pod);
     query.set("download", "true");
     downloadPending = true;
-    downloadButton.disabled = true;
+    unavailable.set(downloadButton, true);
+    describeDeniedControls();
     try {
       const text = await read(`${base}/logs?${query}`, { responseType: "text" });
       if (!current() || logsDenied) {
@@ -939,7 +939,8 @@ export function renderAgentLogs(
       showLogReadError(error, source, { manualRead: true });
     } finally {
       downloadPending = false;
-      downloadButton.disabled = logsDenied || !readableSelection();
+      unavailable.set(downloadButton, logsDenied || !readableSelection());
+      describeDeniedControls();
     }
   }
 

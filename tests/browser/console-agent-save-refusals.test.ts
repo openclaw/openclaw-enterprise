@@ -205,7 +205,8 @@ test("a member who can only read the Configuration sees the collaboration and sa
 });
 
 // Every field a tab's Save would write is disabled or inert: an edit no Save can keep would
-// only block leaving the tab or Deploy (finding 1539).
+// only block leaving the tab or Deploy (finding 1539). An unavailable field with its reason is
+// aria-disabled and ignores edits (finding 2899).
 const editableFields = (page: Page, scope = ".agent-card") =>
   page.locator(scope).evaluateAll((cards) =>
     cards
@@ -220,6 +221,7 @@ const editableFields = (page: Page, scope = ".agent-card") =>
         (field) =>
           field.type !== "hidden" &&
           !field.disabled &&
+          field.getAttribute("aria-disabled") !== "true" &&
           !("readOnly" in field && field.readOnly) &&
           !field.closest("[inert]"),
       )

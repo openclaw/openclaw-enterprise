@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-10-29
-last_updated_session: authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25
+last_updated_session: authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816
 ---
 
 # Platform console request flow
@@ -169,6 +169,8 @@ not row reads. The newest readable revisions page supplies each row;
 `deniedReadsFor` retains 403s. Reused deployment cells show **Reading deployment…**
 after 250 ms, for at least 150 ms, before fresh results. Back/refocus focuses the
 cell, not the old version link. Unfinished/failed row reads resume without blocking reuse.
+A search cancels the unfinished reads of rows it hides (`collection.mts:retireHidden`); a row
+shown again reads once.
 
 Changed users or session keys clear retained views and drafts before private
 reads. Missing sessions open login; failed reads offer Retry. The
@@ -368,6 +370,8 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-10-29 22:18: Cancel the unfinished row reads of Agents a search hides. (authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816 - 225ce0ebaf1dd14c01c5c50ccf8ac420e13c72a4)
+
 - 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
 
 - 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
@@ -378,11 +382,5 @@ gateway startup and file availability.
 - 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
 
 - 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
-
-- 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
-
-- 2026-10-27 14:42: Trace Namespace deletion and recovery. (authoring-run/20fc7b4c-0501-4d3e-9f0c-16a3fd016866 - 0402f1cf1)
-
-- 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
