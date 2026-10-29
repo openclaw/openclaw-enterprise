@@ -34,9 +34,9 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
-  accessibleDescription,
   apiRequests,
   detailUrl,
+  expectReachableReason,
   fileBrowser,
   holdRequests,
   login,
@@ -1349,7 +1349,8 @@ test("an operator without administer sees status but no log text and is never re
   await page.locator(".runtime-pod").getByRole("heading", { name: "Gateway" }).waitFor();
   await page.getByText(LOG_TEXT_DENIED).waitFor();
   assert.equal(await page.getByText("operator must not see this").count(), 0);
-  // Every log control is disabled and described by the refusal beside it (finding D749).
+  // Every log control is disabled and described by the refusal beside it (finding D749), and
+  // Tab still reaches it (finding 2899).
   const refusal = await page.locator(".log-error").textContent();
   assert.ok(refusal?.startsWith(LOG_TEXT_DENIED));
   for (const control of [
@@ -1361,7 +1362,7 @@ test("an operator without administer sees status but no log text and is never re
     page.getByRole("button", { name: "Download" }),
   ]) {
     assert.equal(await control.isDisabled(), true);
-    assert.equal(await accessibleDescription(control), refusal);
+    await expectReachableReason(page, control, refusal.trim());
   }
   // The permission answer says log text is denied, so the read the API would refuse and audit
   // is never sent (finding D758).
