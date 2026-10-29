@@ -329,6 +329,7 @@ import {
 import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 import {
   refuseStoredConfigurationSettings,
+  refuseUndeployableConfigurationValues,
   validateConfigurationSettings,
 } from "./configuration-settings.ts";
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
@@ -10288,12 +10289,11 @@ export class OpenClawController {
       // The model provider settings, then the Compute rules, as on Configuration save, so a
       // stored Configuration that predates a rule gets the message its next save would. A
       // baseUrl or api the runtime cannot use would otherwise fail later, as an unexplained
-      // model probe failure (finding 1549).
-      validateModelProviderSettings(configuration.values);
-      // Native workspace setup refuses an invalid bootstrap setting only after the deployment
-      // starts (finding 2699); the Gateway refuses a setting the pinned OpenClaw retired and does
-      // not start (finding 2709), and fails every turn in OpenClaw's sandbox (finding 2767).
-      refuseStoredConfigurationSettings(configuration.values);
+      // model probe failure (finding 1549). Native workspace setup refuses an invalid bootstrap
+      // setting only after the deployment starts (finding 2699); the Gateway refuses a setting
+      // the pinned OpenClaw retired and does not start (finding 2709), and fails every turn in
+      // OpenClaw's sandbox (finding 2767). The upgrade preflight runs the same values-only rules.
+      refuseUndeployableConfigurationValues(configuration.values);
       this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {

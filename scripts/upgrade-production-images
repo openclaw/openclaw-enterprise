@@ -582,10 +582,10 @@ preflight_startup() {
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   if [[ -s "${agent_drafts:-}" ]]; then
     drafts="$evidence_dir/inventory/agent-drafts.json.gz"
-    node scripts/upgrade-startup-preflight.mjs drafts "$agent_drafts" "$drafts" >/dev/null ||
-      drafts_status=$?
+    node scripts/upgrade-startup-preflight.mjs drafts "$agent_drafts" "$candidate_installation" \
+      "$drafts" >/dev/null || drafts_status=$?
     if ((drafts_status == 3)); then
-      warn "the recorded Agents' drafts are too large for the startup preflight, so it does not check them; OCC checks each draft when the upgrade deploys it."
+      warn "the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it."
       drafts=
     elif ((drafts_status != 0)); then
       die "cannot gather the recorded Agents' drafts for the startup preflight; no OCC writer was stopped."

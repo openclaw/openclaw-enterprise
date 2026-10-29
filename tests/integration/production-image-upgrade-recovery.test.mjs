@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -197,6 +197,27 @@ async function runPreflight(root, cwd, state, pod) {
     }
     mounts.push([directory, mount.mountPath]);
   }
+  const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
+  if (state.olderDraftRules) {
+    // An image built before refuseUndeployableConfigurationValues existed: its
+    // configuration-settings module has every other export but not that one. The stand-in
+    // module re-exports the real one; its own export shadows the new rule.
+    const settings = "packages/occ/src/configuration-settings.ts";
+    const current = "configuration-settings-current.ts";
+    const older = join(work, "configuration-settings.ts");
+    writeFileSync(
+      older,
+      `export * from ${JSON.stringify(image ? `./${current}` : join(cwd, settings))};\n` +
+        "export const refuseUndeployableConfigurationValues = undefined;\n",
+    );
+    chmodSync(older, 0o644);
+    // In the image the stand-in replaces the module for every importer, so the real module
+    // moves beside it.
+    if (image) {
+      mounts.push([join(cwd, settings), `/app/packages/occ/src/${current}`]);
+    }
+    mounts.push([older, `/app/${settings}`]);
+  }
   // Kubernetes expands $(VAR) in literal values from earlier variables and turns $$ into $.
   const expanded = {};
   const env = (container.env ?? [])
@@ -208,7 +229,6 @@ async function runPreflight(root, cwd, state, pod) {
       expanded[item.name] = value;
       return { name: item.name, value };
     });
-  const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
   const local = (value) =>
     mounts
       .reduce((current, [source, target]) => current.split(target).join(source), value)
@@ -1110,6 +1130,7 @@ async function fixture(
     inventoryNamespaces = null,
     names = null,
     configurationValues = null,
+    olderDraftRules = false,
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
@@ -1268,6 +1289,7 @@ async function fixture(
     inventoryNamespaces,
     names,
     configurationValues,
+    olderDraftRules,
     version: 1,
     helmStatus: "deployed",
     api: 1,
@@ -3487,6 +3509,154 @@ for (const preflightOnly of [true, false]) {
     );
   });
 }
+
+// Deploy admission checks the model provider settings before the other stored-value rules
+// (finding 1549), so the preflight runs them too: a baseUrl the runtime cannot use stops the
+// rehearsal with deploy's message instead of the fleet deploy (finding 2816).
+test("preflight-only refuses a draft's model provider setting that deploy refuses", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    agent: true,
+    chart: { installation: (installation) => installation },
+    configurationValues: {
+      cfg_agt_test: { models: { providers: { openai: { baseUrl: "ftp://models.example/v1" } } } },
+    },
+  });
+  await assert.rejects(f.run("--preflight-only"), (error) => {
+    assert.match(
+      error.stderr,
+      /refuses to deploy 1 recorded Agent draft\(s\):\n {2}- Agent agt_test "Mail triage" in Namespace ns_test: Configuration field \/models\/providers\/openai\/baseUrl must be an absolute http or https URL\.\n/,
+    );
+    return true;
+  });
+  await assertStoppedBeforeWriters(f);
+});
+
+// The degraded draft-check paths. Each one either warns and lets OCC check the draft at deploy,
+// as before finding 2809, or stops before any writer stops; none reports drafts as checked
+// when they were not (finding 2815).
+
+// An image built before the shared rule cannot check drafts. Its preflight Pod runs and says
+// so; the helper warns and the upgrade deploys, so this draft, which a newer image would
+// refuse, is refused only by the deploy.
+test("an image without the draft rules warns, and the upgrade continues", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    agent: true,
+    chart: { installation: (installation) => installation },
+    olderDraftRules: true,
+    configurationValues: { cfg_agt_test: { security: { preset: "corporate" } } },
+  });
+  const result = await f.run();
+  assert.match(
+    result.stderr,
+    /upgrade-production-images: the selected controller image cannot check Agent drafts before the upgrade; OCC checks each draft when the upgrade deploys it\./,
+  );
+  const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8");
+  assert.match(log, /^agent-draft-check-unavailable$/m);
+  assert.doesNotMatch(log, /^agent-drafts-accepted$/m);
+  const state = await f.state();
+  assert.equal(state.dispatches, 1);
+  assert.deepEqual(state.preflight.secrets, {});
+});
+
+// The Secret's values may total 1 MiB. Drafts that do not fit beside the candidate
+// Installation are not sent: the helper warns and the preflight goes on. Random text does not
+// compress, so the drafts stay over 1 MiB gzipped.
+test("drafts that do not fit in the preflight Secret warn, and the preflight passes", async (t) => {
+  const f = await fixture(t, {
+    agent: true,
+    configurationValues: {
+      cfg_agt_test: {
+        plugins: {
+          entries: { knowledge: { config: { note: randomBytes(1100 * 1024).toString("base64") } } },
+        },
+      },
+    },
+  });
+  const result = await f.run("--preflight-only");
+  assert.match(result.stdout, /Preflight passed/);
+  assert.match(
+    result.stderr,
+    /upgrade-production-images: the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it\./,
+  );
+  // Neither the Secret nor the API Pod carried the drafts.
+  const api = JSON.parse(await readFile(join(f.evidence, "preflight-api-pod.json"), "utf8"));
+  assert.ok(!api.spec.volumes.some((volume) => volume.name === "upgrade-preflight-agent-drafts"));
+  assert.ok(
+    !api.spec.containers[0].env.some(
+      (variable) => variable.name === "OCC_UPGRADE_PREFLIGHT_AGENT_DRAFTS",
+    ),
+  );
+});
+
+// The drafts get the part of the Secret's 1 MiB that the candidate Installation leaves: about
+// 700 KiB of gzipped drafts fit beside a small Installation, but not beside a 400 KiB one.
+test("the drafts budget is the Secret limit less the candidate Installation", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-drafts-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const drafts = join(directory, "agent-drafts.jsonl");
+  await writeFile(
+    drafts,
+    JSON.stringify({
+      namespaceId: "ns_test",
+      agentId: "agt_test",
+      name: "Mail triage",
+      configurationId: "cfg_agt_test",
+      values: {
+        plugins: {
+          entries: { knowledge: { config: { note: randomBytes(700 * 1024).toString("base64") } } },
+        },
+      },
+    }) + "\n",
+  );
+  const gather = async (installationBytes) => {
+    const installation = join(directory, `installation-${installationBytes}.yaml`);
+    await writeFile(installation, "x".repeat(installationBytes));
+    return spawnResult(
+      process.execPath,
+      [
+        "scripts/upgrade-startup-preflight.mjs",
+        "drafts",
+        drafts,
+        installation,
+        join(directory, `drafts-${installationBytes}.json.gz`),
+      ],
+      { cwd: repository },
+    );
+  };
+  const small = await gather(1024);
+  assert.equal(small.status, 0, small.stderr);
+  assert.ok(statSync(join(directory, "drafts-1024.json.gz")).size > 640 * 1024);
+  const large = await gather(400 * 1024);
+  assert.equal(large.status, 3);
+  assert.match(
+    large.stderr,
+    /1 Agent drafts take \d+ bytes gzipped; with the 409600-byte candidate Installation that is over the 1048576-byte Secret limit\./,
+  );
+  assert.equal(existsSync(join(directory, "drafts-409600.json.gz")), false);
+});
+
+// An API preflight that succeeds without either draft result, as an image that ignored the
+// drafts would, is not taken as a check: the helper stops before any writer stops.
+test("an API preflight that reports no draft result stops the upgrade", async (t) => {
+  const f = await fixture(t, {
+    agent: true,
+    preflightResults: { api: { phase: "Succeeded", log: "installation-startup-ready\n" } },
+  });
+  await assert.rejects(
+    f.run(),
+    /the api startup preflight succeeded without checking the Agent drafts; no OCC writer was stopped\./,
+  );
+  const state = await assertStoppedBeforeWriters(f);
+  assert.equal(state.dispatches, 0);
+});
 
 // The command fixture models API inventory and conditional deletion; it is not a live cluster.
 // kubectl's create output stays off the terminal but is kept in the private evidence

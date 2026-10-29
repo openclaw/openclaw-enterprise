@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-10-29"
-last_updated_session: "fix-2809"
+last_updated_session: "fix-2815-2816"
 ---
 
 # Production image upgrade flow
@@ -115,9 +115,12 @@ the image's `isName`, as the controller does after reading the database
 (`INSTALLATION_NAME_INVALID`); an image without the rule skips it.
 
 Runtime upgrades also put each recorded Agent's Configuration, read through OCC, in the
-Secret. The API Pod alone runs the image's `refuseStoredConfigurationSettings` on them, as
-deploy admission does; a refusal stops preparation. Older images and oversized drafts skip
-it with a warning.
+Secret when it fits beside the Installation within 1 MiB. The API Pod alone runs the
+image's `refuseUndeployableConfigurationValues` on them: deploy admission's values-only
+rules (model providers, workspace bootstrap, retired settings, OpenClaw sandbox). A refusal
+stops preparation. Deploy alone runs rules that read live state, such as Driver, Harness,
+credential, plugin and repository checks. Older images and drafts that do not fit skip the
+check with a warning.
 
 Experimental two-cluster Pods also run
 `KubernetesComputeDriver.verifyExecutionTenantGrants` for their component; startup
@@ -334,6 +337,7 @@ Agents or Secrets.
 ## Changelog
 
 - 2026-10-29: Check Agent drafts before writers stop. (fix-2809)
+- 2026-10-29: Check model provider settings; size drafts from the Installation. (fix-2815-2816)
 - 2026-10-28 18:11: Check Helm status before reconciliation reads. (authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a - 541cc3f43bdfb09615ecee0cfb79c533e6a0b56c)
 - 2026-10-28 21:01: Check API themes before writer quiescence. (authoring-run/bf262f39-fa9d-4e70-94e1-e2fc516234e9 - 304fcfb169bc8403794e8562a08b1e3ee4cc23ac)
 

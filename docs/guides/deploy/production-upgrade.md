@@ -257,9 +257,10 @@ controller image. If cleanup fails or the helper is killed, delete its leftovers
 `kubectl delete pod,secret,networkpolicy.networking.k8s.io -n <namespace> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=upgrade-preflight`.
 
 A runtime upgrade also sends each running Agent's saved Configuration to the API
-Pod, which checks it with the image's deploy rules. A refused draft, such as one
-that keeps a setting the new OpenClaw runtime retired, stops the command with
-each Agent and OCC's deploy message. Correct the draft or stop the Agent, then
+Pod, which checks it with the image's deploy rules that read only the saved values.
+A refused draft, such as one that keeps a setting the new OpenClaw runtime retired
+or an unusable model provider URL, stops the command with each Agent and OCC's
+deploy message. Deploy checks Drivers, credentials, plugins and repositories later. Correct the draft or stop the Agent, then
 start again with a new evidence directory.
 
 The command then applies reviewed settings, scales the API and worker to zero, and
