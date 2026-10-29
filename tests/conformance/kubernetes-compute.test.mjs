@@ -1704,6 +1704,9 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     "https://models.example.test:443/inference/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-completions";
   const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
+  // OpenClaw also names a catalog entry by the full reference; the worker and the startup probe
+  // get the split model ID (finding 2903).
+  selectedEntry.id = "openai/team/model";
   // The worker gets every selected model; the startup probe checks only the primary.
   nativeConfiguration.agents.defaults.model = {
     primary: "openai/team/model",
@@ -1847,14 +1850,22 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     nativeConfig.models.providers.openai.models.map(({ id }) => id),
     ["team/model", "team/fallback"],
   );
-  // OpenClaw merges catalog entries whose ids match after trimming, so the startup probe gets
-  // only the primary model's entry, as written (findings 2882, 2883).
+  // The startup probe gets only the primary model's entry (OpenClaw merges entries whose ids
+  // match after trimming; findings 2882, 2883), as the worker gets it: the split model ID, and
+  // the checked endpoint as the provider default. OpenClaw refuses to probe a known model under
+  // the authored prefix when its endpoint differs from the provider's (finding 2903), and the
+  // unchecked provider baseUrl never reaches the probe. The row carries no baseUrl of its own:
+  // the runtime's upfront credential check skips rows that do (finding 2904).
   const probeConfig = JSON.parse(
     provisions[0].requirements.environment.find(
       ({ name }) => name === "OPENCLAW_HARNESS_PROBE_CONFIG",
     ).value,
   );
-  assert.deepEqual(probeConfig.models.providers.openai.models, [selectedEntry]);
+  const { baseUrl: workerEndpoint, ...workerPrimary } =
+    nativeConfig.models.providers.openai.models[0];
+  assert.equal(workerEndpoint, "https://models.example.test/inference/v1");
+  assert.deepEqual(probeConfig.models.providers.openai.models, [workerPrimary]);
+  assert.equal(probeConfig.models.providers.openai.baseUrl, workerEndpoint);
   // The provider's observed Pod readiness and enrolled node are independent of provisioning.
   // Until the provider's Pod is Ready, the wait has no named reason.
   const podPending = await prepare();

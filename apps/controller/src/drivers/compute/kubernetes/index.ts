@@ -222,6 +222,7 @@ import {
   computeWorkWaiting,
   currentComputeAbortSignal,
   isYieldingComputeStop,
+  recordNamespaceEnsureHint,
   withComputeAbortSignal,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -2646,14 +2647,16 @@ function referenceSetting(value: unknown, setting: string): string | undefined {
 // The startup model probe gets only the selected provider's settings, the primary model's entry
 // and the binding's credential, so a reference there (other than the binding's apiKey) cannot
 // resolve. Another Compute may resolve it, so Configuration save accepts it; Kubernetes admission
-// names the setting, never its value (finding 2828). On Dedicated OpenClaw the native worker
-// gets only the selected catalog entries, so the probe gets only the primary model's entry: no
-// other entry can supply its endpoint (findings 2882, 2883).
+// names the setting, never its value (finding 2828). On Dedicated OpenClaw (`nativeAuthMethod`
+// set) the probe gets the primary model's entry as nativeRuntimeConfiguration renders it for the
+// native worker: no other entry can supply its endpoint (findings 2882, 2883), and the probe
+// resolves the same model ID and checked endpoint as the worker (finding 2903). The checked
+// endpoint is the provider default, not a row setting (finding 2904).
 function harnessProbeConfiguration(
   configuration: OpenClawConfigurationDocument,
   embedded = false,
   settingError: (setting: string, requirement: string) => Error = preparationSettingError,
-  native = false,
+  nativeAuthMethod?: HarnessAuthSnapshot["method"],
 ): object {
   const model = harnessPrimaryModel(configuration);
   const { providerId, environmentName } = harnessModelAuthentication(configuration, embedded);
@@ -2678,12 +2681,22 @@ function harnessProbeConfiguration(
   if (fragment !== undefined && environmentName === CUSTOM_MODEL_API_KEY) {
     fragment.apiKey = { source: "env", provider: "default", id: CUSTOM_MODEL_API_KEY };
   }
-  if (native && fragment !== undefined) {
-    const matches = nativeOpenAiModelSelections(configuration)?.find(
-      (selection) => selection.reference === model,
-    )?.matches;
-    // nativeRuntimeConfiguration refuses any other count; the probe never gets another entry.
-    fragment.models = matches?.length === 1 ? [matches[0]!.entry] : [];
+  if (nativeAuthMethod !== undefined) {
+    // An authored row may carry the provider prefix (openai/<id>); OpenClaw's probe then cannot
+    // route a known model whose row endpoint differs from the provider's, while the worker gets
+    // the split ID. The rendered row also makes its checked endpoint the provider default, so an
+    // unchecked provider baseUrl never reaches the probe.
+    const rendered = nativeRuntimeConfiguration(configuration, settingError, nativeAuthMethod);
+    const { id } = splitModelRef(model);
+    // The rendering holds one row for each selected model, the primary included.
+    const primary = rendered.models.providers.openai.models.find((row) => row.id === id)!;
+    if (fragment !== undefined) {
+      // The row inherits its endpoint from the provider, so the runtime's upfront credential
+      // check, which skips rows with their own baseUrl, still applies (finding 2904).
+      const { baseUrl, ...row } = primary;
+      fragment.baseUrl = baseUrl;
+      fragment.models = [row];
+    }
   }
   return {
     agents: {
@@ -3049,7 +3062,7 @@ function nativeRuntimeConfiguration(
   configuration: OpenClawConfigurationDocument,
   createError: (setting: string, requirement: string) => Error,
   authMethod: HarnessAuthSnapshot["method"],
-): object {
+) {
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   if (asRecord(defaults?.embeddedAgent)?.runtimeServer !== undefined) {
     throw createError(
@@ -4694,11 +4707,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Harness authentication requires a compatible model provider.",
       );
     }
+    // On Dedicated OpenClaw this renders the native catalog too (nativeRuntimeConfiguration).
     if (openclaw) {
-      harnessProbeConfiguration(configuration, embedded, callerSettingError, native);
-    }
-    if (native) {
-      nativeRuntimeConfiguration(configuration, callerSettingError, auth.method);
+      harnessProbeConfiguration(
+        configuration,
+        embedded,
+        callerSettingError,
+        native ? auth.method : undefined,
+      );
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
@@ -5682,7 +5698,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       } else if (this.preprovisionedNamespace) {
         await this.verifyExistingNetworkPolicies(name, ownership);
       }
-      await this.prepareNamespaceInfrastructure(ownership, name);
+      try {
+        await this.prepareNamespaceInfrastructure(ownership, name);
+      } catch (error) {
+        // Only this call reconciles the tenant resources. The Gateway uses the same helper.
+        if (
+          numericErrorStatus(error) === 403 &&
+          error instanceof (await import("@kubernetes/client-node")).ApiException
+        ) {
+          recordNamespaceEnsureHint("KUBERNETES_TENANT_ACCESS_DENIED");
+        }
+        throw error;
+      }
       if (!(await this.ensureGatewayNamespace(ownership))) {
         return result;
       }
@@ -15162,7 +15189,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                     revision.configuration,
                     embedded,
                     preparationSettingError,
-                    revision.harness.mode === "dedicated",
+                    revision.harness.mode === "dedicated" ? revision.harnessAuth.method : undefined,
                   ),
                 ),
               },
