@@ -249,6 +249,24 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     }
   }
 
+  private async signingCredentials() {
+    return this.request(async () => {
+      const credentials = { ...(await this.credentials()) };
+      if (
+        typeof credentials.accessKeyId !== "string" ||
+        !credentials.accessKeyId ||
+        typeof credentials.secretAccessKey !== "string" ||
+        !credentials.secretAccessKey ||
+        (credentials.sessionToken !== undefined &&
+          (typeof credentials.sessionToken !== "string" || !credentials.sessionToken)) ||
+        (credentials.expiration !== undefined && !(credentials.expiration.getTime() > Date.now()))
+      ) {
+        throw new Error("Invalid AWS signing identity.");
+      }
+      return Object.freeze(credentials);
+    });
+  }
+
   async create(identity: SecretIdentity, value: string): Promise<SecretBackendRef> {
     const namespaceName = this.namespace(identity);
     this.validateValue(value);
@@ -260,7 +278,7 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     const token = uid;
     // Resolve once: STS and CreateSecret must sign with the same workload identity,
     // even if its refreshable provider changes accounts between requests.
-    const credentials = Object.freeze({ ...(await this.request(() => this.credentials())) });
+    const credentials = await this.signingCredentials();
     const clients = this.createClients(credentials);
     const caller = await this.request((abortSignal) =>
       clients.identity.send(new GetCallerIdentityCommand({}), { abortSignal }),
@@ -364,8 +382,9 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     }
     const token = randomUUID();
     const binding = this.binding(secret);
+    const client = this.createClients(await this.signingCredentials()).secrets;
     await this.request(async (abortSignal) => {
-      const result = await this.client.send(
+      const result = await client.send(
         new PutSecretValueCommand({
           SecretId: binding.arn,
           SecretString: value,
@@ -391,8 +410,9 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
       return;
     }
     const binding = this.binding(secret);
+    const client = this.createClients(await this.signingCredentials()).secrets;
     await this.request(async (abortSignal) => {
-      const deleted = await this.client.send(
+      const deleted = await client.send(
         new DeleteSecretCommand({
           SecretId: binding.arn,
           RecoveryWindowInDays: 30,

@@ -829,3 +829,135 @@ test("real SDK signs STS and creation with captured credentials at pinned HTTPS 
     }
   }
 });
+
+for (const mutation of ["PutSecretValue", "DeleteSecret"] as const) {
+  for (const outcome of [
+    "identity-failure",
+    "invalid-identity",
+    "lost-response",
+    "invalid-response",
+    "success",
+  ] as const) {
+    test(`real SDK ${mutation}: ${outcome} distinguishes identity resolution from transport`, async () => {
+      const b = backend();
+      const secret = await stored(b);
+      const record = Array.from(b.records.values())[0]!;
+      const calls: string[] = [];
+      let described = false;
+      let signedDescribes = 0;
+      let signedMutations = 0;
+      let mutationResolutions = 0;
+      const driver = new AwsSecretsManagerSecretDriver(options, {
+        credentials: async () => {
+          if (described) {
+            mutationResolutions++;
+            if (outcome === "identity-failure") {
+              throw new Error("synthetic private identity diagnostic");
+            }
+          }
+          let accessKeyId = "fixture-describe";
+          if (described) {
+            accessKeyId = outcome === "invalid-identity" ? "" : "fixture-mutation";
+          }
+          return {
+            accessKeyId,
+            secretAccessKey: "synthetic-signing-key",
+            // Force the SDK's provider-backed identity to refresh after Describe.
+            expiration: new Date(Date.now() + 60_000),
+          };
+        },
+        requestHandler: {
+          handle: async (request: {
+            protocol: string;
+            hostname: string;
+            headers: Record<string, string>;
+            body: string | Uint8Array;
+          }) => {
+            assert.equal(request.protocol, "https:");
+            assert.equal(request.hostname, "secretsmanager.us-east-1.amazonaws.com");
+            const action = request.headers["x-amz-target"]!.split(".")[1]!;
+            calls.push(action);
+            const input = JSON.parse(
+              typeof request.body === "string"
+                ? request.body
+                : new TextDecoder().decode(request.body),
+            );
+            assert.equal(input.SecretId, record.ARN);
+            const key = action === "DescribeSecret" ? "fixture-describe" : "fixture-mutation";
+            assert.ok(request.headers.authorization!.includes(`Credential=${key}/`));
+            assert.ok(
+              request.headers.authorization!.includes("/us-east-1/secretsmanager/aws4_request"),
+            );
+            let response: unknown = record;
+            if (action === "DescribeSecret") {
+              signedDescribes++;
+              described = true;
+            } else {
+              assert.equal(action, mutation);
+              signedMutations++;
+              if (outcome === "lost-response") {
+                throw new Error("synthetic private transport diagnostic");
+              }
+              response =
+                outcome === "invalid-response"
+                  ? {}
+                  : {
+                      ARN: record.ARN,
+                      Name: record.Name,
+                      VersionId: input.ClientRequestToken,
+                      VersionStages: ["AWSCURRENT"],
+                      DeletionDate: Date.now() / 1000,
+                    };
+            }
+            return {
+              response: {
+                statusCode: 200,
+                headers: {},
+                body: new TextEncoder().encode(JSON.stringify(response)),
+              },
+            };
+          },
+        },
+      });
+      const result = await (
+        mutation === "PutSecretValue"
+          ? driver.update(secret, "synthetic-new")
+          : driver.delete(secret)
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const beforeTransport = outcome === "identity-failure" || outcome === "invalid-identity";
+      // Count real HTTP handler invocations before checking diagnostics: a test name
+      // or an injected send exception cannot establish the submission boundary.
+      assert.deepEqual(calls, beforeTransport ? ["DescribeSecret"] : ["DescribeSecret", mutation]);
+      assert.equal(
+        signedDescribes,
+        1,
+        "ownership Describe was signed and transported successfully",
+      );
+      assert.equal(
+        signedMutations,
+        beforeTransport ? 0 : 1,
+        "only validated mutation requests reached the fault boundary",
+      );
+      assert.ok(mutationResolutions > 0, "identity was resolved after successful signed Describe");
+      if (outcome === "success") {
+        assert.equal(result, undefined);
+        assert.equal(
+          mutationResolutions,
+          1,
+          "mutating client uses the captured identity without another provider refresh",
+        );
+      } else {
+        assert.ok(result instanceof DependencyUnavailableError);
+        assert.equal(
+          result.message,
+          beforeTransport
+            ? "AWS Secret operation failed; no mutation was submitted."
+            : "AWS Secret mutation may have applied; reconciliation required.",
+        );
+      }
+    });
+  }
+}

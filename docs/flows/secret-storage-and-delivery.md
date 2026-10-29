@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: "2026-10-29"
-last_updated_session: "authoring-run/45b7994a-d011-47e7-a09d-8659942017aa"
+last_updated_session: "authoring-run/9757ef0b-8f07-4e22-8913-5c4db71a4b97"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -107,6 +107,9 @@ The AWS selection captures credentials and qualifies their account with STS befo
 sending material to the pinned regional HTTPS endpoint. Both calls use the same
 captured signing identity. Credential acquisition rejects on cancellation or deadline
 without waiting for the provider; late credentials cannot advance to STS or creation.
+After ownership checks, update and delete also resolve and validate signing credentials
+before entering the mutation boundary. Each mutation uses a fixed credential snapshot
+and a pinned regional client, so provider refresh cannot fail inside the mutating send.
 Provider, STS, and read-only failures report that no mutation was submitted. Once a
 mutation is submitted, failures through response and post-create ownership/version
 verification require reconciliation, with no returned reference or automatic cleanup.
@@ -333,6 +336,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 23:30: Resolve and validate signing credentials before every AWS mutation. (authoring-run/9757ef0b-8f07-4e22-8913-5c4db71a4b97 - 07cfbf06dbb0a71eaba2ebc09785de0db3bbc0d9)
 
 - 2026-10-29 23:20: Bound credential acquisition and distinguish pre-submission failures from uncertain mutations. (authoring-run/45b7994a-d011-47e7-a09d-8659942017aa - 0f1d98b89182810f8df4e78bd8f4bad1be296e19)
 
