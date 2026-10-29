@@ -283,9 +283,10 @@ destroys HTTP refusals at once, releasing their connections.
 Provider files use reported absolute paths. Gateway failure blocks readiness.
 Providers survive uncertain creates; cleanup deletes their Sandbox first.
 
-The OpenShell supervisor connects through in-cluster WSS on Kubernetes or the
-Agent Gateway Service URL on Compose. Policy binds the executable/supervisor to
-that destination. On process-group `EPERM`, the supervisor signals the process directly.
+The workspace node uses the configured Gateway's scoped WSS node route on
+both control planes. Envoy rewrites worker-transfer paths and attributes each
+client. Policy binds the executable to that host and port. On process-group
+`EPERM`, the supervisor signals the process directly.
 
 ### 5. Observe readiness or clean up
 
@@ -323,11 +324,9 @@ resources/NetworkPolicies in reverse order. Terminating Workspaces retry after
 lost responses. Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:cleanupRevisionSandbox`
-also runs after Namespace loss: stop removes its serving path first; retirement
-cleans the provider first. `deleteNamespace` runs cleanup after lifecycle hooks,
-before Gateway Namespace deletion. Present resources retain ownership checks;
-missing placement uses the derived name. Unconfirmed provider removal prevents
-completion.
+runs after Namespace loss. Stop removes serving paths first. Retirement and
+`deleteNamespace` clean providers before Gateway deletion. Ownership checks remain;
+missing placement uses the derived name. Unconfirmed removal prevents completion.
 
 ### 6. Withdraw Git without retiring the execution
 
@@ -365,9 +364,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 setup, retry and restart under setgid parents. It does not prove Kubernetes or
 model execution.
 
-`tests/conformance/kubernetes-compute.test.mjs` checks cleanup after Namespace loss,
-including refusal and retry, with controlled Driver fixtures. It does not prove
-live cluster or OpenShell removal.
+`tests/conformance/kubernetes-compute.test.mjs` checks cleanup with controlled
+fixtures; live provider removal remains unverified.
 
 ## Related docs
 
@@ -386,6 +384,8 @@ live cluster or OpenShell removal.
 ## Changelog
 
 - 2026-10-29 15:03: Require provider cleanup after Namespace loss. (authoring-run/d72e8e1c-56b3-4bba-b7b2-83d6212f5e58 - 72dfce5bfdbde5a79f714dc62777425c26619581)
+
+- 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
 
 - 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
 

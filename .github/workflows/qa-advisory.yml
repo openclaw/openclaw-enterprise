@@ -21,7 +21,7 @@ concurrency:
     qa-advisory-${{ github.event_name }}-${{
       github.event_name == 'push' && github.sha ||
       github.event_name == 'pull_request' &&
-      (github.event.action != 'labeled' || github.event.label.name == 'full-qa') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'full-qa' || github.event.label.name == 'qa-openshell-compose') &&
       format('pr-{0}', github.event.number) || format('run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -44,9 +44,13 @@ jobs:
       (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' &&
-        (github.event.action != 'labeled' || github.event.label.name == 'full-qa') &&
-        contains(github.event.pull_request.labels.*.name, 'full-qa'))
+        (github.event.action != 'labeled' || github.event.label.name == 'full-qa' || github.event.label.name == 'qa-openshell-compose') &&
+        (contains(github.event.pull_request.labels.*.name, 'full-qa') ||
+         contains(github.event.pull_request.labels.*.name, 'qa-openshell-compose')))
     runs-on: ubuntu-24.04
+    outputs:
+      # Full QA takes precedence when both labels are present. Main runs stay full.
+      openshell-file: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-qa') && 'tests/integration/local-first-agent-openshell-real.test.mjs' || '' }}
     steps:
       - name: Record the commit under test
         run: echo "Running advisory QA for ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
@@ -55,7 +59,7 @@ jobs:
     name: QA advisory (local installation)
     needs: eligibility
     # Run this installation rehearsal with full-qa, the 6-hourly schedule or a manual dispatch on main.
-    if: github.event_name != 'push'
+    if: github.event_name != 'push' && needs.eligibility.outputs.openshell-file == ''
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
@@ -80,6 +84,7 @@ jobs:
   qa:
     name: QA advisory (${{ matrix.installation }})
     needs: eligibility
+    if: needs.eligibility.outputs.openshell-file == ''
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 120
     environment: integration-qa-pr
@@ -133,7 +138,7 @@ jobs:
         run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"
 
   openshell:
-    name: QA advisory (OpenShell)
+    name: QA advisory (OpenShell${{ needs.eligibility.outputs.openshell-file != '' && ' Compose' || '' }})
     needs: eligibility
     # OpenShell requires an enabled Landlock LSM, absent on the Blacksmith kernel.
     runs-on: ubuntu-24.04
@@ -166,7 +171,8 @@ jobs:
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: openshell
+          test-file: ${{ needs.eligibility.outputs.openshell-file }}
           profile: full
           node-version: "24.22.1"
-          artifact-prefix: qa-advisory
+          artifact-prefix: ${{ needs.eligibility.outputs.openshell-file != '' && 'qa-advisory-compose' || 'qa-advisory' }}
           job-timeout-minutes: 120

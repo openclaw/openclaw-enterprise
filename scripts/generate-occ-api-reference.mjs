@@ -202,6 +202,7 @@ const permissionScopeQualifiers = {
   provisioning_work: " (once created)",
   gateway_managed_mode_disabled: " (when `gatewayManagedMode` is `false`)",
   gateway_managed_mode_changed: " (when the request changes `gatewayManagedMode`)",
+  saved_sandbox_policy_additions: " (when saved network policy additions exist)",
 };
 
 function operationReference(path, method, operation, document, { headingLevel = 2 } = {}) {

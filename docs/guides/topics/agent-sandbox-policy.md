@@ -63,7 +63,8 @@ before retrying application; the saved change has not been rolled back.
 
 An administrator must first enable editing for the Agent and separately grant
 exact-Agent `manage_policy` and exact-SandboxPolicy `update`. Viewing the policy
-and live application also need exact-SandboxPolicy `read`. Enabling editing
+and live application also need exact-SandboxPolicy `read`, as do deploying and
+updating an Agent with a repository binding while it has saved grants. Enabling editing
 alone grants none of these permissions. The ordinary editor cannot alter Installation
 or generated rules. Disabling editing preserves approved grants. To remove
 access, re-enable editing if needed, remove the addition, and apply or deploy it.
