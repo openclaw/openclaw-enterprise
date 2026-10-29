@@ -3897,6 +3897,13 @@ export async function renderAgentDetail(
       agentSaveDenial(permissions, agent),
     );
     const next = loadDetails();
+    // Other tabs draw from the last answer and follow the reread (finding 2421), but Repositories
+    // draws its editor only once the reread lands. Rebuilt before that, the tab was empty at the
+    // focus step below: Cancel was not found, the tab strip took focus, the shortened page lost
+    // the reader's place, and the editor drawn later showed no saved status (finding 2892).
+    if (selectedTab === "repositories") {
+      await agentSaveDenied;
+    }
     const data = await next;
     if (!context.isCurrent() || deleting || !data) {
       return;

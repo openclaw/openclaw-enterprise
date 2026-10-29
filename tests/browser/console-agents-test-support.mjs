@@ -6,6 +6,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
+import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { PROVISIONING_NOT_COMPLETED } from "../helpers/refusal-text.mjs";
 import {
@@ -610,29 +611,7 @@ export async function waitForLiveControls(page, ids) {
 }
 
 export function nativeAdminValues(marker, origin) {
-  const values = nativeValues(marker);
-  return {
-    ...values,
-    gateway: {
-      ...(values.gateway ?? {}),
-      controlUi: {
-        ...(values.gateway?.controlUi ?? {}),
-        enabled: true,
-        allowedOrigins: [origin],
-      },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: {
-          "occ-workspace-files": ["operator.admin"],
-        },
-      },
-    },
-  };
+  return withNativeAdminGateway(nativeValues(marker), origin);
 }
 
 // Without a caller-permission summary the console keeps controls enabled, so the API's own

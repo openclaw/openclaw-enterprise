@@ -996,10 +996,25 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
     repositoryAccess("git-read"),
   );
 
-  // Cancel drops the edit and rebuilds from the saved state in place.
+  // Cancel drops the edit and rebuilds from the saved state in place. It reads the permission
+  // answer again, which can land after the Configuration. The rebuild waits for it: rebuilt
+  // before it, the tab had no editor yet, so the tab strip took focus and the page lost its
+  // place (finding 2892).
   await page.locator("#repository-default-git-full").check();
   assert.equal(await save.isEnabled(), true);
+  const permissions = await holdRequests(t, page, `${fixture.origin}${agentPath}/permissions`, {
+    once: true,
+    method: "GET",
+  });
+  const configurationRead = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      response.url() ===
+        `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
   await cancel.click();
+  await Promise.all([permissions.requested, configurationRead]);
+  permissions.release();
   await page.waitForFunction(
     () =>
       globalThis.document.querySelector<HTMLInputElement>("#repository-default-git-read")
