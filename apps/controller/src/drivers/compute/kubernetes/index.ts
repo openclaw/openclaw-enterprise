@@ -519,8 +519,9 @@ export interface KubernetesComputeDriverOptions {
       | {
           /**
            * The provider serves Harness endpoints from a cluster this Compute Driver
-           * cannot reach with Pod selection. The address is an exact IP or CIDR that
-           * the advertised endpoints resolve through, and egress admits only it.
+           * cannot reach with Pod selection. The address is one exact IP address,
+           * bare or with an explicit /32 or /128 host prefix, and egress admits only
+           * it. The endpoint must use WSS.
            */
           readonly remote: true;
           readonly address: string;
@@ -1913,15 +1914,6 @@ function isRemoteProviderHarness(
   return "remote" in provider && provider.remote === true;
 }
 
-function isValidExactCidr(value: string): boolean {
-  try {
-    parseCidr(value, "Remote Provider Harness address");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function providerHarnessUrl(
   endpoint: SandboxHarnessEndpoint,
   network: NonNullable<KubernetesComputeDriverOptions["network"]["providerHarness"]>,
@@ -1945,6 +1937,13 @@ function providerHarnessUrl(
   ) {
     throw new ConfigurationFailure(
       "SandboxDriver Harness endpoint must be an exact WebSocket origin on the configured provider port.",
+    );
+  }
+  // The remote provider's Harness transport, and its token, cross a network;
+  // only the local Pod-peer bridge may run without TLS.
+  if (isRemoteProviderHarness(network) && url.protocol !== "wss:") {
+    throw new ConfigurationFailure(
+      "A remote Provider Harness endpoint must use WSS; the local Pod-peer form alone may use WS.",
     );
   }
   if (
@@ -2010,6 +2009,40 @@ function cidrCoversEveryAddress(cidr: ParsedCidr): boolean {
   const blockList = new BlockList();
   blockList.addSubnet(cidr.address, cidr.prefix, "ipv6");
   return blockList.check("0.0.0.0", "ipv4") && blockList.check("255.255.255.255", "ipv4");
+}
+
+/** The remote provider address is one exact IP: a bare address or an explicit
+ * `/32` or `/128` host prefix. A wider prefix would both turn the exact egress
+ * grant into a range grant and leave the host alias without a real endpoint,
+ * so this refuses ranges like the shared CIDR policy refuses all-address ones. */
+function exactProviderAddress(
+  value: unknown,
+  path?: string,
+): { readonly ip: string; readonly cidr: string } {
+  const invalid = () =>
+    configurationConstraintFailure(
+      "Remote Provider Harness address must be one exact IP address: bare, or with an explicit /32 or /128 prefix.",
+      path,
+    );
+  if (typeof value !== "string") {
+    throw invalid();
+  }
+  const [address = "", prefix, extra] = value.split("/");
+  const family = isIP(address);
+  if (extra !== undefined || family === 0) {
+    throw invalid();
+  }
+  const width = family === 4 ? 32 : 128;
+  if (prefix !== undefined && prefix !== String(width)) {
+    throw invalid();
+  }
+  if (unspecifiedOrIpv4MappedHost(address)) {
+    throw configurationConstraintFailure(
+      "Remote Provider Harness address cannot be an unspecified or IPv4-mapped address.",
+      path,
+    );
+  }
+  return { ip: address, cidr: `${address}/${width}` };
 }
 
 // The one rule for every operator CIDR that grants reach (trusted proxies, status proxy
@@ -3876,16 +3909,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "/network/providerHarness",
           );
         }
-        const providerAddress = options.network.providerHarness.address;
-        if (
-          isRemoteProviderHarness(options.network.providerHarness)
-            ? !isValidExactCidr(providerAddress)
-            : isIP(providerAddress) === 0
-        ) {
+        if (isRemoteProviderHarness(options.network.providerHarness)) {
+          exactProviderAddress(
+            options.network.providerHarness.address,
+            "/network/providerHarness/address",
+          );
+        } else if (isIP(options.network.providerHarness.address) === 0) {
           throw configurationConstraintFailure(
-            isRemoteProviderHarness(options.network.providerHarness)
-              ? "Remote Provider Harness address must be an exact IP address or CIDR."
-              : "Provider Harness gateway address must be an IP address.",
+            "Provider Harness gateway address must be an IP address.",
             "/network/providerHarness/address",
           );
         }
@@ -15312,7 +15343,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           egress: [
             {
               to: remoteProvider
-                ? [{ ipBlock: { cidr: provider.address } }]
+                ? [{ ipBlock: { cidr: exactProviderAddress(provider.address).cidr } }]
                 : [this.peer(provider)],
               ports: [{ protocol: "TCP", port: provider.port }],
             },
@@ -16733,10 +16764,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               : {
                   hostAliases: [
                     {
-                      // The remote provider address is a CIDR for the egress
-                      // ipBlock; a host alias needs the bare IP.
+                      // The remote provider address is one exact IP; the egress
+                      // ipBlock carries its /32 or /128 form, the host alias the
+                      // bare address.
                       ip: isRemoteProviderHarness(providerNetwork!)
-                        ? providerNetwork!.address.split("/")[0]!
+                        ? exactProviderAddress(providerNetwork!.address).ip
                         : providerNetwork!.address,
                       hostnames: [providerUrl.hostname],
                     },
