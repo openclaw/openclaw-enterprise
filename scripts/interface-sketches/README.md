@@ -114,3 +114,14 @@ node render.ts my-layout.json my-layout
 ```
 
 This writes `my-layout.svg` and `my-layout.png`. Keep hand-edited scenes outside the generated examples: the next build replaces those JSON files. No installed system fonts or browser are needed.
+
+## Draw a source-backed view
+
+After generating `coupling.json`, pick the question you want the picture to answer. A diagram ID shows **only** its matched claims. An exact source declaration shows its resolved outgoing references, whether or not anyone mapped them to a diagram.
+
+```sh
+node projection.ts coupling.json --diagram generic-exchange exchange --captions views/exchange.json
+node projection.ts coupling.json --from 'apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts#protectedOpenShellGitOwner' git-authorities --captions views/git-choice.json
+```
+
+Open the PNG for review, or the sibling `.sources.json` for the exact declarations and lines behind each arrow. The scene JSON can be rendered again. Captions and optional board positions change presentation only. Omit `--captions` for an automatically laid-out graph using declaration names. Missing evidence, a proposal, or an oversized selection fails instead of producing a plausible partial drawing. A missing arrow can still mean an unresolved call or a file outside the scan; it does not prove isolation.

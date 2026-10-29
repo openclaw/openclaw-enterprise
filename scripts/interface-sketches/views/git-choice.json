@@ -1,0 +1,8 @@
+{
+  "title": "Which authority checks a Git request?",
+  "nodes": {
+    "apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts#protectedOpenShellGitOwner": "Git adapter",
+    "packages/contracts/src/protected-repository-git.ts#GitHubInstallationAuthority.authorize": "GitHub installation authority",
+    "packages/contracts/src/protected-repository-git.ts#RepositoryGitAuthority.authorize": "Repository grant authority"
+  }
+}

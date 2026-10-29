@@ -1,0 +1,30 @@
+{
+  "title": "Who owns the exchange interface?",
+  "nodes": {
+    "apps/controller/src/composition/egress-authority.ts#installEgressAuthority": "Install exchange authority",
+    "apps/controller/src/composition/production.ts#composeProduction": "Controller startup",
+    "apps/controller/src/drivers/egress-proxy/openshell-authority.ts#createOpenShellEgressAuthority": "Reference listener",
+    "packages/contracts/src/credential-proxy-exchange.ts#CredentialProxyExchange": "Transport contract",
+    "packages/contracts/src/credential-proxy.ts#CredentialProxyDriver.bindExchange": "Selected Driver",
+    "packages/occ/src/credential-proxy.ts#CredentialProxy": "OCC exchange authority",
+    "packages/occ/src/index.ts#OpenClawController.createCredentialProxy": "Controller factory"
+  },
+  "board": [1180, 620],
+  "pins": {
+    "apps/controller/src/composition/egress-authority.ts#installEgressAuthority": [
+      337, 143, 249, 65
+    ],
+    "apps/controller/src/composition/production.ts#composeProduction": [40, 143, 205, 65],
+    "apps/controller/src/drivers/egress-proxy/openshell-authority.ts#createOpenShellEgressAuthority": [
+      60, 454, 290, 65
+    ],
+    "packages/contracts/src/credential-proxy-exchange.ts#CredentialProxyExchange": [
+      500, 470, 240, 65
+    ],
+    "packages/contracts/src/credential-proxy.ts#CredentialProxyDriver.bindExchange": [
+      819, 86, 225, 65
+    ],
+    "packages/occ/src/credential-proxy.ts#CredentialProxy": [484, 347, 270, 65],
+    "packages/occ/src/index.ts#OpenClawController.createCredentialProxy": [815, 231, 240, 65]
+  }
+}
