@@ -5205,6 +5205,7 @@ export const scenarios = {
       "Open Deployment before the first poll, choose folded or expanded details, and Tab to Run diagnostics for this version. The transient failure preserves that choice and the visible focused control; the selected record retains its outcome with an update-delayed label. Expanded activity keeps the last readable progress and labels the delayed update without an alert. Repeat without focusing a control: the summary must stay in place. Reset to repeat the other choice. The later completion is a terminal result, not routine pending recovery.",
       'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment keeps "v7 · In progress" with "Update delayed" in its existing status line and the notice still begins "Deploying version".',
       'Within about 10 s the notice begins "Current version" and Selected for service reads v7, with no "Historical version" in between.',
+      "After completion, hover and focus Refresh deployment, then press Enter. The hovered fill and focus stay while the busy control blocks another Enter; the selected version and tab stay unchanged.",
     ],
   },
   deploymentDeferred: {

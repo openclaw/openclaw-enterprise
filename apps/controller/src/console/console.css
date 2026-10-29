@@ -2142,6 +2142,10 @@ select:not([multiple])[size="1"] {
   top: 18px;
   right: 24px;
 }
+/* A requested refresh stays focusable and hovered while duplicate activation is blocked. */
+.deployment-status > button[aria-disabled="true"]:hover {
+  background: var(--color-surface-hover);
+}
 .agent-deployment-attention {
   display: flex;
   align-items: center;

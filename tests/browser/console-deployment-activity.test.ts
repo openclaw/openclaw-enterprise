@@ -376,6 +376,50 @@ for (const viewport of [
           );
         });
       }
+      // Hold a verified real response: an explicit refresh must retain hover feedback
+      // while aria-disabled communicates busy and repeated Enter remains guarded.
+      await t.test("explicit refresh keeps its hovered fill while busy", async () => {
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let verified!: () => void;
+        const upstreamReady = new Promise<void>((resolve) => {
+          verified = resolve;
+        });
+        let requests = 0;
+        await page.route(url, async (route) => {
+          requests++;
+          const response = await route.fetch();
+          assert.equal(response.status(), 200);
+          const body = await response.json();
+          assert.equal(body.data.deploymentId, revisionId);
+          assert.equal(body.data.status, "succeeded");
+          verified();
+          await held;
+          await route.fulfill({ response });
+        });
+        await refresh.hover();
+        await refresh.focus();
+        const fill = () => refresh.evaluate((node) => getComputedStyle(node).backgroundColor);
+        const before = await fill();
+        const receivedRefresh = next();
+        try {
+          await page.keyboard.press("Enter");
+          await upstreamReady;
+          assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+          assert.equal(await fill(), before, "busy must preserve the hovered fill");
+          assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+          await page.keyboard.press("Enter");
+          assert.equal(requests, 1);
+        } finally {
+          release();
+          await received(receivedRefresh, "succeeded");
+          await page.unroute(url);
+        }
+        await region.locator('button[aria-disabled="false"]').waitFor();
+        assert.equal(await fill(), before);
+      });
       // A human-triggered repeated transient error still needs a visible result.
       for (let attempt = 0; attempt < 2; attempt++) {
         if (await isOpen()) {
