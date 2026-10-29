@@ -187,7 +187,9 @@ function observed(origin, predicate) {
     }, 3000);
     function check() {
       const value = origin.snapshot();
-      if (!predicate(value)) return;
+      if (!predicate(value)) {
+        return;
+      }
       clearTimeout(timer);
       origin.off("observation", check);
       resolve(value);
@@ -201,7 +203,9 @@ async function completedReply(socket) {
   let received = "";
   for await (const chunk of socket.iterator({ destroyOnReturn: false })) {
     received += chunk.toString();
-    if (received.endsWith("\r\n\r\nok")) return;
+    if (received.endsWith("\r\n\r\nok")) {
+      return;
+    }
   }
   throw new Error("Origin reply ended before completion.");
 }

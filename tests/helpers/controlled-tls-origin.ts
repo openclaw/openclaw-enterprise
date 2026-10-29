@@ -33,7 +33,9 @@ export function controlledTlsOrigin(tls: TlsOptions, handle: RequestListener) {
   const records = new WeakMap<Duplex, SocketObservation>();
   http.on("request", (request, response) => {
     const record = records.get(request.socket);
-    if (!record) throw new Error("HTTP request has no origin observation.");
+    if (!record) {
+      throw new Error("HTTP request has no origin observation.");
+    }
     request.once("end", () => {
       if (request.complete) {
         record.completeRequests++;
@@ -75,7 +77,9 @@ export function controlledTlsOrigin(tls: TlsOptions, handle: RequestListener) {
     records.set(wire, record);
     socket.on("data", (chunk) => {
       record.decryptedBytes += chunk.length;
-      if (!wire.push(chunk)) socket.pause();
+      if (!wire.push(chunk)) {
+        socket.pause();
+      }
       server.emit("observation");
     });
     socket.on("end", () => wire.push(null));
@@ -104,7 +108,9 @@ export function controlledTlsOrigin(tls: TlsOptions, handle: RequestListener) {
     },
     since(mark: object): OriginObservation {
       const before = marks.get(mark);
-      if (!before) throw new Error("Unknown origin observation mark.");
+      if (!before) {
+        throw new Error("Unknown origin observation mark.");
+      }
       const after = snapshot();
       return {
         decryptedBytes: after.decryptedBytes - before.decryptedBytes,
@@ -118,7 +124,9 @@ export function controlledTlsOrigin(tls: TlsOptions, handle: RequestListener) {
       };
     },
     closeAllConnections() {
-      for (const socket of sockets) socket.destroy();
+      for (const socket of sockets) {
+        socket.destroy();
+      }
     },
   });
 }
