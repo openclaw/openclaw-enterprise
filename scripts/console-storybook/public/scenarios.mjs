@@ -1526,7 +1526,7 @@ export const scenarios = {
       { click: "Delete Namespace" },
     ],
     description:
-      "A simulated NAMESPACE_NOT_EMPTY response names remaining resources. Open Agents or Secrets, or inspect Configuration cleanup commands.",
+      "A simulated NAMESPACE_NOT_EMPTY response names remaining resources the caller can read and counts the rest. Open Agents or Secrets, or inspect Configuration cleanup commands.",
   },
   namespaceDeleteDenied: {
     group: "Pages/Namespaces",
@@ -5122,6 +5122,22 @@ export const scenarios = {
     steps: [
       "Read the error under the editor: Invalid JSON at line 1, column 18.",
       "Count the visible characters on the line: the x is the 18th.",
+    ],
+  },
+  invalidConfigurationCurlyQuotes: {
+    group: "Pages/Agent detail",
+    name: "Invalid Configuration JSON with curly quotes",
+    path: draft,
+    actions: [
+      click("Edit Configuration"),
+      // Quotes a word processor or chat app curled, as pasted from a document.
+      { selector: "#configuration-json", value: '{\n  "agents": {\u201Cdefaults\u201D: {}}\n}' },
+      click("Save Configuration"),
+    ],
+    description:
+      "A key wrapped in curly quotes looks like JSON but is not. The error names the curly quote and the straight quote to use instead.",
+    steps: [
+      'Read the error under the editor: Invalid JSON at line 2, column 14: replace the curly quote \u201C there with a straight quote (").',
     ],
   },
   configurationChangedElsewhereMerged: {

@@ -14,7 +14,7 @@ Restriction. Ask whoever manages IAM Restrictions to lift it.
 2. Select **Delete Namespace**. **Cancel** or Escape closes the confirmation
    before submission. While the request is pending, wait for its result.
 3. If the Namespace still contains resources, the dialog names the remaining
-   kinds and IDs. **View Agents** and **View Secrets** open that Namespace's
+   kinds and the IDs that you can read, and counts the others. **View Agents** and **View Secrets** open that Namespace's
    resources. Expand **Configuration cleanup commands** to remove unused
    Configurations after their Agents are gone. Other resource kinds need their
    CLI or API operations. See [deletion requirements](../../reference/namespaces.md#deletion-and-tombstones).

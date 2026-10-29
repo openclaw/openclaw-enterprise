@@ -130,8 +130,8 @@ also require frontier completeness.
 
 Completeness requires an ordered consumed prefix after the earliest fetched time,
 or a short uncut Driver page, and persists while time stays unchanged. Otherwise
-matching-time text stays suppressed until time advances; enlarging a cut tail
-must not reveal old occurrences as new. Legacy counts are inferred only below
+matching-time text stays suppressed; the page advancing time reports
+`window_exceeded` at it. Enlarging a cut tail must not reveal old occurrences as new. Legacy counts are inferred only below
 16 hashes. Byte cuts preserve counts for complete frontiers.
 It emits `stream_replaced`,
 `window_exceeded`, `cursor_expired` or `truncated` gaps, and passes the rest to
@@ -226,6 +226,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29: Report frontier lines that de-duplication withheld once time advances.
 
 - 2026-10-26: Follow polls no longer rewrite loaded rows or unchanged statuses (port of #2502).
 

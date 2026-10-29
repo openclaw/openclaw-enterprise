@@ -57,7 +57,7 @@ the paths.
 | `error.details[].message` | `string` | No | max length: 512 |
 | `error.details[].path` | `string` | Yes | max length: 512; pattern: `^(?:/(?:[^~/]\|~0\|~1)*)*$` |
 | `error.message` | `string` | Yes | min length: 1; max length: 256 |
-| `error.remainingResources` | `array<object>` | No | max items: 7; Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others. |
+| `error.remainingResources` | `array<object>` | No | max items: 7; Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others. |
 | `error.remainingResources[].count` | `integer` | Yes | minimum: 0 |
 | `error.remainingResources[].ids` | `array<string>` | Yes | max items: 20 |
 | `error.remainingResources[].kind` | `string` | Yes | min length: 1; max length: 64 |

@@ -70,7 +70,7 @@ container; omission selects the first main container. Changing containers starts
 a new audited view. Container cursors count the lines delivered at their newest
 timestamp, so a later line at that timestamp is returned once, even with identical
 text. After a tail or Driver byte cut, or with an older cursor, such a line can
-stay hidden until a later timestamp.
+stay hidden; the page that reaches a later timestamp then shows **Lines skipped**.
 `download=true` answers `text/plain` as an attachment and cannot be combined
 with `cursor` (`400`). See the
 [API reference](../../reference/api.md).
