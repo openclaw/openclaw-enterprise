@@ -83,7 +83,9 @@ function required(value: unknown, description: string): string {
 const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 
 function validateAwsParameterInputs(value: unknown): void {
-  if (value === undefined) return;
+  if (value === undefined) {
+    return;
+  }
   function invalid(path: string): never {
     throw new ConfigurationValidationError([
       {
@@ -94,7 +96,9 @@ function validateAwsParameterInputs(value: unknown): void {
       },
     ]);
   }
-  if (!Array.isArray(value)) invalid("/awsParameterInputs");
+  if (!Array.isArray(value)) {
+    invalid("/awsParameterInputs");
+  }
   const identities = new Set<string>();
   const parameters = new Map<string, string>();
   for (const [index, candidate] of value.entries()) {
@@ -113,18 +117,23 @@ function validateAwsParameterInputs(value: unknown): void {
       typeof entry.backendUid !== "string" ||
       !new RegExp(`^${UUID}$`).test(entry.backendUid) ||
       typeof entry.parameterArn !== "string"
-    )
+    ) {
       invalid(path);
+    }
     try {
       parseAwsParameterArn(entry.parameterArn);
     } catch {
       invalid(`${path}/parameterArn`);
     }
     const identity = `${entry.namespaceId}/${entry.secretId}`;
-    if (identities.has(identity)) invalid(path);
+    if (identities.has(identity)) {
+      invalid(path);
+    }
     identities.add(identity);
     const tenant = parameters.get(entry.parameterArn);
-    if (tenant !== undefined && tenant !== entry.namespaceId) invalid(path);
+    if (tenant !== undefined && tenant !== entry.namespaceId) {
+      invalid(path);
+    }
     parameters.set(entry.parameterArn, entry.namespaceId);
   }
 }
@@ -552,7 +561,9 @@ export class KubernetesSecretDriver implements SecretDriver {
         try {
           material = await readAwsParameter(binding, lifetime.signal);
           validateValue(material.value);
-          if (!isNonEmptyString(material.version)) throw new Error("Missing parameter version.");
+          if (!isNonEmptyString(material.version)) {
+            throw new Error("Missing parameter version.");
+          }
         } catch {
           throw new SecretBackendUnavailableError("The AWS parameter credential read failed.");
         }

@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { buffer } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
+import { createSecureContext } from "node:tls";
 import {
   KubernetesSecretDriver,
   SecretBackendUnavailableError,
@@ -20,6 +21,7 @@ import { listen } from "../helpers/listen.mjs";
 
 const arn = "arn:aws:ssm:us-east-1:123456789012:parameter/oce/synthetic-access";
 const hostname = "ssm.us-east-1.amazonaws.com";
+const stsHostname = "sts.us-east-1.amazonaws.com";
 const accessKey = "synthetic-access-key";
 const signingKey = "synthetic-signing-key";
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -27,35 +29,39 @@ const hmac = (key: string | Buffer, value: string) =>
   createHmac("sha256", key).update(value).digest();
 
 // Independently verify the wire contract, including signature, rather than echoing SDK output.
-function verifySignature(headers: import("node:http").IncomingHttpHeaders, bytes: Buffer) {
-  assert.equal(headers.host, hostname);
-  assert.equal(headers["x-amz-target"], "AmazonSSM.GetParameter");
-  assert.deepEqual(JSON.parse(bytes.toString()), { Name: arn, WithDecryption: true });
+function verifySignature(request: IncomingMessage, bytes: Buffer, service: "ssm" | "sts") {
+  assert.equal(request.method, "POST");
+  assert.equal(request.url, "/");
+  const { headers } = request;
+  assert.equal(headers.host, service === "ssm" ? hostname : stsHostname);
   const auth = String(headers.authorization);
   const match =
-    /^AWS4-HMAC-SHA256 Credential=([^/]+)\/(\d{8})\/us-east-1\/ssm\/aws4_request, SignedHeaders=([^,]+), Signature=([0-9a-f]{64})$/.exec(
+    /^AWS4-HMAC-SHA256 Credential=([^/]+)\/(\d{8})\/us-east-1\/(ssm|sts)\/aws4_request, SignedHeaders=([^,]+), Signature=([0-9a-f]{64})$/.exec(
       auth,
     );
-  assert.ok(match, "SSM request must carry a service- and region-scoped SigV4 signature");
+  assert.ok(match, "request must carry a service- and region-scoped SigV4 signature");
   assert.equal(match[1], accessKey);
-  const names = match[3]!.split(";");
+  assert.equal(match[3], service);
+  const names = match[4]!.split(";");
   assert.ok(names.includes("host") && names.includes("x-amz-date"));
   const canonical = names
     .map((name) => `${name}:${String(headers[name]).trim().replace(/\s+/g, " ")}\n`)
     .join("");
-  const request = ["POST", "/", "", canonical, match[3], hash(bytes)].join("\n");
-  const scope = `${match[2]}/us-east-1/ssm/aws4_request`;
-  const signed = ["AWS4-HMAC-SHA256", headers["x-amz-date"], scope, hash(request)].join("\n");
+  const canonicalRequest = ["POST", "/", "", canonical, match[4], hash(bytes)].join("\n");
+  const scope = `${match[2]}/us-east-1/${service}/aws4_request`;
+  const signed = ["AWS4-HMAC-SHA256", headers["x-amz-date"], scope, hash(canonicalRequest)].join(
+    "\n",
+  );
   const key = hmac(
-    hmac(hmac(hmac(`AWS4${signingKey}`, match[2]!), "us-east-1"), "ssm"),
+    hmac(hmac(hmac(`AWS4${signingKey}`, match[2]!), "us-east-1"), service),
     "aws4_request",
   );
-  assert.equal(createHmac("sha256", key).update(signed).digest("hex"), match[4]);
+  assert.equal(createHmac("sha256", key).update(signed).digest("hex"), match[5]);
 }
 
 async function awsWire(t: TestContext) {
   const directory = await temporaryDirectory(t, "oce-ssm-wire-");
-  const tls = await selfSigned(directory);
+  const tls = await selfSigned(directory, { subjectAltName: `DNS:${hostname},DNS:${stsHostname}` });
   let parameter: Record<string, unknown> = {
     ARN: arn,
     Type: "SecureString",
@@ -102,17 +108,28 @@ async function awsWire(t: TestContext) {
       ? Promise.resolve(Buffer.from("synthetic-pod-token"))
       : originalRead(...args),
   );
+  // Each listener owns one AWS service. Neither can use a caller's Host to skip verification.
+  const sts = https.createServer(tls, async (req, res) => {
+    const bytes = await buffer(req);
+    try {
+      verifySignature(req, bytes, "sts");
+      assert.equal(new URLSearchParams(bytes.toString()).get("Action"), "GetCallerIdentity");
+    } catch {
+      res.writeHead(403).end();
+      return;
+    }
+    res.setHeader("content-type", "text/xml");
+    res.end(
+      `<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><GetCallerIdentityResult><Account>${callerAccount}</Account><Arn>arn:aws:sts::123456789012:assumed-role/synthetic/test</Arn><UserId>synthetic</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>`,
+    );
+  });
+  const stsPort = await listen(t, sts);
   const server = https.createServer(tls, async (req, res) => {
     try {
       const bytes = await buffer(req);
-      if (req.headers.host === "sts.us-east-1.amazonaws.com") {
-        res.setHeader("content-type", "text/xml");
-        res.end(
-          `<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><GetCallerIdentityResult><Account>${callerAccount}</Account><Arn>arn:aws:sts::123456789012:assumed-role/synthetic/test</Arn><UserId>synthetic</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>`,
-        );
-        return;
-      }
-      verifySignature(req.headers, bytes);
+      verifySignature(req, bytes, "ssm");
+      assert.equal(req.headers["x-amz-target"], "AmazonSSM.GetParameter");
+      assert.deepEqual(JSON.parse(bytes.toString()), { Name: arn, WithDecryption: true });
       calls++;
       await onRequest?.();
       res.setHeader("content-type", "application/x-amz-json-1.1");
@@ -128,16 +145,16 @@ async function awsWire(t: TestContext) {
   });
   const port = await listen(t, server);
   const original = https.request;
+  const agent = new https.Agent({ secureContext: createSecureContext({ ca: tls.cert }) });
+  t.after(() => agent.destroy());
   // Only socket routing is replaced. The real AWS client signs the original endpoint;
   // TLS remains verified against this owned fixture's certificate.
   t.mock.method(
     https,
     "request",
     (options: RequestOptions, callback: (response: IncomingMessage) => void) => {
-      if (
-        (options.hostname ?? options.host) !== hostname &&
-        (options.hostname ?? options.host) !== "sts.us-east-1.amazonaws.com"
-      ) {
+      const destination = options.hostname ?? options.host;
+      if (destination !== hostname && destination !== stsHostname) {
         assert.ok(
           ["127.0.0.1", "localhost", "::1"].includes(String(options.hostname ?? options.host)),
           "unexpected nonlocal HTTPS destination",
@@ -150,10 +167,9 @@ async function awsWire(t: TestContext) {
           ...options,
           host: "127.0.0.1",
           hostname: "127.0.0.1",
-          port,
-          servername: "localhost",
-          ca: tls.cert,
-          agent: false,
+          port: destination === hostname ? port : stsPort,
+          servername: destination,
+          agent,
         },
         callback,
       );
