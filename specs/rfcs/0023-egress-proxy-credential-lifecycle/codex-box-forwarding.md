@@ -19,6 +19,16 @@ authenticated account metadata. Only the OCE-owned sender receives the real
 access token. Its owner rotates or replaces that token outside the request path;
 the Harness and Box receive no refresh token.
 
+The reserved wire value is `Authorization: Bearer <accessTokenPlaceholder>`.
+The trusted sender compares the single header value with the exact non-secret
+placeholder from this execution's admitted `externalChatgptAuth` attachment.
+The placeholder conveys no grant. Select the account and credential source
+from the live binding. Reject a missing or altered marker, duplicate
+authorization, or a conflicting caller-supplied account header before material
+use. After the final allow, replace the marker with the selected token for
+the admitted upstream; the workload's authentication fields never become
+upstream credentials.
+
 Reuse the [external ChatGPT contract](../../../docs/reference/drivers/credential-gateway.md#external-chatgpt-authentication)
 and the ephemeral Codex auth file. Do not treat a ChatGPT account token as an API
 key or PAT. Preserve the API-key path and its explicit direct-delivery boundary.
@@ -94,3 +104,12 @@ Local synthetic proof does not establish provider acceptance or installed
 containment. Those require separately authorized operator runs with the exact
 joined source and image identity. Submission, implementation, native proof and
 live qualification remain separate milestones.
+
+
+For the positive installed check, require the authenticated startup probe and a
+subsequent model turn through the hosted process to use that same admitted
+binding. Independently observe the intended account and synthetic credential
+at the controlled endpoint for each operation and verify the original Agent
+receives the hosted model response. Repeat with an altered marker, duplicate
+authorization and conflicting account fields; observe no credential use or
+protected upstream submission.
