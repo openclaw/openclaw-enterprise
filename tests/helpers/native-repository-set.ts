@@ -40,6 +40,7 @@ export async function exerciseNativeRepositorySet(
     repositories: readonly [string, string, string];
     evaluate: (input: RepositorySetHttpRequest) => Promise<{ decision: number }>;
     installed: (repository: string) => string | undefined;
+    afterRead?: () => Promise<void>;
     authorize: (authorization: string | undefined, repository: string) => boolean;
   },
 ) {
@@ -166,6 +167,7 @@ export async function exerciseNativeRepositorySet(
     await git(["config", "user.name", "Repository acceptance"], path);
     await git(["config", "user.email", "acceptance@example.test"], path);
   }
+  await options.afterRead?.();
   // Interleave pushes: opening B must not replace A's binding on the same Agent.
   for (const step of [1, 2]) {
     for (const index of [0, 1]) {

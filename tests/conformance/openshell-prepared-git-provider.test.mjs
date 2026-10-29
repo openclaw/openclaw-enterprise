@@ -800,3 +800,103 @@ test("Namespace cleanup deletes only workspace-scoped prepared Git profiles", as
     ["deleteProviderProfile", installation],
   ]);
 });
+
+test("completed Git receipt can observe a new aggregate environment without replaying its write", async (t) => {
+  const { state, client } = await wire(t);
+  const provider = new OpenShellPreparedGitProvider(client, {
+    ...scope,
+    observedHookPreview: true,
+  });
+  const bootstrap = await provider.bootstrap(signal());
+  const update = client.updateProviderCredentialsConditionally.bind(client);
+  client.updateProviderCredentialsConditionally = async (...args) => {
+    const result = await update(...args);
+    return {
+      ...result,
+      mutationId: "update-one",
+      targetReceipts: [
+        {
+          receipt_id: "original",
+          mutation_id: "update-one",
+          kind: "PROVIDER_MUTATION_KIND_UPDATE",
+          workspace: scope.workspace,
+          provider: bootstrap.provider,
+          desired: {
+            sandbox: scope.sandbox,
+            provider_id: result.id,
+            provider_resource_version: result.resourceVersion,
+          },
+        },
+      ],
+    };
+  };
+  const active = await provider.rotate(bootstrap, async () => token(), signal());
+  state.status = installedStatus(active);
+  const initial = await client.getSandboxProviderStatus(
+    scope.workspace,
+    scope.sandbox,
+    bootstrap.provider,
+    signal(),
+  );
+  let environment = "101";
+  let completed = true;
+  let drift = {};
+  const reads = [];
+  client.getSandboxProviderStatus = async (_workspace, _sandbox, _provider, _signal, id) => {
+    reads.push(id);
+    const target = id === "original" ? "101" : id === "refreshed" ? "102" : environment;
+    const receiptId = id ?? (environment === "101" ? "original" : "refreshed");
+    return {
+      ...initial,
+      state:
+        target === environment
+          ? "PROVIDER_READINESS_STATE_READY"
+          : "PROVIDER_READINESS_STATE_SUPERSEDED",
+      receipt: {
+        ...initial.receipt,
+        receiptId,
+        kind:
+          receiptId === "original"
+            ? "PROVIDER_MUTATION_KIND_UPDATE"
+            : "PROVIDER_MUTATION_KIND_OBSERVE",
+        desired: { ...initial.receipt.desired, providerEnvRevision: target },
+      },
+      observed: { ...initial.observed, providerEnvRevision: environment, ...drift },
+      completedOperationId: completed || receiptId === "original" ? receiptId : undefined,
+    };
+  };
+  assert.equal(await provider.settlePreviewReceipt(active, signal()), true);
+  assert.equal((await provider.observe(active, "sandbox-id", signal())).providerEnvRevision, "101");
+  const writes = state.requests.filter((r) => r.provider).length;
+  environment = "102";
+  assert.equal(await provider.observe(active, "sandbox-id", signal()), undefined);
+  assert.equal(reads.at(-1), "original", "request lookup cannot create an observation");
+  completed = false;
+  assert.equal(await provider.settlePreviewReceipt(active, signal()), false);
+  assert.equal(
+    await provider.observe(active, "sandbox-id", signal()),
+    undefined,
+    "incomplete receipt remains denied",
+  );
+  completed = true;
+  assert.equal(await provider.settlePreviewReceipt(active, signal()), true);
+  assert.equal((await provider.observe(active, "sandbox-id", signal())).providerEnvRevision, "102");
+  assert.equal(reads.at(-1), "refreshed");
+  environment = "103";
+  for (const mismatch of [
+    { attachmentEpoch: "other" },
+    { configRevision: "999" },
+    { policyHash: "other" },
+  ]) {
+    drift = mismatch;
+    assert.equal(await provider.settlePreviewReceipt(active, signal()), false);
+    assert.equal(await provider.observe(active, "sandbox-id", signal()), undefined);
+    assert.equal(reads.at(-1), "refreshed", "identity drift does not create a new observation");
+  }
+  drift = {};
+  assert.equal(
+    state.requests.filter((r) => r.provider).length,
+    writes,
+    "no provider write replayed",
+  );
+});

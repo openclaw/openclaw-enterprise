@@ -55,6 +55,7 @@ export async function repositorySetJourney(t: TestContext) {
   const tokenPath = join(tls.directory, "gateway-token");
   await writeFile(tokenPath, "controlled-gateway");
   const state = {
+    providerEnvRevision: "",
     revisionId: "",
     namespaceId: "",
     agentId: "",
@@ -617,6 +618,22 @@ export async function repositorySetJourney(t: TestContext) {
       ],
       evaluate,
       installed: () => state.installed,
+      afterRead: async () => {
+        const writes = wire.world.writes;
+        const material = state.installed;
+        state.providerEnvRevision = "1001";
+        assert.equal((await evaluate(probe)).decision, 2, "stale observation cannot authorize");
+        await reconcile();
+        assert.equal(
+          (await evaluate(probe)).decision,
+          1,
+          "fresh observation restores the same route",
+        );
+        assert.equal(wire.world.writes, writes, "refresh does not resend credentials");
+        assert.equal(state.installed, material);
+        assert.equal(peer.gh.issuesOfTokens.length, 1);
+        assert.equal(runtime.previewReleased(revision.id), true, "original release remains valid");
+      },
       authorize: (header, repository) => {
         const selected = repositorySet.find((entry) => entry.repository === repository);
         assert.ok(selected);

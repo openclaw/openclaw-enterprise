@@ -2267,6 +2267,7 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
   const gitRule = { name: "git", endpoints: [{ host: "github.com", port: 443 }] };
   f.provider.previewNetworkRule = () => gitRule;
   f.provider.settlePreviewReceipt = async () => true;
+  let environment;
   const observe = f.provider.observe;
   f.provider.observe = async (...args) => {
     const result = await observe(...args);
@@ -2279,7 +2280,7 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
         provider: f.entry.binding.provider,
         providerId: f.entry.binding.providerId,
         profileVersion: f.entry.binding.profileVersion,
-        providerEnvRevision: f.entry.binding.resourceVersion,
+        providerEnvRevision: environment ?? f.entry.binding.resourceVersion,
         configRevision: "1",
         policyHash: "original-policy",
       }
@@ -2296,7 +2297,7 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
     policy_version: "1",
     policy_hash: "original-policy",
     config_revision: "1",
-    provider_env_revision: f.entry.binding.resourceVersion,
+    provider_env_revision: environment ?? f.entry.binding.resourceVersion,
   });
   const sandbox = f.client.getSandbox;
   f.client.getSandbox = async (...args) => ({
@@ -2330,7 +2331,7 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
     provider_attachment_epoch: f.supervisor.attachmentEpoch,
     policy_hash: "original-policy",
     config_revision: "1",
-    provider_env_revision: f.entry.binding.resourceVersion,
+    provider_env_revision: environment ?? f.entry.binding.resourceVersion,
     supervisor_middleware_services: [
       {
         name: "oce-prepared-git",
@@ -2411,6 +2412,69 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
   assert.equal(f.calls.rotate, 1);
   assert.equal(f.entry.fence, 2);
   assert.equal(f.store.rows.get(revision.id).writePending, undefined);
+
+  f.sandbox.annotations = { "openclaw.dev/revision-id": revision.id };
+  f.sandbox.labels = {};
+  f.sandbox.resourceVersion = "1";
+  const getProvider = f.client.getProvider;
+  f.client.getProvider = async (...args) => ({
+    ...(await getProvider(...args)),
+    id: "model-id",
+    name: "openai",
+    workspace: f.sandbox.workspace,
+  });
+  f.client.getSandboxProviderStatus = async () => {
+    const generation = {
+      attachmentEpoch: f.supervisor.attachmentEpoch,
+      providerEnvRevision: environment ?? f.entry.binding.resourceVersion,
+      configRevision: "1",
+      policyHash: "original-policy",
+    };
+    return {
+      state: "PROVIDER_READINESS_STATE_READY",
+      completedOperationId: "model-observe",
+      receipt: {
+        receiptId: "model-observe",
+        kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+        workspace: f.sandbox.workspace,
+        provider: "openai",
+        desired: {
+          ...generation,
+          sandboxId: f.sandbox.id,
+          sandbox: f.sandbox.name,
+          providerId: "model-id",
+          providerResourceVersion: "1",
+        },
+      },
+      observed: {
+        ...generation,
+        sessionId: f.supervisor.supervisorSessionId,
+        processInstanceId: f.supervisor.processInstanceId,
+        sequence: "1",
+        credentialsInstalled: true,
+        policyActive: true,
+        launchEnvironmentInstalled: true,
+      },
+      networkInstanceId: f.supervisor.networkInstanceId,
+      observedTime: new Date().toISOString(),
+      evaluatedTime: new Date().toISOString(),
+    };
+  };
+  f.faults.observe = false;
+  await f.reconcile();
+  assert.ok(f.entry.installed, "active generation completes its original launch witness");
+  await f.runtime.releasePreview(revision.id, startupId, async () => true);
+  assert.ok(await f.lookup(), "first read after held launch ACK");
+  environment = "1001";
+  f.faults.observe = true;
+  await f.reconcile();
+  assert.equal(await f.lookup(), undefined, "an unverified aggregate environment denies use");
+  assert.equal(f.denials().at(-1).reason, "route_pending");
+  assert.equal(preview.release, "acknowledged", "refresh does not reset held launch ACK");
+  f.faults.observe = false;
+  await f.reconcile();
+  assert.ok(await f.lookup(), "later request uses the newly verified environment");
+  assert.equal(f.calls.rotate, 1, "observation recovery does not reinstall credentials");
 
   const replacement = new OpenShellGitRuntime(f.runtime.configuration, resolve);
   replacement.owner = f.owner;

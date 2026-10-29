@@ -176,6 +176,8 @@ export class OpenShellPreparedGitProvider {
   private readonly fingerprint: string;
   private receipt?: { version: string; id?: string; complete?: true };
 
+  private refreshReceipt?: { version: string; id?: string; complete?: true };
+
   private readonly profile: OpenShellProviderProfile;
   private readonly provider: string;
 
@@ -521,12 +523,41 @@ export class OpenShellPreparedGitProvider {
     if (!this.receipt && binding.credentialState === "bootstrap") {
       this.receipt = { version: binding.resourceVersion };
     }
-    const receipt = this.receipt;
+    let receipt = this.refreshReceipt ?? this.receipt;
     if (!receipt || receipt.version !== binding.resourceVersion) {
       return false;
     }
     if (receipt.complete) {
-      return true;
+      const current = await this.client.getSandboxProviderStatus(
+        binding.workspace,
+        binding.sandbox,
+        binding.provider,
+        signal,
+        receipt.id,
+      );
+      if (current.state !== "PROVIDER_READINESS_STATE_SUPERSEDED") {
+        return true;
+      }
+      // The original UPDATE remains custody evidence. Only the reconciler creates a
+      // fresh OBSERVE; requests still read a completed receipt and verify live identity.
+      // A changed aggregate environment can supersede an unchanged Git generation.
+      const desired = current.receipt?.desired;
+      const observed = current.observed;
+      if (
+        current.completedOperationId !== receipt.id ||
+        current.receipt?.receiptId !== receipt.id ||
+        !desired ||
+        !observed ||
+        desired.providerId !== binding.providerId ||
+        desired.providerResourceVersion !== binding.resourceVersion ||
+        observed.providerEnvRevision === desired.providerEnvRevision ||
+        observed.attachmentEpoch !== desired.attachmentEpoch ||
+        observed.configRevision !== desired.configRevision ||
+        observed.policyHash !== desired.policyHash
+      ) {
+        return false;
+      }
+      receipt = this.refreshReceipt = { version: binding.resourceVersion };
     }
     const status = await this.client.getSandboxProviderStatus(
       binding.workspace,
@@ -540,7 +571,7 @@ export class OpenShellPreparedGitProvider {
       !id ||
       (receipt.id && receipt.id !== id) ||
       status.receipt?.kind !==
-        (binding.credentialState === "bootstrap"
+        (binding.credentialState === "bootstrap" || receipt === this.refreshReceipt
           ? "PROVIDER_MUTATION_KIND_OBSERVE"
           : "PROVIDER_MUTATION_KIND_UPDATE") ||
       status.receipt.desired?.providerResourceVersion !== receipt.version
@@ -605,7 +636,7 @@ export class OpenShellPreparedGitProvider {
       this.binding(current, binding.profileVersion, binding.expiresAt, binding.credentialState);
       const requestedAt = Date.now();
       const preview = this.scope.observedHookPreview;
-      const receipt = this.receipt;
+      const receipt = this.refreshReceipt ?? this.receipt;
       if (
         preview &&
         (!receipt?.complete || !receipt.id || receipt.version !== binding.resourceVersion)
@@ -858,6 +889,7 @@ export class OpenShellPreparedGitProvider {
         ) {
           throw new Error("OpenShell did not confirm the preview's single expected update target.");
         }
+        delete this.refreshReceipt;
         this.receipt = { version: updated.resourceVersion, id };
       }
       return this.binding(updated, previous.profileVersion, token.expiresAt);

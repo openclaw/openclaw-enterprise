@@ -162,6 +162,7 @@ export async function gitExpiryGateway(
   }
   world.retainedProviders = Object.keys(providers);
   let gitName;
+  const receiptEnvironments = new Map();
   const observe = (req) => {
     const name = req.provider;
     const git = name === gitName;
@@ -173,7 +174,7 @@ export async function gitExpiryGateway(
       attachment_epoch: removed ? "reduced" : repositoryGitRecipient.attachmentEpoch,
       config_revision: "3",
       provider_env_revision: supervisor
-        ? String(6 + world.writes)
+        ? supervisor.providerEnvRevision || String(6 + world.writes)
         : profileChanged
           ? "9"
           : removed
@@ -185,8 +186,19 @@ export async function gitExpiryGateway(
           ? "reduced-policy"
           : "original-policy",
     };
+    const receiptId =
+      req.receipt_id ||
+      (supervisor ? `observe-${name}-${snapshot.provider_env_revision}` : "observe-" + name);
+    const desiredEnvironment = receiptEnvironments.get(receiptId) ?? snapshot.provider_env_revision;
+    receiptEnvironments.set(receiptId, desiredEnvironment);
     const metadata = providers[name].metadata;
-    const state = absent ? "REVOKED" : expired || (!git && world.modelFailed) ? "FAILED" : "READY";
+    const state = absent
+      ? "REVOKED"
+      : expired || (!git && world.modelFailed)
+        ? "FAILED"
+        : supervisor && desiredEnvironment !== snapshot.provider_env_revision
+          ? "SUPERSEDED"
+          : "READY";
     // Only the Sandbox resourceVersion changes between the expiry owner's first two reads.
     if (expired && world.version === 13) {
       world.version = 14;
@@ -200,7 +212,7 @@ export async function gitExpiryGateway(
         state: "PROVIDER_READINESS_STATE_" + state,
         ...(supervisor && {
           operation: {
-            operation_id: req.receipt_id || "observe-" + name,
+            operation_id: receiptId,
             sandbox_id: world.id,
             state: 2,
             outcome: 1,
@@ -211,7 +223,7 @@ export async function gitExpiryGateway(
         receipt: {
           workspace,
           provider: name,
-          receipt_id: req.receipt_id || "observe-" + name,
+          receipt_id: receiptId,
           ...(supervisor &&
             req.receipt_id?.startsWith("update-") && { mutation_id: "update-" + world.writes }),
           kind:
@@ -220,6 +232,7 @@ export async function gitExpiryGateway(
               : "PROVIDER_MUTATION_KIND_OBSERVE",
           desired: {
             ...snapshot,
+            ...(supervisor && { provider_env_revision: desiredEnvironment }),
             sandbox_id: world.id,
             sandbox: supervisor?.sandbox ?? sandbox,
             provider_id: absent ? "" : metadata.id,
@@ -292,7 +305,7 @@ export async function gitExpiryGateway(
                 instance_id: "configuration",
                 policy_version: 1,
                 config_revision: "3",
-                provider_env_revision: String(6 + world.writes),
+                provider_env_revision: supervisor.providerEnvRevision || String(6 + world.writes),
                 policy_hash: "original-policy",
               },
             }),
@@ -406,7 +419,7 @@ export async function gitExpiryGateway(
         extension_authentication_enabled: true,
         provider_attachment_epoch: "original",
         config_revision: "3",
-        provider_env_revision: String(6 + world.writes),
+        provider_env_revision: supervisor.providerEnvRevision || String(6 + world.writes),
         policy_hash: "original-policy",
         supervisor_middleware_services: supervisor.middleware,
       }),
