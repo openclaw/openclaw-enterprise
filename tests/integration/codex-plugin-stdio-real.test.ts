@@ -114,8 +114,8 @@ ${CODEX_PLUGIN_STDIO_HELPER}
   // writing into a home that a replacement process could use.
   await assert.rejects(withCodexPluginStdio("codex", ["app-server"], options, request =>
     request("plugin/install", { ...params, pluginName: "missing" })), error => {
-      assert.equal(error.preparationMethod, "plugin/install");
-      assert.equal(Number.isSafeInteger(error.preparationRpcCode), true);
+      assert.equal(error.preparation.method, "plugin/install");
+      assert.equal(Number.isSafeInteger(error.preparation.rpcCode), true);
       return true;
     });
   assert.equal(spawnSync("pgrep", ["-f", "codex.*app-server"]).status, 1);
@@ -125,7 +125,7 @@ ${CODEX_PLUGIN_STDIO_HELPER}
     const pending = request("plugin/read", params);
     process.emit("SIGTERM");
     return pending;
-  }), error => error.preparationReason === "cancelled");
+  }), error => error.preparation.reason === "cancelled");
   assert.equal(spawnSync("pgrep", ["-f", "codex.*app-server"]).status, 1);
   console.log(JSON.stringify({ installed: true, replacementDiscovery: true, failedInstallDrained: true, cancellationDrained: true }));
 })().catch(error => { console.error(error.message); process.exitCode = 1; });

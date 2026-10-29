@@ -208,7 +208,7 @@ malformed files and other Secret-backed environment fail before Gateway mutation
 After login and egress enrollment, `agentRuntimeEntrypoint` calls
 `apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`
 to install selections through its request caller. Clean stdio exit precedes verifier-only WebSocket startup
-in the same home. Failure retires the wrapper's process group. The provider
+in the same home. Failure uses one TERM/KILL cleanup path and retires the wrapper's process group. The provider
 Gateway skips HMAC plugin status; readiness observes transport.
 
 Providers use `oce-codex-runtime` or `oce-openclaw-runtime`. Both supply read-only setup and Gateway CA files; Codex requires `runtime.json` and `config.toml`, which native OpenClaw refuses. The validated setup Secret's complete expiring envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: OpenClaw signs the literal token in its device proof.
@@ -377,6 +377,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 21:24: Unify preparation cleanup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 208172f773)
 
 - 2026-10-28 16:50: Trace stdio plugin installation before verifier-only native startup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 000e1381e7)
 

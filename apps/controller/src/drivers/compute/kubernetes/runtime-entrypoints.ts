@@ -4255,26 +4255,40 @@ const nativeArguments = [
     ...(loginMode === "chatgptAuthTokens" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
 ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_retries",\n' : ""}    "app-server",
 ];
-const startFinalCodex = () => {
-publishRuntimeReady();
-// Preparation, when required, has exited before the serving process starts.
-logStartupPhase("native-spawn", startupPhaseOrigin);
-const child = spawn(
-  "codex",
-  [...nativeArguments, "--listen", "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
-    "--ws-auth", "capability-token", "--ws-token-sha256", digest],
-  { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
-);
-forwardTermination(child);
-const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
-child.on("exit", (code, signal) => {
-  const status = code ?? (signal === "SIGTERM" ? 0 : 1);
-  // Forward Codex's last lines; a descendant holding the pipe cannot delay exit
-  // by more than 2 s. The unref'd timer never keeps an otherwise idle wrapper alive.
-  setTimeout(() => process.exit(status), 2000).unref();
-  codexStderrDone.then(() => process.exit(status));
-});
 (async () => {
+  if (configuredTokenSha !== undefined && hasEnabledPluginSelections(pluginRuntime)) {
+    const preparationStartedAt = Date.now();
+    try {
+      await withCodexPluginStdio(codexExecutable(), nativeArguments,
+        { cwd: workspaceDirectory, env: codexChildEnvironment() }, (request) =>
+          installCodexSelectionSet(pluginRuntime.manifest.selections, [], request, searchCodexSelectionParams));
+      logStartupPhase("plugin-install", preparationStartedAt);
+    } catch (error) {
+      logStartupPhase("plugin-install", preparationStartedAt, "failed", codexPluginStartupFailureCode(error));
+      console.error(JSON.stringify({ event: "codex.plugin_preparation_failed", ...error.preparation }));
+      console.error("Codex plugin preparation failed before native WebSocket startup.");
+      process.exit(1);
+      return;
+    }
+  }
+  publishRuntimeReady();
+  // Preparation, when required, has exited before the serving process starts.
+  logStartupPhase("native-spawn", startupPhaseOrigin);
+  const child = spawn(
+    "codex",
+    [...nativeArguments, "--listen", "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
+      "--ws-auth", "capability-token", "--ws-token-sha256", digest],
+    { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
+  );
+  forwardTermination(child);
+  const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
+  child.on("exit", (code, signal) => {
+    const status = code ?? (signal === "SIGTERM" ? 0 : 1);
+    // Forward Codex's last lines; a descendant holding the pipe cannot delay exit
+    // by more than 2 s. The unref'd timer never keeps an otherwise idle wrapper alive.
+    setTimeout(() => process.exit(status), 2000).unref();
+    codexStderrDone.then(() => process.exit(status));
+  });
   const pluginInstallStartedAt = Date.now();
   let pluginInstallLogged = false;
   try {
@@ -4301,32 +4315,6 @@ child.on("exit", (code, signal) => {
     process.exit(1);
   }
 })();
-};
-if (configuredTokenSha !== undefined && hasEnabledPluginSelections(pluginRuntime)) {
-  const preparationStartedAt = Date.now();
-  withCodexPluginStdio(codexExecutable(), nativeArguments,
-    { cwd: workspaceDirectory, env: codexChildEnvironment() }, async (request) => {
-      return await installCodexSelectionSet(pluginRuntime.manifest.selections, [], request, searchCodexSelectionParams);
-    }).then(() => {
-      logStartupPhase("plugin-install", preparationStartedAt);
-      startFinalCodex();
-    }, (error) => {
-      logStartupPhase("plugin-install", preparationStartedAt, "failed", codexPluginStartupFailureCode(error));
-      const methods = ["initialize", "plugin/list", "plugin/search", "plugin/read", "plugin/install", "config/read", "config/batchWrite", "configRequirements/read", "mcpServerStatus/list"];
-      console.error(JSON.stringify({
-        event: "codex.plugin_preparation_failed",
-        reason: ["early-exit", "timeout", "cancelled", "response-limit", "invalid-json", "server-request", "invalid-response", "catalog-missing", "remote-id-missing", "installer", "rpc"].includes(error?.preparationReason) ? error.preparationReason : "unknown",
-        method: methods.includes(error?.preparationMethod) ? error.preparationMethod : "unknown",
-        rpcCode: Number.isSafeInteger(error?.preparationRpcCode) ? error.preparationRpcCode : undefined,
-        exitCode: Number.isSafeInteger(error?.preparationExitCode) ? error.preparationExitCode : undefined,
-        signal: ["SIGTERM", "SIGKILL", "SIGINT"].includes(error?.preparationExitSignal) ? error.preparationExitSignal : undefined,
-      }));
-      console.error("Codex plugin preparation failed before native WebSocket startup.");
-      process.exit(1);
-    });
-} else {
-  startFinalCodex();
-}
 }
 let modelProbeStartedAt = Date.now();
 startAuthenticatedCodex();

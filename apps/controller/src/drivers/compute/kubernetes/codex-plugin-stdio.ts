@@ -8,44 +8,55 @@ async function withCodexPluginStdio(command, args, options, install) {
   const pending = new Map();
   let nextId = 0;
   let lastMethod = "initialize";
-  let rpcErrorCode;
-  let childExitCode;
-  let childExitSignal;
+  let rpcDiagnostic;
   let buffer = "";
   let failure;
   let closing = false;
-  let closed = false;
-  let killTimer;
+  let exit;
+  let rejectFailure;
+  const failed = new Promise((_, reject) => { rejectFailure = reject; });
   const close = new Promise((resolve) => child.once("close", (code, signal) => {
-    childExitCode = code;
-    childExitSignal = signal;
-    closed = true;
-    if (!closing) fail(new Error("Codex plugin preparation exited before completion."));
-    resolve(code);
+    exit = { code, signal };
+    if (!closing) fail(preparationError("early-exit"));
+    resolve(exit);
   }));
-  const deadline = setTimeout(() => fail(new Error("Codex plugin preparation timed out.")), 60_000);
+  function preparationError(reason, method = lastMethod, rpcCode) {
+    const error = reason === "rpc"
+      ? new CodexAppServerRequestError(method, "Codex plugin preparation RPC failed.")
+      : new Error("Codex plugin preparation failed: " + reason);
+    error.preparation = { reason, method, rpcCode };
+    return error;
+  }
   function fail(error) {
     if (failure !== undefined) return;
     failure = error;
     for (const request of pending.values()) request.reject(error);
     pending.clear();
-    child.kill("SIGTERM");
-    killTimer = setTimeout(() => child.kill("SIGKILL"), 8_000);
-    killTimer.unref();
+    rejectFailure(error);
   }
-  const cancel = () => fail(new Error("Codex plugin preparation was cancelled."));
+  async function waitForClose(abortOnFailure) {
+    let timer;
+    try {
+      return await Promise.race([close, ...(abortOnFailure ? [failed] : []), new Promise((resolve) => {
+        timer = setTimeout(resolve, 8_000);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+  const deadline = setTimeout(() => fail(preparationError("timeout")), 60_000);
+  const cancel = () => fail(preparationError("cancelled"));
   process.on("SIGTERM", cancel);
   process.on("SIGINT", cancel);
-  // Native diagnostics can contain account or URL data. Preparation reports a
-  // fixed startup failure; it does not forward native stdout or stderr to logs.
+  // Native output can contain account or signed URL data. Only our diagnostic
+  // record crosses the launcher boundary; native stderr is discarded.
   child.stderr.on("data", () => {});
-  child.on("error", () => fail(new Error("Codex plugin preparation could not start.")));
-  child.stdin.on("error", () => fail(new Error("Codex plugin preparation input closed.")));
+  child.on("error", () => fail(preparationError("spawn")));
+  child.stdin.on("error", () => fail(preparationError("input-closed")));
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
+    if (failure !== undefined) return;
     buffer += chunk;
     if (Buffer.byteLength(buffer, "utf8") > 16 * 1024 * 1024) {
-      fail(new Error("Codex plugin preparation response exceeded its limit."));
+      fail(preparationError("response-limit"));
       return;
     }
     let end;
@@ -55,25 +66,26 @@ async function withCodexPluginStdio(command, args, options, install) {
       if (line.trim().length === 0) continue;
       let message;
       try { message = JSON.parse(line); } catch {
-        fail(new Error("Codex plugin preparation returned invalid JSON."));
+        fail(preparationError("invalid-json"));
         return;
       }
       const request = pending.get(message?.id);
       if (request === undefined) {
         if (message?.id !== undefined && message?.method !== undefined) {
-          fail(new Error("Codex plugin preparation requested an unsupported interaction."));
+          fail(preparationError("server-request"));
         }
         continue;
       }
-      pending.delete(message.id);
       if (Object.hasOwn(message, "result") === Object.hasOwn(message, "error")) {
-        const error = new Error("Codex plugin preparation returned an invalid response.");
+        fail(preparationError("invalid-response", request.method));
+        return;
+      }
+      pending.delete(message.id);
+      if (Object.hasOwn(message, "error")) {
+        const code = Number.isSafeInteger(message.error?.code) ? message.error.code : undefined;
+        const error = preparationError("rpc", request.method, code);
+        rpcDiagnostic = error.preparation;
         request.reject(error);
-        fail(error);
-      } else if (Object.hasOwn(message, "error")) {
-        rpcErrorCode = Number.isSafeInteger(message.error?.code) ? message.error.code : undefined;
-        // Keep the method for the existing installer's diagnostic classification.
-        request.reject(new CodexAppServerRequestError(request.method, "Codex plugin preparation RPC failed."));
       } else {
         request.resolve(message.result);
       }
@@ -89,56 +101,33 @@ async function withCodexPluginStdio(command, args, options, install) {
     });
   }
   try {
-    await request("initialize", codexPluginInitializeParams());
-    child.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
-    const result = await install(request);
+    const result = await Promise.race([failed, (async () => {
+      await request("initialize", codexPluginInitializeParams());
+      child.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
+      return install(request);
+    })()]);
     if (failure !== undefined) throw failure;
     closing = true;
     child.stdin.end();
-    let shutdownTimer;
-    try {
-      const code = await Promise.race([
-        close,
-        new Promise((_, reject) => {
-          shutdownTimer = setTimeout(() => reject(new Error("Codex plugin preparation did not stop.")), 8_000);
-        }),
-      ]);
-      if (code !== 0) throw new Error("Codex plugin preparation did not exit cleanly.");
-    } finally { clearTimeout(shutdownTimer); }
-    if (failure !== undefined) throw failure;
+    const status = await waitForClose(true);
+    if (status === undefined) throw preparationError("shutdown-timeout");
+    if (status.code !== 0) throw preparationError("unclean-exit");
     return result;
   } catch (error) {
     fail(error);
-    // Never launch a replacement after uncertain mutation. The outer supervisor
-    // also kills this wrapper's entire group before it starts another wrapper.
-    if (!closed) {
-      let cleanupTimer;
-      await Promise.race([close, new Promise((resolve) => {
-        cleanupTimer = setTimeout(() => { child.kill("SIGKILL"); resolve(); }, 8_000);
-      })]);
-      clearTimeout(cleanupTimer);
-    }
-    // These fields describe our requests and process, never native error text.
-    const reasons = new Map([
-      ["Codex plugin preparation exited before completion.", "early-exit"],
-      ["Codex plugin preparation timed out.", "timeout"],
-      ["Codex plugin preparation was cancelled.", "cancelled"],
-      ["Codex plugin preparation response exceeded its limit.", "response-limit"],
-      ["Codex plugin preparation returned invalid JSON.", "invalid-json"],
-      ["Codex plugin preparation requested an unsupported interaction.", "server-request"],
-      ["Codex plugin preparation returned an invalid response.", "invalid-response"],
-      ["Codex plugin catalog did not contain the selected plugin.", "catalog-missing"],
-      ["Codex catalog remote plugin ID is missing.", "remote-id-missing"],
-    ]);
-    error.preparationReason = reasons.get(error.message) ?? (rpcErrorCode === undefined ? "installer" : "rpc");
-    error.preparationMethod = lastMethod;
-    error.preparationRpcCode = rpcErrorCode;
-    error.preparationExitCode = childExitCode;
-    error.preparationExitSignal = childExitSignal;
+    // This is the sole termination path. Never start a replacement after an
+    // uncertain mutation; the outer supervisor also retires the whole group.
+    child.kill("SIGTERM");
+    await waitForClose(false);
+    if (exit === undefined) child.kill("SIGKILL");
+    error.preparation = {
+      ...(error.preparation ?? rpcDiagnostic ?? { reason: "installer", method: lastMethod }),
+      exitCode: exit?.code ?? undefined,
+      signal: exit?.signal ?? undefined,
+    };
     throw error;
   } finally {
     clearTimeout(deadline);
-    clearTimeout(killTimer);
     process.off("SIGTERM", cancel);
     process.off("SIGINT", cancel);
   }
