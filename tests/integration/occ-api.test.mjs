@@ -9062,6 +9062,7 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   const sandbox = {
     id: "sandbox-native",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     implementation: "test-native-sandbox",
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {},
