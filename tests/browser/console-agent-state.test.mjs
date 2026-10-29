@@ -3285,11 +3285,12 @@ test("Agents list row actions explain missing access and still report a refused 
   const requests = apiRequests(page, fixture.origin);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+  // Neither natively disabled nor unavailable with its reason (aria-disabled, finding 2899).
   const stopEnabled = () =>
-    page.waitForFunction(
-      () =>
-        globalThis.document.querySelector('[aria-label="Stop Guarded Agent"]')?.disabled === false,
-    );
+    page.waitForFunction(() => {
+      const stop = globalThis.document.querySelector('[aria-label="Stop Guarded Agent"]');
+      return stop?.disabled === false && stop.getAttribute("aria-disabled") !== "true";
+    });
 
   // Hold the first permission read so the reader can open Stop before the real answer arrives.
   const advice = await holdRequests(t, page, `${fixture.origin}${agentPath}/permissions`, {
@@ -3464,10 +3465,12 @@ test("Agents list permission advice updates its own row without moving focus els
   release = await holdGuardedAdvice();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   const guardedStop = guardedRow.getByRole("button", { name: "Stop Guarded Agent" });
-  await page.waitForFunction(
-    () =>
-      globalThis.document.querySelector('[aria-label="Stop Guarded Agent"]')?.disabled === false,
-  );
+  // The rebuilt row's Stop, live until the held answer: the refused one before Refresh is
+  // aria-disabled, not natively disabled (finding 2899).
+  await page.waitForFunction(() => {
+    const stop = globalThis.document.querySelector('[aria-label="Stop Guarded Agent"]');
+    return stop?.disabled === false && stop.getAttribute("aria-disabled") !== "true";
+  });
   await guardedStop.focus();
   release();
   await guardedRow.getByText(AGENT_STOP_AND_DELETE_DENIED, { exact: true }).waitFor();

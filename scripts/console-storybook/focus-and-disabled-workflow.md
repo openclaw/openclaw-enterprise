@@ -36,9 +36,9 @@ follows `:focus-visible`. No part of any ring may be cut off.
    Arrow through results: the active result has an inset ring.
 8. Open **Pages / Namespaces / Ready and provisioning**. Tab to a Namespace
    name. The whole row card draws the ring.
-9. Open **Pages / Agents / Create Restricted** (**Create Agent** is
-   disabled). Hover the button: the pointer is `not-allowed` and the button is
-   at 0.6 opacity. A button with `aria-busy="true"`, or a disabled
+9. Open **Pages / Create Agent / Capability check failure** (**Create Agent**
+   is disabled). Hover the button: the pointer is `not-allowed` and the button
+   is at 0.6 opacity. A button with `aria-busy="true"`, or a disabled
    button inside an `aria-busy="true"` region, shows the `progress` pointer.
    An unavailable control whose reason shows beside it stays in the Tab order
    instead (`aria-disabled`): open **Pages / Create Agent / Choose a starting
@@ -47,7 +47,12 @@ follows `:focus-visible`. No part of any ring may be cut off.
    not the whole button, so its focus ring keeps full contrast. **Deploy new
    version**, **Save plugin selections**, **Discard changes**, **Save channel
    Secrets**, **Strict mode** and the Gateway toggles do the same (finding
-   2878); an unavailable checkbox's label draws its ring.
+   2878); an unavailable checkbox's label draws its ring. So do the list's
+   **Create Agent**, Stop and Delete icons, **Create Secret**, **Run
+   diagnostics**, the Logs controls, the plugin dialog's **Load plugins** and
+   pager, and the read-only authentication and Slack token fields (finding
+   2899): a select or text field fades its text, and ignores arrow keys and
+   typing too.
 10. Open **Components / Stop Agent / Stop pending**. Stopping… sets
     `aria-busy="true"` and shows the `progress` pointer, as Deleting… and a
     saving Save Configuration do (finding 1927).

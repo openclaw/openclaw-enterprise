@@ -18,7 +18,6 @@ import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
 import {
   button,
-  describeDisabled,
   element,
   fieldError,
   focusSaveOutcome,
@@ -4687,7 +4686,7 @@ export async function renderAgentDetail(
       const reload = button("Reload authentication source", async () => {
         context.drafts.forget("authentication");
         reload.disabled = true;
-        save.disabled = true;
+        setSaveUnavailable(true);
         let fresh;
         try {
           // The tab's own request keeps this tab from being retained while the read is pending.
@@ -4721,15 +4720,21 @@ export async function renderAgentDetail(
       let pending = false;
       // Set when the caller's permission answer denies Agent update (finding 1530).
       let updateDenied = false;
-      // The method select and Save are described by the note that says why they are disabled
-      // (finding D749).
+      let saveUnavailable = false;
+      let authUnavailable = false;
+      // Save and the method select are described by the note that says why they are disabled
+      // (finding D749), and stay in the Tab order while it shows (finding 2899).
+      const setSaveUnavailable = (value: boolean) => {
+        saveUnavailable = value;
+        setUnavailable(save, value, updateDenied ? updateNote : null);
+      };
+      const setAuthUnavailable = (value: boolean) => {
+        authUnavailable = value;
+        auth.setDisabled(value, updateDenied ? updateNote : null);
+      };
       const describeUpdateDenial = () => {
-        const method = auth.section.querySelector<HTMLElement>("#harness-auth-method");
-        for (const control of [save, method]) {
-          if (control) {
-            describeDisabled(control, updateDenied ? updateNote : null);
-          }
-        }
+        setSaveUnavailable(saveUnavailable);
+        setAuthUnavailable(authUnavailable);
       };
       const applyUpdateDenial = (reason: string | undefined) => {
         // Retry credential access only rechecks the Secret grant; it is not an Agent update.
@@ -4741,9 +4746,9 @@ export async function renderAgentDetail(
         updateNote.hidden = !updateDenied;
         // A save in flight sets the controls when it ends.
         if (!pending) {
-          save.disabled = outcomeUnknown || updateDenied;
+          saveUnavailable = outcomeUnknown || updateDenied;
           // An edit that cannot be saved would only block Deploy (finding 1539).
-          auth.setDisabled(outcomeUnknown || updateDenied);
+          authUnavailable = outcomeUnknown || updateDenied;
         }
         describeUpdateDenial();
       };
@@ -4863,15 +4868,15 @@ export async function renderAgentDetail(
       });
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
-        auth.setDisabled(true);
+        setAuthUnavailable(true);
         setStatusTone(feedback, "warning");
         feedback.textContent = grantProblem
           ? grantText(grantProblem)
           : "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.";
       }
       if (outcomeUnknown) {
-        save.disabled = true;
-        auth.setDisabled(true);
+        setSaveUnavailable(true);
+        setAuthUnavailable(true);
         setStatusTone(feedback, "danger");
         feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
       }
@@ -4885,7 +4890,7 @@ export async function renderAgentDetail(
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         // The console's own errors under each field, not the browser's bubble (UX plan C3).
-        if (!validateFields([...form.elements]) || save.disabled) {
+        if (!validateFields([...form.elements]) || saveUnavailable) {
           return;
         }
         let harnessAuth: HarnessAuthBinding | null;
@@ -4896,10 +4901,10 @@ export async function renderAgentDetail(
           say(error instanceof Error ? error.message : message(error), "danger");
           return;
         }
-        save.disabled = true;
+        setSaveUnavailable(true);
         pending = true;
         reload.disabled = true;
-        auth.setDisabled(true);
+        setAuthUnavailable(true);
         data.setAuthenticationSaveState("saving");
         data.setAuthenticationPending(true);
         say(savedAuthentication ? "Checking credential access…" : "Saving authentication…");
@@ -5073,9 +5078,8 @@ export async function renderAgentDetail(
               : "Save authentication source";
             pending = false;
             reload.disabled = false;
-            save.disabled = outcomeUnknown || updateDenied;
-            auth.setDisabled(outcomeUnknown || savedAuthentication !== null || updateDenied);
-            describeUpdateDenial();
+            setSaveUnavailable(outcomeUnknown || updateDenied);
+            setAuthUnavailable(outcomeUnknown || savedAuthentication !== null || updateDenied);
             syncUnsavedAuthentication();
           }
         }

@@ -10,7 +10,16 @@ import type {
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { resourceActionIcon } from "../resource-actions.mjs";
-import { button, element, mayReturnFocus, setText, statusBlock, requestIdLine } from "../dom.mjs";
+import {
+  button,
+  element,
+  isUnavailable,
+  mayReturnFocus,
+  setText,
+  setUnavailable,
+  statusBlock,
+  requestIdLine,
+} from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
 import { credentialRejectedAsk } from "./deployment-recovery.mjs";
@@ -244,10 +253,15 @@ export function renderAgentList(context: AgentListContext) {
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     tone: "primary",
   });
-  // A disabled Create Agent names its reason (UX plan A2), and a provisioning Namespace still
-  // takes drafts, so Create Agent stays enabled and says why nothing deploys yet (finding 1990).
+  const createDeniedNote = element(
+    "p",
+    { className: "muted", role: "status", id: "agents-create-denied" },
+    agentCreateDenied(context.permissions),
+  );
+  // A disabled Create Agent names its reason (UX plan A2) and stays in the Tab order while it
+  // shows (finding 2899), and a provisioning Namespace still takes drafts, so Create Agent stays
+  // enabled and says why nothing deploys yet (finding 1990).
   const describeCreate = () => {
-    create.disabled = createDenied || notReady?.blocked === true;
     const reasons = [
       ...(createDenied ? ["agents-create-denied"] : []),
       ...(notReady ? ["namespace-not-ready"] : []),
@@ -257,8 +271,12 @@ export function renderAgentList(context: AgentListContext) {
     } else {
       create.removeAttribute("aria-describedby");
     }
+    setUnavailable(
+      create,
+      createDenied || notReady?.blocked === true,
+      createDenied ? createDeniedNote : notReadyNoteShown ? notReadyNote : null,
+    );
   };
-  describeCreate();
   // The Namespace status block (dom.mjs statusBlock's markup), a polite status on load.
   const namespaceNote = (tone: "warning" | "success", text: string) =>
     element(
@@ -272,18 +290,13 @@ export function renderAgentList(context: AgentListContext) {
       text,
     );
   let notReadyNote = notReady ? namespaceNote("warning", notReady.note) : null;
+  // Only a note shown at first paint is replaced in place later (showNamespace).
+  const notReadyNoteShown = notReadyNote !== null;
+  describeCreate();
   view.replaceChildren(
     element("div", { className: "collection-toolbar" }, search, create),
     ...(notReadyNote ? [notReadyNote] : []),
-    ...(createDenied
-      ? [
-          element(
-            "p",
-            { className: "muted", role: "status", id: "agents-create-denied" },
-            agentCreateDenied(context.permissions),
-          ),
-        ]
-      : []),
+    ...(createDenied ? [createDeniedNote] : []),
     feedback,
     rows,
   );
@@ -529,7 +542,7 @@ export function renderAgentList(context: AgentListContext) {
     const controls = rowControls.get(id);
     if (!controls) {
       search.focus();
-    } else if (controls[kind] && !controls[kind].disabled) {
+    } else if (controls[kind] && !isUnavailable(controls[kind])) {
       controls[kind].focus();
     } else {
       // At a narrow width the name is scrolled out of view; keep the table where it was.
@@ -741,7 +754,7 @@ export function renderAgentList(context: AgentListContext) {
         }
         // A redraw while the dialog was open (a permission refusal, for example) replaces the
         // invoking icon, so fall back to the row's current controls.
-        if (!submitted && invoker.isConnected && !invoker.disabled) {
+        if (!submitted && invoker.isConnected && !isUnavailable(invoker)) {
           invoker.focus();
         } else {
           focusRow(item.id, kind);
@@ -791,6 +804,15 @@ export function renderAgentList(context: AgentListContext) {
       const ids = [blocked ? noteId : null, badge].filter(Boolean);
       return ids.length ? { "aria-describedby": ids.join(" ") } : {};
     };
+    // The row's Deleting or Stop requested badge (render).
+    const badgeShown =
+      item.status === "deleting" ||
+      (item.status === "active" && stopped && Boolean(item.activeRevisionId));
+    // An icon unavailable for a reason the row shows, the note or the badge, stays in the Tab
+    // order with it (finding 2899); one waiting on Refresh after an uncertain write has only the
+    // alert above the table, and is natively disabled.
+    const reasonFor = (blocked: boolean, badge: boolean) =>
+      blocked ? noteId : badge && badgeShown ? badgeId : null;
     const stop = neverStarted
       ? null
       : button(
@@ -800,11 +822,17 @@ export function renderAgentList(context: AgentListContext) {
             className: "icon-button",
             "aria-label": `Stop ${item.name}`,
             title: "Stop Agent",
-            disabled: !available || stopped || !canStop,
             // A deleting or Stop requested badge explains a stopped Agent's disabled icon.
             ...describedBy(!canStop, stopped ? badgeId : null),
           },
         );
+    if (stop) {
+      setUnavailable(
+        stop,
+        !available || stopped || !canStop,
+        unsettled.has(item.id) ? null : reasonFor(!canStop, stopped),
+      );
+    }
     const remove = button(
       resourceActionIcon("delete"),
       (event) => confirmAction(item, "delete", event.currentTarget as HTMLButtonElement),
@@ -812,9 +840,13 @@ export function renderAgentList(context: AgentListContext) {
         className: "icon-button",
         "aria-label": `Delete ${item.name}`,
         title: "Delete Agent",
-        disabled: !available || !canDelete,
         ...describedBy(!canDelete, item.status === "deleting" ? badgeId : null),
       },
+    );
+    setUnavailable(
+      remove,
+      !available || !canDelete,
+      unsettled.has(item.id) ? null : reasonFor(!canDelete, item.status === "deleting"),
     );
     // The note's line is reserved from the first paint, so advice that lands later only fills it.
     const note = element(
@@ -1085,7 +1117,6 @@ export function renderAgentList(context: AgentListContext) {
         context.namespace = namespace;
       }
       notReady = namespace ? namespaceCreation(namespace) : NAMESPACE_MISSING;
-      describeCreate();
       // A ready Namespace says so where the warning was. The list holds no field being edited,
       // so the note keeps its own height (Create Agent keeps the warning's, finding 2024).
       const replacement = notReady
@@ -1096,6 +1127,7 @@ export function renderAgentList(context: AgentListContext) {
           );
       notReadyNote?.replaceWith(replacement);
       notReadyNote = replacement;
+      describeCreate();
       if (!namespace) {
         // A lost Namespace also removes its retained rows, so search cannot reveal them again.
         const focused =
