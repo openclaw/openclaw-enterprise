@@ -73,6 +73,8 @@ reconciling a version.
 
 ### Native node endpoint
 
+Compute enrolls workspace nodes through Envoy on both control planes.
+
 Runtime-enabled dedicated versions also receive an exact `/node` route and an
 exact `/node/__openclaw__/worker` route under the same Agent URL, hostname and
 `https` listener, plus `/node/__openclaw__/worker-bundle/v1/` and

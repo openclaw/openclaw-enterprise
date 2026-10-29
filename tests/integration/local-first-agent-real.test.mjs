@@ -1664,6 +1664,17 @@ test(
               "the native Harness's provider-owned Sandbox",
             );
             assert.equal(sandbox.metadata.uid, owner.uid);
+            // Cold worker installation uses HTTP transfers as well as WebSocket
+            // enrollment. Both must traverse the scoped TLS route through Envoy.
+            const nodeEndpoints =
+              sandbox.spec.policy.network_policies["workspace-node-enrollment"]?.endpoints;
+            assert.ok(
+              Array.isArray(nodeEndpoints) &&
+                nodeEndpoints.length === 1 &&
+                nodeEndpoints[0].tls === "NETWORK_TLS_MODE_SKIP" &&
+                nodeEndpoints[0].enforcement === "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+              "The native workspace node must use the scoped TLS Gateway route",
+            );
             const container = pod.spec.containers.find(({ name }) => name === "agent");
             assert.ok(container, "The Sandbox must contain its native Harness");
             const mount = container.volumeMounts.find(
