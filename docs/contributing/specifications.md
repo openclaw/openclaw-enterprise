@@ -262,3 +262,4 @@ RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.
 | `0019-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
 | `0021-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
 | `0022-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
+| `0023-openshell-managed-workspaces.md`    | [RFC-0024](../../specs/rfcs/0024-openshell-managed-workspaces.md)            |
