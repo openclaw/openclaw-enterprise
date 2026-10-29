@@ -140,19 +140,17 @@ grants and an absolute deadline unaffected by renewal or recovery.
 `validateRepositoryBrokerNetworkProxy` then refuses a Codex proxy setting that
 blocks the broker, as Agent save does.
 
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
-constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
-member. Protected installations select `repository.preparedGitHub` and the installed
-Sandbox/Credential Proxy Driver. OCC creates finite sessions without a native sender,
-control socket, broker CA or session files.
+`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`:
+GitHub Backend `repo` pins `GitHubRepositoryPolicy`. Protected `repository.preparedGitHub` uses
+the installed Sandbox/Credential Proxy Driver; its finite sessions omit control socket, broker CA and session files.
 
-Explicit `repository.nativeSender` selects `GitHubNativeRepositorySender` and requires
-prepared GitHub custody. It owns session operations and files, receives no App key, and
-cannot coexist with protected delivery. Controller startup rejects `drivers.repo` in
-every mode, before it constructs a worker or allocates an attempt. Operators must
-drain accepted work on the original owner before cutover.
-Cleanup matches recorded owner identity without resolving policy or restoring authority.
-The worker's prepared provider owns issuance and custody.
+`apps/controller/src/drivers/repo/github/installation.ts:githubRepositoryConfiguration`
+rejects invalid native paths before registry or CA reads. `repository.nativeSender` selects
+`GitHubNativeRepositorySender`, requires prepared GitHub custody and excludes protected delivery. It
+owns session operations and files without App keys. Startup rejects `drivers.repo` before workers
+or attempts. Drain accepted work on its original owner before cutover. Cleanup matches recorded
+ownership without resolving policy or restoring authority; the worker's prepared provider owns
+issuance and custody.
 
 ### 3. Record ownership before opening a session
 
@@ -372,7 +370,11 @@ denied before reaching the provider, and chat continues.
 
 - 2026-10-25 00:30: Answer repository options without a repository Driver with no options and `meta.notConfigured`. (finding 2387)
 
+- 2026-10-24 23:39: Document startup validation. (authoring-run/a22ebb8f-60fe-47f8-820b-da27aea2206c - 5d3f3243b1440902d7fd13c15023f13a2abec7ee)
+
 - 2026-10-24 22:30: Name the missing repository Driver. (fix-2361-2362 - 476c1b350)
+
+- 2026-10-22 22:21: Reject invalid native paths before registry or CA loading. (authoring-run/deaf3d45-89b5-4e08-a6b7-c99fd1ffb6ea - 31156790238dff36eaf29bce1a2f6ae5dce50834)
 
 - 2026-10-22 06:30: Preserve independent authority facts and source recovery. (authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4 - 221dff2ff7985a19cd34dad392d68cf5549e1136)
 

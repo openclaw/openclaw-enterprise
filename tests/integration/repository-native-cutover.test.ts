@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test, { type TestContext } from "node:test";
 import { rootCertificates } from "node:tls";
+import { rejectNativeRepositoryPath } from "../../apps/controller/src/composition/installation-fields.ts";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
+import { configurationLogDetails } from "../../apps/controller/src/logging.ts";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { RepositoryReceiptStore } from "../../apps/controller/src/backends/repository-credentials/receipt-store.ts";
@@ -38,6 +43,55 @@ import {
   serviceConfigurationData,
   githubTokenConfigurationData,
 } from "../fixtures/repository-credentials/builders.mjs";
+
+test("a native path diagnostic cannot acquire caller-supplied public text", () => {
+  for (const variant of [
+    "public-ca-format",
+    "control-socket-format",
+    "control-socket-length",
+  ] as const) {
+    assert.throws(
+      () => rejectNativeRepositoryPath(variant),
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.equal(error.error.details.length, 1);
+        assert.equal(Reflect.set(error.error.details[0], "message", "caller-marker"), false);
+        assert.equal(Reflect.set(error.error, "details", []), false);
+        assert.equal(Reflect.set(error.error.details, "0", {}), false);
+        assert.equal(Reflect.set(error, "error", { details: [] }), false);
+        return true;
+      },
+    );
+  }
+});
+
+test("native path diagnostics reject unknown discriminators without coercion or public details", () => {
+  let coerced = false;
+  const object = {
+    toString() {
+      coerced = true;
+      return "public-ca-format";
+    },
+    [Symbol.toPrimitive]() {
+      coerced = true;
+      return "control-socket-format";
+    },
+  };
+  for (const variant of [undefined, null, "unknown", "toString", "__proto__", 0, object]) {
+    // Runtime callers can violate the literal type; no such value gains public text authority.
+    assert.throws(
+      () => rejectNativeRepositoryPath(variant as Parameters<typeof rejectNativeRepositoryPath>[0]),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, "Error");
+        assert.equal(error.message, "Invalid native repository diagnostic.");
+        assert.deepEqual(startupFailureFields(error), { code: "STARTUP_FAILED" });
+        return true;
+      },
+    );
+  }
+  assert.equal(coerced, false);
+});
 
 async function fixture(t: TestContext) {
   const directory = await socketDirectory(t, "native-cutover-");
@@ -493,31 +547,130 @@ test("complete native configuration requires explicit selection and custody with
     podLabels: { app: "worker" },
     port: 8443,
   };
-  configuration.backend = [
-    {
-      id: f.registry.backendId,
-      type: "github",
-      configuration: { registryPath },
-      drivers: { repo: f.sender.id },
-    },
-  ];
+  const backend = {
+    id: f.registry.backendId,
+    type: "github" as const,
+    configuration: { registryPath },
+    drivers: { repo: f.sender.id },
+  };
+  configuration.backend = [backend];
   const repository = {
     id: f.sender.id,
     configuration: { sessionDurationSeconds: 600 },
-    nativeSender: { controlSocket: f.config.gateway.controlSocket, publicCaPath },
+    nativeSender: { controlSocket: join(f.directory, "unstarted.sock"), publicCaPath },
     preparedGitHub: {
       custodyKeyPath: join(f.directory, "custody.key"),
       privateKeyPath: join(f.directory, "app.pem"),
     },
   };
   configuration.repository = repository;
-  const load = () =>
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: {},
-      startupConfiguration: { ...snapshot, configuration },
+  const startupPath = join(f.directory, "installation.json");
+  const load = async (retained = false) => {
+    await writeFile(startupPath, JSON.stringify(configuration));
+    const options = {
+      mode: "production" as const,
+      environment: { OCC_CONFIG_PATH: startupPath },
+    };
+    // Exercise fresh file loading and the retained snapshots used by API and worker startup.
+    return loadInstallationConfiguration({
+      ...options,
+      ...(retained && {
+        startupConfiguration: await loadStartupConfigurationSnapshot(options),
+      }),
     });
-  assert.ok((await load())?.nativeRepositorySender);
+  };
+  // Loading validates configuration and CA material without connecting to the broker.
+  await assert.rejects(stat(repository.nativeSender.controlSocket), { code: "ENOENT" });
+  for (const retained of [false, true]) {
+    assert.ok((await load(retained))?.nativeRepositorySender);
+  }
+  // A valid path does not make invalid CA material acceptable.
+  await writeFile(publicCaPath, "not a PEM certificate", { mode: 0o600 });
+  for (const retained of [false, true]) {
+    await assert.rejects(load(retained), { message: "invalid-public-ca" });
+  }
+  await writeFile(publicCaPath, rootCertificates[0]!, { mode: 0o600 });
+  const protectedAccess = await composeRepositoryAccess({
+    backend,
+    selection: {
+      id: f.sender.id,
+      implementation: "github",
+      definition: GitHubRepositoryPolicy,
+      configuration: repository.configuration,
+    },
+    protectedGit: true,
+  });
+  assert.equal(protectedAccess.repositoryPolicy.id, f.sender.id);
+  assert.equal(protectedAccess.nativeRepositorySender, undefined);
+  // Absent files prove invalid input is refused before either registry or CA I/O.
+  configuration.backend = [
+    { ...backend, configuration: { registryPath: join(f.directory, "missing-registry.json") } },
+  ];
+  const overlongSocketPath = `/${"é".repeat(52)}`;
+  for (const field of ["publicCaPath", "controlSocket"] as const) {
+    const valid = repository.nativeSender[field];
+    for (const [index, path] of [
+      relative(process.cwd(), valid),
+      `${f.directory}/./untrusted`,
+      `${f.directory}/nested/../untrusted`,
+      `${f.directory}//untrusted`,
+      `${valid}/`,
+      `${valid}\n`,
+      `${valid}\u0085`,
+      ...(field === "controlSocket" ? [overlongSocketPath, `${overlongSocketPath}/./socket`] : []),
+    ].entries()) {
+      configuration.repository = {
+        ...repository,
+        nativeSender: { ...repository.nativeSender, [field]: path },
+      };
+      for (const retained of [false, true]) {
+        await t.test(`${field} invalid case ${index + 1}, retained=${retained}`, async () => {
+          await assert.rejects(load(retained), (error: unknown) => {
+            // Configuration consumers rely on the real class as well as public log fields.
+            assert.ok(error instanceof ConfigurationValidationError);
+            const failure = startupFailureFields(error);
+            assert.equal(failure.code, "DRIVER_CONFIGURATION_INVALID");
+            assert.ok("details" in failure);
+            const [detail, ...extra] = configurationLogDetails(failure.details);
+            assert.ok(detail && extra.length === 0, "expected one public configuration detail");
+            assert.equal(detail.path, `/repository/nativeSender/${field}`);
+            assert.equal(
+              detail.code,
+              path === overlongSocketPath ? "INVALID_RANGE" : "INVALID_FORMAT",
+            );
+            assert.match(
+              detail.message ?? "",
+              path === overlongSocketPath
+                ? /at most 103 UTF-8 bytes.*Use a shorter socket path/
+                : /canonical absolute path without control characters.*Use an absolute path with no dot segments/,
+            );
+            assert.ok(
+              !JSON.stringify(failure).includes(JSON.stringify(path).slice(1, -1)),
+              "diagnostics must not echo the input path",
+            );
+            return true;
+          });
+        });
+      }
+    }
+  }
+  assert.deepEqual(startupFailureFields(new Error("unrecognized startup failure")), {
+    code: "STARTUP_FAILED",
+  });
+  configuration.repository = repository;
+  await assert.rejects(load(), (error: unknown) => {
+    assert.deepEqual(startupFailureFields(error), { code: "STARTUP_FAILED" });
+    return true;
+  });
+  configuration.backend = [backend];
+  // The inclusive socket limit counts encoded bytes, not JavaScript characters.
+  configuration.repository = {
+    ...repository,
+    nativeSender: { ...repository.nativeSender, controlSocket: `/${"é".repeat(51)}` },
+  };
+  for (const retained of [false, true]) {
+    assert.ok((await load(retained))?.nativeRepositorySender);
+  }
   configuration.repository = { ...repository, preparedGitHub: undefined };
   await assert.rejects(load(), /requires prepared GitHub custody/);
   // Selecting a Sandbox never downgrades protected delivery to the native socket.

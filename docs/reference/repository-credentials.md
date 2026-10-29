@@ -176,8 +176,10 @@ above the immediate parent. The loader rejects symlinks and file replacement.
 See [configuration and TLS ownership](../flows/repository-credential-configuration.md).
 
 For production native Git, set `backend.kind` to `github-prepared-git-registry`
-and supply `backendId` and `registryFile`. Driver configuration supplies
-`controlSocket`, `sessionDurationSeconds` and `publicCaPath`. Kubernetes mounts
+and supply `backendId` and `registryFile`. In the Installation,
+`repository.configuration.sessionDurationSeconds` sets policy duration;
+`repository.nativeSender.controlSocket` and `repository.nativeSender.publicCaPath`
+select native delivery. Kubernetes mounts
 only configuration, registry and TLS in the sender. The worker alone mounts the
 App signing key and custody key. The service image must trust GitHub's HTTPS
 certificate chain. For a private CA, set `NODE_EXTRA_CA_CERTS` to a readable

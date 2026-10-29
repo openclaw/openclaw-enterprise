@@ -63,7 +63,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     [
       "repository installation admits its exact field helpers",
       installation,
-      'import { object as record, closed as check, nonempty as text, openShellRepositoryConfiguration as repository } from "../../../composition/installation-fields.ts"; void record; void check; void text; void repository;',
+      'import { object as record, closed as check, nonempty as text, openShellRepositoryConfiguration as repository, rejectNativeRepositoryPath as diagnostic } from "../../../composition/installation-fields.ts"; void record; void check; void text; void repository; void diagnostic;',
     ],
     [
       "prepared Git admits its existing transaction class and worker identity",
@@ -168,6 +168,48 @@ test("credential source boundary rejects new raw capabilities in the real source
   });
 
   const cases = [
+    [
+      "repository parser cannot construct arbitrary configuration diagnostics",
+      'import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";',
+      /unreviewed runtime import/,
+      installation,
+    ],
+    [
+      "shared fields reject adjacent contract symbols",
+      'import { requireConfiguration } from "@openclaw-enterprise/contracts";',
+      /unreviewed shared field validation/,
+      sharedFields,
+    ],
+    [
+      "shared fields cannot re-export the configuration error constructor",
+      "export { ConfigurationValidationError };",
+      /raw I\/O binding cannot be re-exported/,
+      sharedFields,
+    ],
+    [
+      "repository parser cannot construct arbitrary public field errors",
+      'import { InstallationFieldError } from "../../../composition/installation-fields.ts";',
+      /unreviewed shared field validation/,
+      installation,
+    ],
+    [
+      "native diagnostic factory rejects an adjacent caller",
+      'import { rejectNativeRepositoryPath } from "../../../../composition/installation-fields.ts";',
+      /unreviewed shared field validation/,
+      preparedConfiguration,
+    ],
+    [
+      "native diagnostic factory rejects an alternate module spelling",
+      'import { rejectNativeRepositoryPath as diagnostic } from "../../../composition/./installation-fields.ts";',
+      /unreviewed shared field validation/,
+      installation,
+    ],
+    [
+      "native diagnostic factory cannot be re-exported",
+      "export { rejectNativeRepositoryPath };",
+      /raw I\/O binding cannot be re-exported/,
+      installation,
+    ],
     [
       "shared fields reject direct file IO",
       'import { readFile } from "node:fs/promises";',

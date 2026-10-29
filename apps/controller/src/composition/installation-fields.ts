@@ -1,5 +1,6 @@
 // Shared Installation value validation. File loading, environment access and
 // Driver binding remain in their owning composition modules.
+import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
@@ -76,6 +77,40 @@ export class InstallationFieldError extends Error {
     super(bounded.map((detail) => detail.message).join(" "));
     this.details = bounded;
   }
+}
+
+/** Only the three public native sender path diagnostics may cross this boundary. */
+export function rejectNativeRepositoryPath(
+  variant: "public-ca-format" | "control-socket-format" | "control-socket-length",
+): never {
+  let detail: InstallationFieldDetail;
+  switch (variant) {
+    case "public-ca-format":
+    case "control-socket-format": {
+      const field = variant === "public-ca-format" ? "publicCaPath" : "controlSocket";
+      detail = {
+        path: `/repository/nativeSender/${field}`,
+        code: "INVALID_FORMAT",
+        message: `repository.nativeSender.${field} must be a canonical absolute path without control characters. Use an absolute path with no dot segments, repeated separators, trailing separator or control characters.`,
+      };
+      break;
+    }
+    case "control-socket-length":
+      detail = {
+        path: "/repository/nativeSender/controlSocket",
+        code: "INVALID_RANGE",
+        message:
+          "repository.nativeSender.controlSocket must be at most 103 UTF-8 bytes. Use a shorter socket path.",
+      };
+      break;
+    default:
+      throw new Error("Invalid native repository diagnostic.");
+  }
+  // Startup consumers rely on configuration-error identity as well as safe details.
+  const error = new ConfigurationValidationError([Object.freeze(detail)]);
+  Object.freeze(error.error.details);
+  Object.freeze(error.error);
+  throw Object.freeze(error);
 }
 
 const egressAuthorityFiles = ["certificatePath", "privateKeyPath", "issuerPublicKeyPath"];
