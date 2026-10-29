@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -2203,7 +2204,25 @@ test("protected material selection is serialized with the reservation fence at t
   assert.equal(f.runtime.route(revision.id).state, "installed");
 });
 
-async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
+// Serialized with the released v0.1.5 proto/sandbox.proto SupervisorMiddlewareService.
+// v0.1.6's default dynamic policy deliberately emits the same bytes. Decode with the
+// product schema/options so missing fields are tested as they arrive from the gateway.
+const registrationLoader = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+)("@grpc/proto-loader");
+const registrationWire = registrationLoader.loadSync(
+  new URL(
+    "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+    import.meta.url,
+  ).pathname,
+  { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+)["openshell.v1.SupervisorMiddlewareService"];
+const legacyRegistrationBytes = Buffer.from(
+  "0a106f63652d70726570617265642d676974121f68747470733a2f2f6d6964646c65776172652e6578616d706c652e7465737418808040320770726576696577c206020805",
+  "hex",
+);
+
+async function observedGitRoute(mandatoryPolicy, legacy = false, removeBinding = false) {
   const previewRegistry = validateGitHubRepositoryRegistry(
     {
       version: 1,
@@ -2304,9 +2323,9 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
     ...(await sandbox(...args)),
     configurationAdmission: admission(),
   });
-  f.client.getGatewayInfo = async () => ({
-    gateway_version: mandatoryPolicy ? "0.1.6" : legacyVersion,
-  });
+  f.client.getGatewayInfo = async () => {
+    assert.fail("recipient proof must not fetch gateway release information");
+  };
   f.client.readExclusivePreviewWorkspace = async () => true;
   f.client.getSandboxConfig = async () => ({
     policy: {
@@ -2334,12 +2353,8 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
     provider_env_revision: environment ?? f.entry.binding.resourceVersion,
     supervisor_middleware_services: [
       {
-        name: "oce-prepared-git",
-        binding_policy: mandatoryPolicy ?? (legacyVersion === "0.1.6" ? 2 : undefined),
-        bindings: [1],
-        audience: "preview",
-        request_timeout: { seconds: "5" },
-        grpc_endpoint: "https://middleware.example.test",
+        ...registrationWire.deserialize(legacyRegistrationBytes),
+        ...(!legacy && { binding_policy: mandatoryPolicy ?? 2, bindings: [1] }),
       },
     ],
   });
@@ -2355,25 +2370,39 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
     materialVersion: "preview-material",
     apiOrigin: "https://api.github.com",
   };
-  if (mandatoryPolicy || legacyVersion === "0.1.6") {
+  {
     const config = f.client.getSandboxConfig;
-    for (const [binding_policy, bindings] of [
-      [0, [1]],
-      [1, [1]],
-      [2, [2]],
-      [2, [1, 2]],
-      [3, [1, 2]],
-      [3, []],
+    for (const fields of [
+      ...(mandatoryPolicy ? [{}] : []),
+      { binding_policy: undefined },
+      { bindings: undefined },
+      { binding_policy: 2 },
+      { bindings: [1] },
+      { binding_policy: null, bindings: [1] },
+      { binding_policy: "2", bindings: [1] },
+      { binding_policy: 0, bindings: [] },
+      { binding_policy: 1, bindings: [1] },
+      { binding_policy: 2, bindings: undefined },
+      { binding_policy: 2, bindings: null },
+      { binding_policy: 2, bindings: "1" },
+      { binding_policy: 2, bindings: ["1"] },
+      { binding_policy: 2, bindings: [2] },
+      { binding_policy: 2, bindings: [1, 2] },
+      { binding_policy: 3, bindings: [1, 2] },
+      { binding_policy: 3, bindings: [] },
     ]) {
       f.client.getSandboxConfig = async () => {
         const value = await config();
-        value.supervisor_middleware_services[0].binding_policy = binding_policy;
-        value.supervisor_middleware_services[0].bindings = bindings;
+        const service = value.supervisor_middleware_services[0];
+        delete service.binding_policy;
+        delete service.bindings;
+        Object.assign(service, fields);
         return value;
       };
       await f.reconcile();
       assert.equal(preview.recipient, undefined, "dynamic or response-only must not qualify");
       assert.equal(f.calls.rotate, 0);
+      assert.equal(f.calls.material, 0, "unqualified binding must not read credential material");
     }
     f.client.getSandboxConfig = config;
   }
@@ -2405,6 +2434,35 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
     ),
   });
   assert.equal(await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe), "held");
+  if (removeBinding) {
+    // Losing explicit mandatory fields after qualification changes the recipient fingerprint.
+    // Observed-only mode must not reinterpret this established recipient as a legacy one.
+    const config = f.client.getSandboxConfig;
+    f.client.getSandboxConfig = async () => {
+      const value = await config();
+      delete value.supervisor_middleware_services[0].binding_policy;
+      delete value.supervisor_middleware_services[0].bindings;
+      return value;
+    };
+    await f.reconcile();
+    assert.equal(f.calls.material, 0, "stripped bindings cannot reuse a witnessed recipient");
+    assert.equal(f.calls.rotate, 0);
+    if (!mandatoryPolicy) {
+      assert.equal(f.entry.blocked, "supervisor_replaced");
+    }
+    return;
+  }
+  // Even a witnessed launcher denial cannot authorize material after a binding downgrade.
+  const qualifiedConfig = f.client.getSandboxConfig;
+  f.client.getSandboxConfig = async () => {
+    const value = await qualifiedConfig();
+    value.supervisor_middleware_services[0].binding_policy = 1;
+    return value;
+  };
+  await f.reconcile();
+  assert.equal(f.calls.material, 0, "a post-challenge downgrade must precede material selection");
+  assert.equal(f.calls.rotate, 0);
+  f.client.getSandboxConfig = qualifiedConfig;
   // The controlled supervisor delays the post-write observation. The production runtime
   // must nevertheless cross its own pre-write observation at the new reservation fence.
   f.faults.observeAfterRotate = true;
@@ -2492,9 +2550,11 @@ async function observedGitRoute(mandatoryPolicy, legacyVersion = "0.1.5") {
 }
 
 for (const policy of [undefined, 2, 3]) {
-  test(`an observed Git route (${policy ?? "preview"}) rotates only after its challenge in the original worker`, () =>
-    observedGitRoute(policy));
+  test(`an observed Git route (${policy ?? "preview"}) rotates only after its challenge in the original worker`, async () => {
+    if (policy === undefined) {
+      await observedGitRoute(policy, true);
+    }
+    await observedGitRoute(policy);
+    await observedGitRoute(policy, false, true);
+  });
 }
-
-test("an explicit installation preview on stock 0.1.6 retains its scope and requires the held challenge", () =>
-  observedGitRoute(undefined, "0.1.6"));

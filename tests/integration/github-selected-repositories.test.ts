@@ -97,6 +97,18 @@ test("ordinary fresh selections resolve one or N repositories without broadening
     },
     "github",
   );
+  const permissions = registry.repositories[0]!.namespaces[0]!.permissions!;
+  assert.notEqual(permissions, grant.permissions);
+  assert.equal(Object.isFrozen(permissions), true);
+  assert.deepEqual(permissions, grant.permissions);
+  assert.deepEqual(Object.keys(permissions), ["contents", "metadata", "pull_requests"]);
+  assert.equal(Object.isFrozen(grant.permissions), false);
+  assert.deepEqual(Object.keys(grant.permissions), ["metadata", "contents", "pull_requests"]);
+  assert.deepEqual(grant.permissions, {
+    metadata: "read",
+    contents: "write",
+    pull_requests: "write",
+  });
   const policy = new GitHubRepositoryPolicy(
     { id: "github", drivers: { repo: "github" } },
     registry,

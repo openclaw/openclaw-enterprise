@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-10-29"
-last_updated_session: authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf
+last_updated_session: authoring-run/033567f0-1b76-4fba-83a3-d83d36dae4bd
 ---
 
 # Agent repository credential flow
@@ -187,18 +187,21 @@ bounded by the configured interval and ten minutes.
 `worker.repository-cleanup-warning` with `cause` once per worker.
 
 `apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission`
-reserves before releasing material.
+reserves before release.
 `apps/controller/src/backends/repository-credentials/receipt-store.ts:RepositoryReceiptStore`
-retains fences and original-broker disposal evidence across service pruning.
-Transport failure cannot establish absence. The receipt store matches
-`preparedOnly` to protocol 3 throughout receipt operations. Unmarked v1 requests
-can recover and close on their original IDs but cannot reserve.
+retains fences and original-broker disposal evidence after pruning.
+Transport failure cannot establish absence. `preparedOnly` requires protocol 3;
+unmarked v1 requests can recover and close original IDs but cannot reserve.
 `RepositoryCredentialLifecycle.verifyRelease` and
 `apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts:sessionQuery`
-require protocol 3 for native release and prepared-material selection.
-Protected sessions retain protocol 2. The query matches policy-reduction version 2
-with execution admission v7. It retains the exact installed-plan, recipient,
-standing-approval and session-lifetime checks before selecting prepared material.
+require protocol 3 for native release and material selection.
+Protected sessions use protocol 2. Selection checks policy-reduction version 2
+against execution admission v7, the exact installed plan, recipient, standing
+approval and session lifetime.
+
+`apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts:selectedRepositoryGrantSql`
+shares per-member selection, Driver and expiry checks between production and
+withdrawal. Frozen identities reject session replacement. Transaction locks remain.
 
 ### 4. Deliver and retain one complete runtime generation
 
@@ -393,6 +396,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 23:23: Share selected-repository grant projection. (authoring-run/033567f0-1b76-4fba-83a3-d83d36dae4bd - a198a93e81cc88f7ba83edc4de7a949a43b19e17)
 
 - 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
 

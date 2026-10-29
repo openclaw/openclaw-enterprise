@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-29
-last_updated_session: 01a183dc-eb11-7f33-9992-dec02cd989e3
+last_updated_session: authoring-run/58990420-42d2-463b-911f-914ca3d54611
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -314,12 +314,14 @@ preserves a serving predecessor; activation resolves the candidate again. Withou
 `harnessEndpoint`, Codex retains Kubernetes transport and `/home/node/workspace`.
 Native OpenClaw enrolls outbound into its admitted workspace.
 
-Compute awaits the Harness Pod and the Secret's enrolled node.
-Missing enrollment prevents activation. The Codex supervisor
-rereads the provider setup before every node retry, keeping the latest valid
-value while the projection is unavailable. It relaunches the workspace-node
-process one second after every exit, uncapped, so Gateway rollout does not
-strand the Sandbox. Shutdown stops retries.
+Compute awaits the Harness Pod and Secret's enrolled node before activation.
+The Codex supervisor rereads provider setup before every node retry, retaining the
+latest valid value while projection is unavailable. It relaunches workspace-node
+one second after every exit until shutdown, so Gateway rollout cannot strand the Sandbox.
+
+`apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts:previewPolicyAndRecipient`
+checks policy, recipient and launcher proof. Strict grants require `PRE_CREDENTIALS`;
+legacy preview accepts absent binding fields.
 
 Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
@@ -350,13 +352,12 @@ conditionally detaches Git. It independently verifies the reduced generation, or
 process and network, retained providers and model attachment. Applied detaches are observed,
 never resent; an unapplied intent repeats its request. A replacement cannot settle it.
 
-This supports one Git binding with separately authorized model access. Removing the last Git route
-denies Git while that conversation continues. Multiple independent Git bindings
-remain unsupported. For generic exchange routes, `withdrawBinding` returns
-`retire-runtime`: Compute reports `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`
-without deleting the Sandbox or claiming detachment. The worker leaves that source pending
-and attempts other authorized withdrawals in the same batch. Runtime retirement is a
-separate action. The mandatory stock gate stays closed; observed-hook assurance stays separate.
+This supports one Git binding and separately authorized model access; removing its
+last route denies Git without interrupting the conversation. Multiple independent
+Git bindings remain unsupported. For generic exchange routes, `withdrawBinding`
+returns `retire-runtime`. Compute reports `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`
+without deleting the Sandbox or claiming detachment. The worker keeps that source
+pending and attempts other authorized withdrawals. Runtime retirement remains separate.
 
 ## Debugging and verification
 
@@ -384,6 +385,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 23:25: Qualify Git independently of release labels. (authoring-run/58990420-42d2-463b-911f-914ca3d54611 - 77d84ecbf76ce5c60193ad21c8be33184a304ee6)
 
 - 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
 

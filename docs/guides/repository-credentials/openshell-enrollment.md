@@ -1,7 +1,9 @@
 # Enroll repositories for OpenShell Agents
 
 For fresh repository-enabled installations, use the production Installation and
-Helm procedure below with matching OpenShell **0.1.6** components. The
+Helm procedure below with matching OpenShell **0.1.6** components. Packaging pins
+this release; runtime admission checks the required facilities and policy proof,
+not the release label. The
 [local setup guide](../deploy/local-openshell-images.md) also lists component versions. Select Kubernetes
 Compute, dedicated Codex, and the same OpenShell Driver for Sandbox and
 Credential Proxy. Repository access requires its own explicit Namespace policy;

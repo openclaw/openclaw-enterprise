@@ -123,6 +123,14 @@ function unique(values: readonly string[]): void {
   }
 }
 
+function canonicalPermissions(
+  permissions: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  return Object.freeze(
+    Object.fromEntries(Object.entries(permissions).sort(([a], [b]) => a.localeCompare(b))),
+  );
+}
+
 function validateInstallationAccess(value: unknown): GitHubInstallationAccess {
   const { repositoryRef, namespaces } = object(value, ["repositoryRef", "namespaces"]);
   const policies = array(namespaces, 128).map((candidate) => {
@@ -217,13 +225,7 @@ export function validateGitHubRepositoryRegistry(
         return invalid();
       }
       const permissions = selected
-        ? Object.freeze(
-            Object.fromEntries(
-              Object.entries(policy.permissions as Record<string, string>).sort(([a], [b]) =>
-                a.localeCompare(b),
-              ),
-            ),
-          )
+        ? canonicalPermissions(policy.permissions as Readonly<Record<string, string>>)
         : undefined;
       if (Object.hasOwn(policy, "allowStandingApproval") && policy.allowStandingApproval !== true) {
         return invalid();

@@ -156,22 +156,26 @@ export async function previewPolicyAndRecipient({
   ) {
     return;
   }
-  const gatewayVersion = (await client.getGatewayInfo?.(signal))?.gateway_version;
-  if (mandatory && gatewayVersion !== "0.1.6") {
-    return;
-  }
   const services = c.supervisor_middleware_services;
   const selected = Array.isArray(services)
     ? services.filter((s) => asRecord(s)?.name === registration)
     : [];
   const service = selected.length === 1 && asRecord(selected[0]);
+  // Legacy observed-only registrations omit both fields. Absence proves no mandatory
+  // support: strict grants never use it, and explicit/partial values cannot fall back.
+  // The recipient fingerprint below fences changes after the registration is witnessed.
+  const legacyObserved =
+    !mandatory &&
+    service &&
+    !Object.hasOwn(service, "binding_policy") &&
+    !Object.hasOwn(service, "bindings");
   // Stock defaults to 500 ms: enough for the deliberate denial, not for the full
   // per-request recheck. Qualify the operator's five-second RPC timeout; OCE still caps
   // its decision at three seconds and never retries a possible authorization commitment.
   const timeout = asRecord(service && service.request_timeout);
   if (
     !service ||
-    ((mandatory || gatewayVersion === "0.1.6") &&
+    (!legacyObserved &&
       (![2, 3].includes(service.binding_policy as number) ||
         !Array.isArray(service.bindings) ||
         service.bindings.length !== 1 ||

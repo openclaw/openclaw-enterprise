@@ -49,29 +49,54 @@ export function isGitHubRepositoryPermissions(
   );
 }
 
+const numericIdPattern = /^[1-9][0-9]{0,15}$/;
+const repositorySlugPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+function isNumericId(value: unknown): boolean {
+  return (
+    typeof value === "string" && numericIdPattern.test(value) && Number.isSafeInteger(Number(value))
+  );
+}
+
+function hasValidGrantIdentity(grant: GitHubRepositoryGrant): boolean {
+  return (
+    grant.profile === "github-repository" &&
+    !!grant.id &&
+    !!grant.isolationId &&
+    isNumericId(grant.appId) &&
+    isNumericId(grant.installationId)
+  );
+}
+
+function isValidRepository(repository: GitHubRepositoryGrant["repositories"][number]): boolean {
+  return (
+    isNumericId(repository.repositoryId) &&
+    typeof repository.repository === "string" &&
+    repositorySlugPattern.test(repository.repository)
+  );
+}
+
+function hasValidRepositories(repositories: GitHubRepositoryGrant["repositories"]): boolean {
+  if (!Array.isArray(repositories) || repositories.length < 1 || repositories.length > 16) {
+    return false;
+  }
+  if (repositories.some((repository) => !isValidRepository(repository))) {
+    return false;
+  }
+  const hasUniqueIds =
+    new Set(repositories.map((repository) => repository.repositoryId)).size === repositories.length;
+  return (
+    hasUniqueIds &&
+    new Set(repositories.map((repository) => repository.repository.toLowerCase())).size ===
+      repositories.length
+  );
+}
+
 export function validateGitHubRepositoryGrant(grant: GitHubRepositoryGrant): void {
-  const id = (value: unknown) =>
-    typeof value === "string" &&
-    /^[1-9][0-9]{0,15}$/.test(value) &&
-    Number.isSafeInteger(Number(value));
   const repositories = grant.repositories;
   if (
-    grant.profile !== "github-repository" ||
-    !grant.id ||
-    !grant.isolationId ||
-    !id(grant.appId) ||
-    !id(grant.installationId) ||
-    !Array.isArray(repositories) ||
-    repositories.length < 1 ||
-    repositories.length > 16 ||
-    repositories.some(
-      (r) =>
-        !id(r.repositoryId) ||
-        typeof r.repository !== "string" ||
-        !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(r.repository),
-    ) ||
-    new Set(repositories.map((r) => r.repositoryId)).size !== repositories.length ||
-    new Set(repositories.map((r) => r.repository.toLowerCase())).size !== repositories.length ||
+    !hasValidGrantIdentity(grant) ||
+    !hasValidRepositories(repositories) ||
     !isGitHubRepositoryPermissions(grant.permissions)
   ) {
     throw new Error("invalid-github-repository-grant");

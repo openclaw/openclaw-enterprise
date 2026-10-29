@@ -559,8 +559,7 @@
         "the Git route tombstone stays for a replaced execution, an unknown write and withdrawal",
         "the Git route reports bootstrap, material and binding states for Compute readiness",
         "an observed Git route (2) rotates only after its challenge in the original worker",
-        "an observed Git route (3) rotates only after its challenge in the original worker",
-        "an explicit installation preview on stock 0.1.6 retains its scope and requires the held challenge"
+        "an observed Git route (3) rotates only after its challenge in the original worker"
       ]
     },
     {

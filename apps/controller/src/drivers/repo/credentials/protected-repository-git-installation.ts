@@ -87,6 +87,40 @@ export const repositoryGitBrokerOwnerPredicate = `EXISTS (
        f.source#>>'{session,sessionId}',f.source#>>'{session,brokerGeneration}')
 )`;
 
+/**
+ * One row for a selected-repository grant, derived from its immutable admission.
+ * Missing/ended members remain in the LEFT JOIN so all_current cannot silently
+ * authorize a subset. The active-binding unique index gives at most one session
+ * per member. Identities fence material across replacement; they are not authority.
+ * The caller owns locks and must re-read this projection after acquiring them.
+ */
+export function selectedRepositoryGrantSql(admissionId: string): string {
+  return `SELECT revision.admitted_spec#>'{repository_credentials,bindings}' AS bindings,
+    jsonb_agg(jsonb_build_object('repositoryRef',member->>'repositoryRef',
+      'admissionId',session.admission_id,'sessionId',session.session_id)
+      ORDER BY member->>'repositoryRef') AS member_sessions,
+    bool_and(session.session_id IS NOT NULL
+      AND clock_timestamp() < to_timestamp(session.deadline_wall_ms / 1000.0)
+      AND (agent.repository_bindings @> jsonb_build_array(jsonb_build_object(
+        'repositoryRef',member->>'repositoryRef','profile',member->>'profile'))) IS TRUE
+    ) AS all_current
+  FROM occ.repository_session_attempts anchor
+  JOIN occ.agent_revisions revision ON (revision.namespace_id,revision.agent_id,revision.id)=
+    (anchor.namespace_id,anchor.agent_id,anchor.revision_id)
+  JOIN occ.agents agent ON (agent.namespace_id,agent.id)=(anchor.namespace_id,anchor.agent_id)
+  CROSS JOIN LATERAL jsonb_array_elements(revision.admitted_spec#>'{repository_credentials,bindings}') member
+  LEFT JOIN occ.repository_session_attempts session ON
+    (session.namespace_id,session.agent_id,session.revision_id,session.live_revision_id)=
+      (anchor.namespace_id,anchor.agent_id,anchor.revision_id,anchor.revision_id)
+    AND session.repository_ref=member->>'repositoryRef'
+    AND session.cleanup_context->'binding'=member
+    AND session.cleanup_context->'driver'=revision.admitted_spec#>'{repository_credentials,driver}'
+    AND session.broker_protocol=2 AND session.phase='open'
+  WHERE anchor.admission_id=${admissionId}
+    AND anchor.cleanup_context#>>'{binding,profile}'='github-repository'
+  GROUP BY revision.admitted_spec`;
+}
+
 /** Absence of a sender's evidence denies use. Only OCC's positive end of this admission retires it. */
 export const repositoryGitAdmissionEnded = `EXISTS (
   SELECT FROM occ.repository_session_attempts s
@@ -94,32 +128,17 @@ export const repositoryGitAdmissionEnded = `EXISTS (
     (f.source#>>'{session,admissionId}',f.source#>>'{session,revisionId}',f.source#>>'{session,sessionId}')
     AND (s.phase IN ('closing','disposed','invalidated') OR s.live_revision_id IS NULL
       OR to_timestamp(s.deadline_wall_ms / 1000.0) <= clock_timestamp()
-      OR (f.source->>'adoption'='${selectedGitAdoption}' AND (
-        EXISTS (SELECT FROM jsonb_array_elements(f.source#>'{session,bindings}') b
-          WHERE NOT EXISTS (SELECT FROM occ.repository_session_attempts m
-            WHERE (m.namespace_id,m.agent_id,m.revision_id,m.live_revision_id)=
-              (s.namespace_id,s.agent_id,s.revision_id,s.revision_id)
-            AND m.repository_ref=b->>'repositoryRef' AND m.cleanup_context->'binding'=b
-            AND m.cleanup_context->'driver'=s.cleanup_context->'driver'
-            AND m.broker_protocol=2 AND m.phase='open' AND m.session_id IS NOT NULL
-            AND clock_timestamp() < to_timestamp(m.deadline_wall_ms / 1000.0)))
-        OR EXISTS (SELECT FROM jsonb_array_elements(f.source#>'{session,memberSessions}') member
-          WHERE NOT EXISTS (SELECT FROM occ.repository_session_attempts m
-            WHERE (m.namespace_id,m.agent_id,m.revision_id,m.live_revision_id)=
-              (s.namespace_id,s.agent_id,s.revision_id,s.revision_id)
-            AND (m.repository_ref,m.admission_id,m.session_id)=
-              (member->>'repositoryRef',member->>'admissionId',member->>'sessionId')
-            AND m.phase='open'))))
+      OR (f.source->>'adoption'='${selectedGitAdoption}' AND EXISTS (
+        SELECT FROM (${selectedRepositoryGrantSql("s.admission_id")}) grant_state
+        WHERE grant_state.all_current IS NOT TRUE
+          OR grant_state.bindings IS DISTINCT FROM f.source#>'{session,bindings}'
+          OR grant_state.member_sessions IS DISTINCT FROM f.source#>'{session,memberSessions}'))
       OR EXISTS (SELECT FROM occ.repository_standing_executions e
         WHERE e.revision_id=s.revision_id AND e.closed)
       OR EXISTS (SELECT FROM occ.repository_standing_approvals a
         WHERE a.id=f.source#>>'{session,standingApprovalId}' AND a.revoked_at IS NOT NULL)
       OR EXISTS (SELECT FROM occ.agents g WHERE (g.namespace_id,g.id)=(s.namespace_id,s.agent_id)
-        AND (g.active_revision_id IS DISTINCT FROM s.revision_id OR g.desired_runtime_state <> 'running'
-          OR (f.source->>'adoption'='${selectedGitAdoption}' AND EXISTS (
-            SELECT FROM jsonb_array_elements(f.source#>'{session,bindings}') b
-            WHERE (g.repository_bindings @> jsonb_build_array(jsonb_build_object(
-              'repositoryRef',b->>'repositoryRef','profile',b->>'profile'))) IS NOT TRUE)))))
+        AND (g.active_revision_id IS DISTINCT FROM s.revision_id OR g.desired_runtime_state <> 'running')))
   )`;
 
 /** Alongside matchingAuthorization, require the policy and every stable recipient identity. */

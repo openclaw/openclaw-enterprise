@@ -333,10 +333,15 @@ test("OpenShell discovery and policy use the installed configuration after calle
     "request-hook-observed",
   );
   gatewayVersion = "0.1.7";
-  await assert.rejects(proxy.sourceControl.assertAvailable(t.signal, "github_installation"), {
-    name: "RetryLaterError",
-  });
-  gatewayVersion = "0.1.6";
+  assert.equal(
+    await repositoryGitAuthorization(proxy.sourceControl, t.signal, "github_installation"),
+    "request-hook-observed",
+  );
+  gatewayVersion = "unknown";
+  assert.equal(
+    await repositoryGitAuthorization(proxy.sourceControl, t.signal, "github_installation"),
+    "request-hook-observed",
+  );
 
   registration = "replacement";
   await assert.rejects(proxy.configureRevision(context), { name: "RetryLaterError" });

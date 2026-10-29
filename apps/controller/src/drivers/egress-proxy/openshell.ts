@@ -407,22 +407,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         if (
           profile === "github_installation" &&
           this.options.observedHookPreviewWorkspace &&
-          this.previewEnforcement &&
-          (info.gateway_version === "0.1.5" || info.gateway_version === "0.1.6")
+          this.previewEnforcement
         ) {
           return { profile, authorization: "request-hook-observed" as const };
         }
-        if (profile === "github_repository" || profile === "repository_git") {
-          if (info.gateway_version !== "0.1.6") {
-            throw new RepositoryGitSenderUnqualifiedError();
-          }
-          return { profile, authorization: "online-request" as const };
-        }
         if (git) {
-          if (this.options.observedHookPreviewWorkspace && profile === "github_installation") {
-            // The gateway's version is live state an operator fixes (finding 2536).
-            throw new RetryLaterError("previewGatewayVersion");
-          }
           return { profile, authorization: "online-request" as const };
         }
       },

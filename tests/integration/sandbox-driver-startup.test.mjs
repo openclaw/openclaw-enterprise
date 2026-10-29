@@ -6873,13 +6873,8 @@ test(
     assert.equal(protectedGit.nativeRepositorySender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
     assert.equal(protectedGit.sandboxDriver.openShellGit.configuration.protectedExecution, true);
-    // Old releases retain their refusal; stock 0.1.6 admits the normal explicit git-write
-    // profile as well as selected-set delivery. Installation still needs the held challenge.
-    await assert.rejects(
-      protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git"),
-      { name: "RepositoryGitSenderUnqualifiedError", code: "REPOSITORY_GIT_SENDER_UNQUALIFIED" },
-    );
-    repositoryGatewayVersion = "0.1.6";
+    // Release labels do not qualify the sender; runtime proof still gates material.
+    repositoryGatewayVersion = "unknown";
     for (const profile of ["repository_git", "github_repository"]) {
       assert.deepEqual(
         await protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, profile),
@@ -6983,17 +6978,8 @@ test(
           "protected-codex-no-connection-retry:v1",
         );
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
-        // Compute's preparation refuses the profile too, so a revision admitted before this check
-        // fails with the code instead of waiting at enrollment (finding 2199). The Sandbox's own
-        // v5 checks stay covered with the wiring a qualified sender would prepare: what
-        // configureRevision returns, without its profile gate.
-        await assert.rejects(new ProtectedExecutionDriver(owner).configure(ctx), {
-          name: "RepositoryGitSenderUnqualifiedError",
-          code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
-        });
-        await assert.rejects(proxy.configureRevision(ctx), {
-          code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
-        });
+        // Preparation accepts the configured facilities independently of the release label.
+        await new ProtectedExecutionDriver(owner).configure(ctx);
         // Finding 2204: a git-read binding maps to no delivery profile. Preparation never checks
         // its counterpart as an ordinary egress plan; it refuses the plan with its own code.
         const readGit = {
@@ -7022,7 +7008,7 @@ test(
           plan: c.plan,
           configuration: openShellEgressConfiguration(c.plan, proxy.options),
         });
-        const proxyWiring = qualifiedWiring(ctx);
+        const proxyWiring = await proxy.configureRevision(ctx);
         const required = structuredClone({ ...requirements, proxyWiring });
         const { harnessEgressEnrollment } =
           await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");

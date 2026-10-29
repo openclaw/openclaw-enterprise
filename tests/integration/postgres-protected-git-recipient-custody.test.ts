@@ -580,6 +580,7 @@ async function admitProtectedSession(
   binding: AdmittedRepositoryBinding,
   bindings: readonly AdmittedRepositoryBinding[] = [binding],
   deadlineWallMs = f.deadlineWallMs,
+  pendingMember?: string,
 ) {
   const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } =
     f.revision as AgentRevision;
@@ -673,6 +674,9 @@ async function admitProtectedSession(
         createdAt,
         brokerProtocol: 2,
       });
+      if (member.repositoryRef === pendingMember) {
+        continue;
+      }
       await sessions.advanceAttempt({
         admissionId: memberAdmission,
         expectedPhase: "opening",
@@ -686,7 +690,13 @@ async function admitProtectedSession(
   return { installation, sessionId, admissionId, revisionId };
 }
 
-for (const removal of ["B session", "B deadline", "NULL selection", "empty selection"] as const) {
+for (const removal of [
+  "B session",
+  "B replacement",
+  "B deadline",
+  "NULL selection",
+  "empty selection",
+] as const) {
   test(
     `selected repository set retires after ${removal} across owner restart`,
     requiresPostgres,
@@ -732,11 +742,27 @@ for (const removal of ["B session", "B deadline", "NULL selection", "empty selec
         bindings[0]!,
         bindings,
         removal === "B deadline" ? Date.now() + 5000 : undefined,
+        "B",
       );
       const host = owner.protectedGit!;
       const selected = host.online.githubRepository!;
       const route = await host.recipients.observe(installation);
       assert.ok(route);
+      await owner.maintain();
+      assert.equal(peer.gh.issuesOfTokens.length, 0, "an opening B cannot issue an A-only subset");
+      const pendingMember = await f.pool.query(
+        "SELECT admission_id FROM occ.repository_session_attempts WHERE revision_id=$1 AND repository_ref='B'",
+        [revisionId],
+      );
+      await f.state.transact((u) =>
+        u.repositorySessions.advanceAttempt({
+          admissionId: pendingMember.rows[0].admission_id,
+          expectedPhase: "opening",
+          phase: "open",
+          sessionId: randomUUID(),
+          updatedAt: new Date().toISOString(),
+        }),
+      );
       await owner.maintain();
       const material = await selected.readMaterial(route, t.signal);
       assert.ok(material && "value" in material);
@@ -781,6 +807,11 @@ for (const removal of ["B session", "B deadline", "NULL selection", "empty selec
           )
         ).rows[0].n;
       assert.equal(await useCount(), 1);
+      const originalSource = (
+        await f.pool.query("SELECT source FROM occ.prepared_github_families WHERE source_id=$1", [
+          "repository-git:" + admissionId,
+        ])
+      ).rows[0].source;
       if (removal === "B session") {
         // Pause the real authorization at B's row, then close B before releasing it.
         // PostgreSQL's lock graph proves the wait; no timing-based synchronization.
@@ -824,6 +855,41 @@ for (const removal of ["B session", "B deadline", "NULL selection", "empty selec
           "denied",
           "waiting authorization rechecks B after commit",
         );
+      } else if (removal === "B replacement") {
+        await f.state.transact(async (u) => {
+          for (const [expectedPhase, phase] of [
+            ["open", "closing"],
+            ["closing", "disposed"],
+          ] as const) {
+            assert.ok(
+              await u.repositorySessions.advanceAttempt({
+                admissionId: sessions.rows[1].admission_id,
+                expectedPhase,
+                phase,
+                updatedAt: new Date().toISOString(),
+              }),
+            );
+          }
+          const replacement = randomUUID();
+          await u.repositorySessions.createAttempt({
+            namespaceId: f.revision.namespaceId,
+            agentId: f.revision.agentId,
+            revisionId,
+            admissionId: replacement,
+            repositoryRef: "B",
+            durationSeconds: 3600,
+            deadlineWallMs: f.deadlineWallMs,
+            createdAt: new Date().toISOString(),
+            brokerProtocol: 2,
+          });
+          await u.repositorySessions.advanceAttempt({
+            admissionId: replacement,
+            expectedPhase: "opening",
+            phase: "open",
+            sessionId: randomUUID(),
+            updatedAt: new Date().toISOString(),
+          });
+        });
       } else if (removal === "B deadline") {
         // Finite members share their immutable admitted deadline. A shorter B-only
         // deadline is rejected by PostgreSQL; both rows remain open as real time passes.
@@ -870,6 +936,13 @@ for (const removal of ["B session", "B deadline", "NULL selection", "empty selec
       );
       const denied = await selected.authorize(request(), installed, t.signal);
       const unavailable = await selected.readMaterial(installedRoute, t.signal);
+      // Replacing B leaves a live selection with different session identities. It has
+      // no matching material, rather than withdrawn authority. Neither result permits
+      // reading or using the old family; discovery separately retires that family.
+      const absence = { absent: removal === "B replacement" ? "unprepared" : "withdrawn" };
+      assert.equal(denied.kind, "denied", "changed set cannot authorize the old material");
+      assert.deepEqual(unavailable, absence);
+      assert.equal(await useCount(), 1, "denial must precede background retirement");
       const beforeRestart = await f.pool.query(
         "SELECT enabled FROM occ.prepared_github_families WHERE source_id=$1",
         ["repository-git:" + admissionId],
@@ -882,12 +955,17 @@ for (const removal of ["B session", "B deadline", "NULL selection", "empty selec
       await owner.close();
       const restarted = await start();
       await restarted.maintain();
+      if (removal === "B replacement") {
+        // A later pass may rediscover the new live selection, but it cannot rebind or
+        // re-enable the old anchor's family after its original token was retired.
+        await restarted.maintain();
+      }
       assert.deepEqual(
         await restarted.protectedGit!.online.githubRepository!.readMaterial(
           installedRoute,
           t.signal,
         ),
-        { absent: "withdrawn" },
+        absence,
       );
       const afterRestart = await restarted.protectedGit!.online.githubRepository!.authorize(
         request(),
@@ -895,8 +973,8 @@ for (const removal of ["B session", "B deadline", "NULL selection", "empty selec
         t.signal,
       );
       const saved = await f.pool.query(
-        "SELECT f.enabled,a.custody,a.sealed IS NULL erased FROM occ.prepared_github_families f JOIN occ.prepared_github_attempts a USING(source_id) WHERE f.source_id=$1",
-        ["repository-git:" + admissionId],
+        "SELECT f.enabled,a.custody,a.sealed IS NULL erased,f.source=$2::jsonb original_source,a.id=$3::uuid original_attempt FROM occ.prepared_github_families f JOIN occ.prepared_github_attempts a USING(source_id) WHERE f.source_id=$1",
+        ["repository-git:" + admissionId, originalSource, material.preparationAttemptId],
       );
       t.diagnostic(
         JSON.stringify({
@@ -906,9 +984,13 @@ for (const removal of ["B session", "B deadline", "NULL selection", "empty selec
           custody: saved.rows,
         }),
       );
-      assert.deepEqual(saved.rows, [{ enabled: false, custody: "revoked", erased: true }]);
-      assert.equal(denied.kind, "denied", "ended set cannot authorize a fresh use");
-      assert.deepEqual(unavailable, { absent: "withdrawn" });
+      assert.deepEqual(saved.rows, [{
+        enabled: false,
+        custody: "revoked",
+        erased: true,
+        original_source: true,
+        original_attempt: true,
+      }]);
       assert.equal(afterRestart.kind, "denied");
       assert.equal(await useCount(), 1, "no post-end dispatch receipt");
       assert.equal(peer.gh.issuesOfTokens.length, 1, "no renewal after a member ends");

@@ -1,19 +1,21 @@
 # Protected repository access with OpenShell
 
-Use stock OpenShell 0.1.6 with a required pre-credentials request binding. Before
+For selected repositories, use OpenShell with a required pre-credentials request
+binding. Before
 issuing credentials, OCE verifies the selected registration and correlates a
 request from the held Agent launcher with its authenticated middleware denial.
 Configuration readback and `ACCEPTED` alone do not establish that the hook ran.
 The launcher starts work only after credential installation and its signed release.
 
-For fresh production setup, follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-Select one or more repositories with the same explicit permission map. OCE requests
-their canonical IDs and accepts only GitHub's matching scope. Ordinary Git refs and
-permitted REST/GraphQL operations remain subject to GitHub rules. Removing or changing
+Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
+Select repositories with the same explicit permission map. OCE requests
+canonical IDs and accepts only GitHub's matching scope. GitHub rules govern Git refs
+and permitted REST/GraphQL operations. Removing or changing
 a grant prevents subsequent authorization; permissions are configured, not inherited.
 
-Explicit `git-write` grants retain their exact ref policy on 0.1.6. Older releases
-retain their refusal. `git-read` and `git-full` gain no protected delivery semantics.
+Explicit `git-write` grants retain their exact ref policy. Release labels do not
+qualify a sender; the configured facilities and current runtime proof do.
+`git-read` and `git-full` gain no protected delivery semantics.
 Installation preview remains a separate opt-in. This path does not claim
 exact-dispatch or v7 reduction guarantees.
 
@@ -168,22 +170,29 @@ Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enabl
 
 ## Grant access to a GitHub App installation
 
-Use the [GitHub App setup](../../guides/repository-credentials/team-runbook.md#register-and-install-the-github-app)
-for membership and permissions, and the
+Use [GitHub App setup](../../guides/repository-credentials/team-runbook.md#register-and-install-the-github-app)
+for permissions and the
 [registry reference](../repository-credentials.md#canonical-platform-registry)
-for policy fields. Keep repository scope when it is sufficient. To expose an
+for policy. Prefer repository scope. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
 `profile: github-installation` in the Agent's `repositoryBindings`, as its only
-binding (Agent save and deploy refuse it next to another). No default profile or
-wildcard selects this scope. The installed sender must positively confirm
+binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
 `github_installation` support. With the bundled OpenShell Credential Proxy, that
 needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
-`409 RESOURCE_CONFLICT`, and on a gateway other than 0.1.5 or 0.1.6, `503`.
-On 0.1.6 the selected middleware registration must also use `allowlist` or `exact`
-binding policy with `pre_credentials`. Both versions require the held request
-challenge before material delivery; upgrading does not change the selected grant
-or enable installation scope for a repository grant.
+`409 RESOURCE_CONFLICT`. Missing or incompatible gateway registration returns
+`503 DEPENDENCY_UNAVAILABLE`.
+
+Repository grants require authenticated `allowlist`/`exact` with only `pre_credentials`.
+Opted-in installation preview also accepts both binding fields absent; partial,
+malformed or explicit optional/wrong values fail. Both paths retain policy,
+recipient, isolation and authenticated launcher-denial checks.
+
+Absence grants only observed assurance: 0.1.5 and 0.1.6 default dynamic registrations
+emit identical absence, without a distinct advertised support signal. Before
+qualification, intentional downgrade is indistinguishable. After qualification,
+registration changes break the recipient fingerprint and close the route.
+Repository grants never use this fallback.
 
 OCE does not add a ref allowlist to installation scope. GitHub's membership,
 permissions and branch rules set its limit. See

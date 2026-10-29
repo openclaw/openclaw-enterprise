@@ -45,6 +45,7 @@ import {
   repositoryGitOwnerPredicate,
   repositoryGitDeliveryTransport,
   selectedRepositoryGitDriver,
+  selectedRepositoryGrantSql,
   validRecipient,
 } from "../../credentials/protected-repository-git-installation.ts";
 
@@ -144,11 +145,9 @@ function sessionQuery(proxy: Recipient): string {
       : "'brokerGeneration',b.generation"
   }, 'driver',s.cleanup_context->'driver', 'binding',s.cleanup_context->'binding',
   'grant',s.cleanup_context #> '{binding,grant}') ||
-  CASE WHEN s.cleanup_context#>>'{binding,profile}'='github-repository' THEN jsonb_build_object('bindings',rev.admitted_spec#>'{repository_credentials,bindings}',
-    'memberSessions',(SELECT jsonb_agg(jsonb_build_object('repositoryRef',m.repository_ref,
-      'admissionId',m.admission_id,'sessionId',m.session_id) ORDER BY m.repository_ref)
-      FROM occ.repository_session_attempts m WHERE (m.namespace_id,m.agent_id,m.revision_id)=
-        (s.namespace_id,s.agent_id,s.revision_id) AND m.phase='open' AND m.live_revision_id=m.revision_id)) ELSE '{}'::jsonb END ||
+  CASE WHEN s.cleanup_context#>>'{binding,profile}'='github-repository' THEN
+    jsonb_build_object('bindings',grant_state.bindings,'memberSessions',grant_state.member_sessions)
+    ELSE '{}'::jsonb END ||
     CASE WHEN rev.admitted_spec->'repository_credentials' ? 'standingApprovalId' THEN jsonb_build_object(
       'standingApprovalId',rev.admitted_spec #> '{repository_credentials,standingApprovalId}',
       'standingApprovalGeneration',rev.admitted_spec #> '{repository_credentials,standingApprovalGeneration}',
@@ -164,6 +163,7 @@ function sessionQuery(proxy: Recipient): string {
   }
   JOIN occ.agents g ON g.namespace_id=s.namespace_id AND g.id=s.agent_id AND g.active_revision_id=s.live_revision_id
   JOIN occ.agent_revisions rev ON rev.id=s.live_revision_id AND rev.namespace_id=s.namespace_id AND rev.agent_id=s.agent_id
+  LEFT JOIN LATERAL (${selectedRepositoryGrantSql("s.admission_id")}) grant_state ON true
   CROSS JOIN occ.installation i
   WHERE s.phase='open' AND s.live_revision_id=s.revision_id
   AND ${
@@ -192,15 +192,7 @@ function sessionQuery(proxy: Recipient): string {
   AND g.status='active' AND g.desired_runtime_state='running' AND g.execution_mode='dedicated'
   AND s.cleanup_context #>> '{binding,profile}' = ${profile}
   AND (s.cleanup_context#>>'{binding,profile}'<>'github-repository' OR (s.repository_ref=rev.admitted_spec#>>'{repository_credentials,bindings,0,repositoryRef}'
-    AND NOT EXISTS (SELECT FROM jsonb_array_elements(rev.admitted_spec#>'{repository_credentials,bindings}') member
-      WHERE (g.repository_bindings @> jsonb_build_array(jsonb_build_object('repositoryRef',member->>'repositoryRef','profile',member->>'profile'))) IS NOT TRUE
-        OR NOT EXISTS (SELECT FROM occ.repository_session_attempts m
-          WHERE (m.namespace_id,m.agent_id,m.revision_id,m.live_revision_id)=
-            (s.namespace_id,s.agent_id,s.revision_id,s.revision_id)
-          AND m.repository_ref=member->>'repositoryRef' AND m.cleanup_context->'binding'=member
-          AND m.cleanup_context->'driver'=s.cleanup_context->'driver'
-          AND m.broker_protocol=2 AND m.phase='open' AND m.session_id IS NOT NULL
-          AND clock_timestamp() < to_timestamp(m.deadline_wall_ms / 1000.0)))))
+    AND grant_state.all_current))
   AND g.repository_bindings @> jsonb_build_array(jsonb_build_object('repositoryRef',s.repository_ref,'profile',s.cleanup_context #>> '{binding,profile}'))
   AND occ.repository_standing_approval_is_current(rev.admitted_spec->'repository_credentials',s.namespace_id,s.agent_id)
   AND NOT EXISTS (SELECT FROM occ.repository_standing_executions e WHERE e.revision_id=s.revision_id AND e.closed)
