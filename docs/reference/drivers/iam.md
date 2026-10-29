@@ -20,7 +20,7 @@ and the [authorization reference](../authorization.md).
 
 ### Identity and authorization operations
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires two
+The [shared interface](../../../packages/contracts/src/iam.ts) requires two
 methods. Optional `coversIdentityAccess(request)` takes a `principalId` and
 `targetIdentityId` and returns `true` only when the principal already holds
 every grant of the target at the same or a broader scope. OCC requires it before

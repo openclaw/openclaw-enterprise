@@ -66,7 +66,10 @@ owning Driver or Backend and wire it through composition. See
 status, and remaining design requirements.
 
 Within `packages/contracts/src/`, `runtime-logs.ts` owns runtime inspection and
-container/Sandbox log types. `index.ts` remains their public export entrypoint.
+container/Sandbox log types. `driver.ts` owns the base `Driver` and registry types.
+Each Driver capability has one interface file named for it, such as `compute.ts` or
+`iam.ts`, with the request, context, and result types of that Driver. `index.ts`
+remains the public export entrypoint for all of them.
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
