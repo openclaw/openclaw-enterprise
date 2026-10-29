@@ -142,38 +142,33 @@ the unique ID (UID) returned on create, leaving same-name replacements alone;
 `preflight-cleanup.err` records refusals. The operator checks whether an
 ambiguous create left an object behind.
 
-`--preflight-only` leaves writers running and keeps private evidence that cannot
-be resumed.
-
-An upgrade saves candidate inputs, inventory, target identity, and parameter
-hashes before marking preparation complete. A directory lock prevents concurrent
-use. `scripts/upgrade-production-images:interrupted_upgrade` retains this lock
-and skips automatic preflight cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`. The
-operator must establish that child commands stopped and reconcile unfinished
-operations before removing the lock; caller interruption is not cancellation
-of an accepted remote operation. Operators freeze other writers, autoscalers, Helm changes, and runtime draft
-edits per the
-[production guide](../guides/deploy/production-upgrade.md).
+`--preflight-only` leaves writers running with private, non-resumable evidence.
+Preparation saves candidate inputs, inventory, target identity and parameter
+hashes under an exclusive directory lock.
+`scripts/upgrade-production-images:interrupted_upgrade` retains it and skips
+preflight cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`. Before unlocking, confirm
+helper and children stopped and reconcile unfinished operations and temporary
+preflight resources; interruption does not cancel accepted work. Freeze other
+writers, autoscalers, Helm changes and runtime drafts per
+the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
 `scripts/upgrade-production-images:1040`
 
-Reconciliation rejects ineligible Helm states before reading values or the
-Installation Secret. Values must match the recorded baseline or candidate;
-Secret UID, Installation annotation, and other data must match the baseline.
-Resume requires a prepared record; otherwise inspect evidence and remaining
-preflight resources. It binds
-kubeconfig contents, inputs, OCC URL, scripts, flow, chart, and pair evidence,
-requalifies the pair, and rejects changed eligible nodes. Candidates must match
-saved reviewed inputs, which the helper applies. Unexpected drift stops execution.
+Resume requires prepared evidence; otherwise reconcile preflight resources and
+use a fresh private directory per
+[upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
+Resume binds kubeconfig contents, inputs, OCC URL, scripts, flow, chart and pair
+evidence; requalifies the pair; and rejects changed eligible nodes.
+Reject ineligible Helm states before values or Secret reads.
+Values must match the baseline or candidate; Secret UID, Installation annotation
+and other data must match the baseline. Apply only saved reviewed candidates; reject drift.
 
-If a previously started Helm release is deployed at a newer version with the
-candidate values, the script continues without repeating Helm. Otherwise it
-requires the operator's migration-history check and refuses a retry while an
-initialization Job or Pod remains active. A failed or disconnected migration may have
-committed; the check and Job inspection are operator-owned and are not a
-rollback. The guide describes the required attestation and recovery.
+A newer Helm release with deployed candidate values skips Helm. Otherwise, retry
+requires the operator's migration-history check and no active initialization Job
+or Pod. Failed or disconnected migrations may have committed; these
+operator-owned checks do not roll them back.
 
 ### 3. Quiesce writers and run the candidate release
 
