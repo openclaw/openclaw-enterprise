@@ -132,6 +132,14 @@ const CONSOLE_ASSETS = new Map([
       contentType: "text/javascript; charset=utf-8",
     },
   ],
+  // The Console shows a draft's retired OpenClaw setting with OCC's own deploy refusal.
+  [
+    "/console/retired-openclaw-settings.mjs",
+    {
+      path: new URL("../../../packages/occ/src/retired-openclaw-settings.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
   // The Console offers each failed deployment's next step from OCC's own table.
   [
     "/console/deployment-failure-steps.mjs",

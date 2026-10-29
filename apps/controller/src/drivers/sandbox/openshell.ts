@@ -3989,6 +3989,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
+    context.signal.throwIfAborted();
     if (context.revision.harness.id === "openclaw" && context.workspaceNodeEnrolled === true) {
       // The exposure is withdrawn with enrollment, and nothing of Compute's listens there.
       throw new OpenShellSandboxConfigurationFailure(
@@ -3997,12 +3998,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     try {
       const { client, service } = await this.exactHarnessService(context, "observe a Harness");
+      context.signal.throwIfAborted();
       // Handshake first, so a serving app-server never receives a plain request. A
       // Harness wrapper holding a startup failure answers the upgrade 503 with the held
       // code and serves the failure itself on the status path.
-      if (
-        await client.serviceWebSocketHandshake(service.url, context.transportToken, context.signal)
-      ) {
+      const serving = await client.serviceWebSocketHandshake(
+        service.url,
+        context.transportToken,
+        context.signal,
+      );
+      context.signal.throwIfAborted();
+      if (serving) {
         return Object.freeze({ state: "serving" });
       }
       const document = await client.getServiceDocument(
@@ -4011,11 +4017,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         context.transportToken,
         context.signal,
       );
+      context.signal.throwIfAborted();
       const runtimeFailure = asRecord(document.json)?.runtimeFailure;
       return document.status === 200 && runtimeFailure !== undefined
         ? Object.freeze({ state: "failed", runtimeFailure })
         : Object.freeze({ state: "starting" });
     } catch (error) {
+      context.signal.throwIfAborted();
       // A gateway that does not answer, over gRPC or its service listener, is no evidence
       // about the Harness: the read waits for convergence without spending the revision's
       // attempt budget (finding 1658). Refusals and invalid answers keep their classes, and

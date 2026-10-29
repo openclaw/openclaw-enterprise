@@ -23,6 +23,7 @@
     "tests/integration/repository-credential-operator-recovery.test.ts",
     "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
+    "tests/integration/codex-plugin-preparation.test.ts",
     "tests/integration/container-release.test.mjs",
     "tests/integration/password-sign-in-audit.test.mjs",
     "tests/integration/ci-impact-gate.test.mjs",
@@ -481,6 +482,12 @@
     },
     {
       "path": "tests/integration/codex-plugin-startup-reads.test.mjs"
+    },
+    {
+      "path": "tests/integration/codex-plugin-preparation.test.ts",
+      "expectedTests": [
+        "Codex no-account preparation uses its supplied caller for disable and readback"
+      ]
     },
     {
       "path": "tests/integration/kubernetes-peer-status.test.mjs",

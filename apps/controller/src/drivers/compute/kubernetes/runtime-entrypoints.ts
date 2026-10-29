@@ -1626,7 +1626,6 @@ function codexAppServerRequestSequence(requests, timeoutMs) {
   });
 }
 
-let codexPluginRequestTransport;
 function codexPluginInitializeParams() {
   return {
     clientInfo: {
@@ -1638,7 +1637,6 @@ function codexPluginInitializeParams() {
   };
 }
 async function codexAppServerRequest(method, params) {
-  if (codexPluginRequestTransport !== undefined) return codexPluginRequestTransport(method, params);
   const responses = await codexAppServerRequestSequence(
     [
       {
@@ -1673,8 +1671,8 @@ function codexPluginConfigEdits(configuration) {
   ];
 }
 
-async function writeCodexPluginConfiguration(configuration) {
-  const effective = await readCodexPluginConfiguration();
+async function writeCodexPluginConfiguration(configuration, request = codexAppServerRequest) {
+  const effective = await readCodexPluginConfiguration(request);
   const edits = codexPluginConfigEdits(configuration);
   // Replacing a user table does not erase descendants inherited from other
   // config layers. Materialize the selection and approval policy at those keys.
@@ -1713,16 +1711,16 @@ async function writeCodexPluginConfiguration(configuration) {
       }
     }
   }
-  await codexAppServerRequest("config/batchWrite", {
+  await request("config/batchWrite", {
     edits,
     reloadUserConfig: true,
   });
 }
 
-async function readCodexPluginConfiguration() {
+async function readCodexPluginConfiguration(request = codexAppServerRequest) {
   // Match the dedicated Harness workspace; a thread-agnostic read omits its
   // trusted .codex layers and can validate a different policy than the Agent uses.
-  const response = await codexAppServerRequest("config/read", {
+  const response = await request("config/read", {
     cwd: process.env.OPENCLAW_WORKSPACE_DIR || "/home/node/workspace",
   });
   return response?.config;
@@ -1787,11 +1785,11 @@ function verifyCodexPluginConfiguration(configuration, effective) {
   }
 }
 
-async function verifyCodexReviewerConfiguration(configuration, effective) {
+async function verifyCodexReviewerConfiguration(configuration, effective, request) {
   const requestedApps = Object.entries(configuration.apps ?? {})
     .filter(([, app]) => app.approvals_reviewer !== undefined);
   if (requestedApps.length === 0) return;
-  const response = await codexAppServerRequest("configRequirements/read", {});
+  const response = await request("configRequirements/read", {});
   if (!isPlainObject(response) ||
       (response.requirements !== null && !isPlainObject(response.requirements))) {
     throw new Error("Codex reviewer requirements are unavailable; use a runtime supporting configRequirements/read.");
@@ -1864,13 +1862,13 @@ function enabledCodexSelectionIds(selections) {
   );
 }
 
-async function readCodexToolStatuses() {
+async function readCodexToolStatuses(request = codexAppServerRequest) {
   const statuses = [];
   const cursors = new Set();
   let cursor;
   // Bound startup discovery even if a server keeps returning fresh cursors.
   for (let page = 0; page < 100; page += 1) {
-    const response = await codexAppServerRequest("mcpServerStatus/list", {
+    const response = await request("mcpServerStatus/list", {
       detail: "toolsAndAuthOnly",
       ...(cursor === undefined ? {} : { cursor }),
     });
@@ -1907,18 +1905,18 @@ async function readCodexPluginDetails(readParamsList, read = (params) => codexAp
   return details;
 }
 
-async function readCodexSelectionParams(selections) {
-  const listed = await codexAppServerRequest("plugin/list", {});
+async function readCodexSelectionParams(selections, request) {
+  const listed = await request("plugin/list", {});
   return pluginRuntimeTranslator.codexReadParamsForSelections(selections, listed);
 }
 
-async function searchCodexSelectionParams(selections) {
+async function searchCodexSelectionParams(selections, request) {
   const resolved = [];
   for (const selection of pluginRuntimeTranslator.codexSearchPlan(selections)) {
     let cursor;
     const seen = new Set();
     for (;;) {
-      const response = await codexAppServerRequest("plugin/search", {
+      const response = await request("plugin/search", {
         ...selection.params, ...(cursor === undefined ? {} : { cursor }),
       });
       const params = pluginRuntimeTranslator.codexReadParamsFromSearch(selection.pluginId, response);
@@ -1934,18 +1932,18 @@ async function searchCodexSelectionParams(selections) {
   return resolved;
 }
 
-async function installCodexSelectionSet(selections, failures = [], resolveSelections = readCodexSelectionParams) {
+async function installCodexSelectionSet(selections, failures, request, resolveSelections = readCodexSelectionParams) {
   if (Object.keys(selections).length === 0) return { successfulPluginIds: [], failures: [] };
   const enabledPluginIds = enabledCodexSelectionIds(selections);
-  const readParamsList = await resolveSelections(selections);
-  const resolvedDetails = await readCodexPluginDetails(readParamsList);
+  const readParamsList = await resolveSelections(selections, request);
+  const resolvedDetails = await readCodexPluginDetails(readParamsList, (params) => request("plugin/read", params));
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
   const successfulPluginIds = [];
   const installs = pluginRuntimeTranslator.codexInstallPlan(selections, resolvedDetails);
   // Native installation reports connector auth only for enabled plugins.
   // Grant validated selections before installation; app grants still wait for revalidation.
-  await codexAppServerRequest("config/batchWrite", {
+  await request("config/batchWrite", {
     edits: [{ keyPath: "plugins", mergeStrategy: "replace", value: {
       _default: { enabled: false },
       ...Object.fromEntries(installs.map((plugin) => [plugin.nativeId, {
@@ -1962,7 +1960,7 @@ async function installCodexSelectionSet(selections, failures = [], resolveSelect
     if (selectedPlugin !== undefined && failedIds.has(selectedPlugin.pluginId)) continue;
     let install;
     try {
-      install = await codexAppServerRequest("plugin/install", readParams);
+      install = await request("plugin/install", readParams);
     } catch (error) {
       if (
         error instanceof CodexAppServerRequestError &&
@@ -2016,7 +2014,7 @@ async function installCodexSelectionSet(selections, failures = [], resolveSelect
     Object.entries(selections).filter(([pluginId]) => enabledPluginIds.has(pluginId) && !failedIds.has(pluginId)),
   );
   const toolStatuses = pluginRuntimeTranslator.codexNeedsToolInventory(enabledSelections)
-    ? await readCodexToolStatuses()
+    ? await readCodexToolStatuses(request)
     : [];
   const effectiveResolvedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, resolvedDetails, failed, toolStatuses);
   const installedDetails = await readCodexPluginDetails(readParamsList, (readParams, index) => {
@@ -2029,7 +2027,7 @@ async function installCodexSelectionSet(selections, failures = [], resolveSelect
     ) {
       return resolvedDetails[index];
     }
-    return codexAppServerRequest("plugin/read", readParams);
+    return request("plugin/read", readParams);
   });
   const installedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, installedDetails, failed, toolStatuses);
   if (JSON.stringify(installedArtifact.installs) !== JSON.stringify(effectiveResolvedArtifact.installs)) {
@@ -2040,12 +2038,12 @@ async function installCodexSelectionSet(selections, failures = [], resolveSelect
   }
   // Remote plugin/read reports catalog metadata, not cached bundle contents.
   // Recheck the admitted release and app mapping before granting apps.
-  await writeCodexPluginConfiguration(effectiveResolvedArtifact.configuration);
+  await writeCodexPluginConfiguration(effectiveResolvedArtifact.configuration, request);
   const enabledReadParams = readParamsList.filter((readParams) => installs.some(
     (plugin) => plugin.remotePluginId === readParams.pluginName &&
       !failedIds.has(plugin.pluginId) && enabledPluginIds.has(plugin.pluginId),
   ));
-  const enabledDetails = await readCodexPluginDetails(enabledReadParams);
+  const enabledDetails = await readCodexPluginDetails(enabledReadParams, (params) => request("plugin/read", params));
   for (const plugin of effectiveResolvedArtifact.installs) {
     if (failedIds.has(plugin.pluginId) || !enabledPluginIds.has(plugin.pluginId)) continue;
     const readParams = enabledReadParams.find((candidate) => candidate.pluginName === plugin.remotePluginId);
@@ -2058,8 +2056,8 @@ async function installCodexSelectionSet(selections, failures = [], resolveSelect
   // TODO: use native effective app/tool policy introspection when available.
   // Codex 0.156 config/read omits managed app requirements applied at execution;
   // this readback verifies loaded configuration, not future thread policy.
-  const effectiveConfiguration = await readCodexPluginConfiguration();
-  await verifyCodexReviewerConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
+  const effectiveConfiguration = await readCodexPluginConfiguration(request);
+  await verifyCodexReviewerConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration, request);
   verifyCodexPluginConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
   return { successfulPluginIds, failures: failed };
 }
@@ -2068,7 +2066,7 @@ async function installCodexSelectionSet(selections, failures = [], resolveSelect
 // API-key login ("api key auth is not supported"), so retrying cannot succeed.
 // Disable every enabled selection as an authentication requirement and turn the
 // plugin features off instead of holding the Harness unready.
-async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = []) {
+async function disableCodexSelectionsWithoutChatGptLogin(selections, failures, request) {
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
   for (const pluginId of enabledCodexSelectionIds(selections)) {
@@ -2094,8 +2092,8 @@ async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = 
     let lastError = new Error("Codex plugin disable deadline expired before the first attempt.");
     while (Date.now() < deadline) {
       try {
-        await writeCodexPluginConfiguration(configuration);
-        verifyCodexPluginConfiguration(configuration, await readCodexPluginConfiguration());
+        await writeCodexPluginConfiguration(configuration, request);
+        verifyCodexPluginConfiguration(configuration, await readCodexPluginConfiguration(request));
         lastError = undefined;
         break;
       } catch (error) {
@@ -2112,18 +2110,23 @@ async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = 
   return { successfulPluginIds: [], failures: failed };
 }
 
-async function installCodexPlugins(runtime, failures = []) {
+async function installCodexPlugins(runtime, failures = [], request) {
   assertCodexPluginRuntime(runtime);
   const selections = runtime.manifest.selections ?? {};
+  // The owner supplies the authenticated native session. Never fall back to
+  // ambient credentials when a nonempty preparation has no valid caller.
+  if (Object.keys(selections).length > 0 && typeof request !== "function") {
+    throw new Error("Codex plugin preparation requires a native request caller.");
+  }
   if (process.env.CODEX_LOGIN_MODE === "api_key") {
-    return disableCodexSelectionsWithoutChatGptLogin(selections, failures);
+    return disableCodexSelectionsWithoutChatGptLogin(selections, failures, request);
   }
   const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
   let lastError = new Error("Codex plugin installation deadline expired before the first attempt.");
   let result = { successfulPluginIds: [], failures };
   while (Date.now() < deadline) {
     try {
-      result = await installCodexSelectionSet(selections, failures);
+      result = await installCodexSelectionSet(selections, failures, request);
       lastError = undefined;
       break;
     } catch (error) {
@@ -4276,7 +4279,7 @@ child.on("exit", (code, signal) => {
   let pluginInstallLogged = false;
   try {
     if (pluginRuntime !== undefined && configuredTokenSha === undefined) {
-      const result = await installCodexPlugins(pluginRuntime);
+      const result = await installCodexPlugins(pluginRuntime, [], codexAppServerRequest);
       logStartupPhase("plugin-install", pluginInstallStartedAt);
       pluginInstallLogged = true;
       publishPluginRuntimeStatus({ phase: "ready", ...result });
@@ -4303,10 +4306,7 @@ if (configuredTokenSha !== undefined && hasEnabledPluginSelections(pluginRuntime
   const preparationStartedAt = Date.now();
   withCodexPluginStdio(codexExecutable(), nativeArguments,
     { cwd: workspaceDirectory, env: codexChildEnvironment() }, async (request) => {
-      codexPluginRequestTransport = request;
-      try {
-        return await installCodexSelectionSet(pluginRuntime.manifest.selections, [], searchCodexSelectionParams);
-      } finally { codexPluginRequestTransport = undefined; }
+      return await installCodexSelectionSet(pluginRuntime.manifest.selections, [], request, searchCodexSelectionParams);
     }).then(() => {
       logStartupPhase("plugin-install", preparationStartedAt);
       startFinalCodex();

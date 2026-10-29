@@ -207,7 +207,7 @@ malformed files and other Secret-backed environment fail before Gateway mutation
 
 After login and egress enrollment, `agentRuntimeEntrypoint` calls
 `apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`
-to install selections. Clean stdio exit precedes verifier-only WebSocket startup
+to install selections through its request caller. Clean stdio exit precedes verifier-only WebSocket startup
 in the same home. Failure retires the wrapper's process group. The provider
 Gateway skips HMAC plugin status; readiness observes transport.
 

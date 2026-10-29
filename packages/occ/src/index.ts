@@ -328,10 +328,8 @@ import {
 } from "./errors.ts";
 import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 import {
-  refuseOpenClawSandbox,
-  refuseRetiredOpenClawSettings,
+  refuseStoredConfigurationSettings,
   validateConfigurationSettings,
-  validateWorkspaceBootstrapSettings,
 } from "./configuration-settings.ts";
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
@@ -584,6 +582,7 @@ export { imageReferenceProblem } from "./image-reference.ts";
 export type { ImageReferenceProblem } from "./image-reference.ts";
 export { DEPLOYMENT_FAILURE_STEPS, deploymentFailureStep } from "./deployment-failure-steps.ts";
 export { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
+export { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
 export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
   environmentReference,
@@ -10292,12 +10291,9 @@ export class OpenClawController {
       // model probe failure (finding 1549).
       validateModelProviderSettings(configuration.values);
       // Native workspace setup refuses an invalid bootstrap setting only after the deployment
-      // starts (finding 2699).
-      validateWorkspaceBootstrapSettings(configuration.values);
-      // The Gateway refuses a setting the pinned OpenClaw retired and does not start (finding 2709).
-      refuseRetiredOpenClawSettings(configuration.values);
-      // The Gateway starts, then fails every turn in OpenClaw's sandbox (finding 2767).
-      refuseOpenClawSandbox(configuration.values);
+      // starts (finding 2699); the Gateway refuses a setting the pinned OpenClaw retired and does
+      // not start (finding 2709), and fails every turn in OpenClaw's sandbox (finding 2767).
+      refuseStoredConfigurationSettings(configuration.values);
       this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
@@ -14405,9 +14401,7 @@ export class OpenClawController {
     const configuration = await readConfiguration();
     // Deploy admission's rules for a stored Configuration that predates them (findings 2699, 2709,
     // 2767).
-    validateWorkspaceBootstrapSettings(configuration.values);
-    refuseRetiredOpenClawSettings(configuration.values);
-    refuseOpenClawSandbox(configuration.values);
+    refuseStoredConfigurationSettings(configuration.values);
     let configuredHarnessId: string;
     try {
       configuredHarnessId = resolveConfiguredHarnessId(configuration.values);

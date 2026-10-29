@@ -78,6 +78,14 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${CODEX_PLUGIN_STDIO_HELPER}
 (async () => {
   await withCodexPluginStdio("codex", ["app-server"], options, async (request) => {
+    // These shared installer helpers must use stdio before any WebSocket exists.
+    const configuration = {
+      features: { apps: true, plugins: true, remote_plugin: true },
+      apps: { _default: { enabled: false } },
+      plugins: { _default: { enabled: false }, "sample@stdio-proof": { enabled: true } },
+    };
+    await writeCodexPluginConfiguration(configuration, request);
+    verifyCodexPluginConfiguration(configuration, await readCodexPluginConfiguration(request));
     const read = await request("plugin/read", params);
     assert.equal(read.plugin.summary.installed, false);
     await request("plugin/install", params);

@@ -160,7 +160,13 @@ async function runPreflight(root, cwd, state, pod) {
     return scripted;
   }
   if (!state.startupCheck) {
-    return { phase: "Succeeded", log: "installation-startup-ready\n" };
+    const drafts = pod.spec.containers[0].env?.some(
+      (variable) => variable.name === "OCC_UPGRADE_PREFLIGHT_AGENT_DRAFTS",
+    );
+    return {
+      phase: "Succeeded",
+      log: (drafts ? "agent-drafts-accepted\n" : "") + "installation-startup-ready\n",
+    };
   }
   const container = pod.spec.containers[0];
   const work = mkdtempSync(join(root, "preflight-"));
@@ -880,8 +886,17 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       out({
         id: args.at(-1),
         name,
-        ...(args.includes("agent") ? { activeRevisionId: state.activeRevision ?? "rev_old" } : {}),
+        ...(args.includes("agent")
+          ? {
+              configurationId: `cfg_${args.at(-1)}`,
+              activeRevisionId: state.activeRevision ?? "rev_old",
+            }
+          : {}),
       });
+    } else if (args.includes("configuration") && args.includes("get")) {
+      // The Agent's saved Configuration (its draft), as OCC returns it.
+      const id = args.at(-1);
+      out({ id, kind: "agent", values: state.configurationValues?.[id] ?? {} });
     } else if (args.includes("deploy")) {
       state.dispatches += 1;
       // A scripted failure for this Agent answers like the real occ: exit 1 and its error
@@ -902,7 +917,12 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       }
       out({ id: "rev_new" });
     } else if (args.includes("agent") && args.includes("get")) {
-      out({ id: "agt_test", activeRevisionId: state.activeRevision ?? "rev_old" });
+      out({
+        id: "agt_test",
+        name: "Mail triage",
+        configurationId: "cfg_agt_test",
+        activeRevisionId: state.activeRevision ?? "rev_old",
+      });
     } else if (args.includes("deployment-status")) {
       out({ status: "succeeded" });
     } else {
@@ -1089,6 +1109,7 @@ async function fixture(
     installationName = "Production",
     inventoryNamespaces = null,
     names = null,
+    configurationValues = null,
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
@@ -1246,6 +1267,7 @@ async function fixture(
     installationName,
     inventoryNamespaces,
     names,
+    configurationValues,
     version: 1,
     helmStatus: "deployed",
     api: 1,
@@ -3416,10 +3438,55 @@ test("preflight-only checks the candidate without preparing or deploying it", as
     await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
     /^installation-startup-ready$/m,
   );
+  // The API Pod checked the recorded Agent's draft with the selected image's deploy rules.
+  assert.match(
+    await readFile(join(f.evidence, "preflight-api.log"), "utf8"),
+    /^agent-drafts-accepted$/m,
+  );
   assert.equal(existsSync(join(f.evidence, "prepared")), false);
   await assert.rejects(f.run("--resume"), /not a prepared deployment/);
   await assertStoppedBeforeWriters(f);
 });
+
+// A draft saved before the selected release retired one of its settings: deploy admission
+// refuses it, so before finding 2809 the upgrade moved the controller and then stopped at the
+// fleet deploy with the Agents on the old runtime. The API preflight Pod runs the selected
+// image's own stored-Configuration rules on each recorded Agent's draft, so the rehearsal and
+// the release itself stop before any writer stops, with OCC's deploy message for each Agent.
+for (const preflightOnly of [true, false]) {
+  test(`${preflightOnly ? "preflight-only" : "the release"} refuses an Agent draft the selected image would not deploy`, async (t) => {
+    if (!realHelm) {
+      t.skip("helm is unavailable to render the real chart");
+      return;
+    }
+    const f = await fixture(t, {
+      agent: true,
+      chart: { installation: (installation) => installation },
+      configurationValues: {
+        cfg_agt_test: { security: { preset: "corporate" }, tools: { exec: { mode: "full" } } },
+      },
+    });
+    await assert.rejects(f.run(...(preflightOnly ? ["--preflight-only"] : [])), (error) => {
+      assert.match(
+        error.stderr,
+        /the selected controller image refuses to deploy 1 recorded Agent draft\(s\):\n {2}- Agent agt_test "Mail triage" in Namespace ns_test: Configuration setting security\.preset must be removed: the OpenClaw runtime retired it \(configure the individual security controls explicitly\)\.\nNo OCC writer was stopped; the old release keeps serving\./,
+      );
+      return true;
+    });
+    const state = await assertStoppedBeforeWriters(f);
+    assert.equal(state.dispatches, 0);
+    assert.equal(existsSync(join(f.evidence, "prepared")), false);
+    // Only the API Pod carries the drafts; the worker's check is unchanged.
+    const api = JSON.parse(await readFile(join(f.evidence, "preflight-api-pod.json"), "utf8"));
+    const worker = JSON.parse(
+      await readFile(join(f.evidence, "preflight-worker-pod.json"), "utf8"),
+    );
+    assert.ok(api.spec.volumes.some((volume) => volume.name === "upgrade-preflight-agent-drafts"));
+    assert.ok(
+      !worker.spec.volumes.some((volume) => volume.name === "upgrade-preflight-agent-drafts"),
+    );
+  });
+}
 
 // The command fixture models API inventory and conditional deletion; it is not a live cluster.
 // kubectl's create output stays off the terminal but is kept in the private evidence

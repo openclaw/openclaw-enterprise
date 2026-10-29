@@ -22,7 +22,6 @@ import {
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
-import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -38,6 +37,7 @@ import {
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
@@ -55,7 +55,7 @@ const PLUGIN_APP_SERVER_TOKEN_DOMAIN = "openclaw-plugin-runtime/app-server-token
 const nodeRequire = createRequire(import.meta.url);
 const gatewayRuntimeProvenance = JSON.stringify({
   source: "https://github.com/openclaw/openclaw",
-  commit: GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+  commit: (await readOpenclawSource()).commit,
 });
 
 function plain(value) {
@@ -432,7 +432,8 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
       `${PLUGIN_RUNTIME_HELPERS}
 installCodexPlugins(
   ${JSON.stringify(runtime)},
-  ${JSON.stringify(options.failures ?? [])}
+  ${JSON.stringify(options.failures ?? [])},
+  codexAppServerRequest
 ).then(result.resolve, result.reject);`,
       sandbox,
     );

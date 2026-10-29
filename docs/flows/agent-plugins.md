@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-10-28
-last_updated_session: authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106
+last_updated_session: authoring-run/b0d7dda7-f5c2-4314-a2ae-bd0c8cdfbd6f
 ---
 
 # Agent Plugin Deployment Flow
@@ -200,6 +200,9 @@ Dedicated Codex uses isolated `CODEX_HOME`, disabling app/plugin defaults.
 Selections enable apps, plugins and remote plugins; disabled entries cannot execute.
 The [native policy mappings](../reference/drivers/plugin-bundled.md#native-mappings-and-limits)
 describe the generated bridge.
+
+<!-- Internal preparation threads one explicit RPC caller through these reads,
+writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
 
 After `plugin/list`, `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
 selections concurrently before and after installs. Batches preserve order and drain

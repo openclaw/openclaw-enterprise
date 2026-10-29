@@ -5,6 +5,7 @@ import {
   describeDisabled,
   dismissOnBackdrop,
   element,
+  replaceChildrenIfChanged,
   requestIdLine,
   statusBlock,
 } from "./dom.mjs";
@@ -34,6 +35,14 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   let unknown = false;
   let pending = false;
   let reading = false;
+  // Set while the running read is a background poll. A poll keeps the controls usable and the
+  // shown status in place, so it neither drops keyboard focus from a button it would disable
+  // nor announces the same status again every 3 s (finding 2797).
+  let quiet = false;
+  // Each deletion request bumps this, so a poll sent before it cannot report over its outcome.
+  let generation = 0;
+  // Set when a requested check disables the focused Refresh status, so focus returns to the row.
+  let refocus = false;
   let denied = false;
   let accessEnded = false;
   let removed = false;
@@ -65,9 +74,10 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     remove.hidden = deleting || unknown;
     refresh.hidden = !deleting && !unknown;
     retry.hidden = !deleting || unknown;
-    remove.disabled = pending || reading || denied || accessEnded;
-    retry.disabled = pending || reading || denied || accessEnded;
-    refresh.disabled = pending || reading;
+    const checking = reading && !quiet;
+    remove.disabled = pending || checking || denied || accessEnded;
+    retry.disabled = pending || checking || denied || accessEnded;
+    refresh.disabled = pending || checking;
     let text = message;
     if (!text && denied) {
       text = DENIED;
@@ -76,10 +86,10 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         "Deletion started. Cleanup runs in the background. If it does not finish, ask an operator to check teardown before requesting deletion again.";
     }
     const support = requestId ? requestIdLine(requestId) : null;
-    feedback.replaceChildren(
+    replaceChildrenIfChanged(feedback, [
       ...(text ? [statusBlock(unknown || accessEnded ? "warning" : "info", null, text)] : []),
       ...(support ? [support] : []),
-    );
+    ]);
     describeDisabled(remove, remove.disabled ? feedback : null);
     describeDisabled(retry, retry.disabled ? feedback : null);
   }
@@ -87,7 +97,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   function schedulePoll() {
     clearTimeout(poll);
     if (deleting && !unknown && !accessEnded && current()) {
-      poll = setTimeout(() => void readStatus(), POLL_MS);
+      poll = setTimeout(() => void readStatus({ background: true }), POLL_MS);
     }
   }
 
@@ -107,16 +117,28 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     }
   }
 
-  async function readStatus() {
-    if (!current() || pending || reading) {
+  async function readStatus({ background = false } = {}) {
+    if (!current() || pending) {
+      return;
+    }
+    if (reading) {
+      // Refresh during a background poll shows that poll as the requested check.
+      if (!background && quiet) {
+        refocus = document.activeElement === refresh;
+        quiet = false;
+        render();
+      }
       return;
     }
     clearTimeout(poll);
     reading = true;
+    quiet = background;
+    refocus = !background && document.activeElement === refresh;
+    const sent = generation;
     render();
     try {
       const result = responseFields(await context.request(path));
-      if (!current()) {
+      if (!current() || sent !== generation) {
         return;
       }
       if (
@@ -124,6 +146,11 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         !["ready", "provisioning", "failed", "deleting"].includes(String(result.status))
       ) {
         throw new Error("Invalid Namespace status response");
+      }
+      if (quiet && deleting && result.status === "deleting") {
+        // Cleanup is still running: a background poll leaves what the row shows, including a
+        // refusal of the last request, until the status changes or the person refreshes.
+        return;
       }
       deleting = result.status === "deleting";
       unknown = false;
@@ -135,7 +162,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       context.statusChanged(result.status as Namespace["status"]);
       await readPermissions();
     } catch (cause) {
-      if (!current()) {
+      if (!current() || sent !== generation) {
         return;
       }
       const error = requestFailure(cause);
@@ -145,6 +172,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       if (error.status === 404) {
         removed = true;
+        // A confirmation opened while a background poll read has nothing left to delete.
+        confirmation?.close();
         context.onRemoved(namespace);
         return;
       }
@@ -156,10 +185,15 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       requestId = error.requestId;
     } finally {
       reading = false;
+      quiet = false;
       if (current()) {
         render();
         schedulePoll();
+        if (refocus && (!document.activeElement || document.activeElement === document.body)) {
+          (refresh.hidden ? remove : refresh).focus();
+        }
       }
+      refocus = false;
     }
   }
 
@@ -269,7 +303,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   }
 
   function openConfirmation() {
-    if (!current() || pending || reading || denied || accessEnded || unknown) {
+    if (!current() || pending || (reading && !quiet) || denied || accessEnded || unknown) {
       return;
     }
     const opener = document.activeElement;
@@ -367,6 +401,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         return;
       }
       pending = true;
+      generation += 1;
       clearTimeout(poll);
       cancel.disabled = true;
       confirm.disabled = true;
@@ -430,9 +465,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   render();
   void readPermissions();
   schedulePoll();
-  context.onResume?.(() => {
-    void readPermissions();
-    schedulePoll();
-  });
+  // A return mounts this row only after replaying its reads, including the permission answer,
+  // unchanged, so resuming only restarts the poll a detached view stopped (finding 2799).
+  context.onResume?.(schedulePoll);
   return { actions, feedback };
 }
