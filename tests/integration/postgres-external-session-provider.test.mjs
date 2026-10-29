@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   assertProviderAttached,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   fakeGoogle,
@@ -16,25 +15,20 @@ import {
   googleUpgradeSettings,
   oidcSignIn,
   oidcUpgradeSettings,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "session-provider-recovery@example.test";
-const password = "session-provider-member-password";
-const authSecret = "session-provider-auth-test-secret-at-least-32-bytes";
 const githubClientId = "session-provider-github-client-id";
 const googleClientId = "session-provider.apps.googleusercontent.com";
 const oidcClientId = "session-provider-oidc-client";
 const oidcClientSecret = "session-provider-oidc-client-secret";
 const secrets = Object.freeze({
-  "occ-auth/secret": authSecret,
+  "occ-auth/secret": "session-provider-auth-test-secret-at-least-32-bytes",
   "occ-github-login/client-id": githubClientId,
   "occ-github-login/client-secret": "session-provider-github-client-secret",
   "occ-google-login/client-id": googleClientId,
@@ -76,8 +70,15 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    await startFakeGitHub(t);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "session-provider-recovery@example.test",
+        password: "session-provider-member-password",
+        secrets,
+      },
+    );
     const google = fakeGoogle(t, {
       clientId: googleClientId,
       clientSecret: secrets["occ-google-login/client-secret"],
@@ -87,14 +88,7 @@ test(
     const {
       admin,
       accounts: { member },
-    } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    } = await onboard({
       remoteAddress: address(),
       accounts: { member: { email: "session-provider-member@example.test" } },
     });
@@ -103,9 +97,7 @@ test(
     async function restart(options = {}, overrides = {}) {
       await app?.close();
       app = undefined;
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: settingsFor(admin.id, options),
+      app = await composeApp(settingsFor(admin.id, options), {
         secrets: { ...secrets, ...overrides },
       });
     }

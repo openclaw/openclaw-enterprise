@@ -8,7 +8,6 @@ import {
   assertReservedLane,
   authRowCounts,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   fakeGoogle,
@@ -17,25 +16,21 @@ import {
   googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   sessionCookieName,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "google-recovery@example.test";
-const password = "google-member-password";
-const authSecret = "google-sign-in-auth-test-secret-at-least-32-bytes";
 const googleClientId = "fixture-oce.apps.googleusercontent.com";
 const googleClientSecret = "fixture-google-client-secret";
 const hostedDomain = "example.test";
 const secrets = {
-  "occ-auth/secret": authSecret,
+  "occ-auth/secret": "google-sign-in-auth-test-secret-at-least-32-bytes",
   "occ-google-login/client-id": googleClientId,
   "occ-google-login/client-secret": googleClientSecret,
   "occ-github-login/client-id": "google-suite-github-client-id",
@@ -64,7 +59,17 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "google-recovery@example.test",
+        password: "google-member-password",
+        secrets,
+        // The GitHub-and-Google subtest starts GitHub; until then no GitHub stand-in runs.
+        github: false,
+      },
+    );
     const google = fakeGoogle(t, {
       clientId: googleClientId,
       clientSecret: googleClientSecret,
@@ -72,14 +77,7 @@ test(
     });
     const address = clientAddresses("198.19");
     // Password onboarding on the default install, before Google is configured.
-    const { admin, accounts } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    const { admin, accounts } = await onboard({
       passwordSlowLaneFloors: slowLane,
       remoteAddress: address(),
       accounts: {
@@ -91,11 +89,8 @@ test(
     const { member, disabled, both } = accounts;
 
     // A Google-only upgrade: no OCC_AUTH_GITHUB_CLIENT_*, hosted domain restricted.
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
+    app = await composeApp(googleUpgradeSettings(admin.id, [hostedDomain]), {
       passwordSlowLaneFloors: slowLane,
-      settings: googleUpgradeSettings(admin.id, [hostedDomain]),
-      secrets,
     });
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
 
@@ -462,15 +457,13 @@ test(
       await app.close();
       app = undefined;
       await startFakeGitHub(t);
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        passwordSlowLaneFloors: slowLane,
-        settings: {
+      app = await composeApp(
+        {
           ...githubUpgradeSettings(admin.id),
           ...googleUpgradeSettings(admin.id, [hostedDomain]),
         },
-        secrets,
-      });
+        { passwordSlowLaneFloors: slowLane },
+      );
       adminHeaders = await signedInHeaders(app, origin, admin, address());
       assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
         github: true,
