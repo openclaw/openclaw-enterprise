@@ -179,11 +179,19 @@ drivers:
 
 The AWS SDK uses its default credential provider chain. Prefer a workload IAM
 role; do not put credentials in Installation YAML. Provision the account, region,
-and optional KMS key separately. No AWS infrastructure is created at startup.
+and optional KMS key separately. Before creation, the Driver captures credentials
+once and calls STS `GetCallerIdentity`. A missing or mismatched account prevents
+`CreateSecret`. STS and creation use copies of the same captured credentials.
+STS and Secrets Manager use explicit regional AWS HTTPS endpoints, ignoring
+SDK endpoint environment/shared-configuration overrides. Certificate verification
+is enabled explicitly; Node's CA trust and credential-provider configuration
+remain trusted operator inputs. No AWS infrastructure is created at startup.
 
-Names use `<prefix>/<namespaceId>/<secretId>/<uuid>`. OCC stores a UUID,
+Names use `<prefix>/<namespaceId>/<secretId>/<uuid>`, with the UUID and creation
+token derived from the stable OCC Secret ID. OCC stores a UUID,
 encoded AWS suffix, and SHA-256 binding to the complete ARN within the existing
-backend-reference format. Every operation reconstructs and verifies that ARN;
+backend-reference format, splitting the digest into DNS labels of at most
+32 characters. Every operation reconstructs and verifies that ARN;
 changed account, region, prefix, Namespace, Driver, or resource identity fails
 closed. Requests use the complete ARN, never a partial ARN or name fallback.
 Live ownership checks require `openclaw:managed-by`, `openclaw:namespace`,
@@ -216,6 +224,12 @@ force-deletes, restores, or adopts a replacement automatically. Requests have a
 30-second timeout, respect protected-read lifetimes, and disable SDK retries.
 Failed mutations may have applied: reconcile AWS audit records and owned resources
 before retrying. A failed create may leave an orphan; it is not blindly deleted.
+Repeating creation for the same OCC ID uses the same name and version token;
+it cannot allocate another name or overwrite a version with different material.
+Existing resources are never adopted by a name lookup. OCC does not automatically
+replay failed creates, but a new HTTP create request generates a new OCC ID.
+There is no request-level idempotency key: repeated client requests after unknown
+outcomes can still leave separate orphans. Reconcile first, rather than resubmit.
 
 This implementation supports storage and trusted server-side reads, including
 protected static credentials. It does not provision rotation Lambdas or project

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: "2026-10-29"
-last_updated_session: "authoring-run/6b11ce1b-071c-416b-8a6b-5952f131c8c4"
+last_updated_session: "authoring-run/d184aaf1-3208-41c4-865e-5333fc3cb38a"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -103,7 +103,12 @@ flight can require operator recovery.
 
 `apps/controller/src/drivers/secret/aws-secrets-manager/index.ts:AwsSecretsManagerSecretDriver.create`
 
-The AWS selection stores tagged material under a Namespace-specific prefix and
+The AWS selection captures credentials and qualifies their account with STS before
+sending material to the pinned regional HTTPS endpoint. Both calls use the same
+captured signing identity. The resource name and creation token derive from the
+OCC Secret ID; unknown effects are not automatically replayed. A separate HTTP
+create request generates a new ID and still requires operator reconciliation
+after an unknown outcome. The Driver stores tagged material under a Namespace-specific prefix and
 returns an encoded complete-ARN binding that fits OCC's existing reference format.
 `owned` verifies that binding and live tags before operations. Updates use
 `PutSecretValue`; trusted reads use an exact VersionId with `AWSCURRENT` and
@@ -323,6 +328,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 23:07: Qualify AWS account before creation and document stable identity retries. (authoring-run/d184aaf1-3208-41c4-865e-5333fc3cb38a - b79a194e3256844844c857ac0b6211b989192f78)
 
 - 2026-10-29 22:56: Document AWS Secret storage, ARN binding, and versioned reads. (authoring-run/6b11ce1b-071c-416b-8a6b-5952f131c8c4 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
 

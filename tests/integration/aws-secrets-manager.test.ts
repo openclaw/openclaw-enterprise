@@ -58,7 +58,9 @@ function backend() {
     const input = command.input;
     if (command instanceof CreateSecretCommand) {
       const ARN = `arn:aws:secretsmanager:us-east-1:123456789012:secret:${input.Name}-Ab123x`;
-      assert.ok(!records.has(ARN));
+      if (records.has(ARN)) {
+        throw new Error("ResourceExistsException");
+      }
       records.set(ARN, {
         ARN,
         Name: input.Name!,
@@ -110,12 +112,16 @@ function backend() {
   const client = { send } as unknown as NonNullable<
     ConstructorParameters<typeof AwsSecretsManagerSecretDriver>[1]
   >["client"];
-  const driver = new AwsSecretsManagerSecretDriver(options, { client: client! });
+  const identityClient = { send: async () => ({ Account: options.accountId }) };
+  const credentials = { accessKeyId: "synthetic-key", secretAccessKey: "synthetic-signing-key" };
+  const injection = { client: client!, identityClient, credentials };
+  const driver = new AwsSecretsManagerSecretDriver(options, injection);
   return {
     records,
     values,
     calls,
     client: client!,
+    injection,
     driver,
     setFault(value: typeof fault) {
       fault = value;
@@ -153,7 +159,7 @@ test("production Installation selects the AWS adapter and OCC authorizes its lif
   const selection = runtime.installation.drivers.secret;
   const driver = new AwsSecretsManagerSecretDriver(
     selection.configuration as unknown as typeof options,
-    { id: selection.id, client: b.client },
+    { id: selection.id, ...b.injection },
   );
   assert.equal("compareAndSwap" in driver, false);
   const iamState = principalIAMState(["owner", "denied"], "aws-secrets");
@@ -187,6 +193,9 @@ test("production Installation selects the AWS adapter and OCC authorizes its lif
     tx.secrets.findSecret(namespace.id, metadata.id),
   );
   assert.ok(secret);
+  assert.ok(secret.backendRef.name.split(".").every((label) => label.length <= 63));
+  assert.equal((await controller.readSecret("owner", namespace.id, metadata.id)).id, metadata.id);
+  assert.deepEqual(await controller.listSecrets("owner", namespace.id), [metadata]);
   assert.equal(await driver.withValue(secret, async (v) => v), "synthetic-first");
   const before = b.calls.length;
   await assert.rejects(
@@ -205,10 +214,37 @@ test("production Installation selects the AWS adapter and OCC authorizes its lif
   });
   assert.equal(await driver.withValue(secret, async (v) => v), "synthetic-second");
   await controller.deleteSecret("owner", namespace.id, secret.id);
+  assert.deepEqual(await controller.listSecrets("owner", namespace.id), []);
+  await assert.rejects(
+    controller.readSecret("owner", namespace.id, secret.id),
+    ScopeViolationError,
+  );
   assert.ok(Array.from(b.records.values())[0]?.DeletedDate);
   await assert.rejects(driver.resolve(secret), DependencyUnavailableError);
   await driver.delete(secret);
   assert.equal(b.calls.filter((c) => c === "DeleteSecretCommand").length, 1);
+  // OCC propagates an unknown create outcome without replay. A separate client
+  // request allocates a new identity; it is not a retry of the prior resource.
+  const attempts: string[] = [];
+  b.setFault((kind, input) => {
+    if (kind === "CreateSecretCommand") {
+      attempts.push(input.Name!);
+      throw new Error("unknown create outcome");
+    }
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(
+      controller.createSecret("owner", {
+        namespaceId: namespace.id,
+        name: "unknown",
+        value: "synthetic-value",
+      }),
+      DependencyUnavailableError,
+    );
+    assert.equal(attempts.length, attempt + 1);
+  }
+  assert.notEqual(attempts[0], attempts[1]);
+  assert.deepEqual(await controller.listSecrets("owner", namespace.id), []);
   for (const configuration of [
     { ...options, accountId: "bad" },
     { ...options, prefix: "../bad" },
@@ -457,4 +493,147 @@ test("invalid material and mismatched mutation responses cannot become successfu
   );
   await assert.rejects(stored(b), ScopeViolationError);
   assert.equal(b.calls.includes("DeleteSecretCommand"), false);
+});
+
+test("account qualification refuses wrong or unavailable STS identity before any create", async () => {
+  const b = backend();
+  const identity = { id: `sec_${randomUUID()}`, namespaceId: `ns_${randomUUID()}`, name: "key" };
+  for (const identityClient of [
+    { send: async () => ({ Account: "999999999999" }) },
+    {
+      send: async () => {
+        throw new Error("STS unavailable");
+      },
+    },
+  ]) {
+    const driver = new AwsSecretsManagerSecretDriver(options, { ...b.injection, identityClient });
+    await assert.rejects(driver.create(identity, "synthetic-value"), (error) => {
+      assert.ok(
+        error instanceof ScopeViolationError || error instanceof DependencyUnavailableError,
+      );
+      return true;
+    });
+  }
+  assert.equal(b.calls.length, 0);
+});
+
+test("lost create responses keep one resource per OCC identity across driver restarts", async () => {
+  const b = backend();
+  const identity = { id: `sec_${randomUUID()}`, namespaceId: `ns_${randomUUID()}`, name: "key" };
+  let appliedName: string | undefined;
+  const tokens: string[] = [];
+  b.setFault((kind, input) => {
+    if (kind !== "CreateSecretCommand") {
+      return;
+    }
+    appliedName = input.Name!;
+    tokens.push(input.ClientRequestToken!);
+    const ARN = `arn:aws:secretsmanager:us-east-1:123456789012:secret:${appliedName}-Ab123x`;
+    b.records.set(ARN, {
+      ARN,
+      Name: appliedName,
+      Tags: [],
+      VersionIdsToStages: { [input.ClientRequestToken!]: ["AWSCURRENT"] },
+    });
+    b.values.set(input.ClientRequestToken!, input.SecretString!);
+    throw new Error("response lost after AWS applied creation");
+  });
+  await assert.rejects(b.driver.create(identity, "synthetic-first"), DependencyUnavailableError);
+  b.setFault((kind, input) => {
+    if (kind === "CreateSecretCommand") {
+      tokens.push(input.ClientRequestToken!);
+    }
+  });
+  const restarted = new AwsSecretsManagerSecretDriver(options, b.injection);
+  await assert.rejects(
+    restarted.create(identity, "synthetic-different"),
+    DependencyUnavailableError,
+  );
+  assert.equal(b.records.size, 1);
+  assert.deepEqual(tokens, [identity.id.slice(4), identity.id.slice(4)]);
+  assert.equal(Array.from(b.records.values())[0]!.Name, appliedName);
+  assert.deepEqual(Array.from(b.values.values()), ["synthetic-first"]);
+  assert.deepEqual(b.calls, ["CreateSecretCommand", "CreateSecretCommand"]);
+});
+
+test("real SDK signs STS and creation with captured credentials at pinned HTTPS endpoints", async (t) => {
+  const keys = ["AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL_SECRETS_MANAGER"];
+  const saved = keys.map((key) => process.env[key]);
+  for (const key of keys) {
+    process.env[key] = "http://untrusted.invalid";
+  }
+  t.after(() =>
+    keys.forEach((key, index) => {
+      if (saved[index] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = saved[index];
+      }
+    }),
+  );
+  for (const account of [options.accountId, "999999999999"]) {
+    let resolutions = 0;
+    const requests: { host: string; authorization: string; action: string }[] = [];
+    let created:
+      { Name: string; ClientRequestToken: string; Tags: RecordValue["Tags"] } | undefined;
+    const handler = {
+      handle: async (request: {
+        protocol: string;
+        hostname: string;
+        headers: Record<string, string>;
+        body: string | Uint8Array;
+      }) => {
+        assert.equal(request.protocol, "https:");
+        const action = request.headers["x-amz-target"] ?? "GetCallerIdentity";
+        requests.push({
+          host: request.hostname,
+          authorization: request.headers.authorization!,
+          action,
+        });
+        let body: string | Uint8Array;
+        if (request.hostname === "sts.us-east-1.amazonaws.com") {
+          body = `<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><GetCallerIdentityResult><Account>${account}</Account><Arn>arn:aws:iam::${account}:role/workload</Arn><UserId>workload</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>test</RequestId></ResponseMetadata></GetCallerIdentityResponse>`;
+        } else {
+          assert.equal(request.hostname, "secretsmanager.us-east-1.amazonaws.com");
+          if (action.endsWith("CreateSecret")) {
+            created = JSON.parse(
+              typeof request.body === "string"
+                ? request.body
+                : new TextDecoder().decode(request.body),
+            ) as typeof created;
+          }
+          assert.ok(created);
+          const ARN = `arn:aws:secretsmanager:us-east-1:123456789012:secret:${created.Name}-Ab123x`;
+          body = JSON.stringify({
+            ARN,
+            Name: created.Name,
+            VersionId: created.ClientRequestToken,
+            Tags: created.Tags,
+            VersionIdsToStages: { [created.ClientRequestToken]: ["AWSCURRENT"] },
+          });
+        }
+        return { response: { statusCode: 200, headers: {}, body: new TextEncoder().encode(body) } };
+      },
+    };
+    const driver = new AwsSecretsManagerSecretDriver(options, {
+      credentials: async () => ({
+        accessKeyId: `synthetic-key-${++resolutions}`,
+        secretAccessKey: "synthetic-signing-key",
+        expiration: new Date(Date.now() + 60_000),
+      }),
+      requestHandler: handler,
+    });
+    const identity = { id: `sec_${randomUUID()}`, namespaceId: `ns_${randomUUID()}`, name: "key" };
+    if (account !== options.accountId) {
+      await assert.rejects(driver.create(identity, "synthetic-value"), ScopeViolationError);
+      assert.equal(requests.length, 1);
+    } else {
+      await driver.create(identity, "synthetic-value");
+      assert.equal(requests[0]!.host, "sts.us-east-1.amazonaws.com");
+      assert.ok(requests[1]!.action.endsWith("CreateSecret"));
+      const signingKey = (authorization: string) => /Credential=([^/]+)/.exec(authorization)?.[1];
+      assert.ok(signingKey(requests[0]!.authorization));
+      assert.equal(signingKey(requests[0]!.authorization), signingKey(requests[1]!.authorization));
+    }
+  }
 });

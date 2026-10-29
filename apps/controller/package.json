@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "3.1156.0",
+    "@aws-sdk/client-sts": "3.1156.0",
     "@better-auth/api-key": "1.7.11",
     "@fastify/ajv-compiler": "4.0.7",
     "@fastify/fast-json-stringify-compiler": "5.1.1",
@@ -33,6 +34,7 @@
     "@openclaw-enterprise/utils": "workspace:*",
     "@openclaw/gateway-client": "2026.10.5",
     "@prometheus-io/client": "0.16.1",
+    "@smithy/node-http-handler": "4.12.1",
     "ajv-formats": "3.0.1",
     "better-auth": "1.7.11",
     "fastify": "5.12.7",

@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { Agent } from "node:https";
+import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import {
   CreateSecretCommand,
   DeleteSecretCommand,
@@ -7,6 +10,7 @@ import {
   PutSecretValueCommand,
   SecretsManagerClient,
   type DescribeSecretCommandOutput,
+  type SecretsManagerClientConfig,
 } from "@aws-sdk/client-secrets-manager";
 import {
   requireConfiguration,
@@ -56,20 +60,67 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
   readonly id: string;
   private readonly options: Readonly<AwsSecretsManagerOptions>;
   private readonly client: Pick<SecretsManagerClient, "send">;
+  private readonly credentials: SecretsManagerClient["config"]["credentials"];
+  private readonly createClients: (
+    credentials: Awaited<ReturnType<SecretsManagerClient["config"]["credentials"]>>,
+  ) => {
+    secrets: Pick<SecretsManagerClient, "send">;
+    identity: Pick<STSClient, "send">;
+  };
 
   constructor(
     options: AwsSecretsManagerOptions,
     selection: {
       readonly id?: string;
       readonly client?: Pick<SecretsManagerClient, "send">;
+      readonly identityClient?: Pick<STSClient, "send">;
+      readonly credentials?: SecretsManagerClientConfig["credentials"];
+      readonly requestHandler?: SecretsManagerClientConfig["requestHandler"];
     } = {},
   ) {
     this.options = Object.freeze({
       ...requireConfiguration(AwsSecretsManagerSecretDriver, options),
     });
     this.id = selection.id ?? "secret-aws-secrets-manager";
-    this.client =
-      selection.client ?? new SecretsManagerClient({ region: options.region, maxAttempts: 1 });
+    // Explicit regional endpoints override environment/shared-config endpoints. The HTTPS
+    // agent explicitly verifies certificates even if NODE_TLS_REJECT_UNAUTHORIZED is set.
+    const common = {
+      region: options.region,
+      maxAttempts: 1,
+      requestHandler:
+        selection.requestHandler ??
+        new NodeHttpHandler({
+          httpsAgent: new Agent({ rejectUnauthorized: true }),
+        }),
+      ...(selection.credentials ? { credentials: selection.credentials } : {}),
+    };
+    const defaults = new SecretsManagerClient({
+      ...common,
+      endpoint: this.endpoint("secretsmanager"),
+    });
+    this.client = selection.client ?? defaults;
+    this.credentials = defaults.config.credentials;
+    this.createClients = (credentials) => ({
+      secrets:
+        selection.client ??
+        new SecretsManagerClient({
+          ...common,
+          credentials: { ...credentials },
+          endpoint: this.endpoint("secretsmanager"),
+        }),
+      identity:
+        selection.identityClient ??
+        new STSClient({
+          ...common,
+          credentials: { ...credentials },
+          endpoint: this.endpoint("sts"),
+        }),
+    });
+  }
+
+  private endpoint(service: "sts" | "secretsmanager"): string {
+    const domain = this.partition() === "aws-cn" ? "amazonaws.com.cn" : "amazonaws.com";
+    return `https://${service}.${this.options.region}.${domain}`;
   }
 
   private namespace(identity: SecretIdentity): string {
@@ -127,7 +178,7 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
   private binding(secret: Secret): { arn: string; name: string } {
     const ref = secret.backendRef;
     const name = `${this.namespace(secret)}/${secret.id}/${ref.uid}`;
-    const match = /^aws-sm-([0-9a-f]{12})-([0-9a-f]{64})$/.exec(ref.name);
+    const match = /^aws-sm-([0-9a-f]{12})\.([0-9a-f]{32})\.([0-9a-f]{32})$/.exec(ref.name);
     if (
       secret.driverId !== this.id ||
       ref.namespaceName !== this.location(secret) ||
@@ -140,7 +191,7 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     const suffix = Buffer.from(match[1]!, "hex").toString("ascii");
     const arn = `arn:${this.partition()}:secretsmanager:${this.options.region}:${this.options.accountId}:secret:${name}-${suffix}`;
     this.checkArn(arn, name);
-    if (this.digest(arn) !== match[2]) {
+    if (this.digest(arn) !== `${match[2]}${match[3]}`) {
       throw new ScopeViolationError("Secret ARN binding changed.");
     }
     return { arn, name };
@@ -183,11 +234,24 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
   async create(identity: SecretIdentity, value: string): Promise<SecretBackendRef> {
     const namespaceName = this.namespace(identity);
     this.validateValue(value);
-    const uid = randomUUID();
+    const uid = identity.id.slice(4);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uid)) {
+      throw new ScopeViolationError("Invalid Secret identity.");
+    }
     const name = `${namespaceName}/${identity.id}/${uid}`;
-    const token = randomUUID();
+    const token = uid;
+    // Resolve once: STS and CreateSecret must sign with the same workload identity,
+    // even if its refreshable provider changes accounts between requests.
+    const credentials = Object.freeze({ ...(await this.request(() => this.credentials())) });
+    const clients = this.createClients(credentials);
+    const caller = await this.request((abortSignal) =>
+      clients.identity.send(new GetCallerIdentityCommand({}), { abortSignal }),
+    );
+    if (caller.Account !== this.options.accountId) {
+      throw new ScopeViolationError("AWS caller account does not match Secret configuration.");
+    }
     const result = await this.request((abortSignal) =>
-      this.client.send(
+      clients.secrets.send(
         new CreateSecretCommand({
           Name: name,
           SecretString: value,
@@ -205,16 +269,20 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     const suffix = Buffer.from(result.ARN.slice(-6), "ascii").toString("hex");
     const reference = Object.freeze({
       namespaceName: this.location(identity),
-      name: `aws-sm-${suffix}-${this.digest(result.ARN)}`,
+      name: `aws-sm-${suffix}.${this.digest(result.ARN).slice(0, 32)}.${this.digest(result.ARN).slice(32)}`,
       uid,
       key: "SecretString",
     });
-    const observed = await this.owned({
-      ...identity,
-      backendRef: reference,
-      driverId: this.id,
-      createdAt: new Date().toISOString(),
-    });
+    const observed = await this.owned(
+      {
+        ...identity,
+        backendRef: reference,
+        driverId: this.id,
+        createdAt: new Date().toISOString(),
+      },
+      false,
+      clients.secrets,
+    );
     if (this.current(observed) !== token) {
       throw new DependencyUnavailableError(
         "Secret changed during creation; outcome may be unknown.",
@@ -223,10 +291,14 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     return reference;
   }
 
-  private async owned(secret: Secret, deleting = false): Promise<DescribeSecretCommandOutput> {
+  private async owned(
+    secret: Secret,
+    deleting = false,
+    client = this.client,
+  ): Promise<DescribeSecretCommandOutput> {
     const { arn, name } = this.binding(secret);
     const result = await this.request((abortSignal) =>
-      this.client.send(new DescribeSecretCommand({ SecretId: arn }), { abortSignal }),
+      client.send(new DescribeSecretCommand({ SecretId: arn }), { abortSignal }),
     );
     if (
       result.ARN !== arn ||
