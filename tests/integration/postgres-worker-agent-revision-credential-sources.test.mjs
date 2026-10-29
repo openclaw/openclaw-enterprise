@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
@@ -53,6 +54,7 @@ function withCredentialGateway(drivers) {
     id: "sandbox-worker-fixture",
     capability: "sandbox",
     implementation: "sandbox-worker-fixture",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup() {},
   };

@@ -642,10 +642,9 @@ export async function renderAgentDetail(
   let agentSaveDenied = callerPermissionsRead.then((permissions) =>
     agentSaveDenial(permissions, agent),
   );
-  // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
-  // The newest reread whose operate answer the page's controls show.
-  let appliedOperateReread = 0;
+  // The newest reread whose answer the page shows: the summary and every control that follows it.
+  let appliedReread = 0;
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
@@ -3867,21 +3866,27 @@ export async function renderAgentDetail(
     const reread = ++permissionsRereads;
     const read = readPermissions().then(
       (permissions) => {
-        if (context.isCurrent() && reread === permissionsRereads) {
+        // An older reread still applies when no newer one has answered: a newer read that
+        // fails resolves to this answer. The summary and the controls take it together, so
+        // the failed-version recovery and Delete never keep an answer that Stop has left
+        // (finding 2329).
+        if (context.isCurrent() && reread > appliedReread) {
+          appliedReread = reread;
           callerPermissions = permissions;
           // Views built from now on take this answer; shown ones follow it below (finding 2470).
-          agentSaveDenied = Promise.resolve(agentSaveDenial(permissions, agent));
+          // While a newer reread is in flight, views built meanwhile wait for it instead, so
+          // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
+          // resolves to this answer.
+          agentSaveDenied =
+            reread === permissionsRereads
+              ? Promise.resolve(agentSaveDenial(permissions, agent))
+              : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
           // A grant or revocation since the last answer relabels the draft (finding 2421).
           applyDraftAccess();
           deletion.applyDelete(permissions?.delete);
-        }
-        // An older reread still applies when no newer one has answered: a newer read that
-        // fails resolves to this answer, which the controls would otherwise never see.
-        if (context.isCurrent() && reread > appliedOperateReread) {
-          appliedOperateReread = reread;
           applyOperateAnswer(permissions?.operate);
         }
         return permissions;
