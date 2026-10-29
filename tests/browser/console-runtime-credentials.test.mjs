@@ -682,20 +682,40 @@ async function agentWithoutGrant(t, { name, slackValues, bindings, ungranted, fi
   return { fixture, namespace, agent, secrets };
 }
 
-async function ungrantedBoundSecret(t, { name, slackValues, bindings, ungranted, rows, badges }) {
+async function ungrantedBoundSecret(
+  t,
+  { name, slackValues, bindings, ungranted, rows, badges, viewport },
+) {
   const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
     name,
     slackValues,
     bindings,
     ungranted,
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { context: viewport && { viewport } });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   const list = page.locator("section.channel-secrets .credential-status-list");
   await list.getByText(/· Agent access not confirmed$/).waitFor();
   assert.deepEqual(await list.locator("dt").allTextContents(), rows);
   assert.deepEqual(await list.locator(".badge").allTextContents(), badges);
+  if (viewport !== undefined) {
+    // On a phone the longest status wraps inside the card; it widened the page to 582 px at
+    // 390 px (finding 2852).
+    assert.deepEqual(
+      await list.evaluate((node) => {
+        const page = globalThis.document.documentElement;
+        const card = node.closest("section").getBoundingClientRect();
+        return {
+          sideways: Math.max(0, page.scrollWidth - page.clientWidth),
+          outsideCard: [...node.querySelectorAll(".badge")]
+            .filter((badge) => badge.getBoundingClientRect().right > card.right)
+            .map((badge) => badge.textContent),
+        };
+      }),
+      { sideways: 0, outsideCard: [] },
+    );
+  }
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Retry Secret access" }).click();
@@ -735,7 +755,8 @@ test("a listed Slack key without the Agent's grant holds Deploy and offers Retry
 
 // HTTP mode reads no app token, so SLACK_APP_TOKEN left bound after a switch from Socket Mode is
 // read by no Slack setting, but Deploy still checks its grant. The tab showed "Ready to deploy."
-// with no Retry, and the deploy failed AUTHORIZATION_DENIED (finding 2558).
+// with no Retry, and the deploy failed AUTHORIZATION_DENIED (finding 2558). Its status is the
+// widest the list shows, so this runs at phone width.
 test("a bound key no Slack setting reads still needs the Agent's grant", (t) =>
   ungrantedBoundSecret(t, {
     name: "HTTP leftover",
@@ -744,6 +765,7 @@ test("a bound key no Slack setting reads still needs the Agent's grant", (t) =>
     ungranted: "SLACK_APP_TOKEN",
     rows: ["Slack bot token", "SLACK_APP_TOKEN"],
     badges: ["Bound", "Bound · not read by the Slack settings · Agent access not confirmed"],
+    viewport: { width: 390, height: 844 },
   }));
 
 // Tokens on other keys get the list; the standard pair left bound beside them is checked too

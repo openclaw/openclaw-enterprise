@@ -3179,6 +3179,13 @@ select:not([multiple])[size="1"] {
 .credential-status-list dd {
   margin: 0;
 }
+/* A status such as "Bound · not read by the Slack settings · Agent access not confirmed" is wider
+   than a phone's value column, so it wraps inside the column rather than widening the page
+   (finding 2852). */
+.credential-status-list .badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 /* Channel Secrets also lists environment keys, which can outgrow the label column. */
 .channel-secrets .credential-status-list {
   grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
