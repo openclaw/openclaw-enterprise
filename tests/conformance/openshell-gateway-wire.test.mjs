@@ -1625,6 +1625,32 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
     outage(error, grpc.status.DEADLINE_EXCEEDED),
   );
 
+  // A gateway that received the request but never answered it is not an outage: grpc-js sent the
+  // request, so its DEADLINE_EXCEEDED names the remote address, not "Waiting for LB pick", and the
+  // request spends the attempt budget like any other failed request.
+  const hungSessions = [];
+  const hung = createH2cServer();
+  hung.on("session", (session) => hungSessions.push(session));
+  hung.on("stream", (stream) => stream.on("error", () => {}));
+  await new Promise((resolve) => hung.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    for (const session of hungSessions) {
+      session.destroy();
+    }
+    return new Promise((resolve) => hung.close(resolve));
+  });
+  const unanswering = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${hung.address().port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => unanswering.close());
+  await assert.rejects(unanswering.health(AbortSignal.timeout(5_000)), (error) => {
+    assert.ok(error instanceof DependencyUnavailableError, String(error));
+    assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+    assert.equal(error.grpcStatus, grpc.status.DEADLINE_EXCEEDED);
+    return true;
+  });
+
   // A status sent in trailers after the response headers carries no other metadata, so only its
   // code and exact details tell it from grpc-js's own: none of these is an unanswered request.
   const trailers = [
@@ -1933,6 +1959,7 @@ async function mutualTls(t) {
 }
 
 test("OpenShell mTLS authenticates DNS and IP channels and refuses missing or foreign identities", async (t) => {
+  const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
   const { tls, auth, rootCertificatePath, directory } = await mutualTls(t);
   const foreignCA = selfSignedCertificate(directory, "foreign-ca", "DNS:foreign.invalid");
   const foreign = signedClientCertificate(directory, "foreign", foreignCA);
@@ -1984,10 +2011,13 @@ test("OpenShell mTLS authenticates DNS and IP channels and refuses missing or fo
         makeClient(foreign),
         makeClient(auth, foreignCA.certPath),
       ]) {
-        await assert.rejects(
-          rejected.health(AbortSignal.timeout(5_000)),
-          DependencyUnavailableError,
-        );
+        // A refused identity is never a Sandbox gateway outage: waiting cannot fix it (owner rule:
+        // retry network failures and timeouts, never an authentication failure).
+        await assert.rejects(rejected.health(AbortSignal.timeout(5_000)), (error) => {
+          assert.ok(error instanceof DependencyUnavailableError, String(error));
+          assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+          return true;
+        });
       }
       assert.equal(seen.length, count, "unverified peers never reach an RPC");
       await assert.rejects(
