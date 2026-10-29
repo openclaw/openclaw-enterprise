@@ -3852,6 +3852,70 @@ for (const { agent, material } of [
   );
 }
 
+// Finding 2894 keeps an existing Agent's version only when the deadline ended its wait for the
+// first Git token. A published version whose runtime never activated is a convergence failure
+// even when its token is pending, and so is Compute's Sandbox install, which shares the token
+// wait's code, once the token is committed: both retire the version as before.
+for (const { wait, material } of [
+  { wait: "WORKSPACE_NODE_PENDING", material: "pending" },
+  { wait: "REPOSITORY_GIT_MATERIAL_PENDING", material: "ready" },
+]) {
+  test(
+    `an existing Agent's native repository version that waits at ${wait} with a ${material} ` +
+      "token fails at the convergence deadline and is retired",
+    requiresPostgres,
+    async (context) => {
+      const repository = repositoryBoundary();
+      const fixture = await setup(context, { repoDriver: repository.driver });
+      const revisionOptions = { repositoryCredentials: repository.snapshot };
+      const { owner, candidate: first } = await fixture.admitInitialRevision(
+        `repository-deadline-${wait.toLowerCase()}`,
+        { revision: revisionOptions },
+      );
+      await fixture.start(fixture.compute, { repositoryGitMaterial: async () => "ready" });
+      await fixture.work(first, "succeeded");
+      await fixture.stop();
+      const candidate = await fixture.revision(owner, 2, revisionOptions);
+      const stopped = [];
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async activateRevision(revision, revisionContext) {
+            // The published version's activation never completes before the deadline.
+            if (revision.id === candidate.id) {
+              throw new ActivationPendingError(wait, "The test runtime is not ready.");
+            }
+            return fixture.compute.activateRevision?.(revision, revisionContext);
+          },
+          async stopRevision(revision) {
+            stopped.push(revision.id);
+            return fixture.compute.stopRevision(revision);
+          },
+        },
+        {
+          convergenceTimeoutMs: 3_000,
+          repositoryGitMaterial: async (revisionId) =>
+            revisionId === candidate.id ? material : "ready",
+        },
+      );
+      await fixture.work(candidate, "failed_permanent");
+      const status = await fixture.deploymentStatus(owner, candidate);
+      assert.equal(status.status, "failed");
+      assert.equal(status.error.code, "CONVERGENCE_DEADLINE_EXCEEDED");
+      await waitFor("the failed version's runtime retirement", async () => {
+        const { rows } = await fixture.observerPool.query(
+          `SELECT state FROM occ.controller_work
+           WHERE revision_id = $1 AND idempotency_key LIKE $2`,
+          [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
+        );
+        return rows[0]?.state === "succeeded" ? true : undefined;
+      });
+      assert.deepEqual(stopped, [candidate.id]);
+      assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, null);
+    },
+  );
+}
+
 test(
   "a running native repository version's maintenance ignores a quarantined token renewal",
   requiresPostgres,
