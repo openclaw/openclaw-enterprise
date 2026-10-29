@@ -144,7 +144,9 @@ acceptance, closure or a 30-second deadline, at most 256 for one Sandbox, so one
 refuse the others. The owner rechecks the bearer and verifies both
 the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
 `openshell-exchange-v1`, a zero byte, the challenge and the binary opening request.
-Request JSON cannot supply a key; bearer-only RPCs refuse.
+Request JSON cannot supply a key; bearer-only RPCs refuse. Online request authorization
+(`apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts:createAuthority`)
+likewise holds at most 1,024 `EvaluateHttpRequest` decisions in flight, 256 for one Sandbox.
 
 Before awaiting work, the adapter copies the request and binds a private capability to the stream.
 Credential Proxy bounds body size, reserves an authentication slot and snapshots headers and body.
