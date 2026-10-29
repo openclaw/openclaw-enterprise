@@ -30,6 +30,8 @@ detail it returns to the new Namespace's Agents list. The account menu contains
 **Settings** and **Sign out**. Settings displays your account. Installation
 administrators can expand **Installation Driver configuration** to inspect
 [accepted startup values](../../reference/drivers/selection.md#configuration-definitions-and-discovery).
+**Fields** shows labeled values and nested groups. **JSON** shows the same values
+as a document. Hidden values remain redacted in both views.
 Changes require operator-managed startup configuration and a control-plane restart.
 Sign out ends your console session.
 

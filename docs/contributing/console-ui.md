@@ -15,6 +15,8 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
 - **Structure.** Let the [shell](../../apps/controller/src/console/shell.mts)
   supply the page title, Namespace, and navigation. Use a `.section` with an
   `h2` to group related content. Add a `.card` when the group needs its own surface.
+  Desktop pages scroll as one document: the sidebar stretches to the page bottom,
+  with the account control at its end. The phone drawer retains its own viewport.
 - **Collections.** Agents and Secrets put search and the primary action in a
   `.collection-toolbar`. Give the search input an accessible name. It comes
   first in markup and in tab order, even when the action wraps below it.

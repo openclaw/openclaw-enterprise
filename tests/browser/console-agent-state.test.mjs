@@ -1165,15 +1165,30 @@ test("A Backends refusal after administration is revoked is read and audited onc
   );
 });
 
-test("Settings displays accepted Driver values instead of schemas and distinguishes unavailable values", async (t) => {
-  // Seed the public projections at the existing controller boundary. Startup integration tests
-  // verify how Drivers produce them; this case exercises the real API and browser rendering.
+test("Settings inspects nested Driver fields and the same JSON without changing configuration", async (t) => {
+  // Startup integration tests establish projection ownership. This public controller fixture
+  // exercises generic values through the real API and browser without adding a product seam.
   const accepted = {
     authentication: {
       mode: "kubeconfig",
       kubeconfigPath: "/etc/occ/cluster.yaml",
       context: "control",
     },
+    operatorResources: "[redacted]",
+    optionalValues: {
+      enabled: false,
+      capacity: 0,
+      fallback: null,
+      emptyText: "",
+      list: [],
+      record: {},
+      ["customfield".repeat(8)]: "configurationvalue".repeat(20),
+    },
+    workerGroups: Array.from({ length: 8 }, (_, index) => ({
+      name: `Group ${index + 1}`,
+      routes: ["/workspace/read", "/workspace/write"],
+      description: index === 0 ? "<img src=x onerror=alert(1)>" : "Configured worker group",
+    })),
   };
   const fixture = await createConsoleAppFixture(t, {
     driverConfigurations: [
@@ -1204,27 +1219,100 @@ test("Settings displays accepted Driver values instead of schemas and distinguis
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/settings?namespace=${namespace.id}`);
-
-  const configuration = page.locator("details").filter({
-    has: page.locator("summary", { hasText: "configuration · console-configuration · startup" }),
-  });
-  await configuration.locator("summary").click();
+  const configuration = page
+    .locator("details.driver-configuration")
+    .filter({ has: page.locator("summary", { hasText: "console-configuration" }) });
+  const fieldsButton = page.getByRole("button", { name: "Fields", exact: true });
+  const jsonButton = page.getByRole("button", { name: "JSON", exact: true });
+  assert.equal(await fieldsButton.getAttribute("aria-pressed"), "true");
+  await configuration.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  const fields = configuration.locator(".driver-configuration-fields").first();
+  for (const value of [
+    "Kubeconfig path",
+    "kubeconfigPath",
+    "/etc/occ/cluster.yaml",
+    "Hidden for security",
+    "false",
+    "0",
+    "null",
+    '""',
+    "[]",
+    "{}",
+    "Group 8",
+    "<img src=x onerror=alert(1)>",
+    "customfield".repeat(8),
+    "configurationvalue".repeat(20),
+  ]) {
+    await fields.getByText(value, { exact: true }).waitFor();
+  }
+  assert.equal(await fields.locator("img").count(), 0, "configuration text is never HTML");
+  assert.equal(await configuration.locator("pre").isVisible(), false);
+  await configuration.locator("summary").getByText("4 fields", { exact: true }).waitFor();
+  await jsonButton.click();
+  assert.equal(await jsonButton.getAttribute("aria-pressed"), "true");
   assert.deepEqual(JSON.parse(await configuration.locator("pre").textContent()), accepted);
-  const iam = page.locator("details").filter({
-    has: page.locator("summary", { hasText: "iam · console-native-iam · startup" }),
-  });
+  assert.equal(await fields.isVisible(), false);
+  await fieldsButton.click();
+  assert.equal(await fields.isVisible(), true);
+  assert.equal(
+    await configuration.getAttribute("open"),
+    "",
+    "changing view retains disclosure state",
+  );
+  const iam = page
+    .locator("details.driver-configuration")
+    .filter({ has: page.locator("summary", { hasText: "console-native-iam" }) });
   await iam.locator("summary").click();
+  await iam.getByText("No startup values to display.", { exact: true }).waitFor();
+  await jsonButton.click();
   assert.equal(await iam.locator("pre").textContent(), "{}");
-
-  // A missing projection must not silently become schema output or an empty object.
-  const secret = page.locator("details").filter({
-    has: page.locator("summary", { hasText: "secret · console-secret · startup" }),
-  });
+  await fieldsButton.click();
+  // A missing projection cannot become schema output or an empty object.
+  const secret = page
+    .locator("details.driver-configuration")
+    .filter({ has: page.locator("summary", { hasText: "console-secret" }) });
   await secret.locator("summary").click();
   await secret
     .getByText("Accepted startup values are unavailable for this Driver.", { exact: true })
     .waitFor();
   assert.equal(await secret.locator("pre").count(), 0);
+  // Both columns belong to one document scroll; the profile reaches the long page's bottom.
+  const desktop = await page.evaluate(() => {
+    const shell = globalThis.document.querySelector(".shell").getBoundingClientRect();
+    const sidebar = globalThis.document.querySelector(".sidebar").getBoundingClientRect();
+    const profile = globalThis.document
+      .querySelector(".sidebar .account-toggle")
+      .getBoundingClientRect();
+    return {
+      shellHeight: shell.height,
+      sidebarHeight: sidebar.height,
+      bottomGap: sidebar.bottom - profile.bottom,
+      viewport: globalThis.innerHeight,
+      fits: globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    };
+  });
+  assert.ok(desktop.shellHeight > desktop.viewport * 1.5, "exercise a genuinely long page");
+  assert.ok(desktop.sidebarHeight >= desktop.shellHeight - 1, JSON.stringify(desktop));
+  assert.ok(desktop.bottomGap >= 0 && desktop.bottomGap <= 32, JSON.stringify(desktop));
+  assert.equal(desktop.fits, true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    ),
+    true,
+  );
+  await page.evaluate(() => globalThis.window.scrollTo(0, 0));
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  await page.locator(".sidebar nav").waitFor({ state: "visible" });
+  const drawer = await page.locator(".sidebar").boundingBox();
+  assert.ok(drawer.height <= 844 && drawer.y === 0, JSON.stringify(drawer));
+  await page.keyboard.press("Escape");
+  await page.locator(".sidebar").waitFor({ state: "hidden" });
+  await configuration.locator("summary").focus();
+  await page.keyboard.press("Space");
+  assert.equal(await configuration.getAttribute("open"), null);
   assert.deepEqual(
     nonAuthWriteRequests(requests),
     [],

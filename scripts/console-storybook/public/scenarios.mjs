@@ -1783,12 +1783,25 @@ export const scenarios = {
     name: "Account",
     path: "/console/settings",
     description:
-      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup values, including redacted sections and an empty configuration. There are no editable settings in this release.",
+      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty projection. There are no editable settings in this release.",
     steps: [
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
-      "Expand each Installation Driver below the cards. Credential Gateway shows configured binary paths, Sandbox shows a redaction marker, and IAM shows an empty object. There are no mutation controls.",
+      "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM explains its empty projection. Switch Fields / JSON and confirm the expanded groups stay open.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
-      "At a phone width, Sign out spans the Session card.",
+      "On a long page, scroll to the bottom and check that the sidebar background and operator profile reach it. At phone width, values fit and the existing navigation drawer still opens.",
+    ],
+  },
+  settingsDriverNestedValues: {
+    group: "Pages/Settings",
+    name: "Nested Driver values",
+    path: "/console/settings",
+    installationNestedValues: true,
+    description:
+      "A package Driver supplies nested records, arrays, empty values and redaction markers. The production renderer handles the safe JSON projection without a bundled schema-specific form. The expanded page exercises the shared sidebar beyond one viewport.",
+    steps: [
+      "Expand Configuration. Inspect groups, nested records, false, zero, null, empty arrays and objects, literal markup text, and the hidden value.",
+      "Switch to JSON and back to Fields. The values and expanded state remain unchanged.",
+      "Scroll to the bottom: the navigation background and profile reach the page bottom. At phone width, open and close the navigation drawer and check that fields fit the viewport.",
     ],
   },
   settingsDriverValuesUnavailable: {

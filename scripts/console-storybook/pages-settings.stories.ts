@@ -29,3 +29,8 @@ export const DriverConfigurationDenied = {
   ...story("settingsDriverConfigurationsDenied"),
   name: "Driver configuration denied",
 };
+
+export const NestedDriverValues = {
+  ...story("settingsDriverNestedValues"),
+  name: "Nested Driver values",
+};

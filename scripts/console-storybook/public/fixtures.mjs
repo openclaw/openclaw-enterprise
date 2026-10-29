@@ -952,6 +952,41 @@ export function installFixture(scenario, evidence) {
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response({
         configurations: [
+          ...(scenario.installationNestedValues
+            ? [
+                {
+                  capability: "configuration",
+                  driverId: "config-example-package",
+                  implementation: "example-configuration-driver",
+                  scope: "installation",
+                  key: "startup",
+                  binding: "installation-startup",
+                  configurationSchema: { type: "object" },
+                  startupConfiguration: {
+                    endpoint: "/configuration/read",
+                    optionalValues: {
+                      enabled: false,
+                      capacity: 0,
+                      fallback: null,
+                      emptyText: "",
+                      list: [],
+                      record: {},
+                      ["customfield".repeat(8)]: "configurationvalue".repeat(20),
+                    },
+                    operatorResources: "[redacted]",
+                    workerGroups: Array.from({ length: 8 }, (_, index) => ({
+                      name: `Group ${index + 1}`,
+                      routes: ["/workspace/read", "/workspace/write"],
+                      description:
+                        index === 0
+                          ? "<b>Literal configuration text</b>"
+                          : "Configured worker group",
+                    })),
+                  },
+                  actions: {},
+                },
+              ]
+            : []),
           {
             capability: "credential_gateway",
             driverId: "credential-gateway-openshell",
