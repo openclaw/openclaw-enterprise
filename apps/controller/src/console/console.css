@@ -1597,7 +1597,7 @@ p {
   margin: 0;
 }
 .driver-configuration-fields .driver-configuration-fields {
-  padding-left: var(--space-3);
+  padding-left: min(var(--space-3), 3%);
   border-left: 1px solid var(--line);
 }
 .driver-configuration-fields .driver-configuration-fields .driver-configuration-field {
@@ -1617,7 +1617,7 @@ p {
 }
 .driver-value-list {
   margin: 0;
-  padding-left: var(--space-5);
+  padding-left: min(var(--space-5), 5%);
   min-width: 0;
 }
 .driver-value-list > li {

@@ -976,6 +976,10 @@ export function installFixture(scenario, evidence) {
                       list: [],
                       record: {},
                       ["customfield".repeat(8)]: "configurationvalue".repeat(20),
+                      nested: Array.from({ length: 12 }).reduce(
+                        (value, _, index) => ({ [`level${index + 1}`]: [value] }),
+                        "Nested leaf",
+                      ),
                     },
                     operatorResources: "[redacted]",
                     workerGroups: Array.from({ length: 8 }, (_, index) => ({

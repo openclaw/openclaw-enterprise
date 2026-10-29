@@ -1186,6 +1186,10 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
       list: [],
       record: {},
       ["customfield".repeat(8)]: "configurationvalue".repeat(20),
+      nested: Array.from({ length: 12 }).reduce(
+        (value, _, index) => ({ [`level${index + 1}`]: [value] }),
+        "Nested leaf",
+      ),
     },
     workerGroups: Array.from({ length: 8 }, (_, index) => ({
       name: `Group ${index + 1}`,
@@ -1246,6 +1250,7 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     "<img src=x onerror=alert(1)>",
     "customfield".repeat(8),
     "configurationvalue".repeat(20),
+    "Nested leaf",
   ]) {
     await fields.getByText(value, { exact: true }).waitFor();
   }
