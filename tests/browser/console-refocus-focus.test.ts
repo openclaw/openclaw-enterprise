@@ -255,8 +255,6 @@ test("refocusing at phone width with the navigation drawer open focuses the draw
   }
 });
 
-// Initial admission allows Agent metadata without Configuration read. Refocus must preserve
-// that same partial view instead of replacing the accessible Agent with a page-wide denial.
 // Tab past a page's last control moves focus to the browser's own controls, and the next Tab
 // brings it back to the page's first. That lap is not the reader coming back: the refocus recheck
 // it started held the page inert, so the next lap went from the header straight back to the
@@ -279,9 +277,13 @@ for (const view of ["Agent page", "Create Agent"] as const) {
       .getByRole("heading", { name: view === "Agent page" ? "Tab lap Agent" : view })
       .waitFor();
     let releaseSession = () => {};
-    const sessionHeld = new Promise<void>((resolve) => {
-      releaseSession = resolve;
-    });
+    let sessionHeld = Promise.resolve();
+    const holdSession = () => {
+      sessionHeld = new Promise<void>((resolve) => {
+        releaseSession = resolve;
+      });
+    };
+    holdSession();
     t.after(() => releaseSession());
     let sessionReads = 0;
     await page.route("**/api/auth/session", async (route) => {
@@ -299,21 +301,21 @@ for (const view of ["Agent page", "Create Agent"] as const) {
           ? "content"
           : "shell";
       });
+    // Tab until focus is in `where`, at most 150 presses.
+    const tabUntil = async (where: "content" | "outside") => {
+      for (let presses = 0; presses < 150; presses += 1) {
+        await page.keyboard.press("Tab");
+        if ((await focusIn()) === where) {
+          return true;
+        }
+      }
+      return false;
+    };
     // Two laps: Tab until focus leaves the page, then on until it reaches the page's content.
     // Each lap stops at a bound, so a page whose content Tab skips fails here.
     for (const lap of [1, 2]) {
-      let reached = false;
-      for (let presses = 0; presses < 150 && !reached; presses += 1) {
-        await page.keyboard.press("Tab");
-        reached = (await focusIn()) === "content";
-      }
-      assert.equal(reached, true, `lap ${lap} reaches the page content`);
-      let left = false;
-      for (let presses = 0; presses < 150 && !left; presses += 1) {
-        await page.keyboard.press("Tab");
-        left = (await focusIn()) === "outside";
-      }
-      assert.equal(left, true, `lap ${lap} leaves the page`);
+      assert.equal(await tabUntil("content"), true, `lap ${lap} reaches the page content`);
+      assert.equal(await tabUntil("outside"), true, `lap ${lap} leaves the page`);
     }
     // One more Tab brings focus back, which ends the lap.
     await page.keyboard.press("Tab");
@@ -327,9 +329,36 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     assert.equal(sessionReads, 1);
     releaseSession();
     await page.locator(settledView).waitFor();
+
+    // Focus that leaves the window with no Tab just before it, such as a click on another
+    // window, is not a lap either: its return rechecks. The wait puts that blur over 1 s past the
+    // last Tab press.
+    holdSession();
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("blur")));
+    await refocus(page);
+    await page.locator(heldView).waitFor();
+    assert.equal(sessionReads, 2, "a return from a blur no Tab started rechecks");
+    releaseSession();
+    await page.locator(settledView).waitFor();
+
+    // Nor is a Tab out that comes back after the lap window (10 s): the reader may have been
+    // elsewhere meanwhile, so the return rechecks. One page is enough for this shared handler.
+    if (view === "Agent page") {
+      holdSession();
+      assert.equal(await tabUntil("outside"), true, "Tab leaves the page");
+      await new Promise((resolve) => setTimeout(resolve, 10_500));
+      await page.keyboard.press("Tab");
+      await page.locator(heldView).waitFor();
+      assert.equal(sessionReads, 3, "a return after the lap window rechecks");
+      releaseSession();
+      await page.locator(settledView).waitFor();
+    }
   });
 }
 
+// Initial admission allows Agent metadata without Configuration read. Refocus must preserve
+// that same partial view instead of replacing the accessible Agent with a page-wide denial.
 test("mounted Agent refocus preserves a stable Configuration denial", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Partial Agent refocus");
   const agent = await fixture.createAgent(
