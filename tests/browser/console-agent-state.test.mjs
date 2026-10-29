@@ -1675,6 +1675,61 @@ test("A revoke the Access tab settles takes away administrator controls without 
   );
 });
 
+// Finding 2329. Two permission rereads overlap and the newer one fails: a failed reread resolves to
+// the answer before it, here the older reread, which then answers. That older answer is the
+// newest the page has, so the permission summary (Delete, the failed-version recovery, the
+// draft's access) takes it together with the operate controls (Stop). Before, only Stop took it
+// and Delete kept the administrator's answer until Refresh.
+test("An older permission reread that answers after a newer one failed applies to every control", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Overlapping rereads", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Overlapping Agent", nativeValues("x"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const account = await fixture.createNamespaceMember("overlapping", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, revision.id, "access")),
+    account.credentials,
+  );
+  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
+  const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+  const stop = stopAgentButton(page);
+  await waitForEnabled(stop);
+  await waitForEnabled(remove);
+  await waitForIdleFetches(page);
+
+  revoke();
+  const permissionsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  // The older reread: Logs compares the now refused runtime status read with a fresh answer.
+  // The server answers it (Agent read only); the page receives that answer last.
+  const older = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await older.requested;
+  // The newer reread: the Access tab's refused recheck ends administration, and the permission
+  // read that follows fails.
+  await page.route(
+    permissionsUrl,
+    (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
+    { times: 1 },
+  );
+  const failed = page.waitForResponse(
+    (response) => response.url() === permissionsUrl && response.status() === 503,
+  );
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await failed;
+  older.release();
+  // She holds Agent read only: Stop and Delete both follow the older answer.
+  await stop.waitFor({ state: "hidden" });
+  await waitForIdleFetches(page);
+  assert.equal(await remove.isVisible(), false);
+});
+
 // Finding D792. A refusal after the page confirmed administration settles nothing until the
 // permission answer, which audits nothing, says so: a Restriction can refuse one read to an
 // administrator. Opened on the Access tab, the sharing reads confirm her administration; the

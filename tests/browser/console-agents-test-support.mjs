@@ -118,6 +118,41 @@ export async function openAdvancedSettings(page) {
   }
 }
 
+// Create Agent's access slot above the form. A refused Installation read's answer is one status
+// block there, never the grey hint under the fields (finding 2092): its text appears once on the
+// page. `retry` says whether the block offers Retry permission check as its action.
+export async function expectCreateAccess(page, { tone, body, retry = false }) {
+  const access = page.locator("#create-agent-access");
+  await access.locator(".status-body").getByText(body, { exact: true }).waitFor();
+  assert.deepEqual(
+    await access.evaluate((node) => ({
+      role: node.getAttribute("role"),
+      tone: node.getAttribute("data-tone"),
+      label: node.querySelector(".status-label")?.textContent,
+      body: [...node.querySelectorAll(".status-body")].map((line) => line.textContent),
+      next: node.nextElementSibling?.id,
+    })),
+    {
+      role: tone === "info" ? "status" : "alert",
+      tone,
+      label: "Your access",
+      body: [body],
+      next: "create-agent-form",
+    },
+  );
+  assert.equal(await page.getByText(body, { exact: true }).count(), 1);
+  assert.equal(
+    await access.getByRole("button", { name: "Retry permission check", exact: true }).isVisible(),
+    retry,
+  );
+  // The capability retry under the fields never stands in for the permission retry.
+  assert.equal(
+    await page.getByRole("button", { name: "Retry capability check", exact: true }).count(),
+    0,
+  );
+  return access;
+}
+
 // Create Agent stays disabled while the form reads Installation capabilities and repository
 // choices. Waits until the live form has both; a retained preview of an earlier form is inert
 // and shows that form's settled reads. A capability retry keeps the failure text until it ends.
