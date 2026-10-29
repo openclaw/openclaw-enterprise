@@ -3,10 +3,8 @@
 Use this guide to make your first authenticated requests to OpenClaw Control
 Plane (OCC). It uses a service API key for automation. Human users can instead
 [sign in with a session](../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator).
-The [API reference](../reference/api.md) lists every exported operation, its
-permissions, and its request and response fields.
-
-Browse the [interactive API explorer](../reference/api-explorer.md), or continue with
+Use the [interactive API reference](../reference/api-explorer.md) to inspect
+operations, permissions, and request and response fields. Continue with
 [creating and deploying an Agent](http-api-agent.md) after this quickstart.
 
 ## Before you start

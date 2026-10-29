@@ -761,20 +761,20 @@
                   },
                   {
                     "page": "reference/api-explorer",
-                    "label": "API Explorer"
+                    "label": "API Reference"
                   },
                   {
                     "page": "guides/http-api-agent",
                     "label": "Create an Agent"
-                  },
-                  {
-                    "page": "reference/api",
-                    "label": "API Reference"
                   }
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding", "reference/cli/local-development"]
+            "hidden": [
+              "reference/api",
+              "reference/postgres-auth-binding",
+              "reference/cli/local-development"
+            ]
           },
           {
             "tab": "Contribute",
