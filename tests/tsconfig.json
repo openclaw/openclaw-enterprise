@@ -19,6 +19,7 @@
     "../packages/utils/prepack.ts",
     "helpers/credential-source-owner-upgrade.ts",
     "helpers/controlled-tls-origin.ts",
+    "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/runtime-google-skill-policy.mts",
     "fixtures/repository-credentials/module-guard.ts",
     "fixtures/repository-credentials/planning.ts"
