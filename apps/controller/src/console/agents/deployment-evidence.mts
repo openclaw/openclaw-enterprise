@@ -398,7 +398,7 @@ export function createDeploymentStatusPanel(
         refreshAgent ? (context.request(path) as Promise<AgentReadWire>) : null,
         refreshAgent ? readRevisionPage(context.request, path) : null,
       ]);
-      if (!context.isCurrent() || started !== generation) {
+      if (!context.isCurrent()) {
         return;
       }
       if (
@@ -407,6 +407,13 @@ export function createDeploymentStatusPanel(
         )
       ) {
         context.onExpired();
+        return;
+      }
+      if (started !== generation) {
+        // A fresh selected read can supersede this work, but not a definitive refusal.
+        if (statusResult.status === "rejected" && !transientReadError(statusResult.reason)) {
+          invalidate(statusResult.reason);
+        }
         return;
       }
       if (statusResult.status === "fulfilled") {
@@ -706,26 +713,47 @@ export function createDeploymentStatusPanel(
     }
   }
 
+  // A matching refusal revokes cached evidence and older reads together.
+  function invalidate(cause: unknown) {
+    if (!context.isCurrent()) {
+      return;
+    }
+    generation += 1;
+    clearTimeout(pollTimer);
+    pollTimer = undefined;
+    loading = false;
+    refreshQueued = false;
+    record = null;
+    lastRecord = null;
+    error = cause;
+    overviewUnavailable = false;
+    overviewError = null;
+    publish(true);
+  }
+
   void loadStatus();
   // New permission or binding information can change a recorded failure's wording.
   // It is not a user refresh of an unsuccessful read.
   return Object.assign(section, {
-    // A matching selected-record refusal revokes cached evidence and older reads together.
-    invalidate(cause: unknown) {
-      if (!context.isCurrent()) {
+    invalidate,
+    // Called only for a fresh independent GET, never for a stale shared fallback.
+    accept(next: Deployment) {
+      if (!context.isCurrent() || next.deploymentId !== revision.id) {
         return;
       }
       generation += 1;
-      clearTimeout(pollTimer);
-      pollTimer = undefined;
-      loading = false;
+      const queued = refreshQueued;
       refreshQueued = false;
-      record = null;
-      lastRecord = null;
-      error = cause;
-      overviewUnavailable = false;
-      overviewError = null;
+      loading = false;
+      record = next;
+      lastRecord = next;
+      error = null;
       publish(true);
+      if (queued) {
+        void loadStatus(true);
+      } else {
+        schedulePoll();
+      }
     },
     rerender() {
       if (record?.error) {
@@ -747,6 +775,7 @@ export function createVersionDeploymentEvidence(
     isCurrentVersion,
     onRecord,
     onRefused,
+    onFreshRecord,
     hasVisibleReadError = () => false,
   }: {
     shared: boolean;
@@ -756,6 +785,7 @@ export function createVersionDeploymentEvidence(
     // Each record this panel shows, read here or handed over by the page.
     onRecord: (record: Deployment) => void;
     onRefused: (cause: unknown) => void;
+    onFreshRecord: (record: Deployment) => void;
   },
 ) {
   const section = element("section", { className: "agent-card version-deployment-record" });
@@ -788,11 +818,13 @@ export function createVersionDeploymentEvidence(
     loading = true;
     error = null;
     const started = generation;
+    let fresh: Deployment | null = null;
     render();
     try {
       const next = await readDeployment(context, path, revisionId);
       if (context.isCurrent() && started === generation) {
         status = next;
+        fresh = next;
       }
     } catch (cause) {
       if (!context.isCurrent()) {
@@ -818,6 +850,9 @@ export function createVersionDeploymentEvidence(
         diagnostics.render();
         if (status) {
           onRecord(status);
+          if (fresh) {
+            onFreshRecord(fresh);
+          }
         }
       }
     }

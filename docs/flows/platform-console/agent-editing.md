@@ -80,14 +80,14 @@ Completion and late reads after `FIRST_ACTIVITY_WAIT_MS` start folded unless
 cleanup, warnings, or overview errors need attention. Pending work and errors
 remain visible outside Deployment; overview errors preserve recorded outcomes.
 
-`createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` until completion
-or refusal. Transient failures retain progress; initial ones permit fallback.
-`invalidate` and `fail` clear matching records and invalidate older reads.
-Definitive refusals override intervening shared successes. Fresh reads recover;
-versions remain independent. Pending polls preserve disclosure; refusals open it.
-Terminal polls reread record, Agent and revisions. **Refresh deployment** queues one
-reread; **Refresh record** keeps focus and ignores repeats. Reserved error space
-protects diagnostics; one visible matching error owns the alert role.
+`createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` until completion/refusal.
+Transient errors retain progress; initial errors permit fallback. `invalidate`/`fail`
+revoke matching cached and pending reads. `onFreshRecord` shares fresh
+GETs with current matching activity; `show` never republishes. Refusals override
+intervening successes. Pending polls preserve disclosure; refusals open it.
+Terminal polls reread record/Agent/revisions. **Refresh deployment** queues one reread;
+**Refresh record** preserves focus and ignores repeats. Error space protects
+diagnostics; matching errors share one alert.
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
@@ -340,6 +340,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 11:30: Share successful record reads. (same-record-recovery - aaa139e48b1ec5a56b7196da984b213df8fe5511)
 
 - 2026-10-29 11:23: Preserve overlapping refusals. (overlap - d8283ec0f55caa496f6e0b750b61a2859fc7e100)
 

@@ -742,9 +742,13 @@ for (const refusal of [403, 404] as const) {
         control.claimed = true;
         await refresh.press("Enter");
         await card.getByText("Recorded outcome: In progress", { exact: true }).waitFor();
-        assert.equal(responses.at(-1), 200, "a fresh authorized read recovers");
-        await activity.getByRole("button", { name: "Refresh deployment", exact: true }).click();
         await activity.getByText("Recorded status: In progress", { exact: true }).waitFor();
+        await waitForIdleFetches(page);
+        assert.deepEqual(
+          responses,
+          [refusal, delayed, 200],
+          "one fresh selected read restores both panels",
+        );
         control.succeeded = true;
         await page.clock.runFor(DEPLOYMENT_POLL_MS + 1);
         await card.getByText("Recorded outcome: Completed", { exact: true }).waitFor();
@@ -755,7 +759,7 @@ for (const refusal of [403, 404] as const) {
 }
 
 test("a selected historical refusal leaves the latest deployment readable", async (t) => {
-  const { fixture, namespace, agent, revisionId, url } = await deploymentFixture(t);
+  const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
   const newest = await fixture.deployAgent(namespace.id, agent.id);
   assert.notEqual(newest.id, revisionId);
   const { page } = await newPage(t, fixture);
@@ -784,6 +788,11 @@ test("a selected historical refusal leaves the latest deployment readable", asyn
   await activity.getByText("Recorded status: Queued", { exact: true }).waitFor();
   await card.getByRole("alert").waitFor();
   assert.doesNotMatch(await card.innerText(), /Recorded outcome:/);
+  fixture.policy.restrictions.pop();
+  control.claimed = true;
+  await card.getByRole("button", { name: "Refresh record", exact: true }).click();
+  await card.getByText("Recorded outcome: In progress", { exact: true }).waitFor();
+  await activity.getByText("Recorded status: Queued", { exact: true }).waitFor();
 });
 
 // An earlier activity success may settle while a selected-record refusal is pending.
@@ -871,6 +880,92 @@ for (const refusal of [403, 404] as const) {
     assert.equal((await fresh).status(), 200);
     await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
     await activity.getByText("Recorded status: Queued", { exact: true }).waitFor();
+  });
+}
+
+// A selected success replaces older activity work without turning a late refusal
+// into a success. Both responses come from the real controller before delivery is held.
+for (const delayed of [200, 403] as const) {
+  test(`selected success supersedes activity work but honors late ${delayed}`, async (t) => {
+    const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+    const member = await fixture.createNamespaceMember("recovery-reader", namespace.id, AGENT_READ);
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await page.clock.install();
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "deployment").href,
+      member.credentials,
+    );
+    const card = page.locator(".version-deployment-record");
+    const activity = page.getByRole("region", { name: "Deployment activity" });
+    const refresh = card.getByRole("button", { name: "Refresh record", exact: true });
+    await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    if (delayed === 403) {
+      denyRevisionRead(fixture, namespace, { id: revisionId });
+    }
+    let first = true;
+    await page.route(url, async (route) => {
+      if (!first) {
+        await route.continue();
+        return;
+      }
+      first = false;
+      const response = await route.fetch();
+      assert.equal(response.status(), delayed);
+      const body = await response.json();
+      if (delayed === 200) {
+        assert.equal(body.data.deploymentId, revisionId);
+        assert.equal(body.data.status, "queued");
+      } else {
+        assert.equal(body.error.code, "FORBIDDEN");
+      }
+      held.resolve();
+      await release.promise;
+      await route.fulfill({ response });
+    });
+    const replies: number[] = [];
+    page.on("response", (response) => {
+      if (response.url() === url) {
+        replies.push(response.status());
+      }
+    });
+    await page.clock.runFor(DEPLOYMENT_POLL_MS + 1);
+    await held.promise;
+    if (delayed === 403) {
+      fixture.policy.restrictions.pop();
+    }
+    control.claimed = true;
+    await refresh.press("Enter");
+    await card.getByText("Recorded outcome: In progress", { exact: true }).waitFor();
+    await activity.getByText("Recorded status: In progress", { exact: true }).waitFor();
+    assert.deepEqual(replies, [200], "sharing a fresh read sends no second request");
+    const late = page.waitForResponse(url);
+    release.resolve();
+    assert.equal((await late).status(), delayed);
+    await waitForIdleFetches(page);
+    assert.deepEqual(replies, [200, delayed]);
+    if (delayed === 403) {
+      assert.doesNotMatch(await card.innerText(), /Recorded outcome:/);
+      assert.doesNotMatch(await activity.innerText(), /Recorded status:/);
+      // An unchanged denial must stay denied; recovery needs a genuinely authorized read.
+      denyRevisionRead(fixture, namespace, { id: revisionId });
+      const denied = page.waitForResponse(url);
+      await refresh.press("Enter");
+      assert.equal((await denied).status(), 403);
+      await waitForIdleFetches(page);
+      assert.doesNotMatch(await activity.innerText(), /Recorded status:/);
+      fixture.policy.restrictions.pop();
+      await refresh.press("Enter");
+    }
+    await card.getByText("Recorded outcome: In progress", { exact: true }).waitFor();
+    await activity.getByText("Recorded status: In progress", { exact: true }).waitFor();
+    assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
   });
 }
 

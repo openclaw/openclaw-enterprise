@@ -5989,6 +5989,7 @@ export const scenarios = {
         method: "GET",
         suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
         skip: 1,
+        once: true,
         status: 403,
         code: "FORBIDDEN",
       },
@@ -5998,6 +5999,7 @@ export const scenarios = {
     steps: [
       "Read the completed record, focus Refresh record, and press Enter. Both panels must show the refusal, with no completed outcome remaining.",
       "Focus remains on Refresh record. Fold and unfold Deployment details: only the visible leading refusal owns the alert role.",
+      "Refresh record again after the one-time refusal. Both panels recover to Completed from that one successful read.",
     ],
     gap: "Simulated UI proof only. The deployment browser suite verifies native IAM denial, missing records, stale deliveries, recovery, and version isolation with the real controller.",
   },

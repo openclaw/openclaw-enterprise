@@ -1777,6 +1777,7 @@ export async function renderAgentDetail(
   let savedNotice = "";
   let activityPanel = deploymentStatus;
   let invalidateActivity: ((cause: unknown) => void) | undefined;
+  let acceptActivity: ((record: AgentDeploymentStatusWire) => void) | undefined;
   let activityRevisionId: string | null | undefined;
   let viewedSnapshot: Snapshot | null = null;
   let detailLoadFinished = false;
@@ -2575,7 +2576,14 @@ export async function renderAgentDetail(
               overviewUnavailable,
               transientFailure,
             }) => {
-              if (activityRevisionId !== mostRecent.id) {
+              if (
+                !context.isCurrent() ||
+                activityRevisionId !== mostRecent.id ||
+                (record &&
+                  (record.deploymentId !== mostRecent.id ||
+                    record.namespaceId !== namespaceId ||
+                    record.agentId !== agentId))
+              ) {
                 return;
               }
               showPanel(nextPanel, status === "failed");
@@ -2620,6 +2628,7 @@ export async function renderAgentDetail(
           )
         : null;
       invalidateActivity = nextActivity?.invalidate;
+      acceptActivity = nextActivity?.accept;
       const nextPanel: HTMLElement =
         nextActivity ??
         element(
@@ -2770,8 +2779,19 @@ export async function renderAgentDetail(
         {
           shared: activityRevisionId === selected,
           onRefused: (cause) => {
-            if (activityRevisionId === selected) {
+            if (context.isCurrent() && activityRevisionId === selected) {
               invalidateActivity?.(cause);
+            }
+          },
+          onFreshRecord: (record) => {
+            if (
+              context.isCurrent() &&
+              activityRevisionId === selected &&
+              record.deploymentId === selected &&
+              record.namespaceId === namespaceId &&
+              record.agentId === agentId
+            ) {
+              acceptActivity?.(record);
             }
           },
           hasVisibleReadError: (cause) => {
