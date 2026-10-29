@@ -18,9 +18,11 @@ export OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_ID=occ-development
 export OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_SECRET_FILE=/secure/openshell-client-secret
 ```
 
-The endpoint must be an `http` or `https` origin without a path; the
-client-secret file must exist and be nonempty. The four variables select the
-external gateway together or not at all.
+The endpoint must be an `https` origin without a path; the token URL must be
+`https` (or `http` to a numeric loopback address), and the client-secret file
+must exist and be nonempty. The four variables select the external gateway
+together or not at all. The [protected profile](local-openshell-images.md#select-the-protected-profile)
+cannot select an external gateway; the launcher refuses that combination.
 
 ## What the launcher changes
 
@@ -47,3 +49,11 @@ The external gateway must reconcile Workspaces in the launcher's cluster:
 The credentialed OpenShell proofs in the
 [testing guide](../../testing/openshell.md) run against the profile's own
 gateway; run them on a profile without this selection.
+
+## Limits
+
+The token request uses the API and worker's system trust store;
+`rootCertificatePath` applies to the gRPC channel only, so an issuer with a
+private CA is out of scope for this profile. A production Installation using
+`oidcClientCredentials` must admit the issuer in its own egress configuration
+(`auth.oidc.egressCidrs` covers console sign-in only).
