@@ -32,26 +32,35 @@ occ_json=(/secure/occ/bin/occ --output json)
 
 ## Record the release and its configuration
 
-The helper refuses to run when the protected values or Installation differ from
-the live release, so compare them now. Each check prints a message only when the
-files differ; resolve any difference before the upgrade.
+From the repository root, use Bash, yq v4, and jq to capture the live release
+and compare its configuration with the protected files. Set the inputs above
+first and keep shell tracing disabled. The subshell stops if a read or comparison
+fails; read failures exit 2 without printing configuration.
 
 ```bash
-helm history oce "${helm_args[@]}" >"$BASELINE/helm-history.txt"
-helm get values oce "${helm_args[@]}" --output yaml >"$BASELINE/live-values.yaml"
-diff <(yq -o=json . /secure/occ/values.yaml | jq -S .) \
-  <(yq -o=json . "$BASELINE/live-values.yaml" | jq -S .) ||
-  echo 'The protected values differ from the live release.' >&2
-OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$BASELINE/live-values.yaml")"
-OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' "$BASELINE/live-values.yaml")"
-"${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json |
-  jq '{installationId: .metadata.annotations["openclaw.dev/installation-id"]}' >"$BASELINE/installation-secret.json"
-"${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json |
-  jq -j --arg key "$OCC_INSTALLATION_KEY" '.data[$key] | @base64d' >"$BASELINE/live-installation.yaml"
-diff <(yq -o=json . /secure/occ/installation.yaml | jq -S .) \
-  <(yq -o=json . "$BASELINE/live-installation.yaml" | jq -S .) ||
-  echo 'The protected Installation differs from the live Secret.' >&2
+(
+  set -euo pipefail
+  trap 'echo "Baseline read failed: check access, tools, and inputs before retrying." >&2; exit 2' ERR
+  helm history oce "${helm_args[@]}" 2>/dev/null >"$BASELINE/helm-history.txt"
+  helm get values oce "${helm_args[@]}" --output yaml 2>/dev/null >"$BASELINE/live-values.yaml"
+  scripts/compare-upgrade-baseline /secure/occ/values.yaml "$BASELINE/live-values.yaml" || exit "$?"
+  OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$BASELINE/live-values.yaml" 2>/dev/null)"
+  OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' "$BASELINE/live-values.yaml" 2>/dev/null)"
+  "${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json 2>/dev/null |
+    jq '{installationId: .metadata.annotations["openclaw.dev/installation-id"]}' 2>/dev/null >"$BASELINE/installation-secret.json"
+  "${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json 2>/dev/null |
+    jq -ej --arg key "$OCC_INSTALLATION_KEY" '.data[$key] | strings | @base64d' 2>/dev/null >"$BASELINE/live-installation.yaml"
+  scripts/compare-upgrade-baseline /secure/occ/installation.yaml "$BASELINE/live-installation.yaml" || exit "$?"
+)
 ```
+
+The comparison prints `Configurations match.` and exits 0 for equal mappings,
+including `{}`. It ignores field order and formatting; scalar types and array
+order must match. Each file must contain exactly one YAML mapping. Exit 1 means
+configuration drift: reconcile the files before maintenance. Exit 2 means a
+missing, unreadable, empty, invalid, nonmapping, or multiple-document input, or a
+parser failure. Correct the input or tool setup and retry. The comparison does
+not print paths or configuration or write parsed data to disk.
 
 `installation-secret.json` records the `openclaw.dev/installation-id`
 annotation. When it is missing, [bind the Installation once](production-upgrade.md#bind-the-installation-once)
