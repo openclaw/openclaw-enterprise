@@ -1,6 +1,7 @@
 package occdev
 
 import (
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/url"
@@ -9,8 +10,12 @@ import (
 	"strings"
 )
 
-// The container path where both control planes mount the OpenShell OIDC client secret.
-const openShellClientSecretContainerPath = "/run/openclaw-development/openshell-client-secret"
+// The container paths where both control planes mount the OpenShell OIDC client
+// secret and the optional external gateway and issuer CA bundle.
+const (
+	openShellClientSecretContainerPath = "/run/openclaw-development/openshell-client-secret"
+	openShellExternalCAContainerPath   = "/run/openclaw-development/openshell-ca.crt"
+)
 
 // externalOpenShell is an operator-selected external OpenShell gateway connection
 // with OIDC client-credentials authentication, replacing the profile's pinned
@@ -20,6 +25,9 @@ type externalOpenShell struct {
 	oidcTokenURL     string
 	oidcClientID     string
 	clientSecretPath string
+	// caPath optionally names a PEM bundle trusting the external gateway's TLS
+	// and the OIDC issuer's TLS; empty selects the controllers' system trust.
+	caPath string
 	// addresses and port are the translated exact gateway targets, and
 	// tokenAddresses and tokenPort the issuer's, resolved once per start for
 	// NetworkPolicies, which cannot select hostnames.
@@ -58,11 +66,15 @@ func readExternalOpenShell(env map[string]string) (*externalOpenShell, error) {
 		"OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_ID":          env["OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_ID"],
 		"OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_SECRET_FILE": env["OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_SECRET_FILE"],
 	}
+	caSelection := env["OCC_DEVELOPMENT_OPENSHELL_CA_FILE"]
 	if endpoint == "" {
 		for name, value := range oidc {
 			if value != "" {
 				return nil, fmt.Errorf("%s requires OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT", name)
 			}
+		}
+		if caSelection != "" {
+			return nil, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_CA_FILE requires OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT")
 		}
 		return nil, nil
 	}
@@ -90,11 +102,27 @@ func readExternalOpenShell(env map[string]string) (*externalOpenShell, error) {
 	if len(strings.TrimSpace(string(secret))) == 0 {
 		return nil, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_SECRET_FILE is empty")
 	}
+	caPath := ""
+	if caSelection != "" {
+		if !filepath.IsAbs(caSelection) {
+			return nil, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_CA_FILE must be an absolute path")
+		}
+		bundle, err := os.ReadFile(caSelection)
+		if err != nil {
+			return nil, fmt.Errorf("read OCC_DEVELOPMENT_OPENSHELL_CA_FILE: %w", err)
+		}
+		// Fail before any cluster effect when the bundle carries no certificate.
+		if !x509.NewCertPool().AppendCertsFromPEM(bundle) {
+			return nil, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_CA_FILE is not a PEM certificate bundle")
+		}
+		caPath = caSelection
+	}
 	return &externalOpenShell{
 		endpoint:         origin,
 		oidcTokenURL:     tokenURL,
 		oidcClientID:     oidc["OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_ID"],
 		clientSecretPath: secretPath,
+		caPath:           caPath,
 	}, nil
 }
 
