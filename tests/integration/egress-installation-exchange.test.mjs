@@ -161,6 +161,17 @@ test("pending openings are bounded per Sandbox and per authority, and slots foll
   for (const call of [...afterTimeout, other]) {
     call.emit("cancelled");
   }
+  // Duplicate terminal events must not return a second Sandbox slot while the pool has room.
+  const again = Array.from({ length: share }, () => open(a));
+  const closed = again.pop();
+  closed.emit("cancelled");
+  closed.emit("cancelled");
+  again.push(open(a));
+  assert.ok(admitted(again.at(-1)));
+  assertRefused(open(a), "duplicate terminal events");
+  for (const call of again) {
+    call.emit("cancelled");
+  }
   t.mock.timers.reset();
 });
 
