@@ -37,7 +37,7 @@ export function controlledTlsOrigin(tls: TlsOptions, handle: RequestListener) {
     request.once("end", () => {
       if (request.complete) {
         record.completeRequests++;
-        changed();
+        server.emit("observation");
       }
     });
     // The handler owns response behavior, including intentionally dropped replies.
@@ -76,13 +76,13 @@ export function controlledTlsOrigin(tls: TlsOptions, handle: RequestListener) {
     socket.on("data", (chunk) => {
       record.decryptedBytes += chunk.length;
       if (!wire.push(chunk)) socket.pause();
-      changed();
+      server.emit("observation");
     });
     socket.on("end", () => wire.push(null));
     socket.on("error", () => wire.destroy());
     socket.on("close", () => wire.destroy());
     http.emit("connection", wire);
-    changed();
+    server.emit("observation");
   });
   server.on("connection", (socket) => {
     sockets.add(socket);
@@ -94,9 +94,6 @@ export function controlledTlsOrigin(tls: TlsOptions, handle: RequestListener) {
       completeRequests: connections.reduce((n, row) => n + row.completeRequests, 0),
       connections: connections.map((row) => ({ ...row })),
     };
-  }
-  function changed() {
-    server.emit("observation");
   }
   return Object.assign(server, {
     snapshot,
