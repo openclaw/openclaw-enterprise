@@ -760,6 +760,14 @@
                     "label": "Quickstart"
                   },
                   {
+                    "page": "reference/api-explorer",
+                    "label": "API Explorer"
+                  },
+                  {
+                    "page": "guides/http-api-agent",
+                    "label": "Create an Agent"
+                  },
+                  {
                     "page": "reference/api",
                     "label": "API Reference"
                   }

@@ -6,6 +6,9 @@ Plane (OCC). It uses a service API key for automation. Human users can instead
 The [API reference](../reference/api.md) lists every exported operation, its
 permissions, and its request and response fields.
 
+Browse the [interactive API explorer](../reference/api-explorer.md), or continue with
+[creating and deploying an Agent](http-api-agent.md) after this quickstart.
+
 ## Before you start
 
 You need Bash, `curl`, `jq`, the origin of an existing OCC Installation, and an

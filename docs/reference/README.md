@@ -28,6 +28,8 @@ expose. The [HTTP API quickstart](../guides/http-api.md) makes authenticated
 requests and explains the responses. The [API reference](api.md) lists exact
 paths, schemas, permissions, and error codes. It is generated from the checked-in
 [OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json).
+Use the [API explorer](api-explorer.md) for request and response examples,
+then follow [create and deploy an Agent](../guides/http-api-agent.md) for the complete workflow.
 
 ## Metrics
 

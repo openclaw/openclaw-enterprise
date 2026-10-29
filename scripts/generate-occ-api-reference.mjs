@@ -204,6 +204,17 @@ const permissionScopeQualifiers = {
   gateway_managed_mode_changed: " (when the request changes `gatewayManagedMode`)",
 };
 
+function renderedExamples(content, contentType) {
+  return Object.values(content.examples ?? {}).map(({ summary, value }) =>
+    [
+      summary ?? "Example",
+      contentType === "text/plain" ? "```text" : "```json",
+      contentType === "text/plain" ? value : JSON.stringify(value, null, 2),
+      "```",
+    ].join("\n"),
+  );
+}
+
 function operationReference(path, method, operation, document, { headingLevel = 2 } = {}) {
   const childHeading = "#".repeat(Math.min(headingLevel + 1, 6));
   const sections = [
@@ -231,8 +242,8 @@ function operationReference(path, method, operation, document, { headingLevel = 
     sections.push(
       `${childHeading} Parameters`,
       [
-        "| Name | In | Type | Required | Constraints |",
-        "| --- | --- | --- | --- | --- |",
+        "| Name | In | Type | Required | Constraints | Example |",
+        "| --- | --- | --- | --- | --- | --- |",
         ...operation.parameters.map((parameter) => {
           const columns = [
             `\`${parameter.name}\``,
@@ -240,6 +251,7 @@ function operationReference(path, method, operation, document, { headingLevel = 
             `\`${schemaType(parameter.schema, document)}\``,
             parameter.required ? "Yes" : "No",
             schemaConstraints(parameter.schema),
+            JSON.stringify(parameter.examples?.example?.value)?.replaceAll("|", "\\|") ?? "—",
           ];
           return `| ${columns.join(" | ")} |`;
         }),
@@ -254,7 +266,11 @@ function operationReference(path, method, operation, document, { headingLevel = 
     );
 
     for (const [contentType, content] of Object.entries(operation.requestBody.content ?? {})) {
-      sections.push(`**Content type:** \`${contentType}\``, schemaTable(content.schema, document));
+      sections.push(
+        `**Content type:** \`${contentType}\``,
+        schemaTable(content.schema, document),
+        ...renderedExamples(content, contentType),
+      );
     }
   }
 
@@ -283,6 +299,7 @@ function operationReference(path, method, operation, document, { headingLevel = 
       sections.push(
         `**\`${status}\` response body:** \`${contentType}\``,
         schemaTable(content.schema, document),
+        ...renderedExamples(content, contentType),
       );
     }
   }
@@ -418,6 +435,7 @@ function referencePage(document, groups, entries) {
   }
 
   sections.push(
+    "[Browse interactive examples in the API explorer](api-explorer.md).",
     "## Resources",
     [
       "| Resource | Operations |",
