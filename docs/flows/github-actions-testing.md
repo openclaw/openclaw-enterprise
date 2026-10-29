@@ -196,7 +196,8 @@ They survive cluster/private-state cleanup but cannot satisfy required test resu
 classifies public placement errors and projects environment/tunnel states, node
 connection and capability counts, and exact workspace-node matches. The expected
 node comes from the selected revision's Gateway Pod. Failure reads use
-`environments.status` and `node.list` with a five-second diagnostic budget.
+`sessions.describe`, `environments.status` and `node.list` share a five-second
+budget; failed refreshes retain a labeled fallback observation.
 `reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
 booleans and counters again. Raw errors and identifiers do not enter the record.
 Public RPCs do not expose workspace-binding readiness or restoration; a workspace

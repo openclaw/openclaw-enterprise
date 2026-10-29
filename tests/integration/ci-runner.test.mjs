@@ -8,7 +8,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { nativeWorkerPlacementObservation } from "../helpers/local-first-agent-native.mjs";
+import {
+  collectNativeWorkerFailure,
+  nativeWorkerPlacementObservation,
+} from "../helpers/local-first-agent-native.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
@@ -1305,6 +1308,94 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       },
     },
   });
+  // A retained session can acquire a new owner during send. Exercise the real
+  // collector with public RPC-shaped observations, then retain its result through CI.
+  const nativeSession = { key: "agent:main:retained-proof", sessionId: "retained-proof" };
+  const lastPlacement = { state: "active", environmentId: "previous-owner" };
+  const collectRetained = (refresh) =>
+    collectNativeWorkerFailure({
+      session: nativeSession,
+      lastPlacement,
+      elapsedMs: 3000,
+      request: async (method, params) => {
+        if (method === "node.list") {
+          return { nodes: [] };
+        }
+        if (method === "sessions.describe") {
+          if (refresh === "rejected") {
+            throw new Error(nativePrivate);
+          }
+          return {
+            session: {
+              sessionId: refresh === "mismatched" ? "different-session" : nativeSession.sessionId,
+              placement: { state: "failed", environmentId: "replacement-owner" },
+            },
+          };
+        }
+        if (method === "environments.status") {
+          return params.environmentId === "replacement-owner"
+            ? { id: "replacement-owner", worker: { state: "failed", tunnelStatus: "stopped" } }
+            : { id: "previous-owner", worker: { state: "attached", tunnelStatus: "connected" } };
+        }
+        throw new Error("Unexpected diagnostic RPC");
+      },
+    });
+  const freshNativeWorker = await collectRetained("fresh");
+  const fallbackNativeWorker = await collectRetained("rejected");
+  const mismatchedNativeWorker = await collectRetained("mismatched");
+  // Installer errors add one more fixed wrapper. Exercise distinct transfer,
+  // extraction, storage and prewarm failures without retaining their private details.
+  const nativeLeafCases = [
+    ["gateway returned 401", "bundle-http-401"],
+    ["gateway returned 403", "bundle-http-403"],
+    ["gateway returned 404", "bundle-http-404"],
+    ["gateway returned 429", "bundle-http-client-error"],
+    ["gateway returned 503", "bundle-http-server-error"],
+    ["gateway returned 0", "bundle-http-unexpected-status"],
+    ["gateway returned an unexpected worker bundle range", "bundle-range-invalid"],
+    ["gateway returned an unexpected worker bundle length", "bundle-transfer-length-invalid"],
+    [
+      "worker bundle download stopped after 3 consecutive no-progress failures",
+      "bundle-download-no-progress",
+    ],
+    ["prepared worker bundle archive has an unexpected length", "bundle-archive-length-invalid"],
+    ["worker bundle archive exceeded its byte limit", "bundle-archive-too-large"],
+    ["worker bundle transfer response exceeded its byte limit", "bundle-response-too-large"],
+    ["worker bundle archive failed integrity validation", "bundle-archive-integrity-failed"],
+    ["published worker bundle failed validation", "bundle-published-invalid"],
+    ["gateway TLS fingerprint mismatch", "bundle-tls-mismatch"],
+    ["Cloudflare Access credentials require HTTPS", "bundle-https-required"],
+    ["gateway transfer is unavailable", "bundle-transfer-unavailable"],
+    [
+      "Worker bundle archive manifest does not match its expected hash",
+      "bundle-manifest-hash-mismatch",
+    ],
+    ["Extracted worker bundle does not match its expected hash", "bundle-extracted-hash-mismatch"],
+    ["Invalid worker bundle archive path:", "bundle-entry-invalid"],
+    ["Worker bundle archive exceeds its entry limit", "bundle-extraction-limit"],
+    ["Worker bundle contains a symbolic link:", "bundle-symlink-refused"],
+    ["Worker bundle file changed while hashing:", "bundle-file-changed"],
+    ["EACCES: permission denied", "bundle-storage-access-denied"],
+    ["EPERM: operation not permitted", "bundle-operation-denied"],
+    ["EROFS: read-only file system", "bundle-storage-readonly"],
+    ["ENOSPC: no space left on device", "bundle-storage-full"],
+    ["ENOENT: no such file or directory", "bundle-file-missing"],
+    ["Command failed:", "bundle-prewarm-failed"],
+    ["INVALID_REQUEST: invalid node worker bundle install request", "bundle-request-invalid"],
+  ];
+  const nativeLeafDiagnostics = nativeLeafCases.map(([message, category]) => ({
+    name: `native installer ${category}`,
+    diagnostic: {
+      kind: "native-first-agent-proof",
+      failureStage: "required-placement-terminal-failed",
+      worker: nativeWorkerPlacementObservation({
+        placement: {
+          state: "failed",
+          recoveryError: `Worker node bootstrap failed: Device worker bundle installation failed: ${category === "bundle-request-invalid" ? "" : "worker-bundle-install-failed: "}${message} ${nativePrivate}`,
+        },
+      }),
+    },
+  }));
   // An unknown outer message is not permission to search arbitrary private text for a cause.
   assert.equal(
     nativeWorkerPlacementObservation({
@@ -1785,6 +1876,15 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
             worker: wrappedNativeWorker,
           },
         },
+        ...[
+          ["refreshes retained native placement", freshNativeWorker],
+          ["labels fallback after failed native placement refresh", fallbackNativeWorker],
+          ["rejects another session during native placement refresh", mismatchedNativeWorker],
+        ].map(([name, worker]) => ({
+          name,
+          diagnostic: { kind: "native-first-agent-proof", failureStage: "model-and-exec", worker },
+        })),
+        ...nativeLeafDiagnostics,
         {
           name: "rejects unknown native first-Agent proof stage",
           diagnostic: { kind: "native-first-agent-proof", failureStage: `${secret}-stage` },
@@ -2075,6 +2175,29 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   assert.equal(wrapped.recoveryError, "worker-deploy-artifact-missing");
   assert.equal(wrapped.terminalReason, "bundle-install-failed");
   assert.equal(wrapped.environmentError, "node-installer-disconnected");
+  const fresh = summary.files[0].tests.find(
+    (entry) => entry.name === "refreshes retained native placement",
+  ).error.diagnostic.worker;
+  assert.equal(fresh.placementLookup, "fresh");
+  assert.equal(fresh.placementState, "failed");
+  assert.equal(fresh.environmentState, "failed");
+  assert.equal(fresh.tunnelStatus, "stopped");
+  for (const name of [
+    "labels fallback after failed native placement refresh",
+    "rejects another session during native placement refresh",
+  ]) {
+    const fallback = summary.files[0].tests.find((entry) => entry.name === name).error.diagnostic
+      .worker;
+    assert.equal(fallback.placementLookup, "fallback");
+    assert.equal(fallback.placementState, "active");
+    assert.equal(fallback.environmentState, "attached");
+  }
+  for (const [, category] of nativeLeafCases) {
+    const leaf = summary.files[0].tests.find(
+      (entry) => entry.name === `native installer ${category}`,
+    );
+    assert.equal(leaf.error.diagnostic.worker.recoveryError, category);
+  }
   const monitoringFailure = summary.files[0].tests.find(
     (entry) => entry.name === "retains safe monitoring readiness evidence",
   );

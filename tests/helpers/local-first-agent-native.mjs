@@ -545,6 +545,7 @@ export async function failNativeProvisioningDeadline({
 // Keep this function self-contained: the trusted controller executes its source.
 export function nativeWorkerPlacementObservation({
   placement,
+  placementLookup,
   environment,
   nodes,
   expectedNodeId,
@@ -570,9 +571,11 @@ export function nativeWorkerPlacementObservation({
     // Strip only their fixed prefixes, never arbitrary peer text or identifiers.
     let detail = value.slice(0, 4096);
     let fallback = "other";
+    let bundleInstall = false;
     const wrappers = [
       ["Worker node bootstrap failed: ", "worker-bootstrap-failed"],
       ["Device worker bundle installation failed: ", "bundle-install-failed"],
+      ["worker-bundle-install-failed: ", "bundle-install-failed"],
       ["Worker provider preparation failed: ", "provider-preparation-failed"],
       ["Worker provider operation failed: ", "provider-operation-failed"],
       ["Worker provider rejected profile: ", "provider-profile-rejected"],
@@ -584,6 +587,38 @@ export function nativeWorkerPlacementObservation({
       }
       detail = detail.slice(wrapper[0].length);
       fallback = wrapper[1];
+      bundleInstall ||= fallback === "bundle-install-failed";
+    }
+    if (bundleInstall) {
+      const http = /^gateway returned ([0-9]{1,3})(?:\b|$)/.exec(detail);
+      if (http) {
+        const status = Number(http[1]);
+        if ([401, 403, 404].includes(status)) {
+          return `bundle-http-${status}`;
+        }
+        if (status >= 400 && status < 500) {
+          return "bundle-http-client-error";
+        }
+        if (status >= 500 && status < 600) {
+          return "bundle-http-server-error";
+        }
+        return "bundle-http-unexpected-status";
+      }
+      const errno =
+        /^(EACCES|EPERM|EROFS|ENOSPC|ENOENT):/.exec(detail) ??
+        /^spawn .+ (EACCES|EPERM|EROFS|ENOSPC|ENOENT)(?:\b|$)/.exec(detail);
+      if (errno) {
+        return {
+          EACCES: "bundle-storage-access-denied",
+          EPERM: "bundle-operation-denied",
+          EROFS: "bundle-storage-readonly",
+          ENOSPC: "bundle-storage-full",
+          ENOENT: "bundle-file-missing",
+        }[errno[1]];
+      }
+      if (detail.startsWith("Command failed:")) {
+        return "bundle-prewarm-failed";
+      }
     }
     // These phrases come from the pinned OpenClaw worker environment and node tunnel owners.
     const errors = [
@@ -615,6 +650,39 @@ export function nativeWorkerPlacementObservation({
       ["Cloud bootstrap is missing its built CLI entry;", "gateway-cli-missing"],
       ["Node bootstrap distribution exceeds its artifact limits", "bootstrap-artifact-too-large"],
       ["Node bootstrap archive exceeds the transfer limit", "bootstrap-transfer-too-large"],
+      ["INVALID_REQUEST: invalid node worker bundle install request", "bundle-request-invalid"],
+      ["gateway returned an unexpected worker bundle range", "bundle-range-invalid"],
+      ["gateway returned an unexpected worker bundle length", "bundle-transfer-length-invalid"],
+      [
+        "worker bundle download stopped after 3 consecutive no-progress failures",
+        "bundle-download-no-progress",
+      ],
+      ["prepared worker bundle archive has an unexpected length", "bundle-archive-length-invalid"],
+      ["worker bundle archive exceeded its byte limit", "bundle-archive-too-large"],
+      ["worker bundle transfer response exceeded its byte limit", "bundle-response-too-large"],
+      ["worker bundle archive failed integrity validation", "bundle-archive-integrity-failed"],
+      ["published worker bundle failed validation", "bundle-published-invalid"],
+      ["gateway TLS fingerprint mismatch", "bundle-tls-mismatch"],
+      ["Cloudflare Access credentials require HTTPS", "bundle-https-required"],
+      ["gateway transfer is unavailable", "bundle-transfer-unavailable"],
+      [
+        "Worker bundle archive manifest does not match its expected hash",
+        "bundle-manifest-hash-mismatch",
+      ],
+      [
+        "Extracted worker bundle does not match its expected hash",
+        "bundle-extracted-hash-mismatch",
+      ],
+      ["Invalid worker bundle archive path:", "bundle-entry-invalid"],
+      ["Duplicate worker bundle archive path:", "bundle-entry-invalid"],
+      ["Invalid worker bundle archive size:", "bundle-entry-invalid"],
+      ["Invalid worker bundle tar entry:", "bundle-entry-invalid"],
+      ["Worker bundle contains an unsupported entry:", "bundle-entry-invalid"],
+      ["Worker bundle archive exceeds its entry limit", "bundle-extraction-limit"],
+      ["Worker bundle archive exceeds its expanded byte limit", "bundle-extraction-limit"],
+      ["Worker bundle directory exceeds its limits", "bundle-extraction-limit"],
+      ["Worker bundle contains a symbolic link:", "bundle-symlink-refused"],
+      ["Worker bundle file changed while hashing:", "bundle-file-changed"],
       [
         "device worker node is not connected with the supervisor dialect",
         "node-supervisor-disconnected",
@@ -641,6 +709,10 @@ export function nativeWorkerPlacementObservation({
   const bool = (value) => (typeof value === "boolean" ? value : undefined);
   const attached = environment?.worker?.attachedSessionIds;
   return {
+    placementLookup:
+      placementLookup === undefined
+        ? undefined
+        : category(placementLookup, ["fresh", "fallback", "absent"]),
     placementState: category(placement?.state, [
       "local",
       "requested",
@@ -698,6 +770,77 @@ export function nativeWorkerPlacementObservation({
         ? elapsedMs
         : undefined,
   };
+}
+
+// Keep reads within one budget and project the current session owner when a turn moved it.
+// Like the projector, this collector is serialized into the trusted controller.
+export async function collectNativeWorkerFailure({
+  request,
+  session,
+  lastPlacement,
+  expectedNodeId,
+  elapsedMs,
+}) {
+  const signal = AbortSignal.timeout(5_000);
+  const read = async (method, params) => {
+    try {
+      return {
+        status: "fulfilled",
+        value: await request(method, params, { signal, timeoutMs: 5_000 }),
+      };
+    } catch {
+      return { status: "rejected" };
+    }
+  };
+  // Observe nodes concurrently without letting their latency delay the environment lookup.
+  const nodeObservation = read("node.list", {});
+  let placement = lastPlacement;
+  let placementLookup = placement === undefined ? "absent" : "fallback";
+  if (
+    typeof session?.key === "string" &&
+    session.key.length > 0 &&
+    typeof session.sessionId === "string" &&
+    session.sessionId.length > 0
+  ) {
+    const described = await read("sessions.describe", { key: session.key, agentId: "main" });
+    if (
+      described.status === "fulfilled" &&
+      described.value?.session?.sessionId === session.sessionId
+    ) {
+      placement = described.value.session.placement;
+      placementLookup = "fresh";
+    }
+  }
+  const environmentId = placement?.environmentId;
+  let environment;
+  let environmentLookup = "absent";
+  if (typeof environmentId === "string" && environmentId.length > 0) {
+    const result = await read("environments.status", { environmentId });
+    environmentLookup = "unavailable";
+    if (result.status === "fulfilled") {
+      environmentLookup = result.value?.id === environmentId ? "found" : "mismatch";
+      if (environmentLookup === "found") {
+        environment = result.value;
+      }
+    }
+  }
+  const nodeResult = await nodeObservation;
+  const nodes = nodeResult.status === "fulfilled" ? nodeResult.value?.nodes : undefined;
+  let nodeLookup = "unavailable";
+  if (nodeResult.status === "fulfilled") {
+    nodeLookup = Array.isArray(nodes) ? "found" : "invalid";
+  }
+  return nativeWorkerPlacementObservation({
+    placement,
+    placementLookup,
+    environment,
+    nodes,
+    expectedNodeId,
+    sessionId: session?.sessionId,
+    environmentLookup,
+    nodeLookup,
+    elapsedMs,
+  });
 }
 
 // Run in the existing trusted controller: it already has the private route key,
@@ -774,44 +917,14 @@ async function nativeWorkerProof({
     assert.equal(required.inference, "worker");
     assert.ok(required.executionModes.includes("worker-turn"));
     let session = existingSession;
-    collectFailure = async () => {
-      const elapsedMs = Math.round(performance.now() - proofStarted);
-      // A separate five-second budget still permits diagnostics after the proof's signal expires.
-      const diagnosticSignal = AbortSignal.timeout(5_000);
-      const read = (method, params) =>
-        client.request(method, params, { signal: diagnosticSignal, timeoutMs: 5_000 });
-      const environmentId = lastPlacement?.environmentId;
-      const [environmentResult, nodeResult] = await Promise.allSettled([
-        typeof environmentId === "string" && environmentId.length > 0
-          ? read("environments.status", { environmentId })
-          : Promise.resolve(undefined),
-        read("node.list", {}),
-      ]);
-      const environment =
-        environmentResult.status === "fulfilled" ? environmentResult.value : undefined;
-      let environmentLookup = "absent";
-      if (environmentId) {
-        environmentLookup = "unavailable";
-        if (environmentResult.status === "fulfilled") {
-          environmentLookup = environment?.id === environmentId ? "found" : "mismatch";
-        }
-      }
-      const nodes = nodeResult.status === "fulfilled" ? nodeResult.value?.nodes : undefined;
-      let nodeLookup = "unavailable";
-      if (nodeResult.status === "fulfilled") {
-        nodeLookup = Array.isArray(nodes) ? "found" : "invalid";
-      }
-      return nativeWorkerPlacementObservation({
-        placement: lastPlacement,
-        environment: environmentLookup === "found" ? environment : undefined,
-        nodes,
+    collectFailure = () =>
+      collectNativeWorkerFailure({
+        request: (method, params, options) => client.request(method, params, options),
+        session,
+        lastPlacement,
         expectedNodeId,
-        sessionId: session?.sessionId,
-        environmentLookup,
-        nodeLookup,
-        elapsedMs,
+        elapsedMs: Math.round(performance.now() - proofStarted),
       });
-    };
     if (session === undefined) {
       stage = "create";
       const key = `agent:main:first-agent-native-${randomUUID()}`;
@@ -1019,7 +1132,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
