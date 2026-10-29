@@ -18,6 +18,7 @@ import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
 import {
+  nativeOpenAiModelSelections,
   normalizeOpenAiBaseUrl,
   openAiBaseUrlRewritesIpv4,
   openAiBaseUrlSpellingMessage,
@@ -2684,25 +2685,6 @@ function harnessModelAuthentication(configuration: OpenClawConfigurationDocument
   throw new ConfigurationFailure("Harness authentication requires a compatible model provider.");
 }
 
-function harnessModels(configuration: OpenClawConfigurationDocument): readonly string[] {
-  const agents = asRecord(configuration.agents);
-  const defaults = asRecord(agents?.defaults);
-  const entries = Object.values(asRecord(agents?.entries) ?? {});
-  const selections = [defaults?.model, ...entries.map((entry) => asRecord(entry)?.model)].filter(
-    (value) => value !== undefined,
-  );
-  const models = selections.flatMap((selection) => {
-    const value = asRecord(selection);
-    return typeof selection === "string"
-      ? [selection]
-      : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
-  });
-  if (models.some((model) => typeof model !== "string" || model.trim().length === 0)) {
-    throw new ConfigurationFailure("Harness authentication requires explicit model references.");
-  }
-  return [...new Set(models as string[])];
-}
-
 // Every provider is checked, selected or not: a bare model name or a `/model` switch can still
 // reach one (finding 1291), as the credential header rule assumes. Dedicated Codex makes no
 // model request from its Gateway, so it refuses every apiKey; OpenClaw accepts one only on the
@@ -3039,7 +3021,10 @@ function nativeRuntimeConfiguration(
       "must be unset on Dedicated OpenClaw: the selected Compute Driver owns the runtime transport",
     );
   }
-  const models = harnessModels(configuration);
+  const selections = nativeOpenAiModelSelections(configuration);
+  if (selections === undefined) {
+    throw new ConfigurationFailure("Harness authentication requires explicit model references.");
+  }
   const providers = asRecord(asRecord(configuration.models)?.providers);
   const openai = asRecord(providers?.openai);
   const catalog = "models.providers.openai.models";
@@ -3052,18 +3037,13 @@ function nativeRuntimeConfiguration(
   if (openai.headers !== undefined) {
     throw createError("models.providers.openai.headers", "must be unset on Dedicated OpenClaw");
   }
-  const entries = openai.models.map((value) => asRecord(value));
-  const runtimeModels = models.map((reference) => {
-    const { provider, id } = splitModelRef(reference);
+  const runtimeModels = selections.map(({ provider, id, matches }) => {
     if (provider !== "openai" || !id) {
       throw createError(
         "agents.defaults.model",
         "and every agents.entries.*.model must select openai/<model> references on Dedicated OpenClaw",
       );
     }
-    const matches = entries.flatMap((entry, index) =>
-      entry?.id === id || entry?.id === reference ? [{ entry: entry!, index }] : [],
-    );
     if (matches.length !== 1) {
       throw createError(
         catalog,
