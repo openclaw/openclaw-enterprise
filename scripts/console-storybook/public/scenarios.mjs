@@ -3672,6 +3672,7 @@ export const scenarios = {
     description:
       "A confirmed duplicate model Secret keeps the draft and offers deliberate existing Secret selection or a separate new Secret name.",
     steps: [
+      "Change Agent name after the conflict: the old collision notice clears without a write. Reset to exercise the recovery choices.",
       "Choose existing Secret and select a readable model credential. Confirm the Agent name, model and other draft fields remain.",
       "Reset the story. Use another Secret name, submit spaces, then a name longer than 255 characters. Both stop at field validation. Correct the name and create the Agent.",
       "Reset the story. Tab from the collision notice through both choices. Use another Secret name focuses its input. Switch Authentication method to ChatGPT OAuth: recovery and its required input disappear. Switch back: no stale choice returns.",

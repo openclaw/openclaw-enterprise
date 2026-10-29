@@ -41,3 +41,7 @@ In **Password Secret conflict recovery**, submit whitespace and an oversized
 alternate name. The field must show validation without saving. Correct the name
 and submit. For Service Accounts, choosing an existing Secret restores the normal
 optional plugin discovery token disclosure when discovery requires credentials.
+
+Change the Agent name after a collision. The old warning clears without a write.
+When editing an alternate Secret name, name changes and later refusals preserve
+that input; only feedback for the current attempted name can describe a collision.

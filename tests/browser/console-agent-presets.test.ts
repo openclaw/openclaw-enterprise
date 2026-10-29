@@ -2928,6 +2928,18 @@ for (const recovery of ["existing", "alternate", "denied existing"] as const) {
       return;
     }
     if (recovery === "existing") {
+      // A different Agent name also changes the generated Secret name; the old refusal is stale.
+      const agentName = page.getByLabel("Agent name", { exact: true });
+      await agentName.fill("Different Agent");
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), false);
+      assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+      await agentName.fill("Recreated Agent");
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), false);
+      const repeatedConflict = page.waitForResponse(
+        (response) => response.url().endsWith("/secrets") && response.request().method() === "POST",
+      );
+      await save.click();
+      assert.equal((await repeatedConflict).status(), 409);
       await page.getByRole("button", { name: "Choose existing Secret", exact: true }).click();
       assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
       await selectSecret(page, "API key Secret", existing);
@@ -2949,6 +2961,12 @@ for (const recovery of ["existing", "alternate", "denied existing"] as const) {
         assert.equal(await apiKey.inputValue(), "replacement-model-key");
       }
       await alternateName.fill("  Alternate model key  ");
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), false);
+      // Updating controls or the Agent name must not discard an independent alternate name.
+      await page.getByLabel("Agent name", { exact: true }).fill("Different Agent");
+      assert.equal(await alternateName.inputValue(), "  Alternate model key  ");
+      assert.equal(await alternateName.isVisible(), true);
+      await page.getByLabel("Agent name", { exact: true }).fill("Recreated Agent");
     }
     assert.equal(
       await page.getByLabel("Agent name", { exact: true }).inputValue(),
@@ -2969,7 +2987,7 @@ for (const recovery of ["existing", "alternate", "denied existing"] as const) {
     assert.deepEqual(
       secretWrites.map(({ body }) => body),
       (recovery === "existing"
-        ? ["Recreated Agent"]
+        ? ["Recreated Agent", "Recreated Agent"]
         : ["Recreated Agent", "Alternate model key"]
       ).map((name) => ({ name, value: "replacement-model-key" }) satisfies CreateSecretBody),
     );
@@ -3192,6 +3210,18 @@ for (const failure of ["denied", "uncertain", "generic conflict"] as const) {
     const save = page.getByRole("button", { name: "Create Agent", exact: true });
 
     const path = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
+    if (failure === "generic conflict") {
+      // The next known refusal must replace an earlier real duplicate-name response.
+      await fixture.createSecret(namespace.id, "Recreated Agent", "earlier-model-key");
+      const duplicate = page.waitForResponse(
+        (response) => response.url() === path && response.request().method() === "POST",
+      );
+      await save.click();
+      assert.equal((await duplicate).status(), 409);
+      await page.getByRole("button", { name: "Use another Secret name", exact: true }).click();
+      await page.getByLabel("New Secret name", { exact: true }).fill("Recreated Agent");
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), true);
+    }
     if (failure === "denied") {
       // Revoke after rendering: the real native IAM admission must deny the write.
       restrict(fixture.policy, "create", "secret", { namespaceId: namespace.id });
@@ -3252,6 +3282,13 @@ for (const failure of ["denied", "uncertain", "generic conflict"] as const) {
       await page.getByLabel("Agent name", { exact: true }).inputValue(),
       "Recreated Agent",
     );
+    if (failure === "generic conflict") {
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), false);
+      const alternateName = page.getByLabel("New Secret name", { exact: true });
+      assert.equal(await alternateName.isVisible(), true);
+      assert.equal(await alternateName.inputValue(), "Recreated Agent");
+      assert.equal(await apiKey.inputValue(), "replacement-model-key");
+    }
     if (failure === "uncertain") {
       assert.equal(await apiKey.inputValue(), "");
       assert.equal(await save.isDisabled(), true);

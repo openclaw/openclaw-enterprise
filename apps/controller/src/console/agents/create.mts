@@ -1139,14 +1139,17 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
-  let secretNameConflict = false;
+  let secretNameConflict: string | null = null;
   const secretConflictMessage = element("p", { className: "status-body" });
   const ownsSecretRecovery = () =>
     passwordAuth && !binding && ["api_key", "codex_pat"].includes(authMethod.value) && !savedSecret;
-  function clearSecretRecovery() {
-    secretNameConflict = false;
+  function clearSecretConflictFeedback() {
+    secretNameConflict = null;
     secretConflictMessage.textContent = "";
     secretConflictRecovery.hidden = true;
+  }
+  function clearSecretRecovery() {
+    clearSecretConflictFeedback();
     alternateSecretField.hidden = true;
     alternateSecretName.value = "";
     alternateSecretName.required = false;
@@ -1159,6 +1162,13 @@ function renderAgentForm(
   });
   const alternateSecretField = field("New Secret name", alternateSecretName);
   alternateSecretField.hidden = true;
+  const requestedModelSecretName = () =>
+    (alternateSecretField.hidden ? name.value : alternateSecretName.value).trim();
+  function clearSupersededSecretConflict() {
+    if (secretNameConflict !== null && secretNameConflict !== requestedModelSecretName()) {
+      clearSecretConflictFeedback();
+    }
+  }
   const chooseExistingSecret = button("Choose existing Secret", () => {
     if (pending || outcomeUnknown || !ownsSecretRecovery() || !secretNameConflict) {
       return;
@@ -1191,7 +1201,6 @@ function renderAgentForm(
     [chooseExistingSecret, chooseAlternateName],
     { id: "model-secret-conflict", hidden: true },
   );
-  secretConflictRecovery.append(alternateSecretField);
   const oauthLogin = createDeviceLogin({
     context,
     initial: draft.oauthLogin,
@@ -1255,6 +1264,7 @@ function renderAgentForm(
           passwordAuth ? transientCredentialField : null,
           pluginDiscoveryTokenDetails,
           secretConflictRecovery,
+          alternateSecretField,
         ]
       : []),
     modelSection,
@@ -2123,6 +2133,9 @@ function renderAgentForm(
     ) {
       control.setCustomValidity("");
     }
+    if (event.target === name || event.target === alternateSecretName) {
+      clearSupersededSecretConflict();
+    }
     if (event.target === name) {
       checkName();
       if (nameTakenMarked) {
@@ -2810,9 +2823,12 @@ function renderAgentForm(
     transientCredentialField.hidden =
       usesOAuth || (!passwordAuth && transientCredentialField.parentElement === authSection);
     if (!ownsSecretRecovery()) {
-      clearSecretRecovery();
+      clearSecretConflictFeedback();
+      alternateSecretField.hidden = true;
+      alternateSecretName.required = false;
     }
-    secretConflictRecovery.hidden = !secretNameConflict || outcomeUnknown;
+    clearSupersededSecretConflict();
+    secretConflictRecovery.hidden = secretNameConflict === null || outcomeUnknown;
     pluginDiscoveryTokenDetails.hidden = Boolean(
       binding || passwordAuth || !usesPat || pluginDiscoveryCredential === "none",
     );
@@ -3443,6 +3459,7 @@ function renderAgentForm(
     }
     pending = true;
     createPending = true;
+    clearSecretConflictFeedback();
     updateControls();
     feedback.textContent = "";
     // A typed key becomes a new Secret that the next requests bind. It gets no Secret operate
@@ -3541,9 +3558,7 @@ function renderAgentForm(
     context.setDraftCapture(null);
     let mutationStarted = false;
     let creatingSecret = false;
-    const requestedSecretName = alternateSecretField.hidden
-      ? body.name
-      : alternateSecretName.value.trim();
+    const requestedSecretName = requestedModelSecretName();
     let refusedInConfiguration = false;
     try {
       if (passwordAuth && !usesOAuth && !savedSecret) {
@@ -3803,7 +3818,7 @@ function renderAgentForm(
         error.serverMessage ===
           "A Secret with this name already exists in this Namespace. Choose a different name.";
       if (confirmedSecretConflict) {
-        secretNameConflict = true;
+        secretNameConflict = requestedSecretName;
         secretConflictMessage.textContent = withRequestId(
           `A Secret named "${requestedSecretName}" already exists in this Namespace. Choose an existing Secret or use another Secret name. Other draft fields stay unchanged.`,
           error.requestId,
