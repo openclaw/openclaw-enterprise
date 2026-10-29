@@ -256,23 +256,33 @@ export function jsonObjectProblem(text: string): string | undefined {
   try {
     parsed = JSON.parse(text);
   } catch {
-    if (!text.trim()) {
+    // Only JSON whitespace is blank: trim() also strips a byte order mark or a space-like
+    // character, which the message below names (finding 1959).
+    if (!/[^ \t\n\r]/.test(text)) {
       return "Enter a valid JSON object.";
     }
     const offset = jsonErrorOffset(text);
     if (offset === undefined) {
       return "Invalid JSON. Enter a valid JSON object.";
     }
-    // A character pasted from a file or a document can be invisible, or look like a space, so a
-    // bare position would point at nothing wrong; the message names it.
-    const unseen = UNSEEN_CHARACTERS[text.charAt(offset)];
-    if (offset === 0 && unseen) {
-      return `Invalid JSON: remove the ${unseen} at the start. Enter a valid JSON object.`;
+    // A character pasted from a file or a document can be invisible, look like a space, or be a
+    // curly quote a word processor put in, so a bare position would point at nothing visibly
+    // wrong; the message names it.
+    const character = text.charAt(offset);
+    const unseen = UNSEEN_CHARACTERS[character];
+    const fix = unseen
+      ? (place: string) => `remove the ${unseen} ${place}`
+      : CURLY_QUOTES.has(character)
+        ? (place: string) =>
+            `replace the curly quote ${character} ${place} with a straight quote (")`
+        : undefined;
+    if (offset === 0 && fix) {
+      return `Invalid JSON: ${fix("at the start")}. Enter a valid JSON object.`;
     }
     const lines = text.slice(0, offset).split(/\r\n?|\n/);
     const where = `line ${lines.length}, column ${visibleLength(lines.at(-1) ?? "") + 1}`;
-    return unseen
-      ? `Invalid JSON at ${where}: remove the ${unseen} there. Enter a valid JSON object.`
+    return fix
+      ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
       : `Invalid JSON at ${where}. Enter a valid JSON object.`;
   }
   return parsed === null || Array.isArray(parsed) || typeof parsed !== "object"
@@ -426,8 +436,14 @@ const JSON_LITERALS: Record<string, string> = { t: "true", f: "false", n: "null"
 const UNSEEN_CHARACTERS: Record<string, string> = {
   "\uFEFF": "invisible byte order mark",
   "\u200B": "invisible zero-width space",
+  "\u2028": "invisible line separator",
+  "\u2029": "invisible paragraph separator",
   "\u00A0": "non-breaking space",
+  "\u202F": "narrow non-breaking space",
+  "\u3000": "full-width space",
 };
+// Typographic quotes that word processors and chat apps substitute for straight ones.
+const CURLY_QUOTES = new Set(["\u201C", "\u201D", "\u2018", "\u2019"]);
 
 const graphemes =
   typeof Intl.Segmenter === "function"
