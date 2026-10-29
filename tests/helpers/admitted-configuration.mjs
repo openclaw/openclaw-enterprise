@@ -8,19 +8,8 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 // No legacy exec policy beside the setting: OpenClaw reads a mode over `security` and `ask`.
 const noExecPolicy = (exec) => exec.security === undefined && exec.ask === undefined;
 
-// Deployment admission fills these settings when the Configuration leaves them unset, ahead of
-// OpenClaw's security preset, which fills only what is still unset. Each row: the setting's path,
-// the value admission fills, whether the object that would hold it admits the fill (in order: the
-// inline-program rule reads the mode filled before it), and an explicit value of another kind,
-// which admission keeps.
-// - apply_patch stays in the workspace (OpenClaw's earlier value).
-// - OpenClaw's own sandbox stays off: its Docker backend cannot run in the OCE runtime (finding
-//   2767).
-// - exec runs without per-command approval, the personal preset's mode, unless tools.exec sets a
-//   security or ask: the corporate "ask" needs an approval client OCE does not have (finding 2771).
-// - In mode "full" with no security or ask, inline programs need no approval either (the personal
-//   preset's strictInlineEval; corporate's `true` needs the same approval client).
-// Collaborative steering keeps the preset's default (on) unless the Configuration sets it.
+// Each row gives an unset setting its OCE default and supplies an explicit value admission
+// preserves. The inline-program rule reads the exec mode filled by the preceding row.
 export const GATEWAY_SECURITY_DEFAULTS = Object.freeze([
   { path: ["tools", "exec", "applyPatch", "workspaceOnly"], value: true, explicit: false },
   { path: ["agents", "defaults", "sandbox", "mode"], value: "off", explicit: "all" },

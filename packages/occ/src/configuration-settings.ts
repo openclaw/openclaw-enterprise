@@ -180,10 +180,10 @@ export function validateWorkspaceBootstrapSettings(
  * Settings the pinned OpenClaw (the commit in `deploy/runtime/openclaw-source.json`) retired,
  * with what replaces each. Its config validation refuses them and the Gateway does not start;
  * its `doctor --fix` would remove them, but it cannot rewrite the read-only Configuration OCE
- * mounts. tests/integration/runtime-image-managed-files.test.mjs checks the image's config schema
- * no longer has the agents.defaults ones; update this list when that pin changes.
+ * mounts. The runtime image test checks the core settings against the pinned schema.
  */
 export const RETIRED_OPENCLAW_SETTINGS: readonly (readonly [string, string])[] = [
+  ["security.preset", "configure the individual security controls explicitly"],
   [
     "agents.defaults.compaction.memoryFlush.model",
     "memory flushes use the session model and its fallbacks",
@@ -242,8 +242,7 @@ const OPENCLAW_SANDBOX_SETTINGS: readonly (readonly [
  * OCE runtime does not have:
  * - An `agents.defaults.sandbox.mode`, or an `agents.entries.<id>.sandbox.mode` (which overrides
  *   it for that Agent), other than "off": the Gateway starts and then fails every turn (finding
- *   2767). Deployment admission fills "off" when unset (gateway-security-defaults.ts), so a
- *   `security.preset` that turns the sandbox on still deploys a working Agent.
+ *   2767). Deployment admission fills "off" when unset (gateway-security-defaults.ts).
  * - A `tools.exec.host`, or an `agents.entries.<id>.tools.exec.host`, other than "auto",
  *   "gateway" or "node": "sandbox" fails every shell command (finding 2773).
  * Configuration save runs it with the other content rules; Agent save and deploy admission run it

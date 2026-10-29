@@ -32,18 +32,16 @@ Configuration:
   the participant steering has fewer. Participants are channel users or local
   operators with distinct Gateway identities. OCE native admin and workspace
   access share one Gateway identity, so this setting does not separate OCE users.
-  When off, their message runs as a separate turn after it. With
-  `messages.queue.collaborativeSteeringFallback: reject` (the default of
-  `security.preset: corporate`), the Gateway refuses it instead and asks them to
-  resend it with `/followup`. The help text shows which applies.
+  When steering is off, the Gateway queues their message as a separate turn by
+  default. If you set `messages.queue.collaborativeSteeringFallback` to `"reject"`,
+  the Gateway asks the participant to resend the message with `/followup`.
 - **apply_patch changes files only in the workspace**
   (`tools.exec.applyPatch.workspaceOnly`, default on).
 
-**Strict mode** writes the locked-down value of each setting into the
-Configuration; turning it off removes them, so each setting follows its default.
-A toggle set back to its default removes its value. Each change edits the
-Configuration JSON: save it, then deploy a new version. Without Configuration
-`update`, the toggles are unavailable.
+**Strict mode** turns collaborative steering off and restricts `apply_patch` to
+the workspace. Turning Strict mode off removes those two settings. Setting an
+individual toggle back to its default removes just that value. Changing the
+toggles requires Configuration `update`. Save the draft, then deploy a new version.
 
 **Edit Configuration** edits native JSON. **Save Configuration** requires an object;
 **Cancel** discards edits. **Edit current Configuration** opens the current draft's editor,
@@ -51,6 +49,17 @@ not a historical copy. Without Configuration `update`, or Secret `operate` on a 
 Configuration binds, it reads **Open draft** and opens the draft read-only. Saving preserves Secret bindings and saved versions;
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.
+
+If a draft contains `security.preset`, remove that field in **Edit Configuration**.
+If you used `corporate`, set the restrictions you relied on explicitly before
+saving. For example, set `tools.fs.workspaceOnly` to
+`true` to confine file tools to the workspace, or set `session.dmScope` to
+`"per-account-channel-peer"` to separate direct-message sessions. Strict mode
+leaves those settings alone. Also review any restrictions you relied on for
+command approvals, elevated execution, session visibility, and messaging between
+Agents or conversations. OCE isolates each Agent and requires OpenClaw's own
+sandbox to stay off. See the [former preset values](https://github.com/openclaw/openclaw/blob/762a2fe60cc37cf6b8c9d05e61c329866e0d3f6f/docs/gateway/security/presets.md#what-the-presets-select)
+and [OCE's deployment defaults](../../reference/configuration.md#agent-references-and-immutable-versions).
 
 Unsaved edits, pending saves, and stale or unknown outcomes block deployment,
 tab switching, and version navigation. Save checks Configuration association and

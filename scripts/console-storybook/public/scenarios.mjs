@@ -4520,14 +4520,14 @@ export const scenarios = {
       "Strict mode writes every locked-down value into the Configuration JSON; Save Configuration keeps them, and the next deployment applies them.",
     gap: "Simulated UI proof; does not show a deployed Gateway steering a turn.",
   },
-  gatewaySafetyCorporate: {
+  gatewaySafetyRejectSteering: {
     group: "Pages/Agent detail",
-    name: "Collaboration and safety, corporate preset",
+    name: "Collaboration and safety, reject steering",
     path: `${draft}&tab=configuration`,
     deployed: true,
-    securityPreset: "corporate",
+    messageQueue: { allowCollaborativeSteering: false, collaborativeSteeringFallback: "reject" },
     description:
-      "With OpenClaw's corporate security preset, steering is off by default, and the help text says the Gateway refuses another participant's message and asks them to resend it with /followup.",
+      "The Configuration disables collaborative steering and sets its fallback to reject. The help explains that another participant must resend their message with /followup.",
     gap: "Simulated UI proof; does not show a deployed Gateway refusing a message.",
   },
   gatewaySafetyReader: {
@@ -4536,7 +4536,7 @@ export const scenarios = {
     path: `${draft}&tab=configuration`,
     deployed: true,
     readOnlyPermissionSummary: true,
-    collaborativeSteering: false,
+    messageQueue: { allowCollaborativeSteering: false },
     description:
       "A viewer sees the saved strict settings, with every toggle unavailable and the reason linked to each. The note above them names the grant to ask for.",
     gap: "The permission answer is simulated; the API still authorizes every save.",

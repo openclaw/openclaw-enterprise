@@ -233,9 +233,9 @@ test(
         ?.enum;
     assert.ok(Array.isArray(files), "the image schema lists the optional bootstrap files");
     assert.deepEqual([...files].sort(), [...OPTIONAL_BOOTSTRAP_FILES].sort());
-    // The core schema holds the agents.defaults settings; a plugin's config has its own schema.
-    for (const [setting] of RETIRED_OPENCLAW_SETTINGS.filter(([path]) =>
-      path.startsWith("agents."),
+    // Plugin settings have their own schemas, separate from the core config schema.
+    for (const [setting] of RETIRED_OPENCLAW_SETTINGS.filter(
+      ([path]) => !path.startsWith("plugins.entries."),
     )) {
       const keys = setting.split(".");
       const parent = keys.slice(0, -1).reduce((node, key) => node?.properties?.[key], schema);
