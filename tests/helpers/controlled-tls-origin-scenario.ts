@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import type { TestContext } from "node:test";
 import type { RequestListener } from "node:http";
+import type { Server } from "node:net";
 import { connect, type TlsOptions, type TLSSocket } from "node:tls";
 import { controlledTlsOrigin } from "./controlled-tls-origin.ts";
 import { harnessTlsFixture } from "./harness-tls.mjs";
@@ -11,13 +12,14 @@ type Observation = ReturnType<ReturnType<typeof controlledTlsOrigin>["snapshot"]
 
 /** Owns a real TLS client and origin; callers specify and assert their own observations. */
 export async function controlledTlsOriginScenario(t: TestContext) {
-  const tls = await harnessTlsFixture(t);
-  const origin = controlledTlsOrigin(tls, (request, response) => {
-    request.on("end", () => response.end("ok"));
-    // This sink intentionally discards the body before acknowledging completion.
-    request.resume();
-  });
-  const port = await listen(t, origin);
+  const peer = await tlsOriginPeer(t, (tls) =>
+    controlledTlsOrigin(tls, (request, response) => {
+      request.on("end", () => response.end("ok"));
+      // This sink intentionally discards the body before acknowledging completion.
+      request.resume();
+    }),
+  );
+  const { origin } = peer;
 
   function observe(predicate: (observation: Observation) => boolean): Promise<Observation> {
     return new Promise((resolve, reject) => {
@@ -39,9 +41,8 @@ export async function controlledTlsOriginScenario(t: TestContext) {
   }
 
   return {
-    origin,
+    ...peer,
     observe,
-    connect: () => verifiedTlsClient(t, port, tls.caBundle),
     async writeAndObserve(
       socket: TLSSocket,
       bytes: string,
@@ -51,15 +52,12 @@ export async function controlledTlsOriginScenario(t: TestContext) {
       socket.write(bytes);
       return observation;
     },
-    async writeAndDrain(socket: TLSSocket, request: string) {
-      const reply = completedReply(socket);
-      socket.write(request);
-      await reply;
-    },
   };
 }
 
-async function completedReply(socket: TLSSocket): Promise<void> {
+/** Send a framed request and drain its complete fixture reply without closing the socket. */
+export async function writeAndDrain(socket: TLSSocket, request: string): Promise<void> {
+  socket.write(request);
   let received = "";
   for await (const chunk of socket.iterator({ destroyOnReturn: false })) {
     received += chunk.toString();
@@ -68,6 +66,17 @@ async function completedReply(socket: TLSSocket): Promise<void> {
     }
   }
   throw new Error("Origin reply ended before completion.");
+}
+
+/** Own a loopback server and certificate-verified clients for one test. */
+export async function tlsOriginPeer<T extends Server>(
+  t: TestContext,
+  create: (tls: Awaited<ReturnType<typeof harnessTlsFixture>>) => T,
+) {
+  const tls = await harnessTlsFixture(t);
+  const origin = create(tls);
+  const port = await listen(t, origin);
+  return { origin, connect: () => verifiedTlsClient(t, port, tls.caBundle) };
 }
 
 /** One permitted send may activate one connection; a partial second send is forbidden. */
