@@ -1832,7 +1832,7 @@ test("A refused recheck of an open Agent page names the grant the API checked", 
 // version again only when the page had it on screen. A version the page proved unreadable on load
 // is not read again: that read would add an audited denial per refocus and its refusal would
 // replace the page with "Access denied". One the page showed and that is revoked since is still
-// taken off the page.
+// taken off the page, current version or not (finding 2913).
 test("A refocus does not read again a version the Agent page proved unreadable", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1841,7 +1841,6 @@ test("A refocus does not read again a version the Agent page proved unreadable",
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
-  denyRevisionRead(fixture, namespace, second.revision);
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
@@ -1860,10 +1859,21 @@ test("A refocus does not read again a version the Agent page proved unreadable",
     return requests.slice(sent).map((request) => request.path);
   }
 
-  // The current version, opened without ?revision: the newest page of versions lists every
-  // version this reader can read and leaves it out, so the page reads it neither on load (finding
-  // D791) nor on any refocus, and keeps its tabs.
+  // The current version v2 is readable and shown, opened without ?revision. Revoked since, the
+  // newest page of versions leaves it out too, but the page had it on screen: a refocus still
+  // reads it and takes it off the page (finding 2913).
   await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  denyRevisionRead(fixture, namespace, second.revision);
+  assert.ok((await refocus()).includes(`${path}/revisions/${second.revision.id}`));
+  await accessDenied.waitFor();
+  assert.equal(versionDenials(), 1);
+
+  // Opened again, the newest page of versions lists every version this reader can read and leaves
+  // the current version out, so the page reads it neither on load (finding D791) nor on any
+  // refocus, and keeps its tabs.
+  await page.goto(detailUrl(fixture, namespace.id, agent.id).href);
   await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   await waitForIdleFetches(page);
   for (let check = 0; check < 2; check += 1) {
@@ -1874,7 +1884,7 @@ test("A refocus does not read again a version the Agent page proved unreadable",
   await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   assert.equal(await accessDenied.count(), 0);
   assert.equal(await page.locator(".agent-tabs").count(), 1);
-  assert.equal(versionDenials(), 0);
+  assert.equal(versionDenials(), 1);
 
   // v1 is readable and shown. Revoked since, a refocus finds it and takes it off the page.
   const olderPath = `${path}/revisions/${first.revision.id}`;
@@ -1886,7 +1896,7 @@ test("A refocus does not read again a version the Agent page proved unreadable",
   denyRevisionRead(fixture, namespace, first.revision);
   assert.ok((await refocus()).includes(olderPath));
   await accessDenied.waitFor();
-  assert.equal(versionDenials(), 1);
+  assert.equal(versionDenials(), 2);
 
   // Opened again, the page shows v1's refusal. A refocus keeps it without another refusal: v1 is
   // not the current version, so this tab's settled refusal is the proof.
