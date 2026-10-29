@@ -25,6 +25,8 @@ import {
 } from "../helpers/development.mjs";
 import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.mjs";
 
 const administrator = "principal-secret-administrator";
 const deployer = "principal-secret-deployer";
@@ -452,7 +454,7 @@ test("listing Secrets requires Namespace read before filtering each Secret", asy
 });
 
 test("deployment admission stamps immutable native logging after sandbox policy", async () => {
-  const { configurationDriver, configure, deploy, namespace, select, updateAgent } =
+  const { agent, configurationDriver, configure, deploy, namespace, select, updateAgent } =
     await fixture();
   const originalValues = {
     logging: {
@@ -490,17 +492,27 @@ test("deployment admission stamps immutable native logging after sandbox policy"
   });
 
   assert.deepEqual(stored.values, originalValues);
-  assert.deepEqual(revision.configuration, {
-    ...originalValues,
-    sandboxed: true,
-    logging: {
-      level: "info",
-      consoleLevel: "info",
-      consoleStyle: "json",
-      tenant: "kept",
-    },
-    diagnostics: { otel: { logs: false, traces: true } },
-  });
+  // The omitted roster gains its served main entry, named after the OCC Agent, and admission
+  // fills the Gateway security defaults.
+  assert.deepEqual(
+    revision.configuration,
+    withGatewaySecurityDefaults(
+      servedAs(
+        {
+          ...originalValues,
+          sandboxed: true,
+          logging: {
+            level: "info",
+            consoleLevel: "info",
+            consoleStyle: "json",
+            tenant: "kept",
+          },
+          diagnostics: { otel: { logs: false, traces: true } },
+        },
+        agent.name,
+      ),
+    ),
+  );
 });
 
 test("deploying a bound Secret requires both the caller and Agent service principal to operate it", async () => {

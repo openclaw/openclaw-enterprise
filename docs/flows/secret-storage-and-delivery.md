@@ -76,7 +76,7 @@ graph TD
 `packages/occ/src/index.ts:OpenClawController.createSecret`
 
 [OpenClawController.createSecret](../../packages/occ/src/index.ts) validates
-bounded, nonempty UTF-8 input and locks the Namespace. The caller needs `create`
+nonempty UTF-8 input of at most 65,536 bytes and locks the Namespace. The caller needs `create`
 on the Namespace's Secret collection. The Namespace must already be ready; an
 Agent record does not need to exist. OCC selects the
 Installation SecretDriver, generates the Secret identity, and prevents the
@@ -128,7 +128,7 @@ caller and consuming Agent service principal to `operate` every Secret, then
 checks live backend identity through the API-side driver. Namespace locking
 serializes binding/admission changes against deletion. Admission freezes
 normalized refs and the selected SecretDriver identity, not backend locators or
-values, in the revision. Enabled native channel environment SecretRefs must have
+values, in the Agent revision. Enabled native channel environment SecretRefs must have
 matching bindings at admission; disabled channel provider blocks do not require
 them.
 
@@ -143,15 +143,15 @@ execution topology.
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
 `scripts/first-agent-database.mjs:grantFirstAgentSecret`
 
-The [tool](../../scripts/first-agent.mjs) targets the persistent installation
-started with `./bin/occ dev up`. Before invoking Kubernetes or the OCC API, it
-requires the current v3 development marker and state from the same checkout.
+The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up` installation.
+Before Kubernetes or OCC API calls, it requires the current v3 development marker
+and state from the same checkout.
 The state must select Kubernetes Compute. The default `sandboxDriver: "none"`
 path uses embedded OpenClaw; OpenShell requires explicit `--harness codex`.
-`scripts/first-agent.mjs:loadLocalInstallation` uses the recorded Unix socket
-for container-engine calls and removes inherited Docker TLS settings from their
-environment. Compose-backed setup therefore queries the recorded local controller
-port and PostgreSQL service without loading certificates for another daemon.
+`scripts/first-agent.mjs:loadLocalInstallation` uses the recorded Unix socket and
+removes inherited Docker TLS settings for container-engine calls. Compose setup
+queries the recorded controller port and PostgreSQL service without another
+daemon's certificates.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
 Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
 `openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
@@ -168,24 +168,24 @@ With OpenShell, the tool registers the Secret as an `openai` or `codex-pat`
 CredentialSource and uses the public Namespace IAM API to grant the Agent principal exact
 `credential_source:operate`. It does not grant Secret access. `--replace-key`
 updates the Secret and asks the Credential Gateway to reread it before deploying
-a new revision. The private helper record freezes the Harness and Sandbox Driver
+a new version. The private helper record freezes the Harness and Sandbox Driver
 choices so a rerun cannot silently change topology.
 
-The tool provisions initial runtime credentials and requests deployment through
-OCC. Its revision check expects the local OpenShell profile's Driver-owned
+The tool provisions runtime credentials and requests deployment through
+OCC. The check requires the local OpenShell profile's Driver-owned
 workspace, `/sandbox/enterprise`, and frozen Codex policy:
 `sandbox: "danger-full-access"` with `approvalsReviewer: "user"` for either API-key
-or PAT sources. It can recognize a prior PAT revision frozen with
+or PAT sources. It can recognize a prior PAT Agent revision frozen with
 `workspace-write`; a new deployment uses the current policy. Other workspace or
-Configuration differences fail the drift check. Once the revision is active,
+Configuration differences fail the drift check. Once OCC selects the version,
 [`findGateway`](../../scripts/first-agent-model.mjs) discovers the canonical
 tenant namespace through `openclaw.dev/namespace`. The supported local setup is
 single-cluster, so embedded and dedicated Gateways share that physical namespace
 with the provider-owned Harness. The verifier requires the exact Agent labels,
-revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends the
+Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends the
 prompt. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
-The tool leaves the installation and resources in place on exit.
+The tool retains installation resources on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
 <span id="4.-render-only-the-exact-gateway's-projection"></span>
@@ -195,13 +195,13 @@ The tool leaves the installation and resources in place on exit.
 `apps/controller/src/worker.ts:ControllerWorker.resolveRevisionSecretContext`
 
 [ControllerWorker](../../apps/controller/src/worker.ts) rechecks
-consumption authority and resolves revision refs from OCC metadata before each
+consumption authority and resolves Agent revision refs from OCC metadata before each
 preparation and activation. It passes an ephemeral `ComputeRevisionContext`; it
-does not add backend metadata to the revision. Its Compute Driver performs
+does not add backend metadata to the Agent revision. Its Compute Driver performs
 the physical Secret reads and scoped runtime delivery.
 
 [KubernetesComputeDriver.prepareRevision](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
-checks the revision, source UIDs, projection identities and verified storage Namespace.
+checks the Agent revision, source UIDs, projection identities and verified storage Namespace.
 Dedicated Gateways directly reference admitted canonical Secrets. It renders `env[].valueFrom.secretKeyRef` with `optional: false` only in each
 selected consuming gateway. Model-auth projections are prepared separately from
 Agent `harnessAuth`. ConfigMaps retain native references only. A missing
@@ -211,7 +211,7 @@ delivery. Kubernetes environment references themselves bind a name and key, so
 Kubernetes administrators remain trusted.
 
 For an embedded replacement, preparation stages its immutable ConfigMap without
-requiring the old gateway to be healthy. The worker commits the selected revision
+requiring the old gateway to be healthy. The worker commits the selected Agent revision
 before activation replaces the gateway Deployment and checks readiness. This lets
 an explicit corrected deployment recover from a native SecretRef startup failure;
 preparation alone is not proof that the replacement runtime is ready.
@@ -238,7 +238,7 @@ project namespace Secrets, so controller compromise remains outside workload iso
 
 [updateSecret](../../packages/occ/src/index.ts) serializes the write and uses
 Kubernetes concurrency/ownership checks. It changes only the stored value; the
-response retains the same ref. No revision, binding, or running environment is
+response retains the same ref. No Agent revision, binding, or running environment is
 updated, and no controller automatically restarts the gateway. A successful update
 means stored, not delivered.
 
@@ -247,9 +247,9 @@ updating each Secret. A partial update leaves it stopped until repaired; there i
 no multi-Secret transaction or rollback of stored bytes.
 
 For model-key replacement, update the OCC Secret and explicitly deploy each
-consuming Agent through OCE. The new revision's preparation calls
+consuming Agent through OCE. The new Agent revision's preparation calls
 `KubernetesComputeDriver.deliverHarnessAuth`, which reads the current canonical source
-and writes the revision-owned DP Secret before the Harness starts. Wait for
+and writes the DP Secret for that Agent revision before the Harness starts. Wait for
 activation and verify a real model request before revoking the old key upstream.
 A Harness Pod recreation reads its existing DP projection; it does not deliver
 current source values. This remains true when the Configuration and Secret reference
@@ -260,13 +260,13 @@ directly. Failed cutover does not restore old source values. Revoking `operate`
 blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
 [deleteSecret](../../packages/occ/src/index.ts) rejects current Configuration,
-Agent harness-binding draft, active revision, and pending-work dependencies under the same serialization
+Agent harness-binding draft, selected version, and pending-work dependencies under the same serialization
 boundary. One `listReferences` query returns at most 50 of them, ordered by kind and ID;
 `secretConsumers` checks `read` on each referencing resource, names the readable ones in
 the `409`, and counts the rest. `readSecret` returns the same result as `consumers`.
 Once unreferenced, it deletes only the exact Namespace-owned backend and metadata.
-A partial delete can be retried; missing or foreign objects never become an
-adoption or recreation path. Gateway replacement does not garbage-collect
+A partial delete can retry; missing or foreign objects cannot be
+adopted or recreated. Gateway replacement does not garbage-collect
 Secrets, so immediate revocation requires stopping workloads or revoking the
 credential at its issuer.
 
@@ -276,10 +276,10 @@ credential at its issuer.
   ownership/UID metadata separately as an authorized operator; do not print
   `Secret.data`, complete process environments, or credential-bearing requests.
 - A stored Secret with no ready gateway is valid. Update success does not imply
-  delivery. Compare revision/Pod identities and use noncredential sentinel values
+  delivery. Compare Agent revision/Pod identities and use noncredential sentinel values
   for restart assertions.
 - On local failure, rerun the tool with the same Agent name. It prints the Agent
-  and revision IDs only after the model responds.
+  and Agent revision IDs only after the model responds.
 - Source selection, exact Namespace ownership, consumption authorization, missing
   material, and concurrent backend mutations fail closed. Do not retry a denial
   against another driver or model-key source.
@@ -315,43 +315,4 @@ credential at its issuer.
 
 - 2026-10-13 15:07: Align the first-Agent revision check with OpenShell's explicit user approval reviewer in the accompanying helper fix. (authoring-run/503e74ea-e82a-4d1a-8081-fcf4fc4e6868 - 05a515c7f57faf3a870b7265b2792c407c0c4305)
 
-- 2026-10-09 13:00: A failed Secret create deletes the exact object it may have stored. (fix-916)
-- 2026-10-05 13:27: Keep first-Agent container-engine calls on the recorded Unix socket without inherited Docker TLS settings. (authoring-run/c743ee6e-95f7-43d3-813d-4496b4b2fb19 - 469d2fef447ecdf2565d3991db1e1ce5c95d880e)
-- 2026-10-05 17:02: Align first-Agent Gateway discovery with the canonical single-cluster tenant namespace. (authoring-run/583f86ae-e997-4586-8fb5-217bb20a1410 - 1d7bd797a941a45c36280b7531ee3051b5cad830)
-
-- 2026-10-02: Canonical sources and role-specific projections share the single-cluster tenant namespace. (01a0fe72-58b2-7cc3-b770-7310f5401deb)
-
-- 2026-10-02 16:00: Discover the first-Agent Gateway from its admitted embedded or dedicated execution placement before checking the model response. (authoring-run/f85f64d4-af40-4918-91ea-2d16640c12b2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
-
-- 2026-10-01: Added the OpenShell dedicated Codex first-Agent path with exact
-  CredentialSource access and no Agent Secret grant.
-
-- 2026-09-25 14:57: Align first-Agent admission and its real fixture with v3 development state, and reject the unsupported OpenShell profile before external calls. (authoring-run/6556d897-be75-463f-b50c-73f3b1fb6d72 - 189c62c993066d52703d2cd7eb896e2c2c01bdc4)
-
-- 2026-09-23 14:12: Clarify model-key replacement through OCE deployment and distinguish Harness Pod recreation from credential delivery. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 240c72f2ef96c034c4e05c4775a79a94ebbe64ab)
-
-- 2026-09-23 12:22: Move canonical credential sources to CP and describe revision-scoped Harness delivery in the accompanying change. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 623d56dec26a8ef0f72b562254687cabecdbbf82)
-
-- 2026-09-21 19:52: Trace the local Agent default and preservation or rejection of recorded model selections. (01a0c580-9e39-7e21-bb0f-28fcc4752c59 - 4ec004dbefd25070ff1bdeb89cfb16d245296ac9)
-
-- 2026-09-20 18:25: Document the local first-Agent Secret grant and model-response check added with the installer tool. (01a0c00c-8a45-7233-82c4-e12fb2c3b0d7 - 3bbdc447dbe2dee8c5f757b822e9ebe034047193)
-- 2026-09-20 00:00: Recorded channel credentials as Configuration Secret bindings with Agent service-principal grants and gateway-only delivery. (01a0bce5-9f29-7110-85fd-6b140674d362 - 93fe0a83)
-
-- 2026-09-17 00:48: Correct current harness admission and metadata-only dispatch boundaries after implementation review. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - 107900e9551b90c3e9ac24d30f8ea866f17e5dbb)
-
-- 2026-09-17 00:31: Align credential selection and delivery with Agent harnessAuth and the shared Kubernetes rendering path. (01a0acc2-a404-77e3-b1a0-9fa4ffbbdb04 - d2bcbd1c53acb2582a774b5158f254d726abd33f)
-
-- 2026-09-01 19:09: Moved historical pass counts, run timing, and stale environment blockers out of active Debugging while keeping current runnable checks and proof requirements. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
-- 2026-08-28: Historical verification retained from prior Debugging: focused conformance reported 134 cases with 1 optional skip; the real Kubernetes Secret API scenario after rebasing onto main `84e773f` reported 1 passed, 0 failed, 0 skipped, exit 0, in 386.4s with OpenClaw 2026.8.1; additional static, API, startup, Helm, PostgreSQL Secret-state, and real Compute checks were reported. Broader host and dedicated file-edit suites were not established because the host OpenClaw build had stale generated assets and the native hook relay was unavailable.
-
-- 2026-08-28 16:33: Updated verification to the passing post-rebase Agent and Compute proofs against main 84e773f and conformance 134. (01a043fa-27fd-7651-b75a-4d46538a2809 - f7c33d5)
-
-- 2026-08-28 15:56: Recorded current Namespace-owned Secret verification from the parent-inspected live proof and focused suites. (01a043fa-27fd-7651-b75a-4d46538a2809 - 9214fbb56f0437b7529f4a9aaa325ae73a489453)
-
-- 2026-08-28 14:48: Updated the flow for Namespace-owned Secrets, retained-binding authorization, selected gateway delivery, and superseded exact-Agent proof. (01a043fa-27fd-7651-b75a-4d46538a2809 - 9214fbb56f0437b7529f4a9aaa325ae73a489453)
-
-- 2026-08-28 13:56: Consolidated duplicate CRUD guidance while preserving runtime ownership and failure transitions. (01a04995-4a11-7c61-ab52-0b43f49524dc - 64e19bb)
-
-- 2026-08-28 13:12: Recorded independent real SecretDriver acceptance and bounded broader-runtime verification gaps. (01a043fa-27fd-7651-b75a-4d46538a2809 - 07d8eb57a05cf4b439f1cb04816da723e4a36209)
-
-- 2026-08-28 10:47: Documented the implemented storage, binding, admission, and gateway delivery path; runtime verification pending. (01a043fa-27fd-7651-b75a-4d46538a2809 - 7b23ec07cef352abc97917eab7c9fa1a331f08a7)
+[Secret storage and delivery documentation history](secret-storage-and-delivery/history.md) preserves the older dated entries.

@@ -28,11 +28,11 @@ images; individual Agents cannot choose their own implementations.
    Kubernetes, [verify an existing Agent's model response](../../guides/operate/model-verification.md).
    On SSH, follow the [host-managed credential requirements](ssh-compute.md#credentials-and-supported-boundaries)
    and send a model request through the host's configured gateway or channel;
-   the Kubernetes verification commands do not apply. Successful OCC startup
-   or gateway readiness alone does not prove that an Agent can use its model.
+   the Kubernetes verification commands do not apply. OCC startup or gateway
+   readiness alone does not prove the Agent can use its model.
 
-Default Docker or Podman Compose can run the control plane for development,
-but its Docker Compute Driver rejects the authentication used for new Agents.
+Default Docker or Podman Compose runs a development control plane, but its
+Docker Compute Driver rejects new Agents' authentication.
 The OpenShell development path remains experimental and unqualified; see its
 [qualification requirements](openshell-sandbox.md#qualification-contract).
 
@@ -48,19 +48,20 @@ IAM, and Docker Compute without Installation YAML and does not select a
 SecretDriver. An operator can select installed IAM, Compute, Configuration, or
 Sandbox packages in trusted YAML in either mode.
 
-| Capability           | Shared contract                                                 | Selection boundary                                                                                     |
-| -------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `configuration`      | [ConfigurationDriver](configuration.md)                         | Required in Installation YAML; bundled Kubernetes or installed package.                                |
-| `channel`            | [ChannelDriver](channel.md)                                     | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                     |
-| `iam`                | [IAMDriver](iam.md)                                             | Required in Installation YAML; bundled native IAM or installed package.                                |
-| `compute`            | [ComputeDriver](compute.md)                                     | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                  |
-| `secret`             | [SecretDriver](secret.md)                                       | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                         |
-| `sandbox`            | [SandboxDriver](sandbox.md)                                     | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.   |
-| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only. |
-| `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                        |
-| `service_account`    | [ServiceAccountDriver](service-account.md)                      | Optional bundled ChatGPT Backend member; no installed-package selector.                                |
-| `plugin`             | [PluginDriver](plugin.md)                                       | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                        |
-| `repo`               | [RepoDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; requires bundled Kubernetes Compute without Sandbox.           |
+| Capability           | Shared contract                                                             | Selection boundary                                                                                                                                       |
+| -------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `configuration`      | [ConfigurationDriver](configuration.md)                                     | Required in Installation YAML; bundled Kubernetes or installed package.                                                                                  |
+| `channel`            | [ChannelDriver](channel.md)                                                 | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                                                                       |
+| `iam`                | [IAMDriver](iam.md)                                                         | Required in Installation YAML; bundled native IAM or installed package.                                                                                  |
+| `compute`            | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                    |
+| `secret`             | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                           |
+| `sandbox`            | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                     |
+| `credential_proxy`   | [CredentialProxyDriver](credential-proxy.md)                                | Optional; the selected Sandbox and Credential Proxy must come from one Driver registration, supplied by bundled OpenShell or a selected Sandbox package. |
+| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
+| `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                          |
+| `service_account`    | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                  |
+| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                                                                          |
+| `repo`               | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                          |
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.
@@ -75,6 +76,68 @@ runtime, and projected-credential checks apply only to bundled Kubernetes Comput
 OCC Secret delivery to SSH hosts is unsupported even though the Installation
 contract still requires the Secret selection.
 
+## Select a protected sender
+
+Implementers start with the [Credential Proxy contract](credential-proxy.md), which
+distinguishes request-time exchange, recipient installation and sender guarantees,
+and the [Driver walkthrough](../../contributing/credential-proxy-driver.md).
+
+With bundled Kubernetes Compute, select the trusted package under
+`drivers.sandbox.package`, then set `drivers.credential_proxy.id` to the
+same Driver ID and its `configuration` to `{}`. Configure the package once,
+under `drivers.sandbox.configuration`. The API and worker each load one
+registration and compare its identity with the admitted revision.
+
+For protected repository Git, set `repository.id`,
+`repository.configuration.sessionDurationSeconds`, and `repository.preparedGitHub`.
+The ID must match the GitHub Backend's `drivers.repo` policy member. Omit the
+Installation's `drivers.repo` and `repository.nativeSender`. A separately installed
+sender also omits `repository.openShell`. No native control socket or broker CA is needed. The Driver must implement
+both Sandbox repository access and the Credential Proxy's `bindRepositoryGit`.
+At release, Compute checks the installed recipient. Select the guarantee that
+the actual sender can enforce:
+
+| Admission | Required behavior                                                                                                                                                                                      |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| v3        | Protected request-time routes and response custody; not repository delivery.                                                                                                                           |
+| v4        | Exact dispatch: enforce exclusive `sendStartBy` before connecting and again before writing if setup took time.                                                                                         |
+| v5        | Online authorization: return the decision by `replyBy`; an authorized request may finish after withdrawal. Only external packages; bundled OpenShell refuses it (`REPOSITORY_GIT_SENDER_UNQUALIFIED`). |
+| v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                  |
+| v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                 |
+
+A lost authorization reply leaves possible use recorded; do not retry that
+exchange. v7 support in OCC is available to a capable Driver, not evidence that
+stock OpenShell enforces it. Selection establishes neither isolation nor release
+qualification. See the [contract](credential-proxy.md#delivery-profiles) and
+[OpenShell qualification boundary](../repository-credentials/protected-openshell-git.md).
+
+### Supply protected Git credentials with Helm
+
+After selecting your installed sender in the Installation, add these values to the
+[production chart](../../../deploy/helm/openclaw-enterprise/values.yaml). Use your own
+resource names. Replace the example IP address with an approved issuer destination.
+Keep Secret contents out of Helm values.
+
+```yaml
+repositoryCredentials:
+  delivery: credential-proxy
+  authority: prepared-git
+  registryConfigMapName: repository-registry-v1
+  appKeySecretName: repository-app-key
+  preparedCustodySecretName: git-custody
+  upstreamCidrs: ["198.51.100.23/32"]
+```
+
+Leave `repositoryCredentials.enabled` and `openshellGit.enabled` false. The chart
+mounts `/etc/openclaw/repository-registry/registry.json` for the API, worker and
+upgrade check. Only the worker gets `private-key.pem` and `custody.key` under
+`/etc/openclaw/prepared-repository`, plus an egress rule to the issuer on TCP 443.
+Your sender supplies its own listener, trust and network policy. Before switching from
+a broker, stop admissions and settle existing sessions with their original owner. Then
+remove Compute `network.repositoryCredentials`. Startup refuses it without
+`repository.nativeSender`.
+The worker's `Recreate` rollout cannot establish that custody is settled.
+
 ## Backend membership
 
 An Installation-scoped [Backend](../backends.md) groups an authenticated
@@ -88,9 +151,45 @@ Gateway Drivers, and its Credential Refresh Driver when it declares one. A
 selected Credential Gateway or Credential Refresh Driver must belong to a
 configured Backend. There is no per-Agent Driver selection.
 
-Runtime Backend injection is limited to those bundled Drivers. Installed factory
-arguments remain the contract below; Backend loading or injection into
-installed packages is deferred.
+Runtime Backend injection is limited to those bundled Drivers; installed
+packages keep the factory arguments below, and Backend loading or injection into
+them is deferred.
+
+## Configuration definitions and discovery
+
+Each selected implementation supplies `ConfigurationDefinition<T>`: a serializable
+`configurationSchema` and synchronous `validateConfiguration(input)` semantic checks.
+The platform checks plain JSON input against the schema once per admission call,
+then passes an isolated, frozen copy typed as `Readonly<T>` to the Driver. The
+callback returns `readonly ErrorDetail[]`; an empty list means success. It cannot
+return replacement configuration. The platform returns the original input to the
+caller and retains the typed `ConfigurationResult<T>` for preview responses.
+Returning `undefined`, a data envelope, malformed field errors, or throwing fails
+closed. Independent constructor entry points still perform their own admission.
+
+Use JSON Schema 2020-12, or omit `$schema`. The installed TypeBox evaluator and its
+meta-schema check registration; unknown formats and unresolved references are
+refused. Validation does not coerce, insert defaults, strip fields, perform I/O,
+or transform submitted values. Diagnostics have bounded JSON Pointer paths,
+uppercase codes, and safe messages. The platform returns at most 32 errors;
+submitted secrets and sensitive dynamic keys never belong in diagnostics.
+
+Composition registers startup as `(capability, driverId, installation, startup)`.
+An implementation can also export `configurationContributions`, with a stable
+`scope` and `key` on each definition. `startup` is reserved. Unknown scopes,
+duplicate identities, unsupported schemas, and missing resource-owner bindings
+fail registration. The current runtime binding is Sandbox
+`(agent, sandbox-network-policy)`; its owner is
+[SandboxPolicy](../sandbox-policies.md). The Configuration Driver still owns
+native configuration rendering. The registry introduces no persistence layer.
+
+Installation administrators can inspect schemas in **Settings**, or call
+`GET /installation/driver-configurations`. This returns contextual descriptors
+without startup values, validators, or mutation actions. Agent discovery uses
+`GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`; the exact
+Agent and contribution owner's read permissions determine the returned sections.
+Owner bindings supply same-origin actions and availability. Actions always
+reauthorize; discovery is not an authorization capability.
 
 ## Package identity and factory exports
 
@@ -143,8 +242,7 @@ releases, and the only way to read a detected format without running the file
 is Node's process-lifetime module hooks. Node itself treats the shape as a
 mistake: outside `node_modules` it warns about such a file and asks for
 `"type": "module"`. To fix a refusal, add `"type": "module"` to the
-`package.json` it names, or rename the entry to `.mjs`. See the
-[breaking-change notices](../../guides/deploy/breaking-changes.md).
+`package.json` it names, or rename the entry to `.mjs`.
 
 The entry point exports the existing Driver contract, not a separate plugin
 manifest or public plugin SDK. The controller validates its closed JSON Schema
@@ -159,7 +257,10 @@ export const configurationSchema = {
 };
 
 export function validateConfiguration(configuration) {
-  // Reject options that violate this Driver's semantic requirements.
+  // Shape is already checked. Return only semantic errors, never submitted values.
+  return configuration.endpoint.startsWith("https://")
+    ? []
+    : [{ path: "/endpoint", code: "INVALID_VALUE", message: "Use an HTTPS endpoint." }];
 }
 
 export function createDriver({

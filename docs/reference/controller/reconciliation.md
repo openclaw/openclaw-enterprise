@@ -39,15 +39,15 @@ implementation and its documented infrastructure.
 
 Stopping an Agent sets its desired runtime state to `stopped` and queues an
 exact-Agent `stopped` target. The worker reauthorizes the original actor, stops
-the current revision, and clears the active pointer only if it still identifies
-that revision. Revision history, credentials, and persistent state remain; a
-later deployment starts a new revision.
+the selected version, and clears `activeRevisionId` only if it still identifies
+that version. Version history, credentials, and persistent state remain; a
+later deployment starts a new version.
 
 Deleting an Agent sets its lifecycle status to `deleting`, sets desired runtime
 state to `stopped`, and queues an exact-Agent `deleted` target. Synchronous Agent
 mutations reject this state. The worker reauthorizes `delete`, retires every
-revision, and removes runtime credentials before a claim-protected database
-finalizer removes the Agent, revisions, service principal, API keys, exact IAM
+version, and removes runtime credentials before a claim-protected database
+finalizer removes the Agent, Agent revisions, service principal, API keys, exact IAM
 references, and Agent work rows. The function records durable success evidence;
 an expired claim or failed external cleanup leaves the rows intact for safe
 retry. Namespace-owned Configurations and Secrets are not Agent teardown state.
@@ -60,13 +60,13 @@ validation. It snapshots the admitted document, including unresolved inline
 SecretRefs, alongside the native-selected Harness identity,
 server-approved version, explicit Agent execution mode, and Compute
 implementation. The required Agent `harnessAuth` selects either an OCC Secret
-API-key source or an issued managed ChatGPT account. The revision freezes the
+API-key source or an issued managed ChatGPT account. The version freezes the
 Secret reference and selected Driver, or the account's exact access-token
 reference and verified private Backend binding. OCC separately authorizes the
-Configuration and harness source before queueing one revision operation in the
+Configuration and harness source before queueing one version operation in the
 same transaction. The source Configuration identity and generation remain pinned even when the
 admitted copy differs. Later Configuration, account, or Agent placement changes
-never mutate an admitted revision; see [Agent references and deployment](../agents/deployment.md#revisions-and-deployment).
+never mutate a saved version; see [Agent references and deployment](../agents/deployment.md#versions-and-deployment).
 PostgreSQL enforces the exact admitted snapshot shape, so the worker trusts
 persisted structure instead of revalidating it.
 
@@ -77,24 +77,24 @@ checks the frozen harness source. API-key delivery requires exact Secret
 requires actor `read` on the exact account and matching credential/Backend
 ownership. It also checks the owning ready Namespace, stable Agent service
 principal, and approved Harness, version, mode, and Compute implementation.
-These checks use the immutable revision, not a later Agent draft. Revoked source
+These checks use the immutable version, not a later Agent draft. Revoked source
 access fails permanently with `AUTHORIZATION_DENIED`, records attributable
 deployment-denial audit evidence, and prevents Compute calls and activation.
 The [harness credential flow](../../flows/native-service-account-credential-delivery.md)
 owns the complete source-resolution sequence. Production accepts dedicated
-Codex and embedded OpenClaw. Dedicated Codex prepares its revision-specific
-workload before the Agent Service selects it. Embedded OpenClaw replaces and
+Codex and embedded OpenClaw. Dedicated Codex prepares the workload for its
+version before the Agent Service selects it. Embedded OpenClaw replaces and
 checks the shared Agent gateway during activation. The worker records the exact
-active revision, activates the Kubernetes route when applicable, and retires the
-prior revision. Its live claim remains unfinished until it atomically records
+selected version, activates the Kubernetes route when applicable, and retires the
+prior version. Its live claim remains unfinished until it atomically records
 one attributable activation audit and completes the durable operation.
-Already-active recovery repeats route activation and predecessor retirement
+Recovery for an already selected version repeats route activation and predecessor retirement
 before that audit and finalization. Kubernetes dedicated replacement stops all
 earlier runtimes before preparing the candidate and reuses the Harness-only RWO
 claim. This interrupts serving, including the gateway; a failed candidate needs
-retry or a new revision, not automatic rollback. A candidate the worker refuses,
+retry or a new version, not automatic rollback. A candidate the worker refuses,
 for example after revoked authority, is stopped before its failure is recorded,
-so it never serves in place of the stopped active revision. See the
+so it never serves in place of the stopped selected version. See the
 [exclusive replacement contract](../drivers/compute.md#production-revision-stages).
 Pod termination does not fence independent processes during node partitions or
 manual replacement.
@@ -102,21 +102,21 @@ See the
 [Harness execution topology flow](../../flows/harness-execution-topology.md) for the
 full placement, runtime, and recovery sequence.
 
-A recovered older operation never replaces a newer active revision: the worker
+A recovered older operation never replaces a newer selected version: the worker
 marks it superseded without calling Compute. A stop or deletion owns the
-revisions admitted before it was requested. PostgreSQL stamps both times on
-its own clock, so controller clock skew cannot exempt a running revision.
+versions admitted before it was requested. PostgreSQL stamps both times on
+its own clock, so controller clock skew cannot exempt a running version.
 Sibling Agents have independent
-queue lanes, while revisions for the same Agent serialize. The default
+queue lanes, while versions for the same Agent serialize. The default
 PostgreSQL-backed development Compute Driver provisions Docker Namespace resources
 but rejects harness bindings for Agent deployment; manual
 host-process debugging also needs PostgreSQL for a durable worker path. The explicitly selected
 Kubernetes driver creates a hardened Deployment and dedicated Kubernetes
-ServiceAccount for the revision's existing Agent ServicePrincipal. Its
+ServiceAccount for the version's existing Agent ServicePrincipal. Its
 audience-scoped projected token is required in production but does not
 implement ServicePrincipal token verification or exchange. The dedicated Codex
 Agent Service does not select a replacement workload until it is ready and the
-revision is active; embedded OpenClaw reuses and replaces its existing gateway.
+version is selected; embedded OpenClaw reuses and replaces its existing gateway.
 Selected SandboxDriver facets are pinned at admission and enforced by the
 selected Driver. See the [SandboxDriver contract](../drivers/sandbox.md) for
 provider-specific preparation and failure boundaries.
@@ -152,7 +152,7 @@ stateDiagram-v2
   token can publish lifecycle state, audit evidence, or completion.
 - **`succeeded`:** The exact Namespace or Agent operation completed
   successfully. Namespace transitions finalize with their audit; an Agent
-  revision first becomes active and publishes its route, then commits its
+  version is selected and its route is enabled before the worker commits its
   activation audit and queue completion together. These terminal records remain
   available for idempotency. Successful Agent deletion instead removes its work
   rows after recording lifecycle evidence because the owner no longer exists.
@@ -185,7 +185,7 @@ tenant RoleBinding, Agent image startup, a ready gateway Pod or EndpointSlice,
 or completion of Kubernetes Namespace deletion.
 
 `defer()` is a transition, not an additional queue state. It returns the work
-to `queued`, releases its claim, schedules bounded backoff, records audit
+to `queued`, releases its claim, schedules backoff up to five minutes, records audit
 evidence, and restores the attempt consumed when the work was claimed. The
 worker can observe ordinary convergence repeatedly without exhausting its
 failure budget.
@@ -193,16 +193,21 @@ failure budget.
 Actual dependency failures instead use `retry()`, which also returns work to
 `queued` but retains the consumed attempt. Once `OCC_WORKER_MAX_ATTEMPTS` is
 exhausted, the operation becomes `failed_permanent`. A Compute or Sandbox dependency
-failure that clears without a change to the revision is deferred like
+failure that clears without a change to the version is deferred like
 convergence instead: the Agent Gateway route refusing or dropping the worker's
 connection while it converges (`AGENT_GATEWAY_UNAVAILABLE`), a Kubernetes API
 request that timed out, never reached the API server, or got 429 or 5xx
 (`KUBERNETES_API_UNAVAILABLE`), an OpenShell gateway refusing new requests at
 its durable request admission limit (`SANDBOX_ADMISSION_LIMIT_REACHED`), or not
-answering a Harness status read (`SANDBOX_GATEWAY_UNAVAILABLE`). Each such
+answering while it is down or restarting (`SANDBOX_GATEWAY_UNAVAILABLE`: no
+connection, a dropped one, or a Harness status read left unanswered; an
+`UNAVAILABLE` the gateway itself sends spends the attempt budget). Each such
 pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
+When a bundled Compute Driver's cleanup after a failed preparation or activation
+fails too, the pass is decided by the preparation's or activation's own failure,
+and `worker.completed` adds `cleanupCause`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
 measured from operation creation on PostgreSQL's clock, so
 controller clock skew cannot move it. Exceeding it fails the operation with
@@ -213,21 +218,25 @@ CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures that need a new
 version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
 and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
-unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
-the revision fails it on the first attempt with its
+unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`, and a `403` on a
+private Secret write fails preparation or activation at once with
+[`KUBERNETES_SECRET_WRITE_FORBIDDEN`](../../guides/operate/troubleshooting.md#a-deployment-fails-because-kubernetes-refused-a-secret). A Sandbox Driver that cannot run
+the version fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
 `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`, and two credential sources that share
 a placeholder variable fail it the same way with
 `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`. Dispatch also fails it at once when
-the Harness credential source was withdrawn from the revision
+the Harness credential source was withdrawn from the version
 (`CREDENTIAL_WITHDRAWN`), when the Harness authentication Secret or source, or a
 listed credential source, is missing or changed since admission
-(`HARNESS_AUTH_SOURCE_UNAVAILABLE`, `CREDENTIAL_SOURCE_UNAVAILABLE`), or when the
-Installation no longer selects the revision's Credential Gateway
+(`HARNESS_AUTH_SOURCE_UNAVAILABLE`, `CREDENTIAL_SOURCE_UNAVAILABLE`), when the
+protected egress provider the Harness source was admitted with is no longer
+available (`EGRESS_PROVIDER_UNAVAILABLE`), or when the
+Installation no longer selects the version's Credential Gateway
 (`CREDENTIAL_GATEWAY_MISMATCH`) or Secret Driver (`SECRET_DRIVER_MISMATCH`). A
-revision pinned to a Compute Driver the controller no longer selects, or to a
+version pinned to a Compute Driver the controller no longer selects, or to a
 Harness version it no longer approves, fails with `COMPUTE_DRIVER_MISMATCH` or
-`HARNESS_DESCRIPTOR_MISMATCH`. A revision whose ServiceAccount Backend binding
+`HARNESS_DESCRIPTOR_MISMATCH`. A version whose ServiceAccount Backend binding
 no longer matches the Agent's Backend, or whose credential is no longer issued,
 fails with `SERVICE_ACCOUNT_BACKEND_MISMATCH`. Each status message names the fix. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
@@ -235,15 +244,15 @@ defaults and supported overrides.
 
 Terminal credential preparation also fails at once through
 [`ComputePreparationFailedError`](../drivers/compute.md#core-lifecycle-operations).
-The worker saves failure and exact revision cleanup in one transaction. Cleanup
+The worker saves failure and cleanup for that Agent revision in one transaction. Cleanup
 continues after worker restart and does not reopen the failed deployment. The
 selected Compute Driver owns the external failure condition and resource cleanup.
-It may supply bounded preparation evidence through the public contracts type;
+It may supply preparation evidence within the public type's field and item limits;
 OCC validates and persists it before deleting resources. Deployment status exposes
 cleanup separately and retains failure evidence after cleanup and restart.
 
-Replacement behavior depends on the Harness. Dedicated Codex prepares its
-revision-specific workload before the worker switches the Agent Service, but the
+Replacement behavior depends on the Harness. Dedicated Codex prepares the
+workload for its version before the worker switches the Agent Service, but the
 shared single-replica gateway can still interrupt serving during its rollout.
 Embedded OpenClaw replaces that shared gateway using Kubernetes `Recreate`: the
 predecessor can stop before the replacement passes startup authentication and
@@ -274,5 +283,5 @@ do not change Namespace status through this recovery path.
 - Current IAM policy is reloaded before each effect. Revoked access fails
   permanently without calling Compute; temporary dependency failures retry.
 - Expiring claim leases recover interrupted work. A stale worker cannot commit
-  Namespace changes, revision activation, audit evidence, or completion after
+  Namespace changes, version activation, audit evidence, or completion after
   losing its claim.

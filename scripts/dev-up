@@ -53,7 +53,9 @@ case "$development_compute_driver" in
 esac
 
 usage() {
+  # Docker Compute only; Kubernetes Compute execs occ dev up above, whose --help lists the Sandbox policy file flags.
   echo "usage: scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
+  echo "Sandbox policy files require Kubernetes Compute and a Sandbox Driver: see OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell scripts/dev-up --help" >&2
 }
 
 quote_command() {
@@ -94,11 +96,21 @@ compose_args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --key-output)
-      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+      if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
         usage_error "arguments" "--key-output requires a path"
       fi
       key_output="$2"
       shift 2
+      ;;
+    --key-output=*)
+      key_output="${1#--key-output=}"
+      if [ -z "$key_output" ]; then
+        usage_error "arguments" "--key-output requires a path"
+      fi
+      shift
+      ;;
+    --sandbox-network-policy-file | --sandbox-network-policy-ceiling-file | --sandbox-network-policy-file=* | --sandbox-network-policy-ceiling-file=*)
+      usage_error "arguments" "Sandbox policy input requires Kubernetes Compute and a Sandbox Driver"
       ;;
     --)
       shift
@@ -124,6 +136,9 @@ require_command() {
 require_command python3
 if [ ! -x "$occ_cli" ]; then
   fail "prerequisite" "OCC CLI is required at $occ_cli; run pnpm cli:build"
+fi
+if ! "$occ_cli" dev check-profile; then
+  exit 2
 fi
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up.XXXXXXXXXX")"
@@ -252,11 +267,37 @@ if [ -z "$container_engine" ] && [ "$requested_container_engine" != docker ] && 
 
     compose_file_selected=0
     if [ "${#compose_args[@]}" -gt 0 ]; then
+      podman_compose_args=()
+      expect_file_value=0
       for arg in "${compose_args[@]}"; do
-        case "$arg" in
-          -f | --file | --file=*) compose_file_selected=1 ;;
-        esac
+        if [ "$expect_file_value" -eq 1 ]; then
+          [ -n "$arg" ] || fail "configuration" "--file requires a Compose file path"
+          expect_file_value=0
+        else
+          case "$arg" in
+            -f | --file)
+              compose_file_selected=1
+              expect_file_value=1
+              ;;
+            -f?*)
+              # Podman can read an "h" in -fFILE as help. Keep the value attached
+              # to --file so the provider also accepts filenames starting with "-".
+              compose_file_selected=1
+              file_value="${arg#-f}"
+              file_value="${file_value#=}"
+              [ -n "$file_value" ] || fail "configuration" "--file requires a Compose file path"
+              arg="--file=$file_value"
+              ;;
+            --file=*)
+              compose_file_selected=1
+              [ -n "${arg#--file=}" ] || fail "configuration" "--file requires a Compose file path"
+              ;;
+          esac
+        fi
+        podman_compose_args+=("$arg")
       done
+      [ "$expect_file_value" -eq 0 ] || fail "configuration" "--file requires a Compose file path"
+      compose_args=("${podman_compose_args[@]}")
     fi
     if [ "$compose_file_selected" -eq 0 ]; then
       compose_file_args=()
@@ -423,8 +464,37 @@ runtime_images="$(sed -n '3,$p' "$compose_analysis")"
 if [ "$runtime_mode" = "default" ]; then
   export OCC_DOCKER_RUNTIME_IMAGE="$DEFAULT_RUNTIME_IMAGE"
   if ! engine image inspect "$DEFAULT_RUNTIME_IMAGE" >/dev/null 2>&1; then
-    if ! engine build -f deploy/runtime/Dockerfile --tag "$DEFAULT_RUNTIME_IMAGE" .; then
-      fail "runtime image" "could not build $DEFAULT_RUNTIME_IMAGE" "${engine_command[@]}" build -f deploy/runtime/Dockerfile --tag "$DEFAULT_RUNTIME_IMAGE" .
+    if ! runtime_source="$(python3 - deploy/runtime/openclaw-source.json <<'PY'
+import datetime
+import json
+import re
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as source_file:
+        source = json.load(source_file)
+    if not isinstance(source, dict) or set(source) != {"commit", "sourceArchiveSha256", "buildTimestamp"}:
+        raise ValueError("require exactly commit, sourceArchiveSha256, and buildTimestamp")
+    for field, pattern in (("commit", r"[a-f0-9]{40}"), ("sourceArchiveSha256", r"[a-f0-9]{64}"),
+                           ("buildTimestamp", r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")):
+        if not isinstance(source[field], str) or not re.fullmatch(pattern, source[field]):
+            raise ValueError(f"invalid {field}")
+    datetime.datetime.strptime(source["buildTimestamp"], "%Y-%m-%dT%H:%M:%SZ")
+    print(source["commit"], source["sourceArchiveSha256"], source["buildTimestamp"])
+except (OSError, ValueError) as error:
+    sys.exit(f"{sys.argv[1]}: {error}")
+PY
+    )"; then
+      fail "runtime image" "cannot read a valid deploy/runtime/openclaw-source.json"
+    fi
+    read -r openclaw_commit openclaw_archive_sha256 openclaw_build_timestamp <<<"$runtime_source"
+    runtime_build_args=(build -f deploy/runtime/Dockerfile
+      --build-arg "OPENCLAW_COMMIT=$openclaw_commit"
+      --build-arg "OPENCLAW_SOURCE_SHA256=$openclaw_archive_sha256"
+      --build-arg "OPENCLAW_BUILD_TIMESTAMP=$openclaw_build_timestamp"
+      --tag "$DEFAULT_RUNTIME_IMAGE" .)
+    if ! engine "${runtime_build_args[@]}"; then
+      fail "runtime image" "could not build $DEFAULT_RUNTIME_IMAGE" "${engine_command[@]}" "${runtime_build_args[@]}"
     fi
   fi
 elif [ "$runtime_mode" = "custom" ]; then

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-17
-last_updated_session: authoring-run/629826fb-b521-49bb-865a-dbc1b5c975a5
+updated: 2026-10-28
+last_updated_session: authoring-run/b0d7dda7-f5c2-4314-a2ae-bd0c8cdfbd6f
 ---
 
 # Agent Plugin Deployment Flow
@@ -10,14 +10,14 @@ last_updated_session: authoring-run/629826fb-b521-49bb-865a-dbc1b5c975a5
 
 An authorized caller saves plugin selections, then deploys. OCC validates and
 snapshots policy, selections, and Driver. Startup resolves metadata, translates
-policy, and prepares the revision. Revision selection may precede cutover; the
+policy, and prepares the version. Version selection may precede cutover; the
 Harness owns tools and approvals.
 
 ## Entry Points
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-- Trigger: Agent create/update with `plugins`, including a Console new-revision
+- Trigger: Agent create/update with `plugins`, including a Console new-version
   plugin save, followed by Agent deployment.
 - Assumptions: exact Agent permission, valid selections, compatible trusted
   PluginDriver, and deployment prerequisites.
@@ -29,26 +29,21 @@ Harness owns tools and approvals.
 
 ```mermaid
 graph TD
-  D0["Request discovery"] -->|Create Agent| D1["Authorize Agent create"]
-  D0 -->|Existing Agent| E0["Authorize Agent read/update"]
-  E0 -->|curated| D6
-  E0 -->|hosted| E1["Resolve bound codex_pat Secret"]
-  E1 --> E2["Authorize caller and Agent Secret operate"]
-  E2 --> D6
-  D1 -->|Secret reference| D2["Authorize exact Secret operate"]
-  D2 --> D6["Check PluginDriver support"]
-  D1 -->|transient token or no credential| D6
-  D6 -->|unsupported| D7["Return unavailable capability"]
-  D6 -->|Secret reference| D3["Read owned current value"]
-  D6 -->|transient token or no credential| D4["Call selected PluginDriver"]
-  D3 -->|Create Agent| E4["Recheck Agent create and Secret operate"]
-  E4 --> D4
-  D3 -->|Existing Agent| E3["Recheck grants and binding"]
-  E3 --> D4
+  D0["Request discovery"] -->|Create| D1["Authorize Agent create"]
+  D0 -->|Saved| E0["Authorize Agent read/update"]
+  E0 -->|no credential| D6
+  E0 -->|bound| E1["Caller and Agent operate"] --> D6
+  E0 -->|credentialSource| D2
+  D1 -->|stored source| D2["Caller source operate"] --> D6["Check PluginDriver support"]
+  D1 -->|token or none| D6
+  D6 -->|unsupported| D7["Unsupported"]
+  D6 -->|token or none| D4["Call PluginDriver"]
+  D6 -->|stored| D3["Use stored credential"] --> E3["Recheck source authority"] --> D4
+  D4 -->|disconnect| D8["Cancel hosted reads"]
   D4 --> D5["Return safe catalog metadata"]
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
-  S --> B["Revalidate and snapshot revision"]
+  S --> B["Revalidate and snapshot version"]
   B --> C["Validate native metadata; grant selected plugins"]
   C --> D["Attempt selected installs"]
   D -->|install rejection or auth required| E["Disable failed selections; collect warnings"]
@@ -58,7 +53,10 @@ graph TD
   F -->|invalid or unsafe| X["Keep runtime unready"]
   F -->|verified| G["Publish current startup status"]
   G --> H["Apply matching gateway configuration"]
-  H -->|ready| I["Compute returns readiness and warnings"]
+  H -->|dedicated| P["Apply Gateway tool policy"]
+  P -->|incompatible| X
+  P -->|valid| I
+  H -->|embedded| I["Compute returns readiness and warnings"]
   I --> J["Worker completes deployment under live claim"]
   G -->|runtime restart| C
 ```
@@ -68,39 +66,48 @@ graph TD
 ### Credential-scoped discovery
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) accepts
-transient PATs, same-Namespace Secrets/CredentialSources, or credential-free access.
-OCC checks Agent `create` and source `operate` before credential access and the
-Driver call. Cross-Namespace references return `400 INVALID_REQUEST`; missing
-sources return `404`. Unsupported discovery reads no credential.
+transient PATs, same-Namespace Secrets/CredentialSources, or no credential.
+OCC checks Agent `create`. For stored sources, it checks source `operate` and
+rechecks both before Driver use. Cross-Namespace references return
+`400 INVALID_REQUEST`. After caller authorization, missing Secrets return `404`.
+Missing or non-ready explicitly selected CredentialSources return `409 RESOURCE_CONFLICT`.
+Unsupported discovery reads no credential.
 
-Existing-Agent discovery requires active Agent `read`/`update`. Hosted discovery
-uses a bound PAT through [`SecretDriver.withValue`](../reference/drivers/secret.md)
-or Credential Gateway `withSourceToken`, which may refresh before returning an
-access token and account metadata. The callback rechecks binding and
-caller/Agent source `operate`. Stored sources outlive
-[login sessions](credential-source-lifecycle.md#device-authorization-and-configuration).
-Curated discovery needs no credential. Unavailable or unauthorized sources fail
-before discovery. Reads may precede rotation; discovery persists no state or credentials.
+Saved-Agent discovery requires an active dedicated Agent and caller `read` and
+`update`. It lists only plugins that Agent save admits for this Agent; details for
+others return the save refusal. Bound Secrets use [`SecretDriver.withValue`](../reference/drivers/secret.md).
+Bound and explicitly supplied CredentialSources use Credential Gateway `withSourceToken`,
+which may refresh tokens and return account metadata. Bound credential callbacks
+recheck binding and caller and Agent `operate` grants. Missing or non-ready
+Agent-bound CredentialSources return `404` at binding lookup.
+For a caller-specified `credentialSource`, OCC rechecks Agent scope and caller
+source `operate` before the Driver call.
+Stored sources outlive [login sessions](credential-source-lifecycle.md#device-authorization-and-configuration).
+Curated reads need no credential. Source failures stop discovery. Reads may
+precede rotation. Discovery stores no catalog results. Authorization denials
+emit `authorization_denial` audit events.
 
 The [Codex Driver](../../apps/controller/src/drivers/plugin/index.ts) hydrates
 identity, searches `q`, and pages GLOBAL entries with opaque cursors.
 [Console discovery](../../apps/controller/src/console/agents/plugin-discovery.mjs)
-prefetches Create Agent and editable Agent Plugin catalogs. Credential changes
-clear results, preserving selections. Search invalidates stale responses before
-its [delay](../reference/drivers/plugin-bundled.md#selection-and-catalogs);
-Enter/paging bypass it. Closing, configured view, credential changes and
-cancellation abort requests. Tools (`null`: unknown) load before selection;
-unsupported releases stay unavailable. Curated catalogs verify neither tools nor account access.
+prefetches catalogs on create or edit. Closing the picker or changing views cancels reads.
+Changing credentials clears results and preserves selections.
+See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
+for search, paging and tool loading.
 
-Bounded hosted reads forbid redirects. Responses are `no-store`, reject credential
-echoes, and omit upstream errors/artifacts and Driver links/setup guidance.
-Connections stay unverified. HTTPS logos omit referrers; initials are the default.
+Disconnects during IAM lookup abort the Driver signal before hosted reads start.
+Hosted reads forbid redirects, with a 15-second timeout and 4 MiB response limit.
+Responses use `Cache-Control: no-store`, reject credential echoes, and omit raw
+upstream errors and private artifact URLs. HTTP retains the hosted Driver’s safe
+setup guidance, links, public HTTPS presentation URLs, and availability help. See
+[catalog metadata](../reference/drivers/plugin.md#selection-and-catalogs).
+Connections remain unverified. HTTPS logos omit referrers. Initials are the default.
 
 Optional `CodexPluginDriver.listCatalog` uses
 [`NativeCodexPluginCatalogReader`](../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts)
 with a configured executable and Codex home. It reads app-server JSON-RPC stdout.
 Invalid JSON-RPC envelopes or `plugin/list` results reject with `NotImplementedError`;
-bounded teardown stops the child. HTTP discovery does not call this reader.
+teardown sends `SIGTERM`, then `SIGKILL` after one second if needed. HTTP discovery does not call this reader.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -110,7 +117,11 @@ HTTP contracts validate input before [OpenClawController](../../packages/occ/src
 checks the exact Namespace and Agent. Reads require Agent `read`; create/PATCH
 stores the `plugins` map. Shared validators check the nested selection shape.
 `OpenClawController.validatePluginPolicies` calls the selected Driver's
-`validatePolicies` before Agent create/update and provisioning writes. Unsupported
+`validatePolicies` before Agent create/update and provisioning writes. Its optional
+`validateAgentConfiguration` checks selections against Configuration values here and at
+deployment. The OpenClaw Driver refuses a selection whose tools `tools.deny`, the sole
+`agents.entries` entry's list, the primary provider's `byProvider` lists, or these together block,
+any selection beside an entry denying `*`, or one a sole entry's `alsoAllow` hides under a profile. Unsupported
 controls, reviewer scopes, and combinations return `400 INVALID_REQUEST`;
 a missing selected Driver returns `501 NOT_IMPLEMENTED`. Validation is static: native app mapping,
 authentication, and release/tool metadata remain startup checks. Agent mutations store desired state and audit evidence atomically without changing
@@ -125,15 +136,17 @@ Installation uses `GET /installation`; Agent editors use
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
 Deployment revalidates selections and Configuration, records the Driver and
-policy-only plugin map in AgentRevision, and queues it. Native app mapping,
+policy-only plugin map in an Agent revision, and queues it. Native app mapping,
 release metadata, and configuration resolve later.
+
+Google Workspace binds an attached Agent credential to a pinned release. The OpenClaw Gateway loads the skill. At deployment, the Sandbox Driver binds the credential’s host, path and scopes. When the worker runs `gog`, its OpenShell supervisor asks the execution cluster’s shared guard to check the actual request against that binding and the release’s operation map. OpenShell injects the bearer after approval. Withdrawal detaches that source. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 ### 3. Deliver requested state through Compute preparation
 
 `apps/controller/src/drivers/compute/plugin-runtime.ts:pluginRuntimeSpecForRevision`
 
 Compute validates admitted state, Driver, and Harness. Kubernetes projects the
-nonsecret request; Docker uses bounded environment delivery. For Codex, Compute
+nonsecret request; Docker uses environment delivery with a 64 KiB size limit. For Codex, Compute
 writes the policy the Gateway runs into native `approval_policy` before startup
 validation: the configured `appServer.approvalPolicy`, with `on-failure` as
 `on-request`. Omission preserves native defaults; incompatible explicit policies
@@ -143,7 +156,7 @@ PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
 check cannot see. Configuration save and Compute Drivers refuse policies the
 Gateway refuses at load, such as `untrusted`.
 
-The Kubernetes ConfigMap is immutable and per revision. A revision prepared
+The Kubernetes ConfigMap is immutable and per version. A version prepared
 by an earlier controller keeps its earlier `config.toml` (without
 `[plugins._default]` (#508), without `approval_policy` (#1995), or with
 `on-failure` as written) until the Agent is deployed again; `KubernetesComputeDriver.reconcilePluginRuntimeConfigMap` refuses any
@@ -156,7 +169,7 @@ policies before host effects.
 Initial embedded Kubernetes gateway preparation applies exact-Agent HTTPS
 egress before installation. For existing gateways, `prepareRevision` avoids
 duplicate Agent database access. `activateRevision` uses `Recreate`, stopping
-the old gateway before installation. Revision files stay private and the native
+the old gateway before installation. Version files stay private and the native
 registry stays in the Agent-owned database. Docker keeps native state in the
 container's private temporary home.
 
@@ -165,34 +178,40 @@ container's private temporary home.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:installOpenClawPlugins`
 
 Embedded OpenClaw validates selections against its bundled catalog and policy.
-Grants enter nonempty `tools.allow`, otherwise `tools.alsoAllow`, preserving denies and profiles. A tool's `enabled`
-override precedes `toolDefaults.enabled`; disabled tools emit native denies.
-Master disable and operator denies prevail; `provider_default` and `none` add no
-Diffs review step. Revision-private configuration uses `--pin --force --no-enable`,
-preserving enablement and allow/deny lists. Preparation refreshes the registry
-and verifies admitted configuration; the pinned runtime release lacks this flag.
-Native inspection verifies plugin ID, package name, runtime/install version,
-recorded integrity, and the runtime source's containment in the install path.
-Failure prevents gateway readiness. Confirmed install rejection disables the
-optional selection and removes its managed tool allowance before startup.
+Grants enter nonempty `tools.allow`, otherwise `tools.alsoAllow`; denies and profiles
+remain. Tool `enabled` overrides `toolDefaults.enabled`; disabled tools emit denies.
+Master disable and operator denies prevail. Diffs adds no review for
+`provider_default` or `none`. Version-private installs use `--pin --force --no-enable`,
+preserving enablement and tool policy. Preparation refreshes the registry and verifies
+configuration, plugin/package identity, versions, integrity and source containment
+within the install path. Verification failures keep the Gateway unready. Confirmed
+install rejection disables the optional selection and removes its tool allowance
+before startup.
 
-Dedicated Codex bootstraps isolated `CODEX_HOME` with
-`apps._default.enabled:false` and `plugins._default.enabled:false`.
-Nonempty selections enable apps, plugins, and remote plugins. The bridge sets
-`codexPlugins.enabled:true`, `allow_all_plugins:false`, and per-selection entries;
-disabled entries cannot execute.
+Dedicated launchers capture the [Gateway tool policy](../reference/configuration.md#gateway-tool-policy)
+from the saved Agent revision before plugin grants. Startup and peer respawn
+enforce it; failures keep the Gateway unready. Changes require deployment replacement
+after affected old work ends. Human permissions stay unchanged. An embedded Gateway
+applies a policy that the Configuration sets without this composition, so Compute checks
+it at Configuration save and deployment admission with the same rules
+(`gateway-tool-policy.ts:validateGatewayToolPolicy`), not on maintenance passes.
 
-After `plugin/list`, `runtime-entrypoints.ts:readCodexPluginDetails` reads up to
-four selections concurrently, preserving selection order; batches drain before retries. Install
-and configuration writes stay sequential; post-install reads use the same
-batching before final policy verification.
-`codexRuntimeArtifact` uses concrete `detail.apps`, excluding `appTemplates`.
-`codexInstallPlan` validates policy and [component support](../reference/drivers/plugin-bundled.md)
-before granting only the selected plugin IDs through `config/batchWrite`, keeping
-the plugin default off. The plugin grants precede `plugin/install` so native
-installation can report required authentication; app/tool grants follow later.
-Codex loads bundled skills; selected-only activation requires the compatible
-runtime described below.
+Dedicated Codex uses isolated `CODEX_HOME`, disabling app/plugin defaults.
+Selections enable apps, plugins and remote plugins; disabled entries cannot execute.
+The [native policy mappings](../reference/drivers/plugin-bundled.md#native-mappings-and-limits)
+describe the generated bridge.
+
+<!-- Internal preparation threads one explicit RPC caller through these reads,
+writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
+
+After `plugin/list`, `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
+selections concurrently before and after installs. Batches preserve order and drain
+before retries and final verification; writes stay sequential.
+`codexRuntimeArtifact` uses `detail.apps`, excluding `appTemplates`.
+`codexInstallPlan` validates policy and [component support](../reference/drivers/plugin-bundled.md),
+then grants selected plugin IDs through `config/batchWrite` before `plugin/install`
+can report authentication requirements. App/tool grants follow; plugin defaults stay
+off. Bundled skills need the compatible runtime below for selected-only activation.
 Install rejections or missing app authentication warn. Explicit tool policies
 require `mcpServerStatus/list`'s `codex_apps` inventory; `codexAppToolSettings`
 binds catalog action IDs through `_meta._codex_apps.resource_uri`. Native IDs
@@ -200,14 +219,13 @@ work. Unknown, unowned, ambiguous, or duplicate IDs fail startup.
 
 `codexRuntimeArtifact` applies the [native policy mappings](../reference/drivers/plugin-bundled.md).
 
-After installation, startup rechecks catalog identity, version, apps, and reported
-components before granting final app/tool policy; `plugin/read` cannot inspect bundles.
-`writeCodexPluginConfiguration` replaces the owned plugin/app tables, enabling
-successful enabled selections and disabling failed/disabled plugins. It reads
-merged workspace settings, disables unselected apps, and writes inherited
-tool/account approvals; table replacement leaves lower-layer descendants.
-Unspecified tool enablement stays unset; native requirements remain enforced.
-Failed-only apps are disabled and disabled selections skip installation/status.
+After installation, startup rechecks catalog identity, version, apps and components
+before final app/tool grants; `plugin/read` cannot inspect bundles.
+`writeCodexPluginConfiguration` replaces owned plugin/app tables, enables successful
+selections, disables failed/disabled plugins and unselected apps, and writes
+inherited tool/account approvals from merged workspace settings. Lower-layer
+descendants remain. Unspecified enablement stays unset; requirements still apply.
+Failed-only apps stay disabled; disabled selections skip installation/status.
 
 Workspace-aware readback rejects policy conflicts before readiness. Disabled apps may
 retain inherited fields. Categories resolve app → global → native `true`; equivalent
@@ -221,14 +239,13 @@ without its provider prefix, to the app-server after the authentication probe
 succeeds. Native configuration readback therefore exposes the model used for
 startup policy validation.
 
-`runtime-entrypoints.ts:verifyCodexReviewerConfiguration` checks explicit app/link
-reviewers and `configRequirements/read`, rejecting forbidden reviewers, incompatible
-automatic-review settings, or conflicting model requirements. Startup checks do not
-cover later workspace/session/model changes or strict review. Codex 0.156 readback
-omits managed app/tool requirements applied during execution; native effective-policy
-introspection remains required. See [remaining proof](../testing/plugins.md#current-proof-notes).
-Codex owns cache integrity and health. Older binaries may ignore echoed plugin
-defaults; see [runtime prerequisites](../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
+`runtime-entrypoints.ts:verifyCodexReviewerConfiguration` checks app/link reviewers
+and `configRequirements/read`. Forbidden reviewers, incompatible automatic-review
+settings or conflicting model requirements block startup. Checks exclude later
+workspace/session/model changes and strict review. Codex 0.156 readback omits
+execution-time managed app/tool requirements; [effective-policy proof](../testing/plugins.md#current-proof-notes)
+remains necessary. Codex owns cache integrity and health;
+[older binaries](../reference/drivers/plugin-bundled.md#native-mappings-and-limits) may ignore plugin defaults.
 
 `runtime-entrypoints.ts:disableCodexSelectionsWithoutChatGptLogin` disables enabled
 selections and app/plugin features for API-key logins when best-effort preparation
@@ -244,7 +261,7 @@ behavior. Provider-owned Harnesses keep their existing startup path.
 
 Kubernetes Compute streams private startup status with a 65,536-byte limit.
 Overflow cancels the response without retry, even for a 404/503; within the limit
-those codes mean not serving. Readiness verifies workload, revision, startup
+those codes mean not serving. Readiness verifies workload, version, startup
 instance, selection keys and warnings. Docker Codex healthchecks fail on
 interrupted status bodies, preserving the transport code or original reason.
 
@@ -255,24 +272,26 @@ credentials. Startup links `/home/node/.openclaw/plugin-skills` to
 
 Gateway blocks failed bridges before serving and retry during turns. Startup
 changes refresh effective configuration; untrusted status cannot establish
-readiness or change revision selections.
+readiness or change version selections.
 
 Compute installs status NetworkPolicies before the first dedicated gateway and
 creates it only when the Agent and plugin status are ready and its Service selects
-the revision. Existing gateways and full runtime policies retain their activation
+the version. Existing gateways and full runtime policies retain their activation
 boundary.
 
 The Agent and gateway derive an app-server credential from the transport Secret,
-revision ID, and Agent startup ID. The gateway receives it after matching status
+Agent revision ID, and Agent startup ID. The gateway receives it after matching status
 and rendering exclusions. After a Harness restart, the old credential cannot open
 a new authenticated app-server WebSocket to the replacement Harness. It does not
 revoke access to a still-running old Harness or an established connection. For a
 changed peer, the supervisor publishes non-ready, restarts only OpenClaw and
 rechecks peer startup, Pod, successes and failures after it serves. Changed or
 unavailable peers trigger container restart.
+The supervisor repeats a stop signal that OpenClaw ignored during its own in-place
+restart, seen as readiness returning after its server closed.
 For writable native-admin configuration, recovery reads the bridge baseline from
 the read-only managed snapshot. A Pod-local record binds the last and pending
-generated bridges to the revision and snapshot hash before configuration writes.
+generated bridges to the version and snapshot hash before configuration writes.
 Process and same-Pod container restarts rebuild only a matching generated bridge.
 Other native edits survive; conflicting bridge edits retain the existing refusal.
 An unreadable or mismatched record holds startup unready, reporting runtime
@@ -283,7 +302,9 @@ state asynchronously, so the signal alone is not a per-request traffic fence.
 If OpenClaw exits while the supervisor waits for its peer, the wrapper exits
 for container recovery.
 
-### 5. Complete revision reconciliation
+<a id="5-complete-revision-reconciliation" class="anchor-alias"></a>
+
+### 5. Complete version reconciliation
 
 `apps/controller/src/worker.ts:finalizeRevision`
 
@@ -291,7 +312,7 @@ Before the worker commits `activeRevisionId`, preparation failure leaves the
 prior pointer unchanged. After commit, activation/finalization failure retains
 the candidate pointer and records `REVISION_FINALIZATION_INCOMPLETE` for retry.
 Embedded Kubernetes replacement runs after commit; the old gateway may already
-be stopped. The previous revision remains stored, without pointer rollback or
+be stopped. The previous version remains stored, without pointer rollback or
 an availability guarantee during cutover. See the [controller worker flow](controller-worker.md).
 
 Successful completion reports `REVISION_ACTIVATED` or `REVISION_ALREADY_ACTIVE`.
@@ -306,12 +327,11 @@ shutdown, or permanent failure latch exists. Warnings describe deployment comple
 
 ## Debugging and Verification
 
-The bounded OpenClaw model probe samples one cumulative CPU-wait counter: PSI
-when initially available, otherwise throttled time. Missing, nonfinite or reset
-samples leave wait unavailable, without establishing starvation or changing the
-deadline.
+The OpenClaw model probe's CPU-based deadline cannot exceed 600 seconds. CPU wait is the larger PSI or throttled
+delta; throttled time is capped by throttled periods. Missing, nonfinite or reset samples give no delta and cannot
+establish starvation.
 
-- Compare `Agent.plugins` with the active revision snapshot and deployment status.
+- Compare `Agent.plugins` with the selected version snapshot and deployment status.
   A successful Agent write alone is not runtime installation evidence.
 - Invalid or unsupported policy leaves Agent desired state unchanged. Catalog
   membership, authenticated metadata, ownership, and effective native configuration
@@ -348,38 +368,8 @@ deadline.
 
 ## Changelog
 
-- 2026-10-17 06:05: Preserve OAuth discovery changes while integrating the native reader fix. (authoring-run/629826fb-b521-49bb-865a-dbc1b5c975a5 - 23965d64cc2824f0c5a2b5d704f767fead13f11b)
+- 2026-10-28 22:10: Move Google request checks to the shared execution-cluster guard. (authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106 - ce4688a9)
 
-- 2026-10-17 00:10: Contain non-object native catalog envelopes in the discovery error path. (authoring-run/3d8efdc8-6da6-4cf9-99f7-adebd5e5649d - 42fb0a90337209e28318765c1b537bc4f3623506)
-- 2026-10-15 22:26: Reconcile main and OpenShell OAuth in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
-
-- 2026-10-15 04:39: Grant read-only access to bundled Codex system skills. (authoring-run/97a67c3a-0aaa-4d59-bccf-19183079b169 - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
-
-- 2026-10-14 12:23: Document runtime-status streaming limits and oversized error responses. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
-
-- 2026-10-14 17:46: Preserve Docker Codex readiness reasons and transport codes when a loopback status response is interrupted. (issue-2403 - 944068b35b5a9bd86a3b1cf7361038a12b3de71a)
-
-- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
-
-- 2026-10-10 09:00: Render `on-failure` as the Gateway's `on-request`; Compute refuses `untrusted`, and the Codex PluginDriver an automatic reviewer without an explicit policy. (fix-987-988)
-
-- 2026-10-10 04:49: Preserve writable native configuration during Harness peer recovery and same-Pod container restarts. (codex/thirty-compute-07-oct10 - 8e5a06ce)
-
-- 2026-10-10 04:10: Check the Codex automatic reviewer policy at Agent create and update too. (fix-994-995)
-
-- 2026-10-10 04:00: Hold an unusable writable-configuration peer bridge record unready with its file and remedy named. (fix-994-995)
-
-- 2026-10-10 00:30: Keep the earlier Codex `config.toml` of revisions prepared before an upgrade. (fix-982)
-
-- 2026-10-09 15:02: Preserve the configured Codex session approval policy during startup. (authoring-run/72c276e8-6db5-44e5-aac1-f9e3fdc34ff2 - 504bf89a0707b66e1612d26e3d67ed6f6b16232f)
-
-- 2026-10-09 17:01: Clarify that CredentialGateway retrieval may refresh before authorized plugin discovery in the accompanying change. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 4f902e2ab7738568fc8bb278296e54255355b8b7)
-
-- 2026-10-08 22:00: Integrate validated plugin default-off grants before native install, with final app-policy verification and skill-only selections. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - 65911984b3f6d9ee398aed913a0b8dd08e2ae094)
-
-- 2026-10-07 17:42: Replace login-bundle discovery with warm CredentialSource token callbacks. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
-- 2026-10-07 19:30: Pass the admitted model to native Codex before reviewer validation. (authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02 - b1be0e0602b9db1035a689ca2a4ac4982f6d0b3b)
-
-- 2026-09-30 13:32: Clarify readiness and routing propagation. (codex/01a0b0e4-839a-71b3-9ec1-3b1000b5d06a - a0ca6376)
+- 2026-10-28 20:30: Trace independent credential attachment, Google request authorization and recovery after withdrawal. (authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded - dbe0d78a)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

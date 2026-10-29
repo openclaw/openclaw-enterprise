@@ -1,6 +1,6 @@
 ---
 created: 2026-09-21
-updated: 2026-09-30
+updated: 2026-10-25
 last_updated_session: authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584
 ---
 
@@ -63,7 +63,7 @@ hosted bootstrap or subsequent release has succeeded.
 
 `scripts/ci/container-bootstrap.mjs:main` reuses
 `scripts/ci/container-release.mjs:verifyMainSource`, `verifyCi`, and
-`verifyEnvironment`. Source equals the trusted main workflow revision and
+`verifyEnvironment`. Source equals the trusted main workflow source commit and
 checkout. The repository is public, exact-source main-push CI succeeds, and the
 environment disables admin bypass and permits only branch `main`. Invalid context fails before a registry write.
 
@@ -79,7 +79,7 @@ only the non-sensitive marker attempt. Authorization and other API errors fail.
 ### 2. Build and transfer only marker bytes
 
 `scripts/ci/container-bootstrap.mjs:main` creates a temporary context with a
-scratch Dockerfile and fixed text marker. Repository source and revision labels
+scratch Dockerfile and fixed text marker. Repository source and source commit labels
 link the image to Enterprise. Docker exports `linux/amd64` OCI bytes without
 copying the checkout, fetching a base image, or receiving registry credentials.
 Skopeo authenticates using the workflow token over stdin and a temporary auth file.
@@ -117,8 +117,10 @@ permission, then uses the same main-only environment and concurrency lock as
 publication. `scripts/ci/container-resume.mjs:verifyPreparation` checks the
 current recovery workflow's main-push CI separately from the original image
 source. The original producer must be the trusted publication workflow on main,
-completed at the unchanged selected attempt, with successful validation and both
-prepare/smoke jobs. Exactly named, nonexpired artifacts must belong to that run
+completed at the unchanged selected attempt, with successful validation, all four
+native platform jobs and both image assembly jobs on the original source SHA. A
+complete older run that prepared each image in one job is still accepted. Exactly
+named, nonexpired artifacts must belong to that run
 and source; the workflow downloads their validated IDs with digest checks.
 
 `scripts/ci/container-resume.mjs:resume` preserves the producer identity in each
@@ -130,7 +132,7 @@ matching existing source tag is inspected remotely and left untouched, even if
 package metadata has not caught up. Only the registry's explicit manifest-unknown
 response permits copying an unlisted tag; authorization and transport failures
 stop recovery. A conflicting tag or remote digest fails.
-Metadata GET transport failures are bounded and report the endpoint. No archive
+Metadata GET requests use a 30-second timeout per attempt and report the endpoint if transport retries fail. No archive
 is rebuilt and no original seal is rewritten.
 
 Only after both remote digests match does `resume` write the recovery receipt,
@@ -169,6 +171,8 @@ without deleting the original archives or rerunning their producer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-25: Recovery requires validation, four native platform jobs and two image assemblies, matching the release guide after #3654. (finding 2490)
 
 - 2026-09-30 11:18: Record the bootstrap-only private marker exception while requiring public packages before source images or the chart publish. (authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584 - 76e9de599a1c5b1319af4f9003f86ecbf53aa9ec)
 

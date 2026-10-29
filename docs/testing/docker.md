@@ -4,8 +4,8 @@
 
 Run Compose startup, container image, and Helm checks. Use [Kubernetes](kubernetes.md)
 for an authenticated Agent journey: the Docker Compute Driver rejects Agent
-harness authentication bindings, so the retained real Agent model and TUI tests
-fail at admission.
+harness authentication bindings, so no Docker test deploys an Agent or makes a
+model call.
 
 ## Verify Compose startup
 
@@ -14,7 +14,7 @@ Compose supports control-plane startup and Namespace operations.
 Follow the [quickstart](../guides/quickstart.md), or run the host/startup cases:
 
 ```sh
-node --test tests/integration/dev-up.test.mjs
+node --test tests/integration/dev-up-compose.test.mjs
 ```
 
 On macOS, follow the Podman prerequisite in the [startup flow](../flows/docker-compose-development/startup.md).
@@ -62,13 +62,17 @@ seconds and does not prove provider compatibility.
 
 ## Docker Compose development test environment
 
-`tests/integration/docker-compute-real.test.mjs` retains real-runtime scenarios
-for future Driver work; `pnpm podman:test` selects Podman. Selected Agent cases
-currently fail at admission; unselected cases skip. The inputs are
+`tests/integration/docker-compute-real.test.mjs` starts the Compose stack and
+checks the bootstrap service key, API authentication denials, Namespace networks
+and empty-Namespace deletion. It also checks that OCC refuses a Harness
+authentication binding and an Agent deployment without one (409). Model turns
+return when Docker Compute supports Harness authentication, a Compute Driver
+contract change. The workspace setup cases call the Driver directly.
+`pnpm podman:test` selects Podman; unselected cases skip. The inputs are
 `OCC_TEST_DOCKER_COMPUTE_REAL` or `OCC_TEST_PODMAN_COMPUTE_REAL`,
 `OCC_DOCKER_GATEWAY_IMAGE`, `OCC_DOCKER_AGENT_IMAGE` (or shared
-`OCC_DOCKER_RUNTIME_IMAGE`), `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL` and
-optionally `PYTHON`. See the test source for defaults.
+`OCC_DOCKER_RUNTIME_IMAGE`), `OCC_TEST_OPENAI_MODEL` and `OPENAI_API_KEY`, which
+only the workspace setup cases pass to the runtime. See the test source for defaults.
 
 See the [Docker Compute support boundary](../reference/drivers/docker-compute.md).
 
@@ -92,7 +96,7 @@ images selected below. These checks make no model calls.
 
 ### Check published images
 
-On a native host for each target architecture, use the source revision that
+On a native host for each target architecture, use the source commit that
 produced the images. Follow [image selection and registry authentication](../guides/deploy/production-installation.md#use-published-images).
 Set the immutable `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` references, then run:
 
@@ -102,8 +106,11 @@ docker pull "$RUNTIME_IMAGE"
 OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
   node --test tests/integration/production-image-startup.test.mjs \
     tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-gateway-workspace.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-startup-termination.test.mjs \
+    tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
+    tests/integration/runtime-image-gateway-retained-state.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
@@ -173,7 +180,9 @@ reviewed `OCC_TEST_CODEX_SECCOMP_PROFILE`. If running inside a container against
 a host Docker daemon, mount the repository and fixture temporary directory at
 the same absolute host paths and set `TMPDIR` to that shared directory.
 `OCC_DOCKER_BIN` selects an alternate executable. For emulated startup, set
-`OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER` to an integer from 1 to 10.
+`OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER` to an integer from 1 to 10. Some startup
+waits are sized for 8 CPUs and grow on runners with fewer CPUs, because CI runs
+image test files side by side.
 
 ## Repository runtime volume test environment
 

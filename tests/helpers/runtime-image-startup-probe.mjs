@@ -1,30 +1,39 @@
-// The startup model probe scenario shared by runtime-image-startup-probe.test.mjs
-// and runtime-image-startup-termination.test.mjs, which CI runs side by side in
-// Image Runtime Startup 2: one runtime wrapper started with the container command
-// the Compute driver renders, beside a stand-in model provider sidecar.
+// The startup model probe scenario shared by runtime-image-startup-probe.test.mjs,
+// runtime-image-startup-termination.test.mjs and the Gateway restart cases
+// (runtime-image-gateway-restart.mjs), which CI runs side by side in Image Runtime
+// Startup 2 and 1: one runtime wrapper started with the container command the
+// Compute driver renders, beside a stand-in model provider sidecar.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { availableParallelism, freemem, loadavg, tmpdir } from "node:os";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { availableParallelism, freemem, loadavg } from "node:os";
 import { join } from "node:path";
+import {
+  EMBEDDED_GATEWAY_OWNER_STARTUP,
+  embeddedGatewayRecoveryPreamble,
+} from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { changeSignal, followContainer } from "./docker-follow.mjs";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+  gatewayRuntimeEntrypoint,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 import {
   execute,
   image,
   runtimeImageModel,
+  docker,
   runDocker,
   waitForDockerLog,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
   failureTail,
+  gatewayMemoryArguments,
 } from "./runtime-image-startup.mjs";
 
 // Startup model probes on Kubernetes. These tests run the real Codex Harness
@@ -35,17 +44,17 @@ import {
 // through a private CA), and observes the wrapper from outside.
 // The production example lets both roles burst to four cores; these cases run
 // tighter, the Codex wrapper at 500m and the embedded Gateway at one core (its
-// probe cap counts at most one core); the runtime image model probe tests cover
-// the Gateway at 500m.
+// probe cap counts at most one core; the Gateway restart cases take two); the
+// runtime image model probe tests cover the Gateway at 500m. Both roles get the
+// Gateway's memory limit, without swap (the Harness's own production limit is
+// higher).
 const startupProbeCpuLimit = "0.5";
 const gatewayStartupProbeCpuLimit = "1";
-const startupProbeMemoryLimit = "2g";
 const startupProbeModel = runtimeImageModel;
 export const startupProbeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
 async function createStartupProbeMaterial(t) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-startup-probe-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-startup-probe-");
   const file = (name) => join(directory, name);
   // Codex rejects a self-signed end-entity certificate, so sign a leaf.
   await createModelProbeCertificates({
@@ -79,7 +88,7 @@ function containerStartedAt(value) {
 
 // The wrapper environment the Kubernetes driver renders, including the private
 // runtime and plugin status ports.
-function startupProbeWrapper(kind) {
+function startupProbeWrapper(kind, gatewayManagedMode) {
   const container = kind === "codex" ? "agent" : "gateway";
   const status = [
     "OPENCLAW_PLUGIN_STATUS_PORT=18791",
@@ -121,7 +130,7 @@ function startupProbeWrapper(kind) {
       },
     };
     return {
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      entrypoint: gatewayRuntimeEntrypoint(gatewayManagedMode),
       cpus: startupProbeCpuLimit,
       nativePort: 8080,
       configuration,
@@ -140,9 +149,14 @@ function startupProbeWrapper(kind) {
   const configuration = createAdmittedRuntimeImageConfiguration("openclaw");
   const model = configuration.agents.defaults.model;
   const provider = model.split("/", 1)[0];
+  const providerTransport = configuration.models.providers[provider];
   // The controller's probe configuration: the selected model and its provider
   // transport. Only allowPrivateNetwork is added, because the stand-in
-  // provider listens on loopback.
+  // provider listens on loopback. The native Gateway's own turns need it too.
+  configuration.models.providers[provider] = {
+    ...providerTransport,
+    request: { ...providerTransport.request, allowPrivateNetwork: true },
+  };
   const probeConfiguration = {
     agents: {
       defaults: {
@@ -158,14 +172,14 @@ function startupProbeWrapper(kind) {
     models: {
       providers: {
         [provider]: {
-          ...configuration.models.providers[provider],
+          ...providerTransport,
           request: { allowPrivateNetwork: true },
         },
       },
     },
   };
   return {
-    entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+    entrypoint: gatewayRuntimeEntrypoint(gatewayManagedMode),
     cpus: gatewayStartupProbeCpuLimit,
     nativePort: 8080,
     configuration,
@@ -181,6 +195,7 @@ function startupProbeWrapper(kind) {
       `OPENCLAW_HARNESS_PROBE_CONFIG=${JSON.stringify(probeConfiguration)}`,
       `OPENAI_API_KEY=${startupProbeApiKey}`,
       "NODE_EXTRA_CA_CERTS=/fixture/ca.pem",
+      "OPENCLAW_GATEWAY_RESTART_TRACE=1",
       ...status,
     ],
   };
@@ -236,15 +251,29 @@ async function startupProbeEvidence(scenario, snapshot, loop) {
   return {
     probe: entries
       .filter(({ event }) => probeEvents.has(event))
-      .map(({ event, attempt, code, elapsedMs, capMs, cpuWaitMs, cause }) => ({
-        event,
-        attempt,
-        code,
-        elapsedMs,
-        capMs,
-        cpuWaitMs,
-        cause,
-      })),
+      .map(
+        ({
+          event,
+          attempt,
+          code,
+          elapsedMs,
+          capMs,
+          cpuWaitMs,
+          pressureWaitMs,
+          throttledWaitMs,
+          cause,
+        }) => ({
+          event,
+          attempt,
+          code,
+          elapsedMs,
+          capMs,
+          cpuWaitMs,
+          pressureWaitMs,
+          throttledWaitMs,
+          cause,
+        }),
+      ),
     stages: Object.fromEntries(
       entries
         .filter(({ event }) => event === "openclaw.model_probe_stage")
@@ -261,7 +290,8 @@ async function startupProbeEvidence(scenario, snapshot, loop) {
     phases: snapshot.phases.map(({ phase, outcome, sinceStartMs }) =>
       [phase, outcome, sinceStartMs].filter((value) => value !== undefined).join(" "),
     ),
-    poll: {
+    // Checks of the followed output (no docker CLI per check).
+    checks: {
       count: loop.polls,
       slowestMs: loop.slowestMs,
       elapsedMs: Date.now() - loop.startedAt,
@@ -292,10 +322,28 @@ function startupProbeFailure(headline, reason, evidence, snapshot) {
 // Runs one wrapper start against the stand-in provider. `mode` is the
 // provider's behaviour: "answer" after `delayMs`, "reject" with HTTP 401, or
 // "hang". `until` returns true once the scenario has what it needs to check;
-// `act`, if given, then runs against the live containers.
-export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act }) {
+// `act`, if given, then runs against the live containers. `homeVolume`, if
+// given, replaces the wrapper's /home/node tmpfs, as a Gateway's
+// PersistentVolume does, so a later scenario can start on the same state.
+// `cpus`, if given, replaces the wrapper's CPU limit.
+export async function runStartupProbeScenario(
+  t,
+  {
+    kind,
+    mode,
+    delayMs = 0,
+    until,
+    act,
+    homeVolume,
+    stateVolume,
+    terminatedGatewayNamespace,
+    podOwner,
+    gatewayManagedMode = false,
+    cpus,
+  },
+) {
   const scenarioStartedAt = Date.now();
-  const wrapper = startupProbeWrapper(kind);
+  const wrapper = startupProbeWrapper(kind, gatewayManagedMode);
   const material = await createStartupProbeMaterial(t);
   if (wrapper.configuration !== undefined) {
     await writeFile(join(material, "openclaw.json"), JSON.stringify(wrapper.configuration));
@@ -353,9 +401,8 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
     "--network",
     `container:${sidecar}`,
     "--cpus",
-    wrapper.cpus,
-    "--memory",
-    startupProbeMemoryLimit,
+    cpus ?? wrapper.cpus,
+    ...gatewayMemoryArguments,
     "--user",
     "1000:1000",
     "--read-only",
@@ -363,8 +410,10 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
     "ALL",
     "--security-opt",
     "no-new-privileges",
-    "--tmpfs",
-    "/home/node:size=1024m,uid=1000,gid=1000,mode=700",
+    ...(homeVolume === undefined
+      ? ["--tmpfs", "/home/node:size=1024m,uid=1000,gid=1000,mode=700"]
+      : ["--volume", `${homeVolume}:/home/node`]),
+    ...(stateVolume ? ["--volume", stateVolume + ":/home/node/.openclaw"] : []),
     "--tmpfs",
     "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
     "--volume",
@@ -376,28 +425,42 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
     ...(wrapper.configuration === undefined
       ? []
       : ["--volume", `${join(material, "openclaw.json")}:/etc/openclaw/openclaw.json:ro`]),
+    ...(podOwner
+      ? [
+          "--volume",
+          podOwner.verifier + ":/run/oce-gateway-owner-key:ro",
+          "--volume",
+          podOwner.scratch + ":/run/oce-gateway-owner-start",
+          "-e",
+          "OPENCLAW_EMBEDDED_GATEWAY_OWNER=1",
+        ]
+      : []),
     ...wrapper.environment.flatMap((value) => ["-e", value]),
     "--entrypoint",
     command,
     image,
     ...commandArguments,
-    ...nodeProgramArguments(wrapper.entrypoint),
+    ...nodeProgramArguments(
+      (podOwner
+        ? EMBEDDED_GATEWAY_OWNER_STARTUP
+        : embeddedGatewayRecoveryPreamble(terminatedGatewayNamespace)) + wrapper.entrypoint,
+    ),
   ]);
   const startedAt = containerStartedAt(
     (await runDocker(["inspect", containerName, "--format", "{{.State.StartedAt}}"])).stdout,
   );
+  // Both containers' logs and the wrapper's exit stream in; each check reads
+  // what arrived, and the loop sleeps until the next write.
+  const changes = changeSignal();
+  const endpointLogs = followContainer(t, sidecar, { docker, exit: false, changes });
+  const wrapperLogs = followContainer(t, containerName, {
+    docker,
+    changes,
+    inspectTimeoutMs: 20_000 * imageSmokeTimeoutMultiplier,
+  });
   const collect = async () => {
-    const [endpoint, native, state] = await Promise.all([
-      runDocker(["logs", sidecar]),
-      runDocker(["logs", containerName]),
-      runDocker([
-        "inspect",
-        containerName,
-        "--format",
-        "{{.State.Running}} {{.State.ExitCode}} {{.State.FinishedAt}}",
-      ]),
-    ]);
-    const [running, exitCode, ...finished] = state.stdout.trim().split(/\s+/);
+    const endpoint = endpointLogs.read();
+    const native = wrapperLogs.read();
     const events = jsonLogEntries(endpoint.stdout).map((event) => ({
       ...event,
       ms: event.at - startedAt,
@@ -407,15 +470,41 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
     return {
       events,
       output,
+      stdout: native.stdout,
+      stderr: native.stderr,
       phases: entries.filter(({ event }) => event === "runtime.startup_phase"),
       // Only the embedded Gateway's OpenClaw probe writes these.
       probe: entries.find(({ event }) => event === "openclaw.model_probe"),
       probeStage: entries.filter(({ event }) => event === "openclaw.model_probe_stage").at(-1)
         ?.stage,
-      running: running === "true",
-      exitCode: Number(exitCode),
-      finishedAt: running === "true" ? undefined : containerStartedAt(finished.join(" ")),
+      running: native.running,
+      exitCode: native.exitCode,
     };
+  };
+  // Resolves with when the wrapper exited (epoch ms: when `docker wait` returned,
+  // or Docker's FinishedAt when an inspect found the exit),
+  // once its output is complete, or with undefined at `deadline`. At the
+  // deadline Docker is asked once more, so a slow `docker wait` cannot turn an
+  // exit into a timeout; that exit counts from Docker's FinishedAt.
+  const exited = async (deadline) => {
+    let inspected = false;
+    for (;;) {
+      const seen = changes.version;
+      const { exitedAt, running } = wrapperLogs.read();
+      if (exitedAt !== undefined && !running) {
+        return exitedAt;
+      }
+      if (exitedAt === undefined && Date.now() >= deadline) {
+        if (!inspected) {
+          inspected = true;
+          await wrapperLogs.inspect();
+          continue;
+        }
+        return undefined;
+      }
+      // After the exit, the follower ends `running` within 10 s.
+      await changes.wait(seen, exitedAt === undefined ? deadline - Date.now() : 1_000);
+    }
   };
   const deadline = Date.now() + 300_000 * imageSmokeTimeoutMultiplier;
   const scenario = {
@@ -424,11 +513,13 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
     setupMs: startedAt - scenarioStartedAt,
     wrapper,
     collect,
+    exited,
     first: (events, predicate) => events.find(predicate),
   };
   const loop = { polls: 0, slowestMs: 0, startedAt: Date.now() };
   for (;;) {
     const pollStartedAt = Date.now();
+    const seen = changes.version;
     const snapshot = await collect();
     loop.polls += 1;
     loop.slowestMs = Math.max(loop.slowestMs, Date.now() - pollStartedAt);
@@ -456,7 +547,12 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
         snapshot,
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // Check again on the next write or exit (at least 5 s apart without one,
+    // at most every 250 ms with them).
+    await changes.wait(seen, Math.min(5_000, deadline + 1 - Date.now()));
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, pollStartedAt + 250 - Date.now())),
+    );
   }
 }
 

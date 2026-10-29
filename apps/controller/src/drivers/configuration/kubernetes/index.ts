@@ -1,4 +1,9 @@
 import {
+  ConfigurationValidationError as SharedConfigurationValidationError,
+  type ErrorDetail,
+} from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
+import {
   asRecord,
   isNonEmptyString,
   numericErrorStatus,
@@ -15,7 +20,10 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
-import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
+import {
+  type PreprovisionedKubernetesNamespace,
+  resolveKubernetesControlNamespace,
+} from "../../compute/kubernetes/index.ts";
 import {
   ConfigurationSizeError,
   DependencyUnavailableError,
@@ -34,6 +42,7 @@ export interface KubernetesConfigurationDriverOptions {
 }
 
 interface KubernetesConfigurationDriverSelection {
+  readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
   readonly id?: string;
   readonly implementation?: string;
 }
@@ -136,25 +145,33 @@ export function kubernetesConfigurationName(configurationId: string): string {
 export class KubernetesConfigurationDriver implements ConfigurationDriver {
   static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
-  static validateConfiguration(configuration: unknown): void {
-    const value = asRecord(configuration);
-    if (value === undefined) {
-      throw new ConfigurationValidationError("Kubernetes configuration options are required.");
-    }
-    if ("clients" in value || Object.keys(value).some((key) => key !== "authentication")) {
-      throw new ConfigurationValidationError(
-        "Injected clients and unknown Kubernetes configuration options are not supported.",
+  static validateConfiguration(
+    configuration: Readonly<KubernetesConfigurationDriverOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateKubernetesAuthentication(
+        configuration.authentication,
+        (message) => new ConfigurationValidationError(message),
       );
+
+      return [];
+    } catch (error) {
+      return error instanceof SharedConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
     }
-    validateKubernetesAuthentication(
-      value.authentication,
-      (message) => new ConfigurationValidationError(message),
-    );
   }
 
   readonly id: string;
   readonly capability = "configuration" as const;
   readonly implementation: string;
+  private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly options: KubernetesConfigurationDriverOptions;
   private client: Promise<CoreV1Api> | undefined;
 
@@ -162,7 +179,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
     options: KubernetesConfigurationDriverOptions,
     selection: KubernetesConfigurationDriverSelection = {},
   ) {
-    KubernetesConfigurationDriver.validateConfiguration(options);
+    options = requireConfiguration(KubernetesConfigurationDriver, options);
     this.id = requiredString(selection.id ?? "config-kubernetes", "Configuration Driver ID");
     this.implementation = selection.implementation ?? IMPLEMENTATION;
     if (this.implementation !== IMPLEMENTATION) {
@@ -170,6 +187,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
         "Unsupported Kubernetes configuration implementation.",
       );
     }
+    this.preprovisionedNamespace = selection.preprovisionedNamespace;
     this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
   }
 
@@ -468,7 +486,9 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
 
   private async controlNamespace(client: CoreV1Api, namespaceId: string): Promise<string> {
     const { name } = await this.request(
-      () => resolveKubernetesControlNamespace(client, namespaceId),
+      () =>
+        this.preprovisionedNamespace?.read(client, namespaceId) ??
+        resolveKubernetesControlNamespace(client, namespaceId),
       "namespace verification",
     );
     return name;

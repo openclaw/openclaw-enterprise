@@ -21,7 +21,7 @@ The current dedicated Codex implementation requires private routing, native node
 Gateway and Harness images containing the matching OpenClaw workspace changes.
 [Storage integration #76](https://github.com/openclaw/openclaw-enterprise/issues/76)
 tracks the current runtime PRs and remaining limits. The Codex plugin must include
-the matching attachment changes. Compute rejects dedicated runtime revisions
+the matching attachment changes. Compute rejects dedicated runtime versions
 without routing or an enrollment client before provisioning workloads.
 
 These prerequisites describe the [Kubernetes Codex implementation](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
@@ -56,10 +56,9 @@ ClusterIP EnvoyProxy, and API-key SecurityPolicy. No public listener is created.
 The operator installing the chart needs permission for these infrastructure
 resources; the OCC API does not.
 
-The chart gives Envoy a stable Service name and derives its `.svc` hostname.
-Normal Linux Pod DNS search resolves that name without a separate DNS record
-or a fixed cluster DNS suffix. The certificate and Compute routes use the same
-hostname. TLS verification remains enabled.
+The chart gives Envoy a stable Service name; Pod DNS search resolves its `.svc`
+hostname, which the certificate and Compute routes share
+([endpoint and route](../../reference/gateway-routing.md#endpoint-and-route)).
 
 ### Configure private routing
 
@@ -136,15 +135,14 @@ TLS Secret; it may share a Secret with the database and repository CA settings.
 For custom DNS, set the same `gatewayRouting.hostname` in Helm and Compute and
 make it resolve to the Envoy Service. Use a lowercase DNS hostname without a port
 or path, at most 253 characters with labels at most 63; both inputs refuse other
-spellings before startup. The selected issuer must be able to issue
+spellings before startup. Shorthand IPv4 is refused. The selected issuer must be able to issue
 for that name. A custom hostname can use either the automatic CA or an existing
 issuer; it does not change CA ownership.
 
 The chart's `tenantGatewayPort` must match Compute's `network.gatewayPort`.
 Remove `network.gatewayClients` when enabling routing. Compute derives the
 Envoy peer from `gatewayRouting` and rejects explicit gateway clients in this mode.
-Retain the Installation's other Compute settings. Restart the API and worker
-when changing their Installation startup configuration. The worker requires tenant-local
+Retain the Installation's other Compute settings. The worker requires tenant-local
 HTTPRoute permissions from the chart's worker role; the API needs no route
 writes or gateway Pod/exec access.
 
@@ -193,10 +191,8 @@ operators and the scoped worker. Untrusted tenants must not be able to replace
 route authentication or attach their own routes.
 
 The chart mounts the service key into the API and worker and sets
-`OCC_GATEWAY_API_KEY_PATH`. Automatic CA mode projects only the root Secret's
-public `tls.crt` as `ca.crt` and sets `NODE_EXTRA_CA_CERTS`; the signing key is
-never mounted into OCC. The Pod waits for that Secret before starting. With an
-explicit issuer, both use the optional configured CA bundle instead.
+`OCC_GATEWAY_API_KEY_PATH`; CA trust follows the
+[TLS lifecycle](../../reference/gateway-routing.md#tls-and-certificate-lifecycle).
 The Harness receives only its node setup code and the public CA bundle.
 The service key is an Installation-wide native administrative
 credential; do not reuse a Better Auth signing key or model-provider token.
@@ -209,7 +205,7 @@ for node enrollment.
 Plan a maintenance window for the gateway restart and Namespace-wide ingress
 change. Preserve Agent IDs, Configuration IDs, PVC/PV identities, workspace
 contents, session IDs, and model/channel credentials. Back up the current native
-Configuration, active revision, protected Helm/Installation inputs, and the
+Configuration, selected version, protected Helm/Installation inputs, and the
 namespace resources before changing them. Check whether other Agents share the
 Configuration before replacing its values.
 
@@ -221,7 +217,7 @@ Configuration before replacing its values.
 2. For each Agent being routed, request
    `POST /namespaces/:namespaceId/agents/:agentId/deploy` for the same Agent.
    Retain and poll the returned deployment ID. Do not recreate the Agent or
-   retire its current revision before successful cutover: its PVCs belong to
+   retire its current version before successful cutover: its PVCs belong to
    that Agent and must survive the gateway replacement.
 3. Reconcile existing ready Namespaces as described below. Agent activation
    alone is not proof that its HTTPRoute is accepted or files are accessible.

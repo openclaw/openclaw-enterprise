@@ -84,7 +84,7 @@ also pass the driver programmatically to
 driver preserves tenant-local RBAC boundaries, enforced NetworkPolicies,
 hardened workloads, and projected Agent ServicePrincipal tokens. When the
 explicit production runtime is enabled, it routes dedicated Codex or combined
-embedded OpenClaw Agents only after their exact revisions become active. Each
+embedded OpenClaw Agents only after OCC selects their versions. Each
 production Harness receives only its own Agent's projected identity and
 operator-owned model key. See the
 [Kubernetes Compute Driver guide](../drivers/kubernetes-compute.md) for the exact options,
@@ -107,7 +107,7 @@ Defaults are `compute-ssh` and `occ/ssh`. Installation YAML cannot inject an
 executor or lifecycle owners. Production selection skips Kubernetes-only
 Compute configuration checks, retains the required Secret selection, and
 rejects `drivers.sandbox`. `preflight` probes configured hosts; `bindAgent`
-captures server-owned Namespace and ServicePrincipal identity before revisions.
+captures server-owned Namespace and ServicePrincipal identity before deployment.
 There is no gateway endpoint resolver or periodic runtime maintenance.
 
 ### Kubernetes Configuration Driver
@@ -126,9 +126,9 @@ Each selected Driver exposes its closed configuration schema and validates its
 own startup settings before OCC constructs the implementation. API operations
 are authorized against their exact Namespace or Configuration, OCC validates
 native Configuration semantics, and deployment deeply snapshots the complete
-document into immutable AgentRevisions. See
+document into AgentRevisions. See
 [Namespace configuration](../configuration.md) for CRUD, exact permissions,
-minimal RBAC, startup validation, revision safety, and troubleshooting.
+minimal RBAC, startup validation, version safety, and troubleshooting.
 Configuration Driver Kubernetes access is checked lazily during the first exact
 CRUD request, not by startup preflight; a provisioning Namespace without its
 Kubernetes namespace or tenant grant may return `503` until infrastructure is
@@ -155,9 +155,9 @@ rejects limits above `1000`. The worker overrides the queue's standalone
 production workers consume Namespace work and selected AgentRevision work
 through the configured bundled or installed Compute Driver. The bundled
 Kubernetes Driver activates approved embedded OpenClaw and dedicated Codex
-revisions. Pending Namespace convergence
+versions. Pending Namespace convergence
 returns the live claim
-to the queue without consuming a failure attempt and remains bounded by
-`OCC_WORKER_CONVERGENCE_TIMEOUT_MS`.
+to the queue without consuming a failure attempt.
+`OCC_WORKER_CONVERGENCE_TIMEOUT_MS` limits how long the worker waits.
 Retry backoff, queue jitter, claim-race retries, and stale-recovery limits have
 no environment-variable overrides.

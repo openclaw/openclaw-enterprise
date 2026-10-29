@@ -1,7 +1,7 @@
 # Give an Agent repository access
 
-Select approved repositories, deploy an Agent, then use ordinary `git` and `gh`.
-GitHub credentials stay in the service. Choose an
+Select approved repositories, deploy an Agent, then use ordinary `git` and the `oce-github` draft helper.
+The worker Token Service owns GitHub App credentials. Choose an
 [access level](../reference/repository-credentials/access-levels.md) for the task;
 the [team runbook](repository-credentials/team-runbook.md) covers App registration,
 configuration, a first draft PR and cleanup.
@@ -12,14 +12,19 @@ check forwarding, Ingress, load balancers and effective policy enforcement.
 
 ## Prepare the platform installation
 
-Use Kubernetes Compute-owned **Dedicated Codex** or **Embedded OpenClaw**,
-compatible Harness authentication and no Sandbox Driver. Enable the optional credential sidecar
+Select `repository.nativeSender` with `repository.preparedGitHub`. Controller
+startup rejects the legacy Installation `drivers.repo` selection. Drain accepted
+work on its original owner before cutover; do not replay an unknown result. See
+[prepared native setup](../reference/repository-credentials/prepared-native-git.md#install-and-check).
+
+Use Kubernetes Compute-owned **Dedicated Codex**, compatible Harness authentication
+and no Sandbox Driver. Enable the optional credential sidecar
 through the [repository installation procedure](repository-credentials/installation.md).
 It requires one immutable registry ConfigMap shared by API, worker and service,
-a separate public CA Secret, and service-only configuration, App-key and TLS
-Secrets. The [registry reference](../reference/repository-credentials.md#canonical-platform-registry)
+a separate public CA Secret, worker-only App-key and custody Secrets, and sender
+configuration and TLS Secrets. The [registry reference](../reference/repository-credentials.md#canonical-platform-registry)
 defines repository and Namespace policy. Set `sessionDurationSeconds: 86400` for
-a 24-hour revision; keep it within the registry's maximum.
+a 24-hour version; keep it within the registry's maximum.
 
 The chart's `repositoryCredentials.enabled` defaults to `false`. Follow the
 installation guide for Backend/Driver selection, images, registry, Secrets,
@@ -27,56 +32,71 @@ upstream ranges, certificates and tenant RBAC. Use one worker/service owner with
 `Recreate`; replicas cannot share in-memory sessions. Routing does not establish
 network isolation.
 
-Build the full Agent runtime from the checkout root and select its immutable
+From the checkout root, [resolve the OpenClaw build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
+and build the full Agent runtime in the same Bash shell. Select its immutable
 image reference in Compute configuration:
 
-```sh
+```bash
 docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" \
   -t openclaw-enterprise-runtime:repository-credentials .
 ```
 
-The image includes Git, the client helper and pinned `gh` 2.100.0. Publish or
+The image includes Git, the client helper and pinned `gh` 2.103.2. Publish or
 import it, select its digest and configure model authentication.
+
+## Keep Git access on the same running Agent
+
+An Agent administrator can approve one repository binding until they remove that approval.
+The worker can then open another short session for the same running Agent without an hourly
+approval or a replacement Agent. Git can pause between sessions. The approval does not extend a
+token, change its repository or permissions, or grant access to a model.
+
+Enable `allowStandingApprovals` in the Installation's repository registry and
+`allowStandingApproval` for that repository in the Agent's Namespace. Upgrade the API, worker,
+receipt owner and credential service together before enabling this policy. A deployment admitted
+with a finite grant keeps its original deadline.
+
+1. Read `GET …/agents/{agentId}/repository-approval-scopes`. Review the resolved repository,
+   permissions and allowed operations, and retain its `scopeFingerprint`.
+2. Update the Agent with its current `configurationId` and a `repositoryStandingApproval`
+   containing `repositoryRef`, a new `approvalId`, `approved: true`, `duration: "until-removed"`,
+   and `expectedScopeFingerprint`. If the scope changed, review it again. Deploy the Agent once.
+3. To withdraw, read `GET …/agents/{agentId}/repository-approvals`, then send the approval's
+   `expectedGeneration` to `POST …/agents/{agentId}/repository-approvals/{approvalId}/remove`.
+   Fresh Git requests are denied even while cleanup is pending. A request with an issued one-use
+   permit can still start before its original send deadline, even after removal is acknowledged.
+   Do not replay a request whose outcome is unknown. See [prepared Git authorization](../reference/repository-credentials/prepared-native-git.md#what-a-request-authorizes).
+   On OpenShell, the worker removes Git and continues supervising the same execution if its
+   independent permissions still allow it. Stopping the Agent ends that execution.
+
+A refusal answers `409 RESOURCE_CONFLICT` and names the step: review the scope again, keep one
+binding, remove the approval before you change the binding, or ask an Installation administrator
+to allow standing approval. Deploy refuses an approval that no longer matches policy until you
+remove and approve it again.
+
+The worker must recognize the same execution and account for its previous session and credential.
+If it returns after a known provider expiry, it waits out the clock allowance and records
+`expired` separately from confirmed revocation. An uncertain issuance, installation or retirement
+still requires recovery. Do not repeat an operation whose outcome is unknown.
 
 ## Create and deploy an Agent
 
 In **Agents** > **Create Agent**, add up to 16 repositories. They inherit
 the Agent default; expand a selected repository’s card to customize its access.
 Use **Dedicated** for Slack on the same Agent; follow the
-[same-Agent Console sequence](../reference/console/create-and-deploy.md#use-repositories-and-slack-on-the-same-agent)
+[same-Agent Console sequence](../reference/console/repository-access.md#use-repositories-and-slack-on-the-same-agent)
 for channels, credentials and deployment. Repository profiles and model
 authentication are separate. If repository discovery fails, **Create Agent**
-stays blocked until discovery succeeds. The exception is
-`503 REPOSITORY_OPTIONS_UNAVAILABLE` with no repositories selected: you can save
+stays blocked until discovery succeeds. The exception is an Installation without
+repository access or `503 REPOSITORY_OPTIONS_UNAVAILABLE`, with no repositories selected: you can save
 an ordinary draft, but cannot start guided provisioning. Other errors still
-block creation. Creation and deployment recheck Namespace repository policy;
-see [repository discovery](../reference/console/create-and-deploy.md#create-an-agent).
+block creation. Creation and deployment recheck Namespace repository policy: deploy refuses
+saved selections it no longer approves with `409 RESOURCE_CONFLICT`. See [repository discovery](../reference/console/repository-access.md#discover-and-select-repositories).
 
-The API sequence below shows the Embedded variant.
-
-Complete [Namespace and embedded Agent preparation](deploy/production-agents.md)
-to prepare the embedded `configuration.json` and Namespace-owned model Secret
-`HARNESS_SECRET_ID`. Enable native command tools before creating the Configuration;
-merge these fields into its `values` while preserving the model and gateway settings:
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "workspace": "/home/node/.openclaw/workspace",
-      "sandbox": { "mode": "off" }
-    }
-  },
-  "tools": {
-    "allow": ["exec", "process"],
-    "exec": { "host": "gateway", "mode": "full" }
-  }
-}
-```
-
-This gives the embedded Agent command execution in its gateway container. It is
-not an additional sandbox. Create the Configuration as that guide describes and
-capture `CONFIGURATION_ID`. Keep its
+For the API sequence, complete [Namespace and dedicated Codex preparation](deploy/production-agents.md#configure-the-agent-runtime)
+to prepare the Configuration and Namespace-owned model Secret `HARNESS_SECRET_ID`.
+Capture `CONFIGURATION_ID` and retain the production guide's
 operator environment, including `OCC_URL`, protected `OCC_SERVICE_KEY_FILE`,
 `NAMESPACE_ID` and Kubernetes context. The registry must authorize the actual
 platform Namespace ID. The example uses its `application` reference:
@@ -89,7 +109,7 @@ import json, os
 body = {
     "name": "repository-agent",
     "configurationId": os.environ["CONFIGURATION_ID"],
-    "executionMode": "embedded",
+    "executionMode": "dedicated",
     "harnessAuth": {
         "method": "api_key",
         "source": {
@@ -108,11 +128,8 @@ AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(j
 export AGENT_ID
 ```
 
-Select an [access level](../reference/repository-credentials/access-levels.md):
-Read-only (`git-read`), Contributor with issue management off (`git-write`), or
-Contributor (`git-full`). Send the profile explicitly; omitting it in an API
-binding selects `git-write`. The Console's Contributor choice defaults to
-`git-full` when approved.
+Select `git-write` with one exact ref in the registry. Add `git-and-draft-pr`
+and an approved base only when the task needs draft creation.
 Add approved references for more repositories. API
 creation uses `POST /namespaces/$NAMESPACE_ID/agents`; the CLI returns the
 unwrapped Agent. Bindings confer no model access: before deploying, complete the
@@ -129,8 +146,8 @@ occ agent deployment-status "$AGENT_ID" "$REVISION_ID"
 ```
 
 Repeat the status command until it reports `succeeded`; a matching
-`activeRevisionId` alone can name a revision that is still starting or has
-failed. The admitted revision exposes
+`activeRevisionId` alone can name a version that is still starting or has
+failed. The saved version exposes
 repository references, profiles and its fixed deadline. Deployment readiness
 alone does not prove a model task or GitHub operation. Failed policy checks,
 unsupported topology, missing material or expired authority must be corrected
@@ -150,22 +167,27 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$TENANT_NAMESPACE" exec -it "$GATEWAY_POD" -c gateway -- \
   env -u OPENAI_API_KEY OPENCLAW_STATE_DIR=/tmp/occ-tui-client \
   node /app/openclaw.mjs tui --session "$REPOSITORY_TASK_SESSION" --message \
-  'Clone https://github.com/example/project.git into your workspace using the default destination. Create a new branch, configure repository-local Git author name Repository Agent and email agent@example.invalid, add a short repository-access-check.md, commit it, push the new branch, and open a draft PR with gh pr create using an explicit head and body text. Report the commit and PR URL.'
+  'Clone https://github.com/example/project.git into your workspace using the default destination. Create a new branch, configure repository-local Git author name Repository Agent and email agent@example.invalid, add a short repository-access-check.md, commit it, push the new branch, and open a draft with oce-github pr-create --draft using the approved head and base and explicit body text. Report the commit and PR URL.'
 ```
 
 The gateway retains its model credential; the TUI client unsets its copy.
-The Agent works in `/home/node/.openclaw/workspace` without manual session-opening:
+
+`user.name` and `user.email` identify the commit author; they do not change the
+managed GitHub App identity used to authorize a push. A successful authenticated
+clone does not configure these values; set them before committing, as shown below.
+
+The dedicated Agent works in its workspace without manual session-opening:
 
 ```sh
 git clone https://github.com/example/project.git
 cd project
 git fetch origin
-git switch -c agent-example
+git switch -c agent-work
 git config user.name "Repository Agent"
 git config user.email "agent@example.invalid"
 # Edit files, then git add and git commit.
-git push origin HEAD:refs/heads/agent-example
-gh pr create -R github.com/example/project --base main --head agent-example \
+git push origin HEAD:refs/heads/agent-work
+oce-github pr-create --base main --head agent-work \
   --draft --title "Repository access check" --body "Verify the Agent repository workflow."
 ```
 
@@ -181,22 +203,20 @@ See
 [native routing limits](../reference/repository-credentials.md#client-routing-and-limits)
 for configuration overrides and credential retention.
 
-The `gh` router selects from an explicit target or effective Git remotes. Ambiguous
-implicit targets require an explicit repository. `gh api` accepts supported relative
-paths such as `repos/example/project/pulls/1`; absolute API URLs are refused.
-Read-only supports selected API reads. Contributor with issue management off
-adds PR writes; Contributor also adds ordinary issue writes. Both writable levels
-can permit GraphQL merges, subject to GitHub rules.
+The draft helper requires the registry's exact head and base. With the Git-only
+sample policy, draft creation is denied. Select `git-and-draft-pr` and set
+`pullRequestBase` before deploying a draft task. General REST and GraphQL
+operations are not part of this native profile.
 
 Inspect the actual remote commit and PR to confirm completion. If a push or
 mutation has an uncertain response, inspect remote state before repeating it.
 Stop the Agent through the normal lifecycle when finished; inspect pending
 cleanup separately. A worker restart can retain a surviving service session. If
-the credential service loses an already delivered session, the revision fails and
+the credential service loses an already delivered session, the version fails and
 its runtime is retired; it cannot automatically receive replacement credentials.
 Inspect retained cleanup obligations and explicitly deploy a new authorized
-revision to continue. A new deployment neither settles old cleanup nor replays
-Git/API operations. The revision's absolute deadline is never renewed; expiry
+version to continue. A new deployment neither settles old cleanup nor replays
+Git/API operations. The version's absolute deadline is never renewed; expiry
 also requires a new authorized deployment.
 
 ## Use the standalone service
@@ -208,6 +228,5 @@ also requires a new authorized deployment.
 <a id="inspect-and-close"></a>
 
 For independent clients outside the OCC Agent lifecycle, use the
-[standalone service guide](repository-credentials/standalone-service.md). It covers
-building and starting the service, opening sessions, running Git and GitHub CLI
-commands, recovering uncertain admissions, container deployment, and closing sessions.
+[standalone service guide](repository-credentials/standalone-service.md). It covers prepared sender setup, the explicit development-token option and
+draining an existing signing gateway.

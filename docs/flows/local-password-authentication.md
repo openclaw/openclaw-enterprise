@@ -8,11 +8,11 @@ last_updated_session: "authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6"
 
 ## Overview
 
-Fresh native-IAM bootstrap creates human and service administrators, binds both
-to one shared Role, and commits them with the Installation. It writes
-the initial service key, and in production a generated human password, to
+Native-IAM bootstrap creates human and service administrators with one Role
+and commits them with the Installation. It writes
+the initial service key and a generated production human password to
 protected storage; development uses its configured password. Human sign-in
-then reaches exact IAM authorization. The
+reaches exact IAM authorization. The
 [service API key flow](service-api-keys.md) covers key verification, rotation, and revocation.
 
 ## Entry Points
@@ -140,7 +140,7 @@ retained views and drafts. Sign-out revokes the session.
 `auth/admission.ts:passwordFailureAdmission` counts failures; fast success clears
 the selected identity, not the address. `onLimited` reports
 `authentication.sign-in-limited` once per lane/window. `auth/known-device.ts`
-checks the email-bound MAC before bounded password-state reads (see
+checks the email-bound MAC before password-state reads with rate and concurrency limits (see
 [known devices](../reference/authentication.md#known-devices)). Verified bindings
 select the device lane; rejected bindings use the shared lane. Failed or refused
 reads retain signed keys as email/address constraints, never exemptions. Password-only admission captures
@@ -212,9 +212,9 @@ State dependency failure or uncertain session completion is not a denial. Neithe
 Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
 start, callback, and result, with provider instance `google:<sha256(client ID)>`.
 Authorization adds scope `openid email` and an auth-secret HMAC of attempt state
-as nonce, without extra storage.
+as nonce, without storage.
 `apps/controller/src/auth/google.ts:exchangeGoogleSubject` exchanges the code, fetches
-Google's signing keys through the same bounded transport, verifies the RS256 ID token's
+Google's signing keys with the shared HTTP deadline and byte limit, verifies the RS256 ID token's
 signature, issuer, audience, expiry, and nonce (plus `hd` and `email_verified` when
 allowed domains are set), and returns only `sub`. Tokens and email are discarded.
 
@@ -223,16 +223,15 @@ IPv4-mapped addresses before prefix validation, refusing entries covering every
 IPv4 or IPv6 address. `resolveClientAddress` uses dotted IPv4 for mapped peers and
 header hops.
 
-Password sign-in detects unstorable email before known-device verification, so
-invalid input cannot trigger account State reads. It rejects inside controller
-admission, preserving budget accounting. Password-only uses `passwordSignInAudit`;
+Password sign-in rejects unstorable email inside controller admission before
+known-device verification or account State reads, preserving budget accounting. Password-only uses `passwordSignInAudit`;
 guarded and recovery-only use `github.ts:recordPasswordDenial`, the same owner as
 credential refusals. Both return `400 INVALID_REQUEST` after the denial audit;
 a failed audit is a counted `503`. An exhausted shared lane rejects the invalid
 email without a reserved-account lookup. Password text is not checked.
-Valid email still enters controller admission before `/oce/password`, with the
-recovery email reserved like an administrator's. GitHub, Google and OIDC share bounded
-process-local start, callback and result admission (`keyedAdmission`), keyed on
+Valid email enters controller admission before `/oce/password`, with the
+recovery email reserved like an administrator's. GitHub, Google and OIDC share process-local rate and concurrency limits
+for start, callback and result admission (`keyedAdmission`), keyed on
 client addresses behind trusted proxies and browser cookies otherwise. Provider
 HTTP shares a deadline and response-byte cap; State bounds pending attempts and expired cleanup.
 State persists attempt and session deadlines; cookie Max-Age subtracts monotonic
@@ -353,13 +352,5 @@ Account creation issues no session and infers no grants.
 - 2026-10-15 18:55: Record verified GitHub identity and correlate matched sign-in attempts in audit. (authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 
 - 2026-10-10 20:56: Reject unstorable email before State reads while preserving denial audits and admission. (authoring-run/6a102658-a68a-460f-bb67-be99a2490d8d - f6526eed518b689cc99e70f2c8ad349c500e936d)
-
-- 2026-10-07 10:10: Treat IPv4-mapped trusted proxies as IPv4; refuse catch-all proxy CIDRs. (fix-678 - bf67a4317)
-
-- 2026-10-06 07:30: Reject undeclared maintenance commands before configuration. (authoring-run/8f5b1566-4538-437c-8e8a-fd2049050c6e - 4bacc7925fcef75ea8715905a0c6c86abb7203d2)
-
-- 2026-10-04 21:00: Verify an existing Installation with SQL before loading Better Auth. (fix/bootstrap-fast-path)
-
-- 2026-10-01 14:36: Bind result receipts to provider instances. (authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
 
 [Bootstrap and human authentication documentation history](local-password-authentication/history.md) preserves the older dated entries.

@@ -9,6 +9,7 @@ import vm from "node:vm";
 
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
@@ -24,8 +25,14 @@ import {
   WORKSPACE_SETUP_FAILED,
 } from "../../packages/contracts/src/runtime-failure.mjs";
 import { deploymentDiagnostics } from "../../packages/occ/src/deployment-diagnostics.ts";
-import { validateFailureData } from "../../packages/occ/src/state/controller-work.ts";
 import {
+  validateFailureData,
+  validateRuntimeFailureEvidence,
+} from "../../packages/occ/src/state/controller-work.ts";
+import {
+  assertConfigurationSchema,
+  validateConfiguration,
+  requireConfiguration,
   CONFIGURATION_KINDS,
   DRIVER_CAPABILITIES,
   LOGGING_LEVELS,
@@ -42,7 +49,83 @@ import {
   isSandboxFacet,
   normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
+  ConfigurationValidationError,
+  sandboxNetworkGrantsWithinCeiling,
+  validateSandboxNetworkGrants,
 } from "../../packages/contracts/src/index.ts";
+
+test("network delegation covers every requested host label and port without broadening executables", () => {
+  const grant = {
+    id: "python",
+    binary: "/usr/bin/python3.11",
+    host: "api.example.org",
+    ports: [{ from: 443, to: 445 }],
+  };
+  const ceiling = [
+    { ...grant, id: "first", host: "*.example.org", ports: [{ from: 443, to: 444 }] },
+    { ...grant, id: "second", host: "*.example.org", ports: [{ from: 445, to: 445 }] },
+  ];
+  assert.equal(sandboxNetworkGrantsWithinCeiling([grant], ceiling), true);
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling([{ ...grant, host: "*.example.org" }], ceiling),
+    true,
+  );
+  // A wildcard covers exactly one label; sampling a subdomain cannot authorize the apex or deeper names.
+  for (const host of [
+    "example.org",
+    "deep.api.example.org",
+    "*.api.example.org",
+    "api.example.net",
+  ]) {
+    assert.equal(sandboxNetworkGrantsWithinCeiling([{ ...grant, host }], ceiling), false, host);
+  }
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling([{ ...grant, binary: "/usr/bin/python3" }], ceiling),
+    false,
+  );
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling(
+      [grant],
+      [ceiling[0], { ...ceiling[1], ports: [{ from: 446, to: 446 }] }],
+    ),
+    false,
+  );
+  assert.equal(sandboxNetworkGrantsWithinCeiling([grant], []), false);
+  // Coverage needs a port: an empty or reversed range never proves containment.
+  for (const ports of [[], [{ from: 445, to: 443 }], [{ from: 65535, to: 1 }]]) {
+    assert.equal(sandboxNetworkGrantsWithinCeiling([{ ...grant, ports }], ceiling), false);
+  }
+  for (const [invalid, path, code, message] of [
+    [
+      [{ ...grant, binary: "/usr/bin/../python3.11" }],
+      "/additions/0/binary",
+      "INVALID_VALUE",
+      "Use a normalized absolute executable path.",
+    ],
+    [
+      [{ ...grant, host: "api..example.org" }],
+      "/additions/0/host",
+      "INVALID_VALUE",
+      "Use a valid DNS host or single-label wildcard.",
+    ],
+    [
+      [{ ...grant, ports: [{ from: 445, to: 443 }] }],
+      "/additions/0/ports/0/to",
+      "INVALID_RANGE",
+      "The end port must be at least the start port.",
+    ],
+    [[grant, grant], "/additions/1/id", "INVALID_VALUE", "Grant IDs must be unique."],
+  ]) {
+    assert.throws(
+      () => validateSandboxNetworkGrants(invalid),
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.deepEqual(error.error.details, [{ path, code, message }]);
+        return true;
+      },
+    );
+  }
+});
 
 test("the Driver contract exposes the supported platform capabilities", () => {
   assert.deepEqual(DRIVER_CAPABILITIES, [
@@ -57,6 +140,7 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "repo",
     "credential_gateway",
     "credential_refresh",
+    "credential_proxy",
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 
@@ -197,6 +281,7 @@ test("the singleton platform resource model keeps Namespace ownership explicit",
     "agent",
     "agent_revision",
     "credential_source",
+    "sandbox_policy",
   ]);
   assert.equal(Object.isFrozen(RESOURCE_KINDS), true);
 
@@ -409,10 +494,19 @@ test("only a codex_pat Harness binding names a ServiceAccount source, and only e
 // evidence from inside its Sandbox, where Agent code can answer in its place.
 
 const runtimeSources = [
+  "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts",
   "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
   "../../apps/controller/src/drivers/compute/runtime-startup.ts",
 ];
 const driverRoot = new URL("../../apps/controller/src/drivers/", import.meta.url);
+
+async function runtimeSourceText() {
+  return (
+    await Promise.all(
+      runtimeSources.map((path) => readFile(new URL(path, import.meta.url), "utf8")),
+    )
+  ).join("\n");
+}
 const runtimeCheckedAt = "2026-10-17T12:00:00.000Z";
 
 function injectedRuntimeList(program, name) {
@@ -481,6 +575,7 @@ test("every check and code a runtime entrypoint publishes is recorded as publish
   for (const program of [
     GATEWAY_RUNTIME_ENTRYPOINT,
     AGENT_RUNTIME_ENTRYPOINT,
+    AGENT_WITH_NODE_ENTRYPOINT,
     NATIVE_WORKER_ENTRYPOINT,
   ]) {
     assert.deepEqual(injectedRuntimeList(program, "RUNTIME_DIAGNOSTIC_CODES"), [
@@ -495,14 +590,10 @@ test("every check and code a runtime entrypoint publishes is recorded as publish
   }
   // Every literal they hold a failure or report a check under is in those lists, so none
   // throws instead of holding.
-  const text = (
-    await Promise.all(
-      runtimeSources.map((path) => readFile(new URL(path, import.meta.url), "utf8")),
-    )
-  ).join("\n");
+  const text = await runtimeSourceText();
   const held = [
     ...text.matchAll(
-      /(?:publishRuntimeFailure|holdFailedAuthentication|serveHeldRuntimeFailureToTransportPeer)\(\s*"([^"]+)"(?:,\s*"([^"]+)")?/gu,
+      /(?:publishRuntimeFailure|holdFailedAuthentication|holdStartupFailure|serveHeldRuntimeFailureToTransportPeer)\(\s*"([^"]+)"(?:,\s*"([^"]+)")?/gu,
     ),
     ...text.matchAll(/function holdFailedAuthentication\(check = "([^"]+)", code = "([^"]+)"/gu),
   ];
@@ -620,6 +711,37 @@ test("a failed workspace setup keeps its check and code through record and read"
   assert.deepEqual(validateFailureData("CONVERGENCE_DEADLINE_EXCEEDED", stored), stored);
 });
 
+test("recorded failure data refuses a cause off the model probe's failure, a cause in deadline data, and another code as a held model-probe failure", () => {
+  const probe = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: runtimeCheckedAt,
+    code: "MODEL_PROBE_FAILED",
+  };
+  const cause = { kind: "PROBE_STATUS", detail: "turn-failed" };
+  assert.throws(() => validateRuntimeFailureEvidence({ ...probe, code: "STARTUP_FAILED", cause }), {
+    name: "ScopeViolationError",
+    message: "Runtime failure cause is invalid.",
+  });
+  // The deadline records its runtime failure without the cause, so a stored cause is refused.
+  assert.throws(
+    () =>
+      validateFailureData("CONVERGENCE_DEADLINE_EXCEEDED", {
+        timeoutMs: 1,
+        runtimeFailure: { ...probe, cause },
+      }),
+    { message: "Convergence deadline failure data cannot carry a cause." },
+  );
+  // A held model-probe failure must be the model probe's own failure, not another one.
+  assert.throws(
+    () =>
+      validateFailureData("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: { ...probe, code: "STARTUP_FAILED" },
+      }),
+    { message: "Model probe failure data requires its runtime failure." },
+  );
+});
+
 test("runtime failure evidence outside that vocabulary is recorded as UNRECOGNIZED", () => {
   const served = {
     component: "sidecar",
@@ -724,6 +846,94 @@ test("a PROCESS_EXIT cause recorded today reads under a controller from before t
   }
 });
 
+test("every model-probe cause a runtime program publishes is recorded as published", async () => {
+  const text = await runtimeSourceText();
+  // Each call shape a model-probe failure is built in, read for the detail tokens it publishes.
+  const read = new Set();
+  const causes = [];
+  const extract = (pattern, toCauses) => {
+    for (const match of text.matchAll(pattern)) {
+      read.add(match.index);
+      causes.push(...toCauses(match));
+    }
+  };
+  extract(/probeFailure\(\s*"([A-Z_]+)"\s*\)/gu, ([, kind]) => [{ kind }]);
+  extract(/probeFailure\(\s*"([A-Z_]+)",\s*"([^"]+)"\s*\)/gu, ([, kind, detail]) => [
+    { kind, detail },
+  ]);
+  // A choice between two tokens, as for the Codex check's unexpected events.
+  extract(
+    /probeFailure\(\s*"([A-Z_]+)",[^?\n]*\?\s*"([^"]+)"\s*:\s*"([^"]+)"\s*\)/gu,
+    ([, kind, ...details]) => details.map((detail) => ({ kind, detail })),
+  );
+  // The OpenClaw check's provider statuses, and "other" for the rest.
+  extract(
+    /probeFailure\(\s*"PROBE_STATUS",\s*\[([^\]]+)\]\.includes\(status\) \? status : "([^"]+)"\)/gu,
+    ([, list, other]) =>
+      [...JSON.parse(`[${list}]`), other].map((detail) => ({ kind: "PROBE_STATUS", detail })),
+  );
+  // The Codex check's helper names rate_limit itself, else its caller's token.
+  extract(
+    /probeFailure\(\s*"PROBE_STATUS",\s*codexRateLimited\(message\) \? "([^"]+)" : detail\)/gu,
+    ([, detail]) => [{ kind: "PROBE_STATUS", detail }],
+  );
+  extract(/codexProbeStatusFailure\([^"\n]*,\s*"([^"]+)"\)/gu, ([, detail]) => [
+    { kind: "PROBE_STATUS", detail },
+  ]);
+  // A backstop for shapes none of these read. PROCESS_EXIT details are built at run time and
+  // pinned by the PROCESS_EXIT tests above.
+  for (const call of text.matchAll(
+    /probeFailure\(\s*"(?!PROCESS_EXIT")|codexProbeStatusFailure\((?!message, detail\))/gu,
+  )) {
+    assert.ok(
+      read.has(call.index),
+      `a probe failure is built in a shape this test cannot read; update it:\n${text.slice(call.index, call.index + 120)}`,
+    );
+  }
+  // Guards the extraction itself: an empty or partial match would prove nothing.
+  const found = new Set(
+    causes.map(({ kind, detail }) => (detail === undefined ? kind : `${kind}/${detail}`)),
+  );
+  for (const expected of [
+    "INVALID_OUTPUT/json",
+    "INVALID_OUTPUT/shape",
+    "PROBE_STATUS/no-reply",
+    "PROBE_STATUS/turn-failed",
+    "PROBE_STATUS/error-event",
+    "PROBE_STATUS/tool-event",
+    "PROBE_STATUS/unexpected-event",
+    "PROBE_STATUS/rate_limit",
+    "PROBE_STATUS/no_model",
+    "PROBE_STATUS/other",
+    "WRAPPER_ERROR",
+  ]) {
+    assert.ok(found.has(expected), `${expected} not found in ${JSON.stringify([...found])}`);
+  }
+  for (const cause of causes) {
+    // The retried check holds its second failure with the "-attempt2" suffix on its detail.
+    for (const held of cause.detail === undefined
+      ? [cause]
+      : [cause, { ...cause, detail: `${cause.detail}-attempt2` }]) {
+      const failure = {
+        runtimeFailure: {
+          component: "agent",
+          check: "model-probe",
+          checkedAt: runtimeCheckedAt,
+          code: "MODEL_PROBE_FAILED",
+          cause: held,
+        },
+      };
+      const stored = validateFailureData("RUNTIME_MODEL_PROBE_FAILED", failure);
+      assert.deepEqual(stored, failure, JSON.stringify(held));
+      assert.deepEqual(
+        validateFailureData("RUNTIME_MODEL_PROBE_FAILED", stored),
+        stored,
+        JSON.stringify(held),
+      );
+    }
+  }
+});
+
 test("every signal and system error code Node names on Linux is in the PROCESS_EXIT vocabulary", (t) => {
   if (process.platform !== "linux") {
     t.skip("the runtime runs on Linux; other platforms name other codes");
@@ -776,5 +986,96 @@ test("runtime diagnostics outside that vocabulary are returned as UNRECOGNIZED",
       { component: "agent", check: "runtime-status", state: "unknown", checkedAt: null },
       known,
     ],
+  );
+});
+
+// A duplicate false-subschema error must not hide useful field diagnostics, and
+// removing that duplicate must not admit independently forbidden values.
+test("configuration diagnostics collapse extra-field noise without accepting false schemas", () => {
+  assert.deepEqual(
+    validateConfiguration({ type: "object", additionalProperties: false }, { extra: 1 }),
+    {
+      success: false,
+      error: {
+        details: [
+          {
+            path: "",
+            code: "UNKNOWN_FIELD",
+            message: "Configuration does not satisfy additionalProperties.",
+          },
+        ],
+      },
+    },
+  );
+  for (const [schema, input] of [
+    [false, 1],
+    [{ type: "array", items: false }, [1]],
+    [{ type: "object", properties: { additionalProperties: false } }, { additionalProperties: 1 }],
+  ]) {
+    const result = validateConfiguration(schema, input);
+    assert.equal(result.success, false);
+    assert.equal(result.error.details[0].message, "Configuration does not satisfy boolean.");
+  }
+});
+
+// Schema checks are cached per process by full JSON text: a schema that passed once and
+// then changes must be checked again, never admitted by object identity.
+test("a Driver configuration schema that changes after a passing check is checked again", () => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: { endpoint: { type: "string" } },
+  };
+  assertConfigurationSchema(schema);
+  assertConfigurationSchema(schema);
+  schema.properties.endpoint.type = "not-a-schema-type";
+  assert.throws(() => assertConfigurationSchema(schema), /Unsupported Driver configuration schema/);
+  schema.properties.endpoint.type = "string";
+  assertConfigurationSchema(schema);
+});
+
+test("configuration admission retains original values while isolating semantic callback references", () => {
+  const input = { endpoint: { port: 443 } };
+  let retained;
+  const definition = {
+    configurationSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        endpoint: {
+          type: "object",
+          additionalProperties: false,
+          properties: { port: { type: "integer" } },
+        },
+      },
+    },
+    validateConfiguration(value) {
+      retained = value;
+      return [];
+    },
+  };
+  assert.equal(requireConfiguration(definition, input), input);
+  // A Driver retaining its argument cannot change data already admitted for another caller.
+  assert.throws(() => {
+    retained.endpoint.port = 80;
+  }, TypeError);
+  assert.deepEqual(input, { endpoint: { port: 443 } });
+  const accessor = {
+    get endpoint() {
+      throw new Error("input getter must not run");
+    },
+  };
+  assert.throws(
+    () => requireConfiguration(definition, accessor),
+    (error) => {
+      assert.deepEqual(error.error.details, [
+        {
+          path: "",
+          code: "INVALID_TYPE",
+          message: "Configuration must contain only plain JSON values.",
+        },
+      ]);
+      return true;
+    },
   );
 });

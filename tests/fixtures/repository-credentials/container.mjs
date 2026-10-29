@@ -35,7 +35,7 @@ export async function runInFixtureContainer(t, testFile, { packaged = false } = 
   if (!packaged) {
     await access(gh);
     const version = await run(gh, ["--version"]);
-    assert.match(version.stdout, /^gh version 2\.100\.0\b/, "pinned gh 2.100.0 is required");
+    assert.match(version.stdout, /^gh version 2\.103\.2\b/, "pinned gh 2.103.2 is required");
   }
   assert.ok(!image.startsWith("-"), "invalid qualification image reference");
   const inspected = await run("docker", ["image", "inspect", "--format", "{{.Id}}", image]);

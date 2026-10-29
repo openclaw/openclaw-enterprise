@@ -4,7 +4,7 @@
 
 Use these tests to check OpenShell setup and real Agent execution. Run commands
 from the repository root. The current setup selects official OpenShell
-`v0.1.4`; see [images and trust](openshell-oauth.md#prepare-images-and-trust)
+`v0.1.5`; see [images and trust](openshell-oauth.md#prepare-images-and-trust)
 for the exact versions and qualification boundary.
 
 ## Start a reusable development environment
@@ -66,6 +66,10 @@ The real Sandbox suite tests a dedicated Codex Agent, including authenticated
 Gateway access, real model and tool turns, credential delivery, restricted
 filesystem and network access, replacement, and cleanup. Local fixture tests
 alone do not prove these outcomes. See [OpenShell coverage](openshell-coverage.md) for the individual checks.
+
+Preparation requires the Codex credential and model; running the complete lane
+also requires the separate native OpenAI key. For direct Codex file runs, also provide the
+[policy fixture's migrator connection](openshell-coverage.md#agent-network-policy).
 
 The suite delivers initial workspace files through real `ExecSandbox` and reads
 them through the Agent API. Separate startup integration checks completion
@@ -131,6 +135,10 @@ Sandbox case uses a test-only compatibility bridge. Use the k3d helper below to
 run that case. The [Sandbox Driver reference](../reference/drivers/openshell-sandbox.md#qualification-contract)
 describes the remaining limits.
 
+Codex also exercises Python deny/grant/allow/revoke, loaded-version confirmation
+across a worker restart, isolation from another Agent, and disabling edits while
+preserving access. Suggestions and decorated logs are read through OCC.
+
 ### Native OpenClaw with k3d
 
 The [k3d helper](kubernetes.md#develop-with-local-containers-and-k3d) prepares
@@ -141,6 +149,23 @@ the native test and builds the sibling `../openclaw` checkout. Set
 ./scripts/k3d test --harness openclaw
 ./scripts/k3d demo --harness openclaw
 ```
+
+For a custom OpenAI-compatible Responses endpoint, bind the model catalog and
+CredentialSource to the same URL:
+
+```sh
+OCC_K3D_CONTAINER_ENGINE=podman ./scripts/k3d test --harness openclaw \
+  --base-url https://models.example.com/v1 --model-id vendor/model
+```
+
+Set `OPENAI_API_KEY` privately to the endpoint's authorized key. The URL must
+use HTTPS port 443 and end in `/v1`. Use the provider's exact model ID, including
+its namespace. Both `test` and `demo` accept these flags. Without flags,
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL` and `OCC_TEST_OPENAI_MODEL` select the endpoint
+and model. Explicit flags override inherited and prepared settings. Native helper
+bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_TOKEN`.
+Full OpenShell lane preparation and the first-Agent workflows still require their
+Codex token.
 
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
@@ -161,7 +186,7 @@ only one. Then run:
 node scripts/first-agent.mjs my-agent --harness codex --control-ui
 ```
 
-A successful model turn prints `Model response verified:`. An active revision or
+A successful model turn prints `Model response verified:`. A selected version or
 ready Sandbox alone is not a model proof. For an invalid key, rerun with
 `--replace-key`. The starter disables tools. In this Compose/OpenShell profile, `--control-ui` prints both the OCE console and OpenClaw Control UI URLs. Trust the browser CA printed by startup before opening them. Run `./scripts/dev-down` with the same state
 directory when finished.
@@ -173,6 +198,16 @@ and Kubernetes-only first-Agent stacks. It first proves Codex with a `codex-pat`
 source, then creates a separate `openai` source from `OPENAI_API_KEY` for guided
 native OpenClaw provisioning. The native case uses the pinned runtime and
 production Drivers without the k3d helper's compatibility bridge.
+
+To exercise an OpenAI-compatible service, set
+`OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing
+`baseUrl`, `api` (`openai-responses` or `openai-completions`), and a `models` array
+with explicit native model metadata. The first model ID selects the native Agent's
+model; it can differ from the Codex starter model. Supply that service's key as
+`OPENAI_API_KEY`, while retaining the separate `CODEX_ACCESS_TOKEN` for Codex.
+The native source is bound to the catalog's base URL. The same provisioning,
+model-and-exec, and retained-session redeployment assertions run with this input;
+changing only the embedded QA preset does not exercise this path.
 
 The case edits `USER.md` through the workspace API and verifies its marker through
 real model execution and `exec`. That turn writes a unique file in its session

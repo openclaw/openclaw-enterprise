@@ -9,8 +9,8 @@ last_updated_session: authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a
 ## Overview
 
 Trace how Agent detail shares one Agent with an existing Principal and removes
-one explicit Agent binding. The trace starts when Agent detail mounts the
-sharing panel and stops at policy configuration; native gateway admission and
+one explicit Agent binding. The trace starts when Agent detail's Access tab
+mounts the sharing panel and stops at policy configuration; native gateway admission and
 runtime readiness belong to the [native admin flow](../agent-native-admin.md).
 See the [parent flow](../platform-console.md) and the
 [sharing reference](../../reference/console/agent-sharing.md).
@@ -18,8 +18,9 @@ See the [parent flow](../platform-console.md) and the
 ## Entry Points
 
 - `apps/controller/src/console/agents/access.mjs:renderAgentAccess` renders the
-  sharing panel inside Agent detail.
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts it.
+  sharing panel on Agent detail's Access tab.
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts it when
+  that tab first opens.
 - Assumptions: a signed-in Installation administrator, an existing Principal ID,
   and the Namespace IAM policy endpoints.
 
@@ -27,14 +28,16 @@ See the [parent flow](../platform-console.md) and the
 
 ```mermaid
 graph TD
-  A["Agent detail mounts sharing panel"] --> B["Read Namespace Roles and bindings"]
+  A["Access tab mounts sharing panel"] --> B["Read Namespace Roles and bindings"]
   B -->|policy denied| K["Keep other Agent panels available"]
   B --> C["Submit share for an existing Principal"]
   C --> D["Reread policy; find or create Namespace read Role"]
   D --> E["Bind Namespace read to the exact Namespace"]
   E --> F["Find or create Agent read/administer Role"]
   F --> G["Bind it to the selected Agent"]
+  C --> P["Hold version and page changes"]
   G -->|confirmed steps| H["Show progress and direct grants"]
+  H --> U["Release the hold"]
   C -->|uncertain| Q["Block writes until policy refresh"]
   H --> R["Remove one selected Agent binding"]
 ```
@@ -45,12 +48,12 @@ graph TD
 
 `apps/controller/src/console/agents/access.mjs:renderAgentAccess`
 
-Agent detail mounts sharing independently of revision/configuration reads and
-native admission, but not when the console's observability probe already showed
-the person lacks Installation administration: the policy endpoints require it and
-the API audits each denial. The panel reads the selected Namespace's existing
+The Access tab mounts sharing independently of version/configuration reads and
+native admission. Agent detail leaves the tab out when the console's Installation-access
+answer already showed the person lacks Installation administration: the policy
+endpoints require it and the API audits each denial. The panel reads the selected Namespace's existing
 `/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
-sharing panel and leaves the other panels usable; a current `401` retains global
+panel and the tab, opens Configuration, and leaves the other panels usable; a current `401` retains global
 session expiry.
 
 ### 2. Serialize Role and binding writes
@@ -67,7 +70,23 @@ resource on each write. Confirmed progress survives later failure; unknown
 results disable mutations until an explicit current-policy refresh. Readback is
 configuration evidence, not a historical receipt, and never triggers a write.
 
-### 3. Remove one explicit binding
+### 3. Hold the page while writes run
+
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail`
+
+Each request belongs to the page and stops when the page goes. So while a share or
+removal runs, the panel's `onWriting` callback has Agent detail hold version and
+page changes, as it does for a draft's writes. The held changes are the Versions
+rail, Create new version, version links, ← Agents, the sidebar, the Namespace
+selector, Back and Forward, the header's Refresh, and the page's own reloads. The
+page shows "This page stays open until sharing finishes." Tabs still switch. After
+Delete replaces the page with its deletion row, a write still in flight holds the
+page and its note shows above that row. The page's `setWriteInFlight` check, which
+also covers a draft's writes, makes `beforeunload` in `console.mjs` ask before a
+reload or tab close. The hold ends when the last request settles. At worst that is
+five requests of up to 15 s each, about 75 s. Session expiry and sign-out still leave.
+
+### 4. Remove one explicit binding
 
 `apps/controller/src/console/agents/access.mjs:renderAgentAccess`
 
@@ -77,7 +96,7 @@ The panel retains discovery grants and explains other possible access sources.
 
 ## Debugging and Verification
 
-- A `403` on the policy reads hides only the sharing panel; check Installation
+- A `403` on the policy reads hides only the Access tab; check Installation
   administration before treating a missing panel as a console fault.
 - After an uncertain write, select **Refresh sharing** and inspect the direct
   grants before submitting again. A present binding does not prove an earlier

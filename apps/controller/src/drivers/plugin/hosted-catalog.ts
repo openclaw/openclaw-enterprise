@@ -5,7 +5,7 @@ import type {
   PluginToolCatalogEntry,
 } from "@openclaw-enterprise/contracts";
 import { PluginDiscoveryError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, readCappedBody } from "@openclaw-enterprise/utils";
 
 const CATALOG_URL = "https://chatgpt.com/backend-api/ps/";
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -50,34 +50,14 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
     await response.body?.cancel().catch(() => {});
     invalid();
   }
-  const reader = response.body?.getReader();
-  if (!reader) {
+  const contents = await readCappedBody(response.body, MAX_RESPONSE_BYTES);
+  if (contents === undefined) {
     invalid();
   }
-  const chunks: Uint8Array[] = [];
-  let size = 0;
   try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
-      }
-      size += chunk.value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) {
-        invalid();
-      }
-      chunks.push(chunk.value);
-    }
-    try {
-      return record(JSON.parse(Buffer.concat(chunks, size).toString("utf8")));
-    } catch {
-      invalid();
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => {});
-    throw error;
-  } finally {
-    reader.releaseLock();
+    return record(JSON.parse(contents.toString("utf8")));
+  } catch {
+    invalid();
   }
 }
 
@@ -196,11 +176,11 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
     switch (plugin.disabled_reason) {
       case "disabled_by_admin":
         unavailableReason =
-          "Disabled by a ChatGPT workspace administrator. Ask an administrator to enable access for the user or service account behind this token.";
+          "Disabled by a ChatGPT workspace administrator. Ask one to enable access for the user or service account behind this token.";
         break;
       case "plan_not_eligible":
         unavailableReason =
-          "This workspace's plan is not eligible for this plugin. Ask a workspace administrator to review plan availability.";
+          "This workspace's plan is not eligible for this plugin. Ask a ChatGPT workspace administrator to review plan availability.";
         break;
       case "required_app_unavailable":
         unavailableReason =
@@ -375,7 +355,7 @@ export async function getHostedPlugin(
           ...(!appAvailable
             ? { unavailableReason: "The app providing this tool is unavailable for this account." }
             : !enabled
-              ? { unavailableReason: "This tool is disabled by the administrator." }
+              ? { unavailableReason: "This tool is disabled by a ChatGPT workspace administrator." }
               : {}),
           writes: !readOnly,
         });

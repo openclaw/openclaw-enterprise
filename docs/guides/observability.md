@@ -18,7 +18,7 @@ not provide traces.
 | Signal              | Available path                                                                                                                                                                                         |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Operational logs    | Local container output; optional OpenTelemetry Collector export over OTLP/HTTP to your log backend.                                                                                                    |
-| One Agent's output  | The console **Logs** tab and `runtime/logs` API read a bounded, redacted page from Kubernetes on demand; nothing is exported. See [Agent logs](topics/agent-logs.md).                                  |
+| One Agent's output  | The console **Logs** tab and `runtime/logs` API read up to 1000 redacted log lines from Kubernetes on demand; nothing is exported. See [Agent logs](topics/agent-logs.md).                             |
 | Collector metrics   | Prometheus endpoint on port `8888` for the collection pipeline itself.                                                                                                                                 |
 | Audit records       | Stored separately in PostgreSQL; the Collector does not export them. See [Audit Log](topics/audit-log.md).                                                                                             |
 | Application metrics | Private OCC Prometheus endpoints enabled by default in Helm; see [production scraping](observability/metrics.md) and the [development dashboard](../testing/local.md#metrics-and-observability-tests). |
@@ -93,8 +93,8 @@ Additional mounts require deployment changes: Helm projects only three named
 configuration files and offers no extra-mount value. Never reference an unmounted CA.
 
 Keep the exporter named `otlp_http`, or update the receiver pipeline's exporter
-reference too. Preserve the shared filtering policy and bounded queue/retry
-settings. Do not put exporter credentials in Installation YAML, Agent
+reference too. Preserve the shared filtering policy, queue size limit, and maximum retry
+window. Do not put exporter credentials in Installation YAML, Agent
 Configurations, SecretBindings, lifecycle hooks, or runtime images.
 
 ### 3. Enable collection for your deployment
@@ -133,7 +133,7 @@ logging block alone cannot install OCC.
 If an existing cluster Collector already reads the OCC and tenant CRI files,
 use it only after applying the same [native receiver](../../deploy/logging/kubernetes.yaml)
 and [shared policy](../../deploy/logging/collector.yaml): trusted metadata,
-privacy, filtering, egress, and bounded state. Use one collection route per
+privacy, filtering, egress, and limits on memory, storage, and queues. Use one collection route per
 stream. Otherwise, enable the bundled Collector below.
 
 Create its two dedicated Secrets before installing or upgrading the chart:
@@ -193,7 +193,7 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 Helm never updates these Secrets, so an upgrade keeps the previous release's
 filtering until you refresh them. Before each upgrade, including image-only
 releases, reapply `collector.yaml` and `kubernetes.yaml` from the target
-revision's checkout and merge any reviewed local changes. Substitute your
+commit's checkout and merge any reviewed local changes. Substitute your
 protected exporter file if you use one. Then restart the Collector as shown above:
 
 ```bash
@@ -206,7 +206,7 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system apply -f -
 ```
 
-Review the `deploy/logging/` diff between the two revisions first. The restart
+Review the `deploy/logging/` diff between the two commits first. The restart
 re-sends every collected Pod log still on each node, so expect duplicate or
 refused records in the backend (see [production readiness](#production-readiness)).
 `scripts/upgrade-production-images` compares both files with its checkout and
@@ -229,7 +229,7 @@ only to keep a reviewed custom configuration.
 Retained record bodies hold the event name; `codex.turn` and `codex.tool_call`
 bodies are fixed text, and `codex.operational` keeps Codex's message when it is
 short plain text. Search for a request, Agent,
-or revision by its attribute, not by body text; in Loki these are structured
+or version by its attribute, not by body text; in Loki these are structured
 metadata, for example `{service_name="occ-worker"} | occ_revision_id="<id>"`.
 
 A healthy Collector and local container output do not prove that the backend
@@ -287,9 +287,10 @@ to assign alert recipients and response procedures alongside these collection ch
 - Alert on failed exports, refused records, queue saturation, and Collector
   restarts. Verify retention and access controls in your selected backend.
 - Treat delivery as best-effort. Docker keeps exporter queues in the
-  `occ_otelcol_data` volume and bounded runtime log caches; its push-based
+  `occ_otelcol_data` volume and runtime log caches with at most two files of `10m` each; its push-based
   Fluent Forward receiver has no file offsets. Kubernetes keeps file offsets
-  and exporter queues in `/var/lib/otelcol` on bounded `emptyDir` storage,
+  and exporter queues in `/var/lib/otelcol` on an `emptyDir` volume with a
+  size limit (128 MiB by default),
   which survives container restart but is lost on Pod or node replacement. A
   replaced Collector Pod, including after the `rollout restart` an upgrade
   refresh needs, reads every collected Pod log still on its node from the

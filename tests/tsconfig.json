@@ -1,0 +1,48 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "composite": false,
+    "declaration": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "erasableSyntaxOnly": true,
+    "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo"
+  },
+  "include": [
+    "**/*.test.ts",
+    "../deploy/runtime/google/install-gog.mts",
+    "../scripts/console-storybook/*.stories.ts",
+    "../scripts/console/record-walkthrough.ts",
+    "../packages/contracts/prepack.ts",
+    "../packages/utils/prepack.ts",
+    "helpers/credential-source-owner-upgrade.ts",
+    "helpers/codex-preparation-caller.ts",
+    "fixtures/runtime-google-skill-policy.mts",
+    "fixtures/codex-local-plugins/probe.ts",
+    "fixtures/codex-local-plugins/enrollment.ts",
+    "fixtures/repository-credentials/module-guard.ts",
+    "fixtures/repository-credentials/planning.ts"
+  ],
+  "references": [
+    {
+      "path": "../packages/utils"
+    },
+    {
+      "path": "../packages/contracts"
+    },
+    {
+      "path": "../packages/occ"
+    },
+    {
+      "path": "../packages/iam"
+    },
+    {
+      "path": "../packages/audit"
+    },
+    {
+      "path": "../apps/controller"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
-# Driver contract documentation template
+# Write a Driver contract
 
-Use this template when writing or rewriting a base Driver contract under
+Use the [Driver contract template](../assets/reference-driver.md) when writing or updating a base Driver contract under
 `docs/reference/drivers/`. Document the shared capability rather than a concrete
 backend. Inspect the exported interface and its actual callers before asserting
 behavior. Preserve existing guarantees and incoming anchors when reorganizing a
@@ -19,18 +19,13 @@ implemented behavior from target design.
 
 ## Interface
 
-Link the canonical exported types. Describe required identity properties and
-core methods, then optional methods, hooks, and capability declarations. For
-each operation, cover inputs, results, preconditions, side effects, and failure
-meaning. Explain what happens when an optional method is absent and whether a
-caller or production mode nevertheless requires it.
-
-Use a compact operation table when helpful:
-
-```markdown
-| Operation | Required? | Inputs and preconditions | Result / side effects | Failure or absence |
-| --------- | --------- | ------------------------ | --------------------- | ------------------ |
-```
+Link the exported types. Group members under **Properties** and then **Methods**.
+In each table, put required members before optional members. Use the exported
+type to determine whether the requirement is `Required` or `Optional`. For an
+optional member, describe the default or fallback and which features are
+unavailable when it is absent. Do not describe an optional member as required
+for a feature. For each method, explain the caller, inputs, result, side effects,
+and failures that affect the caller.
 
 Do not duplicate an entire source interface merely to list fields. Include a
 small shared-contract example when it clarifies a boundary; keep backend setup
@@ -48,6 +43,7 @@ behavior; link canonical IAM policy instead of copying it.
 
 ## Lifecycle
 
+Use a Mermaid sequence diagram to show who calls whom and in what order.
 Distinguish Driver-instance selection, construction, startup, and shutdown from
 the lifecycle of managed resources. Do not imply a destructor exists when the
 interface has none. Explain relevant admission, preparation, readiness,
@@ -104,31 +100,7 @@ These are coverage prompts, not new runtime obligations:
   preparation versus installation; approval policy; exported methods versus
   bundled implementation helpers.
 
-## Copyable outline
-
-```markdown
-# <Name>Driver contract
-
-## Overview
-
-## Interface
-
-### Core interface
-
-### Optional additions
-
-## IAM
-
-## Lifecycle
-
-## Limits
-
-## Troubleshooting
-
-## Implementations
-
-## Related
-```
+## Check the page
 
 Before handoff, verify source claims, relative links, heading anchors, navigation,
 formatting, and the repository word budget. Reference checks do not establish

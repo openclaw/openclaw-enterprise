@@ -14,6 +14,8 @@ import {
 } from "../../scripts/ci/failure-redaction.mjs";
 import { createDevUpModelProvider, imageBuildFailure } from "../helpers/dev-up-model-provider.mjs";
 import { configureModelProviderDNS } from "../helpers/runtime-model-provider.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 
 const execute = promisify(execFile);
 const revision = "a".repeat(40);
@@ -196,6 +198,7 @@ test("provider prepares a scoped immutable image pair and requires a completed t
   await execute("openssl", ["verify", "-CAfile", ca, "-verify_hostname", "api.openai.com", leaf]);
   await assert.rejects(
     execute("openssl", ["verify", "-CAfile", ca, "-verify_hostname", "unrelated.test", leaf]),
+    { code: 2, message: /hostname mismatch/i },
   );
   assert.match(images.OCC_DEVELOPMENT_CONTROLLER_IMAGE, /\/controller@sha256:[a-f0-9]{64}$/);
   assert.match(images.OCC_KUBERNETES_RUNTIME_IMAGE, /\/runtime@sha256:[a-f0-9]{64}$/);
@@ -608,8 +611,7 @@ test("cleanup before prepare permanently closes provider admission", async (t) =
 });
 
 test("Node timeout teardown joins the actual launcher case owner and rejects later work", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-provider-timeout-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-provider-timeout-");
   const trace = join(directory, "trace.jsonl");
   const root = join(directory, "case");
   const child = join(directory, "timeout.test.mjs");
@@ -667,7 +669,7 @@ test("deliberate cancellation", { timeout: 500 }, async (t) => {
       return true;
     },
   );
-  assert.deepEqual((await readFile(trace, "utf8")).trim().split("\n").map(JSON.parse), [
+  assert.deepEqual(await readJsonLines(trace), [
     "command-started",
     "teardown-start",
     "process-settled",
@@ -724,8 +726,7 @@ test("launcher case keeps recovery files after provider cleanup failure and perm
 
 test("launcher case preserves recovery files after forced process termination", async (t) => {
   const { runDevUpModelProviderCase } = await import("../helpers/dev-up-model-provider.mjs");
-  const root = await mkdtemp(join(tmpdir(), "oce-provider-forced-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "oce-provider-forced-");
   let cleanup;
   const scope = {
     signal: new AbortController().signal,

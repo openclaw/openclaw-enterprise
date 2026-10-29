@@ -42,7 +42,7 @@ const PROCESS_EXIT_DETAILS: ReadonlySet<string> = new Set([
   ...PROCESS_EXIT_ERROR_CODES.map((code) => `error-${code}`),
 ]);
 
-// The startup probe retries a transient failure once; when the second attempt
+// The startup probe retries a timeout or reliability failure once; when the second attempt
 // fails too, its detail token carries this suffix.
 const RETRIED_DETAIL_SUFFIX = "-attempt2";
 

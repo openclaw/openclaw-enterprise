@@ -25,24 +25,22 @@ only its owner's Channel traffic and runtime requests. It is distinct from the
 Ingress Gateway, OAG, and OpenShell gateway.
 
 OCC establishes an Agent's gateway through the selected `ComputeDriver`'s
-revision-scoped `prepareRevision` operation in the runtime targets for the
+`prepareRevision` operation for one Agent revision in the runtime targets for the
 selected execution topology. Namespace and Agent ownership remain exact even
 when gateway and Harness have different physical locations.
 The admitted Agent configuration configures both the gateway and workload and
 exists before the gateway starts. Gateway ownership remains stable
-across that Agent's revisions; deploying or deleting one Agent cannot recreate,
+across that Agent's versions; deploying or deleting one Agent cannot recreate,
 delete, reconfigure, or route through another Agent's gateway. Agent deletion
-removes only its gateway and revision-owned Harness resources across their
+removes only its gateway and each Agent revision's Harness resources across their
 targets. Namespace deletion uses `deleteNamespace` to remove remaining
 Namespace-owned infrastructure after the Namespace is empty; it does not remove
 shared control-plane infrastructure or another tenant's resources.
 
 OCC prepares a nonserving route for the candidate Agent workload and enables
-it only after the candidate's revision is the sole active revision and its
-Harness is ready. Gateway routing binds the exact Namespace, Agent, and active
-revision, including when a route crosses runtime targets.
-A gateway, configuration, or route failure leaves the previously active
-revision and its credentials inaccessible to any other revision; failed
+it only after the candidate's version is the sole selected version and its
+Harness is ready. Gateway routing binds the exact Namespace, Agent, and selected version, including when a route crosses runtime targets.
+A gateway, configuration, or route failure leaves the previously selected version and its credentials inaccessible to any other version; failed
 replacement requires exact-owner rollback or fail-closed traffic denial.
 
 The gateway is not a platform primitive, authorization authority, or additional
@@ -63,7 +61,7 @@ Each Agent explicitly selects one Harness execution topology:
   Harness process. The current direct-credential exception also delivers the
   Agent-specific model credential to that combined workload.
 - `dedicated`: the Agent-owned gateway belongs to the OCC control-plane runtime
-  target and connects to its revision-scoped Harness in the selected tenant
+  target and connects to the Harness for that version in the selected tenant
   data-plane runtime target. Dedicated Codex uses a separate workload. Gateway
   and Harness use separate Kubernetes ServiceAccounts and network access;
   only Codex receives the exact Agent's projected identity. The current
@@ -78,7 +76,7 @@ The default runtime targets share one tenant namespace in one Kubernetes cluster
 separate from OCC's API/worker namespace. Configuration and canonical credential
 sources share that tenant namespace. Workload managers there are trusted for
 both roles; quotas and namespace-wide operations cover both. Separate Pods,
-ServiceAccounts, private volumes and exact Agent/revision network peers preserve
+ServiceAccounts, private volumes and exact Agent/version network peers preserve
 runtime delivery boundaries. The experimental `executionCluster` profile retains
 a managed Gateway namespace in the control cluster and places Harness resources
 in a second cluster; complete runtime acceptance remains pending. See
@@ -92,7 +90,7 @@ activation, stop, retirement, and deletion in both targets under the
 
 The selected Harness comes from the Agent's native provider/model configuration;
 OCC snapshots its server-approved identity, version, and explicit execution
-mode in each immutable revision. A native model catalog may offer multiple
+mode in each immutable version. A native model catalog may offer multiple
 models when every selectable entry explicitly resolves to the same approved
 Harness and provider. The provider name alone does not determine the Harness:
 an `openai/*` model explicitly routed through an enabled Codex websocket plugin
@@ -102,17 +100,17 @@ workload identity, provider configuration, or runtime traffic.
 
 Gateway/Harness connectivity and file/config exchange must not depend on
 same-namespace DNS, a shared PVC, or shared Kubernetes Secret references.
-Realization must preserve the exact owner and admitted revision across target
+Realization must preserve the exact owner and saved version across target
 boundaries. The [runtime trust boundary](access.md#runtime-trust-across-targets)
 applies even when both targets share a cluster. Detailed file ownership and
 transfer mechanisms remain outside this placement design.
 
 Canonical configuration, policy and credentials belong to trusted control-plane
 storage. Dedicated Gateways consume admitted channel credentials and their own
-password there. Compute delivers only revision-scoped execution material to the
+password there. Compute delivers only the execution material for that version to the
 data plane: selected model authorization, app-server transport, node enrollment
 and execution configuration. Harnesses cannot write canonical CP sources, routes
-or active-revision state. Current raw model-token delivery and bearer app-server
+or version selection. Current raw model-token delivery and bearer app-server
 transport remain explicit limitations, not brokered or mutually authenticated
 workload identity. See the [implementation follow-ups](../../specs/plans/36-control-plane-gateways-plan.md#open-work-and-release-boundaries).
 
@@ -126,11 +124,14 @@ Installation. Its optional `backendId` references Installation-owned Backend
 configuration; null preserves Agents without a Backend. It can also own desired
 plugin selections independently of its reusable Configuration. One
 Installation-selected PluginDriver validates and renders those selections during
-revision startup.
+version startup.
 
 Editing an Agent or one of its referenced resources changes only
 the inputs available to a future deployment; it does not change an existing
-`AgentRevision` or running Agent workload.
+`AgentRevision` or running Agent workload. An explicit, separately authorized
+[network policy application](../reference/sandbox-policies.md) can update the
+active Sandbox in place when its Driver supports live changes. OCC records the
+result separately. The Agent revision keeps the policy saved at deployment.
 
 Deploying an Agent follows one path.
 
@@ -151,40 +152,39 @@ Deploying an Agent follows one path.
 6. OCC verifies that the exact backing tenant infrastructure is ready in the
    selected runtime targets and that the selected `SandboxDriver` supports the
    entire `SandboxPolicy`. Gateway readiness remains part of the exact Agent's
-   revision preparation.
-7. OCC creates an immutable `AgentRevision` from the admitted Agent,
+   version preparation.
+7. OCC creates an `AgentRevision` from the admitted Agent,
    configuration, references including nullable `backendId`, requested plugin
    selections, server-approved Harness identity/version and explicit mode,
    sandbox policy, and selected compute, sandbox, and plugin implementations.
-8. OCC gives selected Drivers the same revision, exact Namespace, and
+8. OCC gives selected Drivers the same Agent revision, exact Namespace, and
    stable Agent `WorkloadIdentity`. The worker rechecks Backend metadata and
    managed credential ownership after current IAM authorization and before effects.
-9. The selected Compute Driver invokes revision-scoped `prepareRevision` to
+9. The selected Compute Driver invokes `prepareRevision` for that Agent revision to
    provision the exact Agent's configured gateway and requested topology in
    their respective runtime targets. Embedded OpenClaw runs inside its gateway;
    a dedicated Harness starts as a separate, nonserving candidate. The
    gateway configuration exists before its process starts. A dedicated
-   candidate app-server may start idle alongside the previous revision, but
+   candidate app-server may start idle alongside the previous version, but
    cannot receive traffic or execute Agent turns before activation.
 10. `SandboxDriver` establishes and verifies the exact admitted policy before
     the candidate Agent workload can execute Agent turns.
 11. OCC configures a nonserving route through the exact Agent-owned gateway for
     the candidate workload and verifies owner-bound connectivity across the
     selected targets.
-12. OCC records the ready candidate as the sole active revision and enables its
-    exact Agent-owned route. Only that active revision can receive traffic or
+12. OCC records the ready candidate as the sole selected version and enables its
+    exact Agent-owned route. Only that selected version can receive traffic or
     execute Agent turns.
-13. Once the new route is active, OCC retires the previous revision's owned
+13. Once the new route is active, OCC retires the previous version's owned
     runtime resources while preserving the stable Agent gateway and resources
-    needed by the active revision. If activation or routing fails in either
+    needed by the selected version. If activation or routing fails in either
     target, it does not irreversibly delete the previous workload before recovery.
 
-The active AgentRevision is the immutable record of the Agent's deployed
-version. OCC serializes activation for each Agent and uses its single active
-revision as the source of truth for Agent workload authorization and gateway
+The selected AgentRevision is the immutable record of the Agent's deployed
+version. OCC serializes activation for each Agent and uses its single selected version as the source of truth for Agent workload authorization and gateway
 routing. A candidate app-server can start idle, but a candidate or retired
-revision cannot receive traffic or execute Agent turns.
-Failures before activation leave the previously active revision and Agent
+version cannot receive traffic or execute Agent turns.
+Failures before activation leave the previously selected version and Agent
 workload unchanged. Failures after activation require fail-closed rollback.
 
 ## Current provisioning sequence
@@ -227,10 +227,10 @@ sequenceDiagram
 
     Client->>API: Deploy Agent
     API->>IAM: Authorize deployment and referenced resources
-    API->>OCC: Admit immutable AgentRevision
-    OCC->>DB: Commit revision, audit, and work
+    API->>OCC: Admit AgentRevision
+    OCC->>DB: Commit version, audit, and work
     API-->>Client: 202 AgentRevision
-    Worker->>DB: Claim revision work
+    Worker->>DB: Claim version work
     Worker->>IAM: Reauthorize deployment and references
     Worker->>Compute: prepareRevision(revision)
     alt dedicated Codex
@@ -238,14 +238,14 @@ sequenceDiagram
     else embedded OpenClaw
         Compute->>Runtime: Prepare combined gateway and Harness
     end
-    Compute-->>Worker: Revision ready for activation
+    Compute-->>Worker: Version ready for activation
     opt Driver activates before commit
-        Worker->>Compute: Activate prepared revision
+        Worker->>Compute: Activate prepared version
     end
-    Worker->>DB: Commit active revision under the live claim
+    Worker->>DB: Commit selected version under the live claim
     opt Driver activates after commit
-        Worker->>Compute: Activate committed revision
+        Worker->>Compute: Activate committed version
     end
-    Worker->>Compute: Retire prior revision when present
+    Worker->>Compute: Retire prior version when present
     Worker->>DB: Commit activation audit and work completion
 ```

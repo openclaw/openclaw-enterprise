@@ -99,7 +99,7 @@ network or another Namespace network.
 
 ## AgentRevision lifecycle
 
-`prepareRevision(revision)` validates the immutable Namespace, Agent, revision,
+`prepareRevision(revision)` validates the immutable Namespace, Agent, and `AgentRevision`,
 Harness identity, execution mode, and selected Compute implementation before it
 starts containers. The code implements the topologies below, but it rejects
 the model-authentication bindings required for a newly deployed Agent:
@@ -108,8 +108,8 @@ the model-authentication bindings required for a newly deployed Agent:
   That container also runs the embedded Harness and receives only that Agent's
   model credential.
 - `codex` with `dedicated` starts one Agent-owned OpenClaw gateway container
-  and one exact-revision Codex app-server container. The gateway connects to
-  Codex through authenticated `APP_SERVER_URL` and `APP_SERVER_TOKEN`
+  and one Codex app-server container for that Agent revision. The gateway
+  connects to Codex through authenticated `APP_SERVER_URL` and `APP_SERVER_TOKEN`
   transport. Only the Codex container receives the model credential.
 
 When recovery reuses a healthy Codex container, the driver reads its existing
@@ -123,28 +123,56 @@ not build, download, or publish runtime images. Missing image references,
 unsupported Harness combinations, unavailable container-engine access, failed
 transport authentication, or unready containers fail closed.
 
+To upgrade OpenClaw, deploy the Agent with a different gateway image. As on
+Kubernetes, the gateway starts OpenClaw and its state migration with
+`OPENCLAW_NO_AUTO_UPDATE=1`: OpenClaw does not check for updates, send its
+installation count request, or install updates.
+
 Container image references must already resolve in the selected engine. The
 development Driver accepts tags as well as digests; production Kubernetes
 digest requirements do not imply that the local engine enforces immutable
 images.
 
-`retireRevision(revision)` removes only the exact revision's owned runtime. It
-preserves another Agent's containers and preserves a gateway still required by
-a replacement revision for the same Agent.
+Both topologies keep one gateway container per Agent, so a new version
+replaces the active version's gateway. The Driver therefore declares
+[exclusive replacement](compute.md#production-revision-stages)
+(`requiresStoppedPredecessors`) for every version: the worker stops all earlier
+versions before preparing the new one, and stops a refused new version, so
+the Agent is unavailable until a later version deploys. Redeployment interrupts
+service and has no automatic rollback.
+
+`retireRevision(revision)` removes only the runtime with the same Agent revision
+ID. It preserves another Agent's containers and preserves a gateway still required by
+a replacement version for the same Agent.
 
 `stopRevision(revision)` removes the exact dedicated Agent container and a
-gateway only when it still serves that revision. Embedded execution removes the
+gateway only when it still serves that version. Embedded execution removes the
 combined gateway container. Repeating stop is safe; Docker stop does not retire
 the persisted AgentRevision or remove credentials outside the containers. The
 Driver retains the Agent-owned state and workspace volumes used for initial
-workspace setup across stop and revision replacement. Without initial workspace
+workspace setup across stop and version replacement. Without initial workspace
 inputs, writable container tmpfs remains ephemeral.
 
+For a stateful embedded Gateway, the Driver can recover after an unclean stop
+if it observed the old container's private Linux PID namespace while it ran.
+Docker Engine must report that the same container instance exited, and the
+replacement must use the same local state volume. OpenClaw checks every
+recorded holder against that namespace before releasing its locks. If the
+Driver lost its observation or the holders do not match, follow
+[operator recovery](../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+
+The Driver kills an observed embedded Gateway to record its exit. It stops
+every other container before removal: Docker sends SIGTERM and sends SIGKILL
+after 10 seconds. A Gateway that exits on SIGTERM releases its OpenClaw state
+lock, so its replacement needs no recovery. This includes a Gateway that the
+Driver did not observe, for example after a controller restart. If the stop
+fails, the Driver still removes the container and reports the stop failure.
+
 State on that volume outlives runtime image upgrades. Before OpenClaw starts,
-the gateway runs the same agent database migration as a
+the gateway runs the same state migration as a
 [Kubernetes Gateway](kubernetes-compute/storage-and-credentials.md#gateway-storage):
 `openclaw doctor --fix --non-interactive` once, with the configuration
-read-only, when an agent database uses an older schema. If a database is still
+read-only, when its shared state or an agent database uses an older schema. If a database is still
 older afterwards, the container logs `Gateway state migration failed` and exits
 without starting OpenClaw, and the deployment fails as an unready container.
 The Driver then removes the container, so Doctor's output survives only
@@ -164,8 +192,10 @@ published port cannot reach while the healthcheck on loopback passes: a
 
 The container implementation renders `gateway.auth.mode: password` when native
 Configuration omits the mode. Explicit `password` and `trusted-proxy` are supported.
-Only supported authentication fields and modes are admitted. These rules do not
-remove the harness-authentication admission limit above.
+Only supported authentication fields and modes are admitted: deployment refuses
+another mode, such as `token` or `none`, or an unsupported field, such as
+`gateway.auth.token`, with `409` before it stops the running revision. These rules
+do not remove the harness-authentication admission limit above.
 
 With password mode, omitting `gateway.auth.password` selects the managed
 `OPENCLAW_GATEWAY_PASSWORD` reference. An explicit reference to that variable also
@@ -222,9 +252,9 @@ personal OpenClaw/Codex homes, SSH-agent sockets, cloud credentials, or
 controller credentials into workload containers.
 
 The driver detects Podman's Docker-compatible API during preflight. Docker
-keeps UID/GID-owned `0700` tmpfs mount options. Podman receives the same bounded
-`1Gi` home and `64Mi` temporary filesystems using its supported mount options;
-the non-root runtime creates its `.openclaw` and workspace directories as
+keeps UID/GID-owned `0700` tmpfs mount options. Podman receives the same size
+limits: `1Gi` for the home and `64Mi` for temporary filesystems. It uses its
+supported mount options. The non-root runtime creates its `.openclaw` and workspace directories as
 `0700` before writing configuration or state. For Agents with initial inputs,
 the setup container prepares ownership and permissions on the named volumes.
 

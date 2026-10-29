@@ -1,17 +1,24 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 // Runs the real Driver and host helper. SSH and systemd are replaced by fixtures;
 // only tests/integration/ssh-compute-real.test.mjs provides opt-in host proof.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import {
   access,
   appendFile,
   chmod,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   readlink,
+  rename,
   rm,
   stat,
   symlink,
@@ -29,6 +36,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { SystemSshCommandExecutor } from "../../apps/controller/src/drivers/compute/ssh/executor.ts";
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 
@@ -63,11 +71,13 @@ function revision(driver, number = 1, agentId = "agent-ssh-1", configuration = {
     namespaceId: tenant.id,
     agentId,
     revision: number,
+    gatewayManagedMode: false,
     backendId: null,
     harnessAuth: { method: "runtime" },
     configurationId: `configuration-${agentId}`,
     configurationKind: "agent",
     configurationGeneration: number,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       {
         gateway: { mode: "local" },
@@ -208,8 +218,36 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(resolve));
 }
 
+// Startup refuses a runtime.root (and Node or OpenClaw path) under /tmp or /var/tmp, which the
+// unit's PrivateTmp hides, and tmpdir() is /tmp on CI runners. Fixture hosts live in the
+// gitignored test-results directory instead.
+const fixtureHosts = fileURLToPath(new URL("../../test-results/ssh-compute/", import.meta.url));
+
+async function stopFixtureUnits(state) {
+  // Detached unit processes survive helper exit, as systemd services would.
+  for (const name of await readdir(state)) {
+    if (!name.endsWith(".pid")) {
+      continue;
+    }
+    const pid = Number(await readFile(join(state, name), "utf8").catch(() => ""));
+    // A pid file read between create and write is empty (0): kill(0) would signal
+    // this runner's own process group. A removed file reads as empty too.
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      continue;
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
+}
+
 async function fixture(t, selection = {}) {
-  const base = await mkdtemp(join(tmpdir(), "occ-ssh-"));
+  await mkdir(fixtureHosts, { recursive: true });
+  const base = await mkdtemp(join(fixtureHosts, "occ-ssh-"));
   const root = join(base, "root");
   const units = join(base, "units");
   const state = join(base, "fixture");
@@ -276,31 +314,17 @@ async function fixture(t, selection = {}) {
   };
   const driver = createSshComputeDriver(configured, { executor, ...selection });
   t.after(async () => {
-    // Detached unit processes survive helper exit, as systemd services would.
-    for (const name of await readdir(state)) {
-      if (!name.endsWith(".pid")) {
-        continue;
-      }
-      const pid = Number(await readFile(join(state, name), "utf8").catch(() => ""));
-      // A pid file read between create and write is empty (0): kill(0) would signal
-      // this runner's own process group. A removed file reads as empty too.
-      if (!Number.isSafeInteger(pid) || pid <= 0) {
-        continue;
-      }
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch (error) {
-        if (error.code !== "ESRCH") {
-          throw error;
-        }
-      }
-    }
+    await stopFixtureUnits(state);
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
       }
     }
-    await rm(base, { recursive: true, force: true });
+    // A cancelled helper's flock(1) waiter outlives it and keeps logging attempts into
+    // the fixture state until the lock frees. Retry when one lands mid-removal: a failing
+    // hook skips later after hooks, such as the one that ends a test's lock holder, whose
+    // pipes then keep this file running until its runner timeout.
+    await rm(base, { recursive: true, force: true, maxRetries: 10 });
   });
   const nsDir = join(root, "namespaces", digest(tenant.id).slice(0, 12));
   return {
@@ -400,6 +424,93 @@ function setOption(object, keys, value) {
   target[keys.at(-1)] = value;
 }
 
+// The unit's PrivateTmp hides /tmp and /var/tmp, so a state root there timed out every deploy;
+// docs already forbade it (finding 2358).
+test("SSH startup refuses a runtime.root and Node or OpenClaw paths the unit cannot use", () => {
+  const dedicated =
+    "Use a dedicated absolute directory without . or .. segments, such as /var/lib/openclaw-enterprise.";
+  const privateTmp =
+    "Use a path outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those.";
+  for (const [root, message] of [
+    ["/", dedicated],
+    ["//", dedicated],
+    ["/var/lib/../../tmp/oce", dedicated],
+    ["/var/lib/./oce", dedicated],
+    ["/tmp", privateTmp],
+    ["/tmp/openclaw-enterprise", privateTmp],
+    ["//var/tmp/oce", privateTmp],
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError, root);
+        assert.deepEqual(error.error.details, [
+          { path: "/runtime/root", code: "INVALID_VALUE", message },
+        ]);
+        return true;
+      },
+    );
+  }
+  for (const root of [
+    "/var/lib/openclaw-enterprise",
+    "/srv/tmp/oce",
+    "/tmpdata",
+    "/var/tmpfiles",
+  ]) {
+    const candidate = options();
+    candidate.runtime.root = root;
+    requireConfiguration(SshComputeDriver, candidate);
+  }
+  // The unit's ExecStart and ExecStartPre run the Node and OpenClaw paths, which PrivateTmp
+  // hides just the same.
+  for (const [edit, path, prefix] of [
+    [(candidate) => (candidate.runtime.nodePath = "/tmp/node"), "/runtime/nodePath", ""],
+    [
+      (candidate) => (candidate.runtime.openclawPath = "/var/tmp/oc.js"),
+      "/runtime/openclawPath",
+      "",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.nodePath = "/tmp/node"),
+      "/hosts",
+      "hosts.stable.nodePath: ",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.openclawPath = "//tmp/oc.js"),
+      "/hosts",
+      "hosts.stable.openclawPath: ",
+    ],
+    [
+      (candidate) => (candidate.runtime.openclawPath = "/var/./tmp/oc.js"),
+      "/runtime/openclawPath",
+      "",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.nodePath = "/usr/../tmp/node"),
+      "/hosts",
+      "hosts.stable.nodePath: ",
+    ],
+  ]) {
+    const candidate = options();
+    edit(candidate);
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError, path);
+        assert.deepEqual(error.error.details, [
+          { path, code: "INVALID_VALUE", message: `${prefix}${privateTmp}` },
+        ]);
+        return true;
+      },
+    );
+  }
+  const elsewhere = options();
+  elsewhere.hosts.stable.openclawPath = "/srv/tmp/oc.js";
+  requireConfiguration(SshComputeDriver, elsewhere);
+});
+
 test("SSH closed schema and semantic validation reject every invalid option", () => {
   const schema = SshComputeDriver.configurationSchema;
   assert.equal(schema.additionalProperties, false);
@@ -425,6 +536,8 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       Number.MAX_SAFE_INTEGER + 1,
       /connectTimeoutSeconds must be a positive safe/,
     ],
+    // OpenSSH refuses a longer ConnectTimeout, so every probe would fail and blame the host.
+    [["ssh", "connectTimeoutSeconds"], 2_147_483_648, /connectTimeoutSeconds must be at most/],
     [["hosts", "stable", "address"], "", /Host address is required/],
     [["hosts", "stable", "address"], "-oProxyCommand=bad", /Host address must be a hostname or IP/],
     [["hosts", "stable", "address"], "host;false", /Host address must be a hostname or IP/],
@@ -477,14 +590,22 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       setOption(candidate, keys, value);
     }
     assert.equal(Check(schema, candidate), false, keys.join("."));
-    assert.throws(() => SshComputeDriver.validateConfiguration(candidate), refusal, keys.join("."));
-    assert.throws(() => new SshComputeDriver(candidate), refusal, keys.join("."));
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      SharedConfigurationValidationError,
+      keys.join("."),
+    );
+    assert.throws(
+      () => new SshComputeDriver(candidate),
+      SharedConfigurationValidationError,
+      `${keys.join(".")}: ${refusal}`,
+    );
   }
   const reversed = options();
   reversed.network.gatewayPortRange = { start: 2000, end: 1999 };
   assert.throws(
-    () => SshComputeDriver.validateConfiguration(reversed),
-    /start must not exceed end/,
+    () => requireConfiguration(SshComputeDriver, reversed),
+    SharedConfigurationValidationError,
   );
   const optional = options();
   optional.ssh.connectTimeoutSeconds = 2;
@@ -540,7 +661,8 @@ test("SSH Namespace preparation creates exact ownership, rejects adoption, and c
   assert.equal(f.calls.length, 0);
   assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
   const marker = join(f.nsDir, "namespace.json");
-  assert.deepEqual(await json(marker), {
+  const original = await json(marker);
+  assert.deepEqual(original, {
     driverId: "compute-ssh",
     implementation: "occ/ssh",
     namespaceId: tenant.id,
@@ -549,25 +671,23 @@ test("SSH Namespace preparation creates exact ownership, rejects adoption, and c
   assert.equal((await stat(marker)).mode & 0o777, 0o600);
   assert.deepEqual(hooks, [tenant.id]);
   assert.throws(() => f.driver.setLifecycleDrivers([]), /cannot change/);
-  for (const key of ["driverId", "implementation", "namespaceId", "namespaceName"]) {
-    const original = await json(marker);
-    await writeFile(marker, JSON.stringify({ ...original, [key]: "foreign" }));
+  // Replace the directory entry; never follow an unexpected link to change its target.
+  const replaceMarker = async (value) => {
+    const replacement = marker + ".replacement";
+    await writeFile(replacement, JSON.stringify(value), { flag: "wx", mode: 0o600 });
+    await rename(replacement, marker);
+  };
+  for (const key of Object.keys(original)) {
+    await replaceMarker({ ...original, [key]: "foreign" });
     assert.equal((await f.driver.ensureNamespace(tenant)).failure, "permanent");
     assert.equal((await f.driver.deleteNamespace(tenant)).failure, "permanent");
     assert.equal((await json(marker))[key], "foreign");
-    await writeFile(marker, JSON.stringify(original));
+    await replaceMarker(original);
   }
   await rm(marker);
   assert.equal((await f.driver.ensureNamespace(tenant)).failure, "permanent");
-  await writeFile(
-    marker,
-    JSON.stringify({
-      driverId: "compute-ssh",
-      implementation: "occ/ssh",
-      namespaceId: tenant.id,
-      namespaceName: tenant.name,
-    }),
-  );
+  await assert.rejects(access(marker), { code: "ENOENT" });
+  await replaceMarker(original);
   const unowned = revision(f.driver, 1, "agent-ssh-unowned");
   const account = runtimeAccountName(tenant, unowned.agentId, f.configured.runtime.user);
   await Promise.all([
@@ -635,8 +755,19 @@ test("SSH embedded revisions stop without deleting snapshots or persistent Agent
   // Runtime auth is operator-owned. Even an invalid key must not gate process readiness.
   const operatorEnv = join(dir, "env");
   const operatorContents = "OPENAI_API_KEY=invalid-operator-key\n";
-  await writeFile(operatorEnv, operatorContents, { mode: 0o600 });
-  const operatorBefore = await stat(operatorEnv);
+  await writeFile(operatorEnv, operatorContents, { flag: "wx", mode: 0o600 });
+  // Read identity and contents from one descriptor; reopen the name at each observation.
+  const inspectOperatorEnv = async () => {
+    const file = await open(operatorEnv, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const { dev, ino, mode, mtimeNs } = await file.stat({ bigint: true });
+      assert.equal(await file.readFile("utf8"), operatorContents);
+      return { dev, ino, mode, mtimeNs };
+    } finally {
+      await file.close();
+    }
+  };
+  const operatorBefore = await inspectOperatorEnv();
   await f.driver.activateRevision(rev, { secretEnvironment: [] });
   assert.equal((await stat(join(dir, "served.json"))).mode & 0o777, 0o600);
   assert.deepEqual(await json(join(dir, "served.json")), { revisionId: rev.id });
@@ -645,7 +776,7 @@ test("SSH embedded revisions stop without deleting snapshots or persistent Agent
     await readFile(join(dir, "gateway-password.env"), "utf8"),
     /^OPENCLAW_GATEWAY_PASSWORD=[a-f0-9]{64}\n$/,
   );
-  assert.equal(await readFile(operatorEnv, "utf8"), operatorContents);
+  assert.deepEqual(await inspectOperatorEnv(), operatorBefore);
   assert.equal(
     await readFile(join(f.units, f.unit(rev)), "utf8"),
     `[Unit]
@@ -662,6 +793,7 @@ Environment=HOME=${dir}/home
 Environment=OPENCLAW_STATE_DIR=${dir}/state
 Environment=OPENCLAW_CONFIG_PATH=${dir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
+Environment=OPENCLAW_NO_AUTO_UPDATE=1
 EnvironmentFile=${dir}/gateway-password.env
 EnvironmentFile=-${dir}/env
 ExecStart=${process.execPath} ${f.configured.runtime.openclawPath} gateway --port ${port}
@@ -701,11 +833,7 @@ WantedBy=multi-user.target
   await f.driver.activateRevision(replacement);
   await f.driver.retireRevision(rev);
   await f.driver.stopRevision(replacement);
-  const operatorAfter = await stat(operatorEnv);
-  assert.equal(await readFile(operatorEnv, "utf8"), operatorContents);
-  assert.equal(operatorAfter.ino, operatorBefore.ino);
-  assert.equal(operatorAfter.mode, operatorBefore.mode);
-  assert.equal(operatorAfter.mtimeMs, operatorBefore.mtimeMs);
+  assert.deepEqual(await inspectOperatorEnv(), operatorBefore);
   assert.ok(
     (await readFile(join(f.state, "readyz.log"), "utf8"))
       .trim()
@@ -940,17 +1068,54 @@ test("SSH activation invokes lifecycle start hooks and cleans them up after acti
   bind(f.driver, invalidAuth);
   await assert.rejects(
     f.driver.activateRevision(invalidAuth),
-    /unsupported field unsupportedField/,
+    /gateway\.auth\.unsupportedField is not a supported native gateway authentication field/,
   );
   assert.deepEqual(hooks, beforeInvalidAuth);
 });
 
-test("SSH revisions fail closed on unbound identities, unsupported topology, sandbox and Secret delivery", async (t) => {
+// Finding 2268: when the lifecycle cleanup after a failed activation fails too, the activation's
+// own failure stays first, so the worker classifies the deployment by it, and the cleanup
+// failure follows it instead of replacing it.
+test("SSH activation keeps its own failure first when the lifecycle cleanup also fails", async (t) => {
+  const f = await fixture(t, {
+    lifecycleDrivers: [
+      {
+        id: "hooks",
+        implementation: "test",
+        capability: "configuration",
+        computeLifecycleHooks: {
+          async beforeWorkloadStart() {},
+          async beforeWorkloadStop() {
+            throw new Error("lifecycle cleanup refused");
+          },
+        },
+      },
+    ],
+  });
+  const failed = await stage(f);
+  await writeFile(join(f.revisionDir(failed), "revision.json"), JSON.stringify({ broken: true }));
+  const error = await f.driver.activateRevision(failed).then(
+    () => assert.fail("the activation must fail"),
+    (failure) => failure,
+  );
+  assertCleanupFailure(error, /snapshot|ownership/i, [/lifecycle hook beforeWorkloadStop failed/]);
+});
+
+test("SSH revisions fail closed on invalid identities and unsupported workload features", async (t) => {
   const f = await fixture(t);
   const rev = revision(f.driver);
   await assert.rejects(f.driver.prepareRevision(rev), /bound Namespace and Agent/);
   await f.driver.ensureNamespace(tenant);
   bind(f.driver, rev);
+  const managed = { ...rev, gatewayManagedMode: true };
+  const unsupportedManaged = {
+    name: "ConfigurationHarnessError",
+    message: "Agent setting gatewayManagedMode is not supported on SSH Compute.",
+  };
+  const beforeManagedMode = f.calls.length;
+  await assert.rejects(f.driver.prepareRevision(managed), unsupportedManaged);
+  await assert.rejects(f.driver.activateRevision(managed), unsupportedManaged);
+  assert.equal(f.calls.length, beforeManagedMode);
   for (const harnessAuth of [undefined, { method: "runtime", source: {} }]) {
     await assert.rejects(f.driver.prepareRevision({ ...rev, harnessAuth }), /operator-managed/);
   }
@@ -1285,16 +1450,95 @@ test("SSH setup failures withhold activation, preserve private input, and reject
   }
 });
 
+test("SSH setup reads the main roster entry under any letter case, like Kubernetes and Docker", async (t) => {
+  // The fixture has no runuser, so a stand-in records the workspace the helper chose.
+  const bin = await mkdtemp(join(tmpdir(), "occ-ssh-runuser-"));
+  const runuser = join(bin, "runuser");
+  await writeFile(
+    runuser,
+    `#!/bin/sh\nprintf '%s' "$OPENCLAW_WORKSPACE_DIR" > "$OCC_SSH_FIXTURE_STATE/setup-workspace"\n`,
+  );
+  await chmod(runuser, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath}`;
+  t.after(async () => {
+    process.env.PATH = previousPath;
+    await rm(bin, { recursive: true, force: true });
+  });
+  for (const key of ["Main", " MAIN "]) {
+    await t.test(JSON.stringify(key), async (t) => {
+      const f = await fixture(t);
+      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      const agentId = "agent-ssh-roster";
+      const workspace = join(f.agentDir({ agentId }), "state", "roster");
+      // The entry's workspace wins over the defaults, as for the literal main key.
+      const configuration = {
+        agents: {
+          defaults: { workspace: "/tmp/foreign-workspace" },
+          entries: { [key]: { workspace } },
+        },
+      };
+      const first = revision(f.driver, 1, agentId, configuration);
+      bind(f.driver, first);
+      const prepared = await f.driver.prepareRevision(first, {
+        secretEnvironment: [],
+        harnessAuth: { method: "runtime" },
+        workspaceSetup: {
+          id: "setup-ssh-roster",
+          namespaceId: tenant.id,
+          agentId,
+          files: { "AGENTS.md": "roster" },
+          completed: false,
+        },
+      });
+      assert.equal(prepared.ready, true);
+      assert.equal(await readFile(join(f.state, "setup-workspace"), "utf8"), workspace);
+      assert.equal((await json(join(f.agentDir(first), "workspace-setup.json"))).completed, true);
+    });
+  }
+  // As in the shared rule, the roster holds exactly one main entry: two keys that both name
+  // main, an empty roster and a null entry are refused before setup runs.
+  for (const entries of [{ main: {}, Main: {} }, {}, { Main: null }]) {
+    await t.test(`refuses ${JSON.stringify(entries)}`, async (t) => {
+      const f = await fixture(t);
+      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      const refused = revision(f.driver, 1, "agent-ssh-refused", { agents: { entries } });
+      bind(f.driver, refused);
+      await assert.rejects(
+        f.driver.prepareRevision(refused, {
+          secretEnvironment: [],
+          harnessAuth: { method: "runtime" },
+          workspaceSetup: {
+            id: "setup-ssh-refused",
+            namespaceId: tenant.id,
+            agentId: refused.agentId,
+            files: { "AGENTS.md": "roster" },
+            completed: false,
+          },
+        }),
+        /SSH helper rejected host or revision configuration/,
+      );
+      // The helper withholds its reason; the stand-in never ran, so the roster refused it.
+      await missing(join(f.state, "setup-workspace"));
+      await missing(join(f.agentDir(refused), "workspace-setup.json"));
+    });
+  }
+});
+
 test("system SSH executor sends exact argv and stdin and bounds cancellation and timeout", async (t) => {
   const f = await fixture(t);
   const bin = join(f.base, "bin");
   await mkdir(bin);
   // Transport-only stand-in records argv and runs the unchanged stdin program with Node.
   // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
+  // It installs its SIGTERM forwarder before spawning the helper. Installed after spawn(),
+  // a SIGTERM that lands while spawn() runs (the 100 ms timeout below, on a busy runner)
+  // killed the stand-in by default and orphaned the helper, which kept the executor's
+  // stdio pipes open, so the execution never settled and the file hit its runner timeout.
   const ssh = join(bin, "ssh");
   await writeFile(
     ssh,
-    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nconst child = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nprocess.on('SIGTERM', () => child.kill('SIGTERM'));\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
+    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nlet child;\nprocess.on('SIGTERM', () => (child ? child.kill('SIGTERM') : process.exit(143)));\nchild = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
   );
   await chmod(ssh, 0o755);
   const previousPath = process.env.PATH;
@@ -1380,4 +1624,141 @@ test("system SSH executor sends exact argv and stdin and bounds cancellation and
     5_000,
   );
   await assert.rejects(executor.execute({ ...waiting, timeoutMs: 100 }), /cancelled or timed out/);
+});
+
+test("system SSH executor settles when a descendant of ssh keeps its stderr open", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "occ-ssh-stdio-"));
+  const bin = join(base, "bin");
+  await mkdir(bin);
+  const orphans = join(base, "orphans");
+  // Like an operator ProxyCommand, the stand-in starts a detached descendant that inherits
+  // ssh's stderr and outlives ssh. The executor's stderr pipe stays open after ssh exits,
+  // so an executor that settles only on "close" never settles, whatever timeoutMs says.
+  const ssh = join(bin, "ssh");
+  await writeFile(
+    ssh,
+    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nconst orphan = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120_000)'], { detached: true, stdio: ['ignore', 'ignore', 'inherit'] });\nfs.appendFileSync(${JSON.stringify(orphans)}, orphan.pid + '\\n');\norphan.unref();\nlet child;\nprocess.on('SIGTERM', () => (child ? child.kill('SIGTERM') : process.exit(143)));\nchild = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
+  );
+  await chmod(ssh, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath}`;
+  t.after(async () => {
+    process.env.PATH = previousPath;
+    const pids = (await readFile(orphans, "utf8").catch(() => "")).split("\n").filter(Boolean);
+    for (const pid of pids) {
+      try {
+        process.kill(Number(pid), "SIGKILL");
+      } catch (error) {
+        assert.equal(error.code, "ESRCH");
+      }
+    }
+    await rm(base, { recursive: true, force: true });
+  });
+  // Generous for a busy runner, yet far below the descendant's 120 s lifetime, which is
+  // how long an executor waiting for "close" would stay pending.
+  const settled = (promise) => {
+    let timer;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("execute() did not settle within 20 s")), 20_000);
+    });
+    return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+  };
+  const executor = new SystemSshCommandExecutor();
+  const command = {
+    address: "127.0.0.1",
+    port: 2222,
+    user: "root",
+    nodePath: "/usr/bin/node",
+    identityFile: "/keys/id",
+    knownHostsFile: "/keys/known_hosts",
+    connectTimeoutSeconds: 7,
+    helper: 'process.stdout.write(JSON.stringify({value: SSH_OPERATION}) + "\\n");',
+    operation: "e30=",
+    timeoutMs: 5000,
+  };
+  // ssh exits normally: the result keeps everything ssh wrote before it exited.
+  assert.deepEqual(await settled(executor.execute(command)), {
+    code: 0,
+    stdout: '{"value":"e30="}\n',
+    stderr: "",
+  });
+  // The operation times out: the executor terminates ssh and rejects instead of waiting
+  // for the descendant to release stderr.
+  await assert.rejects(
+    settled(
+      executor.execute({ ...command, helper: "setInterval(() => {}, 1000);", timeoutMs: 200 }),
+    ),
+    /cancelled or timed out/,
+  );
+});
+
+// Direct fixture checks keep unit-file discovery separate from process liveness.
+async function unitFileFixture(t) {
+  const base = await mkdtemp(join(tmpdir(), "occ-unit-file-"));
+  const units = join(base, "units");
+  const state = join(base, "state");
+  await Promise.all([mkdir(units), mkdir(state)]);
+  const ctl = (...args) => {
+    const result = spawnSync(join(fixtureBin, "systemctl"), args, {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {
+        PATH: process.env.PATH,
+        OCC_SSH_FIXTURE_STATE: state,
+        OCC_SSH_FIXTURE_UNIT_DIRECTORY: units,
+      },
+    });
+    assert.ifError(result.error);
+    return result.status;
+  };
+  t.after(async () => {
+    await stopFixtureUnits(state);
+    await rm(base, { recursive: true, force: true });
+  });
+  const unit = "discovery.service";
+  const path = join(units, unit);
+  await writeFile(path, "[Service]\nEnvironment=OPENCLAW_GATEWAY_PORT=31443\n");
+  return { ctl, unit, path, units, state };
+}
+
+test("SSH fixture rejects bare-name link without loading or enabling a unit", async (t) => {
+  const { ctl, unit, path, units, state } = await unitFileFixture(t);
+  assert.equal(ctl("link", unit), 1);
+  await missing(join(units, "absent.service"));
+  assert.equal(ctl("link", "absent.service"), 1);
+  assert.deepEqual(
+    (await readdir(state)).filter((name) => name !== "systemctl.log"),
+    [],
+  );
+  assert.equal(ctl("stop", unit), 5);
+  assert.equal(ctl("link", path), 0);
+  assert.equal(ctl("enable", unit), 0);
+  assert.equal(ctl("stop", unit), 0);
+  assert.equal(ctl("disable", unit), 0);
+  assert.equal(ctl("link", path), 0);
+  assert.equal(ctl("stop", unit), 0);
+});
+
+test("SSH fixture requires a discoverable file to enable a disabled running unit", async (t) => {
+  const { ctl, unit, path, state } = await unitFileFixture(t);
+  assert.equal(ctl("enable", path), 0);
+  assert.equal(ctl("start", unit), 0);
+  assert.equal(ctl("disable", unit), 0);
+  assert.equal(ctl("is-active", "--quiet", unit), 0);
+  const pid = await readFile(join(state, `${unit}.pid`), "utf8");
+  // Neither rejected operation may rediscover the disabled file or disturb its live unit.
+  for (const operation of ["enable", "link"]) {
+    assert.equal(ctl(operation, unit), 1);
+    await missing(join(state, `${unit}.linked`));
+    await missing(join(state, `${unit}.enabled`));
+    assert.equal(ctl("is-enabled", unit), 1);
+    assert.equal(await readFile(join(state, `${unit}.pid`), "utf8"), pid);
+    assert.equal(ctl("is-active", "--quiet", unit), 0);
+  }
+  assert.equal(ctl("stop", unit), 0);
+  await missing(join(state, `${unit}.pid`));
+  assert.equal(ctl("is-active", "--quiet", unit), 1);
+  assert.equal(ctl("stop", unit), 5);
+  assert.equal(ctl("enable", path), 0);
+  assert.equal(ctl("is-enabled", unit), 0);
 });

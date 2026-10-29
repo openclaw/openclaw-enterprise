@@ -1,24 +1,4 @@
 {
-  "apps/controller/src/console/agents/detail.mjs": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "apps/controller/src/drivers/compute/docker/index.ts": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "apps/controller/src/drivers/compute/kubernetes/index.ts": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "apps/controller/src/drivers/compute/ssh/index.ts": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
   "apps/controller/src/drivers/compute/ssh/remote-helper.cjs": {
     "no-control-regex": {
       "count": 1
@@ -102,11 +82,6 @@
       "count": 1
     }
   },
-  "tests/helpers/ci-logging.mjs": {
-    "no-unused-vars": {
-      "count": 5
-    }
-  },
   "tests/helpers/envoy-workspace-gateway.mjs": {
     "preserve-caught-error": {
       "count": 1
@@ -115,11 +90,6 @@
   "tests/helpers/harness-topology-k3d-real.mjs": {
     "no-unused-vars": {
       "count": 2
-    }
-  },
-  "tests/helpers/openshell-kubernetes-real.mjs": {
-    "no-unused-vars": {
-      "count": 1
     }
   },
   "tests/helpers/plugin-driver-real.mjs": {
@@ -133,11 +103,8 @@
     }
   },
   "tests/integration/docker-compute-real.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    },
     "preserve-caught-error": {
-      "count": 3
+      "count": 2
     }
   },
   "tests/integration/occ-api.test.mjs": {

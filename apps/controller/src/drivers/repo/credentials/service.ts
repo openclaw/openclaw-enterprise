@@ -1,5 +1,7 @@
 import type {
-  RepositoryBackendFactory,
+  RepositoryBackend,
+  PreparedRepositoryBackend,
+  RepositoryServiceFactory,
   Clock,
   Denied,
   RequestHead,
@@ -12,7 +14,12 @@ import type {
   ShutdownSummary,
   SessionStatus,
 } from "./service-contracts.ts";
-import type { CredentialServiceOwner, ExchangeRef, ExchangeSender } from "./internal-contracts.ts";
+import type {
+  CredentialServiceOwner,
+  ExchangeRef,
+  ExchangeSender,
+  SessionLogIdentity,
+} from "./internal-contracts.ts";
 import { createCustody } from "./custody.ts";
 import type { CustodyOwner } from "./custody.ts";
 import { createLifecycle } from "./lifecycle.ts";
@@ -34,10 +41,16 @@ import type { SessionAdmission } from "./sessions.ts";
 type Admission = Omit<SessionAdmission, "bearer">;
 interface Session {
   readonly admission: Admission;
+  readonly logIdentity: SessionLogIdentity;
   state: SessionStatus["state"];
-  readonly custody: CustodyOwner;
-  readonly lifecycle: LifecycleOwner;
-  readonly driver: ReturnType<RepositoryBackendFactory["create"]>;
+  expiryObserved: boolean;
+  readonly owned?: Readonly<{
+    custody: CustodyOwner;
+    lifecycle: LifecycleOwner;
+    driver: RepositoryBackend;
+    authorizeStanding?: () => Promise<void>;
+  }>;
+  readonly prepared?: PreparedRepositoryBackend;
   readonly exchanges: Set<Exchange>;
   cancelDeadline(): void;
 }
@@ -52,7 +65,7 @@ const deny = (status: number, code: string): Denied =>
 export function createCredentialService(
   options: Readonly<{
     config: ServiceConfig;
-    factory: RepositoryBackendFactory;
+    factory: RepositoryServiceFactory;
     clock: Clock;
     providerQueue?: ProviderQueue;
   }>,
@@ -72,6 +85,7 @@ export function createCredentialService(
   const shutdownWaiters = new Set<() => void>();
   const disposalObservers = new Set<(status: SessionStatus) => void>();
   let exchangeCount = 0;
+  let pendingOpens = 0;
   let shuttingDown = false;
 
   function notifyShutdown() {
@@ -80,12 +94,13 @@ export function createCredentialService(
     }
   }
 
+  function deadlineReached(session: Session) {
+    return (session.expiryObserved ||=
+      clock.monotonicNow() >= session.admission.deadlineMonoMs ||
+      clock.wallNow() >= session.admission.deadlineWallMs);
+  }
   function isOpen(session: Session) {
-    if (
-      session.state === "OPEN" &&
-      (clock.monotonicNow() >= session.admission.deadlineMonoMs ||
-        clock.wallNow() >= session.admission.deadlineWallMs)
-    ) {
+    if (session.state === "OPEN" && deadlineReached(session)) {
       close(session);
     }
     return session.state === "OPEN";
@@ -94,12 +109,13 @@ export function createCredentialService(
     if (
       session.state === "CLOSED" &&
       session.exchanges.size === 0 &&
-      session.lifecycle.activeActions === 0 &&
-      session.lifecycle.finalized &&
-      session.custody.records.size === 0 &&
-      session.custody.reservations.size === 0 &&
-      session.custody.renewalCount === 0 &&
-      session.custody.renewalCallbacks === 0
+      (!session.owned ||
+        (session.owned.lifecycle.activeActions === 0 &&
+          session.owned.lifecycle.finalized &&
+          session.owned.custody.records.size === 0 &&
+          session.owned.custody.reservations.size === 0 &&
+          session.owned.custody.renewalCount === 0 &&
+          session.owned.custody.renewalCallbacks === 0))
     ) {
       session.state = "DISPOSED";
       for (const observer of disposalObservers) {
@@ -112,25 +128,31 @@ export function createCredentialService(
     }
     notifyShutdown();
   }
-  function snapshot(session: Session): SessionStatus {
-    isOpen(session);
-    const records = [...session.custody.records];
-    const unknown = [...session.custody.reservations].filter(
+  function snapshot(session: Session, expire = true): SessionStatus {
+    if (expire) {
+      isOpen(session);
+    }
+    const state =
+      !expire && session.state === "OPEN" && deadlineReached(session) ? "CLOSED" : session.state;
+    const records = [...(session.owned?.custody.records ?? [])];
+    const unknown = [...(session.owned?.custody.reservations ?? [])].filter(
       (reservation) => reservation.unknown,
     ).length;
     return Object.freeze({
       sessionId: session.admission.authority.sessionId,
-      state: session.state,
+      state,
       deadlineWallMs: session.admission.deadlineWallMs,
       binding: session.admission.binding,
-      activeUses: records.reduce((sum, record) => sum + record.uses, 0),
+      activeUses: session.prepared
+        ? [...session.exchanges].filter((exchange) => exchange.dispatched).length
+        : records.reduce((sum, record) => sum + record.uses, 0),
       cleanup: Object.freeze({
         active: records.filter((record) => record.accepted).length,
         pending: records.filter((record) => !record.accepted).length + unknown,
-        revoked: session.lifecycle.counters.revoked,
-        expired: session.lifecycle.counters.expired,
+        revoked: session.owned?.lifecycle.counters.revoked ?? 0,
+        expired: session.owned?.lifecycle.counters.expired ?? 0,
         uncertain: records.filter((record) => record.disposition === "uncertain").length + unknown,
-        auxiliaryPending: !session.lifecycle.finalized && session.state !== "OPEN",
+        auxiliaryPending: !(session.owned?.lifecycle.finalized ?? true) && state !== "OPEN",
       }),
     });
   }
@@ -173,7 +195,7 @@ export function createCredentialService(
     for (const exchange of [...session.exchanges]) {
       cancel(exchange);
     }
-    session.lifecycle.close();
+    session.owned?.lifecycle.close();
     changed(session);
   }
   function original(ref: ExchangeRef) {
@@ -184,132 +206,206 @@ export function createCredentialService(
     return exchange;
   }
 
-  return Object.freeze({
-    open(input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput) {
-      if (shuttingDown) {
-        throw new Error("SERVICE_CLOSED");
-      }
-      if (
-        !Number.isSafeInteger(input.durationSeconds) ||
-        input.durationSeconds <= 0 ||
-        input.durationSeconds > policy.maximumDurationSeconds
-      ) {
-        throw new Error("INVALID_DURATION");
-      }
-      if ("recoverOnly" in input && input.recoverOnly !== undefined) {
-        throw new Error("INVALID_ADMISSION");
-      }
-      const admittedInput = snapshotSessionInput(input);
-      if (isBoundInput(admittedInput) !== (factory.resolveBound !== undefined)) {
-        throw new Error("INVALID_BINDING");
-      }
-      const profile = admittedInput.profile ?? policy.defaultProfile;
-      if (!policy.allowedProfiles.includes(profile)) {
-        throw new Error("INVALID_PROFILE");
-      }
-      for (const [id, existing] of sessions) {
+  function prepareOpen(
+    input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput,
+  ) {
+    if (shuttingDown) {
+      throw new Error("SERVICE_CLOSED");
+    }
+    if (
+      !Number.isSafeInteger(input.durationSeconds) ||
+      input.durationSeconds <= 0 ||
+      input.durationSeconds > policy.maximumDurationSeconds
+    ) {
+      throw new Error("INVALID_DURATION");
+    }
+    if ("recoverOnly" in input && input.recoverOnly !== undefined) {
+      throw new Error("INVALID_ADMISSION");
+    }
+    const admittedInput = snapshotSessionInput(input);
+    if (isBoundInput(admittedInput) !== (factory.resolveBound !== undefined)) {
+      throw new Error("INVALID_BINDING");
+    }
+    if (
+      isBoundInput(admittedInput) &&
+      (admittedInput.preparedOnly !== true || !("createPrepared" in factory))
+    ) {
+      throw new Error("INVALID_ADMISSION");
+    }
+    const profile = admittedInput.profile ?? policy.defaultProfile;
+    if (!policy.allowedProfiles.includes(profile)) {
+      throw new Error("INVALID_PROFILE");
+    }
+    for (const [id, existing] of sessions) {
+      // A bound admission cannot trigger another session's cleanup while its
+      // receipt is undecided. Each session retains its own deadline callback.
+      if (!isBoundInput(admittedInput)) {
         isOpen(existing);
-        if (existing.state === "DISPOSED") {
-          sessions.delete(id);
+      }
+      if (existing.state === "DISPOSED") {
+        sessions.delete(id);
+      }
+    }
+    if (sessions.size + failedConstructions.size + pendingOpens >= limits.sessions) {
+      throw new Error("SESSION_CAPACITY");
+    }
+    const resolved = isBoundInput(admittedInput)
+      ? factory.resolveBound!(admittedInput)
+      : factory.resolve(profile);
+    const binding = snapshotBinding(resolved.binding);
+    const client = Object.freeze({ ...resolved.client });
+    if (isBoundInput(admittedInput) && !sameBinding(binding, admittedInput.expectedBinding)) {
+      throw new Error("INVALID_BINDING");
+    }
+    const checkedWallMs = clock.wallNow();
+    const durationDeadline = checkedWallMs + admittedInput.durationSeconds * 1000;
+    const deadlineWallMs = isBoundInput(admittedInput)
+      ? Math.min(durationDeadline, admittedInput.deadlineWallMs)
+      : durationDeadline;
+    if (!Number.isSafeInteger(deadlineWallMs) || deadlineWallMs <= checkedWallMs) {
+      throw new Error("INVALID_DEADLINE");
+    }
+    const deadlineMonoMs = clock.monotonicNow() + deadlineWallMs - checkedWallMs;
+    pendingOpens++;
+    let pending = true;
+    const cancel = () => {
+      if (pending) {
+        pending = false;
+        pendingOpens--;
+      }
+    };
+    return {
+      cancel,
+      open(authorizeStanding?: (sessionId: string) => Promise<void>) {
+        if (!pending) {
+          throw new Error("INVALID_ADMISSION");
         }
-      }
-      if (sessions.size + failedConstructions.size >= limits.sessions) {
-        throw new Error("SESSION_CAPACITY");
-      }
-      const resolved = isBoundInput(admittedInput)
-        ? factory.resolveBound!(admittedInput)
-        : factory.resolve(profile);
-      if (
-        isBoundInput(admittedInput) &&
-        !sameBinding(resolved.binding, admittedInput.expectedBinding)
-      ) {
-        throw new Error("INVALID_BINDING");
-      }
-      const durationDeadline = clock.wallNow() + admittedInput.durationSeconds * 1000;
-      const deadlineWallMs = isBoundInput(admittedInput)
-        ? Math.min(durationDeadline, admittedInput.deadlineWallMs)
-        : durationDeadline;
-      const { bearer, ...admission } = admitSession(resolved.binding, deadlineWallMs, clock);
-      let session: Session | undefined = undefined;
-      let constructing = true;
-      const custody = createCustody({
-        clock,
-        maximumSlots: limits.credentialSlotsPerSession,
-        maximumAccessBytes: limits.accessTokenBytes,
-        maximumRenewalBytes: limits.renewalBytesPerSession,
-        maximumCallbacks: limits.exchangesPerSession + 1,
-        admitted: () => constructing || (!!session && isOpen(session)),
-        changed: () => {
-          if (session) {
-            session.lifecycle.maintain();
-            changed(session);
-          }
-        },
-      });
-      let driver: ReturnType<RepositoryBackendFactory["create"]>;
-      try {
-        driver = factory.create({
-          authority: admission.authority,
-          custody: custody.driver,
-          clock,
-        });
-        const binding = snapshotBinding(driver.binding);
-        if (
-          binding.providerInstanceId !== admission.binding.providerInstanceId ||
-          binding.repositoryId !== admission.binding.repositoryId ||
-          binding.grantId !== admission.binding.grantId
-        ) {
-          throw new Error("DRIVER_BINDING_MISMATCH");
+        cancel();
+        if (shuttingDown) {
+          throw new Error("SERVICE_CLOSED");
         }
-      } catch (error) {
-        constructing = false;
-        // No valid driver exists to finalize this custody. Retain its capacity
-        // and shutdown obligation until every admitted renewal callback drains.
-        failedConstructions.add(custody);
-        void custody.disposeAllRenewal().then(() => {
-          failedConstructions.delete(custody);
-          notifyShutdown();
-        });
-        throw error;
-      }
-      constructing = false;
-      const lifecycle = createLifecycle({
-        clock,
-        authority: admission.authority,
-        deadlineMonoMs: admission.deadlineMonoMs,
-        custody,
-        driver,
-        queue,
-        providerActionMs: limits.providerActionMs,
-        safetyMarginMs: limits.credentialMarginMs,
-        admitted: () => !!session && isOpen(session),
-        changed: () => {
-          if (session) {
-            changed(session);
+        if (clock.monotonicNow() >= deadlineMonoMs) {
+          throw new Error("INVALID_DEADLINE");
+        }
+        const { bearer, ...created } = admitSession(binding, deadlineWallMs, clock);
+        const admission = {
+          ...created,
+          deadlineMonoMs: Math.min(created.deadlineMonoMs, deadlineMonoMs),
+        };
+        let session: Session | undefined = undefined;
+        let owned: Session["owned"];
+        let prepared: Session["prepared"];
+        if ("createPrepared" in factory) {
+          prepared = factory.createPrepared(admission.authority, resolved);
+          if (!sameBinding(prepared.binding, admission.binding)) {
+            throw new Error("DRIVER_BINDING_MISMATCH");
           }
-        },
-      });
-      const openedSession: Session = {
-        admission,
-        custody,
-        driver,
-        lifecycle,
-        state: "OPEN",
-        exchanges: new Set(),
-        cancelDeadline: () => {},
-      };
-      session = openedSession;
-      session.cancelDeadline = clock.schedule(
-        Math.max(0, admission.deadlineMonoMs - clock.monotonicNow()),
-        () => close(openedSession),
-      );
-      sessions.set(admission.authority.sessionId, session);
-      bearers.set(admission.digest, session);
-      return Object.freeze({
-        session: snapshot(session),
-        bearer,
-        client: Object.freeze({ ...resolved.client }),
-      });
+        } else {
+          let constructing = true;
+          const custody = createCustody({
+            clock,
+            maximumSlots: limits.credentialSlotsPerSession,
+            maximumAccessBytes: limits.accessTokenBytes,
+            maximumRenewalBytes: limits.renewalBytesPerSession,
+            maximumCallbacks: limits.exchangesPerSession + 1,
+            admitted: () => constructing || (!!session && isOpen(session)),
+            changed: () => {
+              if (session) {
+                session.owned?.lifecycle.maintain();
+                changed(session);
+              }
+            },
+          });
+          let driver: RepositoryBackend;
+          try {
+            driver = factory.create({
+              authority: admission.authority,
+              custody: custody.driver,
+              clock,
+            });
+            const binding = snapshotBinding(driver.binding);
+            if (
+              binding.providerInstanceId !== admission.binding.providerInstanceId ||
+              binding.repositoryId !== admission.binding.repositoryId ||
+              binding.grantId !== admission.binding.grantId
+            ) {
+              throw new Error("DRIVER_BINDING_MISMATCH");
+            }
+          } catch (error) {
+            constructing = false;
+            // No valid driver exists to finalize this custody. Retain its capacity
+            // and shutdown obligation until every admitted renewal callback drains.
+            failedConstructions.add(custody);
+            void custody.disposeAllRenewal().then(() => {
+              failedConstructions.delete(custody);
+              notifyShutdown();
+            });
+            throw error;
+          }
+          constructing = false;
+          const authority = authorizeStanding
+            ? { authorizeStanding: () => authorizeStanding(admission.authority.sessionId) }
+            : {};
+          const lifecycle = createLifecycle({
+            ...authority,
+            clock,
+            authority: admission.authority,
+            deadlineMonoMs: admission.deadlineMonoMs,
+            custody,
+            driver,
+            queue,
+            providerActionMs: limits.providerActionMs,
+            safetyMarginMs: limits.credentialMarginMs,
+            admitted: () => !!session && isOpen(session),
+            changed: () => {
+              if (session) {
+                changed(session);
+              }
+            },
+          });
+          owned = { custody, driver, lifecycle, ...authority };
+        }
+        const openedSession: Session = {
+          admission,
+          logIdentity: Object.freeze({
+            sessionId: admission.authority.sessionId,
+            ...(isBoundInput(admittedInput)
+              ? {
+                  namespaceId: admittedInput.namespaceId,
+                  repositoryRef: admittedInput.repositoryRef,
+                }
+              : {}),
+          }),
+          ...(prepared === undefined ? {} : { prepared }),
+          ...(owned === undefined ? {} : { owned }),
+          state: "OPEN",
+          expiryObserved: false,
+          exchanges: new Set(),
+          cancelDeadline: () => {},
+        };
+        session = openedSession;
+        session.cancelDeadline = clock.schedule(
+          Math.max(0, admission.deadlineMonoMs - clock.monotonicNow()),
+          () => close(openedSession),
+        );
+        sessions.set(admission.authority.sessionId, session);
+        bearers.set(admission.digest, session);
+        return Object.freeze({
+          session: snapshot(session),
+          bearer,
+          client,
+        });
+      },
+    };
+  }
+
+  return Object.freeze({
+    prepareOpen,
+    open(
+      input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput,
+      authorizeStanding?: (sessionId: string) => Promise<void>,
+    ) {
+      return prepareOpen(input).open(authorizeStanding);
     },
     observeDisposal(observer: (status: SessionStatus) => void) {
       disposalObservers.add(observer);
@@ -317,7 +413,7 @@ export function createCredentialService(
     },
     status(sessionId: string) {
       const session = sessions.get(sessionId);
-      return session && snapshot(session);
+      return session && snapshot(session, false);
     },
     close(sessionId: string) {
       const session = sessions.get(sessionId);
@@ -326,6 +422,11 @@ export function createCredentialService(
       }
       close(session);
       return snapshot(session);
+    },
+    identify(bearer: string) {
+      const digest = bearerDigest(bearer);
+      const session = digest ? bearers.get(digest) : undefined;
+      return session && isOpen(session) ? session.logIdentity : undefined;
     },
     reserve(bearer: string, head: RequestHead, signal: AbortSignal) {
       const digest = bearerDigest(bearer);
@@ -344,7 +445,7 @@ export function createCredentialService(
       }
       let plan: RequestPlan | Denied;
       try {
-        plan = session.driver.plan(
+        plan = (session.prepared ?? session.owned!.driver).plan(
           Object.freeze({
             session: session.admission.ref,
             authority: session.admission.authority,
@@ -400,13 +501,19 @@ export function createCredentialService(
     plan(ref: ExchangeRef) {
       return original(ref).plan;
     },
-    execute(ref: ExchangeRef, send: ExchangeSender) {
+    execute(ref: ExchangeRef, send: ExchangeSender, requestDigestSha256?: string) {
       const exchange = original(ref);
-      return executeExchange(exchange, send, {
-        clock,
-        finish: () => finish(exchange),
-        cancel: () => cancel(exchange),
-      });
+      return executeExchange(
+        exchange,
+        send,
+        {
+          clock,
+          admitted: () => exchange.session.state === "OPEN" && !deadlineReached(exchange.session),
+          finish: () => finish(exchange),
+          cancel: () => cancel(exchange),
+        },
+        requestDigestSha256,
+      );
     },
     cancel(ref: ExchangeRef) {
       const exchange = exchanges.get(ref);
@@ -453,13 +560,17 @@ export function createCredentialService(
       return Object.freeze({
         closedSessions: all.length,
         disposedSessions: all.filter((session) => session.state === "DISPOSED").length,
-        pendingActions: all.reduce((sum, session) => sum + session.lifecycle.activeActions, 0),
+        pendingActions: all.reduce(
+          (sum, session) => sum + (session.owned?.lifecycle.activeActions ?? 0),
+          0,
+        ),
         pendingCredentials: all.reduce(
-          (sum, session) => sum + session.custody.reservations.size,
+          (sum, session) => sum + (session.owned?.custody.reservations.size ?? 0),
           0,
         ),
         pendingAuxiliary:
-          all.filter((session) => !session.lifecycle.finalized).length + failedConstructions.size,
+          all.filter((session) => !(session.owned?.lifecycle.finalized ?? true)).length +
+          failedConstructions.size,
         graceExpired,
       });
     },

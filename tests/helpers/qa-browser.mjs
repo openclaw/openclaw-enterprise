@@ -6,13 +6,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:tls";
 import { chromium } from "playwright";
-import { unusedPort, waitFor } from "./qa-utils.mjs";
+import { prepareQaConsoleTheme } from "./qa-installation.mjs";
+import { waitFor } from "./qa-utils.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
 
-export async function createQaBrowser(f) {
+export async function createQaBrowser(f, { themed }) {
+  if (themed) {
+    await prepareQaConsoleTheme(f);
+  }
   const nativeHost = `native.${f.cluster}.oce.localhost`;
-  const port = await unusedPort();
-  const nativeOrigin = `https://${nativeHost}:${port}`;
+  let nativeOrigin;
   const ca = f.browserCA ?? join(f.directory, "browser-ca.crt");
   let relay;
   let upstream;
@@ -58,8 +61,10 @@ export async function createQaBrowser(f) {
     );
     await new Promise((accept, reject) => {
       relay.once("error", reject);
-      relay.listen(port, "127.0.0.1", accept);
+      // Port 0: the relay's port is read once bound, so nothing else can take it first.
+      relay.listen(0, "127.0.0.1", accept);
     });
+    nativeOrigin = `https://${nativeHost}:${relay.address().port}`;
     f.resources.after(async () => {
       for (const socket of sockets) {
         socket.destroy();
@@ -93,14 +98,17 @@ export async function createQaBrowser(f) {
   f.resources.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(f.consoleUrl + "/console/");
-  await page.getByLabel("Username").fill(f.credentials.email);
+  if (themed) {
+    assert.equal(await page.title(), "Example Agents");
+  }
+  await page.getByLabel("Email", { exact: true }).fill(f.credentials.email);
   await page.getByLabel("Password").fill(f.credentials.password);
   const signedIn = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/auth/sign-in/email" &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   assert.equal((await signedIn).status(), 200, "console sign-in must succeed");
   // An authenticated API read disambiguates a still-visible login page.
   const authenticated = await page.evaluate(async () => (await fetch("/installation")).status);
@@ -112,7 +120,158 @@ export async function createQaBrowser(f) {
   });
   return {
     nativeOrigin: f.controlPlane === "compose" ? nativeOrigin : undefined,
+    async verifySecrets(agent) {
+      const secretsPage = await browser.newPage();
+      const base = `/namespaces/${agent.namespaceId}`;
+      const name = `qa-console-${randomUUID()}`;
+      const syntheticValue = `synthetic-console-${randomUUID()}`;
+      const configurationPath = `${base}/configurations/${agent.configurationId}`;
+      const configuration = await f.api("GET", configurationPath);
+      let secret;
+      let configurationChanged = false;
+      try {
+        await secretsPage.goto(`${f.consoleUrl}/console/secrets?namespace=${agent.namespaceId}`);
+        await secretsPage.getByRole("button", { name: "Create Secret", exact: true }).click();
+        const create = secretsPage.getByRole("dialog", { name: "Create Secret", exact: true });
+        await create.getByLabel("Secret name", { exact: true }).fill(name);
+        await create.getByLabel("Value", { exact: true }).fill(syntheticValue);
+        await create.getByRole("button", { name: "Create Secret", exact: true }).click();
+        await secretsPage
+          .getByRole("dialog", { name: "Secret created", exact: true })
+          .getByRole("button", { name: "Close" })
+          .click();
+        secret = (await f.api("GET", `${base}/secrets`)).find((item) => item.name === name);
+        assert.ok(secret, "console-created Secret must be persisted by the shipped controller");
+        await secretsPage.getByRole("button", { name, exact: true }).click();
+        await secretsPage
+          .getByRole("dialog", { name, exact: true })
+          .getByRole("button", { name: "Replace value", exact: true })
+          .click();
+        const replace = secretsPage.getByRole("dialog", {
+          name: "Replace Secret value",
+          exact: true,
+        });
+        await replace.getByLabel("Value", { exact: true }).fill(`${syntheticValue}-replacement`);
+        await replace.getByRole("button", { name: "Replace value", exact: true }).click();
+        await secretsPage
+          .getByRole("dialog", { name: "Secret value replaced", exact: true })
+          .getByRole("button", { name: "Close" })
+          .click();
+
+        // Change this scenario's Agent draft Configuration, leaving the active revision intact.
+        // The real Configuration admission and stored reference must prevent Secret deletion.
+        configurationChanged = true;
+        await f.api("PATCH", configurationPath, {
+          values: configuration.values,
+          secretBindings: {
+            ...configuration.secretBindings,
+            QA_CONSOLE_SECRET: { source: secret.ref },
+          },
+        });
+        await secretsPage.getByRole("button", { name, exact: true }).click();
+        const detail = secretsPage.getByRole("dialog", { name, exact: true });
+        await detail.getByText(agent.configurationId, { exact: true }).waitFor();
+        assert.equal(
+          await detail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
+          true,
+        );
+        // Bypass the disabled control to verify the actual server also rejects the reference.
+        const refused = await secretsPage.evaluate(
+          async (path) => (await fetch(path, { method: "DELETE" })).status,
+          `${base}/secrets/${secret.id}`,
+        );
+        assert.equal(refused, 409);
+        await detail.getByRole("button", { name: "Close" }).click();
+        await f.api("PATCH", configurationPath, {
+          values: configuration.values,
+          secretBindings: configuration.secretBindings ?? {},
+        });
+        configurationChanged = false;
+        await secretsPage.getByRole("button", { name, exact: true }).click();
+        await secretsPage
+          .getByRole("dialog", { name, exact: true })
+          .getByRole("button", { name: "Delete Secret", exact: true })
+          .click();
+        await secretsPage
+          .getByRole("dialog", { name: "Delete Secret", exact: true })
+          .getByRole("button", { name: "Permanently delete Secret", exact: true })
+          .click();
+        await secretsPage.getByRole("dialog", { name: "Secret deleted", exact: true }).waitFor();
+        assert.equal(
+          (await f.api("GET", `${base}/secrets`)).some((item) => item.id === secret.id),
+          false,
+        );
+        await f.record(`${agent.preset}-console-secrets`, {
+          agentId: agent.id,
+          configurationId: agent.configurationId,
+          secretId: secret.id,
+          created: true,
+          replaced: true,
+          referenceBlockedDeletion: true,
+          deleted: true,
+        });
+        secret = null;
+      } finally {
+        try {
+          if (configurationChanged) {
+            await f.api("PATCH", configurationPath, {
+              values: configuration.values,
+              secretBindings: configuration.secretBindings ?? {},
+            });
+          }
+          // A lost creation reply can leave an owned Secret before its ID was read.
+          const owned = (await f.api("GET", `${base}/secrets`)).find((item) => item.name === name);
+          if (owned) {
+            await f.api("DELETE", `${base}/secrets/${owned.id}`);
+          }
+        } finally {
+          await secretsPage.close();
+        }
+      }
+    },
+    async verifyNamespaceDeletionBlockers(agent) {
+      const namespacesPage = await browser.newPage();
+      try {
+        const namespace = await f.api("GET", `/namespaces/${agent.namespaceId}`);
+        await namespacesPage.goto(`${f.consoleUrl}/console/namespaces?namespace=${namespace.id}`);
+        await namespacesPage
+          .getByRole("button", { name: `Delete ${namespace.name}`, exact: true })
+          .click();
+        const refused = namespacesPage.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === `/namespaces/${namespace.id}` &&
+            response.request().method() === "DELETE",
+        );
+        await namespacesPage.getByRole("button", { name: "Delete Namespace", exact: true }).click();
+        assert.equal((await refused).status(), 409);
+        // A deployed Agent in this run's Namespace must block real teardown and appear in the dialog.
+        const blockers = namespacesPage.getByRole("dialog", {
+          name: "Namespace still contains resources",
+          exact: true,
+        });
+        await blockers.getByText(agent.id, { exact: true }).waitFor();
+        await blockers.getByText(agent.configurationId, { exact: true }).waitFor();
+        assert.equal((await f.api("GET", `/namespaces/${namespace.id}`)).status, "ready");
+        await blockers.getByRole("button", { name: "View Agents", exact: true }).click();
+        assert.equal(new URL(namespacesPage.url()).searchParams.get("namespace"), namespace.id);
+        await namespacesPage.getByRole("link", { name: agent.name, exact: true }).waitFor();
+        await f.record(`${agent.preset}-console-namespace-deletion`, {
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          configurationId: agent.configurationId,
+          nonemptyDeletionRefused: true,
+          cleanupNavigationScoped: true,
+        });
+      } finally {
+        await namespacesPage.close();
+      }
+    },
     async verify(agent) {
+      assert.equal(await page.locator(".sidebar .brand-name").textContent(), "Example Agents");
+      assert.equal(
+        await page.locator(".sidebar .brand img").getAttribute("src"),
+        "/console/theme/logo.png",
+      );
       const gateway = await f.gatewayUrl(agent);
       let origin = nativeOrigin;
       if (f.controlPlane === "compose") {

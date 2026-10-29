@@ -11,10 +11,12 @@ import { isDeepStrictEqual } from "node:util";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
 import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
+import { isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import {
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
+  reuseFirstAgentRecord,
   selectFirstAgentModel,
   verifyFirstAgentModel,
 } from "./first-agent-model.mjs";
@@ -59,9 +61,20 @@ function parseArguments(argv) {
       result.replaceKey = true;
     } else if (value === "--control-ui" && !result.controlUi) {
       result.controlUi = true;
-    } else if (value === "--harness" && argv[index + 1]) {
+    } else if (value === "--harness") {
+      const next = argv[index + 1];
+      if (!next || next.startsWith("--")) {
+        throw new Error("--harness requires openclaw or codex.");
+      }
       result.harness = argv[++index];
-    } else if (value === "--prompt" && result.prompt === undefined && argv[index + 1]) {
+    } else if (value === "--prompt") {
+      if (result.prompt !== undefined) {
+        throw new Error("--prompt may be given once.");
+      }
+      const next = argv[index + 1];
+      if (!next || next.startsWith("--")) {
+        throw new Error("--prompt requires text.");
+      }
       result.prompt = argv[++index];
     } else if (!value.startsWith("-") && result.name === undefined) {
       result.name = value;
@@ -69,15 +82,10 @@ function parseArguments(argv) {
       throw new Error(`Unexpected argument. ${usage().split("\n")[0]}`);
     }
   }
-  if (
-    !result.name ||
-    result.name.length > 200 ||
-    result.name.trim() !== result.name ||
-    /\p{Cc}/u.test(result.name)
-  ) {
-    throw new Error(
-      "Provide an Agent name of 1–200 characters without surrounding whitespace or control characters.",
-    );
+  // The create-Agent body uses the Name schema. Count code points and refuse line
+  // and paragraph separators, matching isName, before Local Setup is consulted.
+  if (!isName(result.name)) {
+    throw new Error(`Provide an Agent name of ${NAME_RULE}.`);
   }
   if (result.prompt !== undefined && (!result.prompt.trim() || result.prompt.length > 4_000)) {
     throw new Error("The prompt must contain 1–4,000 characters.");
@@ -190,13 +198,14 @@ async function loadLocalInstallation(harness, controlUi) {
       state.sandboxDriver !== "openshell" ||
       browserOrigin.protocol !== "https:" ||
       browserOrigin.hostname !== expectedBrowserHost ||
-      !browserOrigin.port ||
       browserOrigin.pathname !== "/" ||
       browserOrigin.username ||
       browserOrigin.password ||
       browserOrigin.search ||
       browserOrigin.hash ||
-      state.browserOrigin !== browserOrigin.origin ||
+      // URL drops the default port. Older Local Setup recorded port 443 explicitly.
+      (state.browserOrigin !== browserOrigin.origin &&
+        state.browserOrigin !== `${browserOrigin.origin}:443`) ||
       state.nativeAdminDomain !== expectedNativeAdminDomain
     ) {
       throw new Error("The recorded Local Setup native admin endpoint is invalid.");
@@ -857,21 +866,18 @@ async function main(options) {
 
   await withRecord(local.directory, options.name, async (existing, save) => {
     const configuredModel = process.env.OPENCLAW_FIRST_AGENT_MODEL;
-    const model = selectFirstAgentModel(configuredModel, existing);
-    if (
+    // Refuse an older helper's record before the model check reads it.
+    const reused =
       existing &&
-      (existing.version !== 3 ||
-        existing.name !== options.name ||
-        existing.namespaceId !== namespace.id ||
-        existing.harness !== options.harness ||
-        existing.sandboxDriver !== local.sandboxDriver ||
-        existing.controlUi !== options.controlUi)
-    ) {
-      throw new Error(
-        "This Agent's recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs. Reuse its recorded selection or choose a new Agent name.",
-      );
-    }
-    const record = existing ?? {
+      reuseFirstAgentRecord(existing, {
+        name: options.name,
+        namespaceId: namespace.id,
+        harness: options.harness,
+        sandboxDriver: local.sandboxDriver,
+        controlUi: options.controlUi,
+      });
+    const model = selectFirstAgentModel(configuredModel, existing);
+    const record = reused ?? {
       version: 3,
       authMethod:
         process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE

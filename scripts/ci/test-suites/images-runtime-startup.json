@@ -14,12 +14,21 @@
   },
   "fileConcurrency": 3,
   "parallelFiles": [
+    "tests/integration/runtime-image-gateway-retained-state.test.mjs",
     "tests/integration/runtime-image-startup.test.mjs",
+    "tests/integration/runtime-image-gateway-workspace.test.mjs",
     "tests/integration/runtime-image-public-github-read.test.mjs",
     "tests/integration/runtime-image-managed-files.test.mjs",
     "tests/integration/workspace-files-native.test.mjs"
   ],
   "files": [
+    {
+      "path": "tests/integration/runtime-image-gateway-retained-state.test.mjs",
+      "expectedTests": [
+        "runtime image embedded Gateway serves its first turn after operator-confirmed recovery from an unclean stop",
+        "runtime image Docker Compute replaces a Gateway on retained state after a controller restart and on redeploy"
+      ]
+    },
     {
       "path": "tests/integration/runtime-image-public-github-read.test.mjs",
       "expectedTests": [
@@ -35,16 +44,22 @@
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
         "runtime image keeps Codex auth writable with a nested generated images mount",
         "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
+        "runtime image validates the configuration dedicated native OpenClaw renders"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-gateway-workspace.test.mjs",
+      "expectedTests": [
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
-        "runtime image validates the configuration dedicated native OpenClaw renders",
-        "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace"
+        "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace",
+        "runtime image delivers a write-scoped run's Codex command approval to the reviewer and returns the verdict"
       ]
     },
     {
       "path": "tests/integration/runtime-image-managed-files.test.mjs",
       "expectedTests": [
         "runtime image initializes the Harness workspace without replacing owner edits",
-        "runtime image tells OpenClaw that a read-only Kubernetes configuration is externally managed"
+        "runtime image starts the Kubernetes Gateway with its externally managed marker and Node options"
       ]
     },
     {

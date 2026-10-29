@@ -25,6 +25,7 @@ import {
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
+import { readJsonLinesSync } from "../helpers/json-lines.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 const { AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;
@@ -87,7 +88,10 @@ function credentialFixture({
   secretCreateStatus = undefined,
   deploymentListStatus = undefined,
 } = {}) {
-  const configured = options(runtime ? {} : { runtime: undefined });
+  const configured = options();
+  if (!runtime) {
+    delete configured.runtime;
+  }
   if (twoCluster) {
     delete configured.network.gatewayClients;
     configured.gatewayRouting = {
@@ -403,7 +407,16 @@ test("concurrent legacy password delivery accepts only an identical owned source
         "gateway-password": original.data["gateway-password"],
       });
     } else {
-      await assert.rejects(delivery());
+      const refusal = {
+        different: ResourceConflictError,
+        foreign: {
+          message: /^Refusing unowned Kubernetes Secret gateway-password-[a-f0-9]{12}\.$/,
+        },
+        disappeared: { message: "HTTP 409", statusCode: 409 },
+        unavailable: { message: "HTTP 503", statusCode: 503 },
+      }[outcome];
+      assert.ok(refusal, `${outcome}: name its refusal`);
+      await assert.rejects(delivery(), refusal, outcome);
     }
     assert.deepEqual(secrets[name], original, `${outcome}: preserve the serving Gateway source`);
   }
@@ -716,6 +729,7 @@ test("embedded Gateway uses the separate canonical password source", () => {
     configurationId: "cfg_runtime_password_projection",
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     configuration: {
       logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
       diagnostics: { otel: { logs: false } },
@@ -1003,10 +1017,7 @@ test("Codex startup logs in, probes and starts the app server in each login mode
     );
     assert.equal(child.status, 0, `${mode}: ${child.stderr}`);
     assert.match(child.stderr, /"event":"codex\.model_probe".*"code":"READY"/, mode);
-    const calls = readFileSync(join(directory, "calls"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
+    const calls = readJsonLinesSync(join(directory, "calls"));
     assert.deepEqual(
       calls.map(({ args }) =>
         ["login", "exec", "app-server"].find((command) => args.includes(command)),

@@ -1,7 +1,7 @@
 # Configure Agent plugins
 
 Use the console or OpenClaw Control Plane (OCC) CLI to change an existing Agent's
-plugin selections, then deploy a new revision. The CLI example enables the
+plugin selections, then deploy a new version. The CLI example enables the
 bundled Diffs plugin on an embedded OpenClaw Agent running on Kubernetes. Dedicated
 Codex Agents use a different catalog and approval policy; see
 [plugin support](../../reference/agent-plugins.md#current-support).
@@ -9,22 +9,32 @@ Codex Agents use a different catalog and approval policy; see
 ## Use the console
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
-Use **Configure plugins** to edit saved selections and tool policy. Only
-dedicated Codex Agents that do not authenticate with an API key can browse a
-catalog. For other Agents, **Configure plugins** reports that browsing is
-unavailable; add a known plugin ID in **Plugin selections JSON** instead. The
-CLI example below shows the Diffs ID.
+Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
+OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
+**Google Workspace** and add it. Leave **Install without an account** selected
+to verify the installation with `gog --version`. To make Google API calls, choose a ready
+**Google account**, save the selection and deploy. The worker receives an
+OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
+
+The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
+`read` and `operate` on the source, and the Agent needs `operate`. If the
+package digest changes, select the account again. Clearing the slot or removing
+the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+
+Dedicated Codex Agents with a supported login can browse their app catalog.
+For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
+The CLI example below uses Diffs.
 For dedicated Codex browsing, the curated catalog needs no Secret. Hosted
 discovery requires a bound Service Accounts token Secret under **Credentials**
 and uses it server-side; other authentication methods cannot browse the hosted
 catalog. Select **Save plugin selections**, then
 **Deploy new version**. The prior version keeps its
 original selections. On its **Plugins** tab, you can inspect that immutable
-snapshot. See the [Agent detail guide](../console/agent-details.md#plugins-tab)
+snapshot. See the [Plugins tab guide](../console/configuration-plugins-and-files.md#plugins-tab)
 for the controls and [deployment status](../../reference/agents.md#deployment-status)
 for the result. Catalog visibility alone does not prove that the plugin is
 installed or available to the running Agent. Hosted discovery uses the Agent's
-current draft credential, which may differ from its running revision's.
+current draft credential, which may differ from its running version's.
 
 For an unavailable plugin, use the information button beside its row to open the
 reason and any setup link. Press Escape or click outside to dismiss the popover.
@@ -56,19 +66,37 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   Configuration, and read the new Agent revision. Every Agent update, including
   a plugin-only change, also needs `operate` on the Agent's Harness
   authentication Secret or credential source and on each Secret its
-  Configuration binds; without them the update returns `403`. Revision `read` is
+  Configuration binds; without them the update returns `403`. Agent revision `read` is
   [bound per AgentRevision](../../reference/authorization.md#manage-namespace-policy), so a member with
-  only exact grants cannot read the status of a revision that did not exist
+  only exact grants cannot read the status of an Agent revision that did not exist
   when the grants were made; an administrator can check it or grant `read` on
-  that revision. Existing
+  that Agent revision. Existing
   [model credential requirements](../../reference/agents.md#harness-authentication)
   still apply when deploying.
 - Check the Agent Configuration's tool policy. Selecting Diffs adds it to the
   [tool allowlist](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
-  If the Configuration denies every tool, for example with `tools.deny: ["*"]`,
-  no callable tool remains: the deployment still succeeds without a warning,
-  but every turn fails with `No callable tools remain`. Remove that denial
-  before selecting Diffs.
+  If the Configuration's `tools.deny` blocks every Diffs tool, for example with
+  `"*"`, `"diffs"` or `"group:plugins"`, Agent create, update, provisioning
+  and deployment return `400` naming `tools.deny` and the plugin. A deny-all list
+  would leave no callable tool, so every turn would fail. Remove the matching
+  deny item before selecting Diffs. Create Agent checks the pair before it saves
+  anything, so after this refusal every field stays editable, the Configuration
+  included. If Agent create refuses after the console saved the Configuration,
+  the console names the fix it allows: deselect the plugin and create the Agent, then fix the setting
+  on the Agent's Configuration tab and select the plugin again. With one Agent under `agents.entries`, its
+  own `tools.deny` counts too, and the error names it. With several, the error
+  names an Agent whose `tools.deny` denies all tools with `"*"`, because all of
+  its turns would fail once a plugin is selected. To keep a tool-less Agent,
+  move it to a Configuration without plugins. Denying only Diffs to some
+  Agents is allowed. The `deny` list under `tools.byProvider.<provider>` for
+  the primary model's provider counts the same way, at the top level and under
+  an Agent entry. A `tools.byProvider` object that also has a
+  `<provider>/<model>` key for that provider is not checked, because OpenClaw
+  may rewrite the model ID it matches.
+- With one Agent under `agents.entries` and a `minimal`, `coding` or
+  `messaging` tool profile, the Agent's own `tools.alsoAllow` replaces the
+  top-level list that grants Diffs, so the request returns `400` unless that
+  list names Diffs, for example `"diffs"`.
 
 Set the Namespace and Agent IDs from your Installation:
 
@@ -110,7 +138,7 @@ a newer plugin map can be overwritten by the one you read.
 
 ## Deploy the change
 
-Deploy the Agent and keep the returned revision ID:
+Deploy the Agent and keep the returned version ID:
 
 ```bash
 occ agent deploy "$AGENT_ID" --output json > agent-plugin-revision.json

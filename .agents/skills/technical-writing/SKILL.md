@@ -25,6 +25,11 @@ repository terminology. This skill needs no global tools or skill installation.
 
 ## Write precise prose
 
+Apply ASD-STE100 (Simplified Technical English). Before and after a documentation
+update, complete the [terminology and limits pass](./references/terminology-and-limits.md).
+Keep official resource names and public identifiers. Check each replacement
+against its meaning and current source.
+
 - Use present tense, active voice, concrete nouns, and one term per concept.
   Expand unfamiliar abbreviations at first use; use established product names.
 - Define unfamiliar concepts through their owner, action, and observable role.
@@ -94,14 +99,19 @@ Omit empty or irrelevant sections. Split independently useful topics when a page
 mixes too many reader tasks. Keep the root documentation map and affected links
 current, following repository page ownership and length limits.
 
-## Driver contracts
+## Templates for specific document types
 
-When writing or rewriting a base Driver contract, read and follow the
-[Driver contract template](./references/driver-contracts.md). Use its eight
-sections: Overview, Interface, IAM, Lifecycle, Limits, Troubleshooting,
-Implementations, and Related. Keep concrete backend setup and behavior in
-implementation pages; the template takes precedence over the generic option to
-omit sections.
+Use the Markdown frontmatter field `kind` to select a template from the
+[documentation taxonomy](../../../docs/taxonomy.md). Copy the template for a new
+page. When updating an existing page, preserve its links and heading anchors.
+
+| Kind | Use it for | Template |
+| --- | --- | --- |
+| `reference/driver` | The shared contract for one Driver capability | [Driver contract Markdown](./assets/reference-driver.md) |
+
+For a Driver contract, keep the template's eight sections in order and use the
+[Driver authoring guidance](./references/driver-contracts.md) to check coverage.
+Put implementation setup in the linked implementation page.
 
 ## Make examples usable
 

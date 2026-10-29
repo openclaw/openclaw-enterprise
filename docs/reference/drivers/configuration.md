@@ -1,10 +1,14 @@
+---
+kind: reference/driver
+---
+
 # ConfigurationDriver contract
 
 ## Overview
 
 `ConfigurationDriver` stores native Agent configuration for a specific OpenClaw
 Namespace. OpenClaw Control Plane (OCC) assigns resource IDs, owns generations,
-authorizes requests, and creates immutable revision snapshots. The Driver owns
+authorizes requests, and creates Agent revisions. The Driver owns
 the storage representation; it does not deploy Agents or authorize callers.
 
 Trusted Installation YAML requires this capability. It defaults to bundled
@@ -74,12 +78,12 @@ still references the Configuration. This is not permission for callers to roll
 back generations themselves. See the [persistence flow](../../flows/configuration-driver/persistence-and-revisions.md).
 
 Deployment reads the selected Configuration and freezes the effective values in
-the AgentRevision. Later storage updates or deletion cannot change that revision.
+the `AgentRevision`. Later storage updates or deletion cannot change that saved version.
 
 ## Limits
 
 - The current resource kind is `agent`. This Driver does not select Harnesses,
-  restart workloads, or update previously admitted revisions.
+  restart workloads, or update previously saved versions.
 - A backend can reject values it cannot represent. Size, storage permissions, and
   conflict behavior specific to Kubernetes are documented in [Kubernetes Configuration storage](../configuration/kubernetes.md).
 - Installed packages must implement all five methods and provide their own closed

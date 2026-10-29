@@ -3,6 +3,16 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import WebSocket from "ws";
 
+// Admit only the startup validator used by the real wrapper. Native image tests
+// exercise its schema validation; this synthetic image tests transport retries.
+if (
+  JSON.stringify(process.argv.slice(2)) === JSON.stringify(["config", "validate", "--json"]) &&
+  process.env.OPENCLAW_CONFIG_READONLY === "1"
+) {
+  process.stdout.write(JSON.stringify({ valid: true }));
+  process.exit(0);
+}
+
 function optionValue(name) {
   const index = process.argv.indexOf(name);
   return index === -1 ? undefined : process.argv[index + 1];

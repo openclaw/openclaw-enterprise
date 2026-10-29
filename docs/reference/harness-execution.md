@@ -4,6 +4,9 @@ A Harness calls models and runs Agent tools. Bundled deployments run OpenClaw
 inside the gateway or OpenClaw or Codex in a separate runtime. Select the Agent's
 execution mode and a compatible model and Harness in its Configuration.
 
+For an overview of the Gateway/Harness boundary and file flows, see
+[Remote Harness execution and split storage](../guides/topics/remote-harness.md).
+
 ## Supported topology
 
 | Harness  | Agent execution mode | Workloads and support                                                                                                                                                    |
@@ -48,7 +51,7 @@ entries must resolve to one primary model and Harness.
 For a custom endpoint, private Gateway configuration compiles
 `codex/vendor/organization/model` to `codex/openai-compatible/vendor/organization/model`.
 OpenClaw selects `openai-compatible` and ID `vendor/organization/model`, preserving
-fallback order, metadata and policies. Stored Configuration, revision and probe
+fallback order, metadata and policies. Stored Configuration, version and probe
 model remain unchanged.
 
 The resolver selects OpenClaw without a model candidate, or for an unambiguous
@@ -70,14 +73,14 @@ reference or the ID after its first slash, and IDs may contain slashes.
 Configuration save and Kubernetes deployment refuse a nonempty `agents.list` and
 the other rosters OpenClaw rejects ([Configuration](configuration.md#create-read-update-and-delete));
 dedicated execution's `main` Agent rules apply only at deployment. Admission
-preserves fallback order in the immutable revision but does not implement fallback
+preserves fallback order in the immutable version but does not implement fallback
 execution or allow changing topology.
 
 ## Admission and immutable execution
 
 Deployment authorizes the exact Agent, Configuration, and selected managed
 harness credential source. A SandboxDriver may transform native configuration
-before validation and admission without changing its stored source. The revision
+before validation and admission without changing its stored source. The version
 freezes the admitted document, source identity and generation, approved Harness
 identity/version, execution mode, Compute identity, and sandbox or account binding.
 
@@ -120,21 +123,22 @@ OpenAI `api_key` authentication. Dedicated Codex also accepts the
 [external ChatGPT authentication contract](drivers/credential-gateway.md#external-chatgpt-authentication)
 through the bundled experimental `codex-oauth` source, with paired Refresh
 and operator-TLS setup described in the [OpenShell reference](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc). Compute projects no model Secret and
-passes the gateway's attachments to the Sandbox. The revision activates only
+passes the gateway's attachments to the Sandbox. The version activates only
 after every attachment is `ready`.
 While a Credential Gateway is selected, deployment rejects the Secret-backed and
 account methods with `409`. Other Compute
 implementations reject unsupported bindings. SSH embedded OpenClaw accepts
 only `{ "method": "runtime" }`: systemd loads operator-provided host credentials,
-outside revision immutability, and OCC checks gateway readiness without
+outside version immutability, and OCC checks gateway readiness without
 validating model authentication; see [SSH Compute](drivers/ssh-compute.md).
 Kubernetes deployment rejects `runtime` with `409`.
 
 Codex requires a successful native model probe before serving.
 API-key/PAT/external-token state stays ephemeral; `chatgptAuthTokens` delegates
 refresh externally with no refresh token or native fallback. Dedicated Gateways
-receive no model credentials. Configuration `secretBindings` and the initial
-runtime credential API serve separate Gateway transport/channel authentication.
+do not receive the selected Harness inference credential. Configuration
+`secretBindings` supply channel and Gateway feature credentials, including Memory
+embeddings; the initial runtime credential API supplies transport authentication.
 
 For initial and replacement deployments, Kubernetes OpenClaw runs one native
 model probe (20 seconds plus 45 CPU-seconds at its CPU limit, 256 output tokens)
@@ -155,14 +159,14 @@ reaches its model over Responses WebSocket by default (embedded OpenClaw uses
 HTTP streaming), so an egress proxy or firewall before that model host must
 allow the WebSocket upgrade. Compatible endpoints use HTTPS Responses streaming, including the probe.
 Secret-backed Codex uses [Compute configuration](drivers/kubernetes-compute.md#configuration);
-OpenShell sources supply their own endpoint. Probes never log native output. Dedicated Codex retries a confirmed
-subprocess timeout once after one second. Each attempt has a 30-second cap within
-one 61-second budget, including the delay. A transient failure (provider 5xx or
-overload, dropped stream or connection, external kill) shares that one retry;
-other failures do not retry. Under `tini`, termination during a probe, delay or
-held failure exits at once. Exhausted or nonretryable failure
-holds the process unready until restart or Pod stop; readiness polling never
-starts another model call.
+OpenShell sources supply their own endpoint. Dedicated Codex retries once, after
+1-1.5 seconds, a timeout, transient failure (provider 5xx or overload, dropped
+connection, kill) or `network`/`http_5xx` exit naming no credential, TLS error
+or limit; nothing else retries, except TLS or DNS failures Codex prints only as
+a failed connection. Attempts cap at 30 seconds within one 61-second budget,
+delay included. Under `tini`, termination always exits at once. Exhausted
+or nonretryable failure holds the process unready until restart or Pod stop;
+readiness polling never starts another model call.
 
 Codex logs each attempt as a structured `codex.model_probe` record with its
 number, elapsed milliseconds, exit code, recognized termination signal, and
@@ -170,7 +174,8 @@ final code (`READY`, `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`,
 `AUTHENTICATION_FAILED`, or `UNAVAILABLE`). Both probe logs add a
 `MODEL_PROBE_FAILED` [cause](agents/deployment.md#model-check-failure-cause)
 (`causeKind` and `causeDetail` in `occ agent logs` and the console Logs tab) and
-omit credentials and raw provider output. The runtime failure status is
+omit credentials and raw provider output; a failed Codex probe or login logs only
+its closed `failureClass`, such as `network`. The runtime failure status is
 published only after retries end.
 
 `AUTHENTICATION_FAILED` means the provider rejected the credential: OpenClaw
@@ -197,14 +202,14 @@ its Harness, which the Agent Service selects from the start but lists only once
 ready. The gateway waits for the Harness plugin status without its own deadline, staying unready
 and logging `Waiting for Harness plugin runtime status` at most every 30
 seconds. The deployment's convergence deadline governs a Harness that never
-reports. A redeploy keeps the Service on the serving revision until activation.
+reports. A redeploy keeps the Service on the serving version until activation.
 
 Startup checks may incur model charges and verify neither other configured models nor validity after upstream revocation.
 Embedded probe transport configuration must use literal metadata rather than
 additional environment or Secret references; the selected provider's
 `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` alias remains supported.
 
-The revision freezes the admitted source reference, not historical Secret bytes.
+The version freezes the admitted source reference, not historical Secret bytes.
 A managed account snapshot also retains its exact credential and verified private
 Backend/workspace ownership. Later reconciliation cannot substitute a newly
 issued account credential. Source updates take effect only through a new deployment
@@ -221,7 +226,7 @@ A trusted ComputeDriver can instead declare
 for new or adopted runtimes; admission then preserves its native configuration without requiring the Driver to collect logs.
 The following rendering policy applies only to the default platform-owned path.
 
-Compute renders logging from the admitted revision. Kubernetes mounts the
+Compute renders logging from the saved version. Kubernetes mounts the
 admitted native Configuration read-only under `/etc/openclaw`, with
 `OPENCLAW_CONFIG_PATH` pointing at that document. Gateway containers receive
 native JSON console logging at the admitted level and keep their own OTLP log
@@ -233,7 +238,7 @@ export reads Codex stderr only; stdout remains protocol output.
 Worker log attributes such as `work.id`, `work.operation`, `work.attempt`, and
 `work.outcome` describe controller reconciliation, not runtime resource
 identity. The Collector derives `service.name`, version, container, Namespace,
-Agent, and revision identity from protected container labels or Pod metadata,
+Agent, and Agent revision IDs from protected container labels or Pod metadata,
 not payload fields.
 
 ## Isolation and activation
@@ -255,24 +260,25 @@ exceptions and enforcement limitations, and Docker has narrower boundaries.
 
 Embedded preparation runs while its predecessor serves; activation can
 interrupt service (see [Harness authentication](#harness-authentication)).
-Dedicated replacement stops every earlier revision, even a healthy gateway,
+Dedicated replacement stops every earlier version, even a healthy gateway,
 before preparation, leaving the Agent unavailable until the replacement is
 ready. Guarded activation publishes the replacement before retiring the prior
-revision; an older retry never overwrites a newer active revision, and OCC
-routes to one active revision. Kubernetes cannot guarantee a process singleton
+version; an older retry never overwrites a newer selected version, and OCC
+routes to one selected version. Kubernetes cannot guarantee a process singleton
 during node partitions or manual replacement; see [execution
 modes](drivers/kubernetes-compute.md#execution-modes). The worker records one
 activation audit when durable completion succeeds; recovery repeats safe effects
 under the current claim. The [worker flow](../flows/controller-worker.md)
 explains exact ordering and failure handling.
 
-The pinned OpenClaw Codex plugin permits fresh remote work when OCC owns the
-native process configuration, but it lacks a supported managed-remote resume path
-for an existing ordinary session after gateway restart. Retained gateway session
-state and persistent volume data prove storage continuity, not continued native
-execution. Dedicated restart acceptance remains incomplete; the ownership and
-persistence requirements still apply. See the upstream restriction in
-[openclaw/openclaw@759e127](https://github.com/openclaw/openclaw/commit/759e127777b54426c922e8ab4c228523ddac04e9).
+Ordinary thread resume permits an OpenClaw-owned remote connection after
+ownership and non-running-thread checks. Manual adoption requires local stdio
+and an OpenClaw-owned Codex home
+([runtime checks](https://github.com/openclaw/openclaw/blob/9cc4450e9d79a993a51dc6fa362468f46c6f1819/extensions/codex/src/app-server/thread-lifecycle-adoption.ts#L187-L300)).
+
+Retained Gateway state and Harness rollouts do not guarantee session recovery
+or continuation of interrupted turns. OCE's end-to-end dedicated restart
+acceptance remains incomplete.
 
 ## Optional sandbox provisioning
 
@@ -312,11 +318,7 @@ workflow used by dedicated Codex; no startup override is required.
 A custom image can declare
 [`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration). Without native-worker support, deploy and provisioning answer
 `400 INVALID_REQUEST`, the Console withholds Dedicated OpenClaw, and retry
-rechecks support. Deployment requires the qualifying SandboxDriver,
-admitted authentication, and supported projections above. Compute places model
-metadata and the credential reference only in the native node's configuration;
-the Gateway receives no model credential. A missing model or disconnected node
-fails the turn without Gateway inference fallback.
+rechecks support.
 
 ## Related
 

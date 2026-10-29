@@ -3,7 +3,7 @@
 A Preset stores reusable Agent launch settings and variables in a Namespace.
 Select it during Agent creation, fill its variables, and edit copied settings before
 saving. Later Preset edits or deletion cannot change the Agent, Configuration, or
-deployed revisions.
+deployed versions.
 See [Create an Agent from a Preset](../guides/topics/agent-presets.md).
 
 The checked-in [standard Codex Preset](../guides/topics/standard-codex-preset.md)
@@ -177,8 +177,7 @@ with it. Omitted settings use the form's normal defaults.
 
 `agent.pluginApprovers` uses the Agent default plugin approver semantics from
 [Agent Plugins](agent-plugins.md#slack-approver-users). Omit it to inherit
-the form default. Use an empty array to select no Slack approvers, or a
-list of channel user identities to prefill selected approvers. Variable tokens
+the form default; `[]` selects no Slack approvers. Variable tokens
 can appear inside those identity strings; the completed Agent request still
 validates the rendered approvers with the selected Plugin Driver.
 
@@ -307,8 +306,9 @@ An included `template` replaces the whole template, including variable
 definitions; omitted fields stay unchanged. Writes check the template structure,
 variable syntax and default types, credential-binding structure, known
 cross-Namespace credential references, and credential literals at their native
-use sites. Ordinary launch-field errors, such as an invalid execution mode or
-plugin policy, can remain in a saved Preset. The console checks values needed
+use sites. A literal `agent.name`, `executionMode`, `backendId` or
+`pluginApprovers` that Agent create refuses is refused; plugin selections and
+tokens wait. The console checks values needed
 to populate its form; the existing creation APIs validate completed settings.
 The selected
 [Configuration Driver](drivers/configuration.md#optional-validation) must support
@@ -347,11 +347,10 @@ and an Agent separately. Follow [partial-save recovery](console/create-and-deplo
 if the second save fails or a response is lost.
 
 A Preset is read once when selected. **Use Preset** renders its variables and
-opens an ordinary editable Agent form. The chooser closes; changing the draft
-does not update or reread the Preset. **Start over** discards the unsaved draft
+opens an ordinary editable Agent form; changing the draft does not update or
+reread the Preset. **Start over** discards the unsaved draft
 and returns to the chooser, but is disabled once a Configuration has saved or a
 save outcome is uncertain.
 
-A valid Preset is not necessarily a valid Agent configuration. A later Agent
-validation error can leave a saved Configuration; follow the recovery steps
-above. Later deployments read the Agent's own draft.
+A valid Preset is not necessarily a valid Agent configuration. Later deployments
+read the Agent's own draft.

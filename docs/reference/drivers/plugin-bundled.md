@@ -70,13 +70,12 @@ catalog searches its bundled entries.
 The console preloads the first page when a PAT is entered or selected in Create
 Agent, or an editable Agent's Plugins tab opens with a bound PAT Secret;
 **Configure plugins** reuses that page or its pending request. Replacing the PAT
-clears results and preloads a fresh first page; selections remain. Search runs
-300 ms after the last keystroke and resets pagination when the query changes;
-Enter, page navigation, and explicit loads run immediately. Loading feedback
-covers that delay and lasts until the response, even with no earlier entries;
-tool lookups show it until details arrive. Configured-plugin and tool filters
-stay instant and local. Closing the picker or changing its credential cancels
-pending searches. Requests have a 15-second deadline and 4 MiB response limit.
+clears results and preloads a fresh first page; selections remain. Search waits
+300 ms after the last keystroke (Enter, page navigation and explicit loads run at
+once) and resets pagination for a new query. Loading feedback lasts until the
+response, even with no earlier entries; tool lookups show it until details
+arrive. Closing the picker or changing its credential cancels pending searches.
+Configured-plugin and tool filters stay instant and local. Requests have a 15-second deadline and 4 MiB response limit.
 Discovery does not read Codex home, install plugins, or return download URLs.
 Plugin details show available website, privacy-policy, and terms-of-service
 links; invalid or non-HTTPS URLs are omitted.
@@ -97,8 +96,8 @@ Unavailable entries show the reported cause and a recovery link:
 
 | Cause                                              | Next step                                                                                           |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Disabled by administrator                          | Ask a workspace administrator to review access for the token's identity.                            |
-| Plan not eligible                                  | Ask the administrator to review workspace plan availability.                                        |
+| Disabled by a ChatGPT workspace administrator      | Ask a ChatGPT workspace administrator to review access for the token's identity.                    |
+| Plan not eligible                                  | Ask a ChatGPT workspace administrator to review plan availability.                                  |
 | Required app unavailable                           | Review app access and setup; credentials alone may not resolve this.                                |
 | No recognized reason                               | Review workspace plugin access without assuming a specific cause.                                   |
 | Unsupported native components or no apps or skills | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
@@ -151,6 +150,8 @@ with the selected plugin. The pinned catalog currently exposes the `diffs` tool
 owned by `diffs`; adding another entry requires verified package and tool
 identities. Ambiguous global tool names or partial denials that would also deny
 an allowed sibling are rejected.
+
+Dedicated deployments also enforce the [Gateway tool policy](../configuration.md#gateway-tool-policy).
 
 The Codex app default also applies to actions added later; it does not require a
 tool inventory. `write_actions` asks for review when the native action lacks
@@ -260,12 +261,15 @@ including tool denies and profiles, is retained.
 
 ## Preparation and security
 
-Revision plugin state carries only requested IDs/policies and selected Driver
-identity. Compute resolves current native metadata and applies the resulting
-nonsecret configuration inside the exact revision workload before readiness. Codex installation is verified through native API metadata and effective configuration. Codex owns its private cache layout and integrity; Enterprise does not parse its cache records or version directories.
+Agent revision plugin state carries only requested IDs/policies and selected
+Driver identity. Compute resolves current native metadata and applies the
+resulting nonsecret configuration inside the workload with the same Agent
+revision ID before readiness. Codex installation is verified through native API
+metadata and effective configuration. Codex owns its private cache layout and
+integrity; Enterprise does not parse its cache records or version directories.
 Package files/configuration are revision-private. In Kubernetes, the native
 installation registry remains in the persistent Agent-owned OpenClaw state
-database. A different active revision keeps running during embedded-gateway
+database. A different selected version keeps running during embedded-gateway
 preparation; activation replaces it with a `Recreate` Deployment, so the new
 process installs only after the old gateway stops. This reuses the serialized
 lifecycle, with no database copy or plugin-specific coordinator.
@@ -277,8 +281,8 @@ settings. It refreshes the native registry, reapplies the requested policy to it
 private writable configuration, and checks plugin ID, package name,
 runtime/install version, recorded integrity, and that the runtime source resolves
 within the resolved install path. This requires an OpenClaw runtime that supports
-`--no-enable`; the currently pinned `2026.9.1` image must be updated before this
-preparation path can ship. There is no fallback to installation that changes policy.
+`--no-enable`. Unsupported runtimes fail preparation; installation cannot
+fall back to changing policy.
 Identity, integrity, or effective-policy verification failure prevents the
 replacement gateway from starting. A confirmed installation rejection can instead
 disable that optional selection and produce a warning. The previous revision
@@ -317,8 +321,7 @@ preserves other Agents' state.
 
 Source and contract tests, direct MCP calls, package listings, and rendered
 bridge configuration do not prove native Agent behavior or compatibility with
-every runtime image. Native proof requires the opt-in real-runtime lane; the
-testing guide also covers contributor fixture setup and proof notes.
+every runtime image; native proof needs the testing guide's opt-in real-runtime lane.
 
 Disabling a selection does not uninstall it. Native remote installation can enable
 the plugin on the credential's account. Agent-local plugin/app policy and the

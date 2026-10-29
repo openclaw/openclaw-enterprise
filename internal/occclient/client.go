@@ -193,13 +193,7 @@ func (client *Client) DeleteServiceAccount(namespaceID, serviceAccountID string,
 		}
 		return nil, nil
 	case http.StatusOK:
-		var envelope responseEnvelope
-		var data any
-		if json.Unmarshal(responseBody, &envelope) != nil || len(envelope.Data) == 0 ||
-			len(envelope.Meta) == 0 || json.Unmarshal(envelope.Data, &data) != nil {
-			return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
-		}
-		return data, nil
+		return decodeResponseData(status, responseBody)
 	default:
 		if status >= http.StatusOK && status < http.StatusMultipleChoices {
 			return nil, fmt.Errorf("OCC returned an unexpected response (HTTP %d)", status)
@@ -333,9 +327,21 @@ func (client *Client) GetAgent(namespaceID, agentID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents", agentID)
 }
 
+// GetAgentCallerPermissions reads the caller's advisory permission summary for
+// one Agent (update, deploy, operate, delete). It does not authorize a later
+// request; the CLI uses it only to choose advice.
+func (client *Client) GetAgentCallerPermissions(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "permissions")
+}
+
 // UpdateAgent updates an Agent from a JSON document.
 func (client *Client) UpdateAgent(namespaceID, agentID string, body jsontext.Value) (any, error) {
 	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID}, body)
+}
+
+// GetAgentHarnessStatus reads the Sandbox record of a running Agent's active dedicated Harness.
+func (client *Client) GetAgentHarnessStatus(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "harness-status")
 }
 
 // GetAgentRuntimeCredentials fetches runtime credential metadata for an Agent.
@@ -501,4 +507,29 @@ func (client *Client) DeleteAgent(namespaceID, agentID string) (any, error) {
 		[]string{"namespaces", namespaceID, "agents", agentID},
 		nil,
 	)
+}
+
+// GetAgentSandboxPolicy reads desired policy and confirmed application evidence.
+func (client *Client) GetAgentSandboxPolicy(namespaceID, agentID, facet string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet)
+}
+
+// UpdateAgentSandboxPolicy saves an expected-version replacement without applying it.
+func (client *Client) UpdateAgentSandboxPolicy(namespaceID, agentID, facet string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPut, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet}, body)
+}
+
+// ApplyAgentSandboxPolicy requests live application; acknowledgement is not enforcement evidence.
+func (client *Client) ApplyAgentSandboxPolicy(namespaceID, agentID, facet, revisionID string, expectedVersion int) (any, error) {
+	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "apply"}, map[string]any{"revisionId": revisionID, "expectedVersion": expectedVersion})
+}
+
+// TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing changes future edit permission admission, preserving grants.
+func (client *Client) TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing(namespaceID, agentID, facet string, enabled bool) (any, error) {
+	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "editing"}, map[string]any{"enabled": enabled})
+}
+
+// GetAgentSandboxRecommendations reads bounded provider suggestions, independently of logs.
+func (client *Client) GetAgentSandboxRecommendations(namespaceID, agentID, facet, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID, "sandbox-policy", facet, "recommendations")
 }

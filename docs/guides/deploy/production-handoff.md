@@ -62,12 +62,12 @@ and web pages as untrusted inputs when deciding which actions may run.
 
 ## Verify the deployed workflow
 
-Keep a short evidence record identifying the Namespace, Agent, revision,
+Keep a short evidence record identifying the Namespace, Agent, version,
 verification time, expected result, and observed result. Store credential
 references rather than values.
 
 1. Complete the [production workload checks](production-agents.md#verify-production-workloads):
-   the expected revision, denied and allowed gateway access, and a real model
+   the expected version, denied and allowed gateway access, and a real model
    turn through the selected runtime. A deployment response of `202` means work
    was admitted; `activeRevisionId` alone is not serving-health evidence.
 2. Submit a representative business request through the intended channel. Verify
@@ -81,7 +81,7 @@ references rather than values.
    test records. Verify the integration's duplicate-prevention behavior; OCC
    deployment reconciliation does not establish exactly-once CRM updates or
    message delivery.
-5. Repeat the relevant checks after a revision, credential, plugin, or access
+5. Repeat the relevant checks after a version, credential, plugin, or access
    policy change. Confirm that unrelated Agents retain their intended behavior.
 
 ## Connect alerts to a response
@@ -110,7 +110,7 @@ business effects in their destination system.
 Agree on acceptable downtime and data loss before relying on the workflow.
 Controller lease recovery handles interrupted reconciliation; it is not a
 backup or a complete Installation restore. There is currently no general OCC
-backup/restore command or explicit Agent-revision rollback endpoint.
+backup/restore command or explicit Agent rollback endpoint.
 
 Record the protection and recovery owner for each required asset:
 
@@ -137,22 +137,22 @@ external actions. Substitute test credentials and disable copied production
 channels and scheduled work before allowing test egress. Verify state, access,
 and the business workflow; measure recovery time and the age of recovered data.
 Before an actual cutover, fence old writers and workloads. RWO storage and normal
-revision routing do not provide independent process fencing during a node
+version routing do not provide independent process fencing during a node
 partition.
 
 For an update, retain the reviewed deployment inputs and a verified recovery
 point, rehearse the candidate in a separate environment, and repeat the workload
 checks before widening use. Define the failure response with the infrastructure
 owner; reverting a Helm release or image does not restore database, Secret, or
-workspace state. An immutable revision freezes requested configuration and
-references, not every referenced Secret value or resolved plugin release. See
-[revision snapshots](../../reference/agents/deployment.md#revisions-and-deployment)
+workspace state. A saved version fixes the requested configuration and
+references. Referenced Secret values and resolved plugin releases can change. See
+[version snapshots](../../reference/agents/deployment.md#revisions-and-deployment)
 and [plugin lifecycle](../../reference/agent-plugins.md#lifecycle).
 
 ## Complete the handoff
 
 The business and platform owners should be able to locate the accepted workflow,
-deployed revision, access and data decisions, credential renewal dates, alert
+deployed version, access and data decisions, credential renewal dates, alert
 responses, and recovery evidence without the original installer. Record unresolved
 limits and the decision to accept them or defer the workload. Revisit the handoff
 when a new integration, permission, runtime, or data category changes those assumptions.

@@ -1,8 +1,11 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test, { mock } from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import {
@@ -18,6 +21,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const configuration = {
@@ -37,7 +41,7 @@ const configuration = {
     secrets: {
       providers: { teamstore: { source: "store" } },
       defaults: { store: "teamstore" },
-      egressProxy: { enabled: true },
+      credential_proxy: { enabled: true },
     },
     agents: { defaults: { sandbox: { mode: "all" } } },
     plugins: { entries: { example: { config: { enabled: true, retries: 3, tags: [null] } } } },
@@ -141,7 +145,7 @@ test("Kubernetes configuration implementations expose a closed preconstruction s
   assert.equal(schema.additionalProperties, false);
   assert.deepEqual(schema.required, ["authentication"]);
   assert.doesNotThrow(() =>
-    KubernetesConfigurationDriver.validateConfiguration({ authentication: { mode: "inCluster" } }),
+    requireConfiguration(KubernetesConfigurationDriver, { authentication: { mode: "inCluster" } }),
   );
 
   const injected = /Injected clients and unknown Kubernetes configuration options/;
@@ -179,15 +183,25 @@ test("Kubernetes configuration implementations expose a closed preconstruction s
     [{ authentication: { mode: "inCluster" }, token: "not-allowed" }, injected],
     [{ authentication: { mode: "inCluster" }, clients: {} }, injected],
   ]) {
-    assert.throws(() => KubernetesConfigurationDriver.validateConfiguration(invalid), refusal);
-    assert.throws(() => new KubernetesConfigurationDriver(invalid), refusal);
+    assert.throws(
+      () => requireConfiguration(KubernetesConfigurationDriver, invalid),
+      SharedConfigurationValidationError,
+    );
+    assert.throws(
+      () => new KubernetesConfigurationDriver(invalid),
+      SharedConfigurationValidationError,
+      String(refusal),
+    );
   }
 
   // Inherited client injection must not evade the closed own-property schema.
   const inheritedClients = Object.assign(Object.create({ clients: {} }), {
     authentication: { mode: "inCluster" },
   });
-  assert.throws(() => new KubernetesConfigurationDriver(inheritedClients), /client/i);
+  assert.throws(
+    () => new KubernetesConfigurationDriver(inheritedClients),
+    SharedConfigurationValidationError,
+  );
 });
 
 test("configuration Driver selection is explicit and cannot switch implementations", () => {
@@ -607,8 +621,7 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
 });
 
 test("Kubernetes Configuration cancels an in-flight request when its provisioning claim is lost", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-configuration-cancellation-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-configuration-cancellation-");
   const path = join(directory, "kubeconfig.json");
   await writeFile(
     path,

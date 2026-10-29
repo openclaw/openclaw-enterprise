@@ -201,6 +201,12 @@ func TestK3dCreateErrorHint(t *testing.T) {
 			want: []string{unconfirmed}, absent: []string{"k3d reported"},
 		},
 		{
+			name: "Docker address pools exhausted after an undecided preflight", unconfirmed: true,
+			output: "ERRO[0001] Failed to create cluster: Error response from daemon: all predefined address pools have been fully subnetted\n" + k3dRollbackLines,
+			line:   "ERRO[0001] Failed to create cluster: Error response from daemon: all predefined address pools have been fully subnetted",
+			absent: []string{"iptable_nat", channelHint},
+		},
+		{
 			name: "port conflict after an undecided preflight", unconfirmed: true,
 			output: "ERRO[0001] Failed to create cluster: port is already allocated\n" + k3dRollbackLines,
 			line:   "ERRO[0001] Failed to create cluster: port is already allocated",

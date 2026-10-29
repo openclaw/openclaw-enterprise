@@ -210,6 +210,9 @@ function output(command, args) {
   process.stderr.write("SSH host verification failed.\n"); process.exitCode = 1;
 });
 `;
+// The host helper reports a failed workspace setup script ("Workspace initialization
+// failed.") as a retryable failure, which the driver surfaces with this generic message.
+const failedWorkspaceSetup = { message: "SSH host operation failed or timed out." };
 
 test(
   "real SSH unit directory supports stop, restart and scoped deletion",
@@ -617,6 +620,7 @@ test(
           ...setupContext,
           workspaceSetup: { ...setup, defaultsId: "0".repeat(64) },
         }),
+        failedWorkspaceSetup,
       );
       // A real bind mount permits native reads but refuses replacement of the second
       // supplied file. The first atomic write must survive without opening execution.
@@ -625,7 +629,7 @@ test(
         await inspect("workspace-failure-seed", { executable: runtime.openclawPath }),
         { seeded: true },
       );
-      await assert.rejects(driver.prepareRevision(first, setupContext));
+      await assert.rejects(driver.prepareRevision(first, setupContext), failedWorkspaceSetup);
       const inactiveSetup = {
         filesMatch: true,
         userIsStock: true,
@@ -648,7 +652,7 @@ test(
         await inspect("workspace-failure-recover", { divergentContent: divergentUser }),
         { recovered: true },
       );
-      await assert.rejects(driver.prepareRevision(first, setupContext));
+      await assert.rejects(driver.prepareRevision(first, setupContext), failedWorkspaceSetup);
       assert.deepEqual(
         await inspect("workspace-failure-inspect", {
           files: { "AGENTS.md": setup.files["AGENTS.md"], "USER.md": divergentUser },

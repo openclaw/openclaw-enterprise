@@ -1,3 +1,4 @@
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { isImmutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import {
@@ -172,17 +173,28 @@ export function createAuthPrincipalSeed(
             resourceKind,
           })),
       ),
+      { action: "read", resourceKind: "sandbox_policy" },
+      { action: "update", resourceKind: "sandbox_policy" },
       { action: "operate", resourceKind: "secret" },
       ...(["create", "read", "update", "delete", "operate"] as const).map((action) => ({
         action,
         resourceKind: "credential_source" as const,
       })),
-      ...(["create", "read", "update", "delete", "deploy", "operate", "administer"] as const).map(
-        (action) => ({
-          action,
-          resourceKind: "agent" as const,
-        }),
-      ),
+      ...(
+        [
+          "create",
+          "read",
+          "update",
+          "delete",
+          "deploy",
+          "operate",
+          "administer",
+          "manage_policy",
+        ] as const
+      ).map((action) => ({
+        action,
+        resourceKind: "agent" as const,
+      })),
       { action: "read", resourceKind: "agent_revision" },
     ],
   };
@@ -246,6 +258,7 @@ const MANAGED_RESOURCE_KINDS: readonly ManagedIAMResourceKind[] = [
   "agent_revision",
   "configuration",
   "credential_source",
+  "sandbox_policy",
   "secret",
   "service_account",
 ];
@@ -801,7 +814,7 @@ function validRequest(request: AuthorizationRequest): boolean {
     (request.resource.kind !== "service_account" ||
       isNonEmptyString(request.resource.namespaceId)) &&
     (request.resource.kind !== "secret" || isNonEmptyString(request.resource.namespaceId)) &&
-    (request.resource.kind !== "credential_source" ||
+    (!["credential_source", "sandbox_policy"].includes(request.resource.kind) ||
       isNonEmptyString(request.resource.namespaceId)) &&
     ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind)
@@ -1070,17 +1083,8 @@ export class NativeIAMDriver implements IAMDriver {
     additionalProperties: false,
   });
 
-  static validateConfiguration(configuration: unknown): void {
-    if (
-      typeof configuration !== "object" ||
-      configuration === null ||
-      Array.isArray(configuration) ||
-      (Object.getPrototypeOf(configuration) !== Object.prototype &&
-        Object.getPrototypeOf(configuration) !== null) ||
-      Reflect.ownKeys(configuration).length !== 0
-    ) {
-      throw new TypeError("Native IAM Driver configuration must be an empty object.");
-    }
+  static validateConfiguration(): readonly ErrorDetail[] {
+    return [];
   }
 
   readonly id: string;
@@ -1088,6 +1092,19 @@ export class NativeIAMDriver implements IAMDriver {
   readonly implementation: string;
   readonly namespacePolicyTransaction = "platform-unit-of-work" as const;
   private readonly state: NativeIAMStateStore;
+
+  /** Identifies the original native decision method bound to this exact state store. */
+  static usesStateForAuthorization(
+    driver: IAMDriver,
+    authorize: IAMDriver["authorize"],
+    state: unknown,
+  ): boolean {
+    return (
+      authorize === nativeAuthorize &&
+      nativeAuthorityStates.has(driver) &&
+      nativeAuthorityStates.get(driver) === state
+    );
+  }
 
   constructor(state: NativeIAMStateStore, options: NativeIAMDriverOptions = {}) {
     this.id = options.id ?? "occ-native-iam";
@@ -1102,6 +1119,10 @@ export class NativeIAMDriver implements IAMDriver {
       throw new TypeError("Native IAM Driver requires a platform state store.");
     }
     this.state = state;
+    if (new.target === NativeIAMDriver) {
+      Object.defineProperty(this, "state", { writable: false, configurable: false });
+      nativeAuthorityStates.set(this, state);
+    }
   }
 
   async lookupIdentity(input: IdentityLookup): Promise<Identity | undefined> {
@@ -1320,6 +1341,9 @@ export class NativeIAMDriver implements IAMDriver {
     }
   }
 }
+
+const nativeAuthorityStates = new WeakMap<IAMDriver, NativeIAMStateStore>();
+const nativeAuthorize = NativeIAMDriver.prototype.authorize;
 
 export { NativeIAMDriver as OCCIAMDriver };
 

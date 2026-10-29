@@ -26,6 +26,8 @@ import {
   createGitHubTokenServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 // Each case starts its own service, Git and GitHub fixtures and spends most of
 // its time waiting on stock Git children. The cases register here and run two at
@@ -33,11 +35,12 @@ import {
 // 30 s per-command limit on an overloaded host.
 const cases = [];
 const test = (...registration) => cases.push(registration);
+// The bare repository has no such ref: `git rev-parse` exits 128.
+const missingRef = { message: "command failed (exit 128)" };
 
 // Stock Git must reach the gateway under its public HTTPS name. A CONNECT proxy
 // forwards only that name to the listener; TLS still terminates at the gateway.
 async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
-  const sockets = new Set();
   const server = createServer((_, response) => response.writeHead(405).end());
   server.on("connect", (request, socket, head) => {
     if (request.url !== `${gatewayHost}:443`) {
@@ -55,22 +58,11 @@ async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
       [socket, upstream],
       [upstream, socket],
     ]) {
-      sockets.add(one);
-      one.once("close", () => {
-        sockets.delete(one);
-        other.destroy();
-      });
+      one.once("close", () => other.destroy());
       one.on("error", () => other.destroy());
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  resources.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return `http://127.0.0.1:${server.address().port}`;
+  return `http://127.0.0.1:${await listen(resources, server)}`;
 }
 
 async function startTokenService(t, limits = {}, configuration = {}) {
@@ -105,12 +97,18 @@ async function startTokenService(t, limits = {}, configuration = {}) {
   return { clock, tls, config, github, git, service, listeners, token, tokenIndex, proxy };
 }
 
+// Git starts the credential helper and the hook dispatcher (for every hook, three times
+// per ref update) as Node children of an allowlisted environment, so the compile cache
+// is passed explicitly.
+const compileCache = await fileCompileCache("repository-credentials-github-token");
+
 async function stockGit(t, fixture, opened) {
   const material = await createNativeClientMaterial(t, [{ opened, repositoryRef: "fixture" }], {
     ca: fixture.tls.ca,
   });
   const home = await temporaryDirectory(t, "repository-token-home-");
   const env = cleanEnvironment({
+    NODE_COMPILE_CACHE: compileCache,
     HOME: home,
     GIT_CONFIG_SYSTEM: join(material.root, "gitconfig"),
     HTTPS_PROXY: fixture.proxy,
@@ -166,7 +164,7 @@ test("development token sessions clone, push allowed refs and call REST without 
   }
   assert.equal(await git.ref("refs/heads/main"), mainBefore);
   assert.notEqual(await git.ref("refs/heads/existing-branch"), "");
-  await assert.rejects(git.ref("refs/heads/agent/y"));
+  await assert.rejects(git.ref("refs/heads/agent/y"), missingRef);
   assert.deepEqual(
     git.trace.filter((entry) => entry.path.endsWith("/git-receive-pack")),
     pushesBefore,
@@ -253,7 +251,7 @@ test("an oversized development token push is answered 413 before the token is us
       postBuffer,
     );
   }
-  await assert.rejects(fixture.git.ref("refs/heads/agent/large"));
+  await assert.rejects(fixture.git.ref("refs/heads/agent/large"), missingRef);
 });
 
 async function committedCheckout(t, fixture, opened, label) {
@@ -340,7 +338,7 @@ test("development token pushes admit UTF-8 branch names and match the allowlist 
   });
   assert.notEqual(bypassed.code, 0);
   assert.match(bypassed.stderr, /\b400\b/);
-  await assert.rejects(fixture.git.ref(lookalike));
+  await assert.rejects(fixture.git.ref(lookalike), missingRef);
 
   // Git accepts a refname that is not UTF-8 (argv cannot carry it, so a shell spells it).
   // Under an allowed prefix, the client hook and the gateway still refuse it.
@@ -387,7 +385,7 @@ test("development token pushes admit UTF-8 branch names and match the allowlist 
     });
     assert.notEqual(refusedByGateway.code, 0, code);
     assert.match(refusedByGateway.stderr, /\b400\b/, code);
-    await assert.rejects(fixture.git.ref(ref), code);
+    await assert.rejects(fixture.git.ref(ref), missingRef, code);
   }
 
   // Git refuses a control byte itself, before any request.
@@ -415,7 +413,7 @@ test("a development token push of more than 256 refs is refused with its own cod
   assert.notEqual(refused.code, 0);
   assert.match(refused.stderr, /\b413\b/);
   assert.equal(receivePacks(fixture), before);
-  await assert.rejects(fixture.git.ref("refs/heads/agent/many-0"));
+  await assert.rejects(fixture.git.ref("refs/heads/agent/many-0"), missingRef);
 
   // The JSON answer names the limit for clients that read it.
   const lines = refspecs(257).map(

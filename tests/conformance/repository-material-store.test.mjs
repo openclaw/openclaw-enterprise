@@ -3,6 +3,7 @@ import test from "node:test";
 import { RepositoryMaterialStore } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-store.ts";
 import { repositoryMaterialSpec } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { repositoryCleanupFailureCode } from "../../apps/controller/src/worker/repository-credentials.ts";
 
 const now = 1800000000000;
 const origin = "https://credentials.example.test";
@@ -187,4 +188,30 @@ test("expiry during retained Secret validation is not reported as missing materi
     message: "Repository credential material has expired.",
   });
   assert.equal(fake.created.length, 1);
+});
+
+// The worker logs a stuck repository cleanup by its cause code. A store failure names its
+// operation and an RBAC refusal, not the generic REPOSITORY_CLEANUP_FAILED, and never the
+// Kubernetes response text, which may carry a Secret body (finding 2201).
+test("material cleanup failures carry the stable code the worker logs", async () => {
+  for (const [statusCode, code] of [
+    [403, "REPOSITORY_MATERIAL_LIST_FORBIDDEN"],
+    [503, "REPOSITORY_MATERIAL_LIST_FAILED"],
+  ]) {
+    const fake = fakeCore();
+    fake.core.listNamespacedSecret = async () => {
+      throw Object.assign(new Error("synthetic response with a Secret body"), { statusCode });
+    };
+    const store = new RepositoryMaterialStore("namespace-material-expiry", fake.core, (op) => op());
+    const error = await store.cleanup({ namespaceId: "namespace-material-expiry" }, new Set()).then(
+      () => assert.fail("cleanup must fail"),
+      (failure) => failure,
+    );
+    assert.equal(
+      error.message,
+      "Repository credential material cleanup could not list owned objects.",
+    );
+    assert.equal(error.cause, undefined);
+    assert.equal(repositoryCleanupFailureCode(error), code);
+  }
 });

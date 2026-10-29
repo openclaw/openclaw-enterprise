@@ -1,3 +1,4 @@
+import networkPolicySchema from "./network-policy-schema.mjs";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
@@ -64,6 +65,13 @@ function configurationValues(scenario) {
     values.gateway.auth = {
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
     };
+  }
+  if (scenario.messageQueue !== undefined) {
+    values.messages = { queue: structuredClone(scenario.messageQueue) };
+  }
+  if (scenario.retiredSetting) {
+    // A setting an older release saved and the pinned OpenClaw has since retired.
+    values.security = { preset: "corporate" };
   }
   if (scenario.slack) {
     values.channels.slack = {
@@ -150,11 +158,18 @@ function candidateDeploymentError(scenario, checkedAt) {
   }
   // Deployment error messages copy deploymentErrorMessage in
   // packages/occ/src/state/controller-work.ts; keep them in step.
+  if (scenario.candidateCredentialRejected) {
+    return {
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      message:
+        "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
+    };
+  }
   if (scenario.candidateModelProbeCause) {
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
       message:
-        "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
+        "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.",
       data: {
         runtimeFailure: {
           component: "gateway",
@@ -166,10 +181,22 @@ function candidateDeploymentError(scenario, checkedAt) {
       },
     };
   }
+  // A scenario can name any failure code with the message OCC returns for it.
+  if (scenario.candidateFailure) {
+    return scenario.candidateFailure;
+  }
+  if (scenario.candidateDependencyUnavailable) {
+    return {
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
+    };
+  }
   if (scenario.candidateSelected) {
     return {
       code: "REVISION_FINALIZATION_INCOMPLETE",
-      message: "Deployment reconciliation failed.",
+      message:
+        "Deployment failed. Check this version's logs; if they show nothing, ask an Installation administrator to check the controller worker log for this code.",
     };
   }
   return {
@@ -185,12 +212,20 @@ function candidateDeploymentError(scenario, checkedAt) {
 
 export function installFixture(scenario, evidence) {
   const rules = structuredClone(scenario.rules ?? []);
+  const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
   if (scenario.pendingGithubAttempt) {
     // Simulates returning from a GitHub callback started in this tab.
     sessionStorage.setItem("occ.console.githubAttempt", "a".repeat(43));
+  }
+  // Preview frames share tab storage, so every scenario sets the signed-in mark itself: only
+  // one whose tab had a session before it expired keeps it; a first visit has none.
+  if (scenario.expiredSession) {
+    sessionStorage.setItem("occ.console.signedIn", "1");
+  } else {
+    sessionStorage.removeItem("occ.console.signedIn");
   }
   if (scenario.pendingGoogleAttempt) {
     // Simulates returning from a Google callback started in this tab.
@@ -220,7 +255,11 @@ export function installFixture(scenario, evidence) {
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
-    user: { id: "storybook-operator", name: "Demo Operator", email: "operator@example.com" },
+    user: scenario.sessionUser ?? {
+      id: "storybook-operator",
+      name: "Demo Operator",
+      email: "operator@example.com",
+    },
   };
   const namespaces = scenario.emptyNamespaces
     ? []
@@ -228,7 +267,7 @@ export function installFixture(scenario, evidence) {
         {
           id: namespaceId,
           name: scenario.namespaceName ?? "Engineering",
-          status: "ready",
+          status: scenario.namespaceStatus ?? "ready",
           createdAt,
         },
         {
@@ -238,6 +277,7 @@ export function installFixture(scenario, evidence) {
           createdAt,
         },
       ];
+  const namespaceDeletionReads = new Map();
   const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
@@ -286,6 +326,25 @@ export function installFixture(scenario, evidence) {
         delivery: { type: "env" },
       };
     }
+    // The demo Agent was granted the Slack Secrets it binds, unless the scenario left one out:
+    // an administrator's console reads these grants (finding 1920).
+    roles.push({
+      id: "role_demo_secret_operate",
+      namespaceId,
+      name: "Agent Secret operate",
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+    for (const key of keys.filter((name) => name !== scenario.slackGrantMissing)) {
+      bindings.push({
+        id: `binding_demo_${key.toLowerCase()}`,
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: "identity_demo_agent",
+        roleId: "role_demo_secret_operate",
+        resourceKind: "secret",
+        resourceId: `sec_demo_${key.toLowerCase()}`,
+      });
+    }
   }
   configs.set(config.id, config);
   const selectedAuth =
@@ -300,6 +359,37 @@ export function installFixture(scenario, evidence) {
             : scenario.auth === "oauth"
               ? { method: "credential_source", sourceId: "cs_00000000-0000-4000-8000-000000000010" }
               : auth;
+  // The demo Agent was granted its harness authentication Secret or credential source, unless the
+  // scenario left it out: an administrator's Credentials tab reads this grant (finding 2260).
+  const harnessCredential =
+    selectedAuth?.method === "credential_source"
+      ? { kind: "credential_source", id: selectedAuth.sourceId }
+      : selectedAuth?.source?.kind === "secret"
+        ? { kind: "secret", id: selectedAuth.source.id }
+        : null;
+  if (harnessCredential && !scenario.harnessGrantMissing) {
+    const roleId = `role_demo_${harnessCredential.kind}_operate`;
+    if (!roles.some((role) => role.id === roleId)) {
+      roles.push({
+        id: roleId,
+        namespaceId,
+        name:
+          harnessCredential.kind === "secret"
+            ? "Agent Secret operate"
+            : "Agent Credential Source operate",
+        permissions: [{ action: "operate", resourceKind: harnessCredential.kind }],
+      });
+    }
+    bindings.push({
+      id: "binding_demo_harness_auth",
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: "identity_demo_agent",
+      roleId,
+      resourceKind: harnessCredential.kind,
+      resourceId: harnessCredential.id,
+    });
+  }
   let selectedRevisionId = null;
   if (scenario.candidateSuperseded) {
     // A newer v8 the viewer cannot read superseded v7 and is now selected.
@@ -312,14 +402,16 @@ export function installFixture(scenario, evidence) {
   } else if (scenario.deployed) {
     selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
   }
+  let agentReadCount = 0;
   const agent = {
-    id: "agt_00000000-0000-4000-8000-000000000001",
+    id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
     name: scenario.agentName ?? "Research assistant",
     status: scenario.deleting ? "deleting" : "active",
     desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
     configurationId: config.id,
     executionMode: "dedicated",
+    gatewayManagedMode: true,
     harnessAuth: selectedAuth,
     credentialSources: structuredClone(
       scenario.credentialSources ??
@@ -331,7 +423,10 @@ export function installFixture(scenario, evidence) {
       : {}),
     servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId: scenario.stopNoSelection ? null : selectedRevisionId,
+    activeRevisionId:
+      scenario.stopNoSelection || scenario.firstDeploymentFailed || scenario.firstDeploymentQueued
+        ? null
+        : selectedRevisionId,
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),
@@ -358,6 +453,7 @@ export function installFixture(scenario, evidence) {
       agentId: owner.id,
       revision,
       backendId: owner.backendId ?? null,
+      gatewayManagedMode: owner.gatewayManagedMode,
       configurationId: configuration.id,
       configurationKind: configuration.kind,
       configurationGeneration: configuration.generation,
@@ -379,6 +475,7 @@ export function installFixture(scenario, evidence) {
         : {}),
       harness: { id: harnessId, version: "demo", mode: owner.executionMode },
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },
+      ...(scenario.policyState ? { sandboxDriverId: "sandbox-story" } : {}),
       servicePrincipalId: owner.servicePrincipalId,
       ...(owner.repositoryBindings?.length
         ? {
@@ -423,15 +520,35 @@ export function installFixture(scenario, evidence) {
           Date.parse(createdAt) - (scenario.revisionHistory - number) * 86_400_000,
         ).toISOString();
         revisions.set(older.id, older);
+        // An earlier version whose deployment failed before a later one succeeded.
+        if (scenario.earlierFailedVersion === number) {
+          deployments.set(older.id, {
+            deploymentId: older.id,
+            namespaceId,
+            agentId: agent.id,
+            status: "failed",
+            cleanup: null,
+            progress: null,
+            error: candidateDeploymentError(scenario, older.createdAt),
+            warnings: [],
+          });
+        }
       }
     }
     deployments.set(revisionId, {
       deploymentId: revisionId,
       namespaceId,
       agentId: agent.id,
-      status: "succeeded",
+      // A failed or still queued first deployment selects no version for service.
+      status: scenario.firstDeploymentFailed
+        ? "failed"
+        : scenario.firstDeploymentQueued
+          ? "queued"
+          : "succeeded",
       progress: null,
-      error: null,
+      error: scenario.firstDeploymentFailed
+        ? candidateDeploymentError(scenario, currentRevision.createdAt)
+        : null,
       warnings: [],
     });
     if (scenario.candidateDeploymentStatus) {
@@ -458,6 +575,8 @@ export function installFixture(scenario, evidence) {
             ? candidateDeploymentError(scenario, candidate.createdAt)
             : null,
         warnings: scenario.candidateDeploymentWarnings ?? [],
+        // The next status poll records success and selects v7 for service.
+        ...(scenario.candidateActivates ? { reads: 0 } : {}),
       });
     }
   }
@@ -573,6 +692,21 @@ export function installFixture(scenario, evidence) {
       },
     };
   }
+  if (scenario.modelRosterSelection) {
+    const values = preset.template.configuration.values;
+    const primary = values.agents.defaults.model.primary;
+    const policy = values.agents.defaults.models;
+    values.agents.ownership = "explicit";
+    values.agents.entries = {
+      main: { model: primary, models: { [primary]: { ...policy[primary], alias: "Main policy" } } },
+      assistant: {
+        model: structuredClone(values.agents.defaults.model),
+        models: structuredClone(policy),
+      },
+      inherited: {},
+    };
+    preset.name = "Roster with a shared primary";
+  }
   if (scenario.presetAgent) {
     Object.assign(preset.template.agent, structuredClone(scenario.presetAgent));
   }
@@ -602,7 +736,88 @@ export function installFixture(scenario, evidence) {
       });
     }
   }
-  const response = (data, status = 200, errorCode, meta = {}, errorMessage, details) =>
+  const policyGrant = {
+    id: scenario.policyState === "unicode" ? "unicode-tool" : "python-web",
+    binary:
+      scenario.policyState === "unicode"
+        ? "/" + Array(6).fill("\u{10400}".repeat(45)).join("/") + "/tool"
+        : "/usr/bin/python3.11",
+    host: "example.org",
+    ports: [{ from: 443, to: 443 }],
+  };
+  let policyEditing = scenario.policyState !== "disabled";
+  let policyPolls = 0;
+  let policyReads = 0;
+  let sandboxPolicy = {
+    id: "sbp_00000000-0000-4000-8000-000000000001",
+    namespaceId,
+    agentId: agent.id,
+    version: 1,
+    additions:
+      scenario.policyState === "protected"
+        ? [policyGrant]
+        : Array.from({ length: scenario.policyRuleCount ?? 0 }, (_, index) => ({
+            ...structuredClone(policyGrant),
+            id: `explicit-${index + 1}`,
+            host: `allowed-${index + 1}.example.org`,
+          })),
+  };
+  if (scenario.policyRuleCount) {
+    sandboxPolicy.applied = {
+      revisionId: candidateRevisionId,
+      policyVersion: 1,
+      providerVersion: "4",
+      appliedAt: createdAt,
+    };
+  }
+  const policyCeiling = scenario.policyCeiling ?? [
+    policyGrant,
+    ...(scenario.policyDenialCount
+      ? [{ ...policyGrant, id: "observed-services-ceiling", host: "*.example.org" }]
+      : []),
+    ...sandboxPolicy.additions,
+    ...(scenario.policySuggestions ?? []).map((entry) => entry.grant),
+  ];
+  if (scenario.policyInitialOutcome) {
+    sandboxPolicy.version = 2;
+    if (scenario.policyInitialOutcome !== "saved") {
+      sandboxPolicy.application = {
+        id: "00000000-0000-4000-8000-000000000009",
+        revisionId: candidateRevisionId,
+        policyVersion: 2,
+        state: scenario.policyInitialOutcome,
+        requestedBy: "identity_demo",
+        requestedAt: createdAt,
+      };
+    }
+    if (scenario.policyInitialOutcome === "applied") {
+      sandboxPolicy.applied.policyVersion = 2;
+    }
+  }
+  let policyNewRead = false;
+  if (scenario.policyState === "failed" || scenario.policyState === "failedCeiling") {
+    sandboxPolicy.application = {
+      id: "00000000-0000-4000-8000-000000000009",
+      revisionId: candidateRevisionId,
+      policyVersion: 1,
+      state: "failed",
+      requestedBy: "identity_demo",
+      requestedAt: createdAt,
+      reason:
+        scenario.policyState === "failed"
+          ? "SANDBOX_POLICY_UNCONFIRMED"
+          : "SANDBOX_POLICY_CEILING_CHANGED",
+    };
+  }
+  const response = (
+    data,
+    status = 200,
+    errorCode,
+    meta = {},
+    errorMessage,
+    details,
+    remainingResources,
+  ) =>
     new Response(
       JSON.stringify({
         ...(errorCode
@@ -611,6 +826,7 @@ export function installFixture(scenario, evidence) {
                 code: errorCode,
                 message: errorMessage ?? "The selected preview simulates this failure.",
                 ...(details ? { details } : {}),
+                ...(remainingResources ? { remainingResources } : {}),
               },
             }
           : { data }),
@@ -730,6 +946,28 @@ export function installFixture(scenario, evidence) {
       signedIn = false;
       return response({});
     }
+    if (path === "/installation/driver-configurations" && method === "GET") {
+      return response({
+        configurations: [
+          {
+            capability: "sandbox",
+            driverId: "sandbox-story",
+            implementation: "storybook-driver",
+            scope: "installation",
+            key: "startup",
+            binding: "installation-startup",
+            configurationSchema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                endpoint: { type: "string", description: "Operator-managed endpoint." },
+              },
+            },
+            actions: {},
+          },
+        ],
+      });
+    }
     if (path === "/installation" && method === "GET") {
       return response({
         id: "ins_00000000-0000-4000-8000-000000000001",
@@ -747,6 +985,9 @@ export function installFixture(scenario, evidence) {
             : {
                 openclaw: {
                   executionModes: scenario.openclawExecutionModes,
+                  ...(scenario.openclawSettingRefusal
+                    ? { settingRefusals: { dedicated: scenario.openclawSettingRefusal } }
+                    : {}),
                   ...(scenario.sandboxDriverUnavailable ? { sandboxDriverUnavailable: true } : {}),
                 },
               }),
@@ -760,8 +1001,85 @@ export function installFixture(scenario, evidence) {
         },
       });
     }
+    if (path === "/namespaces" && method === "POST") {
+      if (namespaces.some((item) => item.name === body.name)) {
+        return error(409, "RESOURCE_CONFLICT");
+      }
+      const created = { id: nextId("ns"), name: body.name, status: "provisioning", createdAt };
+      namespaces.push(created);
+      return response(created, 201);
+    }
     if (path === "/namespaces" && method === "GET") {
+      // Once the story's actions ran, each read takes the next recheck answer: a status for the
+      // story's Namespace, "missing" to leave it out of the list, or an HTTP status to fail
+      // with. The last one repeats.
+      if (evidence.ready && namespaceRechecks.length) {
+        const next =
+          namespaceRechecks.length > 1 ? namespaceRechecks.shift() : namespaceRechecks[0];
+        if (typeof next === "number") {
+          return error(next);
+        }
+        if (next === "missing") {
+          return response(namespaces.slice(1));
+        }
+        namespaces[0].status = next;
+      }
       return response(namespaces);
+    }
+    const namespaceMatch = path.match(/^\/namespaces\/([^/]+)$/);
+    if (namespaceMatch) {
+      const item = namespaces.find((namespace) => namespace.id === namespaceMatch[1]);
+      if (!item) {
+        return error(404, "NOT_FOUND");
+      }
+      if (method === "DELETE") {
+        if (scenario.namespaceDeleteOutcome === "blocked") {
+          return response(
+            null,
+            409,
+            "NAMESPACE_NOT_EMPTY",
+            {},
+            "The requested Namespace is not empty. It still contains Agents, Configurations and Secrets.",
+            undefined,
+            [
+              { kind: "Agents", count: 1, ids: ["agt_00000000-0000-4000-8000-000000000003"] },
+              {
+                kind: "Configurations",
+                count: 1,
+                ids: ["cfg_00000000-0000-4000-8000-000000000004"],
+              },
+              { kind: "Secrets", count: 1, ids: ["sec_00000000-0000-4000-8000-000000000005"] },
+            ],
+          );
+        }
+        if (scenario.namespaceDeleteOutcome === "forbidden") {
+          return error(
+            403,
+            "FORBIDDEN",
+            "Not authorized: Namespace delete is required on this Namespace.",
+          );
+        }
+        item.status = "deleting";
+        namespaceDeletionReads.set(item.id, 0);
+        if (scenario.namespaceDeleteOutcome === "pending") {
+          await new Promise((resolve) => setTimeout(resolve, 20000));
+        }
+        if (scenario.namespaceDeleteOutcome === "unknown") {
+          return error(503, "DEPENDENCY_UNAVAILABLE");
+        }
+        return response(item, 202);
+      }
+      if (method === "GET") {
+        if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {
+          const reads = (namespaceDeletionReads.get(item.id) ?? 0) + 1;
+          namespaceDeletionReads.set(item.id, reads);
+          if (reads > 1) {
+            namespaces.splice(namespaces.indexOf(item), 1);
+            return error(404, "NOT_FOUND");
+          }
+        }
+        return response(item);
+      }
     }
     if (path === "/backends" && method === "GET") {
       return response(backends);
@@ -775,6 +1093,14 @@ export function installFixture(scenario, evidence) {
     if (match) {
       const [, ns, resource] = match;
       if (ns !== namespaceId) {
+        if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
+          return response({
+            delete: !scenario.namespaceDeleteDenied,
+            agents: { create: true },
+            secrets: { create: true },
+            installation: { administer: !scenario.observabilityDenied },
+          });
+        }
         return response([]);
       }
       const deviceLogin = resource.match(
@@ -849,7 +1175,10 @@ export function installFixture(scenario, evidence) {
           ),
           200,
           undefined,
-          descriptionsPending ? { descriptionsPending: true } : {},
+          {
+            ...(descriptionsPending ? { descriptionsPending: true } : {}),
+            ...(scenario.repositoryNotConfigured ? { notConfigured: true } : {}),
+          },
         );
       }
       if (resource === "presets" && method === "GET") {
@@ -954,9 +1283,12 @@ export function installFixture(scenario, evidence) {
         }
         if (method === "POST") {
           const uncertain = scenario.credentialRegistrationOutcome && !credentialRegistrationFailed;
+          const id = nextId("csr");
           const saved = {
             ...body,
-            id: nextId("csr"),
+            id,
+            config: body.config ?? {},
+            ref: { kind: "credential_source", namespaceId, id },
             namespaceId,
             driverId: "credential-gateway-storybook",
             state:
@@ -970,6 +1302,17 @@ export function installFixture(scenario, evidence) {
             // Preserve the server-owned registration after an uncertain response;
             // recovery operates on the saved source, never another model Secret.
             credentialRegistrationFailed = true;
+            if (scenario.credentialRegistrationOutcome === "different-source") {
+              const otherId = nextId("csr");
+              const other = {
+                ...saved,
+                id: otherId,
+                name: "Another model registration",
+                ref: { ...saved.ref, id: otherId },
+              };
+              credentialSources.set(other.id, other);
+              return response(other, 201);
+            }
             return error(503, "DEPENDENCY_UNAVAILABLE");
           }
           return response(saved, 201);
@@ -1020,11 +1363,24 @@ export function installFixture(scenario, evidence) {
         }
         if (method === "PATCH") {
           Object.assign(saved, body, { generation: saved.generation + 1 });
-          return response(saved);
+          return response({ ...saved, id: scenario.configurationSaveResponseId ?? saved.id });
         }
       }
       if (resource === "permissions" && method === "GET") {
-        return response({ agents: { create: !scenario.readOnlyPermissionSummary } });
+        return response({
+          delete: !scenario.namespaceDeleteDenied,
+          agents: {
+            create: !scenario.readOnlyPermissionSummary && !scenario.agentCreateRestricted,
+          },
+          secrets: { create: !scenario.secretCreateNotPermitted },
+          // A read-only member is no Installation administrator either.
+          installation: {
+            administer: !scenario.readOnlyPermissionSummary && !scenario.observabilityDenied,
+          },
+        });
+      }
+      if (resource === "permissions/secrets" && method === "GET") {
+        return response({ operateDenied: scenario.secretOperateDenied ?? [] });
       }
       if (resource === "agents") {
         if (method === "GET") {
@@ -1051,6 +1407,10 @@ export function installFixture(scenario, evidence) {
           credentials.set(saved.id, { transportConfigured: false });
           return response(saved, 201);
         }
+      }
+      // Create Agent's preflight accepts unless a scenario rule refuses it.
+      if (resource === "agents/validate" && method === "POST") {
+        return new Response(null, { status: 204 });
       }
       if (resource === "agents/provision" && method === "POST") {
         const {
@@ -1118,10 +1478,11 @@ export function installFixture(scenario, evidence) {
                       code: "REVISION_STOPPED",
                       message: "Deployment ended because the Agent was stopped.",
                     }
-                  : {
+                  : (scenario.provisionedDeploymentError ?? {
                       code: "DEPENDENCY_UNAVAILABLE",
-                      message: "Deployment reconciliation failed.",
-                    },
+                      message:
+                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
+                    }),
             warnings: [],
           });
         }
@@ -1139,6 +1500,7 @@ export function installFixture(scenario, evidence) {
         return response(
           {
             provisioning: {
+              requestId,
               workId,
               status: scenario.provisioningStatus ?? "queued",
               phase: "admitted",
@@ -1163,6 +1525,7 @@ export function installFixture(scenario, evidence) {
           return response(
             {
               provisioning: {
+                requestId: current.requestId,
                 workId: current.workId,
                 status: current.status,
                 phase: "admitted",
@@ -1189,6 +1552,7 @@ export function installFixture(scenario, evidence) {
           }
           return response({
             provisioning: {
+              requestId: current.requestId,
               workId: current.workId,
               status: current.status,
               phase: current.reads > 1 ? "handoff" : "configuration",
@@ -1207,7 +1571,7 @@ export function installFixture(scenario, evidence) {
                             code: "REVISION_STOPPED",
                             message: "The Agent was stopped before its first deployment finished.",
                           }
-                        : {
+                        : (scenario.provisionedDeploymentError ?? {
                             code:
                               scenario.provisionedDeploymentStatus === "failed"
                                 ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
@@ -1216,7 +1580,7 @@ export function installFixture(scenario, evidence) {
                               scenario.provisionedDeploymentStatus === "failed"
                                 ? "Harness credential initialization failed. Correct the cause and deploy again."
                                 : "The worker could not finish provisioning.",
-                          },
+                          }),
                   }
                 : {}),
               ...(current.status === "succeeded" || current.reads > 1
@@ -1250,6 +1614,310 @@ export function installFixture(scenario, evidence) {
         if (!saved) {
           return error(404);
         }
+        const policyPath = `/namespaces/${namespaceId}/agents/${id}/sandbox-policy/networking`;
+        const policyDescriptor = {
+          capability: "sandbox",
+          driverId: "sandbox-story",
+          implementation: "storybook-driver",
+          scope: "agent",
+          key: "sandbox-network-policy",
+          binding: "sandbox-policy",
+          configurationSchema: networkPolicySchema,
+          actions: {
+            read: { method: "GET", href: policyPath, available: true },
+            validate: { method: "POST", href: `${policyPath}/validate`, available: policyEditing },
+            save: { method: "PUT", href: policyPath, available: policyEditing },
+            apply: { method: "POST", href: `${policyPath}/apply`, available: policyEditing },
+          },
+        };
+        if (scenario.policyState === "alternate") {
+          policyDescriptor.implementation = "another-sandbox-driver";
+          policyDescriptor.configurationSchema = structuredClone(networkPolicySchema);
+          policyDescriptor.configurationSchema.properties.additions.items.properties.host.enum = [
+            "example.org",
+            "service.example.org",
+          ];
+        }
+        if (scenario.policyState === "json") {
+          policyDescriptor.configurationSchema = structuredClone(networkPolicySchema);
+          policyDescriptor.configurationSchema.properties.additions.items.properties.host = {
+            title: "Destination hostname",
+            anyOf: [{ const: "example.org" }, { const: "service.example.org" }],
+          };
+        }
+        if (suffix === "/driver-configurations" && method === "GET") {
+          return response({
+            configurations:
+              !scenario.policyState || ["unsupported", "ownerDenied"].includes(scenario.policyState)
+                ? []
+                : [policyDescriptor],
+          });
+        }
+        if (suffix === "/sandbox-policy/networking/validate" && method === "POST") {
+          if (scenario.policyState === "editDenied") {
+            return error(403, "FORBIDDEN");
+          }
+          if (scenario.policyState === "conflict") {
+            return error(409, "RESOURCE_CONFLICT", "The policy changed. Reload before editing.");
+          }
+          if (["ceilingDenied", "invalid"].includes(scenario.policyState)) {
+            return response({
+              success: false,
+              error: {
+                details: [
+                  {
+                    path: "/additions/0/host",
+                    code: "OUTSIDE_CEILING",
+                    message: "The grant exceeds the Installation delegation ceiling.",
+                  },
+                ],
+              },
+            });
+          }
+          return response({
+            success: true,
+            data: scenario.policyState === "incompletePreview" ? {} : { additions: body.additions },
+          });
+        }
+        if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "GET") {
+          if (scenario.policyState === "ownerDenied") {
+            return error(403, "FORBIDDEN");
+          }
+          const read = ++policyReads;
+          if (scenario.policyState === "refreshRace" && !sandboxPolicy.application && read <= 3) {
+            // Simulate another operator saving between reads; HTTP workflow coverage uses real saves.
+            sandboxPolicy.version = read;
+          }
+          if (
+            sandboxPolicy.application?.state === "pending" &&
+            !scenario.policyKeepPending &&
+            ++policyPolls > 1
+          ) {
+            sandboxPolicy.application.state = "applied";
+            sandboxPolicy.application.providerVersion = "5";
+            sandboxPolicy.applied = {
+              revisionId: candidateRevisionId,
+              policyVersion: sandboxPolicy.version,
+              providerVersion: "5",
+              appliedAt: createdAt,
+            };
+          }
+          const result = response({
+            policy: sandboxPolicy,
+            configuration: policyDescriptor,
+            editingEnabled: policyEditing,
+            protectedExecution: scenario.policyState === "protected",
+            ceiling: policyCeiling,
+            defaults:
+              scenario.policyState === "unsupported"
+                ? null
+                : {
+                    networkPolicies: [
+                      {
+                        name: "python-default",
+                        binaries: [{ path: policyGrant.binary }],
+                        endpoints: [{ host: "example.com", ports: [443], tls: "skip" }],
+                      },
+                    ],
+                  },
+            // The candidate version was deployed with policy v1; later saves need an application
+            // (D773).
+            ...(scenario.policyState === "unsupported" || scenario.policyState === "protected"
+              ? {}
+              : { defaultsRevisionId: candidateRevisionId, deployedPolicyVersion: 1 }),
+            capability:
+              scenario.policyState === "unsupported"
+                ? null
+                : { live: true, wildcards: true, portRanges: true },
+            // The API names why per-Agent network policy is unavailable (D774).
+            ...(scenario.policyState === "unsupported"
+              ? {
+                  unavailableReason: scenario.policyNoSandboxDriver
+                    ? "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules."
+                    : "The selected Sandbox Driver does not support per-Agent network policy.",
+                }
+              : {}),
+          });
+          if (scenario.policyState === "refreshRace" && (read === 2 || read === 3)) {
+            await new Promise((resolve) => setTimeout(resolve, read === 2 ? 300 : 1500));
+          }
+          return result;
+        }
+        if (
+          scenario.policyState &&
+          suffix === "/sandbox-policy/networking/editing" &&
+          method === "PATCH"
+        ) {
+          if (scenario.policyAdminDenied) {
+            return error(403, "AUTHORIZATION_DENIED");
+          }
+          policyEditing = body.enabled;
+          return response({ ...agent, sandboxPolicyEditing: policyEditing });
+        }
+        if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "PUT") {
+          if (scenario.policyState === "ceilingDenied") {
+            return error(
+              409,
+              "RESOURCE_CONFLICT",
+              "The requested network grant exceeds the Installation delegation ceiling.",
+            );
+          }
+          if (scenario.policyState === "editDenied") {
+            return error(403, "AUTHORIZATION_DENIED");
+          }
+          if (scenario.policyState === "protected" && body.additions.length > 0) {
+            return error(
+              409,
+              "SANDBOX_POLICY_PROTECTED_EXECUTION",
+              "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+            );
+          }
+          if (body.expectedVersion !== sandboxPolicy.version) {
+            return error(409, "RESOURCE_STATE_CONFLICT");
+          }
+          sandboxPolicy = {
+            ...sandboxPolicy,
+            version: sandboxPolicy.version + 1,
+            additions: body.additions,
+          };
+          delete sandboxPolicy.application;
+          return response(
+            scenario.policyState === "unconfirmedSave"
+              ? { ...sandboxPolicy, additions: [] }
+              : sandboxPolicy,
+          );
+        }
+        if (
+          scenario.policyState &&
+          suffix === "/sandbox-policy/networking/apply" &&
+          method === "POST"
+        ) {
+          if (scenario.policyState === "applyRejected") {
+            return error(
+              409,
+              "RESOURCE_CONFLICT",
+              "The Agent, revision, editing setting, or policy changed. Reload before applying.",
+            );
+          }
+          sandboxPolicy.application = {
+            id: "00000000-0000-4000-8000-000000000009",
+            revisionId: body.revisionId,
+            policyVersion: sandboxPolicy.version,
+            state: "pending",
+            requestedBy: "identity_demo",
+            requestedAt: createdAt,
+          };
+          policyPolls = 0;
+          return response(sandboxPolicy, 202);
+        }
+        if (scenario.policyState && suffix.endsWith("/sandbox-policy/networking/recommendations")) {
+          if (scenario.policyState === "ownerDenied") {
+            return error(403, "FORBIDDEN");
+          }
+          if (scenario.policyState === "suggestionsUnavailable") {
+            return error(503, "DEPENDENCY_UNAVAILABLE");
+          }
+          return response({
+            recommendations:
+              scenario.policySuggestions ??
+              (scenario.policyState === "empty"
+                ? []
+                : [
+                    {
+                      id: "00000000-0000-4000-8000-000000000011",
+                      status: "pending",
+                      grant:
+                        scenario.policyState === "ceilingDenied"
+                          ? { ...policyGrant, host: "outside.example.org" }
+                          : policyGrant,
+                      observations: 4,
+                    },
+                  ]),
+            truncated: false,
+          });
+        }
+        if (scenario.policyState && suffix.endsWith("/runtime/logs")) {
+          const stream = { source: "sandbox", sandbox: "os-demo" };
+          const log = {
+            type: "line",
+            time: createdAt,
+            level: "warn",
+            kind: "sandbox",
+            contentClass: "activity",
+            stream,
+            message: "NET:OPEN DENIED python3.11 → example.org:443",
+            fields: { action: "DENIED", rule_name: "default" },
+            decision:
+              scenario.policyState === "missingMetadata"
+                ? undefined
+                : {
+                    decision: "denied",
+                    enforcement: "blocked",
+                    binary: policyGrant.binary,
+                    host: policyGrant.host,
+                    port: 443,
+                    rule: "default",
+                    engine: "OPA",
+                    reason: "Destination is not in the network policy",
+                  },
+          };
+          if (url.searchParams.has("cursor") && scenario.policyNewDenials && !policyNewRead) {
+            policyNewRead = true;
+            return response({
+              revisionId: candidateRevisionId,
+              source: "sandbox",
+              stream,
+              observedAt: createdAt,
+              records: Array.from({ length: scenario.policyNewDenials }, (_, index) => ({
+                ...log,
+                time: new Date(Date.parse(createdAt) + (index + 1) * 1000).toISOString(),
+              })),
+              cursor: "simulated-policy-new-cursor",
+              withheld: 0,
+              truncated: false,
+            });
+          }
+          return response({
+            revisionId: candidateRevisionId,
+            source: "sandbox",
+            stream,
+            observedAt: createdAt,
+            records:
+              scenario.policyState === "empty" || url.searchParams.has("cursor")
+                ? []
+                : [
+                    ...(scenario.policyState === "gap"
+                      ? [
+                          {
+                            type: "gap",
+                            time: createdAt,
+                            stream,
+                            reason: "buffer_lost",
+                            remedy: "Earlier records are unavailable. Start a fresh window.",
+                          },
+                        ]
+                      : []),
+                    ...Array.from({ length: scenario.policyDenialCount ?? 1 }, (_, index) => ({
+                      ...log,
+                      time: new Date(
+                        Date.parse(createdAt) -
+                          ((scenario.policyDenialCount ?? 1) - index - 1) * 17000,
+                      ).toISOString(),
+                      ...(scenario.policyDenialCount
+                        ? {
+                            decision: {
+                              ...log.decision,
+                              host: `service-${Math.floor(index / 2) + 1}.example.org`,
+                            },
+                          }
+                        : {}),
+                    })),
+                  ],
+            cursor: "simulated-policy-cursor",
+            withheld: 0,
+            truncated: false,
+          });
+        }
         if (suffix === "/plugins/capabilities" && method === "GET" && scenario.pluginCapabilities) {
           return response({
             ...scenario.pluginCapabilities,
@@ -1266,6 +1934,9 @@ export function installFixture(scenario, evidence) {
         }
         if (suffix === "") {
           if (method === "GET") {
+            if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
+              saved.status = "deleting";
+            }
             if (deleted.has(id)) {
               agents.delete(id);
               return error(404);
@@ -1294,8 +1965,19 @@ export function installFixture(scenario, evidence) {
               deploy: allowed,
               operate: allowed,
               delete: allowed,
+              administer: allowed,
+              configurationUpdate: allowed,
+              configurationRead: true,
+              configurationSecretsOperate: allowed,
+              configurationSecretsOperateDeniedBindings: [],
+              agentSourcesOperate: allowed,
+              sandboxPolicyRead: allowed,
+              readLogs: allowed,
             },
           );
+        }
+        if (suffix === "/permissions/secrets" && method === "GET") {
+          return response({ operateDenied: scenario.secretOperateDenied ?? [] });
         }
         if (suffix === "/stop" && method === "POST") {
           saved.desiredRuntimeState = "stopped";
@@ -1311,6 +1993,18 @@ export function installFixture(scenario, evidence) {
               (id === agent.id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",
           });
+        }
+        if (suffix === "/harness-status" && method === "GET") {
+          // A scenario's harness answers for the current version, as OCC reads it.
+          return response(
+            scenario.harness === undefined || !saved.activeRevisionId
+              ? { status: "unobserved" }
+              : {
+                  status: "observed",
+                  revisionId: saved.activeRevisionId,
+                  harness: scenario.harness,
+                },
+          );
         }
         if (suffix === "/runtime-images" && method === "GET") {
           return response(scenario.runtimeImages ?? { status: "unsupported", images: [] });
@@ -1376,6 +2070,9 @@ export function installFixture(scenario, evidence) {
               configurationGeneration: item.configurationGeneration,
               harness: item.harness,
               createdAt: item.createdAt,
+              // The API lists each version's deployment outcome and error code (finding 2422).
+              deploymentStatus: deployments.get(item.id)?.status ?? null,
+              deploymentErrorCode: deployments.get(item.id)?.error?.code ?? null,
             })),
             200,
             undefined,
@@ -1485,6 +2182,55 @@ export function installFixture(scenario, evidence) {
                 ],
           };
           const pods = [pod];
+          if (scenario.runtimePod === "dedicatedPair") {
+            // A dedicated Agent: a Harness Pod beside the Gateway, both with the generated long
+            // names and completed init containers a real install shows. This story is about the
+            // Pod cards; its Agent (Harness) source reads the same simulated Gateway output.
+            const completed = (name) => ({
+              name,
+              state: "terminated",
+              reason: "Completed",
+              ready: false,
+              restartCount: 0,
+              startedAt: "2026-09-27T10:00:02.000Z",
+              lastTermination: {
+                reason: "Completed",
+                exitCode: 0,
+                finishedAt: "2026-09-27T10:00:04.000Z",
+              },
+            });
+            const running = (name) => ({
+              name,
+              state: "running",
+              reason: null,
+              ready: true,
+              restartCount: 0,
+              startedAt: "2026-09-27T10:00:05.000Z",
+              lastTermination: null,
+            });
+            pods.splice(
+              0,
+              1,
+              {
+                ...pod,
+                role: "agent",
+                name: "agent-9194e1800111-rev-997042d6ce64-6b5bbd9699-v5rcp",
+                uid: "8d6b1c2e-3f4a-4b5c-9d6e-7f8a9b0c1d2e",
+                containers: [
+                  running("agent"),
+                  completed("prepare-private-state"),
+                  completed("initialize-workspace"),
+                ],
+                events: [],
+              },
+              {
+                ...pod,
+                name: "gateway-9194e1800111-65579dc888-j2czd",
+                containers: [running("gateway"), completed("prepare-private-state")],
+                events: [],
+              },
+            );
+          }
           if (scenario.runtimePod === "rollover") {
             const retiring = podRolloverStatusReads++ === 0;
             pods.push({
@@ -1501,16 +2247,40 @@ export function installFixture(scenario, evidence) {
               {
                 id: "gateway",
                 kind: "container",
-                pods: pods.map(({ name, uid }) => ({
-                  name,
-                  uid,
-                  container: "gateway",
-                  restartCount: 1,
-                })),
+                pods: pods
+                  .filter(({ role }) => role === "gateway")
+                  .map(({ name, uid }) => ({
+                    name,
+                    uid,
+                    container: "gateway",
+                    restartCount: 1,
+                  })),
                 available: true,
                 retention:
                   "Kubernetes keeps only the current and the previous instance of each container; older output and output from deleted Pods is gone.",
               },
+              ...pods
+                .filter(({ role }) => role === "agent")
+                .map(({ name, uid }) => ({
+                  id: "agent",
+                  kind: "container",
+                  pods: [{ name, uid, container: "agent", restartCount: 0 }],
+                  available: true,
+                  retention: "Kubernetes keeps the current and the previous instance.",
+                })),
+              // Dedicated sources remain listed even when their current Pod is absent.
+              ...(scenario.runtimePod === "missingAgent"
+                ? [
+                    {
+                      id: "agent",
+                      kind: "container",
+                      pods: [],
+                      available: false,
+                      unavailableCode: "NO_POD",
+                      retention: "Kubernetes keeps the current and the previous instance.",
+                    },
+                  ]
+                : []),
             ],
           });
         }
@@ -1645,6 +2415,24 @@ export function installFixture(scenario, evidence) {
           const revisionId = suffix.split("/")[2];
           if (!revisions.has(revisionId)) {
             return error(404);
+          }
+          if (scenario.diagnosticsState === "noSlack") {
+            // The gateway's answer for a version with no Slack channel.
+            return response({
+              revisionId,
+              observedAt: "2026-09-27T12:00:00.000Z",
+              checks: [
+                ["configuration", "failed", "NOT_CONFIGURED"],
+                ["authentication", "unknown"],
+                ["connectivity", "unknown"],
+              ].map(([check, state, code]) => ({
+                component: "gateway",
+                check,
+                state,
+                checkedAt: "2026-09-27T11:59:59.000Z",
+                ...(code ? { code } : {}),
+              })),
+            });
           }
           return response({
             revisionId,
@@ -1790,12 +2578,43 @@ export function installFixture(scenario, evidence) {
           return error(404);
         }
         if (method === "GET") {
-          return response(structuredClone(secret));
+          return response({
+            ...structuredClone(secret),
+            consumers: structuredClone(
+              scenario.secretConsumers ?? {
+                agents: [],
+                configurations: [],
+                credentialSources: [],
+                provisioningRequests: [],
+                unreadable: 0,
+                truncated: false,
+              },
+            ),
+            callerPermissions: { update: true, delete: true, ...scenario.secretCallerPermissions },
+          });
         }
         if (method === "PATCH") {
-          const updated = { ...secret, name: body.name ?? secret.name };
+          const updated = { ...secret };
           secrets.set(id, updated);
           return response(structuredClone(updated));
+        }
+        if (method === "DELETE") {
+          const consumers = scenario.secretConsumers;
+          if (
+            consumers &&
+            (consumers.unreadable ||
+              consumers.truncated ||
+              [
+                consumers.agents,
+                consumers.configurations,
+                consumers.credentialSources,
+                consumers.provisioningRequests,
+              ].some((ids) => ids.length))
+          ) {
+            return response(undefined, 409, "RESOURCE_CONFLICT");
+          }
+          secrets.delete(id);
+          return new Response(null, { status: 204 });
         }
       }
     }

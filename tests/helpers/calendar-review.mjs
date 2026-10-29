@@ -1,6 +1,60 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { assertNoSecretMaterial } from "./plugin-driver-real.mjs";
+import { redactedQaTail } from "./qa-secrets.mjs";
+
+// One automatically reviewed read in a reused session. Only a reviewer that could not
+// reach a judgement (failed closed or timed out) gets one more turn; a deny judgement
+// fails at once, and the retried turn must pass the same assertions (finding 1980).
+export async function automaticallyReviewedRead(
+  fixture,
+  {
+    agent,
+    gatewayPassword,
+    sessionKey,
+    prompt,
+    toolName,
+    resultPattern,
+    secrets,
+    // Same redaction as published QA logs: environment values and fixture secrets.
+    log = (message) =>
+      process.stderr.write(
+        `${redactedQaTail(message, process.env, { lines: 1, lineChars: 900 }).join("\n")}\n`,
+      ),
+  },
+) {
+  for (let attempt = 1; ; attempt += 1) {
+    const marker = `CODEX_CALENDAR_AUTOMATIC_${randomUUID()}`;
+    await fixture.normalGatewayTurn({
+      agent,
+      gatewayPassword,
+      sessionKey,
+      prompt: [
+        prompt,
+        "Make a fresh call to that tool exactly once, even if earlier results are available.",
+        `Include this marker in the final answer: ${marker}`,
+      ].join("\n"),
+      expectedPatterns: [marker],
+      secrets,
+    });
+    try {
+      return await fixture.assertSessionToolCallEvidence(agent, {
+        sessionKey,
+        turnMarker: marker,
+        toolName,
+        resultPattern,
+        requireAutomaticReview: true,
+      });
+    } catch (error) {
+      if (attempt > 1 || error?.automaticReviewerErrored !== true) {
+        throw error;
+      }
+      log(
+        `automatic reviewer errored on ${sessionKey}; running the read once more: ${error.approvalReviewSummary}`,
+      );
+    }
+  }
+}
 
 // Shared by both installed QA fixtures. All decisions are
 // correlated with native calls/results, never inferred from assistant prose.
@@ -109,25 +163,14 @@ export async function verifyCalendarReviewPolicy(fixture, agent, credential) {
   const automaticSessionKey = `agent:main:codex-calendar-automatic-${randomUUID()}`;
   const reviewIds = new Set();
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const marker = `CODEX_CALENDAR_AUTOMATIC_${randomUUID()}`;
-    await fixture.normalGatewayTurn({
+    const evidence = await automaticallyReviewedRead(fixture, {
       agent,
       gatewayPassword: automaticRevision.gatewayPassword,
       sessionKey: automaticSessionKey,
-      prompt: [
-        prompt,
-        "Make a fresh call to that tool exactly once, even if earlier results are available.",
-        `Include this marker in the final answer: ${marker}`,
-      ].join("\n"),
-      expectedPatterns: [marker],
-      secrets: [credential.accessToken, credential.workspaceId],
-    });
-    const evidence = await fixture.assertSessionToolCallEvidence(agent, {
-      sessionKey: automaticSessionKey,
-      turnMarker: marker,
+      prompt,
       toolName,
       resultPattern,
-      requireAutomaticReview: true,
+      secrets: [credential.accessToken, credential.workspaceId],
     });
     for (const id of evidence.approvedReviewIds) {
       assert.equal(typeof id, "string");

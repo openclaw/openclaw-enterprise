@@ -11,6 +11,7 @@ import {
   redactLogLine,
   redactOutputLine,
 } from "../../scripts/ci/failure-redaction.mjs";
+import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 import { availablePort } from "./available-port.mjs";
 import {
   configureModelProviderDNS,
@@ -23,7 +24,7 @@ const ownerLabel = "dev.openclaw.model-provider-owner";
 const registryImage =
   "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
 const nodeBaseImage =
-  "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584";
+  "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a";
 
 // The runner keeps the first 16 KiB of a failure message, and buildx and dev-up print progress
 // before their cause, so a failure carries only the end of a command's output. Private keys and
@@ -313,6 +314,7 @@ export function createDevUpModelProvider({
     const controllerTag = `${registry}/${prefix}/controller:${revision}`;
     const baseTag = `${registry}/${prefix}/runtime-base:${revision}`;
     const runtimeTag = `${registry}/${prefix}/runtime:${revision}`;
+    const sourceArguments = openclawBuildArguments(await readOpenclawSource());
     // Same recipes and revision inputs as FirstAgentSmoke. Tags are private to
     // this invocation; the launcher receives only the resulting digest pair.
     for (const tag of [controllerTag, baseTag, runtimeTag]) {
@@ -357,6 +359,7 @@ export function createDevUpModelProvider({
           "build",
           "--load",
           ...cache("runtime"),
+          ...sourceArguments,
           "--pull=false",
           "--file",
           "deploy/runtime/Dockerfile",

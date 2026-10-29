@@ -3,7 +3,7 @@
 Single-cluster Installations created by the 2026-09-28 release keep each
 Namespace's Gateways, Gateway state and canonical Secrets in a separate
 `oce-gateways-<hash>` namespace. The current controller refuses to start on that
-layout; the [breaking-change notice](breaking-changes-before-2026-10-10.md#2026-10-05-split-layout-tenants-block-the-controller-upgrade)
+layout; [split-layout installations](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 says how to tell. This page moves each tenant to the shared layout before the
 [control-plane upgrade](production-upgrade.md#upgrade-the-control-plane). Adopt
 in place where you can; use the export fallback for tenants that can't be
@@ -12,7 +12,7 @@ adopted.
 ## Adopt in place
 
 Each `oce-gateways-<hash>` namespace becomes its tenant's namespace. OCC's database is not changed, so IDs, Namespace names,
-revisions, Secrets, service-account credentials, chat history and Harness
+versions, Secrets, service-account credentials, chat history and Harness
 workspaces all stay. The old namespace's workspace and embedded Gateway claims
 move into it by PersistentVolume rebind, and its Agent Secrets are copied.
 
@@ -74,8 +74,6 @@ are passed through).
 5. Deploy each Agent `apply` listed as running (`occ agent deploy <id>`) that is
    not running yet, and check it. A Gateway from the 2026-09-28 release
    migrates its agent database at its first start, about 15 seconds longer.
-   If one stops with `uses schema version 23`, see the
-   [notice](breaking-changes-before-2026-10-10.md#2026-10-09-released-gateways-need-an-agent-database-migration).
 6. Delete the old namespaces. After this there is no way back:
 
    ```bash
@@ -100,7 +98,7 @@ not come back:
 
 - chat history and other Gateway state (the copy keeps the transcripts for
   reference; loading them into the new Gateway is untested);
-- Agent revision history and bindings to old revisions;
+- Agent revision history and bindings to old versions;
 - group, Installation-wide and resource-less bindings (re-create them by hand);
 - issued service-account credentials and Agent runtime credentials;
 - the old IDs and Namespace names, so update anything outside OCE that uses them.
@@ -177,12 +175,25 @@ Configurations, workspace files, transcripts and Secret values.
      --rename team-a=team-a-2 --skip default
    ```
 
+   Give each selected source Namespace a distinct target name. Import refuses
+   overlapping `--rename` targets or two selected sources that resolve to one
+   Namespace through saved IDs or existing names, before it changes the target
+   or saves the map. A skipped source without a saved destination reserves
+   nothing; a saved destination stays reserved even while its source is skipped.
+   Choose separate targets or skip a source; review an old conflicting map and
+   any already imported resources before retrying.
+
    It creates the Namespaces and exits `3` until they are `ready`.
    [Grant tenant RoleBindings](production-agents.md#grant-tenant-rolebindings)
    for each one, then run the same command again. The ID map records every old
    and new ID, so a rerun after any failure resumes. Exit `4` lists what needs a
    hand: Agents whose deploy failed, such as a service-account Agent without an
    issued credential, and access bindings it could not re-create.
+
+   Presets are restored after service-account IDs are mapped, so their Harness
+   authentication refers to the restored account. Existing mapped Presets are
+   left unchanged; inspect their account references before resuming an older
+   import. See the [tenant restore flow](../../flows/tenant-restore.md).
 
 7. Put each Harness workspace back once the new Agent's Harness Pod runs:
 

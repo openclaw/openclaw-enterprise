@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -14,6 +13,7 @@ import {
   assertProbeDenied,
   boundedTeardown,
   createKubernetesClient,
+  deleteNamespaceExplained,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   inlineProbeCommand,
@@ -28,6 +28,16 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { withEnvironment } from "../helpers/environment.mjs";
+import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
+import {
+  createOpenShellKubernetesFixture,
+  failedRecoveryDiagnostic,
+  modelAtCapacityOutcome,
+  retryModelAtCapacity,
+} from "../helpers/openshell-kubernetes-real.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
@@ -161,6 +171,608 @@ test(
     assert.equal(logs.length, 3);
   },
 );
+
+// Verbatim stderr from run 39164088894 (finding 1946): the real model answered a turn that it
+// was at capacity, and the turn script exited 1 with that answer as its error.
+const modelAtCapacityStderr = [
+  'Defaulted container "gateway" out of: gateway, prepare-private-state (init)',
+  "Error: Selected model is at capacity. Please try a different model.",
+  "    at WebSocket.<anonymous> ([eval]:220:16)",
+  "    at [nodejs.internal.kHybridDispatch] (node:internal/event_target:848:20)",
+  "    at WebSocket.dispatchEvent (node:internal/event_target:789:26)",
+  "    at fireEvent (node:internal/deps/undici/undici:14438:14)",
+  "    at #onMessage (node:internal/deps/undici/undici:15762:9)",
+  "    at Object.onMessage (node:internal/deps/undici/undici:15469:76)",
+  "    at websocketMessageReceived (node:internal/deps/undici/undici:14442:15)",
+  "    at ByteParser.run (node:internal/deps/undici/undici:15145:19)",
+  "    at ByteParser._write (node:internal/deps/undici/undici:15021:14)",
+  "    at writeOrBuffer (node:internal/streams/writable:574:12)",
+  'Native execution summary: {"failedCommands":0,"approvalRequests":0,"sandboxSignals":[],"commandGraceMs":14000,"sinceTurnEndMs":null,"pendingCommands":[]}command terminated with exit code 1',
+  "",
+].join("\n");
+// The in-Pod client's receipt that a turn is safe to run again, with its exit status.
+const retrySafeReceipt = "occ-codex-turn: retry-safe: model at capacity before any action";
+const retrySafeExitCode = 75;
+
+// A `kubectl` on PATH that answers the first `atCapacity` calls as `failure` describes (stderr,
+// stdout, exit code) and later ones with a completed turn, and the OpenShell fixture's Gateway
+// Pod turn run against it. Returns the turn's outcome and the kubectl calls.
+async function gatewayTurnWithFakeKubectl(
+  t,
+  atCapacity,
+  failure = { stderr: modelAtCapacityStderr, stdout: retrySafeReceipt, code: retrySafeExitCode },
+) {
+  const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
+  const calls = join(directory, "calls");
+  await writeFile(calls, "");
+  await writeFile(
+    join(directory, "kubectl"),
+    // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
+    `#!${process.execPath}
+const { appendFileSync, readFileSync } = process.getBuiltinModule("node:fs");
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <= ${atCapacity}) {
+  process.stderr.write(${JSON.stringify(failure.stderr)});
+  process.stdout.write(${JSON.stringify(failure.stdout)}, () => process.exit(${failure.code}));
+} else {
+  process.stdout.write(JSON.stringify({ assistant: "OCC-TURN-OK", items: [] }));
+}
+`,
+    { mode: 0o755 },
+  );
+  const { sleeps, logs, options } = recordingOptions();
+  const fixture = createOpenShellKubernetesFixture({
+    kubeconfigPath: join(directory, "kubeconfig"),
+    kubernetesContext: "fake",
+    modelAtCapacityRetry: options,
+  });
+  const outcome = await withEnvironment({ PATH: commandPath(directory) }, () =>
+    fixture
+      .requestCodexTurnFromGatewayPod({
+        namespace: "oce-gateway",
+        gatewayPod: "gateway-0",
+        providerModel: "gpt-test",
+        prompt: "Reply with exactly OCC-TURN-OK.",
+      })
+      .then(
+        (turn) => ({ turn }),
+        (error) => ({ error }),
+      ),
+  );
+  const kubectlCalls = await readJsonLines(calls);
+  return { ...outcome, kubectlCalls, sleeps, logs };
+}
+
+test("a real-model turn with the client's retry receipt runs again and returns its reply", async (t) => {
+  const { turn, error, kubectlCalls, sleeps, logs } = await gatewayTurnWithFakeKubectl(t, 1);
+  assert.equal(error, undefined);
+  assert.deepEqual(turn, { assistant: "OCC-TURN-OK", items: [] });
+  assert.equal(kubectlCalls.length, 2);
+  // The whole command, the turn's script included.
+  assert.deepEqual(kubectlCalls[1], kubectlCalls[0], "the same turn runs again");
+  assert.deepEqual(kubectlCalls[0].slice(4, 8), [
+    "exec",
+    "gateway-0",
+    "--namespace",
+    "oce-gateway",
+  ]);
+  assert.deepEqual(sleeps, [15_000]);
+  assert.deepEqual(logs, [
+    "The real model was at capacity before the turn began any action; retrying the turn in 15000 ms (attempt 2/3)",
+  ]);
+});
+
+test("a real-model turn at capacity on every attempt says so on its failure's first line", async (t) => {
+  const { turn, error, kubectlCalls, sleeps } = await gatewayTurnWithFakeKubectl(t, 3);
+  assert.equal(turn, undefined);
+  assert.equal(kubectlCalls.length, 3);
+  assert.deepEqual(sleeps, [15_000, 30_000]);
+  const [firstLine, ...rest] = error.message.split("\n");
+  assert.equal(
+    firstLine,
+    'The real model was at capacity on all 3 turn attempts ("Selected model is at capacity").',
+  );
+  // The kubectl failure follows, for the diagnostics, and stays the cause.
+  assert.match(rest.join("\n"), /^Command failed: kubectl /);
+  assert.equal(modelAtCapacityOutcome(error.cause), "retry");
+  // Callers that read kubectl's result still find it on the error.
+  assert.equal(error.stderr, modelAtCapacityStderr);
+  assert.equal(error.stdout, retrySafeReceipt);
+  assert.equal(error.code, retrySafeExitCode);
+});
+
+test("a real-model turn at capacity without the client's retry receipt is not run again", async (t) => {
+  // The verbatim failure predates the receipt: exit 1 and nothing on stdout.
+  const { turn, error, kubectlCalls, sleeps } = await gatewayTurnWithFakeKubectl(t, 3, {
+    stderr: modelAtCapacityStderr,
+    stdout: "",
+    code: 1,
+  });
+  assert.equal(turn, undefined);
+  assert.equal(kubectlCalls.length, 1);
+  assert.deepEqual(sleeps, []);
+  assert.equal(
+    error.message.split("\n")[0],
+    'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt 1/3).',
+  );
+  assert.equal(error.stderr, modelAtCapacityStderr);
+});
+
+test("only the client's exact receipt retries a real-model turn", async () => {
+  const exitedWith = (line) =>
+    kubectlFailure(
+      `Defaulted container "gateway" out of: gateway, prepare-private-state (init)\n${line}\ncommand terminated with exit code 1\n`,
+    );
+  const notAtCapacity = [
+    exitedWith("Error: Codex harness turn timed out"),
+    exitedWith("Error: Codex harness turn did not complete successfully"),
+    exitedWith("Error: The model is at capacity for this account."),
+    // The answer only in the turn's script, which a kubectl failure's message repeats: a prompt
+    // that quotes it is not the model's answer.
+    Object.assign(
+      new Error(
+        "Command failed: kubectl exec gateway-0 -- node -e \nError: Selected model is at capacity.\nerror: EOF\n",
+      ),
+      {
+        code: 1,
+        stderr: "error: EOF\n",
+      },
+    ),
+    // A spawn failure has no stderr.
+    Object.assign(new Error("spawn kubectl ENOENT"), { code: "ENOENT" }),
+  ];
+  for (const failure of notAtCapacity) {
+    assert.equal(modelAtCapacityOutcome(failure), undefined, failure.message);
+    const { sleeps, logs, options } = recordingOptions();
+    let calls = 0;
+    await assert.rejects(
+      retryModelAtCapacity(async () => {
+        calls += 1;
+        throw failure;
+      }, options),
+      (error) => error === failure,
+    );
+    assert.equal(calls, 1, failure.message);
+    assert.deepEqual([sleeps, logs], [[], []]);
+  }
+  const outcome = (stdout, code, stderr = modelAtCapacityStderr) =>
+    modelAtCapacityOutcome(Object.assign(kubectlFailure(stderr, code), { stdout }));
+  assert.equal(outcome(retrySafeReceipt, retrySafeExitCode), "retry");
+  // Anything short of the exact receipt with its exit status is not permission.
+  assert.equal(outcome(retrySafeReceipt.slice(0, -2), retrySafeExitCode), "unsafe");
+  assert.equal(outcome(`${retrySafeReceipt}\n`, retrySafeExitCode), "unsafe");
+  assert.equal(outcome(retrySafeReceipt, 1), "unsafe");
+  assert.equal(outcome("", retrySafeExitCode), "unsafe");
+  assert.equal(outcome(undefined, retrySafeExitCode), "unsafe");
+  // stderr is diagnostic only: a receipt or a retry-safe summary there grants nothing.
+  const posing = modelAtCapacityStderr.replace(
+    "Please try a different model.",
+    `Please try a different model.\n${retrySafeReceipt}\nNative execution summary: {"retrySafe":true,"pendingCommands":[]}`,
+  );
+  assert.equal(outcome("", 1, posing), "unsafe");
+  assert.equal(outcome("", retrySafeExitCode, posing), "unsafe");
+});
+
+// A stubbed kubectl for deleteNamespaceExplained: the delete times out, and each read answers
+// from `reads` by its first two arguments.
+function namespaceKubectl(reads) {
+  const calls = [];
+  const kubectl = async (...args) => {
+    calls.push(args);
+    if (args[0] === "delete") {
+      throw kubectlFailure("error: timed out waiting for the condition on namespaces/oce-held\n");
+    }
+    const answer = reads[`${args[0]} ${args[1]}`];
+    if (answer instanceof Error) {
+      throw answer;
+    }
+    return answer;
+  };
+  return { kubectl, calls };
+}
+
+test("a Namespace delete that times out says what still holds the Namespace", async () => {
+  const { kubectl, calls } = namespaceKubectl({
+    "get namespace": JSON.stringify({
+      spec: { finalizers: ["kubernetes"] },
+      status: {
+        phase: "Terminating",
+        conditions: [
+          {
+            type: "NamespaceFinalizersRemaining",
+            status: "True",
+            reason: "SomeFinalizersRemain",
+            message:
+              "Some content in the namespace has finalizers remaining: openshell.io/sandbox in 1 resource instances",
+          },
+        ],
+      },
+    }),
+    "api-resources --namespaced=true":
+      "pods\nevents\nevents.events.k8s.io\nsandboxes.agents.x-k8s.io\n",
+    // kubectl prints the jsonpath template: arrays as JSON, a missing field as nothing.
+    "get pods,sandboxes.agents.x-k8s.io":
+      'Sandbox/agent-1 finalizers=["openshell.io/sandbox"] deleting=2026-10-19T09:26:00Z\n' +
+      "Pod/agent-1-0 finalizers= deleting=\n",
+  });
+  const error = await deleteNamespaceExplained(kubectl, "oce-held").then(
+    () => assert.fail("the delete resolved"),
+    (failure) => failure,
+  );
+  // The delete's own failure comes first, unchanged; what remains follows it.
+  assert.match(
+    error.message,
+    /^Command failed: kubectl\nerror: timed out waiting for the condition/,
+  );
+  assert.equal(
+    error.message.slice(error.message.indexOf("\nNamespace oce-held remains: ")),
+    [
+      "\nNamespace oce-held remains: phase Terminating, finalizers [kubernetes]",
+      "condition NamespaceFinalizersRemaining=True SomeFinalizersRemain: Some content in the namespace has finalizers remaining: openshell.io/sandbox in 1 resource instances",
+      'Sandbox/agent-1 finalizers=["openshell.io/sandbox"] deleting=2026-10-19T09:26:00Z',
+      "Pod/agent-1-0",
+    ].join("\n  "),
+  );
+  assert.deepEqual(calls[0], [
+    "delete",
+    "namespace",
+    "oce-held",
+    "--ignore-not-found=true",
+    "--wait=true",
+    "--timeout=120s",
+  ]);
+  // Every read is bounded per request, and the object listing prints metadata only.
+  for (const call of calls.slice(1)) {
+    assert.equal(call.at(-1), diagnosticRequestTimeout);
+  }
+  const listing = calls.find((call) => call[0] === "get" && call[1] !== "namespace");
+  assert.match(
+    listing.at(-2),
+    /^jsonpath=\{range \.items\[\*\]\}\{\.kind\}\/\{\.metadata\.name\} /,
+  );
+  assert.doesNotMatch(listing.at(-2), /\.data|\.spec|\.status/);
+});
+
+test("a timed-out Namespace delete still fails when the Namespace is gone or the listing fails", async () => {
+  const gone = namespaceKubectl({
+    "get namespace": kubectlFailure(
+      'Error from server (NotFound): namespaces "oce-held" not found\n',
+    ),
+  });
+  await assert.rejects(deleteNamespaceExplained(gone.kubectl, "oce-held"), (error) => {
+    assert.match(error.message, /\nNamespace oce-held remains: none \(the Namespace is gone\)$/);
+    return true;
+  });
+
+  const partial = namespaceKubectl({
+    "get namespace": JSON.stringify({ spec: {}, status: { phase: "Terminating" } }),
+    "api-resources --namespaced=true": "pods\nwidgets.example.com\n",
+    "get pods,widgets.example.com": Object.assign(
+      kubectlFailure("error: the server is currently unable to handle the request\n"),
+      { stdout: "Pod/left finalizers= deleting=\n" },
+    ),
+  });
+  await assert.rejects(deleteNamespaceExplained(partial.kubectl, "oce-held"), (error) => {
+    assert.match(error.message, /remains: phase Terminating, finalizers \[\]\n/);
+    assert.match(
+      error.message,
+      /\n {2}listing objects failed: error: the server is currently unable/,
+    );
+    assert.match(error.message, /\n {2}Pod\/left$/);
+    assert.doesNotMatch(error.message, /no objects left/);
+    return true;
+  });
+
+  // One unavailable aggregated API fails discovery, but kubectl still prints the other kinds
+  // (a classic NamespaceDeletionDiscoveryFailure): the listing goes on with them.
+  const discovery = namespaceKubectl({
+    "get namespace": JSON.stringify({
+      spec: { finalizers: ["kubernetes"] },
+      status: {
+        phase: "Terminating",
+        conditions: [
+          {
+            type: "NamespaceDeletionDiscoveryFailure",
+            status: "True",
+            reason: "DiscoveryFailed",
+            message: "Discovery failed for some groups: metrics.k8s.io/v1beta1",
+          },
+        ],
+      },
+    }),
+    "api-resources --namespaced=true": Object.assign(
+      kubectlFailure(
+        "error: unable to retrieve the complete list of server APIs: metrics.k8s.io/v1beta1: the server is currently unable to handle the request\n",
+      ),
+      { stdout: "pods\n" },
+    ),
+    "get pods": "",
+  });
+  await assert.rejects(deleteNamespaceExplained(discovery.kubectl, "oce-held"), (error) => {
+    assert.match(error.message, /\n {2}condition NamespaceDeletionDiscoveryFailure=True /);
+    assert.match(
+      error.message,
+      /\n {2}listing kinds failed: error: unable to retrieve the complete list/,
+    );
+    assert.doesNotMatch(error.message, /no objects left/);
+    return true;
+  });
+  assert.equal(discovery.calls.at(-1)[1], "pods");
+
+  const unreadable = namespaceKubectl({ "get namespace": kubectlFailure("error: EOF\n") });
+  await assert.rejects(deleteNamespaceExplained(unreadable.kubectl, "oce-held"), (error) => {
+    assert.match(error.message, /^Command failed: kubectl\nerror: timed out waiting/);
+    assert.match(
+      error.message,
+      /remains: listing what remains failed: Command failed: kubectl\nerror: EOF/,
+    );
+    return true;
+  });
+});
+
+// Finding 2027/2028: the listing has its own bound (40 s by default, so the 120 s delete and the
+// listing fit the teardown step), and a listing cut short keeps what it read: the Namespace's
+// phase, finalizers and conditions are what explain a stuck delete.
+test("a Namespace listing past its deadline keeps the conditions it read", async () => {
+  const held = {
+    "get namespace": JSON.stringify({
+      spec: { finalizers: ["kubernetes"] },
+      status: {
+        phase: "Terminating",
+        conditions: [
+          {
+            type: "NamespaceFinalizersRemaining",
+            status: "True",
+            reason: "SomeFinalizersRemain",
+            message: "Some content in the namespace has finalizers remaining",
+          },
+        ],
+      },
+    }),
+    "api-resources --namespaced=true": "pods\n",
+  };
+  const expected = [
+    "\nNamespace oce-held remains: phase Terminating, finalizers [kubernetes]",
+    "condition NamespaceFinalizersRemaining=True SomeFinalizersRemain: Some content in the namespace has finalizers remaining",
+    "listing what remains timed out",
+  ].join("\n  ");
+  const remains = (error) => error.message.slice(error.message.indexOf("\nNamespace oce-held"));
+  // The object listing never answers, as a get through a hung aggregated API.
+  function stalledAt(stall) {
+    const reads = namespaceKubectl(held);
+    let reached;
+    const stalled = new Promise((resolve) => {
+      reached = resolve;
+    });
+    const kubectl = (...args) => {
+      if (`${args[0]} ${args[1]}` === stall) {
+        reached();
+        return new Promise(() => {});
+      }
+      return reads.kubectl(...args);
+    };
+    return { kubectl, stalled };
+  }
+
+  // The deadline's timer is held until released, so the default bound is read, not waited for.
+  const listing = stalledAt("get pods");
+  const sleeps = [];
+  let release;
+  const sleep = (ms, value, { signal }) => {
+    sleeps.push(ms);
+    return new Promise((resolve, reject) => {
+      release = () => resolve(value);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  };
+  const failure = deleteNamespaceExplained(listing.kubectl, "oce-held", { sleep }).then(
+    () => assert.fail("the delete resolved"),
+    (error) => error,
+  );
+  await listing.stalled;
+  assert.deepEqual(sleeps, [40_000]);
+  release();
+  assert.equal(remains(await failure), expected);
+
+  // The same with the real timer and a short bound; a Namespace read that stalls keeps nothing.
+  const late = stalledAt("get pods");
+  await assert.rejects(
+    deleteNamespaceExplained(late.kubectl, "oce-held", { listTimeoutMs: 20 }),
+    (error) => remains(error) === expected,
+  );
+  const unread = stalledAt("get namespace");
+  await assert.rejects(
+    deleteNamespaceExplained(unread.kubectl, "oce-held", { listTimeoutMs: 20 }),
+    (error) => remains(error) === "\nNamespace oce-held remains: listing what remains timed out",
+  );
+});
+
+// A read the deadline stops rejects with an AbortError as the deadline passes, racing the
+// listing's report: it must not add a "listing objects failed" line, so the report is what was
+// read and then the timeout. The stand-in kubectl on PATH runs through the real client, so the
+// stalled read is a real child process the deadline kills.
+test("a Namespace listing stopped at its deadline reports the timeout alone", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
+  const namespaceJson = JSON.stringify({
+    spec: { finalizers: ["kubernetes"] },
+    status: {
+      phase: "Terminating",
+      conditions: [
+        { type: "NamespaceContentRemaining", status: "True", reason: "SomeResourcesRemain" },
+      ],
+    },
+  });
+  await writeCommand(
+    directory,
+    "kubectl",
+    `const args = process.argv.slice(2);
+const verb = args.findIndex((arg) => ["delete", "get", "api-resources"].includes(arg));
+const command = args.slice(verb, verb + 2).join(" ");
+if (command === "delete namespace") {
+  process.stderr.write("error: timed out waiting for the condition on namespaces/oce-held\\n");
+  process.exitCode = 1;
+} else if (command === "get namespace") {
+  process.stdout.write(${JSON.stringify(namespaceJson)});
+} else if (command === "api-resources --namespaced=true") {
+  process.stdout.write("pods\\n");
+} else {
+  // The object listing stalls, as a get through a hung aggregated API does.
+  setTimeout(() => {}, 30_000);
+}
+`,
+    { interpreter: process.execPath },
+  );
+  prependPath(t, directory);
+  const client = createKubernetesClient({
+    selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
+  });
+  let reached;
+  const listing = new Promise((resolve) => {
+    reached = resolve;
+  });
+  const kubectl = (...args) => {
+    if (args[0] === "get" && args[1] === "pods") {
+      reached();
+    }
+    return client.kubectl(...args);
+  };
+  // The deadline's timer is held until the stalled listing has started.
+  let release;
+  const sleep = (ms, value, { signal }) =>
+    new Promise((resolve, reject) => {
+      release = () => resolve(value);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  const failure = deleteNamespaceExplained(kubectl, "oce-held", { sleep }).then(
+    () => assert.fail("the delete resolved"),
+    (error) => error,
+  );
+  await listing;
+  release();
+  const error = await failure;
+  assert.equal(
+    error.message.slice(error.message.indexOf("\nNamespace oce-held")),
+    [
+      "\nNamespace oce-held remains: phase Terminating, finalizers [kubernetes]",
+      "condition NamespaceContentRemaining=True SomeResourcesRemain: ",
+      "listing what remains timed out",
+    ].join("\n  "),
+  );
+});
+
+// Finding 2027: the listing is bounded in size too, since it joins a test failure message: at most
+// 40 objects, and a failed read's first stderr line cut to 300 characters.
+test("a Namespace listing caps its objects and a failed read's error", async () => {
+  const objects = Array.from({ length: 45 }, (_, index) => `Pod/p-${index} finalizers= deleting=`);
+  const reason = `error: ${"y".repeat(400)}`;
+  const { kubectl } = namespaceKubectl({
+    "get namespace": JSON.stringify({ spec: {}, status: { phase: "Terminating" } }),
+    "api-resources --namespaced=true": Object.assign(
+      kubectlFailure("error: discovery failed for one group\nsecond line of detail\n"),
+      { stdout: "pods\n" },
+    ),
+    "get pods": Object.assign(kubectlFailure(`${reason}\nsecond line of detail\n`), {
+      stdout: `${objects.join("\n")}\n`,
+    }),
+  });
+  await assert.rejects(deleteNamespaceExplained(kubectl, "oce-held"), (error) => {
+    assert.equal(
+      error.message.slice(error.message.indexOf("\nNamespace oce-held")),
+      [
+        "\nNamespace oce-held remains: phase Terminating, finalizers []",
+        "listing kinds failed: error: discovery failed for one group",
+        `listing objects failed: ${reason.slice(0, 300)}`,
+        ...Array.from({ length: 40 }, (_, index) => `Pod/p-${index}`),
+        "and 5 more objects",
+      ].join("\n  "),
+    );
+    return true;
+  });
+});
+
+test("a failed outage recovery says why without replacing its failure", async () => {
+  const written = [];
+  const write = (text) => written.push(text);
+  // The wait itself failed: the worker and Pod evidence join its message.
+  const failure = new Error("deployment rev-1 to activate after the gateway outage timed out");
+  const described = [];
+  const detail = await failedRecoveryDiagnostic({
+    readWorker: async () => ({ events: [{ code: "RUNTIME_LOGIN_FAILED" }] }),
+    describe: async (worker) => {
+      described.push(worker);
+      return "\nHarness diagnostics:\nHarness model authentication probe failed.";
+    },
+    failure,
+    write,
+  });
+  assert.deepEqual(described, [{ events: [{ code: "RUNTIME_LOGIN_FAILED" }] }]);
+  assert.equal(detail, "\nHarness diagnostics:\nHarness model authentication probe failed.");
+  assert.equal(
+    failure.message,
+    "deployment rev-1 to activate after the gateway outage timed out\nHarness diagnostics:\nHarness model authentication probe failed.",
+  );
+  assert.deepEqual(written, [`OpenShell integration: gateway outage recovery failed.${detail}\n`]);
+
+  // The deployment failed without a wait error: the detail is returned for the assertion, and a
+  // worker read that throws still lets the Pods be described.
+  const unread = [];
+  assert.equal(
+    await failedRecoveryDiagnostic({
+      readWorker: () => {
+        throw new Error("pool closed");
+      },
+      describe: async (worker) => {
+        unread.push(worker);
+        return "\nReplacement Pods: []";
+      },
+      failure: undefined,
+      write,
+    }),
+    "\nReplacement Pods: []",
+  );
+  assert.deepEqual(unread, [undefined]);
+
+  // A describe that fails names only its error's class; one that stalls gives way to the deadline.
+  assert.equal(
+    await failedRecoveryDiagnostic({
+      readWorker: async () => undefined,
+      describe: async () => {
+        throw new TypeError("token=secret-value");
+      },
+      write,
+    }),
+    "\nRecovery diagnostic unavailable: TypeError",
+  );
+  const stalledWorker = [];
+  await failedRecoveryDiagnostic(
+    {
+      readWorker: () => new Promise(() => {}),
+      describe: async (worker) => {
+        stalledWorker.push(worker);
+        return "";
+      },
+      write,
+    },
+    { timeoutMs: 50 },
+  );
+  assert.deepEqual(stalledWorker, [undefined]);
+  const started = Date.now();
+  const stalled = new Error("wait failed");
+  assert.equal(
+    await failedRecoveryDiagnostic(
+      {
+        readWorker: () => new Promise(() => {}),
+        describe: () => new Promise(() => {}),
+        failure: stalled,
+        write,
+      },
+      { timeoutMs: 50 },
+    ),
+    "\nRecovery diagnostic timed out after 0.05 s",
+  );
+  assert.equal(stalled.message, "wait failed\nRecovery diagnostic timed out after 0.05 s");
+  assert.ok(Date.now() - started < 2_000);
+});
 
 test("a stalled failure diagnostic gives way to its deadline", { timeout: 5_000 }, async () => {
   // Never settles, like a kubectl read on a stalled API server (finding 1550).
@@ -300,7 +912,7 @@ test(
     const kubernetesHelper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
     const openShellHelper = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
       .href;
-    const script = `
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelper)};
       import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelper)};
@@ -323,21 +935,7 @@ test(
         poll = setInterval(() => {}, 50);
         throw new Error("replacement timed out");
       });
-    `;
-    // Run it as its own node:test root, not as a child reporting to this runner.
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    const started = Date.now();
-    const exited = await execute(process.execPath, ["--input-type=module", "-e", script], {
-      env,
-      timeout: 15_000,
-    }).then(
-      () => ({ code: 0, stdout: "", stderr: "" }),
-      (error) => error,
-    );
-    assert.ok(Date.now() - started < 10_000, "the file exited soon after its teardown");
-    assert.notEqual(exited.killed, true, "the file exited on its own");
-    assert.equal(exited.code, 1);
+    `);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted worker stop",
       "attempted port-forwards",
@@ -392,6 +990,10 @@ test("two helpers given one node:test context share its bounded teardown, newest
   assert.equal(helpersContext.hooks.length, 1);
 });
 
+// A cleanup registered after its teardown ran also stops the setup that made it, by throwing to it.
+const stopsSetup =
+  /^teardown: setup outlived its test; cleanup registered at kubernetes-real-kubectl\.test\.mjs:\d+ runs now and setup stops here$/;
+
 test(
   "a cleanup registered after the teardown ran runs at once, bounded, and fails the file",
   { timeout: 5_000 },
@@ -414,8 +1016,6 @@ test(
     await testContext.hooks[0]();
     assert.deepEqual(events, [], "nothing was abandoned or late");
     // Each late registration also stops the setup that made it, by throwing to it.
-    const stopsSetup =
-      /^teardown: setup outlived its test; cleanup registered at kubernetes-real-kubectl\.test\.mjs:\d+ runs now and setup stops here$/;
     assert.throws(() => context.after(() => ran.push("worker stop")), { message: stopsSetup });
     // A late cleanup that never settles is abandoned like any other.
     assert.throws(() => context.after(() => new Promise(() => {})), { message: stopsSetup });
@@ -476,21 +1076,33 @@ test(
     await first.hooks[0]();
     await second.hooks[0]();
     const ran = [];
-    let release;
-    assert.throws(() =>
-      firstContext.after(async () => {
-        await new Promise((resolve) => {
-          release = resolve;
-        });
-        ran.push("first late cleanup");
-      }),
+    const firstHeld = Promise.withResolvers();
+    const firstRan = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    assert.throws(
+      () =>
+        firstContext.after(async () => {
+          firstHeld.resolve();
+          await release.promise;
+          ran.push("first late cleanup");
+          firstRan.resolve();
+        }),
+      { message: stopsSetup },
     );
-    await delay(20);
-    assert.throws(() => secondContext.after(() => ran.push("second late cleanup")));
-    await delay(20);
-    release();
-    await delay(50);
-    assert.deepEqual(ran.sort(), ["first late cleanup", "second late cleanup"]);
+    await firstHeld.promise;
+    try {
+      assert.throws(() => secondContext.after(() => ran.push("second late cleanup")), {
+        message: stopsSetup,
+      });
+      // Late cleanups drain in microtasks, so one event-loop turn runs the second while the
+      // first teardown's is still running.
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(ran, ["second late cleanup"]);
+    } finally {
+      release.resolve();
+    }
+    await firstRan.promise;
+    assert.deepEqual(ran, ["second late cleanup", "first late cleanup"]);
   },
 );
 
@@ -513,6 +1125,14 @@ async function runTestScript(script, { env: overrides = {}, timeout = 15_000 } =
   return { ...exited, elapsedMs: Date.now() - started };
 }
 
+async function runFailingTestScript(script, options) {
+  const exited = await runTestScript(script, options);
+  assert.equal(exited.killed, false, "the file exited on its own");
+  assert.ok(exited.elapsedMs < 10_000, "the file exited promptly");
+  assert.equal(exited.code, 1);
+  return exited;
+}
+
 test(
   "setup that outlives its test's timeout has its late worker stop run, and the file ends",
   { timeout: 20_000 },
@@ -520,7 +1140,7 @@ test(
     // Finding 1722: a node:test timeout runs the test's hooks but does not stop its body. Setup
     // that started a worker after that registered its stop too late: the stop never ran, and the
     // worker's poll held the file until the runner's 5,400 s file timeout.
-    const exited = await runTestScript(`
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
@@ -535,9 +1155,6 @@ test(
         });
       });
     `);
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after the late cleanup");
-    assert.equal(exited.code, 1);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted early cleanup",
       "attempted worker stop",
@@ -558,7 +1175,7 @@ test(
     // test was killed mid-run, missing from the report, and its cleanups never ran. Suite and file
     // hooks run outside any test, so the exit also waits for the file's root to finish; a test
     // named like the root is not it.
-    const exited = await runTestScript(`
+    const exited = await runFailingTestScript(`
       import { after, beforeEach, describe, it } from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
@@ -596,9 +1213,6 @@ test(
         });
       });
     `);
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after its last test");
-    assert.equal(exited.code, 1);
     assert.match(exited.stdout, /^not ok 1 - <root>$/m);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted suite after",
@@ -617,11 +1231,10 @@ test(
     // The first test's abandoned cleanup arms the exit. The second times out mid-setup; its setup
     // then acquires a resource, waits past the grace for it, and registers its release. The exit
     // must wait for that release, and the setup must not go on to its second acquisition.
-    const directory = await mkdtemp(join(tmpdir(), "occ-teardown-acquisitions-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-teardown-acquisitions-");
     const first = join(directory, "first-resource");
     const second = join(directory, "second-resource");
-    const exited = await runTestScript(
+    const exited = await runFailingTestScript(
       `
       import test from "node:test";
       import { rm, writeFile } from "node:fs/promises";
@@ -648,9 +1261,6 @@ test(
     `,
       { env: { FIRST_RESOURCE: first, SECOND_RESOURCE: second } },
     );
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after the setup stopped");
-    assert.equal(exited.code, 1);
     assert.deepEqual(exited.stdout.match(/^acquired .+$/gm), [`acquired ${first}`]);
     assert.match(exited.stderr, /cleanup registered at \[eval1\]:\d+ came after the teardown ran/);
     await assert.rejects(readFile(first), { code: "ENOENT" }, "the first resource was released");
@@ -665,7 +1275,7 @@ test(
     // Setup still running after its test timed out, holding a handle and never registering
     // again, kept the file alive until the runner's file timeout. The timeout now arms the exit,
     // which waits for that setup only to its limit.
-    const exited = await runTestScript(`
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
       test("never stops", { timeout: 200 }, async (testContext) => {
@@ -673,9 +1283,6 @@ test(
         await new Promise(() => setInterval(() => {}, 50));
       });
     `);
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after the setup's limit");
-    assert.equal(exited.code, 1);
     assert.match(
       exited.stderr,
       /^setup: exiting once the file's tests settle for 200 ms; its test timed out or was cancelled with setup that may still run$/m,
@@ -815,7 +1422,7 @@ test(
     const topologyHelper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url)
       .href;
     const kubernetesHelper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
-    const script = `
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { withBoundedTeardown } from ${JSON.stringify(kubernetesHelper)};
       import {
@@ -839,21 +1446,7 @@ test(
         };
         registerProductionTopologyCleanups(context, operations);
       });
-    `;
-    // Run it as its own node:test root, not as a child reporting to this runner.
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    const started = Date.now();
-    const exited = await execute(process.execPath, ["--input-type=module", "-e", script], {
-      env,
-      timeout: 15_000,
-    }).then(
-      () => ({ code: 0, stdout: "", stderr: "" }),
-      (error) => error,
-    );
-    assert.ok(Date.now() - started < 10_000, "the file exited soon after its teardown");
-    assert.notEqual(exited.killed, true, "the file exited on its own");
-    assert.equal(exited.code, 1);
+    `);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted gatewayForward",
       "attempted worker",
@@ -922,8 +1515,7 @@ test(
     // under a running worker, and skip the worker stop once the delete failed. Each file runs with
     // the helper replaced by a stand-in; a test that hands arrangeProductionTopology its own
     // node:test context records the delete first, and its file never exits.
-    const directory = await mkdtemp(join(tmpdir(), "occ-topology-teardown-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-topology-teardown-");
     const helper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url);
     const exportList = /^export \{([^}]+)\};$/m.exec(await readFile(helper, "utf8"));
     assert.ok(exportList, "the topology helper ends with one export { ... } list");
@@ -960,7 +1552,6 @@ test(
         const env = {
           ...process.env,
           TOPOLOGY_TEARDOWN_RECORD: record,
-          OCC_TEST_SKILL_SOURCE_LIFECYCLE: "1",
           OCC_TEST_SLACK_PROXY_URL: "http://127.0.0.1:3128",
           OCC_TEST_SLACK_CHANNEL_ID: "C0",
           OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",
@@ -1018,19 +1609,10 @@ test(
   async (t) => {
     // A fake kubectl that records its pid and then stalls for 30 s, like a read on a stalled API
     // server (finding 1557). No cluster is involved.
-    const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
     const started = join(directory, "started");
-    await writeFile(
-      join(directory, "kubectl"),
-      `#!/bin/sh\necho "$$" >> '${started}'\nexec sleep 30\n`,
-      { mode: 0o755 },
-    );
-    const path = process.env.PATH;
-    process.env.PATH = `${directory}${delimiter}${path}`;
-    t.after(() => {
-      process.env.PATH = path;
-    });
+    await writeCommand(directory, "kubectl", `echo "$$" >> '${started}'\nexec sleep 30\n`);
+    prependPath(t, directory);
     const { kubectl } = createKubernetesClient({
       selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
     });

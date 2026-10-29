@@ -7,11 +7,10 @@ covers bootstrap, password sessions, request origin, provisioning, and failures.
 
 ## Console sign-in destinations
 
-After sign-in, the console returns to the requested supported page and Namespace
-when available. Access is checked again; sign-out and failed external sign-in
-clear the pending destination. A new sign-in after an active session expires
-starts at Agents. An Agent recovery link can return to its console page after
-authorization, where opening the native UI remains a separate action.
+Sign-in restores the validated page, Namespace, and Agent tab or version after
+expiry, then rechecks access. It clears private views and drafts and never
+replays writes. Logout or failed external sign-in clears the destination. Agent
+recovery ends at its console page; opening native UI remains a separate action.
 
 ## GitHub sign-in for existing accounts
 
@@ -81,10 +80,9 @@ transfer, and self-service linking are rejected. For unknown identities, follow 
 [enrollment procedure](../../guides/deploy/production-installation.md#enable-github-browser-sign-in).
 
 Without an [allowlist](#organization-and-team-allowlist), OCE does not check GitHub
-organization or team membership: any attached GitHub user ID signs in. Either way, OCE
-does not learn when someone leaves the organization or GitHub suspends them: without
-an allowlist someone who left can still sign in, and live sessions continue until they
-expire (at most 8 hours). Offboarding also means acting in OCE
+organization or team membership: any attached GitHub user ID signs in, including someone
+who left. Either way, OCE does not learn when someone leaves or GitHub suspends them, and
+live sessions continue until they expire (at most 8 hours). Offboarding also means acting in OCE
 ([account controls](#session-and-recovery-controls)): disable the account to end all
 access and its sessions, or detach its GitHub method to end GitHub sign-in and all its
 sessions; revoke ends sessions but allows a fresh sign-in. None of these ends a
@@ -127,7 +125,7 @@ or `temporarily_unavailable`), or its token endpoint refuses the configured clie
 and registered callback), the denial is audited as `PROVIDER_UNAVAILABLE` and the API
 logs one `authentication.provider-unavailable-warning` at WARN. It carries `provider`
 (`github`, `google`, or `oidc`), the provider instance `providerId`, `step`
-(`authorization`, `token`, `jwks`, `profile`, or `membership`), a bounded `cause` (`connect_refused`,
+(`authorization`, `token`, `jwks`, `profile`, or `membership`), a `cause` from a fixed list (`connect_refused`,
 `dns`, `timeout`, `tls`, `connection_reset`, `network`, `redirect`, `http_status`,
 `oversized_response`, `malformed_response`, `provider_error`, or `client_rejected`), and,
 when present, the HTTP `status` or transport `code` such as `ECONNREFUSED`. It never carries URLs,
@@ -183,12 +181,11 @@ GitHub may answer `404`, not `403`, for an organization where the App is not ins
 misspelled organization or team slug, or (unverified) an unauthorized SAML session. That
 refuses every member as `MEMBERSHIP_REQUIRED` with no warning log. If known members are
 refused, check the slugs, that the App is installed on each listed organization, and that its
-owner accepted Members: read.
+owner accepted Members: read. [Issue #3300](https://github.com/openclaw/openclaw-enterprise/issues/3300) tracks verification of GitHub’s responses when App or SAML access is missing.
 
 Membership is checked only at sign-in. Turning the list on applies from the next sign-in
 after the API restarts; existing sessions run until they expire (at most 8 hours), so revoke
-them to apply it at once. Removing someone from the organization or team stops their next
-GitHub sign-in but not a live session; disable or detach in OCE to end it.
+them to apply it at once.
 
 ## Recovery-only password sign-in
 
@@ -197,8 +194,7 @@ provider is enabled, so strangers who know an email can spend that account's
 password sign-in budget. `OCC_AUTH_PASSWORD_SIGN_IN=recovery-only` (Helm
 `auth.passwordSignIn: recovery-only`; default `all`) removes that surface:
 only the recovery account signs in with a password, and every other account uses
-its attached GitHub, Google or OIDC identity. It is the target posture once every
-ordinary account has an external identity. It requires a configured provider;
+its attached GitHub, Google or OIDC identity. It requires a configured provider;
 startup and Helm refuse it otherwise, and any other value.
 
 Every other email, existing or not, receives the ordinary `401` bad-credential
@@ -301,7 +297,7 @@ spends one of each. Without
 [trusted proxies](../cheatsheets/environment-variables.md#controller-and-authentication)
 every browser behind an ingress shares its address, so the address is never a key:
 callback and result key on the browser's attempt and receipt cookies, and start is
-bounded only by the active cap and the 1,000 pending attempts (oldest evicted).
+limited only by the active request cap and the 1,000 pending attempts (oldest evicted).
 Startup and Helm's install notes warn
 ([trusted proxies](../settings/production.md#github-sign-in-and-trusted-proxies)).
 A 4,096-key table bounds memory. Provider calls share a ten-second deadline, refuse

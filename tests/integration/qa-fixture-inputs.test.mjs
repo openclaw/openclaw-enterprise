@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -7,7 +7,7 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { protectedText } from "../helpers/qa-secrets.mjs";
+import { protectedText, registerQaSecret } from "../helpers/qa-secrets.mjs";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
@@ -179,8 +179,13 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
       { cell: "kubernetes/Codex", scenarios: ["model-ui", "calendar"] },
     ],
   );
-  assert.deepEqual(selected.cells[1].unselected, ["git-full", "git-read", "slack"]);
-  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-read", "slack"]);
+  assert.deepEqual(selected.cells[1].unselected, [
+    "console-secrets",
+    "git-write",
+    "git-push-denied",
+    "slack",
+  ]);
+  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-push-denied", "slack"]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
@@ -198,13 +203,34 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.deepEqual(calendar.cells[0].scenarios, []);
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "git-full"]);
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-write"]);
   assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
+  const secrets = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "console-secrets",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "compose",
+  });
+  assert.equal(secrets.browser, true);
+  assert.deepEqual(secrets.requiredEnv, ["OCC_TEST_QA_CODEX_TOKEN_FILE"]);
+  const sandbox = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "sandbox-policy",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.equal(sandbox.sandboxPolicy, true);
+  assert.deepEqual(sandbox.requiredEnv, [
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+    "OCC_TEST_QA_SANDBOX_ENV",
+  ]);
+  assert.ok(
+    sandbox.cells.every((cell) => cell.scenarios.length === 0),
+    "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
+  );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
   assert.ok(full.repository);
   const isolated = selectQaMatrix({
-    OCC_TEST_QA_SCENARIOS: "git-full",
+    OCC_TEST_QA_SCENARIOS: "git-write",
     QA_REPOSITORY_FIXTURE: "isolated",
     OCC_TEST_QA_GITHUB_OBSERVER_BINARY: "gh",
     OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: "/private/token",
@@ -298,6 +324,192 @@ test("QA command diagnostics retain the error while hiding generated and environ
   );
 });
 
+test("a failed image build keeps its failed step's output as redacted QA evidence", async () => {
+  const { imageBuildFailureOutput, recordImageBuildFailure } =
+    await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  registerQaSecret("build-private-value");
+  // BuildKit's plain progress (finding 2020's shape): steps interleave, each line prefixed by
+  // its step; the failed step's output is gone from the final summary's last lines.
+  const stderr = [
+    // An earlier build in the same dev-up that succeeded: its step numbers repeat.
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [controller 9/9] RUN node build.mjs",
+    "#41 DONE 4.0s",
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#40 [openclaw-build 13/18] COPY --from=openclaw-source /source/ ./",
+    "#41 [openclaw-build 14/18] RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts",
+    "#40 DONE 2.1s",
+    "#42 [controller 3/5] RUN pnpm install",
+    "#41 3.210  RUN  v3.2.4 /source",
+    "#41 45.12  FAIL  src/gateway/server.required-placement-scopes.test.ts > revokes placement",
+    "#41 45.13 AssertionError: expected 'build-private-value' to be undefined",
+    "#42 12.00 Done in 11.9s",
+    '#41 ERROR: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    "#42 CANCELED",
+    "------",
+    " > [openclaw-build 14/18] RUN --network=none ...:",
+    "------",
+    "Dockerfile:180",
+    "--------------------",
+    " 180 | >>> RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \\",
+    "--------------------",
+    'ERROR: failed to solve: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1" did not complete successfully: exit code: 1',
+    "Error: docker failed: exit status 1",
+    "",
+  ].join("\n");
+  const step = imageBuildFailureOutput(stderr);
+  assert.equal(step.length, 5);
+  assert.ok(step.every((line) => line.startsWith("#41 ")));
+  assert.match(step.at(-2), /AssertionError/);
+  assert.equal(imageBuildFailureOutput(stderr, { lines: 2 }).length, 2);
+
+  const records = [];
+  const record = async (name, value) => {
+    records.push({ name, value });
+    return `kubernetes-${name}.json`;
+  };
+  const file = await recordImageBuildFailure(record, stderr, { PRIVATE_INPUT: "unused" });
+  assert.match(file, /^kubernetes-image-build-failure-\d+\.json$/);
+  assert.equal(records.length, 1);
+  assert.match(
+    records[0].value.lines.join("\n"),
+    /FAIL {2}src\/gateway\/server\.required-placement/,
+  );
+  assert.doesNotMatch(JSON.stringify(records[0].value), /build-private-value/);
+
+  // A podman build has no BuildKit steps: its last lines are kept.
+  const podman = [
+    "STEP 14/18: RUN node test.mjs",
+    ...Array.from({ length: 300 }, (_, i) => `line ${i}`),
+  ];
+  podman.push('Error: building at STEP "RUN node test.mjs": while running runtime: exit status 1');
+  assert.equal(imageBuildFailureOutput(podman.join("\n")).length, 200);
+  assert.match(imageBuildFailureOutput(podman.join("\n")).at(-1), /^Error: building at STEP/);
+
+  // Newer buildx words the summary "failed to build: failed to solve".
+  assert.deepEqual(
+    imageBuildFailureOutput(
+      stderr.replace("ERROR: failed to solve: ", "ERROR: failed to build: failed to solve: "),
+    ),
+    step,
+  );
+
+  // Any other command failure records nothing.
+  assert.equal(
+    imageBuildFailureOutput('Error from server (NotFound): pods "x" not found\n'),
+    undefined,
+  );
+  assert.equal(await recordImageBuildFailure(record, "dev-up: startup timed out\n", {}), undefined);
+  assert.equal(records.length, 1);
+});
+
+// Finding 2025: the QA installation's command runner is what records a failed image build's step
+// as uploaded evidence, so it is run here with a real failing subprocess and no cluster. The
+// evidence file must exist and carry the failed step with every secret the subprocess printed
+// masked; a protected command records nothing.
+test("the QA command runner records a failed image build step as redacted evidence", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "qa-run-evidence-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const artifacts = await mkdtemp(join(directory, "artifacts-"));
+  registerQaSecret("registered-private-2025");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    // The subprocess sees the installation's environment, so it can print its private value.
+    env: { PATH: process.env.PATH, OCC_TEST_PRIVATE_INPUT: "env-private-value-2025" },
+    // The installation's own record: a confined JSON file in the uploaded artifacts directory.
+    async record(name, value) {
+      const file = `kubernetes-${name}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+      return file;
+    },
+  };
+  const longLine = "x".repeat(1_000);
+  const stderr = [
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [openclaw-build 14/18] RUN node scripts/test-projects.mts",
+    "#41 45.12  FAIL  src/gateway/placement.test.ts > keeps its token",
+    "#41 45.13 AssertionError: expected 'registered-private-2025' to be undefined",
+    "#41 45.14 env ${OCC_TEST_PRIVATE_INPUT}",
+    "#41 45.15 Authorization: Bearer fake-bearer-token-2025",
+    "#41 45.16 -----BEGIN PRIVATE KEY-----",
+    "#41 45.17 fakePemBodyLine2025AAAAAAAAAAAAAAAAAAAA",
+    "#41 45.18 -----END PRIVATE KEY-----",
+    `#41 45.19 ${longLine}`,
+    '#41 ERROR: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const script = `process.stderr.write(${JSON.stringify(stderr)}.replace("\${OCC_TEST_PRIVATE_INPUT}", process.env.OCC_TEST_PRIVATE_INPUT) + "\\n"); process.exit(1);`;
+
+  await assert.rejects(runQaCommand(f, process.execPath, ["-e", script]), (error) => {
+    assert.match(
+      error.message,
+      /; failed image build step output: kubernetes-image-build-failure-\d+\.json(?:;|$)/,
+    );
+    return true;
+  });
+  const files = (await readdir(artifacts)).filter((file) => file.includes("image-build-failure"));
+  assert.equal(files.length, 1);
+  const evidence = await readFile(join(artifacts, files[0]), "utf8");
+  const { lines } = JSON.parse(evidence);
+  assert.ok(lines.some((line) => line.includes("FAIL  src/gateway/placement.test.ts")));
+  assert.doesNotMatch(
+    evidence,
+    /registered-private-2025|env-private-value-2025|fake-bearer-token-2025|fakePemBodyLine2025/,
+  );
+  // Each line is cut to 800 characters.
+  assert.ok(lines.includes(`#41 45.19 ${longLine}`.slice(0, 800) + "... [truncated]"));
+
+  // A command whose output is protected records no evidence, even from a failed image build.
+  await assert.rejects(
+    runQaCommand(f, process.execPath, ["-e", script], { privateFailureOutput: true }),
+    (error) => {
+      assert.doesNotMatch(error.message, /failed image build step output/);
+      return true;
+    },
+  );
+  assert.deepEqual(
+    (await readdir(artifacts)).filter((file) => file.includes("image-build-failure")),
+    files,
+  );
+});
+
+// Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
+// line, must lose every body line, not only the lines the tail still shows its BEGIN for.
+test("an image build step's unterminated private key is masked past the evidence window", async () => {
+  const { recordImageBuildFailure } = await import("../helpers/qa-installation.mjs");
+  const body = Array.from(
+    { length: 250 },
+    (_, index) =>
+      `#41 ${index}.0 fakeKeyBody${String(index).padStart(3, "0")}QUJDREVGR0hJSktMTU5PUFFSU1RVVldY`,
+  );
+  const stderr = [
+    "#41 [runtime 4/9] RUN cat /run/secrets/key",
+    "#41 0.1 -----BEGIN RSA PRIVATE KEY-----",
+    ...body,
+    '#41 ERROR: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const records = [];
+  await recordImageBuildFailure(
+    async (name, value) => {
+      records.push(value);
+      return `kubernetes-${name}.json`;
+    },
+    stderr,
+    {},
+  );
+  assert.equal(records.length, 1);
+  assert.equal(records[0].lines.length, 200);
+  assert.doesNotMatch(JSON.stringify(records[0]), /fakeKeyBody/);
+});
+
 test("QA waits report the last observation when they time out", async () => {
   const { waitFor } = await import("../helpers/qa-utils.mjs");
   let observations = 0;
@@ -344,6 +556,229 @@ test("QA waits report the last observation when they time out", async () => {
   assert.equal(
     await waitFor("ready", async () => "value", 10, { describe: () => "unused" }),
     "value",
+  );
+});
+
+// Finding 2106: six QA cells failed "Timed out: Agent deployment" at 600 s with no status.
+test("a QA Agent deployment timeout names its last status, attempt and Pods", async (t) => {
+  const { deployQaAgentAndWait } = await import("../helpers/qa-installation.mjs");
+  const { createQaReport } = await import("../helpers/qa-report.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  // An invented 48-character registered value. Runtime text that OCC shortened could keep
+  // part of it, which whole-value redaction cannot match.
+  const privateValue = "qa-deploy-fixture-private-0123456789abcdefghijkl";
+  assert.equal(privateValue.length, 48);
+  registerQaSecret(privateValue);
+  const base = "/namespaces/namespace-1/agents/agent-1";
+  function fixture({ runtime, finalStatus = "running" } = {}) {
+    let clock = 0;
+    const calls = [];
+    const records = [];
+    const lastAttempt = {
+      at: "2026-10-19T19:40:00.000Z",
+      code: "RUNTIME_NOT_READY",
+      message: "The Agent runtime is not ready yet.",
+    };
+    const f = {
+      async api(method, path) {
+        calls.push(`${method} ${path}`);
+        if (method === "POST" && path === `${base}/deploy`) {
+          return { id: "rev-1" };
+        }
+        if (path === `${base}/deployments/rev-1`) {
+          clock += 100;
+          // Queued for the first observations, then running until the wait ends.
+          const status = clock <= 200 ? "queued" : finalStatus;
+          return {
+            status,
+            progress: status === "succeeded" ? null : { lastAttempt, nextAttemptAt: null },
+            error: null,
+            cleanup: null,
+            warnings: [],
+          };
+        }
+        if (path === `${base}/deployments/rev-1/runtime`) {
+          if (!runtime) {
+            throw new Error(`OCC GET ${path}: HTTP 404`);
+          }
+          return runtime;
+        }
+        throw new Error(`unexpected ${method} ${path}`);
+      },
+      async record(name, value) {
+        records.push({ name, value });
+      },
+    };
+    const agent = { id: "agent-1", namespaceId: "namespace-1", preset: "Codex" };
+    return { f, agent, calls, records, options: { timeout: 1_000, interval: 0, now: () => clock } };
+  }
+
+  const runtime = {
+    revisionId: "rev-1",
+    observedAt: "2026-10-19T19:46:00.000Z",
+    sources: [],
+    pods: [
+      {
+        role: "gateway",
+        cluster: "control",
+        name: "gateway-0",
+        uid: "uid-1",
+        phase: "Pending",
+        ready: false,
+        createdAt: "2026-10-19T19:36:10.000Z",
+        containers: [
+          {
+            name: "gateway",
+            state: "waiting",
+            reason: "ContainerCreating",
+            ready: false,
+            restartCount: 0,
+            startedAt: null,
+            lastTermination: null,
+          },
+          {
+            name: "setup",
+            state: "terminated",
+            // Cut at the API's 128 characters, inside the registered value.
+            reason: ("r".repeat(100) + privateValue).slice(0, 128),
+            ready: false,
+            restartCount: 1,
+            startedAt: null,
+            lastTermination: null,
+          },
+        ],
+        // Newest first, as the API lists them.
+        events: [
+          {
+            type: "Warning",
+            container: null,
+            reason: "Unhealthy",
+            // Probe output can reach an event message; the value starts at character 176.
+            message: "Readiness probe failed: " + "x".repeat(152) + privateValue,
+            count: 4,
+            lastObservedAt: "2026-10-19T19:45:00Z",
+          },
+          {
+            type: "Normal",
+            container: null,
+            reason: "Pulled",
+            message: "Container image already present",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:44:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            // A long reason from a legacy Event producer, cut inside the registered value.
+            reason: ("e".repeat(100) + privateValue).slice(0, 128),
+            message: "Back-off pulling image",
+            count: 2,
+            lastObservedAt: "2026-10-19T19:43:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedScheduling",
+            message: "0/1 nodes are available",
+            count: 3,
+            lastObservedAt: "2026-10-19T19:38:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedCreatePodSandBox",
+            message: "Failed to create pod sandbox",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:37:00Z",
+          },
+        ],
+      },
+    ],
+  };
+  // Through the real report stage, which redacts before it saves the reason.
+  const directory = await mkdtemp(join(tmpdir(), "qa-deploy-timeout-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const reportPath = join(directory, "matrix.json");
+  const report = createQaReport(reportPath, {});
+  const parent = { test: async (_name, _options, run) => run() };
+  const timedOut = fixture({ runtime });
+  await assert.rejects(
+    report.stage(parent, "compose/Codex", "deploy", () =>
+      deployQaAgentAndWait(timedOut.f, timedOut.agent, timedOut.options),
+    ),
+    (error) => {
+      // No runtime text that could hold part of a secret reaches the error.
+      assert.doesNotMatch(error.message, /qa-deploy-fixture|Readiness probe failed|rrrr|eeee/);
+      const [observation, pods] = error.message
+        .replace(/^Timed out: Agent deployment; last observation: /, "")
+        .split("; runtime: ");
+      assert.deepEqual(JSON.parse(observation), {
+        status: "running",
+        // Running since the third observation (clock 300) until the last one (clock 1,000).
+        statusForMs: 700,
+        lastAttempt: {
+          at: "2026-10-19T19:40:00.000Z",
+          code: "RUNTIME_NOT_READY",
+          message: "The Agent runtime is not ready yet.",
+        },
+        nextAttemptAt: null,
+        error: null,
+      });
+      assert.deepEqual(JSON.parse(pods), {
+        pods: [
+          {
+            role: "gateway",
+            phase: "Pending",
+            ready: false,
+            containers: [
+              { name: "gateway", state: "waiting", reason: "ContainerCreating", restartCount: 0 },
+              { name: "setup", state: "terminated", reason: "other", restartCount: 1 },
+            ],
+            // The three newest Warnings, by familiar reason and count only.
+            warnings: [
+              { reason: "Unhealthy", count: 4 },
+              { reason: "other", count: 2 },
+              { reason: "FailedScheduling", count: 3 },
+            ],
+          },
+        ],
+      });
+      return true;
+    },
+  );
+  assert.equal(timedOut.calls.at(-1), `GET ${base}/deployments/rev-1/runtime`);
+  assert.deepEqual(timedOut.records, []);
+  const saved = await readFile(reportPath, "utf8");
+  const [outcome] = JSON.parse(saved).outcomes;
+  assert.equal(outcome.outcome, "failed");
+  assert.match(outcome.reason, /^Timed out: Agent deployment; last observation: /);
+  assert.doesNotMatch(saved, new RegExp(privateValue.slice(0, 8)));
+
+  // Runtime details are best effort: the timeout keeps its status when they are unavailable.
+  const noRuntime = fixture();
+  await assert.rejects(
+    deployQaAgentAndWait(noRuntime.f, noRuntime.agent, noRuntime.options),
+    (error) =>
+      error.message.startsWith(
+        'Timed out: Agent deployment; last observation: {"status":"running","statusForMs":700,',
+      ) &&
+      error.message.endsWith(
+        `; runtime unavailable (OCC GET ${base}/deployments/rev-1/runtime: HTTP 404)`,
+      ),
+  );
+
+  // A deployment that succeeds is recorded and returned, with no runtime request.
+  const succeeded = fixture({ finalStatus: "succeeded" });
+  const result = await deployQaAgentAndWait(succeeded.f, succeeded.agent, succeeded.options);
+  assert.equal(result.status.status, "succeeded");
+  assert.deepEqual(result.revision, { id: "rev-1" });
+  assert.deepEqual(
+    succeeded.records.map(({ name }) => name),
+    ["Codex-agent-1-rev-1-deployment"],
+  );
+  assert.equal(
+    succeeded.calls.some((call) => call.endsWith("/runtime")),
+    false,
   );
 });
 
@@ -602,7 +1037,9 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   );
   // A single worker Pod is the Deployment read: no per-Pod copies.
   platformPods.splice(0, 1);
-  await assert.rejects(stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, timing));
+  await assert.rejects(stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, timing), {
+    message: /^Timed out: ordinary Agent stop removes every runtime Pod; last observation: /,
+  });
   assert.equal(records.get("agent-3-stop-timeout-platform-logs").logs.workerPods, undefined);
 
   // A Compose control plane keeps the observation but has no in-cluster platform logs.
@@ -1406,4 +1843,1523 @@ test("failed native Gateway turns capture private bounded logs for the original 
       }
     });
   }
+});
+
+test("native cron positive control requires its own successful completed run", async (t) => {
+  const { assertNativeCronRunSucceeded } = await import("../helpers/plugin-driver-real.mjs");
+  const accepted = { ok: true, enqueued: true, runId: "control-run" };
+  const finished = {
+    jobId: "control-job",
+    runId: "control-run",
+    action: "finished",
+    status: "ok",
+  };
+  async function exercise(ack, entry) {
+    const calls = [];
+    const proof = await assertNativeCronRunSucceeded({
+      jobId: "control-job",
+      async request(method, params) {
+        calls.push({ method, params });
+        if (method === "cron.run") {
+          return ack;
+        }
+        assert.equal(method, "cron.runs");
+        return { entries: entry === undefined ? [] : [entry] };
+      },
+      // One observation represents completion or exhausted polling, without a real timer.
+      waitFor: async (_description, inspect) => inspect(),
+    });
+    return { proof, calls };
+  }
+
+  await t.test("records the accepted run only after its successful terminal result", async () => {
+    const { proof, calls } = await exercise(accepted, finished);
+    assert.deepEqual(proof, { jobId: "control-job", runId: "control-run", status: "ok" });
+    assert.deepEqual(calls, [
+      {
+        method: "cron.run",
+        params: { id: "control-job", mode: "force", waitTimeoutMs: 5_000 },
+      },
+      { method: "cron.runs", params: { id: "control-job", runId: "control-run", limit: 1 } },
+    ]);
+  });
+  for (const [name, ack, entry, expected] of [
+    [
+      "a successful RPC that did not run the job",
+      { ok: true, ran: false, reason: "invalid-spec" },
+      finished,
+      /must enqueue a run/,
+    ],
+    ["a different completed run", accepted, { ...finished, runId: "other-run" }, /enqueued run/],
+    ["an unfinished run", accepted, { ...finished, action: "started" }, /must finish/],
+    ["a failed terminal run", accepted, { ...finished, status: "error" }, /must succeed/],
+  ]) {
+    await t.test(`rejects ${name}`, async () => {
+      await assert.rejects(exercise(ack, entry), expected);
+    });
+  }
+});
+
+test("native tool evidence reads compressed rows, prompt snapshots and command exit status", async (t) => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { zstdCompressSync } = await import("node:zlib");
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "oce-tool-evidence-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const databasePath = join(directory, "transcript.sqlite");
+  const db = new DatabaseSync(databasePath);
+  db.exec(`CREATE TABLE session_nodes(session_key TEXT, current_session_id TEXT, entry_json TEXT);
+    CREATE TABLE session_entry_snapshots(session_key TEXT, field TEXT, value_json TEXT);
+    CREATE TABLE transcript_events(session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, event_utf8_bytes INTEGER);`);
+  const sessionKey = "agent:main:evidence-fixture";
+  db.prepare("INSERT INTO session_nodes VALUES (?, ?, ?)").run(sessionKey, "session-fixture", "{}");
+  db.prepare("INSERT INTO session_entry_snapshots VALUES (?, ?, ?)").run(
+    sessionKey,
+    "systemPromptReport",
+    JSON.stringify({
+      source: "run",
+      tools: { entries: [{ name: "exec" }, { name: "automations" }] },
+    }),
+  );
+  const toolErrorSecret = "fixture-tool-error-secret";
+  registerQaSecret(toolErrorSecret);
+  const rows = [
+    { role: "user", content: "allowed-fixture" },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "allowed-call",
+          name: "exec",
+          arguments: { command: "printf TOOL-SUCCESS" },
+        },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "allowed-call",
+      toolName: "exec",
+      content: [{ type: "text", text: "TOOL-SUCCESS" }],
+      isError: false,
+      details: { exitCode: 0 },
+    },
+    { role: "assistant", content: [{ type: "text", text: "allowed-fixture" }], stopReason: "stop" },
+    { role: "user", content: "denied-fixture" },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "denied-call",
+          name: "automations",
+          arguments: {
+            action: "update",
+            jobId: "fixture-job",
+            job: { payload: { timeoutSeconds: 5 } },
+          },
+        },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "denied-call",
+      toolName: "automations",
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: [
+            "earlier error context omitted from bounded diagnostic",
+            "Automation not found: fixture-job",
+            `private fixture value: ${toolErrorSecret}`,
+            "x".repeat(3_000),
+          ].join("\n"),
+        },
+      ],
+    },
+    { role: "assistant", content: [{ type: "text", text: "denied-fixture" }], stopReason: "stop" },
+  ];
+  for (const [seq, message] of rows.entries()) {
+    const text = JSON.stringify({ type: "message", message });
+    const compressed = [1, 2, 4, 5, 7].includes(seq);
+    db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?, ?, ?)").run(
+      "session-fixture",
+      seq,
+      compressed ? null : text,
+      compressed ? zstdCompressSync(text) : null,
+      Buffer.byteLength(text),
+    );
+  }
+  db.close();
+  // Run the real evidence program against disposable SQLite storage. This tests
+  // evidence decoding/correlation, not a live model or deployment policy.
+  const assertionOptions = {
+    gatewayUrl: async () => {
+      throw new Error("no Gateway connection in this fixture");
+    },
+    execGateway: async (_agent, [command, flag, script, ...args]) => {
+      assert.equal(command, "node");
+      assert.equal(flag, "-e");
+      const localScript = script.replace(
+        '"/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite"',
+        JSON.stringify(databasePath),
+      );
+      return {
+        label: "sqlite-fixture",
+        stdout: execFileSync(process.execPath, ["-e", localScript, ...args], { encoding: "utf8" }),
+      };
+    },
+    waitFor: async (_description, check) => check(),
+    proofMode: "openclaw",
+  };
+  const native = createNativePluginAssertions(assertionOptions);
+  const shellEvidence = {
+    sessionKey,
+    turnMarker: "allowed-fixture",
+    toolName: "exec",
+    resultPattern: "TOOL-SUCCESS",
+  };
+  const allowed = await native.assertSessionToolCallEvidence(
+    {},
+    {
+      ...shellEvidence,
+      expectedExitCode: 0,
+    },
+  );
+  assert.equal(allowed.toolCallId, "allowed-call");
+  assert.equal(allowed.promptAdvertised, true);
+  assert.equal(allowed.exitCode, 0);
+  assert.equal(allowed.promptReport.source, "run");
+  assert.deepEqual(allowed.promptReport.toolNames, ["exec", "automations"]);
+  await t.test("positive direct evidence matches the requested arguments", async () => {
+    assert.equal(
+      (
+        await native.assertSessionToolCallEvidence(
+          {},
+          { ...shellEvidence, expectedArguments: { command: "printf TOOL-SUCCESS" } },
+        )
+      ).toolCallId,
+      "allowed-call",
+    );
+    await assert.rejects(
+      native.assertSessionToolCallEvidence(
+        {},
+        { ...shellEvidence, expectedArguments: { command: "a different task" } },
+      ),
+      /matching successful result/,
+    );
+  });
+  for (const [report, expectedShape] of [
+    [
+      undefined,
+      { present: false, valueType: "undefined", entriesType: "undefined", entriesCount: null },
+    ],
+    [
+      { source: "estimate", tools: { entries: [{ name: "exec" }] } },
+      {
+        present: true,
+        valueType: "object",
+        source: "estimate",
+        entriesType: "array",
+        entriesCount: 1,
+      },
+    ],
+    [
+      { source: "run", tools: { entries: {} } },
+      {
+        present: true,
+        valueType: "object",
+        source: "run",
+        entriesType: "object",
+        entriesCount: null,
+      },
+    ],
+  ]) {
+    const update = new DatabaseSync(databasePath);
+    try {
+      update.exec("DELETE FROM session_entry_snapshots");
+      if (report !== undefined) {
+        update
+          .prepare("INSERT INTO session_entry_snapshots VALUES (?, ?, ?)")
+          .run(sessionKey, "systemPromptReport", JSON.stringify(report));
+      }
+    } finally {
+      update.close();
+    }
+    await assert.rejects(native.assertSessionToolCallEvidence({}, shellEvidence), (error) => {
+      const diagnostic = JSON.parse(error.message.split("tools.entries snapshot: ")[1]);
+      assert.equal(diagnostic.sessionId, "session-fixture");
+      assert.deepEqual(diagnostic.promptReport, expectedShape);
+      return true;
+    });
+  }
+  const restore = new DatabaseSync(databasePath);
+  try {
+    restore
+      .prepare("UPDATE session_entry_snapshots SET value_json = ?")
+      .run(JSON.stringify({ source: "run", tools: { entries: [] } }));
+    await assert.rejects(
+      native.assertSessionToolCallEvidence({}, shellEvidence),
+      /prompt tools must advertise exec: .*"promptToolNames":\[\]/,
+    );
+    restore.prepare("UPDATE session_entry_snapshots SET value_json = ?").run(
+      JSON.stringify({
+        source: "run",
+        tools: { entries: [{ name: "exec" }, { name: "automations" }] },
+      }),
+    );
+  } finally {
+    restore.close();
+  }
+  for (const details of [
+    { exitCode: 1 },
+    undefined,
+    { status: "running", sessionId: "fixture-process" },
+  ]) {
+    const text = JSON.stringify({ type: "message", message: { ...rows[2], details } });
+    const update = new DatabaseSync(databasePath);
+    try {
+      update
+        .prepare("UPDATE transcript_events SET event_zstd = ?, event_utf8_bytes = ? WHERE seq = 2")
+        .run(zstdCompressSync(text), Buffer.byteLength(text));
+    } finally {
+      update.close();
+    }
+    await assert.rejects(
+      native.assertSessionToolCallEvidence({}, { ...shellEvidence, expectedExitCode: 0 }),
+      details?.status === "running"
+        ? /must exit with code 0: .*"status":"running"/
+        : /must exit with code 0/,
+    );
+  }
+  // Tools without structured exit status retain their existing evidence contract.
+  assert.equal(
+    (await native.assertSessionToolCallEvidence({}, shellEvidence)).toolCallId,
+    "allowed-call",
+  );
+  const denial = {
+    sessionKey,
+    turnMarker: "denied-fixture",
+    toolName: "automations",
+    expectedArguments: {
+      action: "update",
+      jobId: "fixture-job",
+      job: { payload: { timeoutSeconds: 5 } },
+    },
+    resultPattern: ["job.payload.kind:", "Automation not found: fixture-job"],
+  };
+  assert.equal(
+    (await native.assertSessionToolPolicyDeniedEvidence({}, denial)).toolCallId,
+    "denied-call",
+  );
+  assert.equal(
+    (await native.assertSessionToolPolicyDeniedEvidence({}, denial)).matchedRefusal,
+    "Automation not found: fixture-job",
+  );
+  await assert.rejects(
+    native.assertSessionToolPolicyDeniedEvidence(
+      {},
+      { ...denial, expectedArguments: { ...denial.expectedArguments, jobId: "wrong-target" } },
+    ),
+    /exact requested action and target/,
+  );
+  await assert.rejects(
+    native.assertSessionToolPolicyDeniedEvidence(
+      {},
+      {
+        ...denial,
+        resultPattern: [
+          "job.payload.kind:",
+          "automation command payloads cannot be created or edited",
+        ],
+      },
+    ),
+    /the attempted tool must return the policy refusal/,
+  );
+  await assert.rejects(
+    native.assertSessionToolPolicyDeniedEvidence(
+      {},
+      {
+        ...denial,
+        expectedArguments: { ...denial.expectedArguments, job: { payload: { timeoutSeconds: 6 } } },
+      },
+    ),
+    /exact requested action and target/,
+  );
+  await assert.rejects(native.assertSessionToolCallEvidence({}, denial), (error) => {
+    const diagnostic = JSON.parse(error.message.slice(error.message.indexOf("{")));
+    const [result] = diagnostic.results;
+    assert.equal(result.toolCallId, "denied-call");
+    assert.equal(result.errorText, undefined);
+    assert.equal(result.errorLines.length, 3);
+    assert.equal(result.errorLines[0], "Automation not found: fixture-job");
+    assert.equal(result.errorLines[1], "private fixture value: [env:qa-secret]");
+    assert.equal(error.message.includes(toolErrorSecret), false);
+    assert.ok(result.errorLines.every((line) => line.length <= 900 + "... [truncated]".length));
+    assert.match(result.errorLines[2], /\[truncated\]$/);
+    return true;
+  });
+
+  function replaceTranscript(messages, promptNames = ["exec", "dispatch_action", "tool_search"]) {
+    const update = new DatabaseSync(databasePath);
+    try {
+      update.exec("DELETE FROM transcript_events");
+      update.prepare("UPDATE session_entry_snapshots SET value_json = ?").run(
+        JSON.stringify({
+          source: "run",
+          tools: { entries: promptNames.map((name) => ({ name })) },
+        }),
+      );
+      for (const [seq, message] of messages.entries()) {
+        const text = JSON.stringify({ type: "message", message });
+        const compressed = seq % 2 === 0;
+        update
+          .prepare("INSERT INTO transcript_events VALUES (?, ?, ?, ?, ?)")
+          .run(
+            "session-fixture",
+            seq,
+            compressed ? null : text,
+            compressed ? zstdCompressSync(text) : null,
+            Buffer.byteLength(text),
+          );
+      }
+    } finally {
+      update.close();
+    }
+  }
+  await t.test("does not treat an assistant refusal as a denied tool call", async () => {
+    replaceTranscript([
+      { role: "user", content: "denied-fixture" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "I cannot call that tool. denied-fixture" }],
+        stopReason: "stop",
+      },
+    ]);
+    await assert.rejects(native.assertSessionToolPolicyDeniedEvidence({}, denial), (error) => {
+      assert.match(error.message, /the denied turn must attempt exactly the requested tool/);
+      const [summary] = error.message.split("\n");
+      const diagnostic = JSON.parse(summary.slice(summary.indexOf("{")));
+      assert.deepEqual(diagnostic.observedToolNames, []);
+      assert.equal(diagnostic.finalAssistantDiagnostics.mentionsUnavailable, true);
+      return true;
+    });
+  });
+  const dispatchedCall = {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "dispatched-call",
+        name: "dispatch_action",
+        arguments: { id: "openclaw:core:automations", args: { action: "list" } },
+      },
+    ],
+  };
+  const targetResult = { content: [{ type: "text", text: '{"jobs":[]}' }], details: { jobs: [] } };
+  const envelope = {
+    tool: { id: "openclaw:core:automations", name: "automations", source: "openclaw" },
+    result: targetResult,
+  };
+  const dispatchedResult = {
+    role: "toolResult",
+    toolCallId: "dispatched-call",
+    toolName: "dispatch_action",
+    isError: false,
+    content: [{ type: "text", text: JSON.stringify(envelope) }],
+    details: envelope,
+  };
+  const dispatchedMessages = (call = dispatchedCall, result = dispatchedResult) => [
+    { role: "user", content: "dispatched-fixture" },
+    call,
+    result,
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "dispatched-fixture" }],
+      stopReason: "stop",
+    },
+  ];
+  const dispatchedEvidence = {
+    sessionKey,
+    turnMarker: "dispatched-fixture",
+    toolName: "automations",
+    expectedArguments: { action: "list" },
+    resultPattern: "jobs",
+  };
+  await t.test(
+    "correlates the real dispatcher and target without a direct target schema",
+    async () => {
+      for (const id of [
+        "openclaw:core:automations",
+        "automations",
+        " openclaw:core:automations ",
+        "\tautomations\n",
+      ]) {
+        const call = structuredClone(dispatchedCall);
+        call.content[0].arguments.id = id;
+        replaceTranscript(dispatchedMessages(call));
+        await assert.rejects(
+          native.assertNoSessionToolCallEvidence({}, dispatchedEvidence),
+          /still invoked automations/,
+        );
+        const proof = await native.assertSessionToolCallEvidence({}, dispatchedEvidence);
+        assert.equal(proof.toolName, "dispatch_action");
+        assert.equal(proof.targetName, "automations");
+        assert.equal(proof.targetId, id.trim());
+        assert.equal(proof.toolCallId, "dispatched-call");
+      }
+    },
+  );
+  for (const [name, change] of [
+    [
+      "wrong call target",
+      (call) => {
+        call.content[0].arguments.id = "openclaw:core:nodes";
+      },
+    ],
+    [
+      "wrong target arguments",
+      (call) => {
+        call.content[0].arguments.args.action = "run";
+      },
+    ],
+    [
+      "wrong result identity",
+      (_call, result) => {
+        result.toolCallId = "different-call";
+      },
+    ],
+    [
+      "wrong envelope target",
+      (_call, result) => {
+        result.details.tool.name = "nodes";
+      },
+    ],
+    [
+      "target failure behind an ordinary outer result",
+      (_call, result) => {
+        result.details.status = "failed";
+      },
+    ],
+  ]) {
+    await t.test(`rejects dispatched ${name}`, async () => {
+      const call = structuredClone(dispatchedCall);
+      const result = structuredClone(dispatchedResult);
+      change(call, result);
+      replaceTranscript(dispatchedMessages(call, result));
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, dispatchedEvidence),
+        /matching successful result/,
+      );
+    });
+  }
+  await t.test("correlates a thrown dispatcher refusal to its exact target arguments", async () => {
+    const call = structuredClone(dispatchedCall);
+    call.content[0].arguments.args = { action: "run", jobId: "fixture-job" };
+    const result = { ...rows[6], toolCallId: "dispatched-call", toolName: "dispatch_action" };
+    const options = {
+      ...denial,
+      turnMarker: "dispatched-fixture",
+      expectedArguments: { action: "run", jobId: "fixture-job" },
+    };
+    for (const details of [
+      undefined,
+      { status: "error", tool: "dispatch_action", error: "Automation not found: fixture-job" },
+    ]) {
+      result.details = details;
+      replaceTranscript(dispatchedMessages(call, result));
+      assert.equal(
+        (await native.assertSessionToolPolicyDeniedEvidence({}, options)).targetId,
+        "openclaw:core:automations",
+      );
+    }
+    await assert.rejects(
+      native.assertSessionToolPolicyDeniedEvidence(
+        {},
+        {
+          ...options,
+          expectedArguments: { action: "run", jobId: "wrong-target" },
+        },
+      ),
+      /exact requested action and target/,
+    );
+    result.details = {
+      tool: { ...envelope.tool, name: "nodes" },
+      result: { content: result.content },
+    };
+    replaceTranscript(dispatchedMessages(call, result));
+    await assert.rejects(
+      native.assertSessionToolPolicyDeniedEvidence({}, options),
+      /the refusal must belong to the attempted target/,
+    );
+  });
+
+  const expectedCatalog = { present: ["read"], absent: ["agents_list", "gateway"] };
+  const searchCall = {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "search-call",
+        name: "tool_search",
+        arguments: {
+          queries: ["read", "agents_list", "gateway"].map((query) => ({ query, limit: 1 })),
+        },
+      },
+    ],
+  };
+  const readCandidate = { id: "openclaw:core:read", name: "read", source: "openclaw" };
+  const searchPayload = {
+    results: [
+      { query: "read", candidates: [readCandidate] },
+      // Exact-name search may return a fuzzy alternative when the exact tool is absent.
+      { query: "agents_list", candidates: [readCandidate] },
+      { query: "gateway", candidates: [] },
+    ],
+  };
+  const searchResult = {
+    role: "toolResult",
+    toolCallId: "search-call",
+    toolName: "tool_search",
+    isError: false,
+    content: [{ type: "text", text: JSON.stringify(searchPayload) }],
+    details: searchPayload,
+  };
+  const searchEvidence = {
+    sessionKey,
+    turnMarker: "search-fixture",
+    toolName: "tool_search",
+    expectedCatalog,
+  };
+  function replaceSearch(call = searchCall, result = searchResult) {
+    replaceTranscript([
+      { role: "user", content: "search-fixture" },
+      call,
+      result,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "search-fixture" }],
+        stopReason: "stop",
+      },
+    ]);
+  }
+  await t.test("proves complete exact discovery with an allowed positive control", async () => {
+    replaceSearch();
+    const proof = await native.assertSessionToolCallEvidence({}, searchEvidence);
+    assert.equal(proof.toolCallId, "search-call");
+    assert.deepEqual(proof.catalog, [
+      { query: "read", names: ["read"], truncated: false },
+      { query: "agents_list", names: ["read"], truncated: false },
+      { query: "gateway", names: [], truncated: false },
+    ]);
+  });
+  for (const [name, change] of [
+    [
+      "nonexact request",
+      (call) => {
+        call.content[0].arguments.queries[1].query = "agents";
+      },
+    ],
+    [
+      "different request limit",
+      (call) => {
+        call.content[0].arguments.queries[1].limit = 2;
+      },
+    ],
+    [
+      "wrong result identity",
+      (_call, result) => {
+        result.toolCallId = "other-search";
+      },
+    ],
+    [
+      "missing result group",
+      (_call, result) => {
+        result.details.results.pop();
+      },
+    ],
+    [
+      "duplicate result group",
+      (_call, result) => {
+        result.details.results[2] = result.details.results[0];
+      },
+    ],
+    [
+      "truncated response",
+      (_call, result) => {
+        result.details.truncated = true;
+      },
+    ],
+    [
+      "truncated group",
+      (_call, result) => {
+        result.details.results[1].truncated = true;
+      },
+    ],
+    [
+      "missing allowed control",
+      (_call, result) => {
+        result.details.results[0].candidates = [];
+      },
+    ],
+    [
+      "forbidden exact match",
+      (_call, result) => {
+        result.details.results[1].candidates = [
+          { id: "openclaw:core:agents_list", name: "agents_list", source: "openclaw" },
+        ];
+      },
+    ],
+  ]) {
+    await t.test(`rejects catalog proof with ${name}`, async () => {
+      const call = structuredClone(searchCall);
+      const result = structuredClone(searchResult);
+      change(call, result);
+      replaceSearch(call, result);
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, searchEvidence),
+        /matching successful result/,
+      );
+    });
+  }
+  await t.test("binds Code Mode evidence to the exact real-tool program", async (t) => {
+    const codeModeCall = {
+      title: "Gateway policy qualification",
+      code: 'return await exec({"command":"printf TOOL-SUCCESS","awaitResults":true});',
+      awaitResults: true,
+    };
+    const completed = {
+      status: "completed",
+      value: { status: "completed", exitCode: 0, aggregated: "TOOL-SUCCESS" },
+    };
+    const replaceCodeMode = (details, args = codeModeCall) =>
+      replaceTranscript(
+        [
+          { role: "user", content: "code-mode-fixture" },
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "code-mode-call", name: "exec", arguments: args }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "code-mode-call",
+            toolName: "exec",
+            isError: false,
+            content: [{ type: "text", text: JSON.stringify(details) }],
+            details,
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "code-mode-fixture" }],
+            stopReason: "stop",
+          },
+        ],
+        ["exec"],
+      );
+    const options = {
+      sessionKey,
+      turnMarker: "code-mode-fixture",
+      toolName: "exec",
+      codeModeCall,
+      resultPattern: "TOOL-SUCCESS",
+      expectedExitCode: 0,
+    };
+    replaceCodeMode(completed);
+    const proof = await native.assertSessionToolCallEvidence({}, options);
+    assert.equal(proof.codeModeProgramVerified, true);
+    assert.equal(proof.exitCode, 0);
+    await t.test("rejects guest-manufactured success without the exact program", async () => {
+      replaceCodeMode(completed, {
+        ...codeModeCall,
+        code: 'return {status:"completed",exitCode:0,aggregated:"TOOL-SUCCESS"};',
+      });
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, options),
+        /matching successful result/,
+      );
+    });
+    for (const value of [
+      { status: "running", exitCode: 0, aggregated: "TOOL-SUCCESS" },
+      { status: "completed", exitCode: 1, aggregated: "TOOL-SUCCESS" },
+    ]) {
+      replaceCodeMode({ ...completed, value });
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, options),
+        /must exit with code 0/,
+      );
+    }
+    await t.test("correlates returned Gateway errors and thrown bridge errors", async () => {
+      const refusal = "cron job not found: fixture-job";
+      const call = {
+        ...codeModeCall,
+        code: 'return await automations({"action":"update","jobId":"fixture-job","job":{"payload":{"timeoutSeconds":1}}});',
+      };
+      const denied = {
+        sessionKey,
+        turnMarker: options.turnMarker,
+        toolName: "exec",
+        codeModeCall: call,
+        resultPattern: refusal,
+      };
+      for (const details of [
+        { status: "completed", value: { status: "error", error: refusal } },
+        { status: "failed", bridgeDispatchStarted: true, error: refusal },
+      ]) {
+        replaceCodeMode(details, call);
+        assert.equal(
+          (await native.assertSessionToolPolicyDeniedEvidence({}, denied)).codeModeProgramVerified,
+          true,
+        );
+      }
+      replaceCodeMode({ status: "failed", bridgeDispatchStarted: false, error: refusal }, call);
+      await assert.rejects(
+        native.assertSessionToolPolicyDeniedEvidence({}, denied),
+        /refusal must belong to the attempted target/,
+      );
+      replaceCodeMode(
+        { status: "completed", value: { status: "error", error: "unrelated fixture error" } },
+        call,
+      );
+      await assert.rejects(
+        native.assertSessionToolPolicyDeniedEvidence({}, denied),
+        /must return the policy refusal/,
+      );
+    });
+    await t.test(
+      "checks the actual complete catalog alongside the child's command result",
+      async () => {
+        const call = {
+          ...codeModeCall,
+          code: 'const command = await exec({"command":"printf TOOL-SUCCESS","awaitResults":true}); return {...command, catalog: catalog.all().filter(tool => ["read","gateway"].includes(tool.toolName)).map(tool => ({name: tool.toolName, source: tool.source, callableName: tool.callableName}))};',
+        };
+        const readHandle = { name: "read", source: "openclaw", callableName: "read" };
+        const details = {
+          status: "completed",
+          value: { ...completed.value, catalog: [readHandle] },
+        };
+        const catalogOptions = {
+          ...options,
+          codeModeCall: call,
+          expectedCatalog: { present: ["read"], absent: ["gateway"] },
+        };
+        replaceCodeMode(details, call);
+        const proof = await native.assertSessionToolCallEvidence({}, catalogOptions);
+        assert.deepEqual(proof.catalog, [readHandle]);
+        assert.equal(proof.exitCode, 0);
+        details.value.catalog.push({
+          name: "gateway",
+          source: "openclaw",
+          callableName: "gateway",
+        });
+        replaceCodeMode(details, call);
+        await assert.rejects(
+          native.assertSessionToolCallEvidence({}, catalogOptions),
+          /matching successful result/,
+        );
+      },
+    );
+  });
+  await t.test("binds Codex tool work to its native terminal or Gateway finalizer", async () => {
+    const prefix = "codex:thread-fixture:turn-fixture";
+    const runId = "gateway-run";
+    const mirror = (mirrorIdentity, terminal = false) => ({
+      mirrorIdentity,
+      mirrorOrigin: "codex-app-server",
+      mirrorSourceFingerprint: "fixture-fingerprint",
+      runId,
+      ...(terminal ? { runTerminal: true } : {}),
+    });
+    const messages = [
+      {
+        role: "user",
+        content: "codex-fixture",
+        __openclaw: mirror(`${prefix}:prompt`),
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "codex-call",
+            name: "automations",
+            arguments: { action: "list" },
+          },
+        ],
+        __openclaw: mirror(`${prefix}:tool:codex-call:call`),
+      },
+      {
+        role: "toolResult",
+        toolCallId: "codex-call",
+        toolName: "automations",
+        isError: false,
+        content: targetResult.content,
+        __openclaw: mirror(`${prefix}:tool:codex-call:result`),
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "codex-fixture" }],
+        stopReason: "stop",
+        __openclaw: mirror(`${prefix}:assistant`, true),
+      },
+    ];
+    replaceTranscript(messages, []);
+    const codex = createNativePluginAssertions({ ...assertionOptions, proofMode: "codex" });
+    const proof = await codex.assertSessionToolCallEvidence(
+      {},
+      { ...dispatchedEvidence, turnMarker: "codex-fixture" },
+    );
+    assert.equal(proof.toolName, "automations");
+    assert.equal(proof.codexMirrorTurnVerified, true);
+    const evidence = { ...dispatchedEvidence, turnMarker: "codex-fixture" };
+    const absence = { ...evidence, toolName: "agents_list" };
+    const [prompt, call, result, answer] = messages;
+    const write = (...rows) => replaceTranscript(rows, []);
+    const finalizer = { ...answer, __openclaw: mirror(`settled-finalizer:${runId}`, true) };
+    const continuation = { ...answer, __openclaw: mirror("continuation-turn:assistant", true) };
+    for (const [terminal, kind] of [
+      [finalizer, "settled-finalizer"],
+      [continuation, "native-continuation"],
+    ]) {
+      const progress =
+        kind === "native-continuation"
+          ? [
+              {
+                role: "assistant",
+                content: "Finishing",
+                __openclaw: mirror("continuation-turn:commentary:item"),
+              },
+            ]
+          : [];
+      write(prompt, call, result, ...progress, terminal);
+      const finalized = await codex.assertSessionToolCallEvidence({}, evidence);
+      assert.equal(finalized.codexGatewayRunCompletion, kind);
+      assert.equal(finalized.codexMirrorTurnVerified, undefined);
+      await codex.assertNoSessionToolCallEvidence({}, absence);
+      await assert.rejects(
+        codex.assertNoSessionToolCallEvidence({}, evidence),
+        /still invoked automations/,
+      );
+    }
+    // A completed run cannot supply missing IDs or substitute another tool's mirror pair.
+    const unidentified = { ...call, content: [{ ...call.content[0], id: undefined }] };
+    write(prompt, unidentified, { ...result, toolCallId: undefined }, finalizer);
+    await assert.rejects(codex.assertSessionToolCallEvidence({}, evidence), /terminal/);
+    await assert.rejects(codex.assertNoSessionToolCallEvidence({}, absence), /completed/);
+
+    const other = {
+      ...call,
+      content: [{ ...call.content[0], id: "other", name: "other" }],
+      __openclaw: mirror(`${prefix}:tool:other:call`),
+    };
+    const otherResult = {
+      ...result,
+      toolCallId: "other",
+      toolName: "other",
+      __openclaw: mirror(`${prefix}:tool:other:result`),
+    };
+    const wrongResult = { ...result, __openclaw: mirror(`${prefix}:tool:wrong:result`) };
+    write(prompt, other, otherResult, call, wrongResult, continuation);
+    await assert.rejects(codex.assertSessionToolCallEvidence({}, evidence), /terminal/);
+    await codex.assertNoSessionToolCallEvidence({}, absence);
+    write(
+      prompt,
+      other,
+      otherResult,
+      call,
+      {
+        ...wrongResult,
+        isError: true,
+        content: [{ type: "text", text: "user rejected MCP tool call" }],
+      },
+      continuation,
+    );
+    await assert.rejects(codex.assertSessionToolDeniedEvidence({}, evidence), /owned terminal/);
+
+    for (const rows of [
+      [
+        prompt,
+        call,
+        result,
+        { ...continuation, __openclaw: { ...continuation.__openclaw, runId: "other" } },
+      ],
+      [prompt, call, result, { ...finalizer, __openclaw: mirror(`settled-finalizer:${runId}`) }],
+      [
+        prompt,
+        call,
+        result,
+        { ...finalizer, __openclaw: mirror("settled-finalizer:different-run", true) },
+      ],
+      [
+        prompt,
+        call,
+        result,
+        { ...finalizer, __openclaw: mirror(`${prefix}:commentary:other-item`, true) },
+      ],
+      [
+        prompt,
+        call,
+        result,
+        { ...answer, __openclaw: mirror(`${prefix}:commentary:item`) },
+        { ...finalizer, content: [{ type: "text", text: "another answer" }] },
+      ],
+      [prompt, call, finalizer, result],
+      [prompt, { ...call, __openclaw: { ...call.__openclaw, runId: "other" } }, result, finalizer],
+      [prompt, call, result, { ...prompt, __openclaw: mirror("unrelated:prompt") }, finalizer],
+    ]) {
+      write(...rows);
+      await assert.rejects(
+        codex.assertSessionToolCallEvidence({}, evidence),
+        /terminal|matching successful result/,
+      );
+      await assert.rejects(codex.assertNoSessionToolCallEvidence({}, absence), /completed/);
+    }
+    messages[2].__openclaw.mirrorIdentity = "codex:other:turn:tool:codex-call:result";
+    replaceTranscript(messages, []);
+    await assert.rejects(
+      codex.assertSessionToolCallEvidence(
+        {},
+        { ...dispatchedEvidence, turnMarker: "codex-fixture" },
+      ),
+      /share one mirrored turn/,
+    );
+  });
+});
+
+test("Gateway policy evidence identifies a fresh native Codex child and its own completed work", async (t) => {
+  const { assertCodexPolicyChild, parseCodexPolicyMetadata, readCodexPolicyRolloutHead } =
+    await import("../helpers/plugin-driver-real.mjs");
+  const metadata = (id, dynamic_tools = [], parent_thread_id) =>
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id, dynamic_tools, parent_thread_id },
+    });
+  const parentLine = metadata("parent", [
+    {
+      type: "namespace",
+      name: "openclaw",
+      tools: [
+        {
+          type: "function",
+          name: "agents_list",
+          description: "private description",
+          inputSchema: {},
+        },
+      ],
+    },
+  ]);
+  const childLine = metadata("child", [], "parent");
+  const fixture = (version = "v1") => ({
+    childMarker: "child-done",
+    childResult: "command-result",
+    parent: {
+      id: "parent",
+      turns: [
+        {
+          id: "parent-turn",
+          status: "completed",
+          error: null,
+          items:
+            version === "v2"
+              ? [
+                  {
+                    type: "userMessage",
+                    content: [{ type: "text", text: "run native work and reply child-done" }],
+                  },
+                  {
+                    type: "subAgentActivity",
+                    id: "spawn-call",
+                    kind: "started",
+                    agentThreadId: "child",
+                    agentPath: "/root/policy_child",
+                  },
+                ]
+              : [
+                  {
+                    type: "collabAgentToolCall",
+                    tool: "spawnAgent",
+                    status: "completed",
+                    senderThreadId: "parent",
+                    receiverThreadIds: ["child"],
+                    prompt: "run native work and reply child-done",
+                  },
+                ],
+        },
+      ],
+    },
+    child: {
+      id: "child",
+      parentThreadId: "parent",
+      forkedFromId: null,
+      turns: [
+        {
+          id: "child-turn",
+          status: "completed",
+          error: null,
+          items: [
+            {
+              type: "commandExecution",
+              status: "completed",
+              exitCode: 0,
+              aggregatedOutput: "42 command-result\n",
+            },
+            { type: "agentMessage", text: "child-done" },
+          ],
+        },
+      ],
+    },
+    parentMetadata: parseCodexPolicyMetadata(parentLine, "parent"),
+    childMetadata: parseCodexPolicyMetadata(childLine, "child"),
+  });
+  for (const version of ["v1", "v2"]) {
+    const result = assertCodexPolicyChild(fixture(version));
+    assert.equal(result.childTurnId, "child-turn");
+    assert.equal(result.nativeCommandSucceeded, true);
+    assert.deepEqual(result.childGatewayTools, []);
+    assert.deepEqual(result.parentGatewayTools, [{ namespace: "openclaw", name: "agents_list" }]);
+    assert.equal(JSON.stringify(result).includes("private description"), false);
+  }
+
+  for (const [label, mutate] of [
+    [
+      "activity in another turn",
+      (value) => {
+        const activity = value.parent.turns[0].items.pop();
+        value.parent.turns.push({
+          id: "other-turn",
+          status: "completed",
+          error: null,
+          items: [activity],
+        });
+      },
+    ],
+    [
+      "activity that did not start a child",
+      (value) => {
+        value.parent.turns[0].items[1].kind = "completed";
+      },
+    ],
+    [
+      "incomplete parent turn",
+      (value) => {
+        value.parent.turns[0].status = "inProgress";
+      },
+    ],
+    [
+      "activity identifying another child",
+      (value) => {
+        value.parent.turns[0].items[1].agentThreadId = "other-child";
+      },
+    ],
+  ]) {
+    await t.test(`rejects V2 ${label}`, () => {
+      const value = fixture("v2");
+      mutate(value);
+      assert.throws(() => assertCodexPolicyChild(value), assert.AssertionError);
+    });
+  }
+
+  await t.test("reports bounded spawn predicates without private native content", () => {
+    const value = fixture();
+    const spawn = value.parent.turns[0].items[0];
+    // Separate each rejected predicate so a real zero-match result identifies its cause.
+    value.parent.turns = [
+      ...Array.from({ length: 10 }, () => ({ status: "inProgress", error: null, items: [] })),
+      {
+        status: "completed",
+        error: null,
+        items: [
+          { ...spawn, status: "inProgress" },
+          { ...spawn, senderThreadId: "private-thread" },
+          { ...spawn, prompt: "private-prompt private-secret" },
+          {
+            type: "commandExecution",
+            command: "private-command",
+            aggregatedOutput: "private-result",
+          },
+        ],
+      },
+      { status: "completed", items: [spawn] },
+      { status: "inProgress", error: null, items: [spawn] },
+      { status: "failed", error: { message: "private-error" }, items: [spawn] },
+      { status: "private-status", error: "private-error", items: [] },
+    ];
+    assert.throws(
+      () => assertCodexPolicyChild(value),
+      (error) => {
+        assert.ok(error instanceof assert.AssertionError);
+        const prefix = "one completed native spawn must match the child task: ";
+        assert.ok(error.message.startsWith(prefix));
+        const diagnostic = JSON.parse(error.message.split("\n")[0].slice(prefix.length));
+        assert.deepEqual(diagnostic.counts, {
+          turns: 15,
+          completedErrorNullTurns: 1,
+          collabSpawns: 3,
+          completedSpawns: 2,
+          senderBoundSpawns: 1,
+          markerBoundSpawns: 0,
+          subAgentActivities: 0,
+          startedSubAgents: 0,
+          taskBoundSubAgents: 0,
+        });
+        assert.equal(diagnostic.recentTurns.length, 10);
+        assert.deepEqual(diagnostic.recentTurns.slice(-5), [
+          { status: "completed", hasError: false, errorIsNull: true },
+          { status: "completed", hasError: false, errorIsNull: false },
+          { status: "inProgress", hasError: false, errorIsNull: true },
+          { status: "failed", hasError: true, errorIsNull: false },
+          { status: "unknown", hasError: true, errorIsNull: false },
+        ]);
+        for (const privateText of [
+          "private-thread",
+          "private-prompt",
+          "private-secret",
+          "private-command",
+          "private-result",
+          "private-error",
+          "private-status",
+        ]) {
+          assert.equal(error.message.includes(privateText), false);
+        }
+        return true;
+      },
+    );
+  });
+
+  for (const [label, mutate] of [
+    [
+      "unrelated child",
+      (value) => {
+        value.child.id = "other";
+      },
+    ],
+    [
+      "wrong lineage",
+      (value) => {
+        value.child.parentThreadId = "other";
+      },
+    ],
+    [
+      "forked history",
+      (value) => {
+        value.child.forkedFromId = "parent";
+      },
+    ],
+    [
+      "wrong metadata identity",
+      (value) => {
+        value.childMetadata.threadId = "other";
+      },
+    ],
+    [
+      "missing parent catalog control",
+      (value) => {
+        value.parentMetadata.tools = [];
+      },
+    ],
+    [
+      "inherited Gateway tools",
+      (value) => {
+        value.childMetadata.tools = value.parentMetadata.tools;
+      },
+    ],
+    [
+      "unfinished child",
+      (value) => {
+        value.child.turns[0].status = "inProgress";
+      },
+    ],
+    [
+      "failed command",
+      (value) => {
+        value.child.turns[0].items[0].exitCode = 1;
+      },
+    ],
+    [
+      "reply without native work",
+      (value) => {
+        value.child.turns[0].items.shift();
+      },
+    ],
+  ]) {
+    await t.test(`rejects ${label}`, () => {
+      const value = fixture();
+      mutate(value);
+      assert.throws(() => assertCodexPolicyChild(value), assert.AssertionError);
+    });
+  }
+  await t.test("reads only the exact plain or compressed SessionMeta head", async () => {
+    const { zstdCompressSync } = await import("node:zlib");
+    const directory = await mkdtemp(join(tmpdir(), "codex-policy-metadata-"));
+    try {
+      const path = join(directory, "rollout.jsonl");
+      await writeFile(path, `${parentLine}\nnot-a-json-record\n`);
+      await writeFile(`${path}.zst`, zstdCompressSync(`${childLine}\n`));
+      assert.equal(await readCodexPolicyRolloutHead(`${path}.zst`), parentLine);
+      await rm(path);
+      assert.equal(await readCodexPolicyRolloutHead(path), childLine);
+      assert.throws(
+        () => parseCodexPolicyMetadata(childLine, "unrelated-thread"),
+        /SessionMeta must identify the requested thread/,
+      );
+      assert.throws(
+        () => parseCodexPolicyMetadata('{"type":"response_item"}', "child"),
+        /rollout head must be native SessionMeta/,
+      );
+      await writeFile(path, "x".repeat(4 * 1024 * 1024 + 1));
+      await assert.rejects(readCodexPolicyRolloutHead(path), /fixture read limit/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+// The shapes the pinned Codex reviewer records on a tool result (finding 1980): a
+// judgement carries risk and authorization; a failed-closed review carries neither.
+const judgedDeny = {
+  id: "review-judged",
+  status: "denied",
+  riskLevel: "high",
+  userAuthorization: "low",
+  rationale: "The read targets a calendar the user did not mention.",
+};
+const failedClosed = {
+  id: "review-failed",
+  status: "denied",
+  rationale:
+    "Automatic approval review failed: guardian review completed without an assessment payload",
+};
+const timedOut = {
+  id: "review-timeout",
+  status: "timed_out",
+  rationale: "Automatic approval review timed out while evaluating the requested approval.",
+};
+
+test("approval review evidence tells a reviewer error from a deny judgement", async () => {
+  const { approvalReviewKind, automaticReviewerErrored, describeApprovalReviews } =
+    await import("../helpers/plugin-driver-real.mjs");
+  assert.equal(approvalReviewKind(judgedDeny), "judged-deny");
+  assert.equal(approvalReviewKind(failedClosed), "reviewer-error");
+  assert.equal(approvalReviewKind(timedOut), "reviewer-error");
+  assert.equal(approvalReviewKind({ id: "a", status: "approved", riskLevel: "low" }), "approved");
+  assert.equal(approvalReviewKind({ id: "c", status: "aborted" }), "aborted");
+  // Without the reviewer's own failure text, or with a judgement's risk level, a denial
+  // stays a judgement or unclassified: a rationale alone cannot claim a reviewer error.
+  assert.equal(approvalReviewKind({ id: "d", status: "denied" }), "denied-unclassified");
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, riskLevel: "high" }),
+    "judged-deny",
+    "a judged rationale that quotes the failure text is still a judgement",
+  );
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, userAuthorization: "unknown" }),
+    "judged-deny",
+  );
+  // A changed authorization may be the policy's own change, not reviewer trouble.
+  const staleAuthorization = {
+    id: "review-stale",
+    status: "denied",
+    rationale:
+      "Automatic approval review failed: authorization changed before approval could be applied",
+  };
+  assert.equal(approvalReviewKind(staleAuthorization), "stale-authorization");
+
+  const failedResult = (reviews) => [
+    { toolCallId: "call-1", isError: true, approvalReviews: reviews },
+  ];
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed])), true);
+  assert.equal(automaticReviewerErrored(failedResult([timedOut])), true);
+  assert.equal(automaticReviewerErrored(failedResult([judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed, judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([{ id: "d", status: "denied" }])), false);
+  assert.equal(automaticReviewerErrored(failedResult([])), false, "no review, no reviewer error");
+  assert.equal(automaticReviewerErrored([]), false, "no call, no reviewer error");
+  assert.equal(automaticReviewerErrored(failedResult([staleAuthorization])), false);
+  assert.equal(
+    automaticReviewerErrored([
+      ...failedResult([failedClosed]),
+      { toolCallId: "call-2", isError: true, approvalReviews: [] },
+    ]),
+    false,
+    "every failed call needs its own reviewer error",
+  );
+  assert.equal(
+    automaticReviewerErrored([
+      { toolCallId: "call-1", isError: false, approvalReviews: [failedClosed] },
+    ]),
+    false,
+    "a call that did not fail was not blocked by its reviewer",
+  );
+
+  assert.equal(
+    describeApprovalReviews(failedResult([judgedDeny])),
+    "judged-deny (risk: high, authorization: low): The read targets a calendar the user did not mention.",
+  );
+  assert.equal(
+    describeApprovalReviews(failedResult([failedClosed])),
+    `reviewer-error: ${failedClosed.rationale}`,
+  );
+  assert.equal(describeApprovalReviews(failedResult([])), "no approval review recorded");
+  assert.equal(
+    describeApprovalReviews(
+      failedResult([
+        { ...failedClosed, rationale: `${failedClosed.rationale}\n  caused by: eof\n` },
+      ]),
+    ),
+    `reviewer-error: ${failedClosed.rationale} caused by: eof`,
+    "a multi-line rationale stays on the failure's first line",
+  );
+});
+
+function calendarEvidence(reviews) {
+  return {
+    exists: true,
+    sessionId: "session-1",
+    userMarkerSeen: true,
+    assistantMarkerSeen: true,
+    assistantError: false,
+    calls: [{ seq: 5, id: "call-1", name: "calendar_read", mirrorIdentity: "t:tool:call-1:call" }],
+    results: [
+      {
+        seq: 8,
+        toolCallId: "call-1",
+        toolName: "calendar_read",
+        isError: true,
+        deniedByUser: false,
+        matchesResult: false,
+        mirrorIdentity: "t:tool:call-1:result",
+        approvalReviews: reviews,
+      },
+    ],
+    codexTurns: [],
+    diagnostics: {},
+  };
+}
+
+test("a failed reviewed read names the review outcome before the evidence", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  for (const [reviews, errored, reason] of [
+    [[failedClosed], true, `reviewer-error: ${failedClosed.rationale}`],
+    [[judgedDeny], false, "judged-deny (risk: high, authorization: low)"],
+  ]) {
+    const fixture = createNativePluginAssertions({
+      gatewayUrl: async () => assert.fail("no Gateway turn"),
+      proofMode: "codex",
+      execGateway: async () => ({
+        label: "fixture",
+        stdout: JSON.stringify(calendarEvidence(reviews)),
+      }),
+    });
+    await assert.rejects(
+      fixture.assertSessionToolCallEvidence(
+        {},
+        {
+          sessionKey: "agent:main:fixture",
+          turnMarker: "M",
+          toolName: "calendar_read",
+          resultPattern: "x",
+        },
+      ),
+      (error) => {
+        assert.equal(error.name, "AssertionError");
+        assert.equal(error.automaticReviewerErrored, errored);
+        assert.ok(error.approvalReviewSummary.startsWith(reason), error.approvalReviewSummary);
+        const [head] = error.message.split(": {");
+        assert.ok(head.includes(`(approval reviews: ${reason}`), head);
+        assert.match(error.message, /"approvalReviews":\[\{"id":"review-/);
+        return true;
+      },
+    );
+  }
+});
+
+test("an automatically reviewed Calendar read runs again once, only after a reviewer error", async (t) => {
+  const { automaticallyReviewedRead } = await import("../helpers/calendar-review.mjs");
+  const reviewerError = Object.assign(
+    new assert.AssertionError({ message: "reviewer errored: {}" }),
+    {
+      automaticReviewerErrored: true,
+      approvalReviewSummary: "reviewer-error: Automatic approval review failed: eof",
+    },
+  );
+  const judged = Object.assign(new assert.AssertionError({ message: "judged deny: {}" }), {
+    automaticReviewerErrored: false,
+  });
+  const success = { approvedReviewIds: ["review-ok"] };
+  function fixture(outcomes) {
+    const turns = [];
+    const checks = [];
+    return {
+      turns,
+      checks,
+      async normalGatewayTurn(turn) {
+        turns.push(turn);
+      },
+      async assertSessionToolCallEvidence(agent, options) {
+        checks.push(options);
+        const outcome = outcomes.shift();
+        if (outcome instanceof Error) {
+          throw outcome;
+        }
+        return outcome;
+      },
+    };
+  }
+  const read = (f, logs) =>
+    automaticallyReviewedRead(f, {
+      agent: { id: "agt" },
+      gatewayPassword: "pw",
+      sessionKey: "agent:main:codex-calendar-automatic-fixture",
+      prompt: "read",
+      toolName: "calendar_read",
+      resultPattern: "x",
+      secrets: [],
+      log: (line) => logs.push(line),
+    });
+
+  await t.test("first read passes: one turn", async () => {
+    const f = fixture([success]);
+    const logs = [];
+    assert.equal(await read(f, logs), success);
+    assert.equal(f.turns.length, 1);
+    assert.deepEqual(logs, []);
+    assert.equal(f.checks[0].requireAutomaticReview, true);
+  });
+  await t.test("reviewer error, then pass: a second turn in the same session", async () => {
+    const f = fixture([reviewerError, success]);
+    const logs = [];
+    assert.equal(await read(f, logs), success);
+    assert.equal(f.turns.length, 2);
+    assert.equal(new Set(f.turns.map((turn) => turn.sessionKey)).size, 1);
+    assert.notEqual(
+      f.checks[0].turnMarker,
+      f.checks[1].turnMarker,
+      "each turn needs a fresh marker",
+    );
+    assert.ok(f.checks.every((check) => check.requireAutomaticReview === true));
+    assert.equal(logs.length, 1);
+    assert.match(
+      logs[0],
+      /automatic reviewer errored .* running the read once more: reviewer-error: Automatic approval review failed: eof$/,
+    );
+  });
+  await t.test("deny judgement: fails without another turn", async () => {
+    const f = fixture([judged, success]);
+    await assert.rejects(read(f, []), (error) => error === judged);
+    assert.equal(f.turns.length, 1);
+  });
+  await t.test("reviewer error twice: the second failure stands", async () => {
+    const second = Object.assign(new assert.AssertionError({ message: "again: {}" }), {
+      automaticReviewerErrored: true,
+    });
+    const f = fixture([reviewerError, second, success]);
+    await assert.rejects(read(f, []), (error) => error === second);
+    assert.equal(f.turns.length, 2);
+  });
+  await t.test("other failures: no retry", async () => {
+    const other = new Error("transcript missing");
+    const f = fixture([other, success]);
+    await assert.rejects(read(f, []), (error) => error === other);
+    assert.equal(f.turns.length, 1);
+  });
 });

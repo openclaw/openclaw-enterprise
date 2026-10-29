@@ -28,7 +28,7 @@ async function sourceFiles(directory) {
         }
         return sourceFiles(path);
       }
-      return entry.isFile() && /\.(?:ts|mjs)$/.test(entry.name) ? [path] : [];
+      return entry.isFile() && /\.(?:m?ts|mjs)$/.test(entry.name) ? [path] : [];
     }),
   );
   return files.flat();

@@ -126,6 +126,7 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
           "expectedBinding",
           "deadlineWallMs",
           "recoverOnly",
+          "preparedOnly",
         ].includes(key),
     ) ||
     Object.keys(binding).some(
@@ -141,7 +142,9 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
     !isString(binding.providerInstanceId) ||
     !isString(binding.repositoryId) ||
     !isString(binding.grantId) ||
-    (Object.hasOwn(value, "recoverOnly") && value.recoverOnly !== true)
+    (Object.hasOwn(value, "recoverOnly") && value.recoverOnly !== true) ||
+    (Object.hasOwn(value, "preparedOnly") && value.preparedOnly !== true) ||
+    (value.recoverOnly !== true && value.preparedOnly !== true)
   ) {
     throw new Error("invalid-arguments");
   }
@@ -157,6 +160,7 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
     },
     deadlineWallMs: Number(value.deadlineWallMs),
     durableAdmission: true,
+    ...(value.preparedOnly === true ? { preparedOnly: true } : {}),
   };
   return Object.hasOwn(value, "recoverOnly") ? { ...request, recoverOnly: true } : request;
 }
@@ -219,7 +223,7 @@ async function main(): Promise<void> {
       throw new Error("invalid-admission-id");
     }
     process.stderr.write(
-      `credential-admission ${admissionId}; recover with open --admission-id and the same inputs\n`,
+      `credential-admission ${admissionId}; if the outcome is uncertain, inspect the original owner and use status for any known session\n`,
     );
     const result = await callControl(
       socket,
@@ -241,7 +245,7 @@ async function main(): Promise<void> {
       }
       process.stdout.write(JSON.stringify({ ...result, recovered: true }) + "\n");
       process.stderr.write(
-        `credential-admission-recovered session=${result.sessionId}; close this session, then open with a new admission ID\n`,
+        `credential-admission-recovered session=${result.sessionId}; inspect this session's status on the original owner\n`,
       );
       return;
     }

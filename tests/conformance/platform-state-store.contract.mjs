@@ -1,3 +1,4 @@
+import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
@@ -86,6 +87,8 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     backendId: null,
     harnessAuth: apiKeyBinding,
     executionMode: "embedded",
+    gatewayManagedMode: true,
+    sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     desiredRuntimeState: "stopped",
     // Both adapters force a created Agent to `active` rather than honoring a
@@ -98,6 +101,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     namespaceId: namespace.id,
     agentId: agent.id,
     revision: 1,
+    gatewayManagedMode: true,
     backendId: null,
     configurationId: configuration.id,
     configurationKind: configuration.kind,
@@ -118,6 +122,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       implementation: "deterministic-contract",
       admission: `driver-state:v1:${"a".repeat(64)}`,
     },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
     createdAt: new Date().toISOString(),
   };
@@ -147,7 +152,9 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       configuration.id,
     ]);
     await transaction.secrets.createSecret(harnessSecret);
-    assert.deepEqual(await transaction.agents.createAgent(agent), agent);
+    // Creation defaults editing to disabled; reloads must preserve the same Agent shape.
+    const { sandboxPolicyEditing: _editing, ...agentWithoutEditing } = agent;
+    assert.deepEqual(await transaction.agents.createAgent(agentWithoutEditing), agent);
     assertCreatedRevision(await transaction.revisions.createRevision(revision), revision);
     await transaction.audit.append(audit);
     await transaction.operations.append(operation);
@@ -254,7 +261,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   };
   await store.transact(async (transaction) => {
     await transaction.configurations.createConfiguration(backendConfiguration);
-    await transaction.agents.createAgent(providerAgent);
+    // Creation cannot enable editing; the separately authorized setter owns that change.
+    assert.deepEqual(
+      await transaction.agents.createAgent({ ...providerAgent, sandboxPolicyEditing: true }),
+      providerAgent,
+    );
   });
   await assert.rejects(
     store.transact((transaction) =>
@@ -346,7 +357,9 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ["fractional generation", { generation: 1.5 }],
     ["unsafe generation", { generation: Number.MAX_SAFE_INTEGER + 1 }],
   ]) {
-    // Both persistence adapters reject ownership metadata PostgreSQL cannot safely represent.
+    // Both persistence adapters refuse ownership metadata PostgreSQL cannot safely represent,
+    // with the same application check before any write (finding 1887: a fractional generation
+    // used to reach PostgreSQL's bigint cast and fail with a raw 22P02).
     await assert.rejects(
       store.transact((transaction) =>
         transaction.configurations.createConfiguration({
@@ -355,6 +368,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
           ...invalidOwnership,
         }),
       ),
+      { name: "ScopeViolationError", message: "The Configuration kind or generation is invalid." },
       description,
     );
   }
@@ -484,6 +498,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
           revision: 2,
           ...malformed,
         }),
+      ),
+      storeRefusal(
+        "ScopeViolationError",
+        "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
+        postgresOwnershipViolation,
       ),
       description,
     );
@@ -904,6 +923,8 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     configurationId: accountConfiguration.id,
     backendId: null,
     executionMode: "dedicated",
+    gatewayManagedMode: true,
+    sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     harnessAuth: {
       method: "codex_pat",
@@ -1107,6 +1128,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
           account.id,
           invalidCredential,
         ),
+      ),
+      storeRefusal(
+        "ScopeViolationError",
+        "The ServiceAccount credential reference is invalid.",
+        postgresOwnershipViolation,
       ),
       description,
     );
@@ -1523,6 +1549,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     revision,
   });
 
+  await verifyEgressSendReceiptContract(store, installation, namespace, harnessSecret);
   await verifyDeletedResourceAccessBindingContract(store, revision);
   await verifyDuplicateNameContract(store);
   await verifyNameLengthContract(store);
@@ -1592,6 +1619,7 @@ async function verifyDuplicateNameContract(store) {
     type: "openai",
     config: { base_url: "https://api.openai.com/v1" },
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt,
@@ -1690,6 +1718,7 @@ async function verifyNameLengthContract(store) {
     type: "openai",
     config: { base_url: "https://api.openai.com/v1" },
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt,
@@ -1817,6 +1846,7 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
     type: "openai",
     config: { base_url: "https://api.openai.com/v1" },
     secrets: { api_key: { kind: "secret", namespaceId: namespace.id, id: secret.id } },
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt,
@@ -1992,6 +2022,7 @@ async function verifyCredentialSourceContract(
     secrets: {
       api_key: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id },
     },
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt: new Date().toISOString(),
@@ -2512,12 +2543,17 @@ async function verifyCredentialSourceContract(
     store.transact((transaction) =>
       transaction.revisions.createRevision({ ...toolRevision, credentialSources: undefined }),
     ),
+    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
     "A revision must freeze the Agent's non-model sources.",
   );
   await assert.rejects(
     store.transact((transaction) =>
       transaction.credentialSources.deleteCredentialSource(sourceNamespace.id, tokenSource.id),
     ),
+    {
+      name: "ScopeViolationError",
+      message: "The credential source is referenced by active platform state.",
+    },
     "An Agent draft's non-model source cannot be deleted.",
   );
   await store.transact(async (transaction) => {
@@ -2889,4 +2925,133 @@ async function verifyCredentialSourceContract(
     ),
     externalRevision,
   );
+}
+
+async function verifyEgressSendReceiptContract(store, installation, namespace, secret) {
+  const receipts = new EgressSendReceipts(store);
+  const ref = () => ({ id: randomUUID(), generation: 1 });
+  const sender = ref();
+  const evidence = {
+    kind: "static",
+    source: {
+      installationId: installation.id,
+      namespaceId: namespace.id,
+      source: ref(),
+      backend: ref(),
+      provider: ref(),
+    },
+    binding: ref(),
+    grantHash: "receipt-contract",
+    isolationId: randomUUID(),
+    adoption: "live",
+    materialRefId: randomUUID(),
+    secret: { kind: "secret", namespaceId: namespace.id, id: secret.id },
+    secretDriver: ref(),
+    materialId: randomUUID(),
+    materialVersion: "N",
+    authoritativeObservedAt: new Date().toISOString(),
+    usableUntil: "2099-01-01T00:00:00.000Z",
+    retention: "none",
+  };
+  const input = {
+    sender,
+    instanceId: randomUUID(),
+    useId: randomUUID(),
+    attemptId: randomUUID(),
+    material: evidence,
+    deadlineAt: evidence.usableUntil,
+  };
+  const starts = await Promise.all([receipts.begin(sender, input), receipts.begin(sender, input)]);
+  assert.equal(starts.filter((value) => value.created).length, 1);
+  const rejected = { kind: "provider_rejected", dispatch: "confirmed", status: 401 };
+  const feedback = { classification: "credential_rejected", evidence };
+  // Observation commits the fence but cannot claim that a remote sender applied the decision.
+  const observed = await receipts.observe(sender, input, rejected, feedback);
+  assert.deepEqual(observed.outcome, { kind: "uncertain", dispatch: "possible" });
+  assert.deepEqual(observed.observation, rejected);
+  assert.equal(observed.feedback, "fenced");
+  assert.equal(observed.settled, false);
+  assert.deepEqual(await receipts.observe(sender, input, rejected, feedback), observed);
+  assert.equal((await receipts.begin(sender, input)).created, false);
+  assert.equal(await receipts.recover(sender, { ...input, instanceId: randomUUID() }), undefined);
+  for (const changed of [
+    { ...input, deadlineAt: "2099-01-02T00:00:00.000Z" },
+    { ...input, material: { ...evidence, materialVersion: "N+1" } },
+    { ...input, material: { ...evidence, secretDriver: ref() } },
+    { ...input, material: { ...evidence, value: "forbidden" } },
+    { ...input, operation_handle: "forbidden" },
+  ]) {
+    await assert.rejects(receipts.begin(sender, changed), { name: "ResourceStateConflictError" });
+  }
+  for (const invalid of [
+    { ...rejected, body: "forbidden" },
+    { ...rejected, headers: [] },
+    { ...rejected, key: "forbidden" },
+  ]) {
+    await assert.rejects(receipts.observe(sender, input, invalid, feedback), {
+      name: "ResourceStateConflictError",
+    });
+  }
+  await store.read(async (view) => {
+    assert.equal(await view.credentialSources.isEgressMaterialRejected(evidence), true);
+    assert.equal(
+      await view.credentialSources.isEgressMaterialRejected({
+        ...evidence,
+        materialVersion: "N+1",
+      }),
+      false,
+    );
+    assert.equal(
+      await view.credentialSources.isEgressMaterialRejected({ ...evidence, secretDriver: ref() }),
+      false,
+    );
+    assert.equal(
+      view.egressSendReceipts,
+      undefined,
+      "receipt mutation stays in the transaction owner",
+    );
+  });
+  // Once final uncertainty is recorded, neither a retry nor invented refusal is permitted.
+  await receipts.record(sender, input, { kind: "uncertain", dispatch: "possible" });
+  await assert.rejects(receipts.record(sender, input, rejected, feedback), {
+    name: "ResourceStateConflictError",
+  });
+  await assert.rejects(
+    receipts.record(sender, input, {
+      kind: "refused",
+      dispatched: false,
+      error: { kind: "cancelled" },
+    }),
+    { name: "ResourceStateConflictError" },
+  );
+  const rollback = {
+    ...input,
+    useId: randomUUID(),
+    material: { ...evidence, materialVersion: "rollback" },
+  };
+  await assert.rejects(
+    store.transact(async (unit) => {
+      await unit.egressSendReceipts.insert(rollback);
+      await unit.credentialSources.rejectEgressMaterial(rollback.material);
+      throw new Error("abort receipt and fence");
+    }),
+    /abort receipt and fence/,
+  );
+  assert.equal(await receipts.recover(sender, rollback), undefined);
+  assert.equal(
+    await store.read((view) => view.credentialSources.isEgressMaterialRejected(rollback.material)),
+    false,
+  );
+  const refused = { ...input, useId: randomUUID() };
+  await receipts.begin(sender, refused);
+  const final = await receipts.record(sender, refused, {
+    kind: "refused",
+    dispatched: false,
+    error: { kind: "cancelled" },
+  });
+  assert.equal(final.observation, null);
+  assert.equal(final.feedback, null);
+  await assert.rejects(receipts.reject(sender, refused, evidence), {
+    name: "ResourceStateConflictError",
+  });
 }

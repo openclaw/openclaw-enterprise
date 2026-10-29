@@ -6,8 +6,10 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/postgres-worker-agent-revision.test.mjs",
+    "tests/integration/postgres-worker-repository-roles.test.ts",
     "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
     "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
     "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
     "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs",
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
@@ -46,7 +48,8 @@
         "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
         "the revision worker retries transient Backend binding read failures without activating",
         "an older revision retry is superseded without preparing or retiring a newer active revision",
-        "deployment status judges claim liveness by the database clock, not the controller clock",
+        "an expired claim keeps a started deployment running under any controller clock",
+        "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
         "real PostgreSQL preserves the failure budget while an Agent runtime converges",
         "terminal Compute preparation persists failure and resumes exact cleanup after worker restart",
         "an overdue Agent runtime fails closed without activating its incomplete revision",
@@ -59,7 +62,21 @@
         "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
-        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot"
+        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot",
+        "a Kubernetes 403 on a private Secret write fails deployment on the first attempt",
+        "a Kubernetes 403 on a private Secret write during maintenance preparation keeps the maintenance chain",
+        "a Kubernetes 403 on a private Secret write during maintenance activation keeps the maintenance chain"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-repository-roles.test.ts",
+      "expectedTests": [
+        "worker refuses repository credentials when repositoryPolicy is present with the wrong id",
+        "worker refuses repository credentials when repositoryPolicy is present with the wrong implementation",
+        "worker refuses repository credentials when repositoryPolicy is absent",
+        "worker refuses repository credentials when nativeRepositorySender is present with the wrong id",
+        "worker refuses repository credentials when nativeRepositorySender is present with the wrong implementation",
+        "worker refuses repository credentials when nativeRepositorySender is absent"
       ]
     },
     {
@@ -77,7 +94,11 @@
         "a withdrawal reaches the predecessor that runs until its successor's deployment activates",
         "a withdrawn Harness source fails a deployment admitted before the withdrawal",
         "a withdrawal whose requester lost Agent operate fails once with a denial, and another operator's replay completes it",
-        "maintenance keeps re-queuing withdrawals after a withdrawn source loses its Agent grant"
+        "maintenance keeps re-queuing withdrawals after a withdrawn source loses its Agent grant",
+        "attached Git expires under ordinary maintenance; a moving Sandbox version and lost detach reply preserve the Agent",
+        "attached Git expires; a retained model profile that now covers GitHub retires the revision",
+        "attached Git expires; an overlapping platform profile behind a benign workspace namesake retires the revision",
+        "attached Git expires; a safe platform profile preserves the Agent until ordinary maintenance loses permission to read it"
       ]
     },
     {
@@ -120,14 +141,28 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
+      "expectedTests": [
+        "a refusal whose Compute cleanup also failed fails deployment on the first attempt",
+        "a Kubernetes API outage whose Compute cleanup also failed waits past the attempt budget, then the deployment activates",
+        "a Sandbox gateway outage whose Compute cleanup also failed waits past the attempt budget, then the deployment activates",
+        "an activation refusal whose Compute cleanup also failed fails deployment at once (after 0 pending passes)",
+        "an activation refusal whose Compute cleanup also failed fails deployment at once (after 1 pending passes)",
+        "a maintenance outage whose Compute cleanup also failed waits on its dependency and keeps the chain"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
       "expectedTests": [
+        "repository service outage during Agent stop still stops Compute and retains durable closing work",
         "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once"
       ]
     },
     {
       "path": "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
       "expectedTests": [
+        "deployment inventory survives retained completed repository cleanup and preserves deployment guards",
+        "Agent deletion completes with unresolved repository sessions retained as evidence",
         "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
         "a stop admitted after the last running check waits for the claimed revision work, then stops the Agent",
         "Agent stop cleans a terminal candidate without an active revision",

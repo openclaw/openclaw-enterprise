@@ -4,11 +4,10 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { admittedConfiguration } from "./admitted-configuration.mjs";
 import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
@@ -20,6 +19,8 @@ import {
 } from "../helpers/kubernetes-real.mjs";
 import { reservePort, reservedPortArgs } from "./available-port.mjs";
 import { stopProcess } from "./stop-process.mjs";
+import { jsonLines as parseJsonLines } from "./json-lines.mjs";
+import { waitFor } from "./wait-for.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
@@ -46,6 +47,7 @@ const requiresPostgresAndKubernetesConfiguration = {
 };
 const useKubernetesDrivers = process.env.OCC_TEST_KUBERNETES_CONFIGURATION === "1";
 const kubernetesStartupEnvironments = new WeakMap();
+const caseDatabases = new WeakMap();
 const kubernetesWorkloadResources = Object.freeze({
   requests: Object.freeze({ cpu: "25m", memory: "48Mi" }),
   limits: Object.freeze({ cpu: "250m", memory: "192Mi" }),
@@ -69,6 +71,41 @@ async function kubectl(...args) {
     { maxBuffer: 4 * 1024 * 1024 },
   );
   return stdout;
+}
+
+// Under the CI runner (prepared ownership in OPENCLAW_ENTERPRISE_CI_STATE) a case can own a
+// database: prepareFile's fresh copy of the lane's migrated template, the same empty database
+// the runner prepared for the file (OCC_TEST_DATABASE_URL), which such a file leaves unused.
+// Nothing connects to the lane template (PostgreSQL copies only a database without sessions),
+// so a step that still used OCC_TEST_DATABASE_URL could not break another case's copy. The OCC
+// processes started below with the same context use the copy. It is dropped after the case's
+// other after hooks, which stop those processes and end its pools: node:test runs a hook added
+// while the after hooks run after the ones already registered. A failing after hook makes
+// node:test skip the later ones, the drop included; lane cleanup drops that copy. Without
+// prepared ownership the cases share OCC_TEST_DATABASE_URL, so they must run one at a time.
+const caseDatabasesAvailable = Boolean(process.env.OPENCLAW_ENTERPRISE_CI_STATE);
+// The worker revision fixture's limit for the drop's wait for the CI state lock.
+const caseDatabaseDropLockTimeoutMs = 120_000;
+
+async function prepareCaseDatabase(context, { lane, testFile }) {
+  if (!caseDatabasesAvailable) {
+    return databaseUrl;
+  }
+  const { prepareFile } = await import("../../scripts/ci/prepare.mjs");
+  const prepared = await prepareFile({
+    lane,
+    file: fileURLToPath(testFile),
+    statePath: process.env.OPENCLAW_ENTERPRISE_CI_STATE,
+  });
+  context.after(() =>
+    context.after(() => prepared.cleanup({ lockTimeoutMs: caseDatabaseDropLockTimeoutMs })),
+  );
+  caseDatabases.set(context, prepared.env.OCC_TEST_DATABASE_URL);
+  return prepared.env.OCC_TEST_DATABASE_URL;
+}
+
+function contextDatabaseUrl(context) {
+  return caseDatabases.get(context) ?? databaseUrl;
 }
 
 async function configuredDriverEnvironment(context, kubernetesDrivers) {
@@ -246,19 +283,22 @@ async function waitForKubernetesNamespace(
   namespaceId,
   name = kubernetesNamespaceName(namespaceId),
 ) {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    try {
-      await kubectl("get", "namespace", name, "-o", "json");
-      return name;
-    } catch (error) {
-      if (!/NotFound|not found/i.test(error.stderr ?? error.message)) {
-        throw error;
+  return waitFor(
+    `Kubernetes Namespace ${name}`,
+    async () => {
+      try {
+        await kubectl("get", "namespace", name, "-o", "json");
+        return name;
+      } catch (error) {
+        // Only a missing Namespace means "not yet"; any other kubectl failure fails now.
+        if (!/NotFound|not found/i.test(error.stderr ?? error.message)) {
+          throw error;
+        }
+        return undefined;
       }
-      await delay(100);
-    }
-  }
-  assert.fail(`Timed out waiting for Kubernetes Namespace ${name}.`);
+    },
+    { timeoutMs: 60_000, intervalMs: 100 },
+  );
 }
 
 async function grantTenantAccess(context, namespaceId) {
@@ -361,6 +401,8 @@ async function createKubernetesHarnessAuth(api, namespaceId) {
 async function createKubernetesConfiguredAgent(pool, api, namespaceId, name, values, body = {}) {
   const harnessAuth = await createKubernetesHarnessAuth(api, namespaceId);
   const created = await createConfiguredAgent(api, namespaceId, name, values, {
+    // The fixture image does not contain an OC Gateway runtime.
+    gatewayManagedMode: false,
     ...body,
     harnessAuth,
   });
@@ -369,7 +411,7 @@ async function createKubernetesConfiguredAgent(pool, api, namespaceId, name, val
 }
 
 function admitted(values) {
-  return admitLoggingConfiguration(values, "info");
+  return admittedConfiguration(values);
 }
 
 async function startController(context, { kubernetesDrivers = false } = {}) {
@@ -382,13 +424,16 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
   context.after(async () => {
     await rm(configurationRoot, { recursive: true, force: true });
   });
+  const occDatabaseUrl = contextDatabaseUrl(context);
   await ensureDevelopmentBootstrap(context, {
-    databaseUrl,
+    databaseUrl: occDatabaseUrl,
     email: adminEmail,
     password: adminPassword,
     authSecret,
     authBaseURL: `http://127.0.0.1:${port}`,
     installationName: "PostgreSQL platform state integration",
+    // The Job's code in this process; the API below is the real server.mjs process.
+    inProcess: true,
   });
   const child = spawn(process.execPath, [...reservedPortArgs(reservation), entrypoint], {
     cwd: repository,
@@ -397,7 +442,7 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
       NODE_ENV: "development",
       OCC_HOST: "127.0.0.1",
       OCC_PORT: String(port),
-      OCC_DATABASE_URL: databaseUrl,
+      OCC_DATABASE_URL: occDatabaseUrl,
       OCC_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
       OCC_AUTH_SECRET: authSecret,
       OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
@@ -415,37 +460,40 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
   child.stderr.on("data", (chunk) => (output += chunk));
 
   const origin = `http://127.0.0.1:${port}`;
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    assert.equal(child.exitCode, null, `The durable OCC subprocess exited early:\n${output}`);
-    try {
-      const session = await signInWithEmailPassword({
-        fetch,
-        origin,
-        email: adminEmail,
-        password: adminPassword,
-      });
-      // Only the child can sign in, so it has bound the port; the reservation would otherwise
-      // keep taking (and resetting) a share of the connections.
-      await reservation.release();
-      return { child, origin, session, output: () => output };
-    } catch {
-      await delay(40);
-    }
-  }
-  assert.fail(`The durable OCC subprocess never became ready:\n${output}`);
+  const session = await waitFor(
+    () => `the durable OCC subprocess to become ready:\n${output}`,
+    async () => {
+      assert.equal(child.exitCode, null, `The durable OCC subprocess exited early:\n${output}`);
+      try {
+        return await signInWithEmailPassword({
+          fetch,
+          origin,
+          email: adminEmail,
+          password: adminPassword,
+        });
+      } catch {
+        return undefined;
+      }
+    },
+    { timeoutMs: 15_000, intervalMs: 40 },
+  );
+  // Only the child can sign in, so it has bound the port; the reservation would otherwise
+  // keep taking (and resetting) a share of the connections.
+  await reservation.release();
+  return { child, origin, session, output: () => output };
 }
 
 async function spawnWorker(context, { kubernetesDrivers = false } = {}) {
   const driverEnvironment = await configuredDriverEnvironment(context, kubernetesDrivers);
+  const occDatabaseUrl = contextDatabaseUrl(context);
   const child = spawn(process.execPath, [workerEntrypoint], {
     cwd: repository,
     env: {
       ...process.env,
       NODE_ENV: "development",
-      DATABASE_URL: databaseUrl,
-      OCC_DATABASE_URL: databaseUrl,
-      OCC_TEST_DATABASE_URL: databaseUrl,
+      DATABASE_URL: occDatabaseUrl,
+      OCC_DATABASE_URL: occDatabaseUrl,
+      OCC_TEST_DATABASE_URL: occDatabaseUrl,
       OCC_WORKER_POLL_INTERVAL_MS: "20",
       OCC_WORKER_LEASE_DURATION_MS: "5000",
       OCC_AUTH_BASE_URL: "http://127.0.0.1",
@@ -467,19 +515,18 @@ async function spawnWorker(context, { kubernetesDrivers = false } = {}) {
 
 async function startWorker(context, options) {
   const worker = await spawnWorker(context, options);
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    assert.equal(
-      worker.child.exitCode,
-      null,
-      `The separate OCC worker subprocess exited early:\n${worker.output()}`,
-    );
-    if (/"event"\s*:\s*"worker\.started"/.test(worker.output())) {
-      return worker;
-    }
-    await delay(25);
-  }
-  assert.fail(`The separate OCC worker subprocess never became ready:\n${worker.output()}`);
+  return waitFor(
+    () => `the separate OCC worker subprocess to become ready:\n${worker.output()}`,
+    () => {
+      assert.equal(
+        worker.child.exitCode,
+        null,
+        `The separate OCC worker subprocess exited early:\n${worker.output()}`,
+      );
+      return /"event"\s*:\s*"worker\.started"/.test(worker.output()) ? worker : undefined;
+    },
+    { timeoutMs: 15_000, intervalMs: 25 },
+  );
 }
 
 async function startKubernetesController(context) {
@@ -491,32 +538,20 @@ async function startKubernetesWorker(context) {
 }
 
 async function pollUntil(description, operation, { worker, timeoutMs = 15_000 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (worker !== undefined) {
-      assert.equal(
-        worker.child.exitCode,
-        null,
-        `The OCC worker exited while waiting for ${description}:\n${worker.output()}`,
-      );
-    }
-    const result = await operation();
-    if (result !== undefined) {
-      return result;
-    }
-    await delay(35);
-  }
-  assert.fail(
-    `Timed out waiting for ${description}.${worker === undefined ? "" : `\n${worker.output()}`}`,
+  return waitFor(
+    () => `${description}${worker === undefined ? "" : `.\n${worker.output()}`}`,
+    () => {
+      if (worker !== undefined) {
+        assert.equal(
+          worker.child.exitCode,
+          null,
+          `The OCC worker exited while waiting for ${description}:\n${worker.output()}`,
+        );
+      }
+      return operation();
+    },
+    { timeoutMs, intervalMs: 35 },
   );
-}
-
-function parseJsonLines(output) {
-  return output
-    .trim()
-    .split("\n")
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line));
 }
 
 async function request(controller, method, path, body, options = {}) {
@@ -576,6 +611,7 @@ export {
   adminEmail,
   adminPassword,
   admitted,
+  caseDatabasesAvailable,
   cleanupKubernetesNamespaces,
   createConfiguration,
   createConfiguredAgent,
@@ -587,6 +623,7 @@ export {
   grantTenantAccess,
   parseJsonLines,
   pollUntil,
+  prepareCaseDatabase,
   request,
   requiresPostgres,
   requiresPostgresAndKubernetesConfiguration,

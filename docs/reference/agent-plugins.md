@@ -1,17 +1,19 @@
 # Agent plugins
 
-Plugins add tools or integrations to an Agent. Selections belong to that Agent,
+Plugins add Agent tools or integrations. Selections belong to that Agent,
 separately from its reusable [Configuration](configuration.md). Changes apply on
-the next successful deployment; other Agents and active revisions stay unchanged.
+the next successful deployment; other Agents and selected versions stay unchanged.
 New Agents start without user-selected plugins.
 
 [Configure Agent plugins](../guides/topics/plugins-configure.md) explains selection,
 deployment and verification. Deploying requires a bundled [Plugin Driver](drivers/plugin.md);
 none is selected by default. OpenClaw Control Plane (OCC) validates policy shape
-and supported controls before saving nonempty selections. Startup performs the
+and supported controls before saving nonempty selections. Startup runs
 [remaining checks](#failures-and-boundaries).
 
 ## Current support
+
+Dedicated OpenClaw on Kubernetes supports [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json). Its only policy, `plugins[id].enabled`, controls the Gateway skill and the pinned `gog` command on the worker at deployment. Installation requires no Google account.
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
@@ -53,7 +55,7 @@ configuration. Startup resolves and translates current curated metadata inside
 the Agent workload, so a retry or restart can resolve a later curated release
 for the same catalog ID. Kubernetes keeps the native OpenClaw installation
 registry in the Agent-owned state database; serialized gateway replacement
-prevents old and new revisions from installing concurrently. The Agent
+prevents old and new versions from installing concurrently. The Agent
 workspace keeps its existing lifecycle. Ordinary retirement removes old
 workload state but not the Agent-owned database.
 
@@ -69,9 +71,7 @@ readable if the catalog entry or Driver disappears.
 For Compute-owned Kubernetes embedded OpenClaw and dedicated Codex workloads,
 a selected native install rejection produces a `PLUGIN_INSTALL_FAILED` warning,
 and a successful Codex install whose apps still need authentication produces
-`PLUGIN_AUTH_REQUIRED`. Deployment can succeed with these warnings once the
-failed selections are explicitly disabled in the effective native and gateway
-configuration. Warnings contain only the admitted selection key and a closed
+`PLUGIN_AUTH_REQUIRED`. Deployment can still succeed. Warnings contain only the admitted selection key and a closed
 code, never native error text or credentials.
 
 The requested plugin map stays unchanged; startup derives an effective map that
@@ -84,7 +84,7 @@ provider-owned Harnesses and non-Kubernetes Compute paths; see
 [native preparation](../flows/agent-plugins.md#4-prepare-native-runtime-state-and-hand-off-readiness).
 
 SSH Compute supports embedded OpenClaw only without plugin policy. Before host
-effects, it rejects any revision with a nonempty requested plugin map or an Agent
+effects, it rejects any version with a nonempty requested plugin map or an Agent
 default plugin approver policy (even an empty list), even when a PluginDriver is
 selected.
 
@@ -194,7 +194,9 @@ polling. Plugin failure responses use fixed platform messages and include only
 the admitted plugin ID in `error.data`, never native text, command output,
 credentials, claim tokens, or workload paths.
 
-### Agent and revision plugin fields
+<a id="agent-and-revision-plugin-fields" class="anchor-alias"></a>
+
+### Agent and `AgentRevision` plugin fields
 
 [Agent responses](agents.md) optionally include `plugins`, keyed by plugin ID
 with the desired selections above; an absent or empty map means none.
@@ -202,10 +204,10 @@ with the desired selections above; an absent or empty map means none.
 [AgentRevision responses](api.md) optionally include a `plugins` snapshot of
 admitted deployment state, not another mutation body.
 
-| Revision `plugins` field | Type                      | Meaning                                                |
-| ------------------------ | ------------------------- | ------------------------------------------------------ |
-| `driver`                 | Driver identity object    | Required `id` and `implementation` strings.            |
-| `plugins`                | Object keyed by plugin ID | Frozen requested selections, matching `Agent.plugins`. |
+| Agent revision `plugins` field | Type                      | Meaning                                                |
+| ------------------------------ | ------------------------- | ------------------------------------------------------ |
+| `driver`                       | Driver identity object    | Required `id` and `implementation` strings.            |
+| `plugins`                      | Object keyed by plugin ID | Frozen requested selections, matching `Agent.plugins`. |
 
 `AgentRevision.pluginApprovers` freezes the Agent default for that deployment.
 
@@ -217,10 +219,9 @@ See [native mappings](drivers/plugin-bundled.md#native-mappings-and-limits).
 ### Verification boundary
 
 Source, schema, and fixture tests establish API and translation behavior. Native
-runtime compatibility requires opt-in Kubernetes proof: a real Agent turn, then
-a later deployment that disables or removes the selection and leaves another
-Agent unchanged. [Agent plugin testing](../testing/plugins.md) covers
-contributor fixtures, service-account boundaries, and current proof notes.
+runtime compatibility needs the opt-in Kubernetes proof in
+[Agent plugin testing](../testing/plugins.md): a real Agent turn, then a later
+deployment that disables or removes the selection and leaves another Agent unchanged.
 
 This page owns the nested plugin wire contract. The
 [generated API reference](api.md) summarizes routes and top-level schemas;
@@ -243,7 +244,7 @@ Codex supports only `pluginApprovers`: its approval requests omit plugin and
 tool identity, so OpenClaw would deny every request once any plugin list exists.
 Agent create, update, and deploy reject Codex plugin or tool `approvers` with
 `400 INVALID_REQUEST`; remove them to update or redeploy an Agent saved earlier.
-Its deployed revision keeps running without working plugin approvals.
+Its deployed version keeps running without working plugin approvals.
 
 <!-- TODO(policySubject): allow Codex plugin and tool approvers once upstream
 Codex plugin approval requests carry policySubject. -->
@@ -258,13 +259,12 @@ launch; see the
 [compatibility check](../flows/agent-plugin-approvals.md#3-check-the-selected-gateway-before-launch).
 
 The Console resolves display names with the selected same-Namespace bot Secret,
-which stays on the server. Selecting a person shows their name and handle immediately;
-the policy stores their workspace-qualified Slack user ID. If the Console cannot resolve
-a saved name, it shows **Name unavailable** and keeps the selection until you remove it.
-During Agent creation, choose a Secret
+which stays on the server. Selecting a person shows their name and handle; the policy
+stores their workspace-qualified Slack user ID. A saved name the Console cannot resolve
+shows **Name unavailable** and stays selected. During Agent creation, choose a Secret
 beside the approver field; this search-only selection does not bind it to the Agent.
 An existing Slack channel binding supplies the initial selection. Lookup requires
-Agent create or edit and Secret `operate` permission; operators can paste user IDs instead. The
+Agent create or edit and Secret `operate`; operators can paste user IDs instead. The
 [Slack Channel Driver](drivers/slack-channel.md) describes workspace display,
 scopes, and pagination.
 
@@ -296,8 +296,8 @@ mandatory review.
 
 Codex maps `toolDefaults.reviewer` to the native app-wide reviewer. Native Codex
 has no per-tool reviewer setting, so explicit `tools.<toolId>.reviewer` values
-are rejected rather than applied to the whole app. Unsupported choices fail even if the tool is disabled
-or the value matches an inherited reviewer. Reviewer does not belong in
+are rejected rather than applied to the whole app. Unsupported choices fail even when the value
+matches an inherited reviewer. Reviewer does not belong in
 `driverPolicy`. Agent create, update, provisioning, and deploy answer `400` for an enabled
 `auto` reviewer unless the Agent's Configuration sets
 `plugins.entries.codex.config.appServer.approvalPolicy` to `on-request` or

@@ -7,7 +7,7 @@ Kubernetes context. For Secret-backed authentication, you or an Installation
 administrator must [grant the Agent access to the model Secret](#grant-the-agent-access-to-its-model-secret)
 before deployment.
 
-The command path below uses Bash, Python 3, kubectl, the OCC CLI, and Node.js 24
+The command path below uses Bash, Python 3, kubectl, the OCC CLI, and Node.js 24.22.1
 or newer for transport provisioning. If Node is unavailable, use the
 [console deployment workflow](../../reference/console/create-and-deploy.md) after
 preparing the Namespace. Its **Deploy new version** action provisions transport
@@ -84,7 +84,7 @@ is the Kubernetes namespace created by the driver during
 ## Configure the Agent runtime
 
 Both examples enable Control UI. Their explicit loopback origins allow the first
-revision to start without trusting an arbitrary browser host. After deployment,
+version to start without trusting an arbitrary browser host. After deployment,
 [finish Control UI access](#open-control-ui) by adding this Agent's exact HTTPS
 origin. Loopback origins alone do not enable the OCE native admin link.
 
@@ -353,7 +353,7 @@ override a matching Restriction. See [Namespace IAM policy](../../reference/auth
 ### Prepare transport credentials and deploy
 
 For a draft Agent, **Deploy new version** generates missing transport
-credentials before its first revision. API clients may call the endpoint below
+credentials before its first version. API clients may call the endpoint below
 first. Keep `OCC_URL` and
 `OCC_SERVICE_KEY_FILE` from Installation bootstrap. The API derives the correct
 Secret placement for the Agent's execution mode and never returns credential
@@ -399,7 +399,7 @@ Secrets; follow [Slack setup](../integrations/slack.md). Keep credential values
 out of Helm values, Installation YAML, Configurations, shell history, and this
 repository.
 
-Deploy the Agent and capture the immutable revision ID:
+Deploy the Agent and capture the Agent revision ID:
 
 ```bash
 REVISION_RESPONSE="$(occ agent deploy "$AGENT_ID" --output json)" &&
@@ -413,8 +413,8 @@ AgentRevision for structured output. If `configuration.json` includes OCC
 `secretBindings`, the caller and Agent service principal must have `operate` on
 every selected Secret before deploy. Binding changes are authorized by OCC IAM;
 Kubernetes RoleBindings only allow the API to materialize backing tenant
-Secrets. Wait for this revision's [deployment status](../../reference/agents.md#deployment-status)
-to become `succeeded` before the checks below; admission and an active revision
+Secrets. Wait for this version's [deployment status](../../reference/agents.md#deployment-status)
+to become `succeeded` before the checks below; admission and a selected version
 alone do not prove workspace connectivity.
 
 ## Verify workspace access
@@ -429,7 +429,7 @@ permission; saving also requires `operate`.
 An empty editor after an error is not evidence of an empty workspace. A missing
 file is a separate result: the file API can create or replace a file, but cannot
 delete it. Verify access before creating a missing file. See [workspace-file errors](../../reference/agents.md#workspace-files).
-Next, verify a model response from the same revision.
+Next, verify a model response from the same version.
 
 ## Verify production workloads
 

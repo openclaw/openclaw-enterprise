@@ -28,13 +28,15 @@ export KUBECONFIG_FILE="$OCC_EXAMPLE_DIRECTORY/kubeconfig"
 export CONTEXT="k3d-$CLUSTER"
 ```
 
-Build and import the images:
+In the same Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments),
+then build and import the images:
 
 ```bash
 docker build --target runtime \
-  --build-arg NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 \
+  --build-arg NODE_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a \
   -t "localhost/$CLUSTER/controller:local" .
 docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" \
   -t "localhost/$CLUSTER/runtime:local" .
 k3d image import "localhost/$CLUSTER/controller:local" \
   "localhost/$CLUSTER/runtime:local" -c "$CLUSTER"
@@ -85,16 +87,16 @@ For missing DNS, denied connections, or unready Kubernetes Agents after a
 checkout update, inspect the [ordinary network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
 on the affected Pod and its workload template, plus all matching NetworkPolicies.
 The upgrade restarts nothing: running Pods keep their templates and grants until
-Compute next prepares a revision of their Agent. To move an Agent onto the
-profile, rebuild the controller and deploy a new revision. Preparing it
+Compute next prepares a version of their Agent. To move an Agent onto the
+profile, rebuild the controller and deploy a new version. Preparing it
 re-renders that Agent's grants with the profile, and its new templates carry the
 label. A Gateway from an earlier template, embedded or dedicated, keeps serving
-until activation replaces it. Re-preparing an active revision, for
+until activation replaces it. Re-preparing a selected version, for
 example during repository-credential maintenance, rolls its Pods once onto
 profiled templates. Namespace-wide `allow-dns`,
 `allow-gateway-ingress` and `allow-node-gateway` are narrowed only in namespaces
 provisioned after the upgrade; an earlier namespace keeps its previous selectors
-until it is recreated. OpenShell Sandboxes need a redeployed revision.
+until it is recreated. OpenShell Sandboxes need a redeployed version.
 Restarting a Pod from an old template retains the missing label; assigning the
 profile to arbitrary Pods grants access and is not a repair.
 

@@ -12,8 +12,20 @@ import {
   login,
   nativeValues,
   newPage,
+  revokeAdministratorGrant,
+  settlePageRequests,
+  trackSettledFetches,
+  waitForEnabled,
+  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { submitCreateAgent } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import {
+  AGENT_DEVICE_LOGIN_CANCEL_DENIED,
+  AGENT_DEVICE_LOGIN_POLL_DENIED,
+  AGENT_DEVICE_LOGIN_START_DENIED,
+  DEVICE_LOGIN_START_DENIED,
+} from "../helpers/refusal-text.mjs";
 
 // The fixture's login asks the Console to poll every 5 s, and the API refuses an earlier poll.
 // Each ready login moves both clocks past that interval instead of waiting it out.
@@ -184,14 +196,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal(discovery.body.credentialSource.kind, "credential_source");
   await page.getByLabel("Agent name", { exact: true }).fill("OAuth Agent");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-  const created = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname === `/namespaces/${namespace.id}/agents`,
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const createResponse = await created;
-  assert.equal(createResponse.status(), 201, await createResponse.text());
+  await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
   await page.getByRole("heading", { name: "OAuth Agent", exact: true }).waitFor();
   const creation = requests.find(
     (request) => request.method === "POST" && request.path === `/namespaces/${namespace.id}/agents`,
@@ -222,7 +227,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const loginsBeforeBrowse = gateway.calls.filter(
     (call) => call.operation === "startDeviceAuthorization",
   ).length;
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal(
     await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).count(),
     0,
@@ -280,7 +285,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal(withOtherSource.status, 200, JSON.stringify(withOtherSource.body));
 
   // Reconnection is a separate, explicit authentication save with a newly completed login.
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "credential_source");
   await signInReady(page, advanceApiClock);
   assert.deepEqual((await fixture.request("GET", agentPath)).data.harnessAuth, originalAuth);
@@ -398,7 +403,7 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   await save.click();
   await page.getByText("Complete ChatGPT sign-in before saving.", { exact: true }).waitFor();
   await expectNoText(page, /Service unavailable/);
-  assert.equal(await save.isEnabled(), true);
+  await waitForEnabled(save);
   assert.equal(
     requests.some((request) => request.method === "PATCH" && request.path === agentPath),
     false,
@@ -406,13 +411,15 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   assert.equal((await fixture.request("GET", agentPath)).data.harnessAuth.method, "api_key");
 });
 
-test("sign-in unavailable at the credential service shows the API cause once", async (t) => {
+test("Codex sign-in can retry a refused start but cannot repeat one with an unreadable confirmation", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
-  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+  await start.click();
   await page
     .getByText(
       "ChatGPT sign-in is unavailable for this Installation. Choose another authentication method.",
@@ -420,8 +427,132 @@ test("sign-in unavailable at the credential service shows the API cause once", a
     )
     .waitFor();
   assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
-  assert.equal(
-    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).isEnabled(),
-    true,
+  await waitForEnabled(start);
+
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const namespacePath = `/namespaces/${namespace.id}`;
+  const beginPath = `${namespacePath}/agents/device-authorizations`;
+  const requests = apiRequests(page, fixture.origin);
+  await page.route(`**${beginPath}`, async (route) => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    assert.equal(body.data.status, "pending");
+    // The real start committed. Lose its session reference only in the reply reaching the page.
+    const sessionId = body.data.session.id;
+    const session = await fixture.request("GET", `${namespacePath}/secrets/${sessionId}`);
+    assert.equal(session.status, 200);
+    assert.equal(session.data.id, sessionId);
+    delete body.data.session;
+    await route.fulfill({ response, json: body });
+  });
+  await start.click();
+  await waitForSettledFetches(page, beginPath, 2);
+  assert.equal(await start.isDisabled(), true, "a login may already exist");
+  await page
+    .getByText(
+      /may have started.*until an Installation administrator investigates the pending attempt/i,
+    )
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Cancel login" }).isVisible(), false);
+
+  // Changing the method rerenders the controls. Even a delivered click must not repeat Begin.
+  const method = page.getByLabel("Authentication method");
+  await method.selectOption("api_key");
+  await method.selectOption("credential_source");
+  assert.equal(await start.isDisabled(), true);
+  await start.dispatchEvent("click");
+  await settlePageRequests(page);
+  assert.deepEqual(
+    requests
+      .filter(({ path }) => path.includes(beginPath))
+      .map(({ method, path }) => [method, path]),
+    [["POST", beginPath]],
+  );
+});
+
+// A refused device login names what the API checked for that request (finding 2577). Create
+// Agent's start checks Agent create, Secret create and credential source create in the Namespace,
+// which only an Installation administrator holds. The real Native IAM Driver refuses each request
+// below after the administrator's grant is removed from its Role.
+test("a refused device login start on Create Agent names the create grants it checks", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth start refused");
+  revokeAdministratorGrant(fixture, ["create", "secret"]);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Authentication method").selectOption("credential_source");
+  const refused = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+      `/namespaces/${namespace.id}/agents/device-authorizations`,
+  );
+  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  assert.equal((await refused).status(), 403);
+  await page.getByText(DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+});
+
+// From Agent detail, each request checks Agent read and update on that Agent. A start also
+// creates a Secret and a credential source; a poll or cancel checks Secret operate on the login's
+// Secret, which a Namespace Role can grant, so those name the grants to ask for instead.
+test("a refused device login on Agent detail names the grants its start, poll and cancel check", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth Agent refused");
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth Agent refused",
+    nativeValues("oauth-agent-refused", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const loginsPath = `/namespaces/${namespace.id}/agents/${agent.id}/device-authorizations`;
+  const answers = [];
+  const { page } = await newPage(t, fixture);
+  page.on("response", (response) => {
+    const { pathname } = new URL(response.url());
+    if (pathname.startsWith(loginsPath)) {
+      answers.push(
+        `${response.request().method()} ${pathname.slice(loginsPath.length)} ${response.status()}`,
+      );
+    }
+  });
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source").selectOption("credential_source");
+  const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+
+  // Without Secret create the start is refused before any login exists.
+  const restoreCreate = revokeAdministratorGrant(fixture, ["create", "secret"]);
+  await start.click();
+  await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+  assert.deepEqual(answers, ["POST  403"]);
+
+  // With the grant back the login starts. Removing Secret operate then refuses its poll, which
+  // the Console sends after the login's 5 s interval, and its cancel.
+  restoreCreate();
+  await waitForEnabled(start);
+  await start.click();
+  await page
+    .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
+    .waitFor();
+  revokeAdministratorGrant(fixture, ["operate", "secret"]);
+  await page.getByText(AGENT_DEVICE_LOGIN_POLL_DENIED, { exact: true }).waitFor({
+    timeout: 20_000,
+  });
+  await page.getByRole("button", { name: "Cancel login", exact: true }).click();
+  await page.getByText(AGENT_DEVICE_LOGIN_CANCEL_DENIED, { exact: true }).waitFor();
+  assert.deepEqual(
+    answers.map((answer) => answer.replace(/\/[^/ ]+(\/poll)? /, "/{login}$1 ")),
+    ["POST  403", "POST  200", "POST /{login}/poll 403", "DELETE /{login} 403"],
   );
 });

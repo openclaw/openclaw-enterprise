@@ -2,38 +2,60 @@ name: QA Matrix Advisory
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, labeled]
   push:
     branches:
       - main
   workflow_dispatch:
+  # Every 6 hours, so the local installation rehearsal (skipped on push) runs on main without a label.
+  schedule:
+    - cron: "17 */6 * * *"
 
 permissions:
   contents: read
 
+# Finish every main commit. For an opted-in PR, a new commit replaces the old run.
+# An unrelated label event gets its own group so it cannot cancel that qualification.
 concurrency:
-  group: ${{ github.event_name == 'push' && format('qa-advisory-push-{0}', github.sha) || format('qa-advisory-{0}', github.event.pull_request.number || github.ref) }}
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  group: >-
+    qa-advisory-${{ github.event_name }}-${{
+      github.event_name == 'push' && github.sha ||
+      github.event_name == 'pull_request' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'full-qa') &&
+      format('pr-{0}', github.event.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The ordinary PR signal is in ci.yml. The label requests extra coverage; it
+  # does not grant trust. PR jobs use the normal pull_request merge commit
+  # and the existing integration-qa-pr environment.
+  # Push runs are paused until the integration-qa-pr credentials work again
+  # (finding 2524: CODEX_ACCESS_TOKEN failed from 2026-10-23). The schedule,
+  # full-qa and manual runs are unchanged. To run on every main push again, set
+  # the repository variable QA_ADVISORY_ON_PUSH to 'true'. The other jobs need
+  # this one, so they skip with it.
   eligibility:
-    name: QA eligibility
+    name: Select advisory QA
+    if: >-
+      (github.ref == 'refs/heads/main' &&
+        ((github.event_name == 'push' && vars.QA_ADVISORY_ON_PUSH == 'true') ||
+         github.event_name == 'schedule' ||
+         (github.event_name == 'workflow_dispatch' && github.actor != 'dependabot[bot]'))) ||
+      (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' &&
+        (github.event.action != 'labeled' || github.event.label.name == 'full-qa') &&
+        contains(github.event.pull_request.labels.*.name, 'full-qa'))
     runs-on: ubuntu-24.04
-    outputs:
-      trusted: ${{ steps.check.outputs.trusted }}
     steps:
-      - id: check
-        env:
-          TRUSTED: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || ((github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]') }}
-        run: |
-          echo "trusted=$TRUSTED" >> "$GITHUB_OUTPUT"
-          if [[ "$TRUSTED" != true ]]; then
-            echo 'QA advisory jobs did not run: this PR requires a trusted run. The model and Calendar jobs also require model credentials.' >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Record the commit under test
+        run: echo "Running advisory QA for ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
 
   local-installation:
     name: QA advisory (local installation)
     needs: eligibility
-    if: github.event_name != 'push' && needs.eligibility.outputs.trusted == 'true'
+    # Run this installation rehearsal with full-qa, the 6-hourly schedule or a manual dispatch on main.
+    if: github.event_name != 'push'
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
@@ -48,7 +70,7 @@ jobs:
         with:
           lane: dev-up-k3d
           profile: full
-          node-version: "24.16.0"
+          node-version: "24.22.1"
           artifact-prefix: qa-advisory-local-installation
           job-timeout-minutes: 180
       - name: Show Docker Hub pull endpoints
@@ -58,7 +80,6 @@ jobs:
   qa:
     name: QA advisory (${{ matrix.installation }})
     needs: eligibility
-    if: github.event_name != 'push' && needs.eligibility.outputs.trusted == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 120
     environment: integration-qa-pr
@@ -73,7 +94,7 @@ jobs:
       OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
       OCC_TEST_QA_INSTALLATION: ${{ matrix.installation }}
       OCC_TEST_QA_PRESET: Codex
-      OCC_TEST_QA_SCENARIOS: model-ui,calendar
+      OCC_TEST_QA_SCENARIOS: model-ui,calendar,console-secrets
       OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
       OCC_TEST_CODEX_CALENDAR_TOOL_NAME: ${{ vars.OCC_TEST_CODEX_CALENDAR_TOOL_NAME }}
       OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: ${{ vars.OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT }}
@@ -84,7 +105,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: "24.16.0"
+          node-version: "24.22.1"
       - name: Materialize selected QA credentials
         env:
           CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
@@ -93,7 +114,7 @@ jobs:
         with:
           lane: qa-matrix
           profile: full
-          node-version: "24.16.0"
+          node-version: "24.22.1"
           artifact-prefix: qa-advisory-${{ matrix.installation }}
           job-timeout-minutes: 120
       - name: Summarize selected scenarios
@@ -114,7 +135,6 @@ jobs:
   openshell:
     name: QA advisory (OpenShell)
     needs: eligibility
-    if: needs.eligibility.outputs.trusted == 'true'
     # OpenShell requires an enabled Landlock LSM, absent on the Blacksmith kernel.
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -147,6 +167,6 @@ jobs:
         with:
           lane: openshell
           profile: full
-          node-version: "24.16.0"
+          node-version: "24.22.1"
           artifact-prefix: qa-advisory
           job-timeout-minutes: 120

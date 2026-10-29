@@ -4,9 +4,14 @@ Enable the optional repository credential service alongside the single OCC
 worker. Complete the [production installation prerequisites](../deploy/production-installation.md)
 and use its operator shell, `KUBECONFIG_FILE`, `CONTEXT`, `OCC_INPUT_DIRECTORY`
 and `openclaw-system` namespace. Run these commands from the repository root.
-Use Kubernetes Compute-owned embedded OpenClaw or dedicated Codex with compatible
+Use Kubernetes Compute-owned dedicated Codex with compatible
 [Harness authentication](../../reference/agents.md#harness-authentication) and no
 Sandbox Driver.
+
+Before replacing an old signing gateway, stop admissions and let accepted work drain
+on that owner. Preserve unresolved cleanup there. Do not transfer keys, widen
+approvals, or replay uncertain issuance or PR creation. With no outstanding work,
+configure the prepared path directly.
 
 ## Prepare the registry and protected inputs
 
@@ -17,7 +22,7 @@ server-assigned OCC Namespace IDs. Installations always use a GitHub App; the
 is standalone and development-only. One App installation can serve several
 repository entries; each Agent binding still admits a separate single-repository
 session. The example below uses Backend ID `repository-backend`, registry
-maximum duration `86400`, and all three profiles.
+maximum duration `86400`, `git-write`, and one exact branch ref.
 
 Choose the Namespace first with `occ namespace list` on an existing installation.
 For a fresh installation, initially leave this optional capability disabled,
@@ -30,7 +35,8 @@ Place these operator inputs in a private directory such as `/secure/occ/reposito
 | -------------------- | ---------------------------------------------------------------- |
 | `registry.json`      | Nonsecret canonical registry with exact Namespace/profile policy |
 | `config.json`        | Service configuration below                                      |
-| `private-key.pem`    | Existing RSA private key for the registry's GitHub App           |
+| `private-key.pem`    | Worker-only RSA key for the registry's GitHub App                |
+| `custody.key`        | Worker-only random 32-byte custody key                           |
 | `tls.crt`, `tls.key` | Gateway certificate chain and matching private key               |
 | `ca.crt`             | Public PEM CA trust for that certificate, without private keys   |
 
@@ -52,10 +58,10 @@ Write `config.json` with the same Backend ID and duration policy as the registry
   "sessionPolicy": {
     "maximumDurationSeconds": 86400,
     "defaultProfile": "git-write",
-    "allowedProfiles": ["git-read", "git-write", "git-full"]
+    "allowedProfiles": ["git-write"]
   },
   "backend": {
-    "kind": "github-app-registry",
+    "kind": "github-prepared-git-registry",
     "backendId": "repository-backend"
   }
 }
@@ -63,7 +69,7 @@ Write `config.json` with the same Backend ID and duration policy as the registry
 
 This is the Kubernetes projection input. The sidecar supplies the broker origin
 from Helm's repository credential hostname helper, then supplies protected
-registry, App-key and TLS file paths after copying its selected projection into
+registry and TLS file paths after copying its selected projection into
 private owned files. It rejects an explicit `gateway.publicOrigin` that differs
 from the Helm-derived origin and rejects a serving certificate that does not
 cover that host. For direct standalone startup, use the
@@ -72,8 +78,8 @@ with explicit file paths instead.
 
 Plan session capacity before enabling many Agents. The single sidecar holds
 every repository session in the installation: one per binding of each deployed
-revision. A closing session keeps its slot until disposal, so stopped or
-replaced revisions can hold slots for a while. The default limit is 16
+version. A closing session keeps its slot until disposal, so stopped or
+replaced versions can hold slots for a while. The default limit is 16
 sessions, and one Agent may have up to 16 bindings. When the limit is reached, new sessions
 fail with a retryable `overloaded` error until slots free. To raise it, add
 `"limits": { "sessions": 64 }` (any positive integer) to `config.json`. Other
@@ -97,6 +103,9 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   create secret generic occ-repository-app \
   --from-file=private-key.pem=/secure/occ/repositories/private-key.pem
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  create secret generic occ-repository-custody \
+  --from-file=custody.key=/secure/occ/repositories/custody.key
 ```
 
 These commands create new operator-owned inputs and intentionally fail on
@@ -108,12 +117,15 @@ Helm values, Agent configuration and command arguments.
 Add the [GitHub Backend and Driver fragment](../../reference/backends.md#github-repository-credentials)
 to the existing Installation YAML. Set its Backend ID to `repository-backend`
 and `sessionDurationSeconds` to `86400`. Select the optional capability through
-`drivers.repo` and the matching Backend `drivers.repo` member; keep the configured
-Driver ID unchanged. Keep the shown registry, control socket
+`repository.nativeSender` and `repository.preparedGitHub`, with the matching
+Backend `drivers.repo` policy member. The worker alone mounts the App key and
+32-byte custody key. Protected Git instead selects an installed Credential Proxy
+and omits the native sender; see [sender selection](../../reference/drivers/selection.md#select-a-protected-sender). Keep the shown registry, control socket
 and public CA paths; Helm mounts exactly those locations.
 
-Add this peer under the existing
-`drivers.compute.configuration.network` object, retaining its other settings:
+For native delivery only, add this peer under the existing
+`drivers.compute.configuration.network` object, retaining its other settings.
+Startup refuses it without `repository.nativeSender`:
 
 ```yaml
 repositoryCredentials:
@@ -147,6 +159,8 @@ placeholders before rendering:
 ```yaml
 repositoryCredentials:
   enabled: true
+  authority: prepared-git
+  preparedCustodySecretName: occ-repository-custody
   image: "<credential-service-image>@sha256:<digest>"
   serviceName: git
   hostname: "" # Empty selects git.<release-namespace>.svc.<clusterDomain>.
@@ -171,8 +185,7 @@ adds worker-Pod egress on port 443 and ingress from tenant embedded gateways and
 dedicated Agent Pods on port 8443. Compute grants corresponding egress only to
 the repository consumer; see the
 [network selectors](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Existing model/network
-rules still apply. For repository-bound dedicated Codex or embedded OpenClaw
-using `occ/codex-plugin`, Compute allows the exact broker hostname and sets stock Codex `allow_local_binding = true` and
+rules still apply. For repository-bound dedicated Codex, Compute allows the exact broker hostname and sets stock Codex `allow_local_binding = true` and
 `mode = "full"`. This permits local binding, disables Codex's additional
 private-address guard, and permits all HTTP methods at otherwise allowed
 destinations. Explicit denies, TLS verification, and broker authorization remain
@@ -267,11 +280,23 @@ those mounts from the rendered manifests before deploying an Agent.
 A ready sidecar confirms protected startup and the control listener. Continue
 with [Agent creation, deployment and a repository task](../repository-credentials.md#create-and-deploy-an-agent)
 to verify the actual consumer. Registry or certificate mismatch fails closed;
-check IDs, exact paths, DNS SAN and public trust first. A service restart loses
-in-memory sessions. A lost session already delivered to an Agent fails its
-revision and queues runtime retirement; worker maintenance does not recreate it.
+check IDs, exact paths, DNS SAN and public trust first.
+
+A worker Pod restart, such as a rollout, upgrade or node drain, stops the
+credential service and its in-memory sessions. On a normal shutdown the service
+records that each session is disposed. At its next maintenance pass, within
+about 30 seconds, the worker opens a new session for each running version and
+delivers new session files. This recreates each dedicated Codex Pod; Git works
+again without a new deployment, and the deployment status does not change. The
+Agent's workspace volume keeps `/home/node/workspace`, generated images and
+Codex thread history. Other Pod-local state is lost: files elsewhere in the home
+directory or in `/tmp`, and running processes. Plan restarts for times when
+Agents are idle.
+
+If the service stops without recording disposal, for example when its container
+is killed, the worker cannot prove the old session ended and does not replace it.
 Inspect retained cleanup obligations before explicitly deploying a new authorized
-revision. That deployment does not settle old cleanup or replay repository
+version. That deployment does not settle old cleanup or replay repository
 operations. See [restart and cleanup limits](../../reference/repository-credentials.md#repo-driver-contract).
 Updating policy requires a new immutable registry ConfigMap and consistent
 selection by all three consumers; existing admitted grants are not silently widened.

@@ -1,39 +1,68 @@
-import { element, button } from "./dom.mjs";
+import { renderInstallationConfigurations } from "./driver-configurations.mjs";
+import { element, button, requestIdDisclosure, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
+  agentPageReadRefusal,
   clearResolvedSecretNames,
   noteConsoleLoad,
   renderAgentList,
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
-import { clearRuntimeDenials } from "./agents/logs.mjs";
+import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
+import {
+  ASK_INSTALLATION_ADMINISTRATOR,
+  askForGrant,
+  NAMESPACE_UNAVAILABLE,
+} from "./agents/access-reasons.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
-import { createShell, panel, sorted } from "./shell.mjs";
+import {
+  brandContents,
+  createShell,
+  initials,
+  NAMESPACE_ACCESS_REASON_ID,
+  panel,
+  sorted,
+} from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
+import { NO_READABLE_NAMESPACES, renderNamespaces } from "./namespaces.mjs";
+import { renderSecrets } from "./secrets.mjs";
 
 const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
 let session = null;
 let namespaces = [];
+function setNamespaces(readable) {
+  namespaces = sorted(readable);
+}
 let namespaceId = null;
 let observabilityUrl = null;
 // Set while the last Backends read was denied, so Retry and Refresh do not show the Namespace
 // selector again before the same answer hides it (finding 1491).
 let backendsDenied = false;
-// Session owner whose Installation-admin observability read has settled.
+// Session owner whose Installation-admin answer has settled in this tab.
 let observabilityOwner = null;
 // The Installation-access probe still being answered, for the session owner that sent it.
 let installationAccessProbe = null;
 // Whether that owner administers the Installation: true, false, or null when unknown.
 let installationAdmin = null;
+// Set once this page load knows that answer is still true; see administrationRead.
+let administrationConfirmed = false;
+// The Installation-administration read this page load is waiting on, while it runs.
+let administrationCheck = null;
 const installationAccessStorageKey = "occ.console.installationAccess";
 const deniedReadsStorageKey = "occ.console.deniedReads";
+// Set once this tab has a session, until it signs out; see rememberSignedIn.
+const signedInStorageKey = "occ.console.signedIn";
 const deniedReadsLimit = 200;
 let loggingOut = false;
 let navigateAgentTab = null;
+// The shown page's refusal to leave through the Namespace selector, while a save is unsettled.
+let leaveGuard = null;
+// Whether the shown page has a write in flight that a reload or tab close would cut short.
+let writeInFlight = null;
 let discardCreationOnExit = null;
 const drafts = createDraftStore();
 let draftUserId = null;
@@ -178,18 +207,18 @@ function providerFailure(label) {
   return (password) =>
     password
       ? `Could not sign in with ${label}. Try again or use your password.`
-      : `Could not sign in with ${label}. Try again, or ask an administrator to attach your ${label} identity to your account.`;
+      : `Could not sign in with ${label}. Try again, or ask an Installation administrator to attach your ${label} identity to your account.`;
 }
 
 // GitHub sign-in refused by the organization and team allowlist (RFC-0061). The controller
 // sends only these reasons; anything else keeps the generic provider message.
 const githubMembershipFailures = {
   membership: (password) =>
-    `Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access${password ? " or use your password" : ""}.`,
+    `Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access${password ? " or use your password" : ""}.`,
   "membership-unavailable": (password) =>
     password
       ? "Could not check your GitHub organization membership. Try again later or use your password."
-      : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+      : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an Installation administrator.",
 };
 
 // The provider could not answer, or refused this Installation's client: an outage or a
@@ -199,7 +228,7 @@ function providerUnavailableFailure(label) {
   return (password) =>
     password
       ? `${label} sign-in is unavailable right now. Try again later or use your password.`
-      : `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`;
+      : `${label} sign-in is unavailable right now. Try again later. If you are an Installation administrator, use Recovery sign-in.`;
 }
 
 // The callback failed inside OCE (its database or audit store), so no sign-in can finish.
@@ -207,10 +236,81 @@ function signInUnavailableFailure(label) {
   return `Could not finish signing in with ${label}. Sign-in is unavailable right now; try again later.`;
 }
 
+// The API refused a sign-in request because the browser did not send the console's
+// configured Origin: the page was opened at another address, or a proxy changed the
+// request. It says nothing about the account, so it never reads as a wrong password.
+function untrustedOrigin(error) {
+  return (
+    error?.status === 403 &&
+    error.code === "FORBIDDEN" &&
+    typeof error.serverMessage === "string" &&
+    error.serverMessage.startsWith("A trusted browser origin is required")
+  );
+}
+const untrustedOriginFailure =
+  "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
+
+// A sign-in limit is not a refusal: an Installation administrator's correct password still
+// signs in while the limit applies, so the form stays usable and only says how long to wait.
+function rateLimitedFailure(error) {
+  const seconds = error.retryAfterSeconds;
+  return seconds === undefined
+    ? "Too many sign-in attempts. Wait a minute, then try again."
+    : `Too many sign-in attempts. Wait ${seconds} ${seconds === 1 ? "second" : "seconds"}, then try again.`;
+}
+
+const signInOutage =
+  "Sign-in is temporarily unavailable because a service it depends on did not answer. Try again shortly. If it continues, ask an operator.";
+
+// The confirmation after the provider's callback failed. The callback already settled the
+// identity (a refused one returns with authError and never reaches this exchange), so a
+// failure here says why this tab could not adopt the session, never that the identity failed.
+function providerExchangeFailure(error, label) {
+  if (error?.status === 429) {
+    return rateLimitedFailure(error);
+  }
+  if (untrustedOrigin(error)) {
+    return untrustedOriginFailure;
+  }
+  if (error?.status === undefined || error.status >= 500) {
+    return signInUnavailableFailure(label);
+  }
+  // Other than the origin check, the exchange answers 403 only when this API no longer
+  // configures the provider (it was removed after the start), which the provider list shows
+  // anyway. Starting again would fail the same way (finding 2555).
+  if (error.status === 403) {
+    return `Could not finish signing in with ${label}. ${label} sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.`;
+  }
+  return `Could not finish signing in with ${label}. The sign-in in this tab did not complete in time, or another sign-in replaced it. Select Continue with ${label} to start again.`;
+}
+
 // The provider authenticated an identity attached to a disabled account. Retrying, a
 // password or an attach cannot help, so only an administrator is named.
 function accountDisabledFailure(label) {
-  return `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`;
+  return `Your account is disabled, so you cannot sign in with ${label}. Ask an Installation administrator to enable it.`;
+}
+
+// Only a tab that had a session says it expired; a first visit to a deep link, or one after
+// signing out, just asks to sign in (finding 1893). The mark is in tab storage, so a reload
+// after expiry still says it.
+function rememberSignedIn(signedIn) {
+  try {
+    if (signedIn) {
+      sessionStorage.setItem(signedInStorageKey, "1");
+    } else {
+      sessionStorage.removeItem(signedInStorageKey);
+    }
+  } catch {
+    // Without tab storage a reload after expiry asks to sign in without saying why.
+  }
+}
+
+function recalledSignedIn() {
+  try {
+    return sessionStorage.getItem(signedInStorageKey) !== null;
+  } catch {
+    return false;
+  }
 }
 
 function pinSessionKey(value) {
@@ -265,6 +365,11 @@ function probeInstallationAccess(owner) {
   if (owner && installationAccessProbe?.owner === owner) {
     return installationAccessProbe.answer;
   }
+  // A page load asks the permission answer first, so an earlier view's probe can settle while
+  // that read runs: reuse its answer instead of sending (and auditing) the probe again.
+  if (owner && observabilityOwner === owner) {
+    return Promise.resolve({ url: observabilityUrl, admin: installationAdmin, settled: true });
+  }
   const probe = { owner };
   probe.answer = request("/observability", { outlivesView: true })
     .then(
@@ -299,12 +404,147 @@ function probeInstallationAccess(owner) {
   return probe.answer;
 }
 
+// Whether the caller administers the Installation, for this page load. The observability read
+// is the probe, and the API audits its 403 as an authorization denial, so the console first asks
+// a readable Namespace's permission answer, whose `installation.administer` is the same IAM
+// decision and audits nothing. Any readable Namespace gives that answer: it checks the
+// Installation, not the Namespace. A caller it refuses is not probed (findings D45, 2620). That
+// refusal is settled for this tab but not kept across reloads: a reload, or Refresh on the
+// Backends refusal, asks again at no audited cost, so a grant reaches the console (finding
+// 2622). An administrator is probed for the destination URL, which the API allows. Gating
+// only: the API still authorizes every request. With no readable Namespace, or no answer, the
+// console probes.
+function installationAccess(owner, selectedRead) {
+  const readableId = readableNamespaceId();
+  const permissions =
+    selectedRead && readableId !== null && readableId === namespaceId
+      ? selectedRead
+      : readableNamespacePermissions();
+  return permissions.then((answer) =>
+    answer?.installation?.administer === false
+      ? { url: null, admin: false, settled: true }
+      : probeInstallationAccess(owner),
+  );
+}
+
+// The selected Namespace when readable, else the first readable one, else null.
+function readableNamespaceId() {
+  return namespaces.some((item) => item.id === namespaceId)
+    ? namespaceId
+    : (namespaces[0]?.id ?? null);
+}
+
+// A readable Namespace's permission answer, or null without one or when the read fails. Reading
+// it audits nothing.
+function readableNamespacePermissions(options = {}) {
+  return namespacePermissionsRead(options).catch(() => null);
+}
+
+// The same answer, rejecting when the read fails, for a caller that must tell a failure (an
+// unknown answer) from no readable Namespace.
+function namespacePermissionsRead(options) {
+  const readableId = readableNamespaceId();
+  return readableId === null
+    ? Promise.resolve(null)
+    : request(`/namespaces/${encodeURIComponent(readableId)}/permissions`, options);
+}
+
 function forgetInstallationAccess() {
   try {
     sessionStorage.removeItem(installationAccessStorageKey);
   } catch {
     // Nothing to clear without tab storage.
   }
+}
+
+// The caller does not administer the Installation: true for this tab, not kept across reloads,
+// which ask the permission answer again at no audited cost. The Observability link goes away.
+function settleNotAdministrator() {
+  forgetInstallationAccess();
+  observabilityUrl = null;
+  installationAdmin = false;
+  observabilityOwner = sessionOwnerKey(session);
+  shellUI.dropObservabilityLink();
+}
+
+// The refusal of a read only Installation administration may make, refused here without sending
+// it: this tab already knows the caller does not administer the Installation.
+function administrationRefusal() {
+  return Object.assign(new Error("Your access does not include Installation administration."), {
+    status: 403,
+    code: "FORBIDDEN",
+    notAdministrator: true,
+  });
+}
+
+// Reads the console makes because it takes the caller for an Installation administrator (IAM
+// policy lists and Driver configuration schemas, which need that administration; a Secret's
+// metadata read by ID, which other grants may allow too), on an answer this tab settled earlier.
+// An administrator revoked while signed in keeps that answer until one of them is refused, and the
+// API audits each refusal: the Access tab, a bound Secret and Settings added six to the one
+// Backends refusal (finding D760). So a page load sends them one at a time until one that needs
+// administration succeeds. A refusal asks a readable Namespace's permission answer, which audits
+// nothing, because a Restriction can refuse one read to an administrator; unless it confirms
+// administration, the refusal settles "not an administrator" for this tab, as a Backends refusal
+// does (finding 2627), and the reads still waiting are refused here, unsent. A failed answer
+// settles nothing (finding 2637). A probe answered in this page load already confirms the answer.
+// Gating only: the API still authorizes every read.
+function administrationRead(path, options) {
+  if (installationAdmin === false) {
+    return Promise.reject(administrationRefusal());
+  }
+  if (administrationConfirmed) {
+    return sendRequest(path, options);
+  }
+  if (administrationCheck) {
+    // A read waiting behind the check belongs to this page: leaving it or signing out aborts the
+    // check's read, which settles nothing, so the waiter is aborted too instead of being sent
+    // under the next page (finding 2643).
+    const pageReads = lifetime.signal;
+    return administrationCheck.then(() => {
+      pageReads.throwIfAborted();
+      return administrationRead(path, options);
+    });
+  }
+  const owner = sessionOwnerKey(session);
+  const read = sendRequest(path, options);
+  const check = read.then(
+    () => {
+      if (options.installationAdministration === "required") {
+        administrationConfirmed = true;
+      }
+    },
+    async (error) => {
+      if (error?.status !== 403) {
+        return;
+      }
+      let answer;
+      try {
+        answer = await namespacePermissionsRead({ outlivesView: true });
+      } catch {
+        // No answer (a network failure or a 5xx) is unknown, not a refusal: an administrator
+        // whose read a Restriction refused keeps that answer, and the next page load asks again
+        // (finding 2637).
+        return;
+      }
+      if (owner === null || owner !== sessionOwnerKey(session)) {
+        return;
+      }
+      if (answer?.installation?.administer === true) {
+        administrationConfirmed = true;
+      } else {
+        settleNotAdministrator();
+        error.notAdministrator = true;
+      }
+    },
+  );
+  administrationCheck = check;
+  void check.then(() => {
+    if (administrationCheck === check) {
+      administrationCheck = null;
+    }
+  });
+  return check.then(() => read);
 }
 
 // Agent detail reads that the viewer's grants may not allow (saved settings, native admin
@@ -364,6 +604,20 @@ function deniedReadsFor(owner) {
   };
 }
 
+// Refresh checks an Agent's version reads again: a version panel offers no Retry for a refusal
+// (finding D753), so Refresh is how a reader granted read since then sees the version.
+function forgetAgentRevisionDenials(owner, namespaceId, agentId) {
+  if (!owner) {
+    return;
+  }
+  const prefix = `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(agentId)}/revisions/`;
+  const paths = storedDeniedReads(owner);
+  const kept = paths.filter((path) => !path.startsWith(prefix));
+  if (kept.length !== paths.length) {
+    storeDeniedReads(owner, kept);
+  }
+}
+
 function forgetDeniedReads() {
   try {
     sessionStorage.removeItem(deniedReadsStorageKey);
@@ -393,7 +647,7 @@ const navigation = createNavigation({
   isLoggingOut: () => loggingOut,
   loadPage,
 });
-const { route, pageUrl, captureIntent, validIntent, intentUrl, navigate } = navigation;
+const { route, pageUrl, captureIntent, validIntent, intentUrl, navigate, replaceUrl } = navigation;
 function forgetLoginIntent() {
   try {
     sessionStorage.removeItem(loginIntentStorageKey);
@@ -446,18 +700,89 @@ function takeNativeFragment(current) {
     return null;
   }
   const match = /^#native-agent=([0-9a-f]{32})$/.exec(current.url.hash);
-  history.replaceState(history.state, "", current.url.pathname + current.url.search);
+  replaceUrl(current.url.pathname + current.url.search);
   return match ? { kind: "native", key: match[1] } : null;
 }
 
+// An Agent page's Secret link (finding D757) opens that Secret on the Secrets page once. Drop the
+// parameter in place before the page loads, so the header's Refresh does not reopen it, and keep
+// the Secret until the Secrets page shows it or says it is unlisted: a load that ends at sign-in,
+// an expired session or a failed load's Retry still opens it (finding 2645). Another navigation
+// forgets it.
+let linkedSecret = null;
+
+function takeLinkedSecret(fromNavigation) {
+  const { url } = route();
+  const secretId = url.searchParams.get("secret");
+  const namespace = url.searchParams.get("namespace");
+  if (url.pathname !== "/console/secrets") {
+    linkedSecret = null;
+  } else if (secretId !== null) {
+    url.searchParams.delete("secret");
+    replaceUrl(url.pathname + url.search);
+    linkedSecret = { id: secretId, namespace };
+  } else if (fromNavigation || linkedSecret?.namespace !== namespace) {
+    linkedSecret = null;
+  }
+  return linkedSecret?.id ?? null;
+}
+
+// The sign-in destination for a page: its route, with a Secrets page link's Secret not yet shown.
+function loginDestination(current) {
+  const url = new URL(pageUrl(current.target, current.namespace), location.origin);
+  if (current.feature === "secrets" && linkedSecret?.namespace === current.namespace) {
+    url.searchParams.set("secret", linkedSecret.id);
+  }
+  return captureIntent(url.pathname + url.search);
+}
+
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
+shellUI.setLeaveGuard((options) => Boolean(leaveGuard?.(options)));
 const { publicPanel, renderRows, switchNamespace } = shellUI;
-const request = createApiClient({
+
+// The page names a Namespace the reader cannot read. Switch Namespace focuses the header's
+// selector, which is disabled when no Namespace is readable (a member whose only grant was
+// revoked, on a bookmarked link), so the panel then points at the header's Refresh, as the
+// no-readable-Namespace panel does (findings 2371, 2393).
+function namespaceUnavailablePanel(view) {
+  // Deleted, never shared and no longer shared read alike: one sentence for every page (D753).
+  const why = NAMESPACE_UNAVAILABLE;
+  if (namespaces.length) {
+    panel(
+      view,
+      "Namespace unavailable",
+      `${why}. Choose another Namespace.`,
+      "Switch Namespace",
+      () => switchNamespace(),
+    );
+    return;
+  }
+  namespaceAccessPanel(
+    view,
+    "Namespace unavailable",
+    `${why}, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.`,
+  );
+}
+
+// A panel for a reader with no Namespace to select: its sentence describes the header's disabled
+// selector (finding D749).
+function namespaceAccessPanel(view, title, description) {
+  panel(view, title, description);
+  view.querySelector(".state-panel > p")?.setAttribute("id", NAMESPACE_ACCESS_REASON_ID);
+  shellUI.describeNamespaceSelector();
+}
+const sendRequest = createApiClient({
   lifetime,
   hasSession: () => session !== null,
-  onExpired: () => showLogin("Your session has expired."),
+  onExpired: () => showExpiredLogin(),
   sessionKey: () => pinnedSessionKey,
 });
+
+function request(path, options = {}) {
+  return options.installationAdministration
+    ? administrationRead(path, options)
+    : sendRequest(path, options);
+}
 const retainedViews = new Map();
 // Other first visits that settle sooner swap pages without showing loading (finding 1407).
 const loadingDelayMs = 250;
@@ -472,6 +797,8 @@ const stillCheckingDelayMs = 1000;
 let mountedRouteKey = null;
 // The page whose shell is on screen. A held page keeps its own navigation and header.
 let shownFeature = null;
+// The shown header's page: an Agent's ({ agentId }), Create Agent ({ creating: true }) or null.
+let shownPage = null;
 let mountedAgent = null;
 let mountedViewState = null;
 let resumePending = null;
@@ -522,6 +849,9 @@ function clearRetainedViewsForNamespace(selection) {
 
 function clearRetainedViewsOutsideNamespaces(readable) {
   const allowed = new Set(readable.map((item) => item.id));
+  // Drafts are kept until a read proves their Namespace gone, not dropped on a failed read
+  // (finding 1935).
+  drafts.retainNamespaces(allowed);
   const accessRemoved = namespaces.some((item) => !allowed.has(item.id));
   for (const key of retainedViews.keys()) {
     const selection = retainedViewNamespace(key);
@@ -541,7 +871,7 @@ function clearRetainedViewsOutsideNamespaces(readable) {
 }
 
 function clearPasswordInputs() {
-  document.querySelectorAll('input[type="password"]').forEach((input) => {
+  document.querySelectorAll('input[type="password"], [data-secret-value]').forEach((input) => {
     if (input.value) {
       if (mountedViewState) {
         mountedViewState.reusable = false;
@@ -628,17 +958,23 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
     return null;
   }
   const focused = document.activeElement;
-  const focusHeld =
-    keepFocus &&
-    (view.contains(focused) ||
-      focused === app.querySelector(".content h1") ||
-      app.querySelector(".sidebar")?.contains(focused) === true);
   const title = app.querySelector(".content h1")?.textContent;
   const scope = app.querySelector(".content .scope")?.textContent;
   const diagnostics = app.querySelector(".runtime-debug");
   const scrollY = window.scrollY;
   const recovery = app.querySelector(".content > .namespace-recovery, .content > p.scope") !== null;
-  const shell = renderShell(shownFeature ?? current.feature, true, { recovery });
+  // An Agent page's own header actions (Create new version) stay with it, inert like the page.
+  const pageActions = app.querySelector(".content .page-header .page-view-actions");
+  const focusHeld =
+    keepFocus &&
+    (view.contains(focused) ||
+      pageActions?.contains(focused) === true ||
+      focused === app.querySelector(".content h1") ||
+      app.querySelector(".sidebar")?.contains(focused) === true);
+  const shell = renderShell(shownFeature ?? current.feature, true, {
+    recovery,
+    page: shownFeature ? shownPage : headerPage(current),
+  });
   if (title) {
     app.querySelector(".content h1").textContent = title;
   }
@@ -647,6 +983,10 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
   }
   view.inert = true;
   view.setAttribute("aria-busy", "true");
+  if (pageActions) {
+    pageActions.inert = true;
+    shell.actions.append(pageActions);
+  }
   // Navigation dims the held page after a moment (finding 1447); a refocus recheck keeps its
   // look. The class lives on this load's shell, so the next shell drops it.
   app.querySelector(".content").classList.toggle("holding", busyCue);
@@ -711,6 +1051,10 @@ function mountRetainedView(current, retained) {
   retained.snapshot.inert = false;
   shell.view.replaceWith(retained.snapshot);
   shell.view = retained.snapshot;
+  if (retained.state?.pageActions) {
+    retained.state.pageActions.inert = false;
+    shell.actions.append(retained.state.pageActions);
+  }
   if (shell.diagnostics && retained.state?.diagnostics) {
     retained.state.diagnostics.inert = false;
     shell.diagnostics.replaceWith(retained.state.diagnostics);
@@ -732,7 +1076,12 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
     mountedViewState.active = null;
   }
   navigateAgentTab = null;
+  leaveGuard = null;
+  writeInFlight = null;
   mountedAgent = null;
+  // Each page load confirms Installation administration again before its reads that need it.
+  administrationConfirmed = false;
+  administrationCheck = null;
   clearPasswordInputs();
   shellUI.reset();
   if (retainView) {
@@ -744,8 +1093,32 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
   return lifetime.reset();
 }
 
-function renderShell(feature, namespaceAdmissionPending = false, { recovery = true } = {}) {
+// The header shape for a route: an Agent's page and Create Agent lead with ← Agents and carry a
+// meta row (the ID, the Namespace) under the title; collections do not (UX spec 3.2).
+function headerPage(current) {
+  if (current.feature !== "agents") {
+    return null;
+  }
+  if (current.creating) {
+    return { creating: true };
+  }
+  return current.agentId ? { agentId: current.agentId } : null;
+}
+
+function collectionPath(feature, selection) {
+  return (
+    { namespaces: "/namespaces", backends: "/backends" }[feature] ??
+    `/namespaces/${encodeURIComponent(selection)}/${feature}`
+  );
+}
+
+function renderShell(
+  feature,
+  namespaceAdmissionPending = false,
+  { recovery = true, page = headerPage(route()) } = {},
+) {
   shownFeature = feature;
+  shownPage = page;
   const shell = shellUI.renderShell(feature, {
     session,
     namespaces,
@@ -753,6 +1126,7 @@ function renderShell(feature, namespaceAdmissionPending = false, { recovery = tr
     observabilityUrl,
     namespaceAdmissionPending,
     recovery,
+    page,
   });
   if (feature === "backends" && backendsDenied && shell.scopeSelector) {
     shell.scopeSelector.hidden = true;
@@ -786,6 +1160,13 @@ function clearDrafts() {
   draftUserId = null;
 }
 
+function showExpiredLogin() {
+  const current = route();
+  // Keep only a validated read destination; reset private views and drafts in showLogin.
+  const destination = pendingIntent ?? loginDestination(current);
+  showLogin("Your session has expired.", destination);
+}
+
 function showLogin(message = "", destination = null) {
   // A message may depend on whether ordinary accounts can use a password.
   const describe = typeof message === "function" ? message : () => message;
@@ -798,7 +1179,7 @@ function showLogin(message = "", destination = null) {
   takeExternalAttempt();
   pendingIntent = null;
   forgetLoginIntent();
-  history.replaceState(null, "", "/console/login");
+  replaceUrl("/console/login");
   const username = element("input", {
     id: "username",
     name: "username",
@@ -814,21 +1195,25 @@ function showLogin(message = "", destination = null) {
     autocomplete: "current-password",
     required: "",
   });
-  const feedback = element("p", { className: "error", role: "alert" }, describe(true));
+  const feedback = statusBlock("danger", null, describe(true));
+  // The page's one line under the title also describes the email field (UX spec 3.12).
   const usernameHint = element(
-    "span",
-    { id: "username-hint", className: "hint" },
-    "Use your account email",
+    "p",
+    { id: "username-hint", className: "muted auth-intro" },
+    "Use your account email.",
   );
   // Recovery-only password sign-in hides the form until the recovery path is chosen.
   let recoveryOnly = false;
-  const submit = element("button", { type: "submit", className: "primary" }, "Login");
+  const submit = element(
+    "button",
+    { type: "submit", className: "button button--primary" },
+    "Sign in",
+  );
   const form = element(
     "form",
     {},
-    element("label", { for: "username" }, "Username"),
+    element("label", { for: "username" }, "Email"),
     username,
-    usernameHint,
     element("label", { for: "password" }, "Password"),
     password,
     feedback,
@@ -868,10 +1253,12 @@ function showLogin(message = "", destination = null) {
         }
         feedback.textContent =
           error.status === 429
-            ? "Too many attempts. Try again later."
-            : recoveryOnly
-              ? `${label} sign-in is unavailable. Try again later.`
-              : `${label} sign-in is unavailable. Try again or use your password.`;
+            ? rateLimitedFailure(error)
+            : untrustedOrigin(error)
+              ? untrustedOriginFailure
+              : recoveryOnly
+                ? `${label} sign-in is unavailable. Try again later.`
+                : `${label} sign-in is unavailable. Try again or use your password.`;
         pending = false;
         setDisabled(false);
       }
@@ -893,9 +1280,10 @@ function showLogin(message = "", destination = null) {
       feedback.textContent = "";
       form.insertBefore(feedback, submit);
       form.hidden = false;
+      usernameHint.hidden = false;
       username.focus();
     },
-    { className: "auth-recovery", hidden: true },
+    { tone: "link", className: "auth-recovery", hidden: true },
   );
   function setDisabled(disabled) {
     submit.disabled = disabled;
@@ -928,20 +1316,28 @@ function showLogin(message = "", destination = null) {
       pinSessionKey(signedIn?.sessionKey);
       password.value = "";
       pendingIntent = destination;
-      history.replaceState(null, "", "/console/agents");
+      replaceUrl("/console/agents");
       await loadPage();
     } catch (error) {
       if (!lifetime.isCurrent(active)) {
         return;
       }
+      // Every credential refusal keeps one text, so it never says whether the account exists,
+      // is disabled, or which factor failed.
       feedback.textContent =
         error.status === 429
-          ? "Too many attempts. Try again later."
-          : error.status === 400 || error.status === 401 || error.status === 403
-            ? recoveryOnly
-              ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
-              : "Could not sign in. Check your username and password."
-            : "Sign-in is unavailable. Try again.";
+          ? rateLimitedFailure(error)
+          : untrustedOrigin(error)
+            ? untrustedOriginFailure
+            : error.status === 400 || error.status === 401 || error.status === 403
+              ? recoveryOnly
+                ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
+                : "Could not sign in. Check your email and password."
+              : error.status === undefined
+                ? "Could not confirm whether sign-in completed. Reload the page to check your session before trying your password again."
+                : error.status >= 500
+                  ? signInOutage
+                  : "Sign-in is unavailable. Try again.";
     } finally {
       if (lifetime.isCurrent(active)) {
         pending = false;
@@ -953,18 +1349,14 @@ function showLogin(message = "", destination = null) {
     element(
       "main",
       { className: "auth" },
-      element(
-        "p",
-        { className: "brand" },
-        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
-        "OpenClaw Enterprise",
-      ),
-      element("h1", {}, "Welcome back"),
-      element("p", { className: "muted" }, "Sign in to your Installation."),
+      element("p", { className: "brand" }, ...brandContents("sign-in")),
+      element("h1", {}, "Sign in"),
+      usernameHint,
       form,
       providers,
       recovery,
     ),
+    ...signInFooter(),
   );
   void request("/api/auth/providers")
     .then((available) => {
@@ -990,10 +1382,11 @@ function showLogin(message = "", destination = null) {
           if (feedback.textContent === describe(true)) {
             feedback.textContent = describe(false);
           }
-          usernameHint.textContent = "Use the recovery account's email";
+          usernameHint.textContent = "Use the recovery account's email.";
           // Never pull the form away from someone already using it.
           if (!pending && username.value === "" && password.value === "") {
             form.hidden = true;
+            usernameHint.hidden = true;
             providers.after(feedback);
             recovery.hidden = false;
           }
@@ -1003,6 +1396,21 @@ function showLogin(message = "", destination = null) {
     .catch(() => {
       // Password sign-in remains available when provider discovery fails.
     });
+}
+
+// The sign-in page footer names the build it serves, from the meta tag the image bakes in; a
+// development build has none, so the footer is left out.
+function signInFooter() {
+  const revision = document.querySelector('meta[name="occ-build-revision"]')?.content ?? "";
+  return /^[a-f0-9]{40}$/.test(revision)
+    ? [
+        element(
+          "footer",
+          { className: "auth-footer" },
+          `OpenClaw Enterprise · build ${revision.slice(0, 8)}`,
+        ),
+      ]
+    : [];
 }
 
 function showCheckingSession(checking = () => true) {
@@ -1031,6 +1439,8 @@ async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
   fromRefresh = false,
+  // Set only by Back and Forward (popstate).
+  restoreHistory = null,
   openingAgent = false,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
@@ -1041,6 +1451,7 @@ async function loadPage({
   }
   // A refocus or visibility recheck of the shown page, as opposed to a navigation.
   const resumingView = reuseView && !fromNavigation;
+  const linkedSecretId = takeLinkedSecret(fromNavigation);
   const current = route();
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
@@ -1049,9 +1460,21 @@ async function loadPage({
   if (nativeIntent !== null) {
     pendingIntent = nativeIntent;
   }
-  if (fromNavigation && navigateAgentTab?.(current.url)) {
-    // The tab handler can reject navigation and restore the previous URL.
-    markMountedRoute(route());
+  const tabNavigation = fromNavigation && navigateAgentTab?.(current.url);
+  if (tabNavigation === "blocked") {
+    // Back or Forward already moved to an existing entry. Return to the tab we kept open,
+    // leaving that entry intact; only a newly requested navigation needs its URL replaced.
+    (restoreHistory ?? replaceUrl)(mountedRouteKey);
+    return;
+  }
+  if (tabNavigation) {
+    markMountedRoute(current);
+    return;
+  }
+  // Same-version tab changes stay in the mounted page. Leaving it during a pending write
+  // returns the browser to the entry we kept open, preserving both Back and Forward.
+  if (restoreHistory && mountedRouteKey !== null && leaveGuard?.({ pendingOnly: true })) {
+    restoreHistory(mountedRouteKey);
     return;
   }
   const knownPrivateState = session !== null && Object.hasOwn(pages, current.feature);
@@ -1065,9 +1488,26 @@ async function loadPage({
     reuseView = false;
   }
   namespaceId = current.namespace;
+  if (fromRefresh && current.feature === "backends" && installationAdmin === false) {
+    // Refresh on the Backends refusal checks Installation administration again instead of
+    // reusing the settled answer (finding 2622): a permission answer, or one probe without one.
+    forgetInstallationAccess();
+    observabilityOwner = null;
+    installationAdmin = null;
+  }
+  if (fromRefresh && current.agentId && current.namespace) {
+    // Refresh checks access again: an Agent's Logs view asks again instead of reusing a denial
+    // remembered earlier in this sign-in (finding 2566).
+    forgetRuntimeDenials(current.namespace, current.agentId);
+    forgetAgentRevisionDenials(sessionOwnerKey(session), current.namespace, current.agentId);
+  }
   const active = resetReads({
     retainView: knownPrivateState,
-    returnLink: openingAgent ? document.activeElement : null,
+    // A Namespaces row link marks itself too, so Back returns focus to that row.
+    returnLink:
+      openingAgent || document.activeElement?.matches?.("a[data-return-focus-href]")
+        ? document.activeElement
+        : null,
   });
   if (abandonedCreation) {
     const creationDrafts = drafts.scope(discardCreationOnExit.namespaceId, "create");
@@ -1267,15 +1707,18 @@ async function loadPage({
       }
       pinSessionKey(confirmed.sessionKey);
       pendingIntent = externalIntent;
-    } catch {
+    } catch (error) {
       if (lifetime.isCurrent(active)) {
-        showLogin(providerFailure(externalProviders[externalAttempt.provider].label));
+        showLogin(
+          providerExchangeFailure(error, externalProviders[externalAttempt.provider].label),
+        );
       }
       return;
     }
   }
   try {
-    const hadSession = session !== null || pinnedSessionKey !== null;
+    // A pinned key alone covers a provider exchange that confirmed a session now missing.
+    const hadSession = session !== null || pinnedSessionKey !== null || recalledSignedIn();
     const previousOwner = sessionOwnerKey(session);
     const resolvedSession = await request("/api/auth/session");
     if (!lifetime.isCurrent(active)) {
@@ -1285,19 +1728,20 @@ async function loadPage({
       pinSessionKey(resolvedSession.sessionKey);
     } else if (resolvedSession !== null && resolvedSession.sessionKey !== pinnedSessionKey) {
       // The controller rejects a mismatched key; never act on another session regardless.
-      showLogin("Your session has expired.");
+      showExpiredLogin();
       return;
     }
     session = resolvedSession;
     if (session === null) {
       const destination =
-        providerError !== null || current.feature === "login" || hadSession
+        providerError !== null || current.feature === "login"
           ? null
-          : (pendingIntent ?? captureIntent(pageUrl(current.target, current.namespace)));
+          : (pendingIntent ?? loginDestination(current));
       showLogin(
         providerError !== null
           ? (reasonFailure ?? providerFailure(providerError.label))
-          : current.feature !== "login" &&
+          : hadSession &&
+              current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
               current.url.pathname !== "/console"
             ? "Your session has expired."
@@ -1307,9 +1751,14 @@ async function loadPage({
       return;
     }
     sessionResolved = true;
+    rememberSignedIn(true);
     const owner = sessionOwnerKey(session);
-    if (!owner || previousOwner !== owner || draftUserId !== owner) {
+    // Drafts belong to the session that wrote them: a read retried after an unavailable check
+    // keeps them (finding 1935); any other session clears them.
+    if (!owner || draftUserId !== owner) {
       clearDrafts();
+    }
+    if (!owner || previousOwner !== owner || draftUserId !== owner) {
       clearRetainedViews();
       observabilityUrl = null;
       observabilityOwner = null;
@@ -1340,21 +1789,21 @@ async function loadPage({
           tab: null,
         };
         pendingIntent = null;
-        history.replaceState(null, "", intentUrl(target) ?? "/console/agents");
+        replaceUrl(intentUrl(target) ?? "/console/agents");
       } catch (error) {
         if (!lifetime.isCurrent(active)) {
           return;
         }
         pendingIntent = null;
         failure = [400, 403, 404].includes(error.status) ? "unavailable" : "interrupted";
-        history.replaceState(null, "", "/console/agents");
+        replaceUrl("/console/agents");
       }
       void loadPage({ chatLinkFailure: failure });
       return;
     }
     if (destination || current.feature === "login") {
       pendingIntent = null;
-      history.replaceState(null, "", intentUrl(destination) ?? "/console/agents");
+      replaceUrl(intentUrl(destination) ?? "/console/agents");
       void loadPage();
       return;
     }
@@ -1369,19 +1818,11 @@ async function loadPage({
         loadingShownAt = performance.now();
       }
     }
-    // Read the admin-only destination once per session owner. Non-administrators
-    // get 403, which the API audits as a denial, so do not repeat it per navigation
-    // or, within this tab, per page load.
+    // A settled Installation-access answer is kept once per session owner (see
+    // installationAccess below for how it is asked).
     const recalled =
       owner && observabilityOwner !== owner ? recalledInstallationAccess(owner) : null;
-    const [readable, observability] = await Promise.all([
-      request("/namespaces"),
-      owner && observabilityOwner === owner
-        ? null
-        : recalled
-          ? { ...recalled, settled: true }
-          : probeInstallationAccess(owner),
-    ]);
+    const readable = await request("/namespaces");
     if (!lifetime.isCurrent(active)) {
       return;
     }
@@ -1389,25 +1830,28 @@ async function loadPage({
       throw new Error("Invalid collection response");
     }
     clearRetainedViewsOutsideNamespaces(readable);
-    namespaces = sorted(readable);
+    setNamespaces(readable);
     accessResolved = true;
-    if (observability) {
-      observabilityUrl = observability.url;
-      installationAdmin = observability.admin;
-      observabilityOwner = observability.settled ? owner : null;
+    if (recalled) {
+      observabilityUrl = recalled.url;
+      installationAdmin = recalled.admin;
+      observabilityOwner = owner;
     }
+    // The default pick prefers a ready Namespace and never a deleting one while another remains
+    // (finding 1895); with only deleting Namespaces it shows the first, whose status the Agents
+    // page then names.
     namespaceId =
       current.namespace ??
-      (namespaces.find((item) => item.status === "ready") ?? namespaces[0])?.id ??
+      (
+        namespaces.find((item) => item.status === "ready") ??
+        namespaces.find((item) => item.status !== "deleting") ??
+        namespaces[0]
+      )?.id ??
       null;
-    navigation.restoreHistory();
-    history.replaceState(
-      { previousCollection: navigation.previousCollection },
-      "",
-      pageUrl(current.target),
-    );
-    const agentsNamespaceUnavailable =
-      current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
+    replaceUrl(pageUrl(current.target));
+    const scopedNamespaceUnavailable =
+      ["agents", "secrets"].includes(current.feature) &&
+      !namespaces.some((item) => item.id === namespaceId);
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
       // usable while the destination's first read runs. A switch resets the lifetime, discarding
@@ -1421,29 +1865,49 @@ async function loadPage({
     // loading) is replaced once, by the page itself (finding 1407).
     let firstItems = null;
     let firstAgent = null;
-    // The Agents list and Create Agent paint with the caller's permission answer, never enabled
-    // and then refused (findings 1517, 1521). Gating only: the API still authorizes creation, so
-    // an unknown answer (a failed read) keeps the controls.
+    // The Agents and Secrets lists, and Create Agent, paint with the caller's permission answer,
+    // never enabled and then refused (findings 1517, 1521, 2365). Gating only: the API still
+    // authorizes creation, so an unknown answer (a failed read) keeps the controls.
     const permissionsPath = `/namespaces/${encodeURIComponent(namespaceId)}/permissions`;
     const permissionsRead =
-      !agentsNamespaceUnavailable && current.feature === "agents" && !current.agentId
+      !scopedNamespaceUnavailable &&
+      ["agents", "secrets"].includes(current.feature) &&
+      !current.agentId
         ? request(permissionsPath).catch(() => null)
         : null;
+    const accessRead =
+      owner && observabilityOwner === owner ? null : installationAccess(owner, permissionsRead);
+    // Awaited after the first reads; a first read that fails first leaves it unawaited.
+    accessRead?.catch(() => {});
     let firstPermissions = null;
-    if (!agentsNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
+    if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (current.agentId) {
         firstAgent = await request(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
         );
       } else {
+        if (current.feature === "backends") {
+          // Backends need Installation administration, like the probe. A caller this load knows
+          // is no administrator gets the refusal without the read, which the API would audit as
+          // a denial nobody attempted (finding 2619). Gating only: an unknown answer reads.
+          if (accessRead) {
+            const access = await accessRead;
+            if (!lifetime.isCurrent(active)) {
+              return;
+            }
+            observabilityUrl = access.url;
+            installationAdmin = access.admin;
+            observabilityOwner = access.settled ? owner : null;
+            administrationConfirmed = access.admin === true;
+          }
+          if (installationAdmin === false) {
+            throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
+          }
+        }
         firstItems =
           current.feature === "namespaces"
             ? namespaces
-            : await request(
-                current.feature === "backends"
-                  ? "/backends"
-                  : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-              );
+            : await request(collectionPath(current.feature, namespaceId));
       }
       if (!lifetime.isCurrent(active)) {
         return;
@@ -1455,9 +1919,19 @@ async function loadPage({
         return;
       }
     }
+    if (accessRead) {
+      const access = await accessRead;
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
+      observabilityUrl = access.url;
+      installationAdmin = access.admin;
+      observabilityOwner = access.settled ? owner : null;
+      administrationConfirmed = access.admin === true;
+    }
     const retainedState = retainedView?.state;
     let unchanged = false;
-    if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
+    if (retained && reuseView && retainedState && !scopedNamespaceUnavailable) {
       const fresh = new Map([["/namespaces", namespaces]]);
       if (firstAgent) {
         fresh.set(
@@ -1465,12 +1939,7 @@ async function loadPage({
           firstAgent,
         );
       } else if (firstItems && current.feature !== "namespaces") {
-        fresh.set(
-          current.feature === "backends"
-            ? "/backends"
-            : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          firstItems,
-        );
+        fresh.set(collectionPath(current.feature, namespaceId), firstItems);
       }
       if (firstPermissions !== null) {
         fresh.set(permissionsPath, firstPermissions);
@@ -1488,10 +1957,15 @@ async function loadPage({
             refused.set(path, 403);
             return;
           }
+          // An administration read keeps its gate: once this tab knows the caller does not
+          // administer the Installation, it is refused here, unsent (finding 2636).
           try {
             fresh.set(
               path,
-              await request(path, { includeMeta: retainedState.metaReads.has(path) }),
+              await request(path, {
+                includeMeta: retainedState.metaReads.has(path),
+                installationAdministration: retainedState.administrationReads.get(path),
+              }),
             );
           } catch (error) {
             if (!settledRefusal(error)) {
@@ -1525,7 +1999,7 @@ async function loadPage({
     if (
       retained &&
       reuseView &&
-      !agentsNamespaceUnavailable &&
+      !scopedNamespaceUnavailable &&
       (document.activeElement === document.body ||
         (heldHeading !== null && document.activeElement === heldHeading))
     ) {
@@ -1552,6 +2026,8 @@ async function loadPage({
         resume();
       }
       navigateAgentTab = retainedState.tabNavigation;
+      leaveGuard = retainedState.leaveGuard ?? null;
+      writeInFlight = retainedState.writeInFlight ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
       restoreRefocus = () => restoreFocus?.restore(shell.view);
@@ -1566,7 +2042,7 @@ async function loadPage({
     // so nothing is focused twice (finding 1528). A fresh load whose reads beat the loading
     // delay has no shell yet: its startup status stands in, until the overview reveals or the
     // delay passes and the loading page takes its place (finding 1537).
-    const agentEntry = current.agentId && !current.creating && !agentsNamespaceUnavailable;
+    const agentEntry = current.agentId && !current.creating && !scopedNamespaceUnavailable;
     const startupStandIn =
       agentEntry && !shell && loadingTimer !== null ? app.querySelector(":scope > .startup") : null;
     const standIn =
@@ -1591,7 +2067,13 @@ async function loadPage({
       // Diagnostics attach to the Agent's own shell when it reveals.
       shell = { ...standIn, view: detailView, diagnostics: null };
     } else {
-      shell = renderShell(current.feature, false);
+      // A Namespace the reader cannot read hides its Agent too: the panel takes the Agents list's
+      // header, not the Agent page's ID, copy button and ← Agents link (finding 2400).
+      shell = renderShell(
+        current.feature,
+        false,
+        scopedNamespaceUnavailable ? { page: null } : undefined,
+      );
     }
     const viewState = {
       active,
@@ -1600,6 +2082,9 @@ async function loadPage({
       mutations: 0,
       reads: new Map(),
       metaReads: new Set(),
+      // Each read's Installation-administration option, so a return replays it gated (finding
+      // 2636).
+      administrationReads: new Map(),
       resumeHandlers: new Set(),
       revalidators: new Set(),
       user: session.user,
@@ -1620,12 +2105,19 @@ async function loadPage({
         viewState.mutations += 1;
         retainedViews.clear();
       }
+      // Records a read's answer, and its administration option, for a return to replay.
+      const recordRead = (signature) => {
+        viewState.reads.set(path, signature);
+        if (options.installationAdministration) {
+          viewState.administrationReads.set(path, options.installationAdministration);
+        }
+      };
       try {
         const result = await request(path, options);
         // Live reads (runtime status, log pages) differ on every call; replaying them to
         // revalidate a cached view would only spend the reader's rate limit.
         if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
-          viewState.reads.set(path, readSignature(result, options.includeMeta));
+          recordRead(readSignature(result, options.includeMeta));
           if (options.includeMeta) {
             viewState.metaReads.add(path);
           }
@@ -1641,7 +2133,7 @@ async function loadPage({
             viewState.reusable = false;
           }
           if (options.revalidate !== false) {
-            viewState.reads.set(path, refusedRead(error.status));
+            recordRead(refusedRead(error.status));
           }
         } else if (counted) {
           // A reread on resume replaces what an unfinished or failed one showed, including a
@@ -1667,39 +2159,47 @@ async function loadPage({
       attachDiagnostics(shell.diagnostics);
     }
     if (current.feature === "settings") {
-      shell.view.append(
-        element(
-          "section",
-          { className: "state-panel" },
-          element("h2", {}, "Signed-in account"),
-          element(
-            "dl",
-            { className: "settings" },
-            element("dt", {}, "Name"),
-            element("dd", {}, session.user.name),
-            element("dt", {}, "Email"),
-            element("dd", {}, session.user.email),
-          ),
-          element("p", {}, "No configurable settings in this release."),
-          button("Back", () => navigate(navigation.previousCollection)),
-        ),
-      );
+      shell.view.append(settingsView());
+      if (installationAdmin) {
+        shell.view.append(
+          renderInstallationConfigurations({
+            request,
+            isCurrent: () => lifetime.isCurrent(viewState.active),
+          }),
+        );
+      }
+
       markMountedRoute(current);
       return;
     }
-    if (agentsNamespaceUnavailable) {
+    if (scopedNamespaceUnavailable) {
       clearRetainedViewsForNamespace(namespaceId);
-      panel(
-        shell.view,
-        namespaceId === null ? "No readable Namespaces" : "Namespace unavailable",
-        namespaceId === null
-          ? "Ask an administrator to provision a Namespace or grant access. Namespaces remain available in navigation."
-          : "This Namespace is missing or you no longer have access. Choose another Namespace.",
-        namespaces.length ? "Switch Namespace" : "Refresh",
-        () => (namespaces.length ? switchNamespace() : void loadPage()),
-      );
+      if (namespaceId === null) {
+        // With nothing to switch to, the header's Refresh is the one way to look again, so the
+        // panel adds no second Refresh (finding 2371).
+        namespaceAccessPanel(
+          shell.view,
+          NO_READABLE_NAMESPACES,
+          "Ask an Installation administrator to create a Namespace or to give you access to one, then Refresh.",
+        );
+      } else {
+        namespaceUnavailablePanel(shell.view);
+      }
       return;
     }
+    // Inline Create Secret dialogs follow the Namespace's secrets.create answer (finding 2442).
+    // A page that read the answer up front reuses it; the Agent page reads it once, when a Secret
+    // field first needs it, and only for a Namespace this session can read. A failed read is
+    // unknown and keeps the action.
+    let secretsCreateRead = null;
+    const secretsCreateAllowed = () =>
+      (secretsCreateRead ??= (
+        firstPermissions !== null
+          ? Promise.resolve(firstPermissions)
+          : namespaces.some((item) => item.id === namespaceId)
+            ? request(permissionsPath).catch(() => null)
+            : Promise.resolve(null)
+      ).then((permissions) => permissions?.secrets?.create));
     const agentContext = {
       operatorId: session.user.id,
       installationAdmin,
@@ -1708,6 +2208,10 @@ async function loadPage({
       suspendDrafts: () => drafts.suspend(),
       view: shell.view,
       namespaceId,
+      // The selected Namespace: the Agents list and Create Agent name its status when it is not
+      // ready (finding 1895).
+      namespace: namespaces.find((item) => item.id === namespaceId),
+      secretsCreateAllowed,
       request: viewRequest,
       mutationVersion: () => viewState.mutations,
       navigate,
@@ -1720,7 +2224,7 @@ async function loadPage({
       },
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
-          showLogin("Your session has expired.");
+          showExpiredLogin();
         }
       },
       setTitle: (title) => {
@@ -1753,6 +2257,44 @@ async function loadPage({
           navigateAgentTab = navigateTab;
         }
       },
+      // The page's own header actions (an Agent's Create new version) sit beside Refresh. A
+      // page rendering behind a stand-in gets them when its shell reveals.
+      setPageActions(node) {
+        node.classList.add("page-view-actions");
+        viewState.pageActions = node;
+        if (!shownStandIn && shell.actions?.isConnected) {
+          shell.actions.querySelector(":scope > .page-view-actions")?.remove();
+          shell.actions.append(node);
+        }
+      },
+      setLeaveGuard(guard) {
+        if (lifetime.isCurrent(viewState.active)) {
+          const refuse = (options) => shownStandIn === null && guard(options);
+          viewState.leaveGuard = refuse;
+          leaveGuard = refuse;
+        }
+      },
+      // A page whose writes hold it open (an Agent's share, a draft's save) says when one is in
+      // flight, so a reload or tab close asks first too (finding 2125).
+      setWriteInFlight(check) {
+        if (lifetime.isCurrent(viewState.active)) {
+          viewState.writeInFlight = check;
+          writeInFlight = check;
+        }
+      },
+      // A page that holds only for its own write sets both guards here, so it cannot hold in-app
+      // navigation and still let a reload or tab close cut the write short (finding 2181).
+      holdWhileWriting({ writing, held, released }) {
+        agentContext.setLeaveGuard(() => {
+          if (!writing()) {
+            released?.();
+            return false;
+          }
+          held();
+          return true;
+        });
+        agentContext.setWriteInFlight(writing);
+      },
     };
     if (firstPermissions !== null) {
       viewState.reads.set(permissionsPath, readSignature(firstPermissions));
@@ -1760,23 +2302,35 @@ async function loadPage({
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
     }
+    if (current.creating || (["agents", "secrets"].includes(current.feature) && !current.agentId)) {
+      // The Agent and Secret pages show the selected Namespace's status (finding 1895), so a
+      // return rebuilds them when it changed. Other Namespaces' changes keep the view.
+      const shownNamespace = namespaceId;
+      const shownStatus = agentContext.namespace?.status;
+      viewState.revalidators.add(async () => {
+        if (namespaces.find((item) => item.id === shownNamespace)?.status !== shownStatus) {
+          throw new Error("Namespace status changed");
+        }
+      });
+    }
     if (current.creating) {
-      renderCreateAgent(
-        {
-          ...agentContext,
-          permissions: firstPermissions,
-          setDiscardOnExit(discard) {
-            discardCreationOnExit = discard ? { namespaceId } : null;
-          },
-          setDraftCapture(capture) {
-            agentContext.drafts.forget("create");
-            if (capture) {
-              agentContext.drafts.track("create", capture);
-            }
-          },
+      const createContext = {
+        ...agentContext,
+        permissions: firstPermissions,
+        // Create Agent rereads the answer in place, so its Secret fields follow the latest one.
+        secretsCreateAllowed: async () => createContext.permissions?.secrets?.create,
+        setDiscardOnExit(discard) {
+          discardCreationOnExit = discard ? { namespaceId } : null;
         },
-        agentContext.drafts.get("create"),
-      );
+        setDraftCapture(capture, unsaved) {
+          agentContext.drafts.forget("create");
+          if (capture) {
+            agentContext.drafts.track("create", capture);
+            agentContext.drafts.unsavedWhen("create", unsaved);
+          }
+        },
+      };
+      renderCreateAgent(createContext, agentContext.drafts.get("create"));
       markMountedRoute(current);
       return;
     }
@@ -1846,6 +2400,9 @@ async function loadPage({
           shell.view.replaceWith(detailView);
           shell.view = detailView;
           detailView.hidden = false;
+          if (viewState.pageActions) {
+            shell.actions.append(viewState.pageActions);
+          }
           if (shell.diagnostics) {
             attachDiagnostics(shell.diagnostics);
           }
@@ -1888,17 +2445,44 @@ async function loadPage({
     if (!Array.isArray(items)) {
       throw new Error("Invalid collection response");
     }
-    viewState.reads.set(
-      current.feature === "namespaces"
-        ? "/namespaces"
-        : current.feature === "backends"
-          ? "/backends"
-          : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-      JSON.stringify(items),
-    );
+    viewState.reads.set(collectionPath(current.feature, namespaceId), JSON.stringify(items));
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });
       showChatLinkFailure(shell.view, chatLinkFailure);
+    } else if (current.feature === "namespaces") {
+      renderNamespaces(
+        {
+          ...agentContext,
+          reload: () => loadPage(),
+          fromRefresh,
+          sorted,
+          onRemoved(namespace) {
+            clearRetainedViewsForNamespace(namespace.id);
+            setNamespaces(namespaces.filter((item) => item.id !== namespace.id));
+            if (namespaceId === namespace.id) {
+              namespaceId =
+                (
+                  namespaces.find((item) => item.status === "ready") ??
+                  namespaces.find((item) => item.status !== "deleting") ??
+                  namespaces[0]
+                )?.id ?? null;
+              replaceUrl(pageUrl("namespaces"));
+            }
+            shellUI.updateNamespaces(namespaces);
+          },
+        },
+        items,
+      );
+    } else if (current.feature === "secrets") {
+      renderSecrets({
+        ...agentContext,
+        items,
+        sorted,
+        permissions: firstPermissions,
+        openSecretId: linkedSecretId,
+      });
+      // Shown (its dialog opened or the unlisted note), so a later load does not reopen it.
+      linkedSecret = null;
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;
@@ -1917,23 +2501,16 @@ async function loadPage({
     forgetRetainedView(taken);
     shownStandIn = null;
     if (error.status === 401) {
-      showLogin("Your session has expired.");
+      showExpiredLogin();
       return;
     }
     if (!accessResolved) {
-      // Uncertain shared admission invalidates every preview, not just this route.
-      clearDrafts();
+      // Uncertain shared admission invalidates every preview, not just this route. Drafts stay:
+      // a later read clears them only if it proves their Namespace or account gone (finding 1935).
       resetReads();
       clearPrivate();
       shell = null;
-      publicPanel(
-        sessionResolved ? "Namespace access unavailable" : "Session unavailable",
-        sessionResolved
-          ? "Could not check Namespace access. Try again."
-          : "Could not check your session. Try again.",
-        "Retry",
-        () => void loadPage(),
-      );
+      showAdmissionUnavailable(sessionResolved, error.status);
       return;
     }
     mountedRouteKey = null;
@@ -1950,6 +2527,15 @@ async function loadPage({
     focusAgentResult =
       document.activeElement === pendingAgentHeading ||
       (focusAgentResult && document.activeElement === app.querySelector(".content h1"));
+    if (current.feature === "backends" && error.status === 403) {
+      // Backends need Installation administration, so their 403 settles that answer as false,
+      // as a denied probe would. An administrator revoked mid-session kept a settled true: every
+      // Refresh or reload read /backends again and the API audited a denial each time, and the
+      // Observability link stayed (finding 2627). Now the shell below drops the link, the
+      // refusal's Refresh asks the permission answer again, and a reload, without the tab's
+      // stored answer, asks it too. Neither is audited.
+      settleNotAdministrator();
+    }
     shell = renderShell(current.feature);
     if (current.agentId && error.status === 404 && current.namespace === null) {
       // A typed or shared link has no Namespace, so the console read the Agent in
@@ -2025,16 +2611,22 @@ async function loadPage({
       shell.view,
       title,
       agentDenied
-        ? "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you."
+        ? `You do not have access to this Agent or its settings, or it was deleted. ${askForGrant("Agent read on it")}`
         : installationDenied
-          ? "Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. Ask an Installation administrator for access."
+          ? `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`
           : error.status === 403
-            ? "Your account does not have access to this page in this Namespace. Ask an administrator for access, or choose another Namespace."
+            ? `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`
             : "The read could not be completed. Retry to check current access and saved state.",
-      "Retry",
-      () => void loadPage(),
-      error.requestId,
+      // Retrying a permission refusal gives the same answer; the header's Refresh checks access
+      // again after a grant (finding 2549). The Request ID stays for whoever traces the denial,
+      // behind a disclosure (finding D770).
+      error.status === 403 ? undefined : "Retry",
+      error.status === 403 ? undefined : () => void loadPage(),
+      error.status === 403 ? null : error.requestId,
     );
+    if (error.status === 403 && error.requestId) {
+      shell.view.querySelector(".state-panel").append(requestIdDisclosure(error.requestId));
+    }
   } finally {
     stopLoadingTimer();
     if (openingAgentLoad === active) {
@@ -2083,11 +2675,10 @@ const chatLinkFailures = {
 function showChatLinkFailure(view, failure) {
   if (Object.hasOwn(chatLinkFailures, failure ?? "")) {
     view.prepend(
-      element(
-        "p",
-        { className: "notice unopened-chat-link", role: "status" },
-        chatLinkFailures[failure],
-      ),
+      statusBlock("warning", null, chatLinkFailures[failure], [], {
+        className: "unopened-chat-link",
+        role: "status",
+      }),
     );
   }
 }
@@ -2137,14 +2728,22 @@ async function revalidateMountedAgent(current) {
     routeKey(route()) === key &&
     view.isConnected;
   const path = `/namespaces/${encodeURIComponent(selectedNamespace)}/agents/${encodeURIComponent(agent.id)}`;
-  const focused = view.contains(document.activeElement) ? document.activeElement : null;
+  const pageActions = mountedViewState?.pageActions?.isConnected
+    ? mountedViewState.pageActions
+    : null;
+  const activeElement = document.activeElement;
+  const focused =
+    view.contains(activeElement) || pageActions?.contains(activeElement) ? activeElement : null;
   const selection =
     typeof focused?.selectionStart === "number"
       ? [focused.selectionStart, focused.selectionEnd]
       : null;
   let checking = "session";
-  // Block stale controls during admission without losing an editor's caret on return.
+  // Block stale controls during admission without losing focus or an editor's caret on return.
   view.inert = true;
+  if (pageActions) {
+    pageActions.inert = true;
+  }
   let clearStillChecking = null;
   const stillChecking = setTimeout(() => {
     if (isCurrent()) {
@@ -2157,7 +2756,7 @@ async function revalidateMountedAgent(current) {
       return;
     }
     if (resolvedSession === null) {
-      showLogin("Your session has expired.");
+      showExpiredLogin();
       return;
     }
     if (sessionOwnerKey(resolvedSession) !== owner) {
@@ -2178,18 +2777,11 @@ async function revalidateMountedAgent(current) {
     }
     clearRetainedViewsOutsideNamespaces(readable);
     session = resolvedSession;
-    namespaces = sorted(readable);
+    setNamespaces(readable);
     if (!namespaces.some((item) => item.id === selectedNamespace)) {
       clearRetainedViewsForNamespace(selectedNamespace);
       resetReads();
-      const shell = renderShell(current.feature);
-      panel(
-        shell.view,
-        "Namespace unavailable",
-        "This Namespace is missing or you no longer have access. Choose another Namespace.",
-        "Switch Namespace",
-        () => switchNamespace(),
-      );
+      namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
       return;
     }
     checking = "detail";
@@ -2215,21 +2807,14 @@ async function revalidateMountedAgent(current) {
       return;
     }
     if (error.status === 401) {
-      showLogin("Your session has expired.");
+      showExpiredLogin();
       return;
     }
     resetReads();
     if (checking !== "detail") {
-      clearDrafts();
+      // Drafts survive an unavailable check, as in loadPage (finding 1935).
       clearPrivate();
-      publicPanel(
-        checking === "session" ? "Session unavailable" : "Namespace access unavailable",
-        checking === "session"
-          ? "Could not check your session. Try again."
-          : "Could not check Namespace access. Try again.",
-        "Retry",
-        () => void loadPage(),
-      );
+      showAdmissionUnavailable(checking !== "session", error.status);
       return;
     }
     if ([400, 403, 404].includes(error.status)) {
@@ -2244,18 +2829,25 @@ async function revalidateMountedAgent(current) {
           ? "Resource unavailable"
           : "Request unavailable",
       error.status === 403
-        ? "You do not have permission to read this Agent, its versions, or its Configuration."
+        ? agentPageReadRefusal(error)
         : "The read could not be completed. Retry to check current access and saved state.",
-      "Retry",
-      () => void loadPage(),
+      // A permission refusal offers the header's Refresh, not a Retry that repeats it.
+      error.status === 403 ? undefined : "Retry",
+      error.status === 403 ? undefined : () => void loadPage(),
       error.requestId,
     );
+    if (error.status === 403) {
+      shell.refresh.disabled = false;
+    }
   } finally {
     clearTimeout(stillChecking);
     clearStillChecking?.();
     // A newer load may hold this same node on screen; only this check's lifetime releases it.
     if (view.isConnected && lifetime.isCurrent(active)) {
       view.inert = false;
+      if (pageActions?.isConnected) {
+        pageActions.inert = false;
+      }
       if (
         isCurrent() &&
         focused?.isConnected &&
@@ -2303,6 +2895,79 @@ function resumePage() {
   });
 }
 
+// Settings (UX spec 3.10): the signed-in account, and this session with Sign out. The session
+// read carries no sign-in method, sign-in time or expiry, so the cards show only what it has.
+function settingsView() {
+  const { user } = session;
+  return element(
+    "div",
+    { className: "settings-page" },
+    element(
+      "section",
+      { className: "card" },
+      element("h2", {}, "Signed-in account"),
+      element(
+        "div",
+        { className: "settings-account" },
+        element(
+          "span",
+          { className: "account-avatar account-avatar--lg", "aria-hidden": "true" },
+          initials(user),
+        ),
+        element(
+          "dl",
+          { className: "settings" },
+          // An account with no display name carries its email as the name; the email row
+          // already says it (finding 2099).
+          ...(user.name && user.name !== user.email
+            ? [element("dt", {}, "Name"), element("dd", {}, user.name)]
+            : []),
+          element("dt", {}, "Email"),
+          element("dd", {}, user.email),
+        ),
+      ),
+    ),
+    element(
+      "section",
+      { className: "card" },
+      element("h2", {}, "Session"),
+      button("Sign out", () => void logout(), {
+        className: "settings-sign-out",
+        "aria-describedby": "settings-sign-out-help",
+      }),
+      element(
+        "p",
+        { className: "hint", id: "settings-sign-out-help" },
+        "Signing out ends this session on this device only.",
+      ),
+    ),
+  );
+}
+
+// The shared session or Namespace read failed, so no private page can show. Once the session
+// is confirmed, a refusal can be lasting (an account whose access was removed), and this panel
+// has no account menu, so it offers Sign out beside Retry (finding 1894).
+function showAdmissionUnavailable(sessionChecked, status) {
+  if (!sessionChecked) {
+    publicPanel(
+      "Session unavailable",
+      "Could not check your session. Try again.",
+      "Retry",
+      () => void loadPage(),
+    );
+    return;
+  }
+  publicPanel(
+    status === 403 ? "No access" : "Namespace access unavailable",
+    status === 403
+      ? "Your account has no access to this Installation. Try again or sign out."
+      : "Could not check Namespace access. Try again.",
+    "Retry",
+    () => void loadPage(),
+    { label: "Sign out", action: () => void logout() },
+  );
+}
+
 async function logout() {
   loggingOut = true;
   pendingIntent = null;
@@ -2313,6 +2978,7 @@ async function logout() {
   clearPrivate();
   forgetInstallationAccess();
   forgetDeniedReads();
+  rememberSignedIn(false);
   publicPanel("Signing out…", "Confirming that your session has ended.");
   let confirmed = false;
   try {
@@ -2330,7 +2996,6 @@ async function logout() {
   }
   if (confirmed) {
     loggingOut = false;
-    navigation.resetHistory();
     showLogin();
   } else {
     publicPanel(
@@ -2342,16 +3007,27 @@ async function logout() {
   }
 }
 
+// Phone bottom sheets stay above the on-screen keyboard (finding 1957).
+trackVisualViewport();
 window.addEventListener("popstate", () => {
   if (!loggingOut) {
     // Browser history can change Agent tabs while the mounted view is inert.
     // Recheck admission for the new route before exposing its cached panel.
-    void loadPage({ fromNavigation: !resumePending });
+    navigation.traverse({ fromNavigation: !resumePending, mountedUrl: mountedRouteKey });
   }
 });
 window.addEventListener("focus", resumePage);
 document.addEventListener("visibilitychange", () => {
   resumePage();
+});
+// Drafts live only in this document, so a reload or tab close would lose unsaved editor work
+// (finding 1902). It would also cut short a write in flight, such as the second of a share's
+// two bindings (finding 2125).
+window.addEventListener("beforeunload", (event) => {
+  if (!loggingOut && (drafts.hasUnsaved() || writeInFlight?.())) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
 });
 window.addEventListener("pagehide", () => {
   clearDrafts();

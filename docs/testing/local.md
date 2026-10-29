@@ -99,7 +99,10 @@ node scripts/generate-occ-api-reference.mjs --check
 ```
 
 Run `pnpm hooks:install` to reinstall the managed pre-push hook. It refuses to
-replace an unmanaged hook and preserves `core.hooksPath`.
+replace an unmanaged hook and preserves `core.hooksPath`. The hook checks files
+on disk in the active checkout, including unstaged edits. To verify formatting
+for a trusted outgoing commit, run `pnpm format:check` in a clean, isolated
+checkout of its exact commit ID with matching dependencies already installed.
 
 ## Metrics and observability tests
 
@@ -214,7 +217,7 @@ pnpm_config_verify_deps_before_run=false node scripts/ci/prepare.mjs --lane "$OB
 
 Inspect results and clean up as above. The model lane checks embedded and
 dedicated turns and attributed logs in a production topology fixture; it does
-not prove Helm-installed model coverage or revision cutover. See
+not prove Helm-installed model coverage or version cutover. See
 [Kubernetes image requirements](kubernetes.md#kubernetes-model-turns-and-secrets).
 
 On macOS, Podman needs a compatible rootful engine with cpuset delegation. Select

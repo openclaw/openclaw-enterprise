@@ -1,6 +1,6 @@
 # Verify an Agent with the OpenClaw TUI
 
-Attach to the requested active revision and ask its model to echo a fresh nonce.
+Attach to the selected Agent version and ask its model to echo a fresh nonce.
 Use this interactive check after [deploying a production Agent](production-agents.md).
 For a noninteractive check, use [HTTP model verification](../operate/model-verification.md).
 
@@ -14,11 +14,13 @@ You need OCC Agent read access and Kubernetes permission to list Pods and exec
 into the selected gateway. The Agent needs a valid model credential and the
 [optional gateway password](production-agents.md#configure-the-agent-runtime).
 
-## Select and verify the requested revision
+<span id="select-and-verify-the-requested-revision" class="anchor-alias"></span>
+
+## Select and verify the requested version
 
 Use the requested `REVISION_ID`. This Bash function waits up to five minutes
 for OCC to select it and for exactly one Ready gateway Pod to mount its
-immutable ConfigMap. A previous revision cannot satisfy both checks:
+immutable ConfigMap. A previous version cannot satisfy both checks:
 
 ```bash
 # Single-cluster shares the tenant; two-cluster dedicated uses the control target.
@@ -62,7 +64,7 @@ ready = [
             for v in pod["spec"].get("volumes", []))
 ]
 if len(ready) > 1:
-    sys.exit("Multiple Ready Pods match the requested revision; refusing to choose.")
+    sys.exit("Multiple Ready Pods match the requested Agent revision; refusing to choose.")
 if not ready:
     sys.exit(3)
 print(ready[0]["metadata"]["name"])
@@ -79,7 +81,7 @@ print(ready[0]["metadata"]["name"])
     fi
     if [ "$attempt" -lt 60 ]; then sleep 5; fi
   done
-  printf '%s\n' 'No unique Ready gateway Pod for the requested active revision.' >&2
+  printf '%s\n' 'No unique Ready gateway Pod matches the requested Agent revision.' >&2
   return 1
 }
 ```

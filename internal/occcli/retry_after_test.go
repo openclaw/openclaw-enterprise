@@ -3,6 +3,7 @@ package occcli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -48,11 +49,17 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 	for _, test := range []struct {
 		name, format, fixed string
 		fallback            bool
+		wantDelay           time.Duration
 	}{
 		{name: "HTTP date", format: http.TimeFormat},
 		{name: "obsolete RFC850 date", format: time.RFC850},
 		{name: "obsolete asctime date", format: time.ANSIC},
-		{name: "seconds", fixed: "5"},
+		{name: "seconds", fixed: "5", wantDelay: 5 * time.Second},
+		{name: "leading zero seconds", fixed: "05", wantDelay: 5 * time.Second},
+		{name: "maximum seconds", fixed: "3600", wantDelay: time.Hour},
+		{name: "seconds beyond supported hour", fixed: "3601", fallback: true},
+		{name: "signed positive seconds", fixed: "+3600", fallback: true},
+		{name: "signed negative seconds", fixed: "-5", fallback: true},
 		{name: "invalid", fixed: "not a date", fallback: true},
 		{name: "zero", fixed: "0", fallback: true},
 		{name: "past date", format: http.TimeFormat, fallback: true},
@@ -60,6 +67,14 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sleeps := recordSleeps(t)
+			// Record when each wait ends, to compare it with the server's date.
+			var wakes []time.Time
+			recorded := sleepContext
+			sleepContext = func(ctx context.Context, d time.Duration) error {
+				wakes = append(wakes, time.Now().Add(d))
+				return recorded(ctx, d)
+			}
+			var serverDate time.Time
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			retry := func(w http.ResponseWriter, q url.Values) {
@@ -73,6 +88,7 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 						when = when.Add(2 * time.Hour)
 					}
 					value = when.Format(test.format)
+					serverDate = when.Truncate(time.Second)
 				}
 				logError(http.StatusTooManyRequests, "RUNTIME_LOGS_RATE_LIMITED", map[string]string{"retry-after": value})(w, q)
 			}
@@ -86,7 +102,7 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 				}
 				return n, err
 			})
-			if err := runLogsCommandTo(t, ctx, stub, sink, &notices, "agent", "logs", "agt_1", "--revision", "rev_1", "--source", "gateway", "--follow"); err != nil {
+			if err := runLogsCommandTo(t, ctx, stub, sink, &notices, "agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--revision", "rev_00000000-0000-4000-8000-000000000001", "--source", "gateway", "--follow"); err != nil {
 				t.Fatal(err)
 			}
 			if len(*sleeps) != 1 {
@@ -99,8 +115,8 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 					t.Fatalf("fallback wait=%v; want 2s", delay)
 				}
 			case test.fixed != "":
-				if delay != 5*time.Second {
-					t.Fatalf("seconds wait=%v; want 5s", delay)
+				if delay != test.wantDelay {
+					t.Fatalf("seconds wait=%v; want %v", delay, test.wantDelay)
 				}
 			default:
 				if delay < 20*time.Second || delay > 30*time.Second {
@@ -109,11 +125,44 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 				if delay%time.Second != 0 {
 					t.Fatalf("date wait=%v; want whole seconds", delay)
 				}
+				// The remaining time is rounded up, so the retry never comes before the date.
+				// A truncating client is caught unless less than the parse-to-sleep gap
+				// (microseconds) remained of the second.
+				if wakes[0].Before(serverDate) {
+					t.Fatalf("date wait=%v ends %v before the server date", delay, serverDate.Sub(wakes[0]))
+				}
 				if got := notices.String(); strings.Contains(got, ".") || !strings.Contains(got, "retrying in "+delay.String()) {
 					t.Fatalf("notice=%q; want whole-second retry delay", got)
 				}
 			}
 		})
+	}
+}
+
+// Error renders at most 32 details, and only bounded ones: a path and a message of
+// up to 512 runes each, and a code of up to 64 bytes.
+func TestAPIErrorRendersOnlyBoundedDetails(t *testing.T) {
+	detail := func(path, code string) occclient.ConfigurationErrorDetail {
+		return occclient.ConfigurationErrorDetail{Path: path, Code: code, Message: "m"}
+	}
+	withMessage := func(code, message string) occclient.ConfigurationErrorDetail {
+		return occclient.ConfigurationErrorDetail{Path: "/m", Code: code, Message: message}
+	}
+	var details []occclient.ConfigurationErrorDetail
+	for index := range 33 {
+		details = append(details, detail(fmt.Sprintf("/d%d", index), "INVALID_VALUE"))
+	}
+	got := (&occclient.APIError{Status: http.StatusBadRequest, Details: details}).Error()
+	if !strings.Contains(got, `"/d31"`) || strings.Contains(got, `"/d32"`) {
+		t.Fatalf("message=%q; want the first 32 details only", got)
+	}
+	longPath, longCode, longMessage := "/"+strings.Repeat("é", 511), strings.Repeat("C", 64), strings.Repeat("é", 512)
+	got = (&occclient.APIError{Status: http.StatusBadRequest, Details: []occclient.ConfigurationErrorDetail{
+		detail(longPath, "A"), detail(longPath+"é", "B"), detail("/c", longCode), detail("/d", longCode+"C"),
+		withMessage("E", longMessage), withMessage("F", longMessage+"é"),
+	}}).Error()
+	if lines := strings.Count(got, "\n  "); lines != 3 || !strings.Contains(got, `"code":"A"`) || !strings.Contains(got, `"`+longCode+`"`) || !strings.Contains(got, `"code":"E"`) {
+		t.Fatalf("message=%q; want only the details within the path and code bounds", got)
 	}
 }
 

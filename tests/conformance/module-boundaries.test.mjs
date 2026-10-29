@@ -4,11 +4,16 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join, relative, win32 } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, test } from "node:test";
 import ts from "typescript-compiler-api";
-import { verifyModuleBoundaries } from "../../scripts/verify-module-boundaries.mjs";
+import {
+  runModuleBoundaryCli,
+  verifyModuleBoundaries,
+} from "../../scripts/verify-module-boundaries.mjs";
+import { settled as settle } from "../helpers/child-processes.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = new URL("../fixtures/module-boundaries/", import.meta.url);
@@ -34,6 +39,29 @@ async function node(args, options) {
   }
 }
 
+// Runs the CLI in this process. Like a child run, it resolves to { stdout, stderr } on exit
+// 0 and otherwise rejects with an error carrying the exit `code`, `stdout` and `stderr`.
+// Real child runs stay where the process matters: exit statuses and stream output in
+// "requires explicit valid policy...", an unreadable policy file, an unknown option,
+// NODE_PATH, and tests that resolve with Node in this process before running the CLI (its
+// resolution caches).
+async function cliInProcess(args) {
+  let stdout = "";
+  let stderr = "";
+  const code = await runModuleBoundaryCli(args, {
+    stdout: { write: (text) => (stdout += text) },
+    stderr: { write: (text) => (stderr += text) },
+  });
+  if (code !== 0) {
+    throw Object.assign(new Error(`module boundary CLI exited with ${code}`), {
+      code,
+      stdout,
+      stderr,
+    });
+  }
+  return { stdout, stderr };
+}
+
 // Awaits a rejected child run, requires exit `code`, and returns the error.
 async function failure(promise, code) {
   let caught;
@@ -43,16 +71,6 @@ async function failure(promise, code) {
   });
   assert.equal(caught.code, code, caught.stderr);
   return caught;
-}
-
-// Awaits every case, then rethrows the first failure, so no case outlives its test.
-async function settle(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
 }
 
 const dynamic = "unresolved-dynamic-import";
@@ -109,7 +127,19 @@ async function workspace(t, overrides = {}) {
     check,
     native,
     observe,
-    cli: (extra = [], options) => node([cli, ...args, ...extra], options),
+    // Reviews the source's unknown loader and keeps its exception valid across a line shift.
+    reviewLoader: async (path, report) => {
+      const item = violation(report ?? (await check()), path);
+      assert.ok(item);
+      const exceptions = exceptionsFor(item);
+      assert.equal((await check({ exceptions })).ok, true);
+      await write(path, "\n\n" + (await readFile(join(root, path), "utf8")));
+      assert.equal((await check({ exceptions })).ok, true, "line shifts retain the identity");
+      return { item, exceptions };
+    },
+    cli: (extra = []) => cliInProcess([...args, ...extra]),
+    // A real child, for exit statuses, streams, env and Node's per-process caches.
+    cliProcess: (extra = [], options) => node([cli, ...args, ...extra], options),
     // Installs a workspace package directory at `at`, as a package manager would.
     link: async (path = "packages/library", at = "node_modules/@fixture/library") => {
       await mkdir(dirname(join(root, at)), { recursive: true });
@@ -201,7 +231,7 @@ describe("module boundaries", { concurrency: true }, () => {
         const space = await workspace(t);
         await space.write(path, marker);
         for (const error of await settle(
-          [[], ["--json"]].map((json) => failure(node([cli, ...options(space), ...json]), 2)),
+          [[], ["--json"]].map((json) => failure(cliInProcess([...options(space), ...json]), 2)),
         )) {
           const output = error.stdout + error.stderr;
           assert.match(output, /Invalid JSON/);
@@ -213,7 +243,7 @@ describe("module boundaries", { concurrency: true }, () => {
   });
 
   test("uses Node ESM lookup without CommonJS global search paths", async (t) => {
-    const { root, write, cli: verify } = await workspace(t);
+    const { root, write, cliProcess: verify } = await workspace(t);
     const global = join(root, "global-modules");
     await write(
       "global-modules/@fixture/library/package.json",
@@ -731,8 +761,7 @@ describe("module boundaries", { concurrency: true }, () => {
 
   test("rejects symbolic links in configured source roots and their ancestors", async (t) => {
     const { root, write, check } = await workspace(t);
-    const outside = await mkdtemp(join(tmpdir(), "module-outside-"));
-    t.after(() => rm(outside, { recursive: true, force: true }));
+    const outside = await temporaryDirectory(t, "module-outside-");
     await writeFile(join(outside, "outside.mjs"), "export const outside = true;");
     await mkdir(join(outside, "nested"));
     await writeFile(join(outside, "nested", "outside.mjs"), "export const outside = true;");
@@ -750,7 +779,7 @@ describe("module boundaries", { concurrency: true }, () => {
         );
         await write(`policy-${index}.json`, JSON.stringify(invalid));
         const error = await failure(
-          node([cli, "--root", root, "--policy", join(root, `policy-${index}.json`), "--json"]),
+          cliInProcess(["--root", root, "--policy", join(root, `policy-${index}.json`), "--json"]),
           2,
         );
         assert.match(error.stderr, /Source roots cannot traverse symbolic links/);
@@ -1004,6 +1033,94 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.equal(types.runtimeTarget, null);
   });
 
+  test("refuses case-insensitive reserved export segments like native Node", async (t) => {
+    const { root, write, cli, link, exports } = await workspace(t);
+    await exports({
+      "./mixed": "./src/NoDe_MoDuLeS/entry.mjs",
+      "./encoded": "./src/%4eODE_MODULES/entry.mjs",
+      "./fallback": ["./src/NoDe_MoDuLeS/entry.mjs", "./src/conditional.mjs"],
+      "./valid": "./src/node_modules-backup/entry.mjs",
+    });
+    await link();
+    for (const directory of ["NoDe_MoDuLeS", "NODE_MODULES", "node_modules-backup"]) {
+      await write(`packages/library/src/${directory}/entry.mjs`, "export const value = 1;\n");
+    }
+    await write("apps/app/src/mixed.mjs", 'import "@fixture/library/mixed";');
+    await write("apps/app/src/encoded.mjs", 'import "@fixture/library/encoded";');
+    await write("apps/app/src/mixed.cjs", 'require("@fixture/library/mixed");');
+    await write("apps/app/src/valid.mjs", 'import "@fixture/library/valid";');
+    await write("apps/app/src/fallback.mjs", 'import "@fixture/library/fallback";');
+
+    // Real Node selects the fallback without executing a rejected target. ESM and
+    // CommonJS both refuse the same reserved directory, regardless of its case.
+    for (const file of ["mixed.mjs", "encoded.mjs", "mixed.cjs"]) {
+      const error = await failure(node([join(root, "apps/app/src", file)]), 1);
+      assert.match(error.stderr, /ERR_INVALID_PACKAGE_TARGET/);
+    }
+    await node([join(root, "apps/app/src/valid.mjs")]);
+    const fallback = await node(
+      [
+        "--input-type=module",
+        "-e",
+        'console.log(import.meta.resolve("@fixture/library/fallback"))',
+      ],
+      { cwd: root },
+    );
+    assert.equal(
+      fileURLToPath(fallback.stdout.trim()),
+      join(root, "packages/library/src/conditional.mjs"),
+    );
+
+    const result = await failure(cli(["--json"]), 1);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.ok, false);
+    assert.deepEqual(rules(report), Array(3).fill("unsupported-package-export"));
+    for (const file of ["mixed.mjs", "encoded.mjs", "mixed.cjs"]) {
+      assert.equal(from(report, `apps/app/src/${file}`).length, 0);
+    }
+    assert.equal(
+      from(report, "apps/app/src/valid.mjs")[0].to,
+      "packages/library/src/node_modules-backup/entry.mjs",
+    );
+    assert.equal(
+      from(report, "apps/app/src/fallback.mjs")[0].to,
+      "packages/library/src/conditional.mjs",
+    );
+  });
+
+  test("preserves valid export query and fragment names while checking slash segments", async (t) => {
+    const { root, write, cli, link, exports } = await workspace(t);
+    await exports({
+      "./query": "./src/entry.mjs?NoDe_MoDuLeS",
+      "./fragment": "./src/entry.mjs#NoDe_MoDuLeS",
+      "./query-slash": "./src/entry.mjs?q=/NoDe_MoDuLeS/end",
+    });
+    await link();
+    await write("packages/library/src/entry.mjs", "export const value = 1;\n");
+    for (const name of ["query", "fragment", "query-slash"]) {
+      await write(
+        `apps/app/src/${name}.mjs`,
+        `import { value } from "@fixture/library/${name}"; console.log(value);`,
+      );
+    }
+    for (const name of ["query", "fragment"]) {
+      assert.equal((await node([join(root, `apps/app/src/${name}.mjs`)])).stdout.trim(), "1");
+    }
+    const rejected = await failure(node([join(root, "apps/app/src/query-slash.mjs")]), 1);
+    assert.match(rejected.stderr, /ERR_INVALID_PACKAGE_TARGET/);
+
+    const result = await failure(cli(["--json"]), 1);
+    const report = JSON.parse(result.stdout);
+    assert.deepEqual(rules(report), ["unsupported-package-export"]);
+    for (const name of ["query", "fragment"]) {
+      assert.equal(
+        from(report, `apps/app/src/${name}.mjs`)[0].to,
+        "packages/library/src/entry.mjs",
+      );
+    }
+    assert.equal(from(report, "apps/app/src/query-slash.mjs").length, 0);
+  });
+
   test("does not treat a declaration-only target as runtime code", async (t) => {
     const { write, check } = await workspace(t);
     await write("apps/app/src/declaration.d.ts", "export interface Value {};");
@@ -1103,7 +1220,7 @@ describe("module boundaries", { concurrency: true }, () => {
       root,
       write,
       link,
-      cli: verify,
+      cliProcess: verify,
     } = await workspace(t, {
       packages: ["apps/app", "packages/legacy", "packages/outside"],
       sourceRoots: ["apps/app/src", "packages/legacy/src"],
@@ -1632,6 +1749,49 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.ok(imports.every((edge) => edge.to === "apps/app/src/target.mjs"));
   });
 
+  test("keeps case-insensitive file URL loads local with normalized diagnostics", async (t) => {
+    const target = "apps/app/src/private/target.mjs";
+    const { root, write, check, cli, native } = await workspace(t, {
+      boundaries: [noPrivate("apps/app/src/**")],
+    });
+    await write(target, 'export default "LOCAL";');
+    await write("apps/app/src/private/target.cjs", 'module.exports = "LOCAL";');
+    const url = pathToFileURL(join(root, target)).href;
+    for (const [index, scheme] of ["file:", "FILE:", "fIlE:"].entries()) {
+      const prefix = `scheme-${index}`;
+      const selected = url.replace(/^file:/, scheme) + "?view=1#probe";
+      const imports = `apps/app/src/${prefix}-imports.mjs`;
+      await write(imports, `import value from ${JSON.stringify(selected)}; console.log(value);`);
+      assert.equal(await native(imports), "LOCAL");
+      const helpers = `apps/app/src/${prefix}-helpers.mjs`;
+      await write(
+        helpers,
+        `import { createRequire } from "node:module";
+         import { fileURLToPath, pathToFileURL } from "node:url";
+         const load = createRequire(${JSON.stringify(url.replace(/^file:/, scheme))});
+         const value = await import(pathToFileURL(fileURLToPath(${JSON.stringify(selected)})).href);
+         console.log(value.default + load("./target.cjs"));`,
+      );
+      assert.equal(await native(helpers), "LOCALLOCAL");
+    }
+    const report = await check();
+    for (const index of [0, 1, 2]) {
+      const source = `apps/app/src/scheme-${index}-imports.mjs`;
+      assert.ok(reaches(report, source, target), source);
+      assert.equal(violation(report, source, "no-private").specifier, `file:${target}`);
+      assert.ok(reaches(report, `apps/app/src/scheme-${index}-helpers.mjs`, target));
+      assert.ok(
+        reaches(
+          report,
+          `apps/app/src/scheme-${index}-helpers.mjs`,
+          "apps/app/src/private/target.cjs",
+        ),
+      );
+    }
+    const rejected = await failure(cli(["--json"]), 1);
+    assert.equal(JSON.parse(rejected.stdout).ok, false);
+  });
+
   test("resolves ESM literal paths with URL semantics and preserves literal CommonJS filenames", async (t) => {
     const base = "apps/app/src/literals";
     const consumer = `${base}/imports.mjs`;
@@ -1875,22 +2035,33 @@ describe("module boundaries", { concurrency: true }, () => {
   });
 
   test("requires explicit valid policy and reports CLI success, violations and configuration failures", async (t) => {
-    const { root, write, check, args, cli: verify } = await workspace(t, { diagnosticLimit: 1 });
-    const passed = await verify(["--json"]);
+    const {
+      root,
+      write,
+      check,
+      args,
+      cli: verify,
+      cliProcess,
+    } = await workspace(t, {
+      diagnosticLimit: 1,
+    });
+    // Success and violations through a real child: its exit status and output streams.
+    const passed = await cliProcess(["--json"]);
     assert.equal(passed.stderr, "");
     assert.deepEqual(JSON.parse(passed.stdout), await check());
     await write("apps/app/src/invalid.mjs", 'import "./missing-a.mjs"; import "./missing-b.mjs";');
     await write("malformed.json", "{");
     await write("invalid.json", JSON.stringify({ ...policy, diagnosticLimit: 0 }));
     const [text, json, ...configuration] = await settle([
-      failure(verify(), 1),
+      failure(cliProcess(), 1),
       failure(verify(["--json"]), 1),
       ...[
         ["--root", root],
         ["--root", root, "--policy", join(root, "malformed.json")],
         ["--root", root, "--policy", join(root, "invalid.json")],
-        [...args, "--unknown"],
-      ].map((options) => failure(node([cli, ...options]), 2)),
+      ].map((options) => failure(cliInProcess(options), 2)),
+      // A configuration failure without an error code, through a real child.
+      failure(node([cli, ...args, "--unknown"]), 2),
     ]);
     assert.match(text.stderr, /1 additional violations/);
     assert.equal(
@@ -1979,7 +2150,7 @@ describe("module boundaries", { concurrency: true }, () => {
 
   test("does not reuse one unknown-loader exception for a distinct loader", async (t) => {
     const source = "apps/app/src/public/load.mjs";
-    const { write, check, native, decoys, anchors } = await workspace(t, {
+    const { write, check, native, decoys, anchors, reviewLoader } = await workspace(t, {
       boundaries: [noPrivate(source, { kinds: ["require"] })],
     });
     await decoys("secret.cjs");
@@ -1994,11 +2165,7 @@ b = createRequire(new URL("../private/anchor.cjs", import.meta.url));
 console.log(b("./secret.cjs"));
 `;
     await write(source, first);
-    const unresolved = violation(await check(), source);
-    const exceptions = exceptionsFor(unresolved);
-    assert.equal((await check({ exceptions })).ok, true);
-    await write(source, "\n\n" + first);
-    assert.equal((await check({ exceptions })).ok, true, "line changes retain the identity");
+    const { item: unresolved, exceptions } = await reviewLoader(source);
     const count = (report) =>
       report.violations.filter((item) => item.from === source && item.rule === dynamic).length;
     await write(source, first + 'console.log(a("./secret.cjs"));');
@@ -2027,7 +2194,9 @@ console.log(b("./secret.cjs"));
 
   test("does not reuse unknown-anchor exceptions across distinct loaders", async (t) => {
     const source = "apps/app/src/public/unknown-loads.mjs";
-    const { root, write, check, native, decoys, anchors } = await workspace(t, { boundaries: [] });
+    const { root, write, check, native, decoys, anchors, reviewLoader } = await workspace(t, {
+      boundaries: [],
+    });
     await decoys("secret.cjs");
     await anchors("public", "private");
     const env = {
@@ -2043,12 +2212,7 @@ console.log(a("./secret.cjs"));
 console.log(b("./secret.cjs"));
 `;
     await write(source, requireFirst);
-    const item = violation(await check(), source);
-    assert.ok(item);
-    const exceptions = exceptionsFor(item);
-    assert.equal((await check({ exceptions })).ok, true);
-    await write(source, "\n\n" + requireFirst);
-    assert.equal((await check({ exceptions })).ok, true);
+    const { exceptions } = await reviewLoader(source);
     await write(source, requireFirst + requireSecond);
     assert.equal(await native(source, { env }), "PUBLIC\nPRIVATE");
     const distinct = await check({ exceptions });
@@ -2058,7 +2222,9 @@ console.log(b("./secret.cjs"));
 
   test("does not reuse an unknown-path exception for a different lexical binding", async (t) => {
     const source = "apps/app/src/public/dynamic-loads.mjs";
-    const { write, check, native, decoys } = await workspace(t, { boundaries: [] });
+    const { write, check, native, decoys, reviewLoader } = await workspace(t, {
+      boundaries: [],
+    });
     await decoys("secret.mjs");
     const env = {
       ...process.env,
@@ -2073,10 +2239,7 @@ await ${name}();
 `;
     const first = loader("publicLoad", "PUBLIC_PATH");
     await write(source, first);
-    const exceptions = exceptionsFor(violation(await check(), source));
-    assert.equal((await check({ exceptions })).ok, true);
-    await write(source, "\n\n" + first);
-    assert.equal((await check({ exceptions })).ok, true);
+    const { exceptions } = await reviewLoader(source);
     await write(source, first.replace("PUBLIC_PATH", "PRIVATE_PATH"));
     assert.equal(await native(source, { env }), "PRIVATE");
     const changedBinding = await check({ exceptions });
@@ -2217,17 +2380,13 @@ console.log((await import(select())).default);
     await settle(
       Object.entries(forms).map(([name, makeSource]) =>
         t.test(name, async (st) => {
-          const { write, check, native, observe, decoys } = await workspace(st, {
+          const { write, check, native, observe, decoys, reviewLoader } = await workspace(st, {
             boundaries: [noPrivate(source)],
           });
           await decoys("secret.mjs");
           const publicSource = makeSource("./secret.mjs");
-          const item = violation(await observe(source, publicSource, "PUBLIC"), source);
-          assert.ok(item);
-          const exceptions = exceptionsFor(item);
-          assert.equal((await check({ exceptions })).ok, true);
-          await write(source, "\n\n" + publicSource);
-          assert.equal((await check({ exceptions })).ok, true, "line shifts retain the identity");
+          const observed = await observe(source, publicSource, "PUBLIC");
+          const { item, exceptions } = await reviewLoader(source, observed);
           await write(source, makeSource("../private/secret.mjs"));
           assert.equal(await native(source), "PRIVATE");
           const changed = await check({ exceptions });
@@ -2263,18 +2422,14 @@ console.log((await import(select())).default);
     // Dot and computed deletes use separate workspaces and run concurrently.
     await settle(
       [false, true].map(async (computed) => {
-        const { write, check, native, observe, decoys } = await workspace(t);
+        const { write, check, native, observe, decoys, reviewLoader } = await workspace(t);
         await decoys("secret.mjs");
         const makeSource = (property) =>
           `delete process.env${computed ? `["${property}"]` : `.${property}`};
          console.log((await import(process.env.BOUNDARY_SELECTED ?? "../private/secret.mjs")).default);`;
         const publicSource = makeSource("BOUNDARY_UNRELATED");
-        const before = violation(await observe(source, publicSource, "PUBLIC", { env }), source);
-        assert.ok(before);
-        const exceptions = exceptionsFor(before);
-        assert.equal((await check({ exceptions })).ok, true);
-        await write(source, "\n\n" + publicSource);
-        assert.equal((await check({ exceptions })).ok, true);
+        const observed = await observe(source, publicSource, "PUBLIC", { env });
+        const { exceptions } = await reviewLoader(source, observed);
         await write(source, makeSource("BOUNDARY_SELECTED"));
         assert.equal(await native(source, { env }), "PRIVATE");
         const changed = await check({ exceptions });

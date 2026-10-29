@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import { createControlledClock } from "./clock.mjs";
 import { serviceConfigurationData } from "./builders.mjs";
-import { fixtureAppId } from "./github.mjs";
 import { createTlsMaterial } from "./process.mjs";
 import { createResourceScope } from "./resources.mjs";
 import { socketDirectory } from "../../helpers/socket-directory.mjs";
@@ -37,9 +36,9 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
     const backendId = options.backendId ?? "github-fixture";
     const durationSeconds = options.durationSeconds ?? 86400;
     const maximumDurationSeconds = options.maximumDurationSeconds ?? 172800;
-    const profile = options.profile ?? "git-full";
+    const profile = options.profile ?? "git-write";
     const definitions = options.repositories ?? defaultRegistryRepositories;
-    const { privateKeyFile, registryFile, keyPair } = await createRegistryMaterial(resources, {
+    const { registryFile } = await createRegistryMaterial(resources, {
       definitions,
       namespaceId,
       backendId,
@@ -49,14 +48,12 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       { validateServiceConfig },
       { loadGitHubRepositoryRegistry },
       { resolveGitHubRepositoryBinding },
-      { createGitHubRegistryDriverFactory },
-      { createGitHubKeyOwner },
+      { createPreparedGitHubRegistryFactory },
     ] = await Promise.all([
       credentialDriverModule("configuration"),
       credentialCompositionModule("registry"),
       githubProviderModule("registry"),
-      githubProviderModule("registry-factory"),
-      githubProviderModule("material"),
+      githubProviderModule("warm-registry-factory"),
     ]);
     const controlDirectory = await socketDirectory(resources, "rcs-control-");
     const configured = validateServiceConfig(
@@ -80,23 +77,14 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       definitions,
       clock,
       tls,
-      keyPair,
-      tokenLifetimeMs: options.tokenLifetimeMs,
     });
-    const key = createGitHubKeyOwner({
-      privateKey: keyPair.privateKey,
-      appId: fixtureAppId,
-      clock,
-    });
-    resources.after(() => key.close());
     const owner = createRegistryServiceOwner(resources, {
       loadGitHubRepositoryRegistry,
-      createGitHubRegistryDriverFactory,
+      createPreparedGitHubRegistryFactory,
       registryFile,
       backendId,
-      privateKeyFile,
+      socketPath: options.socketPath ?? join(controlDirectory, "prepared-git-use.sock"),
       config,
-      key,
       clock,
       tls,
       apiOrigin,
@@ -111,7 +99,6 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       backendId,
       namespaceId,
       registryFile,
-      privateKeyFile,
       repositories,
       byRef,
       get registry() {
@@ -144,6 +131,7 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
           expectedBinding: binding.grant,
           durationSeconds: selectedDuration,
           deadlineWallMs: overrides.deadlineWallMs ?? clock.wallNow() + selectedDuration * 1000,
+          preparedOnly: true,
         });
         const clientDirectory = await writeSessionClientConfiguration(resources, {
           opened,

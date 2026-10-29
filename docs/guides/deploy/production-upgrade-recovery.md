@@ -15,6 +15,13 @@ candidate, reads the live Secret and Helm release, accepts only the recorded
 baseline or candidate, and continues the recorded fleet. It rejects unrelated drift. The evidence includes
 Secret contents and must remain private.
 
+For a failed writer scale, Helm upgrade, or rollout wait, read
+`native-command-failures.tsv` in the evidence directory. Each tab-separated row
+records the operation, component (`api`, `worker`, or `release`), and native exit
+code. Rows remain after resume; they record client failures, not whether a
+request took effect. Reconcile live state as described below before resuming.
+Other failures and killed processes might not produce a row.
+
 If a killed process leaves `.upgrade-lock`, first establish that no helper or
 its child commands are still running, then remove that empty directory and
 resume. This lock covers only processes sharing this evidence directory; it
@@ -44,23 +51,23 @@ release. Prefer a reviewed forward fix; neither Helm rollback nor the helper
 reverses committed migrations.
 
 For an unknown Agent dispatch, the helper saves an Agent readback and stops
-without replaying it. Inspect the exact Agent's authorized revision history,
+without replaying it. Inspect the exact Agent's authorized version history,
 deployment status, and audit records, and allow any in-flight request to finish.
-An unchanged active revision alone does not prove rejection, and a filtered
-revision list does not prove absence. If you can identify the accepted revision,
+An unchanged selected version alone does not prove rejection, and a filtered
+version list does not prove absence. If you can identify the accepted version,
 record a private `dispatch/<same-prefix-as-intent>.json` containing its `id`;
 the helper checks that exact deployment's status on resume. If evidence proves
 the request was not accepted, deploy that Agent once with the ordinary OCC CLI
 and save its successful JSON response under that name. Preserve the `.intent`,
 error, and readback evidence. If the result is still uncertain, stop and
-investigate rather than submitting another request. For a known failed revision,
+investigate rather than submitting another request. For a known failed version,
 inspect its failure and explicitly deploy an authorized replacement before
 recording that replacement's response; preserve the original response separately.
 Each deployment snapshots current drafts.
 
-For an accepted revision, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
+For an accepted version, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
 Agent IDs, `DISPATCH_PREFIX` to the matching evidence path without `.intent` or
-`.json`, and `REVISION_ID` to the independently confirmed revision. Verify the exact Agent and deployment before recording it:
+`.json`, and `REVISION_ID` to the independently confirmed version. Verify the exact Agent and deployment before recording it:
 
 ```bash
 if test -z "$REVISION_ID"; then
@@ -95,7 +102,57 @@ the previous controller image after the check below.
 
 Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never
-delete Agents, revisions, PVCs, or the bootstrap volume to force recovery.
+delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
+
+## Correct a refused Agent deployment
+
+The startup preflight refuses some such drafts before any writer stops. When
+OCC still refuses an Agent's deployment with a 4xx answer, such as
+`HTTP 400 ... must use reviewed task actions` for a saved Configuration that
+the new release refuses, it saved no new version. The command lists each
+refused Agent with OCC's message, keeps the message in `dispatch/*.rejected`,
+and stops. Correct the cause, for example with `occ configuration update`, and
+repeat the command with `--resume`. The resume deploys each refused Agent once,
+so do not deploy it yourself. A 408 or 5xx answer stays an unknown dispatch.
+When OCC rejects the command's own service key, the command says so and lists
+the Agents it did not deploy; get a new key, point `OCC_SERVICE_KEY_FILE` at it,
+and resume.
+
+## Correct a Doctor failure
+
+Doctor shares the gateway container's memory limit. At the default heap cap,
+the command waits for two consecutive readings with at least 640 MiB free or
+one with at least 1024 MiB free. Initially unavailable cgroup data produces a
+warning and Doctor runs. Once insufficient memory is observed, missing or failed
+reads cannot admit Doctor and reset consecutive evidence. Fresh sufficient
+readings must arrive within that Doctor's `--timeout-seconds`. Wait for memory use
+to settle, then resume; consider a larger gateway memory limit if it stays low.
+These readings do not reserve memory or guarantee that the gateway avoids an OOM kill.
+
+A Doctor failure reports its command exit separately from gateway restart
+history. It also names each gateway or agent Pod evicted, deleted, replaced, restarted, or
+not `Ready` since then: an eviction kills Doctor (exit 137) without a restart.
+A higher restart count on the same Pod with last termination
+`OOMKilled` means an OOM restart occurred after the Ready baseline; it does not
+prove Doctor caused it. The restart history is unknown when the gateway Pod was
+replaced, its container status is missing, or its restart count went down.
+Wait until the gateway is `Ready` again, then resume; the resume runs Doctor
+again without new deployments.
+
+`did not stay on the same Ready Pod without restarts through OpenClaw Doctor`
+means that every Doctor passed, but afterward a named Agent's gateway Pod, or a
+dedicated Agent's `agent` Pod, was evicted, deleted, replaced, restarted, or not
+`Ready`. Doctors run one at a time, but node memory pressure from other Pods can
+still evict them. Inspect the node's events, wait until that Agent's Pods are
+`Ready`, then resume. The resume runs Doctor in the current gateway without new
+deployments.
+
+`OpenClaw Doctor ran out of its 384 MiB heap` means Doctor reached its heap cap;
+check the separate gateway restart observation. Repeat the command with
+`--resume` and `--doctor-heap-mib 768`, doubling again if needed. Each extra MiB
+of heap needs the same free gateway memory before Doctor starts, so raise the
+gateway memory limit first if the command then waits for memory. The command
+refuses a cap too large for its 64-bit memory arithmetic before it changes anything.
 
 ## Correct an invalid Installation name
 
@@ -143,9 +200,8 @@ the preflight), Helm's `--wait` has marked the candidate release `failed`:
 rename as above, follow the Helm failure steps above, then repeat the command
 with `--resume --migration-history-checked`.
 
-## Correct values newer releases refuse
+## Correct values the candidate refuses
 
-Releases after 2026-10-05 refuse some values that earlier releases accepted.
 Before the maintenance window, render the candidate chart with your live values
 from the candidate checkout:
 
@@ -166,21 +222,20 @@ The upgrade command does not accept these changes in candidate files. Edit the
 live values or Installation YAML and apply it with the installed release's
 checkout, as in
 [Apply other Installation changes](production-upgrade.md#apply-other-installation-changes),
-so the baseline files match live state. Except where a row says otherwise, each
-correction keeps the behavior the old release already had.
+so the baseline files match live state.
 
 | Refused value                                                                                                                                                                     | Correction                                                                                                                                                                                                      |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `auth.github.allowedOrgs`, `allowedTeams` or `auth.google.allowedDomains` set while that provider is disabled                                                                     | Remove the list; the old chart ignored it.                                                                                                                                                                      |
+| `auth.github.allowedOrgs`, `allowedTeams` or `auth.google.allowedDomains` set while that provider is disabled                                                                     | Remove the list.                                                                                                                                                                                                |
 | `""` or `{}` for those allowlists, or `{}` for a provider's `egressCidrs`                                                                                                         | Write `[]` or remove the key.                                                                                                                                                                                   |
 | An IPv4-mapped `api.trustedProxy.cidrs` entry with a prefix from 97 to 128, such as `::ffff:a00:0/104`                                                                            | Write the IPv4 CIDR with the prefix minus 96: `10.0.0.0/8`. A Compose install's API refuses the same entry in `OCC_AUTH_TRUSTED_PROXY_CIDRS` at startup.                                                        |
-| An IPv6 `api.trustedProxy.cidrs` entry that contains `::ffff:0:0/96`, such as `::ffff:0:0/96`, `::ffff:a00:0/64` or `::/64`                                                       | Such an entry trusted forwarded headers from every IPv4 peer. List your proxies' own CIDRs instead; this changes behavior.                                                                                      |
+| An IPv6 `api.trustedProxy.cidrs` entry that contains `::ffff:0:0/96`, such as `::ffff:0:0/96`, `::ffff:a00:0/64` or `::/64`                                                       | Such an entry trusts forwarded headers from every IPv4 peer. List your proxies' own CIDRs instead.                                                                                                              |
 | A Unicode `auth.baseUrl` host, such as `https://bücher.example.com`, with a punycode `agentNativeAdmin.sharedCookieDomain`                                                        | Write the host in punycode: `https://xn--bcher-kva.example.com`.                                                                                                                                                |
 | An `auth.baseUrl` with a `/.` or `/%2e` path, a short loopback such as `http://127.1`, or U+200B (zero-width space)                                                               | Remove the path and invisible characters; write `127.0.0.1`.                                                                                                                                                    |
-| An `auth.baseUrl` with a path or query, such as `https://example.com/occ`                                                                                                         | Serve OCC at the root of its own origin and set that origin, such as `https://occ.example.com`. This changes behavior: point browsers, CLI and API clients, and your proxy at the new origin.                   |
+| An `auth.baseUrl` with a path or query, such as `https://example.com/occ`                                                                                                         | Serve OCC at the root of its own origin and set that origin, such as `https://occ.example.com`. Point browsers, CLI and API clients, and your proxy at the new origin.                                          |
 | A `presets.files` Preset `name` with leading or trailing Unicode spaces (such as U+00A0), U+2028, U+2029 or C1 control characters                                                 | Correct the `name` in the file, or remove the entry. Startup adds a Preset with the corrected name; delete any saved copy with the old name you no longer need.                                                 |
 | A Backend `id` with a C1 control character (U+0080 to U+009F)                                                                                                                     | Rename the Backend. No Agent can store such an ID, but ServiceAccounts created through that Backend keep it in a binding that cannot change: delete them before the rename and recreate them after the upgrade. |
-| With `requireImmutableDigest: true`, an upper-case `gateway` or `agent` digest in the Installation's `drivers.compute.configuration.images`, such as `@sha256:ABC…` or `@SHA256:` | Write `sha256` and the hex digits in lower case; the digest is the same. Kubernetes could not pull the upper-case spelling.                                                                                     |
+| With `requireImmutableDigest: true`, an upper-case `gateway` or `agent` digest in the Installation's `drivers.compute.configuration.images`, such as `@sha256:ABC…` or `@SHA256:` | Write `sha256` and the hex digits in lower case; the digest is the same.                                                                                                                                        |
 
 ## Roll back across human sign-in
 

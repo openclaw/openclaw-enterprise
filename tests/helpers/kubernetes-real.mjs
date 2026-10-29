@@ -9,7 +9,10 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { captureChild } from "./child-processes.mjs";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
+import { kubectlGetJson } from "./kubernetes-api-read.mjs";
+import { waitFor as pollFor } from "./wait-for.mjs";
 
 const execute = promisify(execFile);
 
@@ -26,12 +29,17 @@ export function diagnosticDeadlinePassed() {
   return diagnosticDeadline.getStore()?.aborted === true;
 }
 
-async function kubectlFor(selection, ...args) {
+async function kubectlFor(selection, args, options) {
   // Inside a failure diagnostic, kubectl stops at its deadline (finding 1557).
   const signal = diagnosticDeadline.getStore();
   signal?.throwIfAborted();
+  const answered = await kubectlGetJson(selection, args, { signal });
+  if (answered !== undefined) {
+    return answered;
+  }
   const { stdout } = await execute("kubectl", kubectlArguments(selection, args), {
     maxBuffer: 4 * 1024 * 1024,
+    ...options,
     signal,
   });
   return stdout;
@@ -99,7 +107,7 @@ export const diagnosticDeadlineMs = 60_000;
 // writes (finding 1557). A diagnostic nested in another one also stops at the outer deadline.
 export async function withinDiagnosticDeadline(
   diagnostic,
-  { timeoutMs = diagnosticDeadlineMs, timedOut = "Diagnostic timed out" } = {},
+  { timeoutMs = diagnosticDeadlineMs, timedOut = "Diagnostic timed out", sleep = delay } = {},
 ) {
   const deadline = new AbortController();
   const outer = diagnosticDeadline.getStore();
@@ -108,7 +116,7 @@ export async function withinDiagnosticDeadline(
   try {
     return await Promise.race([
       diagnosticDeadline.run(signal, () => diagnostic(signal)),
-      delay(timeoutMs, undefined, { signal: timer.signal }).then(() => {
+      sleep(timeoutMs, undefined, { signal: timer.signal }).then(() => {
         deadline.abort();
         return timedOut;
       }),
@@ -117,6 +125,140 @@ export async function withinDiagnosticDeadline(
     // Stops the timer once the diagnostic settles, so it does not hold the event loop.
     timer.abort();
   }
+}
+
+// Deletes a Namespace and waits for it. A delete that fails (a finalizer holding the Namespace
+// past the timeout, say) says before it fails what holds it (finding 2018): the Namespace's
+// phase, finalizers and status conditions, and every object still in it with its finalizers and
+// deletion time. The listing runs within the diagnostic deadline and only adds to the delete's
+// own error; past the deadline it keeps what it read (finding 2028).
+export async function deleteNamespaceExplained(
+  kubectl,
+  namespace,
+  // The listing's own bound keeps the delete and the listing within teardownStepLimitMs, so the
+  // teardown never abandons the step and loses the listing with it. `sleep` stands in for the
+  // deadline's timer (withinDiagnosticDeadline's), so a test can hold it.
+  { timeout = "120s", listTimeoutMs = 40_000, sleep } = {},
+) {
+  try {
+    return await kubectl(
+      "delete",
+      "namespace",
+      namespace,
+      "--ignore-not-found=true",
+      "--wait=true",
+      `--timeout=${timeout}`,
+    );
+  } catch (error) {
+    const read = [];
+    const timedOut = Symbol("listing timed out");
+    const remains = await withinDiagnosticDeadline(
+      () => describeNamespaceRemains(kubectl, namespace, read),
+      { timeoutMs: listTimeoutMs, timedOut, sleep },
+    ).then(
+      (listed) =>
+        listed === timedOut ? [...read, "listing what remains timed out"].join("\n  ") : listed,
+      (listError) => `listing what remains failed: ${listError?.message ?? listError}`,
+    );
+    error.message = `${error.message}\nNamespace ${namespace} remains: ${remains}`;
+    throw error;
+  }
+}
+
+// Objects a failed Namespace delete lists, at most; the rest are counted.
+const namespaceRemainsLimit = 40;
+// Only object metadata is printed, never a Secret's or ConfigMap's data.
+const namespaceRemainsTemplate =
+  '{range .items[*]}{.kind}/{.metadata.name} finalizers={.metadata.finalizers} deleting={.metadata.deletionTimestamp}{"\\n"}{end}';
+
+// A kubectl read that printed what it could before failing (one unavailable aggregated API fails
+// discovery and a multi-kind get, but kubectl still prints the rest): its stdout, and its error's
+// first stderr line in `lines`.
+async function partialKubectlRead(kubectl, args, lines, what) {
+  try {
+    return { output: await kubectl(...args), complete: true };
+  } catch (error) {
+    // A read the deadline stopped is not a failed read: the listing reports its timeout instead,
+    // and a line pushed here could race into that report.
+    if (error?.name === "AbortError" || diagnosticDeadlinePassed()) {
+      throw error;
+    }
+    const reason = String(error?.stderr || error?.message || error)
+      .trim()
+      .split("\n")[0]
+      .slice(0, 300);
+    lines.push(`${what} failed: ${reason}`);
+    return { output: String(error?.stdout ?? ""), complete: false };
+  }
+}
+
+// Pushes each line to `lines` as it is read, so a listing cut short by its deadline keeps them.
+async function describeNamespaceRemains(kubectl, namespace, lines) {
+  let state;
+  try {
+    state = JSON.parse(
+      await kubectl("get", "namespace", namespace, "-o", "json", diagnosticRequestTimeout),
+    );
+  } catch (error) {
+    if (/\(NotFound\)/.test(String(error?.stderr ?? ""))) {
+      return "none (the Namespace is gone)";
+    }
+    throw error;
+  }
+  lines.push(
+    `phase ${state.status?.phase ?? "unknown"}, finalizers [${(state.spec?.finalizers ?? []).join(", ")}]`,
+    ...(state.status?.conditions ?? []).map(
+      (condition) =>
+        `condition ${condition.type}=${condition.status} ${condition.reason ?? ""}: ${condition.message ?? ""}`,
+    ),
+  );
+  const discovery = await partialKubectlRead(
+    kubectl,
+    ["api-resources", "--namespaced=true", "--verbs=list", "-o", "name", diagnosticRequestTimeout],
+    lines,
+    "listing kinds",
+  );
+  const kinds = discovery.output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    // Events describe the delete, they don't hold it.
+    .filter((kind) => !/^events(\.events\.k8s\.io)?$/.test(kind));
+  if (kinds.length === 0) {
+    return lines.join("\n  ");
+  }
+  const listed = await partialKubectlRead(
+    kubectl,
+    [
+      "get",
+      kinds.join(","),
+      "--namespace",
+      namespace,
+      "--ignore-not-found=true",
+      "-o",
+      `jsonpath=${namespaceRemainsTemplate}`,
+      diagnosticRequestTimeout,
+    ],
+    lines,
+    "listing objects",
+  );
+  const objects = listed.output
+    .split("\n")
+    .map((line) =>
+      line
+        .trim()
+        .replace(/ finalizers=(?= |$)/, "")
+        .replace(/ deleting=$/, ""),
+    )
+    .filter(Boolean);
+  lines.push(...objects.slice(0, namespaceRemainsLimit));
+  if (objects.length > namespaceRemainsLimit) {
+    lines.push(`and ${objects.length - namespaceRemainsLimit} more objects`);
+  }
+  if (objects.length === 0 && discovery.complete && listed.complete) {
+    lines.push("no objects left in it");
+  }
+  return lines.join("\n  ");
 }
 
 // node:test runs a test's after hooks in registration order and skips the rest once one throws
@@ -491,7 +633,7 @@ export function inlineProbeCommand(source, ...probeArguments) {
 
 export function createKubernetesClient({
   selection,
-  kubectl = (...args) => kubectlFor(selection, ...args),
+  kubectl = (...args) => kubectlFor(selection, args),
   waitTimeoutMs = 240_000,
   waitIntervalMs = 750,
 }) {
@@ -505,17 +647,16 @@ export function createKubernetesClient({
   };
   const resources = async (kind, namespace, ...args) =>
     JSON.parse(await kubectl("get", kind, "--namespace", namespace, ...args, "-o", "json")).items;
-  const waitFor = async (description, operation, timeoutMs = waitTimeoutMs) => {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const result = await operation();
-      if (result !== undefined && result !== false) {
-        return result;
-      }
-      await delay(waitIntervalMs);
-    }
-    assert.fail(`Timed out waiting for ${description}.`);
-  };
+  // `operation` may also return false for "not yet".
+  const waitFor = (description, operation, timeoutMs = waitTimeoutMs) =>
+    pollFor(
+      description,
+      async () => {
+        const result = await operation();
+        return result === false ? undefined : result;
+      },
+      { timeoutMs, intervalMs: waitIntervalMs },
+    );
 
   return {
     kubectlArguments: kubectlArgumentsForSelection,
@@ -529,25 +670,14 @@ export function createKubernetesClient({
 }
 
 async function applyManifest(kubectlArgumentsForSelection, manifest, { redactions = [] } = {}) {
-  await new Promise((resolve, reject) => {
-    const child = spawn("kubectl", kubectlArgumentsForSelection(["apply", "-f", "-"]), {
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr = `${stderr}${chunk.toString()}`.slice(-4096);
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`kubectl apply failed (${code}): ${redact(stderr, redactions)}`));
-      }
-    });
-    child.stdin.once("error", reject);
-    child.stdin.end(manifest);
-  });
+  const { status, stderr } = await captureChild(
+    "kubectl",
+    kubectlArgumentsForSelection(["apply", "-f", "-"]),
+    { input: manifest },
+  );
+  if (status !== 0) {
+    throw new Error(`kubectl apply failed (${status}): ${redact(stderr.slice(-4096), redactions)}`);
+  }
 }
 
 function redact(value, redactions) {
@@ -563,8 +693,12 @@ export async function validateExplicitK3dLoopbackContext(selection) {
     "OCC_TEST_KUBERNETES_KUBECONFIG must explicitly select disposable k3d.",
   );
   assert.match(kubernetesContext ?? "", /^k3d-/, "a dedicated k3d-* context is required");
+  // Flattening reads local files, where kubectl's API request timeout does not apply.
   const configuration = JSON.parse(
-    await kubectlFor(selection, "config", "view", "--minify", "--flatten", "-o", "json"),
+    await kubectlFor(selection, ["config", "view", "--minify", "--flatten", "-o", "json"], {
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+    }),
   );
   assert.equal(configuration.contexts?.length, 1);
   assert.equal(configuration.contexts[0].name, kubernetesContext);
@@ -582,6 +716,13 @@ export async function validateExplicitK3dLoopbackContext(selection) {
 export function kubernetesHash(value, length = 12) {
   return sha256Hex(value, length);
 }
+
+// The production Gateway memory limit (deploy/examples/production/installation.yaml,
+// docs/guides/deploy/installation-profiles.md). Fixtures that run a real Gateway
+// turn set it, so they hold the Gateway to what production allows: OpenClaw
+// starts most of its worker threads on the first turn (finding 2700).
+export const productionGatewayMemoryLimitGi = 4;
+export const productionGatewayMemoryLimit = `${productionGatewayMemoryLimitGi}Gi`;
 
 export function createKubernetesInstallationConfiguration({
   authentication,

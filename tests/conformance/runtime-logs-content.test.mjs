@@ -5,14 +5,19 @@ import test from "node:test";
 
 import {
   maskRuntimeEventText,
+  redactArgvCredentials,
   redactRuntimeLogText,
+  stripRuntimeLogControls,
 } from "../../packages/occ/src/runtime-logs/redact.ts";
-import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
+import {
+  runtimeLogEvidence,
+  sanitizeRuntimeLogChunk,
+} from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import {
   compareRuntimeLogTime,
   readRuntimeLogPage,
 } from "../../packages/occ/src/runtime-logs/read.ts";
-import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
+import { cpuTimeMs } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogCursorCodec,
   RUNTIME_LOG_CURSOR_TTL_MS,
@@ -411,8 +416,8 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
       ),
       probe("openclaw.model_probe", { kind: "WRAPPER_ERROR" }),
       // The upfront 401 reports which header names it saw and its body's shape and
-      // closed-set error code and type; the Codex probe has none of these fields,
-      // and provider text never passes.
+      // closed-set error code and type, and a failed probe directory removal its
+      // error code; the Codex probe has none of these fields, and provider text never passes.
       probe("openclaw.model_probe", undefined, {
         providerStatus: 401,
         providerCode: "missing_api_key",
@@ -420,11 +425,13 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
         bodyShape: "json-error-code",
         providerErrorCode: "no_organization",
         providerErrorType: "invalid_request_error",
+        cleanupError: "ENOTEMPTY",
         providerMessage: "Missing bearer or basic authentication in header",
         error: { code: "no_organization", message: "sk-live-abc" },
         body: '{"error":{"message":"sk-live-abc"}}',
       }),
       probe("codex.model_probe", undefined, {
+        cleanupError: "ENOTEMPTY",
         responseHeaderMarker: "provider-like",
         bodyShape: "json-error-code",
         providerErrorCode: "no_organization",
@@ -471,6 +478,7 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
       bodyShape: "json-error-code",
       providerErrorCode: "no_organization",
       providerErrorType: "invalid_request_error",
+      cleanupError: "ENOTEMPTY",
     }),
     fields("codex.model_probe"),
     fields("openclaw.model_probe"),
@@ -491,6 +499,97 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
       fields: { phase: "model-probe", outcome: "failed", code: "MODEL_PROBE_FAILED" },
     },
   ]);
+});
+
+// Finding 2017: a failed Codex login or model check names the class of Codex's error
+// output. Only a value from the contract's closed list passes, and only on those events.
+test("a failed Codex login or model check keeps its closed-list failure class, never other text", () => {
+  const login = (failureClass) =>
+    JSON.stringify({
+      event: "runtime.startup_phase",
+      container: "agent",
+      phase: "codex-login",
+      outcome: "failed",
+      ms: 812,
+      sinceStartMs: 900,
+      failureClass,
+    });
+  const probe = (event, failureClass) =>
+    JSON.stringify({
+      event,
+      elapsedMs: 2340,
+      exitCode: 1,
+      code: "MODEL_PROBE_FAILED",
+      cause: { kind: "PROCESS_EXIT", detail: "exit-1" },
+      failureClass,
+    });
+  const loginAttempt = (failureClass) =>
+    JSON.stringify({ event: "codex.login", attempt: 1, elapsedMs: 640, exitCode: 1, failureClass });
+  const { records, withheld } = sanitize(
+    agentPodStream,
+    [
+      login("network"),
+      probe("codex.model_probe", "http_5xx"),
+      loginAttempt("network"),
+      loginAttempt("Error: error sending request for url (https://auth.example.invalid/?a=b)"),
+      // Off-list values, token-shaped text and non-strings are dropped, never the line.
+      login("sk-proj-0123456789abcdefghijklmnop"),
+      probe(
+        "codex.model_probe",
+        "error sending request for url (https://auth.example.invalid/?a=b)",
+      ),
+      probe("codex.model_probe", { class: "network" }),
+      probe("codex.model_probe", "NETWORK"),
+      // Other wrapper events never carry a class.
+      probe("openclaw.model_probe", "network"),
+    ],
+    { first: 1 },
+  );
+  assert.equal(withheld, 0);
+  const loginFields = (extra = {}) => ({
+    kind: "wrapper",
+    level: "error",
+    message: "runtime.startup_phase",
+    fields: {
+      container: "agent",
+      phase: "codex-login",
+      outcome: "failed",
+      ms: 812,
+      sinceStartMs: 900,
+      ...extra,
+    },
+  });
+  const probeFields = (event, extra = {}) => ({
+    kind: "wrapper",
+    level: "error",
+    message: event,
+    fields: {
+      elapsedMs: 2340,
+      code: "MODEL_PROBE_FAILED",
+      ...(event === "codex.model_probe" ? { exitCode: 1 } : {}),
+      causeKind: "PROCESS_EXIT",
+      causeDetail: "exit-1",
+      ...extra,
+    },
+  });
+  const loginAttemptFields = (extra = {}) => ({
+    kind: "wrapper",
+    level: "warn",
+    message: "codex.login",
+    fields: { attempt: 1, elapsedMs: 640, exitCode: 1, ...extra },
+  });
+  assert.deepEqual(pick(records, wrapperKeys), [
+    loginFields({ failureClass: "network" }),
+    probeFields("codex.model_probe", { failureClass: "http_5xx" }),
+    loginAttemptFields({ failureClass: "network" }),
+    loginAttemptFields(),
+    loginFields(),
+    probeFields("codex.model_probe"),
+    probeFields("codex.model_probe"),
+    probeFields("codex.model_probe"),
+    probeFields("openclaw.model_probe"),
+  ]);
+  assert.doesNotMatch(JSON.stringify(records), /sk-proj|error sending|example\.invalid|NETWORK/);
 });
 
 test("a Gateway settings override keeps its setting names, never values (D322)", () => {
@@ -855,6 +954,43 @@ test("bounded key and path patterns still mask the shapes they did before", () =
     ["bearer authentication failed", "bearer authentication failed"],
   ]) {
     assert.equal(redactRuntimeLogText(input), expected, input);
+  }
+});
+
+test("rule prefilters skip only text a rule cannot change", () => {
+  for (const [input, expected] of [
+    // Long-token rules run only on a 40-character run of their joint alphabet.
+    [`k=${"Ab1x".repeat(9)}Ab1`, `k=${"Ab1x".repeat(9)}Ab1`],
+    [`k=${"Ab1x".repeat(10)}`, "k=[redacted:long-token]"],
+    // A joint run of 40 that is no single rule's run of 40 stays.
+    [`k=${"Ab1+".repeat(5)}${"Ab1_".repeat(5)}`, `k=${"Ab1+".repeat(5)}${"Ab1_".repeat(5)}`],
+    [`${"A1".repeat(20)}==${"B2".repeat(20)}`, "[redacted:long-token][redacted:long-token]"],
+    [`x${"a1B_".repeat(10)} eyJ, a://b, why?`, "[redacted:long-token] eyJ, a://b, why?"],
+  ]) {
+    assert.equal(redactRuntimeLogText(input), expected, input);
+  }
+  // Every character of either long-token alphabet counts toward the 40-character run.
+  for (const character of "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-") {
+    assert.equal(
+      redactRuntimeLogText(`k=${`Ab1${character}`.repeat(10)}`),
+      "k=[redacted:long-token]",
+      character,
+    );
+  }
+  assert.equal(
+    stripRuntimeLogControls(
+      "a\tb\u0000c\u001b[31md\u001b[0m\u007fe\u0085f\u009fg\u00a0h🙂\ud800\u2028",
+    ),
+    "a bcdefg\u00a0h🙂\ud800\u2028",
+  );
+  for (const [input, expected] of [
+    ["/usr/local/bin/redis-cli -a pw1", "/usr/local/bin/redis-cli -a [redacted:argv]"],
+    // A client name inside a longer token names no client.
+    ["redis-cli-wrapper -a pw2", "redis-cli-wrapper -a pw2"],
+    ["echo mysql; ls -pfoo", "echo mysql; ls -pfoo"],
+    ["sudo mysql -uroot -ppw3", "sudo mysql -uroot -p[redacted:argv]"],
+  ]) {
+    assert.equal(redactArgvCredentials(input), expected, input);
   }
 });
 
@@ -2297,12 +2433,14 @@ test("runtime container wire budgeting handles empty, single and grouped withhel
   assert.deepEqual(replay.data.records, []);
 });
 
-test("a full 1 MiB container window is cut for about the cost of sanitizing it once", async () => {
+test("a full 1 MiB container window is cut after sanitizing it once", async (t) => {
   // With tailLines=1000 a chatty container fills the kubelet's 1 MiB read on every
   // poll: twice what one 512 KiB page may carry. Choosing the cut must not sanitize
   // the window again for each candidate prefix (a binary search did about five
-  // window sanitizations per poll). Both costs are process CPU time, min of 3, so
-  // the bound holds on slow or loaded runners.
+  // window sanitizations per poll). Sanitizing a line classifies it (one JSON.parse of
+  // the raw line) and redacts its message (one argv split of the message text), so
+  // call-through spies on both count per-line work without depending on runner load.
+  // Every spied call returns the real result.
   const started = Date.parse("2026-09-30T12:00:00Z");
   const lines = Array.from({ length: 1000 }, (_, index) => ({
     time: iso(started + index),
@@ -2310,18 +2448,45 @@ test("a full 1 MiB container window is cut for about the cost of sanitizing it o
   }));
   assert.ok(lines.reduce((sum, { raw }) => sum + Buffer.byteLength(raw), 0) > 1024 * 1024);
   const stream = { source: "gateway", pod: "gateway-test-0", container: "gateway" };
-  const once = cpuTimeMs(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
+  const raws = new Set(lines.map(({ raw }) => raw));
+  const texts = new Set(lines.map(({ raw }) => JSON.parse(raw).message));
+  const parse = t.mock.method(JSON, "parse");
+  const split = t.mock.method(String.prototype, "split");
+  const work = async (run) => {
+    parse.mock.resetCalls();
+    split.mock.resetCalls();
+    await run();
+    return {
+      classified: parse.mock.calls.filter(({ arguments: [text] }) => raws.has(text)).length,
+      redacted: split.mock.calls.filter((call) => texts.has(String(call.this))).length,
+    };
+  };
+  // The Driver's byte cut drops the final, partial line before any classification.
+  const complete = lines.slice(0, -1);
+  const evidence = await work(() => runtimeLogEvidence(complete));
+  const once = await work(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
+  // The proxies hold: one sanitization classifies and redacts each complete line once,
+  // and the evidence pass classifies without redacting.
+  assert.deepEqual(once, { classified: complete.length, redacted: complete.length });
+  assert.equal(evidence.redacted, 0);
   let page;
-  const cut = await cpuTimeMsAsync(async () => {
+  const cut = await work(async () => {
     page = await pollReader().poll(lines, { truncated: true });
   });
   const delivered = lineRecords(page).length;
   assert.equal(page.truncated, true);
   assert.ok(delivered > 300 && delivered < 999, `${delivered} lines delivered`);
   assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
+  // The fetched safety evidence classifies every complete line once; the prefix
+  // builds then share one sanitization. Both bounds are exact today: classifying or
+  // redacting even the delivered prefix once more adds at least 300 lines.
   assert.ok(
-    cut < 2.5 * once,
-    `the cut page took ${cut.toFixed(0)} ms of CPU; one sanitization takes ${once.toFixed(0)} ms`,
+    cut.classified <= evidence.classified + once.classified,
+    `the cut page classified ${cut.classified} window lines; the evidence pass and one sanitization classify ${evidence.classified + once.classified}`,
+  );
+  assert.ok(
+    cut.redacted <= once.redacted,
+    `the cut page redacted ${cut.redacted} window messages; one sanitization redacts ${once.redacted}`,
   );
 });
 
@@ -2737,13 +2902,14 @@ test("container follows a growing full wire-cut tail without replaying its deliv
 });
 
 // A cut first page of 80 or 100 ordinary rows, then the rows a rotation leaves behind.
+// Returns both pages.
 async function rotatedWindow(label, rows, rotate) {
   const route = await logsRoute({ label });
   route.state.lines = rows;
   const first = await cutPage(route, { tailLines: 100 });
   route.state.lines = rotate(route.state.lines);
   const second = await boundedPage(route, { tailLines: 100, cursor: first.data.cursor });
-  return second.data;
+  return [first.data, second.data];
 }
 
 test("container checkpoint recovery does not duplicate an observed window-loss gap", async () => {
@@ -2751,7 +2917,7 @@ test("container checkpoint recovery does not duplicate an observed window-loss g
   // The burst replaces the whole tail before the byte-cut snapshot drains.
   // Actual missing rows still require one window gap, not a second gap for the
   // discarded checkpoint alongside that same observed loss.
-  const second = await rotatedWindow(
+  const [, second] = await rotatedWindow(
     "wire-cut-burst-gap",
     range(100).map((index) => ordinaryRow(start, index)),
     (lines) => [...lines, ...range(100).map((index) => ordinaryRow(start, 100 + index))],
@@ -2763,7 +2929,7 @@ test("container checkpoint recovery keeps an unknown-time reset visible", async 
   const start = Date.now() - 120_000;
   // The timed frontier cannot locate an unknown row in a changed snapshot.
   // Recovering timed rows must keep that reset visible, even on a short tail.
-  const second = await rotatedWindow(
+  const [, second] = await rotatedWindow(
     "wire-cut-unknown-reset",
     range(80).map((index) => ({
       ...ordinaryRow(start, index),
@@ -2778,7 +2944,7 @@ test("container shortened timed checkpoints disclose missing undelivered rows", 
   const start = Date.now() - 120_000;
   // Rotation can leave a short surviving window in the same container. Its
   // later times establish progress, not continuity with the unread snapshot.
-  const second = await rotatedWindow(
+  const [, second] = await rotatedWindow(
     "wire-cut-shortened-timed-window",
     range(80).map((index) => ordinaryRow(start, index)),
     (lines) => lines.slice(-5),
@@ -2790,7 +2956,7 @@ test("container shortened timed checkpoints disclose missing undelivered rows", 
 test("container same-size short replacements disclose missing undelivered rows", async () => {
   const start = Date.now() - 120_000;
   // Rotation retains the same row count but replaces the unread part with newer rows.
-  const second = await rotatedWindow(
+  const [, second] = await rotatedWindow(
     "wire-cut-same-size-short-window",
     range(80).map((index) => ordinaryRow(start, index, "old")),
     () =>
@@ -2801,4 +2967,79 @@ test("container same-size short replacements disclose missing undelivered rows",
   );
   assert.equal(lineRecords(second).length, 80);
   assert.equal(gapCount(second, "window_exceeded"), 1);
+});
+
+test("container checkpoint recovery that still covers the delivered frontier reports no loss", async () => {
+  const start = Date.now() - 120_000;
+  // Rotation drops only the oldest, already delivered row. The changed window still
+  // starts before the delivered frontier, so every undelivered row survives.
+  const [first, second] = await rotatedWindow(
+    "wire-cut-covered-frontier",
+    range(80).map((index) => ordinaryRow(start, index)),
+    (lines) => lines.slice(1),
+  );
+  assert.deepEqual([...rowIds(first), ...rowIds(second)], range(80));
+  assert.equal(gapCount(second, "window_exceeded"), 0);
+});
+
+// Ordinary rows whose rows from `from` on share one timestamp group.
+function groupedRows(start, from) {
+  return range(80).map((index) => ({
+    ...ordinaryRow(start, index),
+    ...(index >= from && { time: iso(start + from * 1000) }),
+  }));
+}
+
+test("container checkpoint recovery discloses rows lost inside the frontier time group", async () => {
+  const start = Date.now() - 120_000;
+  // The surviving window starts at the delivered frontier time, so undelivered
+  // rows of that group can sit before it; a later row lets time recovery start.
+  const [first, second] = await rotatedWindow(
+    "wire-cut-frontier-group-loss",
+    groupedRows(start, 60),
+    (lines) => [...lines.slice(-3), ordinaryRow(start, 80)],
+  );
+  assert.ok(rowIds(first).at(-1) >= 60 && rowIds(first).at(-1) < 76);
+  assert.deepEqual(rowIds(second), [77, 78, 79, 80]);
+  assert.ok(gapCount(second, "window_exceeded") > 0);
+});
+
+test("container checkpoint recovery discloses a reordered changed window", async () => {
+  const start = Date.now() - 120_000;
+  // An undelivered row now dates before the frontier, so time resumption drops it.
+  const [, second] = await rotatedWindow(
+    "wire-cut-reordered-window",
+    range(80).map((index) => ordinaryRow(start, index)),
+    (lines) => [...lines.slice(1, -1), { ...lines.at(-1), time: iso(start) }],
+  );
+  assert.ok(gapCount(second, "window_exceeded") > 0);
+});
+
+test("container checkpoint recovery discloses frontier rows its hash history cannot place", async () => {
+  const start = Date.now() - 120_000;
+  // The delivered group outgrows the frontier hashes and a changed row breaks the
+  // positional proof, so undelivered rows of that group cannot be told apart.
+  const [first, second] = await rotatedWindow(
+    "wire-cut-frontier-history-loss",
+    groupedRows(start, 3),
+    (lines) => [
+      ...lines.slice(1, 3),
+      { time: lines[3].time, raw: gatewayJson("changed group row") },
+      ...lines.slice(3),
+    ],
+  );
+  assert.ok(rowIds(first).length > 3 + 16);
+  assert.ok(gapCount(second, "window_exceeded") > 0);
+});
+
+test("container checkpoint recovery discloses a window whose clock stepped back", async () => {
+  const start = Date.now() - 120_000;
+  // Rotation dropped the delivered frontier and the rows after it, and the node
+  // clock stepped back: the new rows are ordered and all before the frontier.
+  const [, second] = await rotatedWindow(
+    "wire-cut-clock-step-back",
+    range(80).map((index) => ordinaryRow(start, index)),
+    () => range(6).map((index) => ordinaryRow(start, 40 + index, "after-step")),
+  );
+  assert.ok(gapCount(second, "window_exceeded") > 0);
 });

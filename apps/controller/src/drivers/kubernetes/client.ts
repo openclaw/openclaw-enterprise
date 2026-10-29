@@ -9,7 +9,10 @@ import type {
   ResponseContext,
 } from "@kubernetes/client-node";
 import { Agent, type buildConnector, type Dispatcher, fetch, ProxyAgent } from "undici";
-import { currentComputeAbortSignal } from "../compute/operation-context.ts";
+import {
+  currentComputeAbortSignal,
+  currentComputeOperationLifetime,
+} from "../compute/operation-context.ts";
 import type { KubernetesAuthentication } from "./authentication.ts";
 
 type KubernetesSdk = typeof import("@kubernetes/client-node");
@@ -122,6 +125,13 @@ export async function createKubernetesClientConfiguration(
 export function nonRedirectingHttpLibrary(sdk: KubernetesSdk): HttpLibrary {
   return sdk.wrapHttpLibrary({
     async send(request) {
+      const deadline = currentComputeOperationLifetime()?.deadline;
+      if (deadline !== undefined && Date.now() >= deadline) {
+        throw new DOMException(
+          "The Kubernetes request deadline elapsed before dispatch.",
+          "TimeoutError",
+        );
+      }
       const dispatcher = request.getDispatcher();
       const response = await fetch(request.getUrl(), {
         method: request.getHttpMethod().toString(),

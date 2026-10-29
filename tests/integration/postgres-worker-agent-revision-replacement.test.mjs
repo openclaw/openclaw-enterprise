@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
-import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
+import {
+  SandboxGatewayUnavailableError,
+  SandboxRevisionUnsupportedError,
+} from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
@@ -150,6 +153,86 @@ revisionTest(
     assert.equal(driver.count(replacement), 1);
     assert.equal(driver.count(first), 1, "a recorded predecessor is skipped by later sweeps");
     assert.deepEqual([...driver.running], [recovery.id]);
+  },
+  { timeout: 60_000 },
+);
+
+// Finding 2040 (D28): an exclusive predecessor's stop goes through the Sandbox gateway (its
+// Sandbox deletion detaches its credentials). While the gateway is down, the stop answers gRPC
+// UNAVAILABLE, so the redeploy waits within the deadline instead of spending its attempt budget,
+// with the candidate untouched and the predecessor still recorded active; the next pass repeats
+// the stop. The outage holds until the test has seen more stops than the attempt budget (5).
+revisionTest(
+  "a Sandbox gateway outage during an exclusive predecessor's stop waits, then the redeploy activates",
+  async (fixture) => {
+    const owner = await fixture.agent("exclusive-gateway-outage", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    let held = false;
+    let failedStops = 0;
+    const events = [];
+    await fixture.start(
+      {
+        ...driver.compute,
+        async stopRevision(revision) {
+          if (held) {
+            failedStops += 1;
+            throw new SandboxGatewayUnavailableError(
+              "OpenShell GetSandbox failed with gRPC status 14.",
+            );
+          }
+          return driver.compute.stopRevision(revision);
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    held = true;
+    const replacement = await fixture.revision(owner, 2);
+    const waited = await waitFor(
+      "more predecessor stops against the stopped gateway than the attempt budget",
+      async () => {
+        const work = await fixture.observerPool.query(
+          "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+          [replacement.idempotencyKey],
+        );
+        assert.notEqual(work.rows[0]?.state, "failed_permanent", "the outage spent the budget");
+        return failedStops > 7 && work.rows[0]?.state === "queued" ? work.rows[0] : undefined;
+      },
+      30_000,
+    );
+    assert.equal(waited.attempt_count, 0);
+    assert.equal(driver.preparations(replacement), 0, "the candidate waits for the stop");
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, first.id);
+    held = false;
+
+    const succeeded = await fixture.work(replacement, "succeeded", 30_000);
+    assert.equal(succeeded.attempt_count, 1);
+    assert.equal(driver.count(first), 1);
+    assert.deepEqual([...driver.running], [replacement.id]);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, replacement.id);
+    const outagePasses = events.filter(
+      (event) =>
+        event.event === "worker.completed" &&
+        event.revisionId === replacement.id &&
+        event.outcome !== "success",
+    );
+    assert.ok(outagePasses.length > 7, `saw ${outagePasses.length} outage passes`);
+    assert.deepEqual(
+      new Set(
+        outagePasses.map(({ outcome, code, dependency, cause }) =>
+          JSON.stringify({ outcome, code, dependency, cause }),
+        ),
+      ),
+      new Set([
+        JSON.stringify({
+          outcome: "pending",
+          code: "SANDBOX_GATEWAY_UNAVAILABLE",
+          dependency: "sandbox_gateway",
+          cause: "unavailable",
+        }),
+      ]),
+    );
   },
   { timeout: 60_000 },
 );

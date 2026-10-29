@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # SecretDriver contract
 
 ## Overview
@@ -6,10 +10,9 @@
 backend references used to deliver them. OpenClaw Control Plane (OCC) owns the
 Secret ID, Namespace, authorization, references, and public metadata. The Driver
 owns backend storage and must verify that stored material still belongs to the
-requested Secret. Compute handles workload delivery; this Driver does not issue
-credentials or return secret values to API readers. OCC reads a value only to
-register a [credential source](../credential-sources.md) with the selected
-Credential Gateway.
+requested Secret. Compute delivers workload projections. OCC returns only Secret
+metadata to API readers. Trusted server-side operations can read the current
+value through the selected Secret Driver.
 
 Trusted Installation YAML requires the bundled Kubernetes implementation,
 including when Compute is SSH; delivery to SSH hosts is unsupported. Default
@@ -21,19 +24,33 @@ Compose without Installation YAML selects no Secret Driver. See
 The [shared interface](../../../packages/contracts/src/index.ts) requires four
 storage and projection methods and optionally supports transient server-side use.
 
-| Method                                    | Contract                                                                                                                                                                                      |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create(identity, value)`                 | Store the value for OCC's `{ id, namespaceId, name }` and return a safe backend reference.                                                                                                    |
-| `update(secret, value)`                   | Replace the value at the stored, owned backend identity. Returns no value and does not report delivery.                                                                                       |
-| `delete(secret)`                          | Remove only the backend object belonging to this Secret. Returns no value.                                                                                                                    |
-| `resolve(secret)`                         | Check live ownership and return only the reference safe to use for projection. Never return the value or substitute another object.                                                           |
-| `compareAndSwap(secret, expected, value)` | Optional atomic replacement of an exact current value. **Experimental** Codex OAuth device login uses it to serialize polling and fence cancellation; a mismatch returns false.               |
-| `withValue(secret, use)`                  | When supported, verify exact ownership and pass the current value to a transient server-side callback, such as registering an authorized credential source. Never expose it as a public read. |
+| Method                                    | Contract                                                                                                                                                                        |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create(identity, value)`                 | Store the value for OCC's `{ id, namespaceId, name }` and return a safe backend reference.                                                                                      |
+| `update(secret, value)`                   | Replace the value at the stored, owned backend identity. Returns no value and does not report delivery.                                                                         |
+| `delete(secret)`                          | Remove only the backend object belonging to this Secret. Returns no value.                                                                                                      |
+| `resolve(secret)`                         | Check live ownership and return only the reference safe to use for projection. Never return the value or substitute another object.                                             |
+| `compareAndSwap(secret, expected, value)` | Optional atomic replacement of an exact current value. **Experimental** Codex OAuth device login uses it to serialize polling and fence cancellation; a mismatch returns false. |
+| `withValue(secret, use)`                  | Optional. Verify ownership, pass the current value to the trusted callback, and return its result.                                                                              |
+| `readCredentialInput(input)`              | Optional. Required for protected static sources. Read the authoritative value and its version from the owned Secret.                                                            |
 
 The current `SecretBackendRef` contains `namespaceName`, `name`, `key`, and
 `uid`; these are internal metadata, never caller-selected locations. The public
 `SecretMetadata` contains only `id`, `namespaceId`, `name`, and a platform `ref`.
 OCC rejects empty values, NUL, invalid text, and values above 65,536 UTF-8 bytes.
+
+OCC uses `withValue` to register and update [credential sources](../credential-sources.md)
+with the Credential Gateway. Other callers include
+Secret-backed plugin discovery, channel credential validation and directory
+lookup, and **experimental** Codex OAuth device login.
+
+For `readCredentialInput`, [`CredentialInputRead`](../../../packages/contracts/src/credential-proxy.ts)
+supplies the stored `secret`, `retention: "none"`, and a `lifetime`. Honor its
+`signal` and absolute `deadlineAt` across backend calls and retries. Return a
+`VersionedSecretValue` with `value`, `version`, `authoritativeObservedAt`, and
+optional `expiresAt`. Read each value from the authoritative store without
+caching it. Kubernetes verifies the stored UID and returns the object's
+`resourceVersion` as the version.
 
 ## IAM
 
@@ -58,7 +75,7 @@ for both the caller and the Agent's ServicePrincipal. OCC derives the `codex_pat
 source from the Agent rather than accepting a Secret ID from the browser. It
 rechecks those grants and the binding after the backend read, before sending
 the value to the selected Plugin Driver. Never expose values in responses,
-configuration documents, audit, or logs. A running revision may still use an
+configuration documents, audit, or logs. A running version may still use an
 older projected value.
 For channel directory lookup, the caller selects an existing same-Namespace
 Secret while creating an Agent or editing an Agent or Configuration. OCC requires
@@ -81,7 +98,7 @@ OCC registers backend deletion for a known failed transaction; it does not do
 so when the commit outcome is unknown. Updates overwrite the backend value: OCC
 keeps no prior value for rollback, and success means stored, not delivered.
 Deletion is refused with `409` while a Configuration, credential source, Agent
-draft, active revision, pending deployment, or queued or running Agent
+draft, selected version, pending deployment, or queued or running Agent
 provisioning request still references the Secret. The message names each
 referencing resource the caller may read, by kind and ID, as many as fit the
 256-character message, and only counts the others. The exact Secret read lists
@@ -108,8 +125,17 @@ backend value; a concurrent rotation can take effect after an in-flight request
 has already read the prior value. See
 [plugin discovery](plugin.md#selection-and-catalogs).
 
+To admit a protected static source, OCC checks the caller's `operate` grant on
+the exact Secret and uses the selected provider to validate the value returned
+by `readCredentialInput`. For a protected request, OCC checks the Agent
+ServicePrincipal's `operate` grant on the Credential Source. Before calling
+the Secret Driver, OCC verifies the stored Driver ID and checks that the
+selected provider is still current. The sender needs separate authorization
+from OCC before it can dispatch the request. See the
+[protected request flow](../../flows/credential-source-egress.md).
+
 During deployment admission, the API asks `resolve` to verify that the current
-backend identity still matches OCC's record. The revision pins the Driver ID
+backend identity still matches OCC's record. The Agent revision pins the Driver ID
 and normalized binding, not the backend locator or secret bytes. The worker
 later rechecks permissions and loads current OCC metadata; it does not call the
 Secret Driver. Compute receives a temporary delivery reference. In the current
@@ -119,10 +145,10 @@ model API keys go only to the Harness that executes the model.
 ## Limits
 
 - No public value reads, version history, rollback, credential issuance, or general
-  per-access broker. Environment projection is the supported workload delivery
-  mechanism; plugin discovery uses the transient server-side callback.
+  per-access broker. Workload delivery uses environment projection. Protected
+  static requests keep credential material out of the workload.
 - Updating a Secret does not restart workloads. Redeploy consumers through OCE
-  to refresh revision projections before expecting a new environment value.
+  to refresh projections for the Agent revision before expecting a new environment value.
 - Kubernetes is the only selectable implementation. Arbitrary installed Secret
   packages and SSH delivery are unsupported; selection alone does not enable them.
 

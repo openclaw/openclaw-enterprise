@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 const client = {
@@ -17,8 +17,7 @@ const client = {
 };
 
 async function repositoryProjectionFixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "repository-runtime-material-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "repository-runtime-material-");
   const sourceRoot = join(root, "projection");
   await mkdir(sourceRoot);
   const { descriptor, deployment } = await projectRepositorySessions(sourceRoot, {

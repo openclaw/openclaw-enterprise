@@ -4,27 +4,16 @@ import {
   assertProviderAttached,
   assertSessionUser,
   authRowCounts,
-  composeProductionSignIn,
   consoleOrigin as origin,
   githubSignIn,
   githubUpgradeSettings,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "allowlist-recovery@example.test";
-const password = "allowlist-member-password";
-const authSecret = "allowlist-auth-test-secret-at-least-32-bytes";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "allowlist-client-id",
-  "occ-github-login/client-secret": "allowlist-client-secret",
-};
 const memberSubject = 7_100_001;
 const strangerSubject = 7_100_002;
 const acme = "/user/memberships/orgs/acme";
@@ -38,32 +27,32 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    const github = await startFakeGitHub(t);
+    const { pool, state, github, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "allowlist-recovery@example.test",
+        password: "allowlist-member-password",
+        secrets: {
+          "occ-auth/secret": "allowlist-auth-test-secret-at-least-32-bytes",
+          "occ-github-login/client-id": "allowlist-client-id",
+          "occ-github-login/client-secret": "allowlist-client-secret",
+        },
+      },
+    );
     let memberships = {};
     // Compare with the fixed paths; never select a handler by the request's own key.
     github.membership = (path, subject) =>
       Object.entries(memberships).find(([listed]) => listed === path)?.[1](subject) ?? 404;
 
-    const { admin, accounts } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    const { admin, accounts } = await onboard({
       accounts: { member: { email: "allowlist-member@example.test" } },
     });
     const { member } = accounts;
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: {
-        ...githubUpgradeSettings(admin.id),
-        OCC_AUTH_GITHUB_ALLOWED_ORGS: "Acme",
-        OCC_AUTH_GITHUB_ALLOWED_TEAMS: "other/platform",
-      },
-      secrets,
+    app = await composeApp({
+      ...githubUpgradeSettings(admin.id),
+      OCC_AUTH_GITHUB_ALLOWED_ORGS: "Acme",
+      OCC_AUTH_GITHUB_ALLOWED_TEAMS: "other/platform",
     });
     const adminHeaders = await signedInHeaders(app, origin, admin);
     await assertProviderAttached(app, adminHeaders, member.id, "github", String(memberSubject));

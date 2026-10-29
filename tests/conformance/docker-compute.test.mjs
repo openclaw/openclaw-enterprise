@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import { promisify } from "node:util";
+import { runInNewContext } from "node:vm";
+import { inflateRawSync } from "node:zlib";
 import {
   createDockerDevelopmentComputeDriverFromEnv,
   DockerComputeDriver,
@@ -11,6 +14,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
 } from "../../packages/occ/src/index.ts";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
 test("Docker preflight rejects an interrupted response and can retry", async () => {
@@ -168,6 +172,7 @@ import { readdirSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
 const { AGENT_READINESS_ENTRYPOINT } = await import(process.argv[1]);
 const wsStore = readdirSync(join(process.cwd(), "node_modules/.pnpm")).find((entry) =>
   entry.startsWith("ws@"),
@@ -493,29 +498,58 @@ test("Docker Compute gateway containers use password auth by default and preserv
   );
 });
 
-test("Docker Compute rejects unsupported native gateway settings before Docker engine access", async () => {
+test("Docker Compute rejects unsupported native gateway settings at admission and before Docker engine access", async () => {
   const driver = new DockerComputeDriver({
     images: { gateway: "gateway:local", agent: "agent:local" },
   });
 
-  for (const [configuration, expected] of [
-    [{ gateway: { auth: { mode: "oauth" } } }, /password or trusted-proxy/i],
-    [{ gateway: { auth: { unsupportedField: true } } }, /unsupported field unsupportedField/i],
-    [{ gateway: { auth: null } }, /gateway auth must be an object/i],
-    [{ gateway: { tls: { enabled: true } } }, /gateway\.tls\.enabled must be omitted or false/i],
+  for (const [configuration, setting, expected] of [
+    [{ gateway: { auth: { mode: "oauth" } } }, "gateway.auth.mode", /password or trusted-proxy/i],
+    [{ gateway: { auth: { mode: "token" } } }, "gateway.auth.mode", /password or trusted-proxy/i],
+    [{ gateway: { auth: { mode: "none" } } }, "gateway.auth.mode", /password or trusted-proxy/i],
+    [
+      { gateway: { auth: { token: "gateway-token" } } },
+      "gateway.auth.token",
+      /gateway\.auth\.token is not a supported native gateway authentication field/,
+    ],
+    [
+      { gateway: { auth: { unsupportedField: true } } },
+      "gateway.auth.unsupportedField",
+      /gateway\.auth\.unsupportedField is not a supported/,
+    ],
+    [{ gateway: { auth: null } }, "gateway.auth", /gateway\.auth must be an object/],
+    [
+      { gateway: { tls: { enabled: true } } },
+      "gateway.tls.enabled",
+      /gateway\.tls\.enabled must be omitted or false/i,
+    ],
     // The published port forwards to the container IP while the healthcheck probes
     // loopback, so a loopback-only listener would pass readiness and serve nothing.
-    [{ gateway: { bind: "loopback" } }, /gateway\.bind must listen on all interfaces/],
-    [{ gateway: { bind: "tailnet" } }, /gateway\.bind must listen on all interfaces/],
+    [
+      { gateway: { bind: "loopback" } },
+      "gateway.bind",
+      /gateway\.bind must listen on all interfaces/,
+    ],
+    [
+      { gateway: { bind: "tailnet" } },
+      "gateway.bind",
+      /gateway\.bind must listen on all interfaces/,
+    ],
     [
       { gateway: { bind: "custom", customBindHost: "127.0.0.1" } },
+      "gateway.customBindHost",
       /gateway\.customBindHost must be 0\.0\.0\.0/,
     ],
-    [{ gateway: { tailscale: { mode: "serve" } } }, /gateway\.tailscale\.mode must be off/],
+    [
+      { gateway: { tailscale: { mode: "serve" } } },
+      "gateway.tailscale.mode",
+      /gateway\.tailscale\.mode must be off/,
+    ],
     [
       {
         plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } } },
       },
+      "plugins.entries.codex.config.appServer.approvalPolicy",
       /appServer\.approvalPolicy must not be "untrusted"/,
     ],
   ]) {
@@ -531,22 +565,79 @@ test("Docker Compute rejects unsupported native gateway settings before Docker e
       throw new Error("Docker API access must not occur");
     };
 
-    await assert.rejects(() => driver.prepareRevision(revision), expected);
+    let preparationMessage;
+    await assert.rejects(
+      () => driver.prepareRevision(revision),
+      (error) => {
+        preparationMessage = error.message;
+        return expected.test(error.message);
+      },
+    );
     assert.equal(networkAccesses, 0);
     assert.equal(dockerRequests, 0);
-  }
-  // Admission names the same listener settings with a 409 before a revision exists.
-  for (const [gateway, setting] of [
-    [{ bind: "loopback" }, "gateway.bind"],
-    [{ bind: "custom", customBindHost: "127.0.0.1" }, "gateway.customBindHost"],
-    [{ tailscale: { mode: "funnel" } }, "gateway.tailscale.mode"],
-  ]) {
+    // Deployment admission refuses every setting preparation refuses, with the same message and a
+    // 409, because the deploy stops the running revision before preparation (finding 2352).
     assert.throws(
-      () => driver.validateGatewaySettings({ gateway }),
-      (error) => error instanceof ComputeGatewaySettingError && error.setting === setting,
+      () => driver.validateGatewaySettings(configuration),
+      (error) =>
+        error instanceof ComputeGatewaySettingError &&
+        error.setting === setting &&
+        error.message === preparationMessage,
     );
   }
   assert.doesNotThrow(() => driver.validateGatewaySettings({ gateway: { bind: "lan" } }));
+  for (const auth of [
+    { mode: "password", password: "static-gateway-password" },
+    { mode: "trusted-proxy" },
+  ]) {
+    assert.doesNotThrow(() => driver.validateGatewaySettings({ gateway: { auth } }));
+  }
+});
+
+test("Docker prepares configuration before starting a managed Gateway", async () => {
+  const { body, environment } = await gatewayContainerLaunch();
+  const program = inflateRawSync(Buffer.from(body.Cmd.slice(2).join(""), "base64")).toString();
+  const nativeRequire = createRequire(import.meta.url);
+  const events = [];
+  runInNewContext(program, {
+    process: { env: { ...environment }, on() {} },
+    require(specifier) {
+      if (specifier === "node:fs") {
+        return {
+          chmodSync() {},
+          mkdirSync() {},
+          readdirSync: () => [],
+          writeFileSync(path) {
+            events.push({ path });
+          },
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          spawn(_command, args, { env }) {
+            events.push({ args: [...args], env });
+            return { on() {} };
+          },
+        };
+      }
+      return nativeRequire(specifier);
+    },
+  });
+  assert.equal(events.length, 2);
+  const [configWrite, gatewayLaunch] = events;
+  assert.equal(configWrite.path, environment.OPENCLAW_CONFIG_PATH);
+  assert.deepEqual(gatewayLaunch.args, [
+    "/app/openclaw.mjs",
+    "gateway",
+    "--port",
+    environment.OPENCLAW_GATEWAY_PORT,
+  ]);
+  assert.equal(gatewayLaunch.env.OPENCLAW_CONFIG_READONLY, "1");
+  assert.equal(gatewayLaunch.env.OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS, "1");
+  assert.equal(gatewayLaunch.env.OPENCLAW_DISABLE_CRON_HOST_EXECUTION, "1");
+  // OCE replaces the Gateway image to upgrade it: OpenClaw runs no update check or
+  // install count request of its own (finding 2779).
+  assert.equal(gatewayLaunch.env.OPENCLAW_NO_AUTO_UPDATE, "1");
 });
 
 async function gatewayContainerLaunch(configuration = {}) {
@@ -618,7 +709,9 @@ function dockerGatewayRevision(driver, configuration = {}) {
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(configuration, "info"),
+    gatewayManagedMode: true,
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: driver.id, implementation: driver.implementation },
     servicePrincipalId: "service-principal-docker-auth",
@@ -632,9 +725,11 @@ function splitEnvironment(entry) {
   return [entry.slice(0, separator), entry.slice(separator + 1)];
 }
 
-test("Docker Compute recovery keeps dedicated transport paired across container reuse and replacement", async () => {
-  // Model only the Docker inspect/create boundary; token selection and reconciliation
-  // run in the real Driver. The Compose integration separately kills a real worker.
+/**
+ * Models only the Docker inspect/create/start/delete boundary over one in-memory container map;
+ * reconciliation runs in the real Driver. `createDriver()` returns a fresh Driver on that map.
+ */
+function fakeDockerEngine(inspectCreated) {
   const containers = new Map();
   const createDriver = () => {
     const driver = new DockerComputeDriver({
@@ -650,14 +745,23 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
     driver.request = async (method, path, body) => {
       const url = new URL(path, "http://docker.invalid");
       if (method === "POST" && url.pathname === "/containers/create") {
-        containers.set(url.searchParams.get("name"), {
+        const name = url.searchParams.get("name");
+        const created = {
           Config: structuredClone(body),
           State: { Running: true, Health: { Status: "healthy" } },
-        });
+        };
+        containers.set(name, inspectCreated?.(name, created) ?? created);
         return "";
       }
       const [, name, action] = /^\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname) ?? [];
       if (method === "POST" && action === "start") {
+        return "";
+      }
+      if (method === "POST" && action === "stop") {
+        const container = containers.get(name);
+        if (container !== undefined) {
+          container.State = { Running: false, ExitCode: 0 };
+        }
         return "";
       }
       if (method === "DELETE") {
@@ -669,30 +773,58 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
     driver.container = async (name) => containers.get(name);
     return driver;
   };
-  const driver = createDriver();
-  const revision = {
-    id: "revision-docker-recovery",
+  return { containers, createDriver };
+}
+
+function dockerAgentRevision(driver, { id, agentId, revision = 1, mode }) {
+  return {
+    id,
     namespaceId: tenant.id,
-    agentId: "agent-recovery",
-    revision: 1,
+    agentId,
+    revision,
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration({}, "info"),
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: mode === "dedicated" ? "codex" : "openclaw", version: "1.0.0", mode },
     compute: { id: driver.id, implementation: driver.implementation },
-    servicePrincipalId: "service-principal-docker-recovery",
+    servicePrincipalId: `service-principal-${agentId}`,
     createdAt: tenant.createdAt,
   };
+}
+
+/** Runs `body` with the model credential the Docker runtime requires, then restores it. */
+async function withModelKey(body) {
+  const previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-openai-api-key";
+  try {
+    return await body();
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+  }
+}
+
+test("Docker Compute recovery keeps dedicated transport paired across container reuse and replacement", async () => {
+  // The Compose integration separately kills a real worker.
+  const { containers, createDriver } = fakeDockerEngine();
+  const driver = createDriver();
+  const revision = dockerAgentRevision(driver, {
+    id: "revision-docker-recovery",
+    agentId: "agent-recovery",
+    mode: "dedicated",
+  });
   const role = (name) =>
     [...containers.entries()].find(
       ([, value]) => value.Config.Labels["org.openclaw.enterprise.role"] === name,
     );
   const token = (container) =>
     container.Config.Env.find((value) => value.startsWith("APP_SERVER_TOKEN="));
-  const previousKey = process.env.OPENAI_API_KEY;
-  process.env.OPENAI_API_KEY = "test-openai-api-key";
-  try {
+  await withModelKey(async () => {
     assert.equal((await driver.prepareRevision(revision)).ready, true);
     const [agentName, agent] = role("agent");
     const [gatewayName, gateway] = role("gateway");
@@ -728,13 +860,134 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
       invalidAgent,
       "missing credentials must fail closed without adopting a new token",
     );
-  } finally {
-    if (previousKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousKey;
-    }
-  }
+  });
+});
+
+// Finding 2268: when preparation fails and its cleanup fails too, the preparation's own failure
+// stays first, so the worker classifies the deployment by it. Every cleanup still runs after an
+// earlier one fails: the created container's removal, then the lifecycle cleanup.
+test("Docker preparation keeps its own failure first when every cleanup also fails", async () => {
+  const { containers, createDriver } = fakeDockerEngine();
+  const driver = createDriver();
+  driver.setLifecycleDrivers([
+    {
+      id: "hooks",
+      capability: "configuration",
+      implementation: "test",
+      computeLifecycleHooks: {
+        async beforeWorkloadStart() {},
+        async beforeWorkloadStop() {
+          throw new Error("lifecycle cleanup refused");
+        },
+      },
+    },
+  ]);
+  const revision = dockerAgentRevision(driver, {
+    id: "revision-docker-cleanup",
+    agentId: "agent-cleanup",
+    mode: "dedicated",
+  });
+  const primary = new Error("gateway reconcile refused");
+  driver.reconcileGateway = async () => {
+    throw primary;
+  };
+  const removed = [];
+  driver.removeContainer = async (name) => {
+    removed.push(name);
+    throw new Error("container removal refused");
+  };
+  const error = await withModelKey(() =>
+    driver.prepareRevision(revision).then(
+      () => assert.fail("the preparation must fail"),
+      (failure) => failure,
+    ),
+  );
+  assertCleanupFailure(error, primary, [
+    /container removal refused/,
+    /lifecycle hook beforeWorkloadStop failed/,
+  ]);
+  assert.deepEqual(removed, [driver.agentContainerName(tenant.id, revision.agentId, revision.id)]);
+  assert.equal(containers.size, 1, "only the agent container was created");
+});
+
+// Every topology keeps one gateway container per Agent, so preparing a redeploy candidate
+// replaces the active revision's gateway. The worker stops a refused candidate beside an active
+// revision only when Compute declares exclusive replacement; without it the candidate's gateway
+// kept serving under the predecessor's active pointer (finding 1800).
+for (const mode of ["embedded", "dedicated"]) {
+  test(`Docker ${mode} redeploy is exclusive, so a refused candidate leaves nothing serving`, async () => {
+    const { containers, createDriver } = fakeDockerEngine();
+    const driver = createDriver();
+    const agentId = `agent-redeploy-${mode}`;
+    const active = dockerAgentRevision(driver, { id: `revision-${mode}-1`, agentId, mode });
+    const candidate = dockerAgentRevision(driver, {
+      id: `revision-${mode}-2`,
+      agentId,
+      revision: 2,
+      mode,
+    });
+    const serving = () =>
+      [...containers.values()].map(
+        ({ Config }) =>
+          `${Config.Labels["org.openclaw.enterprise.role"]}:${Config.Labels["org.openclaw.enterprise.revision-id"]}`,
+      );
+    await withModelKey(async () => {
+      assert.equal((await driver.prepareRevision(active)).ready, true);
+      assert.ok(serving().includes(`gateway:${active.id}`));
+
+      assert.equal(
+        driver.requiresStoppedPredecessors?.(candidate),
+        true,
+        "the candidate takes the Agent's only gateway, so Docker must declare exclusive replacement",
+      );
+      // The worker sequence is simulated here (the postgres worker suites cover the worker's
+      // side): exclusive replacement stops every predecessor, then prepares the candidate.
+      await driver.stopRevision(active);
+      assert.deepEqual(serving(), []);
+      assert.equal((await driver.prepareRevision(candidate)).ready, true);
+      assert.ok(serving().includes(`gateway:${candidate.id}`));
+      assert.ok(serving().every((entry) => !entry.endsWith(active.id)));
+
+      // A refused candidate is stopped, so the Agent is unavailable rather than serving it.
+      await driver.stopRevision(candidate);
+      assert.deepEqual(serving(), []);
+    });
+  });
+}
+
+// Removal stops a container (SIGTERM) before the force DELETE. When the stop itself fails (an
+// Engine error, or its request deadline on a container that ignores SIGTERM), the force DELETE
+// must still run, or callers such as a failed create's cleanup leave the container behind.
+test("Docker removal still force-removes a container whose stop failed, and reports the failure", async () => {
+  const { containers, createDriver } = fakeDockerEngine();
+  const driver = createDriver();
+  const revision = dockerAgentRevision(driver, {
+    id: "revision-docker-stop-failure",
+    agentId: "agent-stop-failure",
+    mode: "dedicated",
+  });
+  const roles = () =>
+    [...containers.values()].map(({ Config }) => Config.Labels["org.openclaw.enterprise.role"]);
+  await withModelKey(async () => {
+    assert.equal((await driver.prepareRevision(revision)).ready, true);
+    assert.deepEqual(roles().sort(), ["agent", "gateway"]);
+
+    const engine = driver.request;
+    const stopFailure = new Error("Docker stop request timed out");
+    driver.request = async (method, path, body) => {
+      if (method === "POST" && /^\/containers\/[^/]+\/stop\?/.test(path)) {
+        throw stopFailure;
+      }
+      return engine(method, path, body);
+    };
+    // The stop failure stays visible, but only after the agent container is removed.
+    await assert.rejects(driver.stopRevision(revision), (error) => error === stopFailure);
+    assert.deepEqual(roles(), ["gateway"]);
+
+    // The retry finds the agent gone and removes the gateway the same way.
+    await assert.rejects(driver.stopRevision(revision), (error) => error === stopFailure);
+    assert.deepEqual(roles(), []);
+  });
 });
 
 // These checks exercise the real Driver at Docker's API boundary. Container exit
@@ -753,6 +1006,7 @@ for (const mode of ["embedded", "dedicated"]) {
       configurationId: "cfg-workspace",
       configurationKind: "agent",
       configurationGeneration: 1,
+      executionAdmission: { version: 2, mode: "unprotected" },
       configuration: admitLoggingConfiguration(
         mode === "dedicated"
           ? { agents: { entries: { main: { workspace: "/home/node/workspace" } } } }
@@ -843,6 +1097,13 @@ for (const mode of ["embedded", "dedicated"]) {
           assert.equal(setupFinished, true, "no runtime process can start before setup succeeds");
           runtimeStarts += 1;
           container.State = { Running: true, Health: { Status: "healthy" } };
+        }
+        return "";
+      }
+      if (method === "POST" && action === "stop") {
+        const container = containers.get(name);
+        if (container !== undefined) {
+          container.State = { Running: false, ExitCode: 0 };
         }
         return "";
       }
@@ -1040,4 +1301,214 @@ test("Docker workspace setup refusals match Kubernetes Compute's and name the se
       `Configuration setting ${setting} must not be true for initial workspace files: Docker Compute writes them after native bootstrap.`,
     );
   }
+});
+
+test("Docker rejects an invalid dedicated Gateway tool policy before engine access", async () => {
+  const driver = new DockerComputeDriver({
+    images: { gateway: "gateway:local", agent: "agent:local" },
+  });
+  let requests = 0;
+  driver.network = async () => {
+    requests += 1;
+    return undefined;
+  };
+  for (const [gatewayPolicy, expected] of [
+    [{ allow: ["plugins"] }, /Gateway administrative tools/],
+    [{ allow: ["message"], actions: { message: ["set-profile"] } }, /reviewed task actions/],
+    [{ allow: ["automations"] }, /actions.automations must list/],
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateWorkspaceSetup(
+          { id: "codex", version: "1.0.0", mode: "dedicated" },
+          { tools: { gatewayPolicy } },
+        ),
+      expected,
+      "Agent admission checks policy when initial workspace files are supplied",
+    );
+    await assert.rejects(
+      () =>
+        driver.prepareRevision({
+          ...dockerGatewayRevision(driver, { tools: { gatewayPolicy } }),
+          harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+        }),
+      expected,
+    );
+  }
+  assert.equal(requests, 0);
+  await driver.prepareRevision({
+    ...dockerGatewayRevision(driver, { tools: { gatewayPolicy: { allow: [] } } }),
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+  });
+  assert.equal(requests, 1, "an explicit empty policy is a supported ceiling");
+});
+
+function embeddedRecoveryInspection(volumeName = "agent-state") {
+  const live = {
+    Id: "a".repeat(64),
+    State: { Status: "running", Running: true, Pid: 42, StartedAt: "2026-10-20T12:05:00Z" },
+    Config: { User: "1000:1000", Env: ["NODE_OPTIONS=--require=/tmp/untrusted", "PATH=/tmp"] },
+    HostConfig: {
+      PidMode: "",
+      Privileged: false,
+      ReadonlyRootfs: true,
+      CapDrop: ["ALL"],
+      SecurityOpt: ["no-new-privileges"],
+      Tmpfs: { "/home/node": "", "/tmp": "" },
+    },
+    Mounts: [{ Type: "volume", Name: volumeName, Destination: "/home/node/.openclaw", RW: true }],
+  };
+  const volume = {
+    Name: volumeName,
+    Driver: "local",
+    Scope: "local",
+    CreatedAt: "2026-10-20T12:00:00Z",
+  };
+  const namespace = {
+    platform: "linux",
+    identity: "d64275ef-a30a-4a02-917d-adb75653f494",
+    host: "old-gateway",
+    pidNsInode: "4026533123",
+    pidNsInitStartTicks: 12345,
+  };
+  const execId = "b".repeat(64);
+  const engine = async (method, path, body) => {
+    if (method === "GET" && path === "/volumes/" + volumeName) {
+      return volume;
+    }
+    if (method === "POST" && path.endsWith("/exec")) {
+      assert.equal(body.User, "65534:65534");
+      assert.deepEqual(body.Env, ["NODE_OPTIONS=", "PATH="]);
+      return { Id: execId };
+    }
+    if (method === "POST" && path === "/exec/" + execId + "/start") {
+      return JSON.stringify(namespace);
+    }
+    if (method === "GET" && path === "/exec/" + execId + "/json") {
+      return { Running: false, ExitCode: 0, ContainerID: live.Id };
+    }
+    assert.equal(path, "/containers/" + live.Id + "/json");
+    return live;
+  };
+  const stopped = {
+    ...live,
+    State: {
+      ...live.State,
+      Status: "exited",
+      Running: false,
+      Pid: 0,
+      FinishedAt: "2026-10-20T12:10:00Z",
+    },
+  };
+  return { live, stopped, volume, namespace, engine };
+}
+
+test("embedded recovery requires the observed container incarnation and its original state mounts", async () => {
+  const { observeEmbeddedGateway, terminatedEmbeddedGateway } =
+    await import("../../apps/controller/src/drivers/compute/docker/embedded-gateway-recovery.ts");
+  const { live, stopped, volume, namespace, engine } = embeddedRecoveryInspection();
+  const observed = await observeEmbeddedGateway(engine, live, volume.Name);
+  assert.deepEqual(
+    await terminatedEmbeddedGateway(engine, observed, stopped, volume.Name),
+    namespace,
+  );
+  for (const candidate of [
+    live,
+    { ...stopped, State: { ...stopped.State, StartedAt: "2026-10-20T12:08:00Z" } },
+    { ...stopped, Id: "c".repeat(64) },
+  ]) {
+    assert.equal(
+      await terminatedEmbeddedGateway(engine, observed, candidate, volume.Name),
+      undefined,
+    );
+  }
+  volume.CreatedAt = "2026-10-20T12:10:00Z";
+  assert.equal(await terminatedEmbeddedGateway(engine, observed, stopped, volume.Name), undefined);
+  for (const candidate of [
+    { ...live, HostConfig: { ...live.HostConfig, PidMode: "host" } },
+    { ...live, HostConfig: { ...live.HostConfig, SecurityOpt: [] } },
+    {
+      ...live,
+      Mounts: [
+        ...live.Mounts,
+        { Type: "bind", Destination: "/home/node/.openclaw/state/openclaw.sqlite" },
+      ],
+    },
+    { ...live, HostConfig: { ...live.HostConfig, Tmpfs: { "/usr/local": "" } } },
+  ]) {
+    assert.equal(await observeEmbeddedGateway(assert.fail, candidate, volume.Name), undefined);
+  }
+});
+
+test("Docker dispatches embedded recovery only while Engine can verify the old state volume", async () => {
+  await withModelKey(async () => {
+    for (const unavailable of [undefined, "at removal", "at replacement"]) {
+      let previous;
+      const { containers, createDriver } = fakeDockerEngine((name, created) => {
+        if (previous) {
+          return created;
+        }
+        const state = created.Config.HostConfig.Mounts.find(
+          ({ Target }) => Target === "/home/node/.openclaw",
+        );
+        previous = { name, ...embeddedRecoveryInspection(state.Source) };
+        previous.live.Config.Labels = created.Config.Labels;
+        previous.live.State.Health = created.State.Health;
+        return previous.live;
+      });
+      const driver = createDriver();
+      const revision = dockerGatewayRevision(driver);
+      const workspaceSetup = {
+        id: "existing",
+        namespaceId: tenant.id,
+        agentId: revision.agentId,
+        completed: true,
+      };
+      // The workspace already exists. Exercise normal Gateway creation, observation and replacement.
+      driver.initializeWorkspace = async () => {};
+      const lifecycle = driver.request;
+      let removed = false;
+      driver.request = async (method, path, data) => {
+        if (previous) {
+          const { name, live, volume, engine } = previous;
+          if (method === "POST" && path.startsWith("/containers/" + live.Id + "/stop?")) {
+            // The old Gateway has already exited (304 from Engine).
+            return "";
+          }
+          if (method === "DELETE" && path.startsWith("/containers/" + live.Id + "?")) {
+            removed = containers.delete(name);
+            return "";
+          }
+          if (
+            method === "GET" &&
+            path === "/volumes/" + volume.Name &&
+            !live.State.Running &&
+            unavailable === (removed ? "at replacement" : "at removal")
+          ) {
+            throw new Error("Docker volume inspection failed");
+          }
+          if (path.includes(live.Id) || path.startsWith("/exec/") || path.startsWith("/volumes/")) {
+            return engine(method, path, data);
+          }
+        }
+        return lifecycle(method, path, data);
+      };
+      assert.equal((await driver.prepareRevision(revision, { workspaceSetup })).ready, true);
+      previous.live.State = previous.stopped.State;
+      const successor = { ...revision, revision: 2, id: revision.id + "-replacement" };
+      assert.equal((await driver.prepareRevision(successor, { workspaceSetup })).ready, true);
+      assert.equal(removed, true, "an unavailable recovery proof must not prevent normal removal");
+      const command = containers.get(previous.name).Config.Cmd;
+      const program = inflateRawSync(Buffer.from(command.slice(2).join(""), "base64")).toString(
+        "utf8",
+      );
+      assert.equal(program.includes("--terminated-namespace"), unavailable === undefined);
+      if (unavailable === undefined) {
+        assert.ok(
+          program.includes(JSON.stringify(previous.namespace)),
+          "the preamble carries this exact owner",
+        );
+      }
+    }
+  });
 });

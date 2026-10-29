@@ -87,14 +87,14 @@ retain their selected Compute identity and immutable
 Configuration snapshot and explicit Harness execution mode. Production worker
 claim, stale-claim recovery, and backlog queries include Namespace and both
 approved AgentRevision pairs: `dedicated` Codex and `embedded` OpenClaw. Each
-Agent-owned gateway serves only its own active revision; unsupported
+Agent-owned gateway serves only its own selected version; unsupported
 Harness/mode combinations and external ingress remain unavailable.
 
 ## Reconciliation lifecycle
 
 Namespace creation and deletion queue infrastructure work. Agent stop and
 deletion queue exact-Agent lifecycle work. Agent deployment queues an immutable
-revision; the worker prepares it, activates its route, and retires its
+version; the worker prepares it, activates its route, and retires its
 predecessor. Kubernetes uses a single-replica gateway with `Recreate`, so
 replacement can interrupt serving. For embedded OpenClaw, the predecessor can
 stop before the replacement passes authentication and readiness. Read
@@ -112,7 +112,7 @@ configure export, and verify delivery. The API and worker share the OCC Pino
 logger. The API disables Fastify's default request logging and emits one
 sanitized `http.completed` record per response with the generated
 request ID, method, route template, status, and duration. Unexpected internal
-failures add `http.unexpected_error` with a bounded error code.
+failures add `http.unexpected_error` with an error code that passes the log filter.
 
 The worker emits fixed operational event classes through the same logger:
 
@@ -123,17 +123,19 @@ The worker emits fixed operational event classes through the same logger:
   and a stable result code; for an Agent stop, deletion or credential-source
   withdrawal, an exhausted retry is `outcome: permanent` while `result` stays
   the Driver's classification; AgentRevision operations also include `agentId` and
-  `revisionId`. A failed or deferred revision pass adds `cause`: the error class,
+  `revisionId`. A failed or deferred version pass adds `cause`: the error class,
   or for a transient dependency its closed failure code, with `dependency` naming
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
-  write. A revision pass that loses the race for the Agent's active revision logs
+  write. When a bundled Compute Driver's cleanup after the failed preparation or
+  activation failed too, the pass adds `cleanupCause`, the first cleanup failure's
+  class. A version pass that loses the race for the Agent's selected version logs
   outcome `retry` with code `ACTIVE_REVISION_CHANGED`; the work fails once its
   attempts are exhausted.
   A pass that could not stop a refused candidate stays pending with code
   `REFUSED_CANDIDATE_STOP_PENDING` and adds `refusal`, the refusal's code
   (`CONVERGENCE_DEADLINE_EXCEEDED` once a lifted refusal outlived the deadline),
-  until the stop succeeds. A stopped Agent's stop or revision pass whose Gateway drain
+  until the stop succeeds. A stopped Agent's stop or version pass whose Gateway drain
   yielded to other work stays pending with `AGENT_STOP_YIELDED` and runs again after it;
   a deployment whose dedicated predecessor's drain yielded stays pending with
   `PREDECESSOR_STOP_YIELDED`. Such a deployment that then fails (with the full wait), is
@@ -142,7 +144,7 @@ The worker emits fixed operational event classes through the same logger:
   Only the work's first yield, then at most one a minute, is logged; these lines and the
   work's next other line add `stopYields`, the yields this worker counted for it. A provisioning plan that the Compute Driver refuses for a reason the caller
   cannot fix adds that `reason`. A failed Namespace pass adds the Compute Driver's
-  `reason` when it gives one: bounded printable text that never carries another
+  `reason` when it gives one: at most 256 printable characters that never carry another
   tenant's values. These fields stay in the local log; the Collector
   exports only the result code. Each deployment pass adds worker wall-clock milliseconds:
   `durationMs` for the pass, `deployPasses` and summed Compute `prepareMs` so
@@ -153,7 +155,20 @@ The worker emits fixed operational event classes through the same logger:
   stop work carry no deployment timing.
 - `worker.error`: reports `CLAIM_LOST` or `WORKER_UNAVAILABLE` without exposing
   credentials. A deployment pass that cannot read its stored refusal adds the work
-  identity and `cause`, then leaves its claim to lease recovery.
+  identity and `cause`, then leaves its claim to lease recovery. An unreadable
+  Namespace, Agent or candidate revision row cannot recover by itself, so that pass stays an
+  ordinary retry that the attempt limit ends. A claim lost around
+  an external effect adds the work identity and `cause`: `CLAIM_RENEWAL_REFUSED`,
+  `CLAIM_RENEWAL_LATE`, `CLAIM_RENEWAL_FAILED`, or `CLAIM_LEASE_LAPSED` (no renewal
+  was confirmed within the lease). The repository
+  credential codes `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and
+  `PREPARED_GITHUB_RECOVERY_REQUIRED` add a `reason` class and the affected
+  Namespace, revision and `repositoryRef` (see
+  [Git through OpenShell](repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)).
+- `worker.claim-renewal-warning`: a lease renewal that succeeded but answered after
+  the lease could have run out, at warn level with the work identity, code
+  `CLAIM_RENEWAL_LATE` and the renewal's `durationMs`. The worker stops that work,
+  because another worker may already own it.
 - `worker.pass-interrupted`: a graceful shutdown aborted the pass in flight, at
   info level with `cause` `WorkerStopping`; another worker resumes the work once
   its lease expires, unless that was its last attempt (`LEASE_EXPIRED`).
@@ -167,12 +182,14 @@ Bootstrap and migration scripts use the same level and write machine-protocol
 success records to stdout. Their structured failure diagnostics go to stderr.
 Startup failures write `startup-error`, `worker.startup-error`,
 `installation.bootstrap-failed`, or `migration.failed` and exit before serving
-or processing work. Log sanitization keeps only reviewed scalar fields and drops
+or processing work. Log sanitization keeps only reviewed fields and up to 32 configuration diagnostics, and drops
 credentials, provider payloads, request objects, and unbounded error values. The
-worker does not expose an HTTP health endpoint. A startup Installation with an
-invalid Gateway StorageClass name emits `GATEWAY_STORAGE_CLASS_INVALID`; a
-Compute gateway or Agent image without a required digest, or with an uppercase
-repository path, emits `RUNTIME_IMAGE_INVALID`.
+worker does not expose an HTTP health endpoint. Driver startup schema or semantic
+refusals emit `DRIVER_CONFIGURATION_INVALID` with `details`: schema-owned
+JSON Pointer paths, codes, and safe messages. This includes invalid StorageClass
+names and runtime image settings. Submitted values and exception text are omitted.
+A prepared repository App key that cannot sign stops the worker with
+`PREPARED_GITHUB_APP_KEY_INVALID` and a fixed `reason`.
 
 ## Failures and diagnostics
 
@@ -188,7 +205,7 @@ repository path, emits `RUNTIME_IMAGE_INVALID`.
   `/app/.development/configurations` mount backed by `occ_configuration_data`.
 - **AgentRevision does not activate:** Confirm its Namespace is `ready`, the
   original actor retains exact-Agent `deploy` permission and `read` on any
-  account in its immutable revision, and its pinned Harness descriptor and
+  account in its immutable version, and its pinned Harness descriptor and
   Compute implementation match the worker.
 - **Kubernetes Namespace or Agent workload does not become ready:** Confirm
   the API and worker selected the same configured driver and the worker uses
@@ -225,6 +242,9 @@ repository path, emits `RUNTIME_IMAGE_INVALID`.
   spaces (a trailing newline counts). Native admin without the path reports
   this code too. Helm mounts the file from `gatewayRouting.apiKeySecretName`;
   see [gateway routing](gateway-routing.md#service-key-and-native-identity).
+- **`WORKER_READINESS_PATH_INVALID` or `WORKER_LIVENESS_PATH_INVALID` at startup:**
+  The worker refuses an `OCC_WORKER_READINESS_PATH` or `OCC_WORKER_LIVENESS_PATH`
+  that is relative, names a directory, or cannot be written.
 - **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub, Google
   and OIDC sign-in support host-only cookies only, so the API refuses any of
   them with native admin enabled, before it connects to the database. Turn off
@@ -241,7 +261,7 @@ repository path, emits `RUNTIME_IMAGE_INVALID`.
   Kubernetes Secret Driver.
 - **`AUTHORIZATION_DENIED` or `ACTOR_REVOKED`:** Inspect the initiating actor's
   current role, binding, exact-Namespace Restrictions, and `read` permission on
-  any service account captured in the immutable revision; see [IAM](authorization.md).
+  any service account captured in the immutable version; see [IAM](authorization.md).
 - **`CLAIM_LOST`:** Another valid claim recovered the operation. The stale
   attempt cannot publish lifecycle state; inspect subsequent worker events.
 
@@ -249,7 +269,7 @@ repository path, emits `RUNTIME_IMAGE_INVALID`.
 
 - [API operations, authentication, and permission reference](api.md)
 - [Namespace lifecycle and deletion](namespaces.md)
-- [Agent Configuration, revisions, and deployment](agents.md)
+- [Agent Configuration, versions, and deployment](agents.md)
 - [Native service accounts and account authorization](service-accounts.md)
 - [Controller and PostgreSQL configuration](settings.md)
 - [Docker Compute Driver and Compose development](drivers/docker-compute.md)

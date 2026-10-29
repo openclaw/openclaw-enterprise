@@ -5,31 +5,29 @@
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import {
+  cpuScaledImageTimeoutMs,
+  imageSmokeTimeoutMultiplier,
+} from "../helpers/image-smoke-timeout.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   image,
   imageTestOptions,
   runDocker,
   commandOutput,
+  failureTail,
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
-  eachSettled,
+  waitForContainerReady,
 } from "../helpers/runtime-image-startup.mjs";
+import { eachSettled } from "../helpers/child-processes.mjs";
 
-test(
-  "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
-  imageTestOptions,
-  async (t) => {
-    const drivers = plaintextGatewayComputeDrivers();
-    const directory = await mkdtemp(join(tmpdir(), "oce-native-listener-tls-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    // The loopback provider owns all possible requests; no model turn is sent.
-    const provider = String.raw`
+// The loopback provider owns all possible requests; no model turn is sent.
+const countingProvider = String.raw`
 const http = require("node:http");
 let modelCalls = 0;
 http.createServer((req, res) => {
@@ -38,6 +36,44 @@ http.createServer((req, res) => {
   res.end(JSON.stringify(req.url === "/counter" ? { modelCalls } : { data: [{ id: "fixture" }] }));
 }).listen(18880, "127.0.0.1");
 `;
+
+// One docker exec polls the listener (see waitForContainerReady). The wait scales
+// with the runner's CPUs: the lane's other files start runtimes at the same time
+// (finding 2448). The 90 s base keeps the former limit: 80 probes of about 1 s each.
+async function waitForListenerReady(containerName, request) {
+  try {
+    await waitForContainerReady(containerName, {
+      label: "Listener",
+      request,
+      timeoutMs: cpuScaledImageTimeoutMs(90_000),
+    });
+  } catch (error) {
+    const logs = await runDocker(["logs", containerName]).then(
+      (result) => failureTail(commandOutput(result)),
+      () => "Docker logs unavailable.",
+    );
+    error.message += `\nContainer logs:\n${logs}`;
+    throw error;
+  }
+}
+
+async function assertNoModelRequests(containerName) {
+  const counter = await runDocker([
+    "exec",
+    containerName,
+    "node",
+    "-e",
+    'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
+  ]);
+  assert.equal(counter.stdout.trim(), "0");
+}
+
+test(
+  "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
+  imageTestOptions,
+  async (t) => {
+    const drivers = plaintextGatewayComputeDrivers();
+    const directory = await temporaryDirectory(t, "oce-native-listener-tls-");
     // Each case owns its container and configuration file, so both run at once.
     await eachSettled([true, false], async (enabled) => {
       const configuration = drivers[0][1].kubernetesGatewayConfigurationDocument(
@@ -59,7 +95,7 @@ http.createServer((req, res) => {
       // why Compute refuses it; this is not a supported TLS deployment fixture.
       const { containerName } = await runGatewaySmoke(t, "openclaw", {
         configurationPath: "/etc/openclaw/openclaw.json",
-        entrypoint: provider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+        entrypoint: countingProvider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
         volumes: [`${path}:/etc/openclaw/openclaw.json:ro`],
         waitUntilReady: false,
         withAppServer: false,
@@ -70,33 +106,34 @@ http.createServer((req, res) => {
           "OPENCLAW_POD_UID=owned-native-tls",
         ],
       });
-      const nativeProbe = enabled
-        ? `require("https").get({hostname:"127.0.0.1",port:8080,path:"/readyz",servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem")},r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on("error",()=>process.exit(1));`
-        : `fetch("http://127.0.0.1:8080/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));`;
-      let ready = false;
-      for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
-        try {
-          await runDocker(["exec", containerName, "node", "-e", nativeProbe]);
-          ready = true;
-          break;
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      }
-      assert.equal(ready, true, commandOutput(await runDocker(["logs", containerName])));
-      const readiness = () =>
-        runDocker([
+      const computeReady = `async () => {
+        const response = await fetch("http://127.0.0.1:18791/readyz", {signal: AbortSignal.timeout(5000)});
+        if (await response.text() !== "") throw new Error("Compute readiness returned a body");
+        return response.status;
+      }`;
+      if (enabled) {
+        // Both native endpoints must serve HTTPS before a Compute 503 can be attributed to TLS.
+        const nativeReady = `async () => {
+          const options = {hostname: "127.0.0.1", port: 8080, servername: "openclaw-gateway",
+            ca: require("node:fs").readFileSync("/home/node/tls/cert.pem"), timeout: 5000};
+          const statuses = await Promise.all(["/startupz", "/readyz"].map(path => new Promise((resolve, reject) => {
+            const request = require("node:https").get({...options, path}, response => {
+              response.resume();
+              resolve(response.statusCode);
+            });
+            request.on("error", reject).on("timeout", () => request.destroy(new Error("timeout")));
+          })));
+          return statuses.every(status => status === 200) ? 200 : 503;
+        }`;
+        await waitForListenerReady(containerName, nativeReady);
+        const { stdout } = await runDocker([
           "exec",
           containerName,
           "node",
           "-e",
-          'fetch("http://127.0.0.1:18791/readyz").then(async r=>{if(await r.text()!=="")process.exit(2);console.log(r.status);process.exit(r.status===200?0:1)}).catch(()=>process.exit(2));',
+          `(${computeReady})().then(status => console.log(status));`,
         ]);
-      if (enabled) {
-        await assert.rejects(
-          readiness,
-          (error) => error.code === 1 && error.stdout.trim() === "503",
-        );
+        assert.equal(stdout.trim(), "503");
         for (const [kind, driver] of drivers) {
           assert.throws(
             () => driver.validateGatewaySettings?.(configuration),
@@ -105,19 +142,16 @@ http.createServer((req, res) => {
           );
         }
       } else {
-        await readiness();
+        await waitForListenerReady(
+          containerName,
+          '() => fetch("http://127.0.0.1:8080/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)',
+        );
+        await waitForListenerReady(containerName, computeReady);
         for (const [, driver] of drivers) {
           assert.doesNotThrow(() => driver.validateGatewaySettings(configuration));
         }
       }
-      const counter = await runDocker([
-        "exec",
-        containerName,
-        "node",
-        "-e",
-        'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
-      ]);
-      assert.equal(Number(counter.stdout.trim()), 0);
+      await assertNoModelRequests(containerName);
       t.diagnostic(
         `native TLS enabled=${enabled}: native ready, Compute readiness ${enabled ? "refused" : "passed"}, modelCalls=0`,
       );
@@ -140,17 +174,7 @@ test(
       }
       await runDocker(["network", "rm", network]);
     });
-    const directory = await mkdtemp(join(tmpdir(), "oce-native-bind-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    const provider = String.raw`
-const http = require("node:http");
-let modelCalls = 0;
-http.createServer((req, res) => {
-  if (req.method === "POST") modelCalls++;
-  res.setHeader("content-type", "application/json");
-  res.end(JSON.stringify(req.url === "/counter" ? { modelCalls } : { data: [{ id: "fixture" }] }));
-}).listen(18880, "127.0.0.1");
-`;
+    const directory = await temporaryDirectory(t, "oce-native-bind-");
     // Each case owns its container and configuration file, so the cases run
     // concurrently on the shared internal network.
     const bindCases = [
@@ -180,7 +204,7 @@ http.createServer((req, res) => {
         "openclaw",
         {
           configurationPath: "/etc/openclaw/openclaw.json",
-          entrypoint: provider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+          entrypoint: countingProvider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
           network,
           volumes: [`${path}:/etc/openclaw/openclaw.json:ro`],
           waitUntilReady: false,
@@ -193,38 +217,38 @@ http.createServer((req, res) => {
           ],
         },
       );
-      let ready = false;
-      for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
-        try {
-          await runDocker([
-            "exec",
-            containerName,
-            "node",
-            "-e",
-            'fetch("http://127.0.0.1:18791/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));',
-          ]);
-          ready = true;
-          break;
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      }
-      assert.equal(ready, true, commandOutput(await runDocker(["logs", containerName])));
+      await waitForListenerReady(
+        containerName,
+        '() => fetch("http://127.0.0.1:18791/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)',
+      );
       const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
       const address = inspected.NetworkSettings.Networks[network].IPAddress;
       assert.ok(address);
-      const remote = await runDocker([
-        "run",
-        "--rm",
-        "--pull=never",
-        "--network",
-        network,
-        "--entrypoint",
-        "node",
-        image,
-        "-e",
-        `Promise.all([8080,18791].map(async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}})).then(v=>console.log(JSON.stringify(v)));`,
-      ]);
+      // One container on the network polls both ports until the status listener
+      // answers 200 and the native port settles (200 or refused). The status
+      // readiness asks the native Gateway with 2 s limits, so on a CPU-starved
+      // runner it can answer 503 once just after the private probe saw 200
+      // (finding 2468); a Kubernetes readiness probe retries the same way.
+      const remoteBudgetMs = cpuScaledImageTimeoutMs(15_000);
+      const remote = await runDocker(
+        [
+          "run",
+          "--rm",
+          "--pull=never",
+          "--network",
+          network,
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          // A fixed program: the address and expectation are arguments, not code.
+          'const [budget,address,reachable]=process.argv.slice(1);const deadline=Date.now()+Number(budget);const probe=async port=>{try{const r=await fetch("http://"+address+":"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}};(async()=>{for(;;){const v=await Promise.all([8080,18791].map(probe));if((v[1].status===200&&(reachable==="true"?v[0].status===200:v[0].error==="ECONNREFUSED"))||Date.now()>=deadline){console.log(JSON.stringify(v));return;}await new Promise(r=>setTimeout(r,500));}})();',
+          String(remoteBudgetMs),
+          address,
+          String(reachable),
+        ],
+        { timeout: remoteBudgetMs + 60_000 * imageSmokeTimeoutMultiplier },
+      );
       const [native, status] = JSON.parse(remote.stdout.trim());
       assert.equal(status.status, 200);
       if (reachable) {
@@ -237,14 +261,7 @@ http.createServer((req, res) => {
           /gateway\.(bind|customBindHost)/,
         );
       }
-      const counter = await runDocker([
-        "exec",
-        containerName,
-        "node",
-        "-e",
-        'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
-      ]);
-      assert.equal(Number(counter.stdout.trim()), 0);
+      await assertNoModelRequests(containerName);
       t.diagnostic(
         `native bind=${gateway.bind ?? "omitted"} host=${gateway.customBindHost ?? "default"}: private ready=200, Pod-IP ${reachable ? "ready=200" : "ECONNREFUSED"}, modelCalls=0`,
       );

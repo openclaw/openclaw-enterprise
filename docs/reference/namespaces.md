@@ -40,6 +40,12 @@ They do not backfill an existing Installation, recreate a deleted Namespace,
 or overwrite configuration. Additional named Namespaces remain available
 through `POST /namespaces`.
 
+In the console, open **Namespaces → Create Namespace**, enter a unique name,
+and submit. The confirmation offers **Open Agents** for the new scope;
+provisioning continues asynchronously. See the
+[console workflow](../guides/console/create-namespace.md) for permissions and
+creation recovery.
+
 ## Ownership and supported operations
 
 The server assigns the Namespace's identifier and Installation ownership.
@@ -96,6 +102,14 @@ reports infrastructure readiness, but does not choose whether a Namespace is
 ready. An Agent can be created while its Namespace is `provisioning`; deploying
 an Agent requires the Namespace to be `ready`.
 
+The console's **Agents** page and **Create Agent** name a Namespace that is not
+`ready`. A `provisioning` Namespace keeps **Create Agent** for drafts that need no
+new Secret or sign-in. A `failed` or `deleting` Namespace, or a `provisioning` one
+with `existingNamespace` (no Configuration until `ready`), disables it with the
+reason. A status change rebuilds a retained Agents or Create Agent view. With no
+URL selection, the console picks a `ready` Namespace first and skips `deleting`
+ones while another remains.
+
 The separate [controller worker](controller.md) processes Namespace lifecycle
 work when the API uses PostgreSQL. Compose starts it after initialization and
 API readiness; host-process debugging starts it independently because the API does
@@ -109,6 +123,9 @@ exact dedicated existing namespace selected by `existingNamespace`; see the
 ## Deletion and tombstones
 
 `DELETE /namespaces/:namespaceId` starts deletion of an empty Namespace.
+
+The Console exposes this operation through each Namespace row's trash icon.
+See [Delete a Namespace in the console](../guides/console/delete-namespace.md).
 
 A successful request returns `202` and the Namespace with `status: "deleting"`.
 Repeating the request while teardown is in progress changes nothing.
@@ -127,8 +144,10 @@ A Namespace containing any Agent, Configuration, Preset, service account, Secret
 or [credential source](credential-sources.md) cannot be deleted and returns
 `409 NAMESPACE_NOT_EMPTY`. The error message lists the kinds that remain and
 the IDs of their resources, as far as the 256-character message
-allows; a kind with more says how many are left. Configurations have no list
-route, so this message is where their IDs appear. Delete
+allows; a kind with more says how many are left. The error also includes
+`remainingResources`: up to seven entries with `kind`, `count`, and up to 20
+`ids` each. Pending Agent provisioning has no resource IDs. Configurations have
+no list route, so the deletion conflict provides their IDs. Delete
 unreferenced Agents, Configurations, [Presets](presets.md), service accounts,
 Secrets, and credential sources before deleting their Namespace. A credential
 source in `deleting` still counts; retry its deletion until it disappears.
@@ -146,7 +165,7 @@ Namespace, and a different Namespace cannot use that Agent ID to bypass
 authorization or ownership checks.
 
 Each deployed Agent owns exactly one gateway, created with its workload and
-reused across its revisions. A Namespace can therefore contain zero gateways
+reused across its versions. A Namespace can therefore contain zero gateways
 before deployment or multiple gateways for different Agents; Namespace
 readiness does not depend on a gateway. When explicitly selected, the
 Kubernetes Compute Driver uses one isolated Kubernetes namespace and,
@@ -206,6 +225,7 @@ workload is ready.
 
 ## Changelog
 
+- 2026-10-18 21:10: The console names a Namespace's status where Agent creation starts and disables creation only where the API refuses new Agents. (ux-a5)
 - 2026-10-06 18:55: The worker log names why a Namespace failed; the API still does not. (fix-d521)
 - 2026-10-06 18:40: Note that a reused existing namespace fails until its old tenant markers are cleared, that `failed` carries no reason, and that `401` covers service API keys. (dogfood-r38)
 

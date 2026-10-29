@@ -60,8 +60,12 @@ graph TD
   KCodex -->|failure| KRollback
   KDriver -->|OpenShell| KOpenFirst["Prepare OpenShell assets,<br/>install routing, then import runtime"]
   KRoutingFirst --> KOnly["Install selected control-plane profile<br/>and retain all readiness gates"]
-  KOpenFirst --> KOnly
-  KOnly --> KWorkspace
+  KOpenFirst --> KProtection{"Protected egress?"}
+  KProtection -->|Off| KOnly
+  KProtection -->|On| KAuthority["Prepare authority TLS and registry<br/>Install Gateway without readiness wait"]
+  KAuthority --> KOnly
+  KOnly --> KWait["Complete readiness gates<br/>including protected Gateway rollout"]
+  KWait --> KWorkspace
   KControl -->|Compose| KConfig["Validate Compose and claim<br/>private state with snapshot"]
   KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
   KStart --> KReady["Import runtime and start<br/>API and Kubernetes worker"]
@@ -103,7 +107,15 @@ graph TD
 
 ### 1. Start and initialize the local stack
 
-`scripts/dev-up`, `apps/controller/src/server.mjs:start`
+`internal/occcli/dev.go:developmentCommand`,
+`internal/occdev/egress_k3d.go:CheckDevelopmentProfile`, `scripts/dev-up`
+
+Before Compute dispatch, the CLI checks protected-egress, database, and host-gateway
+selectors through the existing development validators. Direct Docker script startup
+calls the same check through `occ dev check-profile` before temporary-state creation
+or engine probes; Kubernetes script startup dispatches to the guarded CLI.
+Invalid or incompatible selections stop startup. Unset or `0` protected egress
+preserves ordinary startup when its related selectors are absent.
 
 Both shell wrappers locate the checkout with command-local `CDPATH="" cd`,
 so shell search paths cannot change the selected repository or contaminate the
@@ -117,7 +129,7 @@ engine selection, database initialization, local API admission and worker startu
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver`
 
 [Namespace execution and Agent admission](docker-compose-development/agent-execution.md)
-traces API authorization, durable work, tenant network ownership, unsupported
+traces API authorization, queued controller operations, tenant network ownership, unsupported
 Agent authentication and exact resource removal.
 The Driver rejects Docker API responses above 4 MiB from either a declared
 content length or the bytes received before buffering the complete body.
@@ -149,17 +161,23 @@ For the Kubernetes-only profile, `internal/occdev/openshell_k3d.go:upK3d`
 creates the owned cluster, checks node DNS, and writes and selects its kubeconfig.
 With Sandbox Driver `none`, it then imports the runtime image and runs
 `prepareDevelopmentCodexSandbox` before installing private routing controllers.
-A sandbox refusal rolls back the owned cluster before controller or PostgreSQL
-image imports, Installation setup, or credential delivery. OpenShell retains its
-preparation, routing-controller installation, then runtime-import order. Both
-paths retain the later network-isolation and authenticated readiness gates.
+Meanwhile, `internal/occdev/concurrent.go:concurrently` imports the controller
+image, then checks network isolation while importing PostgreSQL and, when
+configured, repository images. The first independent failure cancels the others
+and is reported. A sandbox refusal or failed check rolls back the owned cluster
+before Installation setup or credential delivery. OpenShell retains its
+routing-controller installation, then runtime-import order. Both paths install
+the platform only after the check, then gate on authenticated readiness.
 
 `internal/occdev/kubernetes.go:importDevelopmentImage` exports each selected
-image to a temporary archive, selecting its Linux platform explicitly on Docker.
-`internal/occdev/k3d_import.go:importArchiveDirect` streams that archive into
-k3d; only its known closed-stream race receives bounded retries. The launcher
-then resolves the imported digest from containerd, rejects missing or ambiguous
-results, and removes the archive. Tagged local builds use this same path.
+image to its own temporary archive, with an explicit Linux platform on Docker.
+`internal/occdev/k3d_import.go:importArchiveDirect` streams it into
+k3d, retrying only its known closed-stream race, three times at most. The launcher
+resolves the imported digest from containerd, rejects missing or ambiguous
+results, and removes the archive. Tagged builds share this path.
+`internal/occdev/registry_k3d.go:pullDevelopmentImage` pulls digest-pinned
+`OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` images instead; `state.json` records
+the registry attachment for `occ dev down` to detach.
 
 ### 5. Prepare the optional OpenShell development profile
 
@@ -187,6 +205,44 @@ Sandbox Driver applies rendered workspace resources and the operator label
 before creating the corresponding Gateway Workspace. Startup waits until the
 OCC Namespace becomes ready. See the
 [OpenShell flow](openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
+
+### 6. Start protected OpenShell transport
+
+`internal/occdev/egress_k3d.go:protectedEgressSelection`,
+`internal/occdev/openshell_k3d.go:installDevelopmentPlatform`,
+`apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createClient`
+
+The explicit protected profile requires Kubernetes Compute, Kubernetes control
+plane, OpenShell Sandbox, and reviewed
+candidate images/charts. It prepares authority server TLS and its public CA,
+then installs OpenShell with native PKI and a TLS middleware registration.
+OpenShell owns the complete Gateway server/client certificate and extension-JWT
+key set. The launcher reads only its public key ID and writes the paired Backend,
+egress Driver and authority listener settings into the Installation.
+
+Gateway startup contacts the registry, so `installDevelopmentPlatform` defers
+its readiness wait until after the OCE release's normal readiness gates. API
+composition starts the authority; Backend validation is declarative, and worker
+startup/preflight and health do not require a Gateway call. The final Gateway
+rollout gate still precedes Namespace readiness. Any failure returns to the
+existing owned-cluster rollback path; no empty registry response substitutes for
+negotiation.
+
+The chart projects the administrative client certificate into API and worker
+only. The Backend supplies it to verified gRPC TLS for DNS or exact-IP server
+identities. Service traffic keeps its separate scoped bearer identity. The API
+alone receives authority TLS and the issuer public key; selected Gateway and
+supervisor Pods can reach that listener through narrow NetworkPolicies. See the
+[Backend authentication boundary](../reference/backends.md#openshell-gateway).
+
+`selectedDevelopmentDatabase` validates an optional disposable database name
+before effects. `installKubernetesControlPlane` uses that name in creation, readiness,
+migrator and application URLs. Bootstrap, API and worker share the limited
+application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
+Helm waits for both. Unselected profiles retain the existing database and
+transport defaults. The [launch guide](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
+owns inputs; [packaging verification](../testing/static-egress.md#protected-launch-packaging)
+distinguishes local proof from pending connected runtime qualification.
 
 ## Debugging and Verification
 
@@ -249,51 +305,8 @@ OCC Namespace becomes ready. See the
 
 - 2026-10-14 18:14: Bound declared and streamed Docker API response bodies before complete buffering. (issue-2406 - 1fc3258afdd73b2888c524092b988a2110449bbb)
 
-- 2026-10-09 19:04: Import tagged development images through the platform-selected archive path and retain digest verification. (authoring-run/3980117d-b11c-47c0-9f7a-765c1481ee7b - 6d0bb202d97f487cbd5e41d64e0f1f5ab196d083)
+- 2026-10-14 17:03: Validate protected development selectors before CLI dispatch and direct Docker script effects. (authoring-run/5607c5fd-a268-466b-a5c9-93e0cc984807 - 3fba9be5bae09aa9c33483a768221f44079edc3b)
 
-- 2026-10-09 03:27: Run the unchanged Codex sandbox preflight before routing for the Kubernetes-only none profile; preserve OpenShell ordering and later readiness checks. (authoring-run/ec403753-6547-4dcb-8624-26628a124b7d - 259702d92a9ebb094c5f9bea0465bd6b09681d08)
+- 2026-10-14 16:11: Add the default-off protected OpenShell launch, native mTLS credential ownership, authority-first readiness and disposable database selection. (authoring-run/b0bd473e-3b1d-44cc-a1b1-4a1d411a1829 - 126b6a1b13b48281aee5d3ca4d476ec75da8a24a)
 
-- 2026-10-01 16:58: Added automatic private Envoy routing for the Compose-backed OpenShell profile. (authoring-run/53c6746c-9551-4f70-9d1f-e0540ce29868 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
-
-- 2026-09-28 00:34: Restored Compose as the default control plane and made Kubernetes-only startup explicit. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 201f31d511464133f06e0526bb5545ed1cb27e25)
-
-- 2026-09-25 12:23: Added the selectable Compose control-plane path for Kubernetes Compute with OpenShell while retaining the Kubernetes-only default. (authoring-run/a81f3e71-1c8e-4692-8e2e-d462ddacc10b - 64ab72aed5c4926e4a2080ade91d785e531801a2)
-
-- 2026-09-23 20:46: Allow an explicit K3s node image for local startup when channel discovery is unavailable; retain the default 1.35 channel. (pr-337 - 8adfd86e96a10a9d06761bc78e385eafd6bf2760)
-
-- 2026-09-23 01:52: Moved workspace-chart reconciliation from a bootstrap-only Helm release into the operator-mode Sandbox Driver Namespace lifecycle. (authoring-run/dc7a0b75-945c-4091-8600-eb919ad138dd - fbaf3e2dfeccbcf2815327d7d5a9aa6643a26cf2)
-
-- 2026-09-23 01:11: Documented the deployment Gateway, operator Workspace creation, and bootstrap workspace chart in the OpenShell development profile. (authoring-run/955359e5-5631-48e4-acc1-a5e32b9ade00 - fbaf3e2dfeccbcf2815327d7d5a9aa6643a26cf2)
-
-- 2026-09-22 18:36: Added the optional OpenShell Kubernetes development profile, namespace-local Helm readiness, and the supported fail-closed Agent boundary. (authoring-run/e7b89de2-9e58-4849-b078-791560cc5d58 - fbaf3e2dfeccbcf2815327d7d5a9aa6643a26cf2)
-
-- 2026-09-17 17:42: Pin Kubernetes development to the supported 1.35 family and emit only runtime settings accepted by the current Kubernetes Compute Driver schema. (authoring-run/b044b43c-e713-4006-93a0-c129cdf5578e - 9310d5b025e84f885e4f7facae2e2906b50d58f8)
-
-- 2026-09-17 16:21: Preserve Podman's host connection during Compose cleanup and verify explicit volume deletion with the real CLI and engine. (authoring-run/566921ff-3342-4dec-aa19-110acc8aa1e4 - 58ead9943ee6b2560eea2c327967b50a30f7644e)
-
-- 2026-09-17 16:47: Merge current main's Podman dedicated recovery proof and checkout-local CLI requirement while preserving the Kubernetes lifecycle trace. (01a0ae15-3bad-7d92-92b7-f8be208cbb49 - b13b2f479f824891ab3c5bf71e6851d704dba458)
-
-- 2026-09-17 14:32: Resolve the effective macOS Podman machine connection, trust its private gateway only for rootful Compose, and retain bridge-CIDR admission for rootless Compose. (authoring-run/07150374-b371-440a-92f7-9d53dedb9512 - 309c5c38702d026e09df703d7e79c2c9eb2d570c)
-
-- 2026-09-17 06:42: Trace the accompanying Go CLI development lifecycle, Kubernetes startup and cleanup ownership, and retained Docker startup path. (01a0ae15-3bad-7d92-92b7-f8be208cbb49 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
-
-- 2026-09-17 00:48: Correct current harness admission and metadata-only dispatch boundaries after implementation review. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - 107900e9551b90c3e9ac24d30f8ea866f17e5dbb)
-
-- 2026-09-09: Added automatic Podman selection, API socket delivery, Podman
-  status and bootstrap-copy handling, and the Docker-only Fluentd and Agent
-  runtime verification boundaries while retaining the Docker Compose path.
-
-- 2026-09-01 22:09: Document explicit runtime image rebuilding and link packaged-plugin and Codex compatibility checks. (01a05f89-ff1c-7643-a77f-7e1e3aed9e5f - 5fa47a6)
-
-- 2026-09-01 19:09: Merge the development startup trace into the canonical Docker Compose flow and clarify the `dev-up` readiness proof versus later API deployment and TUI attachment. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
-- 2026-08-31 20:33: Trace the shared installation initializer, startup ordering, and initializer-owned credential delivery. (01a05a3d-526f-7553-8cd8-070bd1847acb - b6f213cbcee11ba3dd69886c936c7e5abe233eb3)
-
-- 2026-08-31 19:14: Document bootstrap service-key API access and operator credential cleanup for the TUI path. (codex/01a05a3d-526f-7553-8cd8-070bd1847acb - 06c4bccb95543d3d545d011e72074f805f339aa8)
-
-- 2026-08-31 17:45: Align bootstrap identity and protected service-key storage with the current startup path. (codex/01a05a69-3fbe-7441-9e6d-20394758cf94 - 0797098646028ac00cb26cd4afcbc9b2cf8bcb24)
-- 2026-08-31 15:40: Added the compact development TUI runtime trace and two-turn verification boundary. (01a059f9-e5cc-7b01-9479-0c5087f5e58f - 3a04cee)
-- 2026-08-28 17:54: Clarified the Docker workload execution boundary and linked operator setup, quickstart, and worker traces. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)
-- 2026-08-25 10:13: Removed the deleted bootstrap sidecar/script from the Compose flow and documented controller-owned fresh-database self-bootstrap. (01a03630-cd9f-7352-9e64-1d30de98c7dd - c56867448b187304723d20043dd5a0e184736ef2)
-- 2026-08-25 08:46: Clarified that Docker E2E verification may invoke gateways through Namespace networking or published loopback ports. (01a03630-cd9f-7352-9e64-1d30de98c7dd - 949e57ba008486c7ad60978df79dc53cce31bee9)
-- 2026-08-24 22:43: Added API-only filesystem Configuration Driver volume boundaries and removed stale Docker subnet knobs. (01a03630-cd9f-7352-9e64-1d30de98c7dd - 63890cf94cfc15f848f62f8f957eb766d2101f55)
-- 2026-08-24 21:40: Documented Docker Compose development startup and Docker Compute Driver runtime flow. (01a03630-cd9f-7352-9e64-1d30de98c7dd - 63890cf94cfc15f848f62f8f957eb766d2101f55)
+[Compose development documentation history](docker-compose-development/history.md) preserves the older dated entries.
