@@ -14602,6 +14602,18 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       "models.providers.openai.headers.x-provider-feature",
     ],
     [{}, 'agents.defaults.models["openai/gpt-5"].params.user', { params: { user: "${USER}" } }],
+    // The first reference is named: list entries by index, a key that is not a plain ID
+    // quoted, and the provider before the model entry.
+    [{ models: [{ id: "gpt-5", name: "${MODEL_NAME}" }] }, "models.providers.openai.models.0.name"],
+    [
+      { headers: { "x-feature.v2": "${HEADER}" } },
+      'models.providers.openai.headers["x-feature.v2"]',
+    ],
+    [
+      { baseUrl: "${PROVIDER_URL}" },
+      "models.providers.openai.baseUrl",
+      { params: { user: "${USER}" } },
+    ],
   ]) {
     const configuration = {
       ...embeddedRevision.configuration,
