@@ -15,16 +15,18 @@ expiry together through the Secret Driver. OCE registers the Secret reference an
 the source's approved OAuth settings with the Token Service for background refresh.
 The source becomes `ready` after both the write and registration are confirmed.
 If either outcome is unknown, the source stays `registering` and OCC never replays
-the authorization code. Deleting a pending source also removes any tokens stored
-for it. [Secret Driver](../../../docs/reference/drivers/secret.md)
+the authorization code. Deleting a pending source withdraws any refresh
+registration and removes its token Secret. [Secret Driver](../../../docs/reference/drivers/secret.md)
 
 When the source's refresh strategy calls for renewal, the Token Service reads the
 current token set through the Secret Driver and requests a new access token from
 the pinned issuer. It validates the response and writes the new token set back
 through the Secret Driver, retaining the current refresh token if the issuer omits
 a replacement. The Token Service serializes refresh attempts that share a rotating
-grant and prevents stale writes. OpenShell can present the renewed access token
-only after the write succeeds. [Credential lifecycle](../0023-egress-proxy-credential-lifecycle/protocol.md#prepare-and-renew-credentials)
+grant and prevents stale writes. If a write is uncertain, it checks which version
+was stored before refreshing again. If the replacement was lost and the old token
+may have been consumed, the owner must reconnect. OpenShell can present the renewed
+access token only after the write succeeds. [Credential lifecycle](../0023-egress-proxy-credential-lifecycle/protocol.md#prepare-and-renew-credentials)
 
 ## MCP authorization
 
@@ -44,13 +46,18 @@ At **Connect**, the owner selects scopes in Console. Before creating the source,
 OCC checks that the selection is a nonempty subset of the template version's
 approved scopes and includes every required scope. OCE uses the SDK to start
 authorization with those scopes, the pinned resource, a random `state`, and a
-PKCE challenge. The owner grants consent at the issuer.
+PKCE challenge. For `accountIdentity: oidc`, OCE also generates a nonce, includes
+it in the request, and keeps it in the private connection session. The owner grants
+consent at the issuer.
 At callback, OCE checks the session, state, and issuer, then exchanges the code
 once using the verifier, pinned client registration, token endpoint, and resource.
 
-OCE checks the granted scopes against the owner's selection before storing the
-tokens. The refresh registration binds the Secret reference to the source, client
-registration, issuer, token endpoint, resource, and selected scopes. The Token
+Before storing the tokens, OCE checks the granted scopes against the owner's
+selection. For OIDC, it passes the ID token, pinned template version, and session
+nonce to the Driver's [OIDC verifier](#oidc-account-identity). OCC records the
+verified email on the source. A missing or invalid ID token fails the connection
+before the Secret write. The refresh registration binds the Secret reference to the
+source, client registration, issuer, token endpoint, resource, and selected scopes. The Token
 Service uses those pinned values and checks each renewed grant before use.
 Changed endpoints require a new version and consent. The worker exposes the tools the server lists
 for the connection (`tools/list`). [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
@@ -180,7 +187,7 @@ installation cannot enforce the executable restriction recorded at consent.
 | Consent denied, popup closed, or session expired            | Pending source deleted                           | Connect again                                  |
 | `state` mismatch, reuse, or another user's session          | `400`; no exchange                               | The owner connects again                       |
 | Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`              | Administrator corrects the connection template |
-| Exchange or grant handoff outcome unknown                   | Source stays `registering`                       | Delete and reconnect; OCC never replays a code |
+| Exchange, Secret write, or refresh registration uncertain   | Source stays `registering`                       | Delete and reconnect; OCC never replays a code |
 | Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`     | **Reconnect** and redeploy                     |
 | Driver unavailable before source creation                   | `503`; no source created                         | Retry                                          |
 | OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                      | Administrator corrects `issuer` or URLs        |
@@ -218,8 +225,8 @@ issue seven-day refresh tokens.
   and exchanges the code with PKCE. Verify the Token Service receives the stored
   Secret reference, pinned resource, and selected scopes. Withhold confirmation
   of storage or refresh registration and verify the source stays `registering`
-  and the issuer sees only one code exchange. On a dedicated worker, verify a tool call
-  uses the selected scopes and an unselected scope stays unavailable after refresh.
+  and the issuer sees only one code exchange. On a dedicated worker, verify a tool
+  call uses the selected scopes and an unselected scope stays unavailable after refresh.
   Bind two MCP servers, one on a nondefault port, and verify each placeholder
   works only at its own endpoint.
 - **Client registrations.** Two connection templates with the same `clientId` in
@@ -229,9 +236,10 @@ issue seven-day refresh tokens.
   Namespace with a `namespace` binding can connect; the same person connecting an
   Agent in another Namespace, a service key, and a caller without a binding are
   refused. Only Installation administrators can create or delete the bindings.
-- **OIDC.** Reject a version whose metadata issuer or endpoints differ, and an ID
-  token with a wrong issuer, an untrusted signing key, a wrong audience, or a wrong
-  nonce. Show the verified address on success.
+- **OIDC.** Exercise both template types. Reject a version whose metadata issuer or
+  endpoints differ. Reject an ID token with a wrong issuer, untrusted signing key,
+  wrong audience, or wrong nonce before storing the token set. Show the verified
+  address on success.
 - **Real k3d and OpenShell.** Through the regular Agent create path, connect via
   Keycloak and prove: a tool reaches its endpoint with no added network policy; a
   write fails under `read-only`; another tool binary cannot send the placeholder;
