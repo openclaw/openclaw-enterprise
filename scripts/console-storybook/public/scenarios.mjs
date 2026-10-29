@@ -1350,7 +1350,62 @@ export const scenarios = {
       "The Namespace list the Agents page rereads while its Namespace provisions no longer holds it: it was deleted, or the reader lost access. The wait ends, the note asks for another Namespace, as Create Agent's does, and Create Agent is disabled.",
     steps: [
       'Within about 10 s the note "Namespace status: Provisioning." becomes "This Namespace is missing or you no longer have access. Choose another Namespace."',
-      'Confirm Create Agent is disabled and described by that note, the empty state reads "Agents cannot be created in this Namespace.", and no further Namespace reads happen.',
+      "Confirm Create Agent is disabled and described by that note, no empty-list message appears, and no further Namespace reads happen.",
+    ],
+  },
+  agentsNamespaceMissingStopDialog: {
+    group: "Pages/Agents",
+    name: "Namespace loss with Stop dialog",
+    deployed: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
+    description:
+      "The last Namespace response still says provisioning. Its idle recheck removes access while the row confirmation is open.",
+    steps: [
+      "Wait for the recheck. The dialog, rows and previous feedback disappear. Search Agents receives focus, with no empty-list message.",
+    ],
+  },
+  agentsNamespaceMissingLateStop: {
+    group: "Pages/Agents",
+    name: "Namespace loss before Stop response",
+    deployed: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    rules: [{ suffix: "/stop", method: "POST", delayMs: 12000 }],
+    actions: [
+      { selector: '[aria-label="Stop Research assistant"]', click: true },
+      { selector: ".agent-stop-dialog .danger", click: true },
+    ],
+    description: "The Namespace becomes unavailable while a Stop response is pending.",
+    steps: [
+      "Wait for the result. Only generic acceptance and the unavailable warning remain, with no Agent name, ID or empty-list message.",
+    ],
+  },
+  agentsNamespaceMissingDeleteDialog: {
+    group: "Pages/Agents",
+    name: "Namespace loss with Delete dialog",
+    deployed: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [{ selector: '[aria-label="Delete Research assistant"]', click: true }],
+    description:
+      "The last Namespace response still says provisioning. Its idle recheck removes access while the row confirmation is open.",
+    steps: [
+      "Wait for the recheck. The dialog, rows and previous feedback disappear. Search Agents receives focus, with no empty-list message.",
+    ],
+  },
+  agentsNamespaceMissingPopulated: {
+    group: "Pages/Agents",
+    name: "Populated Namespace leaves the list",
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [{ selector: 'input[type="search"]', value: "Research", focus: true }],
+    description:
+      "A provisioning Namespace becomes unreadable while its Agents are displayed. The idle check removes the rows and disables Create Agent without moving search focus.",
+    steps: [
+      "Wait for the missing-Namespace warning. Research assistant and its actions disappear.",
+      "Clear Search Agents. The old rows must not return. Repeat at phone width.",
     ],
   },
   agentsDenied: {
@@ -3651,6 +3706,93 @@ export const scenarios = {
       "Select Start over, cancel once, then confirm. Navigate away and return to see the fresh Preset chooser.",
     ],
     gap: "Simulated UI proof only; this walkthrough does not save or deploy an Agent.",
+  },
+  createPasswordSecretConflict: {
+    group: "Pages/Create Agent",
+    name: "Password Secret conflict recovery",
+    path: create,
+    standardCodexPreset: true,
+    actions: [...passwordPresetForm, click("Create Agent")],
+    rules: [
+      {
+        suffix: "/secrets",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "A Secret with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    description:
+      "A confirmed duplicate model Secret keeps the draft and offers deliberate existing Secret selection or a separate new Secret name.",
+    steps: [
+      "Change Agent name after the conflict: the old collision notice clears without a write. Reset to exercise the recovery choices.",
+      "Choose existing Secret and select a readable model credential. Confirm the Agent name, model and other draft fields remain.",
+      "Reset the story. Use another Secret name, submit spaces, then a name longer than 255 characters. Both stop at field validation. Correct the name and create the Agent.",
+      "Reset the story. Tab from the collision notice through both choices. Use another Secret name focuses its input. Switch Authentication method to ChatGPT OAuth: recovery and its required input disappear. Switch back: no stale choice returns.",
+    ],
+    gap: "Simulated UI proof; native controller browser tests exercise duplicate rejection and recovery.",
+  },
+  createPasswordSecretConflictPat: {
+    group: "Pages/Create Agent",
+    name: "Secret conflict restores plugin discovery",
+    path: create,
+    standardCodexPreset: true,
+    pluginDiscovery,
+    pluginCapabilities,
+    actions: [
+      ...passwordPresetForm,
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      { selector: "#provider-api-key", value: "at-storybook-pat" },
+      { selector: "#agent-model", value: "gpt-5.1" },
+      click("Create Agent"),
+      click("Choose existing Secret"),
+      { selector: "#plugin-discovery-token summary", click: true },
+    ],
+    rules: [
+      {
+        suffix: "/secrets",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "A Secret with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    description:
+      "Choosing an existing Secret restores the normal optional service account token for plugin discovery.",
+    steps: [
+      "Enter a dummy token, then open Configure plugins. Select a Secret deliberately before creating the Agent.",
+    ],
+    gap: pluginDiscoveryGap,
+  },
+  createPasswordSecretConflictOAuth: {
+    group: "Pages/Create Agent",
+    name: "Secret conflict cleared for OAuth",
+    path: create,
+    standardCodexPreset: true,
+    actions: [
+      ...passwordPresetForm,
+      click("Create Agent"),
+      click("Use another Secret name"),
+      { selector: "#agent-auth-method", value: "credential_source" },
+    ],
+    rules: [
+      {
+        suffix: "/secrets",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "A Secret with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    description:
+      "Switching the refused password draft to OAuth clears the Secret collision choices and required alternate name. Returning to API key requires fresh credentials without restoring the collision.",
+    gap: "Simulated UI proof; native fixtures cover the actual duplicate refusal and keyboard recovery.",
   },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
@@ -7488,6 +7630,30 @@ export const scenarios = {
     description:
       "Both Slack token bindings are empty and required before a Slack-enabled draft can deploy.",
   },
+  credentialsSlackOtherKeys: {
+    group: "Components/Credentials",
+    name: "Slack tokens on other keys",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackTokens: {
+      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      botToken: "${ACME_SLACK_BOT}",
+    },
+    slackBindings: ["SLACK_APP_TOKEN"],
+    description:
+      "The bot token reads ACME_SLACK_BOT, which the token pickers do not bind, so the tab lists each key the tokens read without pickers. Deploy waits until ACME_SLACK_BOT is bound through the Configuration API.",
+  },
+  credentialsSlackHttp: {
+    group: "Components/Credentials",
+    name: "Slack HTTP mode, bot token only",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackMode: "http",
+    slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
+    slackBindings: ["SLACK_BOT_TOKEN"],
+    description:
+      "HTTP mode reads no app token, so the tab offers only the Slack bot token picker, and Deploy is available while it is bound.",
+  },
   credentialsSlackReader: {
     group: "Components/Credentials",
     name: "Slack tokens, viewer can only read",
@@ -7610,6 +7776,52 @@ export const scenarios = {
       "The unsaved choice stays selected and Deploy stays disabled. Choose the saved Slack app token again to make Deploy available; no retry or reload is needed.",
     ],
   },
+  credentialsSaveChannelRefused: {
+    group: "Components/Credentials",
+    name: "Channel Secret save refused for a channel setting",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings.",
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "The stored Configuration holds a Slack token form that save now refuses, so saving channel Secrets, which resends the stored values, is refused for that setting.",
+    gap: "The refusal is simulated; the API refuses the stored form on the bundled Kubernetes Compute.",
+    steps: [
+      "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says to fix it in the Configuration JSON on the Configuration tab.",
+    ],
+  },
+  credentialsSaveChannelBindingRefused: {
+    group: "Components/Credentials",
+    name: "Channel Secret save refused for a missing binding",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting channels.slack.signingSecret references SLACK_SIGNING_SECRET without a Configuration Secret binding: bind SLACK_SIGNING_SECRET in secretBindings to an environment-backed Secret, or remove the reference.",
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "The stored Configuration references a name that has no Secret binding, so saving channel Secrets, which resends the stored values, is refused for that setting.",
+    gap: "The refusal is simulated; the API refuses the unbound reference on the bundled Kubernetes Compute.",
+    steps: [
+      "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says where the console binds a Secret: this tab for SLACK_APP_TOKEN and SLACK_BOT_TOKEN, the Configuration API for other names.",
+    ],
+  },
   credentialsSaveConflict: {
     group: "Components/Credentials",
     name: "Secret choices after a conflict",
@@ -7657,6 +7869,47 @@ export const scenarios = {
     ],
     description:
       "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
+  },
+  credentialsSecretListRefresh: {
+    group: "Components/Credentials",
+    name: "Refresh Secret list without saving",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    // Setup makes three exact collection reads; the permission endpoint is separate.
+    rules: [{ path: presetSecretsPath, method: "GET", skip: 3, once: true, delayMs: 3000 }],
+    description:
+      "The first explicit refresh waits three seconds, preserving query, focus and the staged app token. Save channel Secrets applies the choices.",
+    steps: [
+      "Type a nonmatching name in Slack bot token. ArrowDown highlights Create; a second ArrowDown highlights Refresh Secret list. Press Enter.",
+      "Loading Secrets is disabled during the three-second read. Check that query, focus and staged app token remain. Afterward, choose a Secret; only Save channel Secrets saves bindings. Existing access restrictions still apply.",
+    ],
+    gap: "The delay is simulated. Real two-tab persistence, races and grants require the browser test; no provider readiness is established.",
+  },
+  credentialsSecretListRetry: {
+    group: "Components/Credentials",
+    name: "Retry Secret list without losing a choice",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    // Fail the first explicit collection read, after the three successful setup reads.
+    rules: [
+      {
+        path: presetSecretsPath,
+        method: "GET",
+        skip: 3,
+        once: true,
+        status: 503,
+        code: "UNAVAILABLE",
+      },
+    ],
+    description:
+      "The first explicit refresh fails; retry succeeds without clearing the query or staged app token, or saving bindings.",
+    steps: [
+      "Type a nonmatching name in Slack bot token. Press ArrowDown twice to pass Create and highlight Refresh Secret list, then Enter. Check Secrets unavailable, retained query/focus and the staged app token.",
+      "Choose Refresh Secret list again. The read succeeds with query, focus and staged app token intact. Clear the query to choose a Secret; Save channel Secrets alone persists the choices.",
+    ],
+    gap: "The one-shot failure is simulated. Real staged-choice preservation, late responses and grants require the browser test; no provider readiness is established.",
   },
   credentialsSecretListScrolling: {
     group: "Components/Credentials",
@@ -7754,6 +8007,50 @@ export const scenarios = {
       "Select Refresh. The simulated read succeeds again and restores the saved bindings, without applying the staged choice.",
       "Select Slack backup token (simulated) again, then Save channel Secrets once. A fresh preflight and one PATCH save that replacement. See unreadable-configuration-workflow.md for the complete walkthrough.",
     ],
+  },
+  credentialsSlackLeftoverGrantMissing: {
+    group: "Components/Credentials",
+    name: "Slack key left bound without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackMode: "http",
+    slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    description:
+      "HTTP mode reads no app token, but SLACK_APP_TOKEN is still bound from Socket Mode and its Secret has no Agent grant. Deploy checks every bound Secret, so the tab lists the key as read by no Slack setting, marks it, blocks Deploy, and offers Retry Secret access.",
+    steps: [
+      "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; the warning says deploying would be refused.",
+      "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
+    ],
+  },
+  credentialsSlackGrantReadPending: {
+    group: "Components/Credentials",
+    name: "Slack grant read in progress",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "GET", delayMs: 4000 }],
+    description:
+      "An Installation administrator opens an Agent while the console still reads the Namespace IAM policy for the bound Slack Secrets' grants. Deploy waits for that read, then stays blocked because the app token Secret has no Agent grant.",
+    gap: "The slow policy read is simulated.",
+    steps: [
+      "While the read is held, Prepare says Checking this Agent's credential access before deploying. and Deploy new version is disabled.",
+      "After the read lands, the Slack app token reads Bound · Agent access not confirmed and Deploy stays disabled until Retry Secret access grants it.",
+    ],
+  },
+  credentialsSlackSigningSecretMissing: {
+    group: "Components/Credentials",
+    name: "Slack signing secret without a binding",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackTokens: {
+      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      signingSecret: "${SLACK_SIGNING_SECRET}",
+    },
+    description:
+      "Both token pickers are bound, but the signing secret reads SLACK_SIGNING_SECRET, which has no binding. Save and deployment refuse that, so the tab lists the key as Missing below the pickers and Deploy waits until it is bound through the Configuration API.",
   },
   credentialsSavePending: {
     group: "Components/Credentials",

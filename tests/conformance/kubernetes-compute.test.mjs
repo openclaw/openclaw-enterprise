@@ -14586,20 +14586,50 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       }),
     );
   }
-  for (const transport of [
-    { baseUrl: "${PROVIDER_URL}" },
-    { headers: { "x-provider-feature": "${HEADER}" } },
-    { headers: { "x-provider-feature": { source: "env", provider: "model", id: "HEADER" } } },
+  // The startup model probe receives only the binding's credential, so a reference in the
+  // selected provider's settings or the primary model's entry cannot resolve. The refusal names
+  // the setting, never its value (finding 2828).
+  const probeReference = (setting) =>
+    `Configuration setting ${setting} must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential.`;
+  for (const [transport, setting, modelEntry] of [
+    [{ baseUrl: "${PROVIDER_URL}" }, "models.providers.openai.baseUrl"],
+    [
+      { headers: { "x-provider-feature": "${HEADER}" } },
+      "models.providers.openai.headers.x-provider-feature",
+    ],
+    [
+      { headers: { "x-provider-feature": { source: "env", provider: "model", id: "HEADER" } } },
+      "models.providers.openai.headers.x-provider-feature",
+    ],
+    [{}, 'agents.defaults.models["openai/gpt-5"].params.user', { params: { user: "${USER}" } }],
+    // The first reference is named: list entries by index, a key that is not a plain ID
+    // quoted, and the provider before the model entry.
+    [{ models: [{ id: "gpt-5", name: "${MODEL_NAME}" }] }, "models.providers.openai.models.0.name"],
+    [
+      { headers: { "x-feature.v2": "${HEADER}" } },
+      'models.providers.openai.headers["x-feature.v2"]',
+    ],
+    [
+      { baseUrl: "${PROVIDER_URL}" },
+      "models.providers.openai.baseUrl",
+      { params: { user: "${USER}" } },
+    ],
   ]) {
-    await assert.rejects(
-      production.prepareRevision({
-        ...embeddedRevision,
-        configuration: {
-          ...embeddedRevision.configuration,
-          models: { providers: { openai: { apiKey: "${OPENAI_API_KEY}", ...transport } } },
-        },
-      }),
-      /transport configuration cannot require additional Secret or environment references/i,
+    const configuration = {
+      ...embeddedRevision.configuration,
+      models: { providers: { openai: { apiKey: "${OPENAI_API_KEY}", ...transport } } },
+    };
+    if (modelEntry !== undefined) {
+      configuration.agents = {
+        defaults: { ...configuration.agents.defaults, models: { "openai/gpt-5": modelEntry } },
+      };
+    }
+    await assert.rejects(production.prepareRevision({ ...embeddedRevision, configuration }), {
+      message: probeReference(setting),
+    });
+    assert.throws(
+      () => production.validateHarnessAuth(embeddedRevision.harness, apiKeyAuth, configuration),
+      { name: "ConfigurationHarnessError", message: probeReference(setting) },
     );
   }
   for (const conflicting of [

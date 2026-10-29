@@ -29,6 +29,7 @@
     "tests/integration/ci-impact-gate.test.mjs",
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
+    "tests/integration/console-storybook-workflow.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
     "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/repository-credentials-service-loss.test.mjs",
@@ -333,6 +334,9 @@
     },
     {
       "path": "tests/integration/console-theme.test.ts"
+    },
+    {
+      "path": "tests/integration/console-storybook-workflow.test.ts"
     },
     {
       "path": "tests/integration/workspace-setup-api.test.mjs"

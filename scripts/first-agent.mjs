@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { lstat, open, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { lstat, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -751,6 +751,7 @@ async function withRecord(directory, name, action) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       handle = await open(lockPath, "wx", 0o600);
+      await handle.chmod(0o600);
       await handle.writeFile(String(process.pid));
       break;
     } catch (error) {
@@ -793,8 +794,15 @@ async function withRecord(directory, name, action) {
   try {
     const save = async (value) => {
       const temporary = `${path}.${randomUUID()}`;
-      await writeFile(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600, flag: "wx" });
       try {
+        const file = await open(temporary, "wx", 0o600);
+        try {
+          // Creation mode is filtered by umask; retries and stale-lock recovery need reads.
+          await file.chmod(0o600);
+          await file.writeFile(`${JSON.stringify(value)}\n`);
+        } finally {
+          await file.close();
+        }
         await rename(temporary, path);
       } finally {
         await unlink(temporary).catch(() => {});

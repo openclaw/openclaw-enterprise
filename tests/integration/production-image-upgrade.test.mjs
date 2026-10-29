@@ -720,3 +720,60 @@ test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", a
     });
   }
 });
+
+test("manual baseline comparison preserves mapping semantics and contains parser failures", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-baseline-compare-");
+  const bin = join(directory, "bin");
+  await mkdir(bin);
+  const protectedFile = join(directory, "protected.yaml");
+  const observedFile = join(directory, "observed.yaml");
+  const compareScript = join(repository, "scripts/compare-upgrade-baseline");
+
+  // Feed JSON-compatible YAML to real jq and simulate a parser that fails after
+  // writing a valid document. The wrapper also checks its environment.
+  await writeCommand(
+    bin,
+    "yq",
+    `
+[[ "\${protected-} \${observed-}" != *synthetic-private* ]] || exit 48
+jq . "\${@: -1}" || exit $?
+if [[ "\${PARTIAL_FAILURE:-}" == yes ]]; then
+  echo 'synthetic-private parser excerpt' >&2
+  exit 47
+fi
+`,
+    { interpreter: "bash" },
+  );
+  for (const [left, right, status, partial] of [
+    ['{"value":"synthetic-private","n":1}', '{"n":1,"value":"synthetic-private"}', 0],
+    ['{"n":1}', '{"n":2}', 1],
+    ["{}", "{}", 0],
+    ['{"n":true}', '{"n":"true"}', 1],
+    ['{"n":[1,2]}', '{"n":[2,1]}', 1],
+    ["", "{}", 2],
+    ["{} {}", "", 2],
+    ["[]", "[]", 2],
+    ['{"value":"synthetic-private"', "{}", 2],
+    ["{}", '{"value":"synthetic-private"', 2],
+    ["{}", "{}", 2, "yes"],
+  ]) {
+    await writeFile(protectedFile, left);
+    await writeFile(observedFile, right);
+    const result = await execute(compareScript, [protectedFile, observedFile], {
+      cwd: repository,
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        protected: "",
+        observed: "",
+        SHELLOPTS: "allexport",
+        PARTIAL_FAILURE: partial ?? "",
+      },
+    }).then(
+      (result) => ({ ...result, code: 0 }),
+      (error) => error,
+    );
+    assert.equal(result.code, status);
+    assert.equal(result.stdout, status === 0 ? "Configurations match.\n" : "");
+    assert.doesNotMatch(result.stderr, /synthetic-private/);
+  }
+});

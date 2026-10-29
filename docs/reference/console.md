@@ -64,6 +64,14 @@ Click an Agent name or an open area of its row to open its details. Version link
 and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
 the Agent name and press Enter.
 
+While a Namespace provisions, the Agents list checks its status every ten seconds.
+If that check no longer lists the Namespace, the Console removes its Agent rows
+and previous row feedback, and disables Create Agent. Open row confirmations close
+and focus Search Agents. The unavailable status replaces empty-list messages.
+Submitted requests report acceptance, refusal or an unknown outcome without Agent
+names or IDs and without replay. Session expiry still requires sign-in.
+Clearing search does not restore the removed rows.
+
 Opening an Agent shows its details page immediately. While it loads, **Back to
 Agents** returns to your place. A slow return to a retained page says **Still
 checking…** after one second. Refresh rebuilds; refocusing an unchanged page preserves edits,

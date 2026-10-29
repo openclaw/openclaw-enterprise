@@ -2488,6 +2488,7 @@ test("Tab leaves a scrolling Secret list for the next control, and the list keep
   assert.deepEqual(await listbox.getByRole("option").allTextContents(), [
     secrets[8].name,
     "Create new Secret...",
+    "Refresh Secret list",
   ]);
   await page.keyboard.press("Escape");
   await listbox.waitFor({ state: "hidden" });
@@ -2533,7 +2534,14 @@ for (const listOutcome of ["arrives", "fails"]) {
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
     const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
     await apiKeySecret.fill("no matching create target");
-    await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+    const create = page.getByRole("option", { name: "Create new Secret...", exact: true });
+    await apiKeySecret.press("ArrowDown");
+    assert.equal(
+      await apiKeySecret.getAttribute("aria-activedescendant"),
+      await create.getAttribute("id"),
+    );
+    assert.equal(await hasFocus(apiKeySecret), true);
+    await apiKeySecret.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
     await dialog.getByLabel("Name", { exact: true }).fill("Created while loading");
     await dialog.getByLabel("Value", { exact: true }).fill("created-while-loading");
@@ -2541,11 +2549,15 @@ for (const listOutcome of ["arrives", "fails"]) {
     await dialog.waitFor({ state: "detached" });
     const staged = page.getByText("Secret binding staged. Save changes to apply it.");
     await staged.waitFor();
+    assert.equal(await hasFocus(apiKeySecret), true);
+    assert.equal(await apiKeySecret.getAttribute("aria-expanded"), "false");
     assert.ok(listReads > 0);
     releaseList();
     // Every held list read and the create have now reached the page's own code.
     await waitForSettledFetches(page, secretsPath, listReads + 1);
     assert.equal(await staged.count(), 1);
+    assert.equal(await hasFocus(apiKeySecret), true);
+    assert.equal(await apiKeySecret.getAttribute("aria-expanded"), "false");
     assert.deepEqual(await statusTone(staged), { className: "hint", tone: null, role: "status" });
     const created = (await fixture.request("GET", secretsPath)).data.find(
       (secret) => secret.name === "Created while loading",

@@ -232,12 +232,11 @@ See [deletion](../guides/console/delete-namespace.md).
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
 Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
-omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.
-OCC authorizes writes ([Agent creation](../reference/console/create-and-deploy.md)).
+omission disables Create (`NAMESPACE_MISSING`), clears rows and feedback, closes
+confirmations, and ends polling. Its note replaces empty states. Late outcomes are
+generic, without replay; 401 expires the session. Focus: Search. Failed reads retry.
 
-The [creation flow](platform-console/agent-creation.md) traces the form: plugin
-fields and discovery, model choices, the starter template, repository options,
-provisioning, ordinary drafts, Secret grants, and harness authentication.
+See [Agent setup and provisioning](platform-console/agent-creation.md).
 
 ### 4–6. Edit the Agent and access runtime files
 
@@ -376,6 +375,11 @@ gateway startup and file availability.
 - 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
 
 - 2026-10-29 11:42: Keep contextual request recovery and scope binding scrubbing to its preflight. (authoring-run/221d2fc5-7549-4054-a3ab-6b078a1755ae - aa74d9bc28d8c)
+- 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
+
+- 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
+
+- 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 - 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
 

@@ -44,6 +44,8 @@ export const NamespaceLeavesList = {
   ...story("agentsNamespaceMissing"),
   name: "Namespace leaves the list while provisioning",
 };
+export const PopulatedNamespaceLeavesList = story("agentsNamespaceMissingPopulated");
+
 export const AgentsDenied = { ...story("agentsDenied"), name: "Access denied" };
 export const AgentsError = { ...story("agentsError"), name: "Read failure" };
 export const AgentsInterruptedResponse = {
@@ -70,3 +72,8 @@ export const ReturnWhileDeploymentsLoad = {
   name: "Return while deployments load",
 };
 export const LatestDeploymentUnavailable = story("agentsDeploymentError");
+
+export const NamespaceLossWithStopDialog = story("agentsNamespaceMissingStopDialog");
+export const NamespaceLossWithDeleteDialog = story("agentsNamespaceMissingDeleteDialog");
+
+export const NamespaceLossBeforeStopResponse = story("agentsNamespaceMissingLateStop");

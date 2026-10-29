@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-28
-last_updated_session: fix-3285
+updated: 2026-10-29
+last_updated_session: authoring-run/84c88245631c4882bd93c2140e0f313b
 ---
 
 # Console Agent editing and runtime requests
@@ -204,21 +204,21 @@ selection; redeployment applies it. See
 [Slack policies](../../reference/configuration/secrets.md#native-channel-configuration).
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies Namespace,
-bindings, and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
-It loads `GET /namespaces/:namespaceId/secrets`; Namespace read is required.
-`packages/occ/src/index.ts:listSecrets` filters records by exact Secret read
-without calling the Secret Driver. Shared `agents/secret-picker.mjs:createSecretReferenceField`
-filters names/IDs in a combobox. Arrows navigate, Enter selects, and Escape
-restores the binding. Typing stages nothing; selection stages a reference,
-Cancel discards it. A false Namespace `secrets.create` disables creation, with its reason;
-drawer hints and Preset Secret sources then offer only existing Secrets. **Save configuration**
-stays disabled until a field or binding changes.
-On the Agent page, `GET .../agents/:agentId/permissions/secrets` lists readable Secrets the
-caller may not `operate`; each is disabled with its reason and never staged. A refused binding
-save rereads it to name such a Secret; an inline create rereads it before staging.
-When it lists any Secret, `operate` is granted per Secret and a new Secret has none: creation is
-disabled with that reason and drawer hints offer only existing Secrets, as the Preset's **Create
-new Secret** is. A failed reread keeps the last answer.
+bindings and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
+`GET /namespaces/:namespaceId/secrets` requires Namespace read;
+`packages/occ/src/index.ts:listSecrets` filters exact Secret read without the Secret Driver.
+`agents/secret-picker.mjs:createSecretReferenceField` filters names/IDs. Arrows navigate,
+Enter selects, Escape restores, Cancel discards; typing stages nothing, selection stages references.
+**Refresh Secret list** preserves query, focus, staged fields and highlighted IDs across reordering;
+vanished highlights require new intent. It retries metadata, never saves; pending reads disable refresh.
+When a selection waits for permission, a refused list clears readable metadata and prevents that
+selection from staging. The completed refresh clears its loading hint without replacing newer feedback.
+False Namespace `secrets.create` disables creation with reasons and existing-only drawer/Preset hints.
+**Save configuration** requires changed fields/bindings.
+`GET .../agents/:agentId/permissions/secrets` lists readable but inoperable Secrets, disabled with
+reasons, never staged. Refused binding saves reread it; inline creation rereads before staging.
+Any listed denial means per-Secret operate: new Secrets have none, disabling picker/Preset
+creation with reasons and existing-only hints. Failed rereads keep prior answers.
 
 `apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
 an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),
@@ -239,13 +239,16 @@ A save that rebinds such a Secret rereads the permission answer; Plugins, Reposi
 authentication source follow it without a reload.
 
 After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
-grants the Agent service principal access to selected Secrets through Namespace
-IAM. A failed grant leaves Configuration saved; a 403 is a known refusal that names the
-Installation administrator, who selects **Retry Secret access**; a timeout or 5xx stays unknown. A member's
-session sends no grant and says access was not verified until **Reload draft**. An administrator's console
-also reads Namespace IAM to mark a bound Slack Secret without an Agent grant.
-An uncertain PATCH blocks another
-channel write until Refresh. Disabling a draft channel changes Configuration
+grants the Agent service principal access to selected Secrets through Namespace IAM. A failed
+grant leaves Configuration saved; a 403 names the Installation administrator, who selects
+**Retry Secret access**; a timeout or 5xx stays unknown. A member's session sends no grant and
+says access was not verified until **Reload draft**. An administrator's console checks every
+bound Secret's grant, as deployment does; Deploy waits for those reads and rechecks before its
+POST, and a save or Retry during one reads again before naming Deploy.
+`agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
+Driver does; pickers appear only for standard keys. A 400 that
+`agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
+blocks another channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent.
 
 <span id="5-provision-initial-runtime-credentials"></span>
@@ -294,9 +297,8 @@ earlier version require operator investigation. Model/channel Secrets stay separ
 
 On explicit submission, the panel rereads and refuses as channel saves do above, PATCHes every
 binding with `expectedGeneration`, then calls `ensureCredentialOperateBinding` for changed and
-pending Secrets. A refused or unconfirmed post-PATCH grant leaves bindings saved and blocks
-deployment in the current view; later saves retry still-referenced pending grants.
-Only a confirmed grant or confirmed removal of its reference clears the pending Secret.
+pending Secrets. A refused or unconfirmed grant blocks deployment until a later save or Retry
+confirms it or removes its reference.
 
 ### 6. Read and replace live workspace files
 
@@ -344,16 +346,14 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-29 03:49: Clear a completed Secret refresh hint while selection permission is pending. Accompanying uncommitted changes. (authoring-run/84c88245631c4882bd93c2140e0f313b - b81139ddfe086aca0e4da4eb5b9feedc8ac39d67)
+
 - 2026-10-28 13:53: Keep the reader’s fold through routine polls and show failed record checks outside it. (fix-3285 - 14f6d94db)
 
 - 2026-10-28 11:48: Quiet refresh (uncommitted). (authoring-run/4573d808-e28c-4e0f-8c52-faacba26092a - 8b5bee3ef01644cf7731f68794fe87d6b4b1d265)
 
 - 2026-10-28 10:57: Clarify keyboard focus during record refresh. (authoring-run/7832bcaa-29cd-4303-99ce-edf549ad55d6 - e7f7c242158627219f6ce9d398c5cc034d721f7e)
 
-- 2026-10-27 13:55: Document Deployment snapshot-read recovery; uncommitted changes. (authoring-run/99997d03-9533-4cff-b942-8fe773c472db - b1e6d83d1cde4741d6f0b857e30e473ec1f97a18)
-
-- 2026-10-27 09:30: Document the Agent detail version picker, Deployment tab, and direct Agent UI access. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
-
-- 2026-10-25: Move step 6 (workspace files) to [its own trace](agent-workspace-files.md); move older entries to history. (finding 2488)
+- 2026-10-27: Credentials follows the default Slack account's keys and every bound Secret's grant; Deploy waits for grant reads. (findings 2526, 2529, 2540-2542, 2554, 2558, 2575)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

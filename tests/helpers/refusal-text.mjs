@@ -478,10 +478,12 @@ const SLACK_TOKEN_OBJECTS = { secretRef: "a SecretRef", object: "an object" };
 export const unreadableSlackTokenRefusal = (setting, held) =>
   `Configuration setting ${setting} holds ${SLACK_TOKEN_OBJECTS[held]} the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings.`;
 // Where the console says to add a Secret binding that a channel refusal asks for: the Agent
-// page's Configuration JSON editor saves none (finding 2494), and Create Agent binds only Slack's
-// standard names (finding 2506).
-export const CHANNEL_BINDING_CONSOLE_REMEDY =
-  "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+// page's Configuration JSON editor saves none (finding 2494), the Credentials tab binds only Slack's
+// standard names (finding 2542), and Create Agent binds only those too (finding 2506).
+const CHANNEL_BINDING_PLACES =
+  "bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+export const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret bindings: ${CHANNEL_BINDING_PLACES}`;
+export const CHANNEL_BINDING_CREDENTIALS_REMEDY = `To fix it, ${CHANNEL_BINDING_PLACES}`;
 // The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
 export const CHANNELS_NEED_DEDICATED =
   "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.";
