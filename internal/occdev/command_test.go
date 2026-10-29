@@ -259,11 +259,8 @@ func TestContainerEngineSelectionHonorsServerIdentity(t *testing.T) {
 }
 
 func TestPodmanComposeProviderPrefersDockerCompose(t *testing.T) {
-	// The Kubernetes-profile Compose command passes --project-directory, which
-	// standalone podman-compose does not support. With both providers installed,
-	// selection must pin docker-compose, which reaches Podman through the
-	// DOCKER_HOST endpoint startup pins, so a host that starts the Compose
-	// control plane can also stop it.
+	// With both providers installed, Kubernetes-profile startup prefers
+	// docker-compose, which reaches Podman through the pinned DOCKER_HOST.
 	r, err, calls := engineSelection(t, `{"Platform":{"Name":"PoDmAn Engine"},"Components":[{"Name":"Engine"}]}`, "podman", "", "", true, true, false)
 	if err != nil || r.engine != "podman" {
 		t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)

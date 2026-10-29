@@ -371,7 +371,7 @@ func (r *runner) composeServiceAddress(
 	state *developmentState,
 	service string,
 ) (string, error) {
-	id, err := r.composeOutput(ctx, state, "ps", "--all", "-q", service)
+	id, err := r.composeServiceID(ctx, state, service)
 	if err != nil {
 		return "", err
 	}

@@ -652,15 +652,21 @@ test(
     const stateDirectory = join(root, "state");
     const suffix = randomUUID().slice(0, 8);
     const cluster = `occ-dev-os-compose-${suffix}`;
-    const apiPort = await availablePort();
-    const kubernetesPort = await availablePort();
+    const ports = new Set();
+    while (ports.size < 4) {
+      ports.add(await availablePort());
+    }
+    const [apiPort, kubernetesPort, browserPort, postgresPort] = [...ports];
     const environment = {
       ...process.env,
       OPENCLAW_DEV_PORT: String(apiPort),
+      OCC_POSTGRES_PORT: String(postgresPort),
+      OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
       OCC_DEVELOPMENT_SANDBOX_DRIVER: "openshell",
       OCC_DEVELOPMENT_CONTROL_PLANE: "compose",
       OCC_DEVELOPMENT_CONTAINER_ENGINE: process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker",
+      OCC_DEVELOPMENT_COMPOSE_PROJECT: cluster,
       OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
       OCC_DEVELOPMENT_KUBERNETES_CLUSTER: cluster,
       OCC_DEVELOPMENT_KUBERNETES_API_PORT: String(kubernetesPort),
@@ -760,6 +766,32 @@ test(
       "app.kubernetes.io/component=proxy,app.kubernetes.io/managed-by=envoy-gateway," +
       "gateway.envoyproxy.io/owning-gateway-namespace=oce-system," +
       "gateway.envoyproxy.io/owning-gateway-name=openclaw-enterprise-agent-gateways";
+    // The node shares host disk usage. Default kubelet GC can delete idle local
+    // images even after successful startup; their localhost digests cannot be
+    // pulled back. Verify effective node policy and CRI availability together.
+    const nodeConfiguration = JSON.parse(
+      (
+        await execute(
+          "kubectl",
+          [...kubectl, "get", "--raw", `/api/v1/nodes/k3d-${cluster}-server-0/proxy/configz`],
+          { cwd: repository, env: environment, timeout: 30_000 },
+        )
+      ).stdout,
+    ).kubeletconfig;
+    assert.equal(nodeConfiguration.imageGCHighThresholdPercent, 100);
+    assert.equal(nodeConfiguration.imageGCLowThresholdPercent, 99);
+    for (const image of new Set([compute.images.agent, compute.images.gateway])) {
+      const inspected = JSON.parse(
+        (
+          await execute(
+            state.containerEngine,
+            ["exec", `k3d-${cluster}-server-0`, "crictl", "inspecti", image],
+            { cwd: repository, env: environment, timeout: 30_000 },
+          )
+        ).stdout,
+      );
+      assert.ok(inspected.status.id, "the exact Agent image must resolve in the node's CRI");
+    }
     const envoyPods = JSON.parse(
       (
         await execute(

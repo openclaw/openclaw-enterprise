@@ -93,14 +93,23 @@ func TestDownImageVolumeRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.cluster == "fail" && bytes.Contains(calls, []byte("volume ls")) {
+			imageVolumeQuery := "volume ls --filter label=k3d.cluster=occ-dev-recorded --format {{.Name}}"
+			if tc.cluster == "fail" && bytes.Contains(calls, []byte(imageVolumeQuery)) {
 				t.Errorf("observed volume after failed cleanup: %s", calls)
 			}
 			if tc.mode == "" {
-				stop := strings.Index(string(calls), " stop controller worker-kubernetes")
+				stopCommand := " stop controller worker-kubernetes"
+				downCommand := " down --volumes"
+				if tc.engine == "podman" {
+					// Podman checks reconcilers and confirms owned resource absence
+					// directly before the final k3d image-volume check.
+					stopCommand = "ps --all --quiet --filter label=com.docker.compose.project=recorded --filter label=com.docker.compose.service=worker-kubernetes"
+					downCommand = "network ls --quiet --filter label=io.podman.compose.project=recorded"
+				}
+				stop := strings.Index(string(calls), stopCommand)
 				cluster := strings.Index(string(calls), "cluster list -o json")
-				down := strings.Index(string(calls), " down --volumes")
-				volume := strings.Index(string(calls), "volume ls")
+				down := strings.LastIndex(string(calls), downCommand)
+				volume := strings.Index(string(calls), imageVolumeQuery)
 				if stop < 0 || cluster < stop || down < cluster || (volume >= 0 && volume < down) {
 					t.Errorf("Compose cleanup order: %s", calls)
 				}
@@ -124,7 +133,7 @@ func TestDownImageVolumeRecovery(t *testing.T) {
 }
 
 // Reuse the recorded-state, endpoint, cluster and unrelated-marker fixture.
-// Only the selected engine gets the additional exact Compose grammar.
+// Only the selected engine gets the additional exact cleanup grammar.
 func downVolumeFixture(t *testing.T, engine, mode, cluster string, bothProviders bool) (string, string, string) {
 	t.Helper()
 	directory, log, sentinel := recoveryFixture(t, "oce-system", "none", engine, cluster)
@@ -133,33 +142,40 @@ func downVolumeFixture(t *testing.T, engine, mode, cluster string, bothProviders
 		t.Fatal(err)
 	}
 	state.DeploymentMode = mode
-	composeCases := ""
+	cleanupCases := ""
 	if mode == "" {
 		state.ComposeProject = "recorded"
 		if err := os.WriteFile(filepath.Join(directory, "compose.yaml"), []byte("services: {}\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		prefix := strings.Join(state.composeCommand(), " ")
-		composeCases = shellQuote(prefix+" stop controller worker-kubernetes") + "|" + shellQuote(prefix+" down --volumes") + ") ;;\n"
+		if engine == "podman" {
+			// Compose resources are already absent; the leftover image volume
+			// belongs to k3d and must remain outside the Compose inventory.
+			cleanupCases = `
+'ps --all --quiet --filter label=com.docker.compose.project=recorded --filter label=com.docker.compose.service=controller'|\
+'ps --all --quiet --filter label=com.docker.compose.project=recorded --filter label=com.docker.compose.service=worker-kubernetes'|\
+'container ls --quiet --all --filter label=com.docker.compose.project=recorded'|\
+'container ls --quiet --all --filter label=io.podman.compose.project=recorded'|\
+'volume ls --quiet --filter label=com.docker.compose.project=recorded'|\
+'volume ls --quiet --filter label=io.podman.compose.project=recorded'|\
+'network ls --quiet --filter label=com.docker.compose.project=recorded'|\
+'network ls --quiet --filter label=io.podman.compose.project=recorded') ;;
+`
+		} else {
+			prefix := strings.Join(state.composeCommand(), " ")
+			cleanupCases = shellQuote(prefix+" stop controller worker-kubernetes") + "|" + shellQuote(prefix+" down --volumes") + ") ;;\n"
+		}
 	}
 	if err := rewriteState(state); err != nil {
 		t.Fatal(err)
 	}
 	bin := os.Getenv("PATH") // recoveryFixture supplies an isolated, inert PATH.
-	providerCheck := ""
-	if engine == "podman" && mode == "" {
-		// Down resolves the provider path; the fake engine must never invoke it.
-		if err := os.WriteFile(filepath.Join(bin, "podman-compose"), []byte("#!/bin/sh\nexit 96\n"), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if bothProviders {
-			// With both providers installed, the Kubernetes-profile down must pin
-			// docker-compose to match the provider occ dev up selected.
-			if err := os.WriteFile(filepath.Join(bin, "docker-compose"), []byte("#!/bin/sh\nexit 96\n"), 0700); err != nil {
+	if bothProviders {
+		// Cleanup must use the engine even when installed providers cannot run.
+		for _, provider := range []string{"docker-compose", "podman-compose"} {
+			if err := os.WriteFile(filepath.Join(bin, provider), []byte("#!/bin/sh\nexit 96\n"), 0700); err != nil {
 				t.Fatal(err)
 			}
-			providerCheck = `[ "$PODMAN_COMPOSE_PROVIDER" = ` + shellQuote(filepath.Join(bin, "docker-compose")) + ` ] || exit 97
-`
 		}
 	}
 	script := `#!/bin/sh
@@ -168,7 +184,7 @@ func downVolumeFixture(t *testing.T, engine, mode, cluster string, bothProviders
 if [ "$RECOVERY_ENGINE" = podman ]; then
  [ "$CONTAINER_HOST" = "$DOCKER_HOST" ] && [ -z "$CONTAINER_CONNECTION" ] || exit 93
 fi
-` + providerCheck + `printf '%s\n' "$*" >> "$RECOVERY_LOG"
+printf '%s\n' "$*" >> "$RECOVERY_LOG"
 case "$*" in
  'volume ls --filter label=k3d.cluster=occ-dev-recorded --format {{.Name}}')
   case "$DOWN_VOLUME" in
@@ -178,7 +194,7 @@ case "$*" in
    '') ;;
    *) exit 94 ;;
   esac ;;
-` + composeCases + ` *) exit 95 ;;
+` + cleanupCases + ` *) exit 95 ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(bin, engine), []byte(script), 0700); err != nil {
@@ -187,13 +203,9 @@ esac
 	return directory, log, sentinel
 }
 
-func TestDownKubernetesComposeModePrefersDockerCompose(t *testing.T) {
-	// occ dev up starts the Kubernetes-profile Compose stack with docker-compose
-	// when both providers exist, because its Compose command passes
-	// --project-directory, which standalone podman-compose does not support.
-	// Down must resolve the same provider, or up and down disagree about which
-	// binary stops the stack. The fixture's engine exits 97 unless down pinned
-	// the docker-compose path.
+func TestDownKubernetesComposeModeDoesNotRequireWorkingProvider(t *testing.T) {
+	// Podman cleanup uses exact project labels through the engine. A broken
+	// Compose provider must not prevent shutdown or retain recovered state.
 	directory, _, sentinel := downVolumeFixture(t, "podman", "", "absent", true)
 	var output bytes.Buffer
 	if err := Down(context.Background(), Options{Repository: filepath.Dir(directory), Out: &output}); err != nil {

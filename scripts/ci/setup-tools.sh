@@ -258,6 +258,15 @@ case "${profile}" in
     install_helm
     install_yq
     ;;
+  podman)
+    need_command podman
+    need_command podman-compose
+    podman info >/dev/null
+    install_kubectl
+    install_k3d
+    install_helm
+    install_yq
+    ;;
   workflows)
     install_actionlint
     ;;

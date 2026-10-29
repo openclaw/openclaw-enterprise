@@ -67,7 +67,7 @@ test(
       selection.cells.some((cell) => cell.installation === value && cell.scenarios.length > 0),
     )) {
       await context.test(
-        `${installation} OCC + Kubernetes compute / Sandbox none`,
+        `${installation} OCC + Kubernetes compute / Sandbox ${process.env.OCC_TEST_QA_SANDBOX_DRIVER ?? "none"}`,
         { timeout: 7_000_000 },
         async (installationContext) => {
           const f = await stage(

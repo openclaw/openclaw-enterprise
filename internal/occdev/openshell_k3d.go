@@ -517,13 +517,9 @@ func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernet
 		"--k3s-arg", "--tls-san=k3d-" + state.Cluster + "-serverlb@server:*",
 		"--env", "IPTABLES_MODE=legacy@server:0",
 		"--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold),
-		// The local profile uses imagePullPolicy Never with verified digest aliases. Keep
-		// their content until dev-down removes the disposable node; ordinary image GC
-		// otherwise drops idle Sandbox images on a busy developer host.
-		"--k3s-arg", "--kubelet-arg=image-gc-high-threshold=100@server:*",
-		"--k3s-arg", "--kubelet-arg=image-gc-low-threshold=99@server:*",
 		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 	}
+	args = append(args, developmentImageGCArgs()...)
 	if state.BrowserPort != 0 {
 		args = append(args, "--port", fmt.Sprintf("127.0.0.1:%d:30081@loadbalancer", state.BrowserPort))
 	}

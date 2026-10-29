@@ -1,0 +1,5 @@
+# Ubuntu 24.04 / CPython 3.12 / x86_64 wheels from the versioned PyPI JSON metadata.
+# Install with --require-hashes --only-binary=:all:; include every runtime dependency.
+podman-compose==1.5.0 --hash=sha256:f0b9d35f4da1b309172adf208a5cb7a882b532a834c2202666c1988b6f147546
+python-dotenv==1.1.1 --hash=sha256:31f23644fe2602f88ff55e1f5c79ba497e01224ee7737937930c448e4d0e24dc
+PyYAML==6.0.3 --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc

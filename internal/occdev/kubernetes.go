@@ -216,6 +216,16 @@ func dockerHubReference(reference string) (string, bool) {
 	}
 }
 
+// Both local control-plane profiles import images that have no pullable registry
+// reference. Retain them until dev-down removes the node, including while no
+// Agent uses them. Disk-pressure eviction remains independently configured.
+func developmentImageGCArgs() []string {
+	return []string{
+		"--k3s-arg", "--kubelet-arg=image-gc-high-threshold=100@server:*",
+		"--k3s-arg", "--kubelet-arg=image-gc-low-threshold=99@server:*",
+	}
+}
+
 func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string, error) {
 	image := r.setting("OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart")
 	if r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {

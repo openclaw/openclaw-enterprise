@@ -9,10 +9,14 @@ or several Agents are affected. For a problem with one Agent, start with
 If the k3d server logs report `failed to find cpuset cgroup (v2)`, inspect
 `/sys/fs/cgroup/cgroup.controllers` inside that server. Docker running inside a
 containerized development host needs the outer host to delegate `cpuset`;
-a running Docker daemon does not prove delegation. On native rootless Podman,
-delegating `cpuset` is not enough: k3d still fails with
-`mkdir /var/run/docker.sock: permission denied`. Use the
-[rootful setup requirements](../deploy/local-kubernetes-development.md#start-the-profile).
+a running Docker daemon does not prove delegation. The complete OCE/OpenShell
+profile is tested with rootful Podman; see the
+[native Linux setup](../deploy/local-kubernetes-development.md#start-the-profile).
+
+`mkdir /var/run/docker.sock: permission denied` instead indicates an incorrect
+k3d socket mount. Rebuild the current CLI with `pnpm cli:build`; startup derives
+that mount from the selected Podman API. This error alone does not establish a
+rootless cgroup limitation.
 
 Use the host management service's documented delegation procedure. If delegation
 changes fail, check that service before concluding that an outer-host change is
@@ -33,6 +37,16 @@ After a failed creation, wait for startup to exit, then run `./scripts/dev-down`
 from the repository root with the same profile and state directory. Retry the
 [Compose profile startup](../deploy/local-kubernetes-development.md#run-occ-in-compose-with-kubernetes-compute)
 with the selected image and wait for the development stack to report ready.
+
+## A local Agent image disappears
+
+For `ImagePullBackOff` on imported `localhost/...@sha256:...` images, check node
+events for `ImageGCFailed` or `FreeDiskSpaceFailed`. Default 85% disk-usage cleanup
+can delete them.
+
+Rebuild the CLI for 100/99 GC thresholds; disk-pressure eviction remains enabled.
+Preserve existing Installations by correcting kubelet settings and reimporting
+exact images without deleting the database.
 
 ## Local K3s cannot load the legacy iptables nat table
 
