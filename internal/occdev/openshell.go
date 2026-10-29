@@ -205,10 +205,11 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		{"sandbox", images.sandbox, &assets.sandboxImage},
 		{"supervisor", images.supervisor, &assets.supervisorImage},
 	} {
-		// An external gateway brings its own images; this checkout supplies only the
-		// workspace chart, admission configuration, and RuntimeClass.
-		if state.openShellExternal != nil {
-			break
+		// An external gateway brings its own deployment and image. The supervisor and
+		// static sandbox launcher still run in this cluster — the gateway's driver
+		// creates their Pods here — so only the gateway component is skipped.
+		if state.openShellExternal != nil && selected.component == "gateway" {
+			continue
 		}
 		imported, err := r.importOpenShellImage(ctx, state, root, selected.component, selected.source, images.revision != "")
 		if err != nil {
