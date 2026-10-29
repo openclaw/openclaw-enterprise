@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-21
-last_updated_session: authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f
+updated: 2026-10-29
+last_updated_session: authoring-run/f70f3437-5a3d-456e-b35d-2d7d1e4b3490
 ---
 
 # Platform Startup Flow
@@ -188,6 +188,15 @@ runs before composition; the API and worker fail if that state is absent.
 Credential creation, private delivery, and failure handling belong to
 the [bootstrap flow](local-password-authentication.md).
 
+For an existing `preprovisionedNamespace` installation, the [Helm
+chart](../../deploy/helm/openclaw-enterprise/templates/_helpers.tpl) accepts
+GitHub Console sign-in on upgrade when only approved teams can sign in,
+passwords are restricted to the recovery administrator, and native
+administration is disabled. The database must already be initialized and
+compatible because this profile omits the initialization Job. The Kubernetes
+Drivers still verify the configured Namespace ID, derived Kubernetes name,
+UID and ownership using a named GET. Console sign-in grants no tenant roles.
+
 When `OCC_CONFIG_PATH` is absent, it registers the bundled Docker Compute Driver and filesystem
 Configuration Driver, which writes native documents under
 `OCC_DEVELOPMENT_CONFIGURATION_ROOT`. Compose always supplies PostgreSQL for
@@ -278,6 +287,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 23:19: Document team-restricted GitHub Console sign-in on a bound Namespace upgrade. (authoring-run/f70f3437-5a3d-456e-b35d-2d7d1e4b3490 - 7e6be3eef0fb11a9f26b0f39a7762c0c18b350c0)
 
 - 2026-10-23: Pass the Installation's Credential Proxy request capacity from startup to the exchange registry.
 

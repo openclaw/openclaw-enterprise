@@ -117,3 +117,23 @@ Complete bootstrap and `occ installation get`, then follow
 [workload verification](production-agents.md#verify-production-workloads).
 Verify a real model turn and persistence across gateway replacement before
 handoff. Record operational ownership using [production handoff](production-handoff.md).
+
+## Enable Console login on a bound Namespace
+
+For an existing single-cluster OpenShell installation with
+`preprovisionedNamespace`, an upgrade can enable `auth.github` with
+`auth.passwordSignIn: recovery-only` and `agentNativeAdmin.enabled: false`.
+Set `auth.github.allowedTeams` to a nonempty list of approved teams and leave
+`auth.github.allowedOrgs` empty.
+Keep the existing `namespaceId` and independently verified Kubernetes `uid`.
+Follow the [external sign-in requirements](../../reference/authentication/external-sign-in.md)
+for the recovery administrator, attached identities, HTTPS origin, and dedicated
+API-only client Secret. A successful login does not grant tenant permissions.
+
+This mode retains named Namespace GET access and omits the initialization Job,
+including its database migration and bootstrap containers. The operator must
+verify the existing Installation, database compatibility, and tenant-local
+RoleBindings before upgrading. The API and worker reject a Namespace whose UID,
+ownership, gateway membership, lifecycle, or Pod Security labels do not match.
+Fresh installs with external login, other external providers, and native
+administration remain unavailable in this mode.
