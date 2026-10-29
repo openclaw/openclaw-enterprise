@@ -2624,8 +2624,9 @@ select:not([multiple])[size="1"] {
 .resource-row-actions .icon-button:disabled {
   cursor: not-allowed;
 }
-/* A refused delete stays focusable so its reason is reachable (finding D788); it looks disabled. */
-.resource-row-actions .icon-button[aria-disabled="true"] {
+/* A refused delete (the trash icon or Request deletion again) stays focusable so its reason is
+   reachable (finding D788); it looks disabled. */
+.resource-row-actions button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.6;
 }

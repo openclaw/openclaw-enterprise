@@ -398,4 +398,12 @@ test("a refused Namespace deletion retry keeps its reason through a background p
   // would invite the same 403 (finding 2725).
   assert.equal(await reason.isVisible(), true);
   assert.equal(await retry.isDisabled(), true);
+  // The refused retry stays focusable (aria-disabled) and still looks unavailable (finding D788).
+  assert.deepEqual(
+    await retry.evaluate((node) => ({
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      opacity: globalThis.getComputedStyle(node).opacity,
+    })),
+    { ariaDisabled: "true", opacity: "0.6" },
+  );
 });
