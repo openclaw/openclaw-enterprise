@@ -451,6 +451,21 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "owner-epoch-stale",
     "owner-binding-changed",
     "tunnel-stopped",
+    "worker-bootstrap-failed",
+    "bundle-install-failed",
+    "provider-preparation-failed",
+    "provider-operation-failed",
+    "provider-profile-rejected",
+    "node-installer-disconnected",
+    "node-install-connection-stale",
+    "bundle-receipt-mismatch",
+    "bundle-prefetch-unsupported",
+    "worker-deploy-artifact-missing",
+    "worker-deploy-artifact-unsafe",
+    "gateway-build-missing",
+    "gateway-cli-missing",
+    "bootstrap-artifact-too-large",
+    "bootstrap-transfer-too-large",
   ];
   const vocabularies = {
     placementState: [

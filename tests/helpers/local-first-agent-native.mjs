@@ -566,12 +566,55 @@ export function nativeWorkerPlacementObservation({
     if (typeof value !== "string") {
       return "other";
     }
+    // Upstream provider/bootstrap owners wrap the cause before publishing placement errors.
+    // Strip only their fixed prefixes, never arbitrary peer text or identifiers.
+    let detail = value.slice(0, 4096);
+    let fallback = "other";
+    const wrappers = [
+      ["Worker node bootstrap failed: ", "worker-bootstrap-failed"],
+      ["Device worker bundle installation failed: ", "bundle-install-failed"],
+      ["Worker provider preparation failed: ", "provider-preparation-failed"],
+      ["Worker provider operation failed: ", "provider-operation-failed"],
+      ["Worker provider rejected profile: ", "provider-profile-rejected"],
+    ];
+    for (let depth = 0; depth < 4; depth += 1) {
+      const wrapper = wrappers.find(([prefix]) => detail.startsWith(prefix));
+      if (!wrapper) {
+        break;
+      }
+      detail = detail.slice(wrapper[0].length);
+      fallback = wrapper[1];
+    }
     // These phrases come from the pinned OpenClaw worker environment and node tunnel owners.
     const errors = [
       ["Worker tunnel did not connect within 3 minutes", "tunnel-timeout"],
       ["node worker workspace command timed out", "workspace-command-timeout"],
       ["node workspace command failed (", "workspace-command-failed"],
       ["device worker node transport is unavailable", "node-transport-unavailable"],
+      ["Device worker node transport is unavailable", "node-transport-unavailable"],
+      [
+        "Device worker node is not connected with the installer dialect",
+        "node-installer-disconnected",
+      ],
+      [
+        "Device worker installation connection is no longer current",
+        "node-install-connection-stale",
+      ],
+      [
+        "Device worker bundle installer returned a mismatched build receipt",
+        "bundle-receipt-mismatch",
+      ],
+      ["Device worker bundle installation failed", "bundle-install-failed"],
+      ["Device worker node does not support bundle prefetch", "bundle-prefetch-unsupported"],
+      [
+        "OpenClaw worker deploy artifact is missing; build the running package",
+        "worker-deploy-artifact-missing",
+      ],
+      ["Unsafe worker deploy artifact:", "worker-deploy-artifact-unsafe"],
+      ["Cloud bootstrap requires a built Gateway;", "gateway-build-missing"],
+      ["Cloud bootstrap is missing its built CLI entry;", "gateway-cli-missing"],
+      ["Node bootstrap distribution exceeds its artifact limits", "bootstrap-artifact-too-large"],
+      ["Node bootstrap archive exceeds the transfer limit", "bootstrap-transfer-too-large"],
       [
         "device worker node is not connected with the supervisor dialect",
         "node-supervisor-disconnected",
@@ -585,7 +628,7 @@ export function nativeWorkerPlacementObservation({
       ["node worker tunnel owner binding changed within one epoch", "owner-binding-changed"],
       ["node worker tunnel stopped before connecting", "tunnel-stopped"],
     ];
-    return errors.find(([phrase]) => value.startsWith(phrase))?.[1] ?? "other";
+    return errors.find(([phrase]) => detail.startsWith(phrase))?.[1] ?? fallback;
   };
   const present = (value) => typeof value === "string" && value.length > 0;
   const count = (value) =>

@@ -1292,6 +1292,28 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     nodeLookup: "found",
     elapsedMs: 180488,
   });
+  const wrappedNativeWorker = nativeWorkerPlacementObservation({
+    placement: {
+      state: "failed",
+      recoveryError: `Worker node bootstrap failed: OpenClaw worker deploy artifact is missing; build the running package at ${nativePrivate}`,
+      terminalReason: `Worker node bootstrap failed: Device worker bundle installation failed: ${nativePrivate}`,
+    },
+    environment: {
+      worker: {
+        error:
+          "Worker provider preparation failed: Device worker node is not connected with the installer dialect",
+      },
+    },
+  });
+  // An unknown outer message is not permission to search arbitrary private text for a cause.
+  assert.equal(
+    nativeWorkerPlacementObservation({
+      placement: {
+        recoveryError: `${nativePrivate}: Worker node bootstrap failed: OpenClaw worker deploy artifact is missing; build the running package`,
+      },
+    }).recoveryError,
+    "other",
+  );
   const relayPodCases = [
     {
       name: "retains closed relay Pod status without payloads",
@@ -1756,6 +1778,14 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           },
         },
         {
+          name: "retains wrapped native worker bootstrap causes through CI",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement-terminal-failed",
+            worker: wrappedNativeWorker,
+          },
+        },
+        {
           name: "rejects unknown native first-Agent proof stage",
           diagnostic: { kind: "native-first-agent-proof", failureStage: `${secret}-stage` },
         },
@@ -2039,6 +2069,12 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     ).error.diagnostic.worker,
     { placementState: "other", recoveryError: "other", environmentLookup: "other" },
   );
+  const wrapped = summary.files[0].tests.find(
+    (entry) => entry.name === "retains wrapped native worker bootstrap causes through CI",
+  ).error.diagnostic.worker;
+  assert.equal(wrapped.recoveryError, "worker-deploy-artifact-missing");
+  assert.equal(wrapped.terminalReason, "bundle-install-failed");
+  assert.equal(wrapped.environmentError, "node-installer-disconnected");
   const monitoringFailure = summary.files[0].tests.find(
     (entry) => entry.name === "retains safe monitoring readiness evidence",
   );
