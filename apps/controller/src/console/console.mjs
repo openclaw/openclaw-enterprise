@@ -2726,8 +2726,8 @@ async function loadPage({
 // Static text only: a refused lookup never says whether the link expired or was denied.
 const chatLinkFailures = {
   unavailable:
-    "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
-  interrupted: "This Agent chat link could not be opened. Try the link again.",
+    "This Gateway link could not be opened. It may be out of date, or you may not have access to the Gateway.",
+  interrupted: "This Gateway link could not be opened. Try the link again.",
 };
 
 function showChatLinkFailure(view, failure) {
