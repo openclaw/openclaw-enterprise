@@ -2629,7 +2629,11 @@ test("Back rebuilds an Agent view whose runtime status or version read was refus
   await leave();
   revoke("agent_revision", "read");
   await page.goBack();
-  await page.getByText(/you cannot read this version/).waitFor();
+  // The page names the current version in words once its read is refused (finding D791).
+  await page
+    .locator(".agent-current-summary")
+    .getByText("A version you cannot read", { exact: true })
+    .waitFor();
   assert.equal(await viewKept(page), false);
 });
 
