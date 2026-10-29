@@ -76,9 +76,7 @@ running Agent.
 Agent revision read access must also cover the replacement versions.
 
 Review saved Agent and Configuration drafts before a runtime upgrade. Each
-deployment snapshots the current draft, not the previous selected version. The
-startup preflight below refuses a draft the selected controller image would not
-deploy.
+deployment snapshots the current draft, not the previous selected version.
 
 A controller-only release does not deploy Agents, but when it changes the Pod
 specs the controller renders, the new worker restarts the affected Agent Pods
@@ -192,23 +190,18 @@ bootstrap record disagree.
 ## Rehearse before the maintenance window
 
 Run the intended upgrade command below with `--preflight-only` and a new
-private evidence directory. Use the reviewed image digests, source checkout,
-baseline files, and candidate files you intend to deploy. The helper checks the
+private evidence directory. Use the exact inputs you intend to deploy. The helper checks the
 baseline, renders the chart, runs a Helm server dry run, and runs one-shot API
 and worker startup checks. Repository-enabled releases also check the image pair.
 
-The helper creates temporary Pods and a Secret in the release namespace. It
-creates a NetworkPolicy when the rendered egress policies require one. The
-serving OCC writers keep running. Cleanup is best effort; inspect
-the evidence and remove any leftovers using the command below. Keep the evidence
-private because it contains configuration and diagnostics.
+The serving OCC writers keep running. Keep the evidence private because
+it contains configuration and diagnostics.
 
 A successful preflight does not prove deployment readiness or grant approval.
 It does not create a prepared deployment, and its evidence cannot be resumed.
 `--preflight-only` and `--resume` cannot be combined. At release, use the same
 reviewed inputs, omit `--preflight-only`, and set `UPGRADE_EVIDENCE` to a new
-path. The helper repeats the checks because live state may have changed. Allow
-time for those checks and the remaining upgrade and recovery work. Apply the
+path. The helper repeats the checks because live state may have changed. Apply the
 writer and draft freezes above during deployment and through recovery.
 
 ## Upgrade the control plane
@@ -263,19 +256,11 @@ as `preflight-<resource>-create.err` or `preflight-cleanup.err`. Runtime upgrade
 controller image. If the helper is killed, delete its leftovers with
 `kubectl delete pod,secret,networkpolicy.networking.k8s.io -n <namespace> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=upgrade-preflight`.
 
-A runtime upgrade also reads each running Agent's saved Configuration and adds
-it to the temporary Secret. The API Pod checks each one with the image's deploy
-rules for stored Configurations. A refused draft, such as one that keeps a
-setting the new OpenClaw runtime retired, stops the command with each Agent and
-the message OCC would return at deployment:
-
-```text
-the selected controller image refuses to deploy 1 recorded Agent draft(s):
-  - Agent agt_... "Mail triage" in Namespace ns_...: Configuration setting security.preset must be removed: ...
-```
-
-Correct each draft, for example with `occ configuration update`, or stop the
-Agent, then start again with a new evidence directory.
+A runtime upgrade also sends each running Agent's saved Configuration to the API
+Pod, which checks it with the image's deploy rules. A refused draft, such as one
+that keeps a setting the new OpenClaw runtime retired, stops the command with
+each Agent and OCC's deploy message. Correct the draft or stop the Agent, then
+start again with a new evidence directory.
 
 The command then applies reviewed settings, scales the API and worker to zero, and
 waits for their Pods to terminate. Helm restores the candidate Deployments after

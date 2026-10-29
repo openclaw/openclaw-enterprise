@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-28"
-last_updated_session: "authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a"
+updated: "2026-10-29"
+last_updated_session: "fix-2809"
 ---
 
 # Production image upgrade flow
@@ -11,8 +11,7 @@ last_updated_session: "authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a"
 `scripts/upgrade-production-images` updates the OpenClaw Control Plane (OCC),
 Agent runtimes, or both. Controller-only upgrades end after API and worker recovery,
 without Agent deployments. Runtime upgrades deploy every initially running Agent,
-then wait for ready Pods and read-only Doctor lint. Operators check models and
-external integrations.
+then wait for ready Pods and read-only Doctor lint.
 
 ## Entry Points
 
@@ -115,15 +114,10 @@ Each Pod checks the stored Installation name from `occ installation get` with
 the image's `isName`, as the controller does after reading the database
 (`INSTALLATION_NAME_INVALID`); an image without the rule skips it.
 
-A runtime upgrade reads each recorded Agent's draft (`occ agent get`, then
-`occ configuration get` for its Configuration) into private evidence. The helper adds them,
-gzipped, to the temporary Secret, and only the API Pod mounts them. That Pod runs the
-image's `refuseStoredConfigurationSettings`
-(`packages/occ/src/configuration-settings.ts`), which Agent save and deploy admission
-run on a stored Configuration. A refused draft, such as one that keeps a setting the
-image's OpenClaw retired, stops preparation with each Agent and OCC's deploy message.
-An image without the function, or drafts too large for the Secret, skip the check with
-a warning; deploy admission still refuses them after the controller moves.
+Runtime upgrades also put each recorded Agent's Configuration, read through OCC, in the
+Secret. The API Pod alone runs the image's `refuseStoredConfigurationSettings` on them, as
+deploy admission does; a refusal stops preparation. Older images and oversized drafts skip
+it with a warning.
 
 Experimental two-cluster Pods also run
 `KubernetesComputeDriver.verifyExecutionTenantGrants` for their component; startup
@@ -182,10 +176,9 @@ rollback. The guide describes the required attestation and recovery.
 
 Before changing the Secret or invoking Helm, the script scales the selected API
 and worker Deployments to zero, waits until their Pods disappear, and confirms
-both desired replica counts remain zero. Kubernetes requests in this phase share
-the configured shutdown deadline. This covers the selected Helm release;
-it does not detect independent database writers, autoscalers, or partitioned
-nodes. The operator must stop those writers and keep nodes reachable.
+both stay at zero, within the shutdown deadline. It cannot detect independent
+database writers, autoscalers, or partitioned nodes; the operator stops those
+writers and keeps nodes reachable.
 
 The protected files are atomically replaced with the saved candidate. When the
 Installation changes, including a controller-only settings release, the script
@@ -213,15 +206,15 @@ access is retried and must return the same Installation ID. Controller-only
 releases request no Agent deployments.
 An existing version keeps the Pod specification of the controller that
 deployed it only until the worker prepares it again. Agents with repository
-credentials get a maintenance pass every 30 seconds (the repository Driver's
-`maintenanceIntervalMs`) until their repository session deadline. Other Agents
+credentials get a maintenance pass every 30 seconds until their repository
+session deadline. Other Agents
 are prepared again only when their deployment was still finishing as the new
 worker took over (the helper checks for unfinished deployments only before a
 runtime release).
 Kubernetes Compute applies the Gateway and, for dedicated Harnesses, Harness
 Deployments as the new controller renders them, with the Installation's current
-images, so a changed Pod template (for example new entrypoint arguments or
-readiness probes) rolls those Pods once on the unchanged runtime image. Chat is
+images, so a changed Pod template rolls those Pods once on the unchanged runtime
+image. Chat is
 unavailable until the new Pods are ready, about 17 seconds in one test.
 Controller fixes to Gateway and Agent Pods, such as
 [diagnostics](agent-deployment-diagnostics.md) mappings, reach an Agent then or
@@ -292,8 +285,7 @@ begins with the read-only `scripts/split-layout-tenants.mjs export --out FILE`.
 Its `createOccApi.expect` requires a data envelope for each successful resource
 response before `exportTenants` assembles the bundle. Malformed JSON, an empty
 body, or a missing data envelope causes export to exit nonzero before `main`
-writes the bundle; an actual empty collection remains valid. Restore the API
-response path, retry the read, and check exported inventory before recovery. Empty 204 deletes
+writes the bundle; an actual empty collection remains valid. Empty 204 deletes
 and explicitly accepted 404 responses retain their meaning.
 
 On re-creation, `importTenants` requires distinct target names for selected
@@ -317,8 +309,8 @@ Agents or Secrets.
 - Before retrying runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
   version history, and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
 - Compare `before-workloads.json` and `after-workloads.json` for unexpected
-  changes. The controller-only helper requests no Agent deployments; expect one
-  same-image Pod template rollout per affected Agent. Separately check
+  changes. After a controller-only release, expect one same-image Pod template
+  rollout per affected Agent. Separately check
   repository-bound versions affected by broker restart.
   Runtime proof should show intended replacements.
 - Use credentialed production Kubernetes integration with distinct baseline
@@ -341,7 +333,7 @@ Agents or Secrets.
 
 ## Changelog
 
-- 2026-10-29: Check recorded Agent drafts with the selected image's deploy rules before writers stop. (fix-2809-2810)
+- 2026-10-29: Check Agent drafts before writers stop. (fix-2809)
 - 2026-10-28 18:11: Check Helm status before reconciliation reads. (authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a - 541cc3f43bdfb09615ecee0cfb79c533e6a0b56c)
 - 2026-10-28 21:01: Check API themes before writer quiescence. (authoring-run/bf262f39-fa9d-4e70-94e1-e2fc516234e9 - 304fcfb169bc8403794e8562a08b1e3ee4cc23ac)
 
