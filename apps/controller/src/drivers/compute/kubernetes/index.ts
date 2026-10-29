@@ -2605,7 +2605,44 @@ function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): stri
   return model;
 }
 
-function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument): object {
+// The setting under `setting` (`value`'s path) that holds a `${` or is a SecretRef, if any.
+function referenceSetting(value: unknown, setting: string): string | undefined {
+  if (typeof value === "string") {
+    return value.includes("${") ? setting : undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const found = referenceSetting(item, `${setting}.${index}`);
+      if (found !== undefined) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (record === undefined) {
+    return undefined;
+  }
+  if (typeof record.source === "string" && typeof record.id === "string") {
+    return setting;
+  }
+  for (const [key, item] of Object.entries(record)) {
+    const found = referenceSetting(item, keyedSettingPath(setting, key));
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+// The startup model probe gets only the selected provider's settings, the primary model's entry
+// and the binding's credential, so a reference there (other than the binding's apiKey) cannot
+// resolve. Another Compute may resolve it, so Configuration save accepts it; Kubernetes admission
+// names the setting, never its value (finding 2828).
+function harnessProbeConfiguration(
+  configuration: OpenClawConfigurationDocument,
+  settingError: (setting: string, requirement: string) => Error = preparationSettingError,
+): object {
   const model = harnessPrimaryModel(configuration);
   const { providerId } = harnessModelAuthentication(configuration);
   const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
@@ -2613,25 +2650,15 @@ function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument)
   if (fragment !== undefined) {
     delete fragment.apiKey;
   }
-  const containsReference = (value: unknown): boolean => {
-    if (typeof value === "string") {
-      return value.includes("${");
-    }
-    if (Array.isArray(value)) {
-      return value.some(containsReference);
-    }
-    const record = asRecord(value);
-    return (
-      record !== undefined &&
-      ((typeof record.source === "string" && typeof record.id === "string") ||
-        Object.values(record).some(containsReference))
-    );
-  };
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   const modelEntry = asRecord(asRecord(defaults?.models)?.[model]);
-  if (containsReference(fragment) || containsReference(modelEntry)) {
-    throw new ConfigurationFailure(
-      "Selected model provider transport configuration cannot require additional Secret or environment references.",
+  const reference =
+    referenceSetting(fragment, keyedSettingPath("models.providers", providerId)) ??
+    referenceSetting(modelEntry, keyedSettingPath("agents.defaults.models", model));
+  if (reference !== undefined) {
+    throw settingError(
+      reference,
+      "must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential",
     );
   }
   return {
@@ -4663,7 +4690,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (openclaw) {
-      harnessProbeConfiguration(configuration);
+      harnessProbeConfiguration(configuration, callerSettingError);
     }
     if (native) {
       nativeRuntimeConfiguration(configuration, callerSettingError, auth.method);
