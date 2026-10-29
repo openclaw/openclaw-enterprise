@@ -6000,7 +6000,7 @@ export const scenarios = {
     steps: [
       "Read the completed record, focus Refresh record, and press Enter. Both panels must show the refusal, with no completed outcome remaining.",
       "Focus remains on Refresh record. Fold and unfold Deployment details: only the visible leading refusal owns the alert role.",
-      "Refresh record again after the one-time refusal. Both panels recover to Completed from that one successful read.",
+      "Refresh record again after the one-time refusal. Both panels recover to Completed and the overview refreshes once. Repeat on the settled record: its overview does not reread.",
     ],
     gap: "Simulated UI proof only. The deployment browser suite verifies native IAM denial, missing records, stale deliveries, recovery, and version isolation with the real controller.",
   },

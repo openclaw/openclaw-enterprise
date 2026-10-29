@@ -340,6 +340,8 @@ export function createDeploymentStatusPanel(
   let record: Deployment | null = null;
   let error: unknown = null;
   let overviewUnavailable = false;
+  // This records reconciliation, not a cached deployment; refusals reset it.
+  let terminalOverview: "unread" | "reading" | "ready" | "failed" = "unread";
   // The refused or failed overview read, when one was, so its text says why (finding 2538).
   let overviewError: unknown = null;
   // Tallest the details have been since a deploy was seen pending; see reserveHeight().
@@ -375,19 +377,20 @@ export function createDeploymentStatusPanel(
     }, DEPLOYMENT_POLL_MS);
   }
 
-  function finishRecord(previousStatus: Deployment["status"] | null, overviewRead = false) {
+  function finishRecord(overviewRead = false, retryOverview = false) {
     if (refreshQueued) {
       refreshQueued = false;
       void loadStatus(true);
     } else if (
       !overviewRead &&
-      deploymentPending(previousStatus) &&
+      (terminalOverview === "unread" || (retryOverview && terminalOverview === "failed")) &&
       !error &&
       record &&
       !deploymentPending(record.status)
     ) {
       // Either reader can discover completion. Reuse that verified record while
       // refreshing current-version information, without another deployment GET.
+      terminalOverview = "reading";
       void loadStatus(true, true, record);
     } else {
       schedulePoll();
@@ -400,16 +403,16 @@ export function createDeploymentStatusPanel(
     }
     clearTimeout(pollTimer);
     pollTimer = undefined;
-    // After a failed read, the record before it.
-    const previousStatus = lastRecord?.status ?? null;
     const started = generation;
     // A failed background check does not change recorded progress. A definitive refusal
     // clears both copies so a later transient failure cannot restore revoked evidence.
     loading = true;
     polling = poll;
     error = null;
-    overviewUnavailable = false;
-    overviewError = null;
+    if (refreshAgent) {
+      overviewUnavailable = false;
+      overviewError = null;
+    }
     render();
     try {
       const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
@@ -436,13 +439,22 @@ export function createDeploymentStatusPanel(
         return;
       }
       if (statusResult.status === "fulfilled") {
-        record = statusResult.value;
-        lastRecord = statusResult.value;
+        if (!verifiedRecord) {
+          if (
+            lastRecord?.status !== statusResult.value.status ||
+            deploymentPending(statusResult.value.status)
+          ) {
+            terminalOverview = "unread";
+          }
+          record = statusResult.value;
+          lastRecord = statusResult.value;
+        }
       } else {
         error = statusResult.reason;
         record = poll && transientReadError(error) ? lastRecord : null;
         if (!transientReadError(error)) {
           lastRecord = null;
+          terminalOverview = "unread";
         }
       }
       if (refreshAgent) {
@@ -465,6 +477,9 @@ export function createDeploymentStatusPanel(
               (result): result is PromiseRejectedResult => result.status === "rejected",
             )?.reason ?? null;
         }
+        if (!error && record && !deploymentPending(record.status)) {
+          terminalOverview = overviewUnavailable ? "failed" : "ready";
+        }
       }
     } catch (cause) {
       if (!context.isCurrent() || started !== generation) {
@@ -476,14 +491,18 @@ export function createDeploymentStatusPanel(
       }
       error = cause;
       record = poll && transientReadError(error) ? lastRecord : null;
+      if (verifiedRecord) {
+        terminalOverview = "failed";
+      }
       if (!transientReadError(error)) {
         lastRecord = null;
+        terminalOverview = "unread";
       }
     } finally {
       if (context.isCurrent() && started === generation) {
         loading = false;
         publish(poll);
-        finishRecord(previousStatus, refreshAgent);
+        finishRecord(refreshAgent);
       }
     }
   }
@@ -723,6 +742,7 @@ export function createDeploymentStatusPanel(
     if (!context.isCurrent()) {
       return;
     }
+    terminalOverview = "unread";
     generation += 1;
     clearTimeout(pollTimer);
     pollTimer = undefined;
@@ -746,14 +766,26 @@ export function createDeploymentStatusPanel(
       if (!context.isCurrent() || next.deploymentId !== revision.id) {
         return;
       }
-      const previousStatus = lastRecord?.status ?? null;
+      const sameTerminal = !deploymentPending(next.status) && lastRecord?.status === next.status;
+      if (sameTerminal && terminalOverview === "reading") {
+        // A second fresh record shares this terminal lifetime's overview read.
+        // Keep its newer payload without invalidating the guarded read in flight.
+        record = next;
+        lastRecord = next;
+        error = null;
+        publish(true);
+        return;
+      }
+      if (!sameTerminal) {
+        terminalOverview = "unread";
+      }
       generation += 1;
       loading = false;
       record = next;
       lastRecord = next;
       error = null;
       publish(true);
-      finishRecord(previousStatus);
+      finishRecord(false, true);
     },
     rerender() {
       if (record?.error) {

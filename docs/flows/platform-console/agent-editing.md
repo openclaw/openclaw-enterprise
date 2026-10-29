@@ -8,7 +8,7 @@ last_updated_session: authoring-run/26ccef3f-405c-4275-bef6-7c1722ae15c8
 
 ## Overview
 
-Trace Agent edits. Related flows: [parent](../platform-console.md),
+Related flows: [parent](../platform-console.md),
 [workspace files](agent-workspace-files.md), [stop and deletion](agent-stop-and-deletion.md).
 
 ## Entry Points
@@ -16,7 +16,7 @@ Trace Agent edits. Related flows: [parent](../platform-console.md),
 - `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads the exact Agent and composes the detail actions.
 - `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel` saves channel Secret bindings.
 - `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a version after first-deployment credential setup.
-- A signed-in caller must hold each action's permission on the exact resource.
+- Each action requires permission for its exact resource.
 
 ## Flow
 
@@ -78,15 +78,14 @@ Completion and late reads after `FIRST_ACTIVITY_WAIT_MS` start folded unless
 cleanup, warnings, or overview errors need attention. Pending work/errors
 remain visible across tabs; overview errors preserve outcomes.
 
-`createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` until completion/refusal.
-Transient errors retain progress; initial errors permit fallback. `invalidate`/`fail`
-revoke matching cached and pending reads. `onFreshRecord` shares fresh
-GETs with current matching activity; `show` never republishes. Refusals override
-intervening successes. Pending polls preserve disclosure; refusals open it.
-Either reader’s terminal transition rereads Agent/revisions, discarding older overview work.
-**Refresh deployment** queues one reread;
-**Refresh record** preserves focus and ignores repeats. Error space protects
-diagnostics; matching errors share one alert.
+`createDeploymentStatusPanel` polls until completion/refusal. Transient errors retain
+progress. `invalidate`/`fail` clear denied caches and pending reads. `onFreshRecord`
+shares matching GETs; `show` never republishes. Refusals override older successes.
+`terminalOverview` tracks reconciliation without retaining denied records. Initial or
+unreconciled terminal data reads Agent/revisions once. Matching in-flight reads share
+work; settled records skip it. Failed overviews wait for explicit retry.
+**Refresh deployment** queues one full reread; **Refresh record** preserves focus
+and ignores repeats. Refusals open details; matching errors share one alert.
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
@@ -339,6 +338,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 11:50: Track terminal overview reconciliation. (terminal-regrant - 1a16ee6c8ff11aaa0b8ea2451aabbc5445d8a72c)
 
 - 2026-10-29 11:40: Share terminal overview refresh. (terminal-transition - 4f6e05487f336db326b46bd87fb3100ad99b660d)
 

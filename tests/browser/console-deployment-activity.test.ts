@@ -11,6 +11,7 @@ import {
   AGENT_READ,
   detailUrl,
   denyRevisionRead,
+  revokeMemberGrant,
   login,
   nativeValues,
   newPage,
@@ -129,7 +130,7 @@ async function deploymentFixture(t: TestContext) {
   return { fixture, namespace, agent, revisionId, url, control, unavailableDuring };
 }
 
-for (const source of ["selected", "automatic", "overlapping refresh"] as const) {
+for (const source of ["selected", "automatic", "overlapping refresh", "regrant"] as const) {
   test(
     `terminal ${source} record refreshes current version once`,
     { timeout: 30_000 },
@@ -192,10 +193,24 @@ for (const source of ["selected", "automatic", "overlapping refresh"] as const) 
         await activity.getByRole("button", { name: "Refresh deployment" }).click();
         await ready.promise;
       }
+      let restore: (() => void) | undefined;
+      if (source === "regrant") {
+        restore = revokeMemberGrant(fixture, "terminal-reader", ["read", "agent_revision"]);
+        const refusal = page.waitForResponse(url);
+        await refresh.press("Enter");
+        const response = await refusal;
+        assert.equal(response.status(), 403);
+        const message = (await response.json()).error.message;
+        await card.getByText(message, { exact: true }).waitFor();
+        await activity.getByText(message, { exact: true }).waitFor();
+        assert.doesNotMatch(await activity.innerText(), /Recorded status:/);
+        counts.record = counts.agent = counts.revisions = 0;
+      }
       // Use the real state transaction for current-version selection. Only worker
       // progress is projected: this fixture does not execute a Compute Driver.
       await fixture.activateRevision(namespace.id, agent.id, revisionId, undefined);
       control.succeeded = true;
+      restore?.();
       if (source !== "automatic") {
         await refresh.press("Enter");
       }
@@ -218,9 +233,97 @@ for (const source of ["selected", "automatic", "overlapping refresh"] as const) 
         agent: source === "overlapping refresh" ? 2 : 1,
         revisions: source === "overlapping refresh" ? 2 : 1,
       });
+      // A second verified terminal record must not repeat an already successful overview.
+      counts.record = counts.agent = counts.revisions = 0;
+      const repeated = page.waitForResponse(url);
+      await refresh.press("Enter");
+      assert.equal((await repeated).status(), 200);
+      await waitForIdleFetches(page);
+      assert.deepEqual(counts, { record: 1, agent: 0, revisions: 0 });
     },
   );
 }
+
+test(
+  "terminal overview retries explicitly and shares its in-flight read",
+  { timeout: 30_000 },
+  async (t) => {
+    const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    await page.clock.install();
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "deployment"),
+    );
+    const card = page.locator(".version-deployment-record");
+    const refresh = card.getByRole("button", { name: "Refresh record", exact: true });
+    await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
+    await waitForIdleFetches(page);
+    const agentUrl = url.split("/deployments/")[0]!;
+    let overviewReads = 0;
+    let revisionReads = 0;
+    let recordReads = 0;
+    page.on("request", (request) => {
+      if (request.url() === url) {
+        recordReads++;
+      } else if (request.url().split("?")[0] === `${agentUrl}/revisions`) {
+        revisionReads++;
+      }
+    });
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    await page.route(agentUrl, async (route) => {
+      overviewReads++;
+      if (overviewReads === 1) {
+        await route.abort("connectionfailed");
+        return;
+      }
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      assert.equal((await response.json()).data.activeRevisionId, revisionId);
+      held.resolve();
+      await release.promise;
+      await route.fulfill({ response });
+    });
+    await fixture.activateRevision(namespace.id, agent.id, revisionId, undefined);
+    control.succeeded = true;
+    // Pending cleanup keeps genuine automatic record reads running after completion.
+    control.cleanup = "queued";
+    await refresh.press("Enter");
+    const failure = page
+      .getByRole("region", { name: "Deployment activity" })
+      .getByText(/Current version and version history could not be refreshed/);
+    await failure.waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    await waitForIdleFetches(page);
+    assert.deepEqual([recordReads, overviewReads, revisionReads], [2, 1, 1]);
+    await failure.waitFor();
+
+    // Only an explicit fresh record retries the failed overview. Another successful
+    // record while that pair is held shares it instead of discarding or duplicating it.
+    await refresh.press("Enter");
+    await held.promise;
+    const repeated = page.waitForResponse(url);
+    await refresh.press("Enter");
+    assert.equal((await repeated).status(), 200);
+    assert.deepEqual([recordReads, overviewReads, revisionReads], [4, 2, 2]);
+    release.resolve();
+    await waitForIdleFetches(page);
+    await failure.waitFor({ state: "detached" });
+    assert.match(
+      await page.getByRole("region", { name: "Agent state at a glance" }).innerText(),
+      /Selected for service\s+v1/,
+    );
+    await refresh.press("Enter");
+    await waitForIdleFetches(page);
+    assert.deepEqual([recordReads, overviewReads, revisionReads], [5, 2, 2]);
+  },
+);
 
 for (const viewport of [
   { width: 1440, height: 1000 },

@@ -2532,6 +2532,7 @@ export async function renderAgentDetail(
     );
     const mostRecent = revisions[0];
     if (activityRevisionId !== (mostRecent?.id ?? null)) {
+      activityRevisionId = mostRecent?.id ?? null;
       // The version's record panel no longer gets this panel's reads.
       versionRecord?.release();
       latestDeploymentStatus = null;
@@ -2559,7 +2560,11 @@ export async function renderAgentDetail(
       };
       const nextActivity = mostRecent
         ? createDeploymentStatusPanel(
-            { ...context, failureText: (error) => recordedFailureText(error, mostRecent.id) },
+            {
+              ...context,
+              isCurrent: () => context.isCurrent() && activityRevisionId === mostRecent.id,
+              failureText: (error) => recordedFailureText(error, mostRecent.id),
+            },
             path,
             mostRecent,
             (freshAgent, freshRevisions) =>
@@ -2660,7 +2665,6 @@ export async function renderAgentDetail(
         },
         true,
       );
-      activityRevisionId = mostRecent?.id ?? null;
       versionRecord?.render();
     }
     renderLatestDeployment();
