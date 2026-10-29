@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-27
-last_updated_session: authoring-run/0430a401-05fb-4e0b-9166-a02b77498311
+updated: 2026-10-29
+last_updated_session: authoring-run/7671e83f-de1e-402c-bc7c-7704dbdd54dd
 ---
 
 # Credential source refresh Flow
@@ -128,12 +128,16 @@ marks the source `ready` with its audit event.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-For a type declaring `deviceAuthorization.harnessId`, OCC registers the empty
-source before asking the paired Refresh Driver to start device login. It then
-stores the opaque handle, actor, source, and Driver IDs in the session Secret.
-The HTTP handler in `apps/controller/src/index.ts` records the successful start
-before sending the session reference. The audit event identifies the Agent or
-Namespace, not the session Secret.
+For a type declaring `deviceAuthorization.harnessId`, OCC registers the source
+before provider login. `source_registering` and `source_ready` audit events
+commit with their transitions and identify actor, request, and source. Audit
+failure stops login. Failed starts retain the audited source.
+
+OCC stores the handle, actor, source, and Driver IDs in a session Secret,
+committed with its `session_pending` event. Known commit failure
+removes the metadata and private Driver value; unknown outcomes skip compensation.
+The session event names the Agent or Namespace and source ID. Audit excludes
+handles, credentials, and user codes.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` keeps
 `start_unconfirmed` in the form draft if the start has no response status or its
@@ -145,15 +149,13 @@ both Driver selections before accepting completion. An uncertain exchange closes
 the handle without removing the source or repeating the exchange.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
-starts the issuer request from the API Pods. The start, poll, and token-exchange
-requests use fixed `auth.openai.com` endpoints and refuse redirects, so login
-material is never forwarded to a redirect target. It preserves the existing
-`DeviceAuthorizationStartError` distinction: connection failure or timeout is
-`unreachable`; HTTP rejection, malformed replies, and `AbortError` are
-`unavailable`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
-`auth.openai.com` and API Pod egress only for `unreachable`. The
-`device_authorization.start_failed` warning keeps the Refresh boundary and allowed
-failure class, never provider messages, response bodies, or nested causes.
+uses fixed `auth.openai.com` endpoints from API Pods for start, poll, and exchange.
+Redirects are refused. `DeviceAuthorizationStartError` reports connection failure
+or timeout as `unreachable`; HTTP rejection, malformed replies, and `AbortError`
+as `unavailable`. HTTP returns `503 DEPENDENCY_UNAVAILABLE`, naming the host and
+API Pod egress only for `unreachable`. The `device_authorization.start_failed`
+warning includes the Refresh boundary and failure class, never provider messages,
+response bodies, or nested causes.
 
 `apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
 performs the Codex exchange, configures OpenShell with refresh material, and
@@ -337,6 +339,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 15:03: Trace device-start audit transactions. (authoring-run/7671e83f-de1e-402c-bc7c-7704dbdd54dd - 72dfce5bfdbde5a79f714dc62777425c26619581)
 
 - 2026-10-27 19:10: Clarify GitHub token renewal and withdrawal. (authoring-run/0430a401-05fb-4e0b-9166-a02b77498311 - d0d593e0f6b4d2c8c1282f0f05e4d83aa607608f)
 

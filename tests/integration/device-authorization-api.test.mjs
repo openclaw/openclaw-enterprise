@@ -35,9 +35,11 @@ const plugin = {
   },
 };
 
-async function createFixture(t, { logger, ...gatewayOptions } = {}) {
+async function createFixture(
+  t,
+  { logger, auditSink = new InMemoryAuditSink(), ...gatewayOptions } = {},
+) {
   const clock = createControlledClock();
-  const auditSink = new InMemoryAuditSink();
   const secretDriver = createTestSecretDriver();
   const { gateway, refresh } = createDeviceCredentialDrivers({
     now: () => clock.wallNow(),
@@ -150,6 +152,7 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
 }
 
 function assertNoCredentials(fixture) {
+  assert.equal(JSON.stringify(fixture.auditSink.events).includes("CODE-12345"), false);
   const publicOutput = JSON.stringify([fixture.responses, fixture.auditSink.events]);
   for (const value of [DEVICE_ACCESS_TOKEN, "device-private-handle-"]) {
     assert.equal(
@@ -671,6 +674,22 @@ test("a failed Refresh login start retains a manageable source and sanitizes the
     1,
     "an uncertain external login remains visible for source management",
   );
+  const evidence = fixture.auditSink.events.filter(
+    (event) => event.action === "openclaw.agents.device_authorization.start",
+  );
+  assert.deepEqual(
+    evidence.map((event) => event.details.phase),
+    ["source_registering", "source_ready"],
+  );
+  for (const event of evidence) {
+    assert.equal(event.actorId, fixture.policy.identities[0].id);
+    assert.equal(event.requestId, response.body.meta.requestId);
+    assert.deepEqual(event.resource, {
+      kind: "credential_source",
+      id: sources.data[0].id,
+      namespaceId: fixture.namespace.id,
+    });
+  }
   // Source deletion fences uncertain external registration before final removal.
   await fixture.clock.advance(71_000);
   assert.equal(
@@ -680,6 +699,60 @@ test("a failed Refresh login start retains a manageable source and sanitizes the
   assert.equal(fixture.gateway.sources.size, 0);
   assertNoCredentials(fixture);
 });
+
+for (const { phase, retainedSources, eventCount } of [
+  { phase: "source_registering", retainedSources: 0, eventCount: 0 },
+  { phase: "source_ready", retainedSources: 1, eventCount: 1 },
+  { phase: "session_pending", retainedSources: 1, eventCount: 2 },
+]) {
+  test(`device start fails closed when ${phase} audit cannot commit`, async (t) => {
+    class FailingAuditSink extends InMemoryAuditSink {
+      async append(event) {
+        if (
+          event.action === "openclaw.agents.device_authorization.start" &&
+          (event.details?.phase === phase || event.details?.phase === undefined)
+        ) {
+          throw new Error("Synthetic audit storage failure");
+        }
+        await super.append(event);
+      }
+    }
+    const fixture = await createFixture(t, { auditSink: new FailingAuditSink() });
+    const response = await fixture.request("POST", fixture.path, { body: { harnessId: "codex" } });
+    assert.equal(response.status, 503, JSON.stringify(response.body));
+    assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
+    const sources = (await fixture.request("GET", fixture.sourcesPath)).data;
+    const secrets = (await fixture.request("GET", `/namespaces/${fixture.namespace.id}/secrets`))
+      .data;
+    assert.deepEqual(secrets, [], "a rejected start cannot leave a login Secret");
+    assert.equal(sources.length, retainedSources);
+    const evidence = fixture.auditSink.events.filter(
+      (event) => event.action === "openclaw.agents.device_authorization.start",
+    );
+    assert.equal(evidence.length, eventCount);
+    for (const event of evidence) {
+      assert.equal(event.actorId, fixture.policy.identities[0].id);
+      assert.equal(event.requestId, response.body.meta.requestId);
+      assert.equal(event.resource.id, sources[0].id);
+    }
+    const loginCreates = fixture.secretDriver.calls.filter((call) => call.operation === "create");
+    if (phase === "session_pending") {
+      // The private Driver value must be compensated as well as its OCC metadata.
+      assert.equal(loginCreates.length, 1);
+      assert.equal(fixture.secretDriver.has(loginCreates[0].identity), false);
+    } else {
+      assert.equal(loginCreates.length, 0);
+      assert.equal(
+        fixture.gateway.calls.some((call) => call.operation === "startDeviceAuthorization"),
+        false,
+      );
+    }
+    if (phase === "source_registering") {
+      assert.equal(fixture.gateway.sources.size, 0, "audit failure precedes Gateway registration");
+    }
+    assertNoCredentials(fixture);
+  });
+}
 
 // Finding D762: an Installation that does not select both Drivers device login needs names them
 // and who selects them, after the caller's grants and before any Gateway I/O.

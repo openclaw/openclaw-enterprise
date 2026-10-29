@@ -2341,6 +2341,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           namespaceId,
           body?.harnessId as string,
           agentId,
+          (source, phase) =>
+            event(
+              operation,
+              request,
+              phase === "session_pending"
+                ? { kind: "agent", id: agentId ?? namespaceId, namespaceId }
+                : source.ref,
+              "mutation",
+              context,
+              undefined,
+              { outcome: "success", details: { phase, sourceId: source.id } },
+            ),
         );
       } else if (operation.operationId.startsWith("poll")) {
         result = await controller.pollAgentDeviceAuthorization(
@@ -2358,7 +2370,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         );
       }
       // Clients poll on the provider interval; audit the transition, not every pending poll.
-      if (result?.status !== "pending" || operation.operationId.startsWith("start")) {
+      if (!operation.operationId.startsWith("start") && result?.status !== "pending") {
         await options.auditSink.append(
           event(
             operation,
