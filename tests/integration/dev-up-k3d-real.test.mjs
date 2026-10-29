@@ -1082,19 +1082,6 @@ test(
   },
 );
 
-// The end of a command's output for a failure message. The results artifact keeps a whole
-// message only up to 16 KiB, so each stream is bounded to leave room for both.
-const outputTailLines = 40;
-const outputTailChars = 6_000;
-function outputTail(output) {
-  return String(output ?? "")
-    .trimEnd()
-    .split("\n")
-    .slice(-outputTailLines)
-    .join("\n")
-    .slice(-outputTailChars);
-}
-
 test(
   "dev-up Keycloak second-pass failure retains recovery state until owned cleanup succeeds",
   {
@@ -1160,8 +1147,10 @@ process.exit(result.status ?? 1);
           // Node's own message quotes the start of stdout; keep only its first line.
           throw new Error(
             `${mismatch.message.split("\n")[0].replace(/ Input:$/, "")} dev up exit ${error.code} signal ${error.signal}.` +
-              `\n--- dev up stdout, last ${outputTailLines} lines ---\n${outputTail(error.stdout)}` +
-              `\n--- dev up stderr, last ${outputTailLines} lines ---\n${outputTail(error.stderr)}`,
+              // The results artifact keeps a whole message only up to 16 KiB, so each
+              // redacted stream is bounded to leave room for both.
+              `\n--- dev up stdout tail ---\n${outputTail(error.stdout, fixture.environment, 6_000)}` +
+              `\n--- dev up stderr tail ---\n${outputTail(error.stderr, fixture.environment, 6_000)}`,
             { cause: mismatch },
           );
         }
