@@ -5455,6 +5455,58 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     /managed workspace mode is not implemented; cannot observe a Harness/,
   );
   assert.deepEqual(observed, []);
+
+  // Even an already-cancelled lookup must not initialize a cold gRPC client.
+  const cold = new GrpcOpenShellGatewayClient({ endpoint: "http://127.0.0.1:1" });
+  cold.createClient = async () => assert.fail("cancelled status initialized the client");
+  const cancelled = new Error("cancel Harness observation");
+  await assert.rejects(
+    openShellDriver(cold).harnessStatus({
+      ...statusContext,
+      signal: AbortSignal.abort(cancelled),
+    }),
+    (error) => error === cancelled,
+  );
+
+  // Cancellation can arrive after a Gateway read completes but before its result
+  // reaches the Driver. Do not accept that result or begin another read.
+  for (const [operation, serving, reject] of [
+    ["getService", false, false],
+    ["serviceWebSocketHandshake", true, false],
+    ["serviceWebSocketHandshake", false, false],
+    ["getServiceDocument", false, false],
+    ["serviceWebSocketHandshake", false, true],
+  ]) {
+    handshake = serving;
+    observed.length = 0;
+    const caller = new AbortController();
+    const reason = new DependencyUnavailableError("cancel Harness observation");
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const original = gatewayClient[operation];
+    gatewayClient[operation] = async (...args) => {
+      const result = await original(...args);
+      entered.resolve();
+      await release.promise;
+      if (reject) throw reason;
+      return result;
+    };
+    try {
+      const rejected = assert.rejects(
+        driver.harnessStatus({ ...statusContext, signal: caller.signal }),
+        (error) => error === reason,
+      );
+      await entered.promise;
+      const beforeAbort = [...observed];
+      caller.abort(reason);
+      release.resolve();
+      await rejected;
+      assert.deepEqual(observed, beforeAbort, `${operation} started another read`);
+    } finally {
+      release.resolve();
+      gatewayClient[operation] = original;
+    }
+  }
 });
 
 test("OpenShell startup admits exactly the endpoints both consumers can parse and dial", async (t) => {
