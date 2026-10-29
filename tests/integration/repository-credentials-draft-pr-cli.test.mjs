@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer as createHttpsServer } from "node:https";
-import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
@@ -46,8 +45,7 @@ function runHelper(args, env, secret) {
 // A server leaf for api.github.com signed by the Harness fixture CA, so the helper's
 // configured root trusts it.
 async function githubLeaf(tls) {
-  const ca = { caPath: tls.rootCertificatePath, caKeyPath: join(tls.directory, "ca.key") };
-  const { key, cert } = await signedLeaf(tls.directory, ca, {
+  const { key, cert } = await signedLeaf(tls.directory, tls.authority, {
     name: "github",
     commonName: "api.github.com",
     subjectAltName: "DNS:api.github.com",

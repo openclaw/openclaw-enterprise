@@ -140,7 +140,8 @@ see the [supported recovery boundary](../reference/credential-sources/protected-
 
 Each TLS stream carries one `HttpInstallationExchange.Exchange`. After bearer authentication,
 the adapter issues a random 32-byte challenge. Up to 1,024 openings await proof until signed
-acceptance, closure or a 30-second deadline. The owner rechecks the bearer and verifies both
+acceptance, closure or a 30-second deadline, at most 256 for one Sandbox, so one Sandbox cannot
+refuse the others. The owner rechecks the bearer and verifies both
 the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
 `openshell-exchange-v1`, a zero byte, the challenge and the binary opening request.
 Request JSON cannot supply a key; bearer-only RPCs refuse.

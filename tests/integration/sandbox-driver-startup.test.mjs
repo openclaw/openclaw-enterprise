@@ -74,6 +74,7 @@ import {
   reservePort,
 } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const controllerRequire = createRequire(
@@ -5843,12 +5844,9 @@ test("observed-hook preview recognizes a released Codex through its authenticate
     response.writeHead(status);
     response.end("WebSocket upgrade required");
   });
-  const sockets = new Set();
   server.on("upgrade", (request, socket) => {
     upgrades++;
-    sockets.add(socket);
     socket.on("error", () => {});
-    socket.once("close", () => sockets.delete(socket));
     if (!serving || request.headers.authorization !== `Bearer ${token}`) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
       return;
@@ -5861,17 +5859,10 @@ test("observed-hook preview recognizes a released Codex through its authenticate
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    for (const peer of sockets) {
-      peer.destroy();
-    }
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  const transport = new GrpcOpenShellGatewayClient({
-    endpoint: `http://127.0.0.1:${server.address().port}`,
-  });
+  // listen() closes the server when the test ends, after destroying every connection,
+  // including the upgraded sockets the HTTP server no longer tracks.
+  const port = await listen(t, server);
+  const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
   t.after(() => transport.close());
   const gateway = workspaceGatewayClient();
   gateway.getServiceDocument = (...args) => transport.getServiceDocument(...args);
@@ -6698,8 +6689,8 @@ test(
       ...fragment.repository.openShell.authority,
       host: "127.0.0.1",
       port,
-      certificatePath: join(tls.directory, "server.pem"),
-      privateKeyPath: join(tls.directory, "server.key"),
+      certificatePath: tls.certPath,
+      privateKeyPath: tls.keyPath,
       issuerPublicKeyPath: publicKeyPath,
       issuer: "https://gateway.example.test",
       audience: "online-authorizer",
