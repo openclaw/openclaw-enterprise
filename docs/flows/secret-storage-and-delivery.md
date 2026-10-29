@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: "2026-10-29"
-last_updated_session: "authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42"
+last_updated_session: "authoring-run/6b11ce1b-071c-416b-8a6b-5952f131c8c4"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -41,7 +41,7 @@ Credential issuance and provider internals are outside this flow.
 graph TD
   subgraph Storage["Protected storage request"]
     A["Owner supplies value"] --> B["OCC authorizes Namespace Secret create"]
-    B --> C["KubernetesSecretDriver stores mutable Secret"]
+    B --> C["Selected SecretDriver stores owned Secret"]
     C --> D["OCC stores metadata and returns stable ref"]
   end
   subgraph Admission["Configuration and deployment"]
@@ -80,7 +80,7 @@ nonempty UTF-8 input of at most 65,536 bytes and locks the Namespace. The caller
 on the Namespace's Secret collection. The Namespace must already be ready; an
 Agent record does not need to exist. OCC selects the
 Installation SecretDriver, generates the Secret identity, and prevents the
-caller from choosing Kubernetes backend identity. The value stays in protected
+caller from choosing backend identity. The value stays in protected
 request/driver memory, never in the reconciliation queue or resource metadata.
 
 ### 2. Store material and commit safe identity
@@ -100,6 +100,19 @@ deletes the owned object it may have stored under its name. A create refused bec
 its stored object was rewritten deletes it, pinned to the answered UID and
 resourceVersion. There is no value journal or automatic replay; a create still in
 flight can require operator recovery.
+
+`apps/controller/src/drivers/secret/aws-secrets-manager/index.ts:AwsSecretsManagerSecretDriver.create`
+
+The AWS selection stores tagged material under a Namespace-specific prefix and
+returns an encoded complete-ARN binding that fits OCC's existing reference format.
+`owned` verifies that binding and live tags before operations. Updates use
+`PutSecretValue`; trusted reads use an exact VersionId with `AWSCURRENT` and
+recheck ownership/version before returning. Deletion schedules 30-day recovery.
+Missing resources, replacements, stale reads, and ambiguous failures fail closed;
+there is no name fallback, automatic cleanup, or CAS. The
+[AWS reference](../reference/drivers/secret.md#aws-secrets-manager) owns IAM and
+recovery requirements. This path ends at storage or trusted server-side use;
+existing Compute does not project AWS material into workloads.
 
 ### 3. Bind a source, then admit references
 
@@ -310,6 +323,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 22:56: Document AWS Secret storage, ARN binding, and versioned reads. (authoring-run/6b11ce1b-071c-416b-8a6b-5952f131c8c4 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
 
 - 2026-10-29 19:38: Keep local first-Agent records owner-readable under restrictive umasks. (authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42 - cadab7afee966df8ff7a13250df443404ae76314)
 

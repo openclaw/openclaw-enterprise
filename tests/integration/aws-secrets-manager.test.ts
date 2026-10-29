@@ -1,0 +1,460 @@
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import {
+  AuthorizationDeniedError,
+  DependencyUnavailableError,
+  ScopeViolationError,
+} from "../../packages/occ/src/index.ts";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import test from "node:test";
+import type { Secret } from "../../packages/contracts/src/index.ts";
+import { AwsSecretsManagerSecretDriver } from "../../apps/controller/src/drivers/secret/aws-secrets-manager/index.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
+import { grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
+
+// Resolve the SDK from its owning workspace package, not an undeclared root dependency.
+const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+const {
+  CreateSecretCommand,
+  DescribeSecretCommand,
+  GetSecretValueCommand,
+  PutSecretValueCommand,
+  DeleteSecretCommand,
+} = require("@aws-sdk/client-secrets-manager");
+const options = { region: "us-east-1", accountId: "123456789012", prefix: "oce/test" };
+type RecordValue = {
+  ARN: string;
+  Name: string;
+  Tags: { Key: string; Value: string }[];
+  VersionIdsToStages: Record<string, string[]>;
+  DeletedDate?: Date;
+};
+
+// Only the AWS service is simulated: commands, Driver, Installation validation,
+// OCC lifecycle, ownership checks, and IAM decisions use production code.
+function backend() {
+  const records = new Map<string, RecordValue>();
+  const values = new Map<string, string>();
+  const calls: string[] = [];
+  let fault: ((name: string, input: Record<string, string>) => unknown) | undefined;
+  const send = async (command: {
+    constructor: { name: string };
+    input: Record<string, string>;
+  }) => {
+    const kind = command.constructor.name;
+    calls.push(kind);
+    const overridden = fault?.(kind, command.input);
+    if (overridden !== undefined) {
+      return overridden;
+    }
+    const input = command.input;
+    if (command instanceof CreateSecretCommand) {
+      const ARN = `arn:aws:secretsmanager:us-east-1:123456789012:secret:${input.Name}-Ab123x`;
+      assert.ok(!records.has(ARN));
+      records.set(ARN, {
+        ARN,
+        Name: input.Name!,
+        Tags: command.input.Tags as unknown as RecordValue["Tags"],
+        VersionIdsToStages: { [input.ClientRequestToken!]: ["AWSCURRENT"] },
+      });
+      values.set(input.ClientRequestToken!, input.SecretString!);
+      return { ARN, Name: input.Name, VersionId: input.ClientRequestToken };
+    }
+    const record = records.get(input.SecretId!);
+    if (!record) {
+      throw new Error("ResourceNotFoundException: synthetic sensitive diagnostic");
+    }
+    if (command instanceof DescribeSecretCommand) {
+      return structuredClone(record);
+    }
+    if (command instanceof GetSecretValueCommand) {
+      assert.equal(input.VersionStage, "AWSCURRENT");
+      if (!record.VersionIdsToStages[input.VersionId!]?.includes("AWSCURRENT")) {
+        throw new Error("InvalidRequestException");
+      }
+      return {
+        ARN: record.ARN,
+        Name: record.Name,
+        VersionId: input.VersionId,
+        VersionStages: ["AWSCURRENT"],
+        SecretString: values.get(input.VersionId!),
+      };
+    }
+    if (command instanceof PutSecretValueCommand) {
+      for (const key of Object.keys(record.VersionIdsToStages)) {
+        record.VersionIdsToStages[key] = ["AWSPREVIOUS"];
+      }
+      record.VersionIdsToStages[input.ClientRequestToken!] = ["AWSCURRENT"];
+      values.set(input.ClientRequestToken!, input.SecretString!);
+      return {
+        ARN: record.ARN,
+        Name: record.Name,
+        VersionId: input.ClientRequestToken,
+        VersionStages: ["AWSCURRENT"],
+      };
+    }
+    assert.ok(command instanceof DeleteSecretCommand);
+    assert.equal(command.input.RecoveryWindowInDays, 30);
+    assert.equal(command.input.ForceDeleteWithoutRecovery, undefined);
+    record.DeletedDate = new Date();
+    return { ARN: record.ARN, Name: record.Name, DeletionDate: record.DeletedDate };
+  };
+  const client = { send } as unknown as NonNullable<
+    ConstructorParameters<typeof AwsSecretsManagerSecretDriver>[1]
+  >["client"];
+  const driver = new AwsSecretsManagerSecretDriver(options, { client: client! });
+  return {
+    records,
+    values,
+    calls,
+    client: client!,
+    driver,
+    setFault(value: typeof fault) {
+      fault = value;
+    },
+  };
+}
+
+async function stored(b: ReturnType<typeof backend>): Promise<Secret> {
+  const identity = {
+    id: `sec_${randomUUID()}`,
+    namespaceId: `ns_${randomUUID()}`,
+    name: "api-key",
+  };
+  return {
+    ...identity,
+    driverId: b.driver.id,
+    createdAt: new Date().toISOString(),
+    backendRef: await b.driver.create(identity, "synthetic-original"),
+  };
+}
+
+test("production Installation selects the AWS adapter and OCC authorizes its lifecycle", async (t) => {
+  const configuration = createInstallationDriverConfiguration();
+  const config = {
+    ...configuration,
+    drivers: {
+      ...configuration.drivers,
+      secret: { id: "secret-aws-secrets-manager", configuration: options },
+    },
+  };
+  const runtime = await loadInstallationFile(t, config);
+  assert.ok(runtime?.secretDriver instanceof AwsSecretsManagerSecretDriver);
+  assert.equal(runtime.installation.drivers.secret.definition, AwsSecretsManagerSecretDriver);
+  const b = backend();
+  const selection = runtime.installation.drivers.secret;
+  const driver = new AwsSecretsManagerSecretDriver(
+    selection.configuration as unknown as typeof options,
+    { id: selection.id, client: b.client },
+  );
+  assert.equal("compareAndSwap" in driver, false);
+  const iamState = principalIAMState(["owner", "denied"], "aws-secrets");
+  grantRole(iamState, "owner", {
+    namespaceId: undefined,
+    resource: undefined,
+    id: "owner-role",
+    bindingId: "owner-binding",
+    permissions: {
+      namespace: ["create", "read"],
+      secret: ["create", "read", "update", "delete", "operate"],
+    },
+  });
+  const iam = new NativeIAMDriver({ loadNativeIAMState: async () => iamState });
+  const controller = new OpenClawController(
+    { id: "installation-test", name: "AWS test", createdAt: new Date().toISOString() },
+    { state: new InMemoryPlatformState() },
+  );
+  registerAndSelectDrivers(controller, [iam, createDevelopmentComputeDriver(), driver]);
+  const namespace = await controller.createNamespace("owner", { name: "AWS tenant" });
+  await controller.transact((tx) =>
+    tx.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const metadata = await controller.createSecret("owner", {
+    namespaceId: namespace.id,
+    name: "key",
+    value: "synthetic-first",
+  });
+  assert.ok(!JSON.stringify(metadata).includes("synthetic-first"));
+  const secret = await controller.transact((tx) =>
+    tx.secrets.findSecret(namespace.id, metadata.id),
+  );
+  assert.ok(secret);
+  assert.equal(await driver.withValue(secret, async (v) => v), "synthetic-first");
+  const before = b.calls.length;
+  await assert.rejects(
+    controller.updateSecret("denied", {
+      namespaceId: namespace.id,
+      secretId: secret.id,
+      value: "forbidden",
+    }),
+    AuthorizationDeniedError,
+  );
+  assert.equal(b.calls.length, before);
+  await controller.updateSecret("owner", {
+    namespaceId: namespace.id,
+    secretId: secret.id,
+    value: "synthetic-second",
+  });
+  assert.equal(await driver.withValue(secret, async (v) => v), "synthetic-second");
+  await controller.deleteSecret("owner", namespace.id, secret.id);
+  assert.ok(Array.from(b.records.values())[0]?.DeletedDate);
+  await assert.rejects(driver.resolve(secret), DependencyUnavailableError);
+  await driver.delete(secret);
+  assert.equal(b.calls.filter((c) => c === "DeleteSecretCommand").length, 1);
+  for (const configuration of [
+    { ...options, accountId: "bad" },
+    { ...options, prefix: "../bad" },
+    { ...options, credentials: "forbidden" },
+  ]) {
+    await assert.rejects(
+      loadInstallationFile(t, {
+        ...config,
+        drivers: { ...config.drivers, secret: { id: driver.id, configuration } },
+      }),
+      Object.hasOwn(configuration, "credentials")
+        ? { message: /must not contain a plaintext credential/ }
+        : ConfigurationValidationError,
+    );
+  }
+});
+
+test("complete ARN and ownership binding rejects namespace, driver, key, account and replacement changes", async () => {
+  const b = backend();
+  const secret = await stored(b);
+  for (const changed of [
+    { ...secret, namespaceId: "ns_other" },
+    { ...secret, id: "sec_other" },
+    { ...secret, driverId: "other" },
+    ...[
+      { key: "other" },
+      { namespaceName: "other" },
+      { uid: secret.backendRef.name },
+      { name: secret.backendRef.name.replace(/.$/, "z") },
+    ].map((change) => ({ ...secret, backendRef: { ...secret.backendRef, ...change } })),
+  ]) {
+    const before = b.calls.length;
+    await assert.rejects(b.driver.update(changed, "synthetic-new"), ScopeViolationError);
+    await assert.rejects(b.driver.delete(changed), ScopeViolationError);
+    assert.equal(b.calls.length, before);
+  }
+  const record = Array.from(b.records.values())[0]!;
+  record.Tags[1]!.Value = "ns_foreign";
+  await assert.rejects(b.driver.resolve(secret), ScopeViolationError);
+  await assert.rejects(b.driver.delete(secret), ScopeViolationError);
+  record.Tags[1]!.Value = secret.namespaceId;
+  record.ARN = record.ARN.replace("Ab123x", "Cd456y");
+  await assert.rejects(
+    b.driver.withValue(secret, async () => assert.fail("foreign value")),
+    ScopeViolationError,
+  );
+  b.records.clear();
+  for (const operation of [
+    () => b.driver.update(secret, "synthetic-new"),
+    () => b.driver.delete(secret),
+    () => b.driver.resolve(secret),
+  ]) {
+    await assert.rejects(operation, (error: Error) => {
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.doesNotMatch(error.message, /sensitive diagnostic/);
+      return true;
+    });
+  }
+  assert.equal(b.calls.filter((c) => c === "CreateSecretCommand").length, 1);
+  assert.equal(b.calls.includes("DeleteSecretCommand"), false);
+});
+
+test("versioned credential reads follow external rotation and refuse stale or racing responses", async () => {
+  const b = backend();
+  const secret = await stored(b);
+  const read = () =>
+    b.driver.readCredentialInput({
+      secret,
+      retention: "none",
+      lifetime: {
+        signal: new AbortController().signal,
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+      },
+    });
+  const first = await read();
+  const record = Array.from(b.records.values())[0]!;
+  const next = randomUUID();
+  record.VersionIdsToStages = { [first.version]: ["AWSPREVIOUS"], [next]: ["AWSCURRENT"] };
+  b.values.set(next, "synthetic-rotated");
+  const rotated = await read();
+  assert.equal(rotated.value, "synthetic-rotated");
+  assert.equal(rotated.version, next);
+  b.setFault((name) =>
+    name === "GetSecretValueCommand"
+      ? {
+          ARN: record.ARN,
+          Name: record.Name,
+          SecretString: first.value,
+          VersionId: first.version,
+          VersionStages: ["AWSCURRENT"],
+        }
+      : undefined,
+  );
+  await assert.rejects(read, DependencyUnavailableError);
+  b.setFault((name) => {
+    if (name === "GetSecretValueCommand") {
+      record.VersionIdsToStages = { [randomUUID()]: ["AWSCURRENT"] };
+    }
+  });
+  await assert.rejects(read, DependencyUnavailableError);
+  b.setFault(undefined);
+  record.VersionIdsToStages = {};
+  await assert.rejects(b.driver.resolve(secret), DependencyUnavailableError);
+  const before = b.calls.length;
+  await assert.rejects(
+    b.driver.readCredentialInput({
+      secret,
+      retention: "none",
+      lifetime: {
+        signal: AbortSignal.abort(),
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+      },
+    }),
+    { name: "AbortError" },
+  );
+  assert.equal(b.calls.length, before);
+});
+
+test("ambiguous create and update failures are not retried or repaired by name", async () => {
+  const b = backend();
+  const secret = await stored(b);
+  b.setFault((name) => {
+    if (name === "PutSecretValueCommand" || name === "CreateSecretCommand") {
+      throw new Error("synthetic sensitive diagnostic");
+    }
+  });
+  await assert.rejects(b.driver.update(secret, "synthetic-new"), DependencyUnavailableError);
+  await assert.rejects(stored(b), DependencyUnavailableError);
+  assert.equal(b.calls.filter((c) => c === "PutSecretValueCommand").length, 1);
+  assert.equal(b.calls.filter((c) => c === "CreateSecretCommand").length, 2);
+  assert.equal(b.calls.includes("DeleteSecretCommand"), false);
+});
+
+test("configuration drift and in-progress rotation fail closed before mutations", async () => {
+  const b = backend();
+  const secret = await stored(b);
+  for (const change of [
+    { region: "us-west-2" },
+    { accountId: "999999999999" },
+    { prefix: "oce/other" },
+  ]) {
+    const driver = new AwsSecretsManagerSecretDriver(
+      { ...options, ...change },
+      { client: b.client },
+    );
+    const before = b.calls.length;
+    await assert.rejects(driver.resolve(secret), ScopeViolationError);
+    await assert.rejects(driver.delete(secret), ScopeViolationError);
+    assert.equal(b.calls.length, before);
+  }
+  const record = Array.from(b.records.values())[0]!;
+  record.VersionIdsToStages[randomUUID()] = ["AWSPENDING"];
+  const before = b.calls.length;
+  await assert.rejects(b.driver.update(secret, "synthetic-new"), /rotation is pending/);
+  assert.deepEqual(b.calls.slice(before), ["DescribeSecretCommand"]);
+  assert.equal(await b.driver.withValue(secret, async (v) => v), "synthetic-original");
+  const other = await stored(b);
+  assert.notEqual(other.namespaceId, secret.namespaceId);
+  assert.notEqual(other.backendRef.namespaceName, secret.backendRef.namespaceName);
+  await assert.rejects(
+    b.driver.resolve({ ...secret, backendRef: other.backendRef }),
+    ScopeViolationError,
+  );
+});
+
+test("post-read rotation and cancellation never release material to the callback", async () => {
+  const b = backend();
+  const secret = await stored(b);
+  const record = Array.from(b.records.values())[0]!;
+  b.setFault((name, input) => {
+    if (name !== "GetSecretValueCommand") {
+      return;
+    }
+    record.VersionIdsToStages = { [randomUUID()]: ["AWSCURRENT"] };
+    return {
+      ARN: record.ARN,
+      Name: record.Name,
+      VersionId: input.VersionId,
+      VersionStages: ["AWSCURRENT"],
+      SecretString: "synthetic-original",
+    };
+  });
+  await assert.rejects(
+    b.driver.withValue(secret, async () => assert.fail("rotated material released")),
+    /rotated during/,
+  );
+  const abort = new AbortController();
+  b.setFault((name, input) => {
+    if (name !== "GetSecretValueCommand") {
+      return;
+    }
+    abort.abort();
+    return {
+      ARN: record.ARN,
+      Name: record.Name,
+      VersionId: input.VersionId,
+      VersionStages: ["AWSCURRENT"],
+      SecretString: "synthetic-original",
+    };
+  });
+  await assert.rejects(
+    b.driver.readCredentialInput({
+      secret,
+      retention: "none",
+      lifetime: { signal: abort.signal, deadlineAt: new Date(Date.now() + 10_000).toISOString() },
+    }),
+    DependencyUnavailableError,
+  );
+  b.setFault(undefined);
+  const before = b.calls.length;
+  await assert.rejects(
+    b.driver.readCredentialInput({
+      secret,
+      retention: "none",
+      lifetime: { signal: new AbortController().signal, deadlineAt: new Date(0).toISOString() },
+    }),
+    { name: "TimeoutError" },
+  );
+  assert.equal(b.calls.length, before);
+});
+
+test("invalid material and mismatched mutation responses cannot become successful storage", async () => {
+  const b = backend();
+  const secret = await stored(b);
+  for (const value of ["", "bad\0value", "\ud800", "x".repeat(65_537)]) {
+    const before = b.calls.length;
+    await assert.rejects(b.driver.update(secret, value), ScopeViolationError);
+    assert.equal(b.calls.length, before);
+  }
+  const record = Array.from(b.records.values())[0]!;
+  for (const response of [
+    { ARN: record.ARN, Name: record.Name, VersionId: randomUUID(), VersionStages: ["AWSCURRENT"] },
+    {
+      ARN: record.ARN.replace("Ab123x", "Cd456y"),
+      Name: record.Name,
+      VersionStages: ["AWSCURRENT"],
+    },
+  ]) {
+    b.setFault((name) => (name === "PutSecretValueCommand" ? response : undefined));
+    await assert.rejects(b.driver.update(secret, "synthetic-new"), DependencyUnavailableError);
+  }
+  b.setFault((name) =>
+    name === "CreateSecretCommand"
+      ? { ARN: record.ARN, Name: record.Name, VersionId: randomUUID() }
+      : undefined,
+  );
+  await assert.rejects(stored(b), ScopeViolationError);
+  assert.equal(b.calls.includes("DeleteSecretCommand"), false);
+});

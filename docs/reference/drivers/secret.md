@@ -14,8 +14,8 @@ requested Secret. Compute delivers workload projections. OCC returns only Secret
 metadata to API readers. Trusted server-side operations can read the current
 value through the selected Secret Driver.
 
-Trusted Installation YAML requires the bundled Kubernetes implementation,
-including when Compute is SSH; delivery to SSH hosts is unsupported. Default
+Trusted Installation YAML requires a bundled Secret Driver: Kubernetes or
+[AWS Secrets Manager](#aws-secrets-manager). Delivery to SSH hosts is unsupported. Default
 Compose without Installation YAML selects no Secret Driver. See
 [Driver selection](selection.md) and the [Kubernetes implementation](kubernetes-secret.md).
 
@@ -149,7 +149,7 @@ model API keys go only to the Harness that executes the model.
   static requests keep credential material out of the workload.
 - Updating a Secret does not restart workloads. Redeploy consumers through OCE
   to refresh projections for the Agent revision before expecting a new environment value.
-- Kubernetes is the only selectable implementation. Arbitrary installed Secret
+- Kubernetes and AWS Secrets Manager are selectable. Arbitrary installed Secret
   packages and SSH delivery are unsupported; selection alone does not enable them.
 
 ## Troubleshooting
@@ -161,6 +161,66 @@ model API keys go only to the Harness that executes the model.
 | A Secret cannot be resolved             | Check the selected Driver, backend availability, and whether the original owned object still matches OCC's identity. Do not point OCC to a replacement object manually. |
 | Updated credentials are not visible     | Restart or redeploy the consuming workload and verify the new process became active; updating storage does not refresh existing environments.                           |
 | Deletion is rejected                    | Remove Configuration and deployment references through OCC before retrying.                                                                                             |
+
+## AWS Secrets Manager
+
+Select `secret-aws-secrets-manager` in trusted Installation YAML:
+
+```yaml
+drivers:
+  secret:
+    id: secret-aws-secrets-manager
+    configuration:
+      region: us-east-1
+      accountId: "123456789012"
+      prefix: oce/production
+      # kmsKeyId: arn:aws:kms:us-east-1:123456789012:key/...
+```
+
+The AWS SDK uses its default credential provider chain. Prefer a workload IAM
+role; do not put credentials in Installation YAML. Provision the account, region,
+and optional KMS key separately. No AWS infrastructure is created at startup.
+
+Names use `<prefix>/<namespaceId>/<secretId>/<uuid>`. OCC stores a UUID,
+encoded AWS suffix, and SHA-256 binding to the complete ARN within the existing
+backend-reference format. Every operation reconstructs and verifies that ARN;
+changed account, region, prefix, Namespace, Driver, or resource identity fails
+closed. Requests use the complete ARN, never a partial ARN or name fallback.
+Live ownership checks require `openclaw:managed-by`, `openclaw:namespace`,
+`openclaw:secret`, and `openclaw:driver` tags.
+
+Grant the controller role `secretsmanager:CreateSecret`, `TagResource`,
+`DescribeSecret`, `GetSecretValue`, `PutSecretValue`, and `DeleteSecret` only
+within its account, region, and prefix. Constrain creation with `aws:RequestTag`
+and existing resources with `aws:ResourceTag` conditions for the ownership tags.
+Deny changes to ownership tags after creation and deny resource replacement by
+untrusted principals. Tag reads and writes are not an atomic authorization fence;
+AWS IAM must enforce these boundaries too. A customer-managed KMS key also needs
+appropriate `kms:GenerateDataKey` and `kms:Decrypt` grants and key policy.
+
+Updates create an AWS version and move `AWSCURRENT`; they refuse an observed
+separate `AWSPENDING` rotation version. Trusted reads request both the observed
+VersionId and `AWSCURRENT`, then recheck ownership and the current version.
+They return the AWS VersionId through `readCredentialInput`, with no value cache.
+External rotation is visible on the next successful read. Concurrent changes can
+still occur after the final check. Updates are last-writer-wins, not atomic CAS;
+this Driver omits `compareAndSwap` and cannot support flows that require it.
+AWS version quotas limit update frequency; see
+[PutSecretValue](https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_PutSecretValue.html).
+
+Deletion schedules a 30-day recovery window. Retrying a scheduled deletion
+succeeds only after exact ownership verification. Missing resources fail closed,
+including deletion; an operator must reconcile lost resources. Restoration uses
+AWS administration and does not recreate deleted OCC metadata. The Driver never
+force-deletes, restores, or adopts a replacement automatically. Requests have a
+30-second timeout, respect protected-read lifetimes, and disable SDK retries.
+Failed mutations may have applied: reconcile AWS audit records and owned resources
+before retrying. A failed create may leave an orphan; it is not blindly deleted.
+
+This implementation supports storage and trusted server-side reads, including
+protected static credentials. It does not provision rotation Lambdas or project
+AWS secrets into Kubernetes or SSH workloads. Existing Compute rejects its
+backend-reference namespace. Use Kubernetes for environment projections.
 
 ## Implementations
 

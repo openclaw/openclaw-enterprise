@@ -126,7 +126,8 @@
     "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.mjs",
     "tests/integration/refusal-answers.test.mjs",
-    "tests/integration/namespace-deletion-console-api.test.ts"
+    "tests/integration/namespace-deletion-console-api.test.ts",
+    "tests/integration/aws-secrets-manager.test.ts"
   ],
   "files": [
     {
@@ -634,6 +635,9 @@
     },
     {
       "path": "tests/integration/namespace-deletion-console-api.test.ts"
+    },
+    {
+      "path": "tests/integration/aws-secrets-manager.test.ts"
     }
   ]
 }

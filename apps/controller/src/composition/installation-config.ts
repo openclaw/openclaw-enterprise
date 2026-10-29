@@ -1,4 +1,8 @@
 import {
+  AwsSecretsManagerSecretDriver,
+  type AwsSecretsManagerOptions,
+} from "../drivers/secret/aws-secrets-manager/index.ts";
+import {
   openShellProxyConfiguration,
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
@@ -918,11 +922,12 @@ export async function loadInstallationConfiguration(options: {
     computePackage?.implementation ?? (sshCompute ? "occ/ssh" : "occ/kubernetes"),
     computePackage?.module ?? (sshCompute ? SshComputeDriver : KubernetesComputeDriver),
   );
+  const awsSecrets = secretSelection.id === "secret-aws-secrets-manager";
   const secret = selected(
     secretSelection,
     "secret",
-    "occ/kubernetes-secret",
-    KubernetesSecretDriver,
+    awsSecrets ? "occ/aws-secrets-manager" : "occ/kubernetes-secret",
+    awsSecrets ? AwsSecretsManagerSecretDriver : KubernetesSecretDriver,
   );
   const namespaceBinding = environment.OCC_PREPROVISIONED_NAMESPACE;
   let preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
@@ -1158,10 +1163,16 @@ export async function loadInstallationConfiguration(options: {
       "Protected egress requires paired Kubernetes/OpenShell Drivers and an authenticated TLS gateway endpoint.",
     );
   }
-  const secretDriver = new KubernetesSecretDriver(
-    secret.configuration as unknown as KubernetesSecretDriverOptions,
-    { id: secret.id, implementation: secret.implementation, preprovisionedNamespace },
-  );
+  const secretDriver = awsSecrets
+    ? new AwsSecretsManagerSecretDriver(
+        secret.configuration as unknown as AwsSecretsManagerOptions,
+        { id: secret.id },
+      )
+    : new KubernetesSecretDriver(secret.configuration as unknown as KubernetesSecretDriverOptions, {
+        id: secret.id,
+        implementation: secret.implementation,
+        preprovisionedNamespace,
+      });
   const tokenService = new TokenService();
   const preparedGitHub =
     preparedGitHubKeyPath === undefined
