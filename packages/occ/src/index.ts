@@ -6513,7 +6513,9 @@ export class OpenClawController {
     });
     const { namespace, gateway, refresh, deferred, source, values, issuer } = registration;
     const config = source.config;
-    const placed = gateway ? await this.credentialNamespace(namespace) : namespace;
+    const deferPlacement = source.egress?.adoption === "live" && refresh === undefined;
+    const placed =
+      gateway && !deferPlacement ? await this.credentialNamespace(namespace) : namespace;
     let status: CredentialSourceStatus;
     // A returned result means every gateway effect of this attempt has finished; a throw does not.
     let terminal = false;
@@ -6586,7 +6588,10 @@ export class OpenClawController {
     if (ready === undefined) {
       // A concurrent deletion owns the prepared family withdrawal. It must not be reconfigured or replayed.
       if (gateway && source.egress?.adoption !== "prepared") {
-        await this.abandonCredentialRegistration(placed, gateway, source, true, refresh);
+        const cleanupNamespace = deferPlacement
+          ? await this.credentialNamespace(namespace)
+          : placed;
+        await this.abandonCredentialRegistration(cleanupNamespace, gateway, source, true, refresh);
       }
       throw new ResourceStateConflictError("The credential source changed during registration.");
     }

@@ -102,17 +102,27 @@ Values remain in memory only for the authorized external call.
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-OCC commits `registering` with Secret references, resolves Compute's Sandbox
-namespace, and calls `registerSource` with a 30-second deadline. OpenShell checks
-provider ownership before changing the source-owned profile, creates the labeled
-provider, and rechecks creation collisions. These calls are not atomic. Only the
-Refresh Driver receives refresh material.
+OCC commits `registering` with Secret references. For Gateway registration,
+it resolves Compute's Sandbox namespace and calls `registerSource` with a
+30-second deadline. OpenShell checks provider ownership before changing the
+source-owned profile, creates the labeled provider, and rechecks creation
+collisions. These calls are not atomic. Only the Refresh Driver receives refresh
+material.
+
+For a live versioned static OpenAI source without refresh, OCC skips placement
+and Gateway registration. The Gateway still owns the catalog and the source record.
 
 A definitive failed/absent result triggers cleanup and record deletion; failed
 cleanup retains `deleting`. Thrown calls may still take effect, so cleanup retains
 `deleting` for another DELETE. Success commits `ready` and audit atomically. A
 failed commit leaves `registering`: binding/admission fail, deletion remains
-possible. If concurrent DELETE won, OCC repeats remote cleanup and returns `409`.
+possible.
+
+If DELETE wins before a Gateway-owned source becomes ready, OCC attempts cleanup
+through the original Gateway and returns `409`. For a live static source, OCC
+resolves the physical Namespace at this point. If placement is unavailable,
+POST returns `503` without calling Gateway removal. Retry DELETE if the source
+is still marked `deleting`.
 
 ### Device authorization and configuration
 

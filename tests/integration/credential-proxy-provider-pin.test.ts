@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type {
   CredentialProviderDefinition,
+  ComputeDriver,
+  CredentialGatewayDriver,
+  CredentialSource,
   EgressInstallation,
   EgressRequest,
 } from "../../packages/contracts/src/index.ts";
@@ -632,4 +635,102 @@ test("a source update withholds resolved material after its provider or injector
     },
   );
   assert.equal(f.providerRequests.length, 0);
+});
+
+test("live static registration does not require Gateway placement", async (t) => {
+  const f = await staticEgressFixture(t, { physicalPlacement: true });
+  assert.ok("egress" in f);
+  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
+    f.controller.selectedDriver("compute");
+  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
+  const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
+    throw new Error("placement unavailable");
+  });
+  const registration = t.mock.method(gateway, "registerSource");
+  const reads = f.secretReads;
+  const result = await f.request("POST", f.path, {
+    body: { name: "static-no-placement", type: "openai", secrets: { api_key: f.secret.ref } },
+  });
+  assert.equal(result.status, 201);
+  const stored = await f.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
+  );
+  assert.equal(stored?.state, "ready");
+  assert.equal(stored?.ownerCapability, "credential_gateway");
+  assert.equal(stored?.driverId, gateway.id);
+  assert.equal(stored?.egress?.adoption, "live");
+  assert.equal(f.secretReads - reads, 1);
+  assert.equal(placement.mock.callCount(), 0);
+  assert.equal(registration.mock.callCount(), 0);
+});
+
+test("live static registration resolves physical placement for late cleanup", async (t) => {
+  let deleting = false;
+  const f = await staticEgressFixture(t, {
+    physicalPlacement: true,
+    appFactory: (context, options) =>
+      createConsoleAppFixture(context, {
+        ...options,
+        wrapState: (state: PlatformStateStore): PlatformStateStore => ({
+          read: (work) => state.read(work),
+          transact: (work) =>
+            state.transact((unit) =>
+              work({
+                ...unit,
+                credentialSources: {
+                  ...unit.credentialSources,
+                  async markCredentialSourceReady(namespaceId, sourceId) {
+                    // Model DELETE winning before the source can become ready.
+                    if (deleting) {
+                      await unit.credentialSources.markCredentialSourceDeleting(
+                        namespaceId,
+                        sourceId,
+                      );
+                    }
+                    return unit.credentialSources.markCredentialSourceReady(namespaceId, sourceId);
+                  },
+                },
+              }),
+            ),
+        }),
+      }),
+  });
+  assert.ok("egress" in f);
+  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
+    f.controller.selectedDriver("compute");
+  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
+  const placement = t.mock.method(compute, "resolveSandboxNamespace");
+  // Model terminal Gateway removal; the controller still owns placement and record cleanup.
+  const terminalRemoval: CredentialGatewayDriver["removeSource"] = async () => {};
+  const removal = t.mock.method(gateway, "removeSource", terminalRemoval);
+  deleting = true;
+  const body = { name: "late-delete", type: "openai", secrets: { api_key: f.secret.ref } };
+  assert.equal((await f.request("POST", f.path, { body })).status, 409);
+  assert.equal(placement.mock.callCount(), 1);
+  assert.equal(removal.mock.callCount(), 1);
+  const removed = removal.mock.calls[0]!;
+  assert.equal(removed.this, gateway);
+  assert.deepEqual(removed.arguments[0].namespace, f.runtimeNamespace);
+  assert.equal(removed.arguments[0].source.name, body.name);
+  assert.notEqual(f.runtimeNamespace.name, f.namespace.name);
+  const sources = (): Promise<readonly CredentialSource[]> =>
+    f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.listCredentialSources(f.namespace.id),
+    );
+  assert.equal(
+    (await sources()).some((source) => source.id === removed.arguments[0].source.id),
+    false,
+  );
+
+  placement.mock.mockImplementationOnce(async () => {
+    throw new Error("placement unavailable");
+  });
+  const unavailable = { ...body, name: "late-delete-unavailable" };
+  assert.equal((await f.request("POST", f.path, { body: unavailable })).status, 503);
+  const retained = (await sources()).find((source) => source.name === unavailable.name);
+  assert.equal(retained?.state, "deleting");
+  assert.equal(retained?.ownerCapability, "credential_gateway");
+  assert.equal(retained?.driverId, gateway.id);
+  assert.equal(placement.mock.callCount(), 2);
+  assert.equal(removal.mock.callCount(), 1, "unplaced cleanup must not reach the Gateway");
 });
