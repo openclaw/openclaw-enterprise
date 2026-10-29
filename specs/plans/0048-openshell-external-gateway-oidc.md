@@ -182,6 +182,19 @@ None.
     production egress limits, and renumbered this plan from TASK-0045 (already
     taken by the Python sandbox policy denials plan) to TASK-0048.
 
+- 2026-10-29 (proof-driven fixes while preparing the real-gateway proof):
+  - The external profile still imports the supervisor and static sandbox launcher
+    images; only the gateway component is skipped, because the gateway's driver
+    creates those Pods in the launcher's cluster.
+  - New optional `OCC_DEVELOPMENT_OPENSHELL_CA_FILE` PEM bundle: the Backend
+    renders `rootCertificatePath`, the chart and Compose mount it into the API
+    and worker, and `NODE_EXTRA_CA_CERTS` trusts the issuer for the token
+    request. Without it the controllers' system trust store applies.
+  - The Compose external selection no longer mounts the in-cluster gateway key
+    and CA (they are not created); the Console stays on the API origin and
+    `OCC_DEVELOPMENT_BROWSER_PORT` must be unset, because native administration
+    requires the in-cluster gateway relay.
+
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]

@@ -151,6 +151,7 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL` — OIDC token endpoint for the client-credentials grant against the external gateway; `https`, or `http` to a numeric loopback address.
 - `OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_ID` — OIDC client ID for the external gateway.
 - `OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_SECRET_FILE` — Absolute path to a nonempty file with the OIDC client secret; copied into the private state directory.
+- `OCC_DEVELOPMENT_OPENSHELL_CA_FILE` — Optional absolute path to a PEM CA bundle for the external gateway and issuer TLS; mounted into the API and worker, with the system trust store applying when unset.
 - `OCC_CONTAINER_ENGINE_SOCKET` — Podman API socket; the development helper supplies it automatically.
 - `DOCKER_HOST`, `DOCKER_CONTEXT` — Docker endpoint or named context; an explicit context takes precedence. The Kubernetes profile requires a local `unix:///` socket and records the selected endpoint.
 - `CONTAINER_CONNECTION`, `CONTAINER_HOST` — Podman's connection selection; preserved during Docker-profile cleanup when Podman is the engine.
