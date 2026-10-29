@@ -16,6 +16,7 @@ import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
+  startWorkspaceGatewayHostRelay,
 } from "./envoy-workspace-gateway.mjs";
 import {
   createKubernetesInstallationConfiguration,
@@ -163,7 +164,11 @@ function createAgentPluginApi({ request, namespaceId, gatewayAuth }) {
   async function createAgent({ harnessId, executionMode, name, harnessAuth, backendId }) {
     const values = nativeConfiguration(harnessId);
     if (gatewayAuth !== undefined) {
-      values.gateway = { ...values.gateway, ...gatewayAuth };
+      values.gateway = {
+        ...values.gateway,
+        ...gatewayAuth,
+        auth: { ...gatewayAuth.auth, password: values.gateway.auth.password },
+      };
     }
     const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
       kind: "agent",
@@ -2386,6 +2391,11 @@ export async function createPluginDriverRealFixture(
       { platformNamespace },
       helpers,
     );
+    workspaceGateway.routing.endpointPort = await startWorkspaceGatewayHostRelay(
+      context,
+      workspaceGateway,
+      { ...helpers, gatewayImage },
+    );
   }
   await kubectl(
     "create",
@@ -2399,7 +2409,7 @@ export async function createPluginDriverRealFixture(
     "clusterrole",
     `${proofPrefix}-tenant-${suffix}`,
     "--verb=create,get,list,patch,update,delete",
-    "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges,persistentvolumeclaims,httproutes.gateway.networking.k8s.io,securitypolicies.gateway.envoyproxy.io",
+    "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges,persistentvolumeclaims,jobs.batch,httproutes.gateway.networking.k8s.io,securitypolicies.gateway.envoyproxy.io",
   );
   await kubectl(
     "create",
@@ -2481,6 +2491,14 @@ export async function createPluginDriverRealFixture(
     ),
   ]);
 
+  const driverEnvironment = {};
+  if (workspaceGateway !== undefined) {
+    const keyPath = join(directory, "gateway-api-key");
+    await writeFile(keyPath, workspaceGateway.apiKey, { mode: 0o600 });
+    driverEnvironment.OCC_GATEWAY_API_KEY_PATH = keyPath;
+    driverEnvironment.OCC_GATEWAY_CA_PATH = process.env.OCC_TEST_GATEWAY_CA_CERT_PATH;
+  }
+
   const [
     { PostgresPlatformState },
     { createPostgresControllerAuth },
@@ -2500,11 +2518,11 @@ export async function createPluginDriverRealFixture(
   const [apiDrivers, workerDrivers] = await Promise.all([
     loadInstallationConfiguration({
       mode: "production",
-      environment: { OCC_CONFIG_PATH: apiConfigurationPath },
+      environment: { ...driverEnvironment, OCC_CONFIG_PATH: apiConfigurationPath },
     }),
     loadInstallationConfiguration({
       mode: "production",
-      environment: { OCC_CONFIG_PATH: workerConfigurationPath },
+      environment: { ...driverEnvironment, OCC_CONFIG_PATH: workerConfigurationPath },
     }),
   ]);
   assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);

@@ -80,6 +80,10 @@ Dedicated Codex cases also require the real Envoy Gateway and cert-manager
 controllers from [Gateway routing setup](kubernetes.md#private-gateway-routing). Provide
 `OCC_TEST_GATEWAY_CA_CERT_PATH` and `OCC_TEST_GATEWAY_CA_KEY_PATH` for that fixture.
 The test creates an owned Gateway; Kubernetes Compute creates each Agent route.
+Set `OCC_DOCKER_RUNTIME_IMAGE` to the qualified runtime for the fixture's
+TLS-preserving host relay. This fixture runs its controller on the host; the
+[OpenShell Linear case](openshell.md#linear-tool-use-qualification) instead starts
+the shipped control plane and uses its configured OCE Gateway route directly.
 
 | Scenario                                | Flag                                        | Database variable                                   |
 | --------------------------------------- | ------------------------------------------- | --------------------------------------------------- |
