@@ -72,7 +72,7 @@ register with the provider.
 ### Discover an MCP connection template
 
 In **Settings → Connection templates**, select **New MCP connection template** and
-enter the server URL. For Slack, use `https://mcp.slack.com/mcp`. The Credential
+enter the MCP server URL. The Credential
 Refresh Driver uses the TypeScript MCP client to discover the resource, issuer,
 OAuth endpoints, and proposed scopes. Discovery supports publicly routable HTTPS
 servers with one authorization server. It runs without the client secret.
@@ -80,9 +80,9 @@ servers with one authorization server. It runs without the client secret.
 Review the values, choose the scopes, and enter the registered OAuth client. OCC
 checks the server metadata again before saving the version or registering the
 secret. Existing templates with manually configured endpoints keep their OAuth
-flow. The current OpenShell refresh implementation can stage an MCP template.
-Connecting an account and deploying it require SDK-owned refresh and delivery
-of the resulting access token to protected worker egress.
+flow. This release supports template setup. Connecting an MCP account requires
+OCE to hand the grant to the Token Service for refresh and deliver a prepared
+access token to OpenShell for worker requests.
 
 ### Versions and consent
 

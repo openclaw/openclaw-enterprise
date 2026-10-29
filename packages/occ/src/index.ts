@@ -6540,8 +6540,7 @@ export class OpenClawController {
     }
     const version = template.current;
     if (version.mcp) {
-      // The current browser path gives the grant to the native refresh implementation.
-      // MCP requires SDK-owned, resource-bound refresh and delivery of a prepared access token.
+      // MCP Connect needs a grant handoff to the Token Service for resource-bound refresh.
       throw new NotImplementedError(
         "mcp_oauth",
         "Connecting this MCP account requires a credential service that prepares and delivers the access token.",
