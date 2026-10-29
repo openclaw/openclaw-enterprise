@@ -382,6 +382,8 @@ export function createDeploymentStatusPanel(
     pollTimer = undefined;
     // After a failed read, the record before it.
     const previousStatus = lastRecord?.status ?? null;
+    // A failed background check does not change recorded progress. A definitive refusal
+    // clears both copies so a later transient failure cannot restore revoked evidence.
     loading = true;
     polling = poll;
     error = null;
@@ -409,8 +411,11 @@ export function createDeploymentStatusPanel(
         record = statusResult.value;
         lastRecord = statusResult.value;
       } else {
-        record = null;
         error = statusResult.reason;
+        record = poll && transientReadError(error) ? lastRecord : null;
+        if (!transientReadError(error)) {
+          lastRecord = null;
+        }
       }
       if (refreshAgent) {
         if (
@@ -442,7 +447,10 @@ export function createDeploymentStatusPanel(
         return;
       }
       error = cause;
-      record = null;
+      record = poll && transientReadError(error) ? lastRecord : null;
+      if (!transientReadError(error)) {
+        lastRecord = null;
+      }
     } finally {
       if (context.isCurrent()) {
         loading = false;
@@ -498,7 +506,7 @@ export function createDeploymentStatusPanel(
   }
 
   function renderStatus() {
-    if (error) {
+    if (error && !record) {
       return statusBlock("danger", null, message(error));
     }
     if (!record) {
@@ -631,6 +639,15 @@ export function createDeploymentStatusPanel(
         `Most recent visible deployment · v${revision.revision}`,
       ),
       renderStatus(),
+      ...(record
+        ? [
+            element(
+              "p",
+              { className: "muted" },
+              error ? "Update delayed · last known status" : "Latest update received",
+            ),
+          ]
+        : []),
       ...(overviewUnavailable
         ? [
             statusBlock(
@@ -777,7 +794,7 @@ export function createVersionDeploymentEvidence(
   }
 
   // Deployment activity already read this version's record; show it instead of a stale one.
-  function show(next: Deployment) {
+  function show(next: Deployment, readError: unknown = null) {
     if (!context.isCurrent() || !next) {
       return;
     }
@@ -786,7 +803,7 @@ export function createVersionDeploymentEvidence(
     generation += 1;
     loading = false;
     status = next;
-    error = null;
+    error = readError;
     render();
     diagnostics.render();
     onRecord(next);
@@ -836,7 +853,7 @@ export function createVersionDeploymentEvidence(
         element(
           "div",
           {},
-          error
+          error && !status
             ? statusBlock("danger", null, message(error), [], {
                 role: hasVisibleReadError(error) ? null : "alert",
               })
@@ -844,7 +861,11 @@ export function createVersionDeploymentEvidence(
               ? element(
                   "div",
                   {},
-                  element("p", {}, `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}`),
+                  element(
+                    "p",
+                    {},
+                    `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}${error ? " · update delayed" : ""}`,
+                  ),
                   failureShownAbove && deploymentOutcome(status) === "failed"
                     ? element(
                         "p",

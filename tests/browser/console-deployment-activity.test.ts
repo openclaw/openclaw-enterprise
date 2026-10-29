@@ -152,50 +152,59 @@ for (const viewport of [
         page.waitForResponse(
           (response) => response.url() === url && response.request().method() === "GET",
         );
+      let recordedLabel = "Queued";
       type Outcome = "queued" | "running" | "succeeded" | 503 | 404;
-      async function received(pending: ReturnType<typeof next>, expected: Outcome) {
+      async function received(
+        pending: ReturnType<typeof next>,
+        expected: Outcome,
+        retained = false,
+      ) {
         const response = await pending;
         assert.equal(response.status(), typeof expected === "number" ? expected : 200);
         const body = await response.json();
         if (typeof expected === "number") {
           assert.equal(body.data, undefined, "failed reads do not return a private record");
           assert.equal(body.error.code, expected === 503 ? "DEPENDENCY_UNAVAILABLE" : "NOT_FOUND");
-          await region
-            .getByText(
-              expected === 503
-                ? "Service unavailable. The read could not be completed. Try again."
-                : "Resource unavailable in this Namespace. Check the ID and your access.",
-              { exact: true },
-            )
-            .waitFor({ state: "attached" });
-          assert.equal(await region.locator(".deployment-outcome").count(), 0);
           const card = page.locator(".version-deployment-record");
-          await card
-            .getByText(
+          if (retained) {
+            await region
+              .getByText("Update delayed · last known status", { exact: true })
+              .waitFor({ state: "attached" });
+            await card
+              .getByText(`Recorded outcome: ${recordedLabel} · update delayed`, { exact: true })
+              .waitFor();
+            assert.equal(await region.locator(".deployment-outcome").count(), 1);
+            assert.equal(await page.getByRole("alert").count(), 0);
+            await page
+              .getByRole("region", { name: "Agent state at a glance" })
+              .getByText("Update delayed.", { exact: true })
+              .waitFor();
+          } else {
+            const message =
               expected === 503
                 ? "Service unavailable. The read could not be completed. Try again."
-                : "Resource unavailable in this Namespace. Check the ID and your access.",
-              { exact: true },
-            )
-            .waitFor();
-          assert.doesNotMatch(
-            await card.innerText(),
-            /Recorded outcome:|No persisted startup failure/,
-          );
-          assert.equal(
-            await page.getByRole("alert").count(),
-            1,
-            "one visible alert outside or inside the fold",
-          );
-          await page
-            .getByRole("region", { name: "Agent state at a glance" })
-            .getByText("Recorded deployment status could not be read.", { exact: true })
-            .waitFor();
+                : "Resource unavailable in this Namespace. Check the ID and your access.";
+            await region.getByText(message, { exact: true }).waitFor({ state: "attached" });
+            assert.equal(await region.locator(".deployment-outcome").count(), 0);
+            await card.getByText(message, { exact: true }).waitFor();
+            assert.doesNotMatch(
+              await card.innerText(),
+              /Recorded outcome:|No persisted startup failure/,
+            );
+            assert.equal(await page.getByRole("alert").count(), 1);
+            await page
+              .getByRole("region", { name: "Agent state at a glance" })
+              .getByText("Recorded deployment status could not be read.", { exact: true })
+              .waitFor();
+          }
         } else {
           assert.equal(body.data.deploymentId, revisionId);
           assert.equal(body.data.namespaceId, namespace.id);
           assert.equal(body.data.agentId, agent.id);
           assert.equal(body.data.status, expected);
+          recordedLabel = { queued: "Queued", running: "In progress", succeeded: "Completed" }[
+            expected
+          ];
           await region
             .getByText(
               `Recorded status: ${{ queued: "Queued", running: "In progress", succeeded: "Completed" }[expected]}`,
@@ -220,7 +229,7 @@ for (const viewport of [
       async function poll(expected: Outcome) {
         const response = next();
         await page.clock.runFor(DEPLOYMENT_POLL_MS);
-        await received(response, expected);
+        await received(response, expected, expected === 503);
       }
       const isOpen = () => details.evaluate((node: HTMLDetailsElement) => node.open);
       async function focusDiagnostics(folded: boolean) {
@@ -240,6 +249,22 @@ for (const viewport of [
         assert.equal(await focused.evaluate((node) => node === document.activeElement), true);
         return focused;
       }
+      // An idle reader has no focused control: layout itself must remain stable.
+      await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+      const idleTop = await details
+        .locator("summary")
+        .evaluate((node) => node.getBoundingClientRect().top);
+      await unavailableDuring(() => poll(503));
+      assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+      assert.equal(
+        await details.locator("summary").evaluate((node) => node.getBoundingClientRect().top),
+        idleTop,
+      );
+      await poll("queued");
+      assert.equal(
+        await details.locator("summary").evaluate((node) => node.getBoundingClientRect().top),
+        idleTop,
+      );
       // Distinguishes the old collision: both 503 and 404 used to stamp "///false".
       // Start with the first folded reader position, before later phases can scroll.
       const original = await focusDiagnostics(true);
@@ -277,9 +302,9 @@ for (const viewport of [
         finalPosition.top >= 0 && finalPosition.bottom <= finalPosition.viewport,
         "the required new refusal leaves the focused diagnostics button inside the viewport",
       );
-      assert.deepEqual(responses, [200, 503, 404]);
+      assert.deepEqual(responses, [200, 503, 200, 503, 404]);
       await page.clock.runFor(2 * DEPLOYMENT_POLL_MS);
-      assert.equal(responses.length, 3, "final refusal stops automatic polling");
+      assert.equal(responses.length, 5, "final refusal stops automatic polling");
       // Explicit refresh reveals even the same repeated error after a reader folds it.
       await details.locator("summary").click();
       const retried = next();
@@ -393,9 +418,7 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
     if (cleanup === null) {
       assert.equal(response.status(), 503);
       await region
-        .getByText("Service unavailable. The read could not be completed. Try again.", {
-          exact: true,
-        })
+        .getByText("Update delayed · last known status", { exact: true })
         .waitFor({ state: "attached" });
       return;
     }

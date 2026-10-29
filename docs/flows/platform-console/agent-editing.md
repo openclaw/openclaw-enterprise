@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-29
-last_updated_session: authoring-run/84c88245631c4882bd93c2140e0f313b
+last_updated_session: authoring-run/26ccef3f-405c-4275-bef6-7c1722ae15c8
 ---
 
 # Console Agent editing and runtime requests
@@ -73,24 +73,21 @@ retains selection, and focuses the picker after the last page. The picker marks
 failures from `deploymentStatus` and `deploymentErrorCode` across reloads, excluding
 superseded/stopped outcomes.
 
-**Deployment** mounts the newest readable activity, selected record, and diagnostics
+**Deployment** mounts activity, the selected record, and diagnostics
 (`agents/deployment-evidence.mts`); polling continues across tabs.
-`detail.mts:renderTab` shows snapshot errors with **Retry** for transient failures.
-Routine completion starts folded. Late first reads after `FIRST_ACTIVITY_WAIT_MS`
-stay folded unless cleanup, warnings, or overview errors require expansion.
-Pending work, warnings, cleanup and failed overview refreshes retain attention
-outside Deployment; overview errors retain the recorded outcome.
+`detail.mts:renderTab` offers **Retry** for transient snapshot errors.
+Completion and late reads after `FIRST_ACTIVITY_WAIT_MS` start folded unless
+cleanup, warnings, or overview errors need attention. Pending work and errors
+remain visible outside Deployment; overview errors preserve recorded outcomes.
 
-`createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` through transient
-errors until completion or refusal, patching in place. Pending polls, recovery and
-cleanup progress preserve disclosure choice and measured height. Distinct refusal evidence and
-manual failed refreshes reveal errors. Terminal polls quietly reread record,
-Agent and revisions; **Refresh deployment** acknowledges immediately and queues
-one full reread behind quiet work. **Refresh record** retains focus and ignores
-repeats. `createVersionDeploymentEvidence.fail` clears the selected record and
+`createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` until completion
+or refusal. Transient failures label retained progress without reflow. Refusals clear both records. Pending
+polls and cleanup preserve disclosure choice; refusals and manual failures open it.
+Terminal polls reread record, Agent and revisions. **Refresh deployment** queues
+one full reread behind pending work. **Refresh record** preserves focus and ignores
+repeats. Shared transient reads retain the selected record; `fail` clears it and
 invalidates older reads; initial transient failures permit fallback. Reserved
-wrapped-error space protects diagnostics position. Disclosure/tab changes give
-one matching visible error the alert role.
+error space protects diagnostics position; one visible matching error gets the alert role.
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
@@ -343,6 +340,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 10:27: Retain deployment progress through transient reads. (authoring-run/26ccef3f-405c-4275-bef6-7c1722ae15c8 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 - 2026-10-29 03:49: Clear a completed Secret refresh hint while selection permission is pending. Accompanying uncommitted changes. (authoring-run/84c88245631c4882bd93c2140e0f313b - b81139ddfe086aca0e4da4eb5b9feedc8ac39d67)
 
