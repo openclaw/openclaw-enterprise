@@ -23,6 +23,8 @@ const gateway = {
 // a real Gateway approval client reviews it.
 const threads = new Map();
 const events = [];
+// The reviewer and sandbox access the Gateway requests on each native thread and turn.
+const nativePolicies = [];
 let unsupportedMethod;
 let peerAnswer;
 let answered;
@@ -186,6 +188,11 @@ server.on("connection", (socket, request) => {
         reply({ data: [], nextCursor: null });
         break;
       case "thread/start": {
+        nativePolicies.push({
+          method: message.method,
+          reviewer: message.params.approvalsReviewer,
+          access: message.params.permissions ?? message.params.sandbox,
+        });
         const threadId = randomUUID();
         threads.set(threadId, message.params);
         reply(threadResult(threadId, message.params));
@@ -204,6 +211,11 @@ server.on("connection", (socket, request) => {
         break;
       case "turn/start": {
         const { threadId } = message.params;
+        nativePolicies.push({
+          method: message.method,
+          reviewer: message.params.approvalsReviewer,
+          access: message.params.permissions ?? message.params.sandboxPolicy?.type,
+        });
         const thread = threads.get(threadId);
         assert.ok(thread, "A native turn must own a fixture thread.");
         const turnId = randomUUID();
@@ -289,6 +301,7 @@ try {
       commit: provenance.commit,
       peerAnswer,
       runStatus: completed.status,
+      nativePolicies,
       events: events.map(({ event, payload, error }) => ({
         event,
         ...(error === undefined

@@ -359,6 +359,14 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
       const result = JSON.parse(stdout.trim().split("\n").at(-1));
       t.diagnostic(JSON.stringify(result));
       assert.equal(result.commit, commit);
+      // The Gateway asks Codex for full access with the user reviewer, so Codex sends the
+      // escalation to the Gateway's human reviewer. OpenClaw cannot use a model-backed reviewer
+      // (auto_review, guardian_subagent) for this model: it would force the user reviewer with a
+      // workspace-write sandbox, whose nested namespaces OpenShell blocks.
+      assert.deepEqual(result.nativePolicies, [
+        { method: "thread/start", reviewer: "user", access: "danger-full-access" },
+        { method: "turn/start", reviewer: "user", access: "dangerFullAccess" },
+      ]);
       // The reviewer saw the exact command and allowed it once, and Codex got that verdict.
       // Before the fix, the write-scoped run's wait failed with "missing scope:
       // operator.approvals", so the peer got "decline" even after the reviewer allowed it.
