@@ -1704,6 +1704,9 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     "https://models.example.test:443/inference/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-completions";
   const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
+  // The primary row names its own API; the worker and the startup probe use it, not the
+  // provider's.
+  selectedEntry.api = "openai-responses";
   // OpenClaw also names a catalog entry by the full reference; the worker and the startup probe
   // get the split model ID (finding 2903).
   selectedEntry.id = "openai/team/model";
@@ -1718,11 +1721,21 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     primary: "openai/team/model",
     fallbacks: ["openai/team/fallback"],
   };
-  // An unselected entry for another endpoint reaches neither the worker nor the startup probe.
-  nativeConfiguration.models.providers.openai.models.push(
-    { ...selectedEntry, id: "team/fallback", name: "team/fallback" },
-    { id: "unselected", baseUrl: "https://other.example.test/v1" },
-  );
+  // The fallback row comes first in the catalog, with its own endpoint and the provider's API;
+  // it reaches only the worker. An unselected entry for another endpoint reaches neither the
+  // worker nor the startup probe.
+  const fallbackEntry = {
+    ...selectedEntry,
+    id: "team/fallback",
+    name: "team/fallback",
+    baseUrl: "https://fallback.example.test/v1",
+  };
+  delete fallbackEntry.api;
+  nativeConfiguration.models.providers.openai.models.unshift(fallbackEntry);
+  nativeConfiguration.models.providers.openai.models.push({
+    id: "unselected",
+    baseUrl: "https://other.example.test/v1",
+  });
   const sourceType = {
     type: "openai",
     config: [],
@@ -1842,19 +1855,18 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     nativeConfig.models.providers.openai.baseUrl,
     "https://models.example.test/inference/v1",
   );
-  assert.equal(
-    nativeConfig.models.providers.openai.models[0].baseUrl,
-    "https://models.example.test/inference/v1",
-  );
-  assert.equal(nativeConfig.models.providers.openai.models[0].api, "openai-completions");
   assert.deepEqual(nativeConfig.models.providers.openai.apiKey, {
     source: "env",
     provider: "model",
     id: "OPENAI_API_KEY",
   });
+  // The worker gets the selected rows in selection order, each with its own endpoint and API.
   assert.deepEqual(
-    nativeConfig.models.providers.openai.models.map(({ id }) => id),
-    ["team/model", "team/fallback"],
+    nativeConfig.models.providers.openai.models.map(({ id, api, baseUrl }) => [id, api, baseUrl]),
+    [
+      ["team/model", "openai-responses", "https://models.example.test/inference/v1"],
+      ["team/fallback", "openai-completions", "https://fallback.example.test/v1"],
+    ],
   );
   // The startup probe gets only the primary model's entry (OpenClaw merges entries whose ids
   // match after trimming; findings 2882, 2883), as the worker gets it: the split model ID, and
