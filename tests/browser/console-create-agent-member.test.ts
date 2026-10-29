@@ -382,7 +382,10 @@ test("a permission retry that refuses Agent create shows the fresh-load refusal 
   await waitForEnabled(retry);
   await retry.click();
   const refusal = await expectCreateRefused(page, AGENT_CREATE_DENIED);
-  assert.equal(await refusal.evaluate((node) => node === globalThis.document.activeElement), true);
+  assert.equal(
+    await refusal.evaluate((node: Element) => node === globalThis.document.activeElement),
+    true,
+  );
   await page.goto(`${fixture.origin}${createPath}`);
   await expectCreateRefused(page, AGENT_CREATE_DENIED);
   assert.deepEqual(repositoryReads(answers), []);
