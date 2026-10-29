@@ -1,13 +1,20 @@
 package occdev
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -38,6 +45,7 @@ func externalTestState(t *testing.T) *developmentState {
 			port:             8443,
 			tokenAddresses:   []string{"198.51.100.20/32"},
 			tokenPort:        443,
+			caPath:           "/state/openshell-ca.crt",
 		},
 	}
 }
@@ -125,6 +133,64 @@ func TestReadExternalOpenShellSelection(t *testing.T) {
 	if external.endpoint != "https://openshell-gateway.example.com:8443" || external.oidcClientID != "occ-openshell" {
 		t.Fatalf("unexpected external selection: %+v", external)
 	}
+	if external.caPath != "" {
+		t.Fatal("no CA is selected, so the selection must keep system trust")
+	}
+	// The optional CA bundle is a PEM certificate bundle and requires the endpoint.
+	caFile := filepath.Join(t.TempDir(), "openshell-ca.crt")
+	if err := os.WriteFile(caFile, []byte("not a certificate"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	withInvalidCA := map[string]string{}
+	for key, value := range complete {
+		withInvalidCA[key] = value
+	}
+	withInvalidCA["OCC_DEVELOPMENT_OPENSHELL_CA_FILE"] = caFile
+	if _, err := readExternalOpenShell(withInvalidCA); err == nil {
+		t.Fatal("a non-PEM CA selection must be rejected")
+	}
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: testCertificate(t)}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	withCA := map[string]string{}
+	for key, value := range complete {
+		withCA[key] = value
+	}
+	withCA["OCC_DEVELOPMENT_OPENSHELL_CA_FILE"] = caFile
+	selected, err := readExternalOpenShell(withCA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.caPath != caFile {
+		t.Fatalf("the CA selection must be carried: %+v", selected)
+	}
+	caOnly := map[string]string{"OCC_DEVELOPMENT_OPENSHELL_CA_FILE": caFile}
+	if _, err := readExternalOpenShell(caOnly); err == nil {
+		t.Fatal("a CA selection without an endpoint must be rejected")
+	}
+}
+
+// testCertificate returns a minimal self-signed certificate the selection accepts as a
+// PEM bundle; the launcher only checks that the bundle parses, not who signed it.
+func testCertificate(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
 }
 
 func TestOpenShellExternalAddressesTranslateIPLiteralEndpoints(t *testing.T) {
@@ -163,6 +229,7 @@ func TestExternalOpenShellInstallationAuthenticatesWithOidc(t *testing.T) {
 		"clientId: occ-openshell",
 		"clientSecretPath: " + openShellClientSecretContainerPath,
 		"endpoint: https://openshell-gateway.example.com:8443",
+		"rootCertificatePath: " + openShellExternalCAContainerPath,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("installation.yaml is missing %q", required)
