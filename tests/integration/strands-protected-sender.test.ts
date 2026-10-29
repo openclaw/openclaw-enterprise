@@ -1,36 +1,73 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { createServer } from "node:https";
-import { connect } from "node:net";
-import { connect as connectTls } from "node:tls";
 import { readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import {
+  launchStrandsSender,
+  sendThroughStrandsGateway,
+} from "../helpers/strands-sender-client.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const binary = process.env.OCC_TEST_STRANDS_SENDER_BINARY;
-const scenarios = [
-  "allow",
-  "SDK wire",
-  "withdraw",
-  "replace",
-  "lost reply",
-  "Box deny",
-  "authority unavailable",
-  "x-goog-api-key",
-  "x-amz-security-token",
-  "duplicate authorization",
-  "authorization",
-  "cookie",
-  "x-api-key",
-  "unknown header",
-] as const;
+const sensitiveValue = "untrusted-credential-must-not-be-classified";
+// OpenAI Node 7.5.0 responses.create header shape, including Undici transport metadata.
+// Keep this wire control runnable without installing the SDK in the workspace.
+const sdkHeaders =
+  [
+    "Authorization: Bearer oce-placeholder",
+    "Accept: application/json",
+    "User-Agent: OpenAI/JS 7.5.0",
+    "X-Stainless-Arch: x64",
+    "X-Stainless-Lang: js",
+    "X-Stainless-OS: Linux",
+    "X-Stainless-Package-Version: 7.5.0",
+    "X-Stainless-Retry-Count: 0",
+    "X-Stainless-Runtime: node",
+    "X-Stainless-Runtime-Version: v24.22.1",
+    "Accept-Encoding: gzip, deflate, br",
+    "Accept-Language: *",
+    "Sec-Fetch-Mode: cors",
+  ].join("\r\n") + "\r\n";
+
+type Scenario = {
+  name: string;
+  outcome: "allow" | "withhold" | "deny";
+  fault?: "withdraw" | "replace" | "lost reply" | "Box deny" | "authority unavailable";
+  sdkWire?: boolean;
+  untrustedHeader?: string;
+};
+const rejectedHeader = (name: string, untrustedHeader: string, sdkWire = true): Scenario => ({
+  name,
+  outcome: "deny",
+  sdkWire,
+  untrustedHeader,
+});
+const scenarios: readonly Scenario[] = [
+  { name: "allow", outcome: "allow" },
+  { name: "SDK wire", outcome: "allow", sdkWire: true },
+  { name: "withdraw", outcome: "deny", fault: "withdraw" },
+  { name: "replace", outcome: "withhold", fault: "replace" },
+  { name: "lost reply", outcome: "withhold", fault: "lost reply" },
+  { name: "Box deny", outcome: "deny", fault: "Box deny" },
+  { name: "authority unavailable", outcome: "deny", fault: "authority unavailable" },
+  rejectedHeader("x-goog-api-key", `x-goog-api-key: ${sensitiveValue}`),
+  rejectedHeader("x-amz-security-token", `x-amz-security-token: ${sensitiveValue}`),
+  rejectedHeader(
+    "duplicate authorization",
+    "Authorization: Bearer oce-placeholder\r\nauthorization: Bearer oce-placeholder",
+    false,
+  ),
+  rejectedHeader("authorization", `authorization: Bearer ${sensitiveValue}`, false),
+  rejectedHeader("cookie", `cookie: ${sensitiveValue}`),
+  rejectedHeader("x-api-key", `x-api-key: ${sensitiveValue}`),
+  rejectedHeader("unknown header", `x-unknown-client-field: ${sensitiveValue}`),
+];
 
 for (const scenario of scenarios) {
   test(
-    `Box terminal sender: ${scenario}`,
+    `Box terminal sender: ${scenario.name}`,
     {
       skip: binary ? false : "Build the reference sender and set OCC_TEST_STRANDS_SENDER_BINARY",
       timeout: 60000,
@@ -40,29 +77,20 @@ for (const scenario of scenarios) {
       let applicationBytes = 0;
       let accepted = 0;
       let resolutions = 0;
-      const sensitiveValue = "untrusted-credential-must-not-be-classified";
-      const sensitive = [
-        "x-goog-api-key",
-        "x-amz-security-token",
-        "duplicate authorization",
-        "authorization",
-        "cookie",
-        "x-api-key",
-        "unknown header",
-      ].includes(scenario);
+      const inspectSdk = scenario.outcome === "allow" && scenario.sdkWire;
       // The controlled origin counts decrypted bytes across every TLS connection.
       // Its lost-reply and replacement cases happen after a real request reaches it.
       const initialized = await staticEgressFixture(t, {
         resolutionFinished: async () => {
           resolutions++;
-          if (scenario === "withdraw") {
+          if (scenario.fault === "withdraw") {
             await fixture.revoke();
           }
         },
         providerServer: (options, handler) => {
           const server = createServer(options, (request, response) => {
             accepted++;
-            if (scenario === "SDK wire") {
+            if (inspectSdk) {
               assert.deepEqual(Object.keys(request.headers).sort(), [
                 "accept",
                 "authorization",
@@ -76,11 +104,11 @@ for (const scenario of scenarios) {
                 /oce-placeholder|OpenAI\/JS|stainless/,
               );
             }
-            if (scenario === "lost reply") {
+            if (scenario.fault === "lost reply") {
               request.resume();
               request.on("end", () => request.socket.destroy());
             } else {
-              if (scenario === "replace") {
+              if (scenario.fault === "replace") {
                 const evidence = Reflect.get(fixture.observed, "evidence") as {
                   instance_id: string;
                 };
@@ -107,7 +135,7 @@ for (const scenario of scenarios) {
       await writeFile(
         policy,
         `permit(principal, action == Box::Action::"net:connect", resource);
-      ${scenario === "Box deny" ? "forbid" : "permit"}(principal, action == Box::Action::"http:request", resource);`,
+      ${scenario.fault === "Box deny" ? "forbid" : "permit"}(principal, action == Box::Action::"http:request", resource);`,
       );
       const gatewayPath = join(directory, "gateway.json");
       await writeFile(
@@ -122,93 +150,29 @@ for (const scenario of scenarios) {
           dns: [["provider.example.test", "127.0.0.1"]],
         }),
       );
-      const child = spawn(resolve(binary!), [gatewayPath], { stdio: ["ignore", "pipe", "pipe"] });
-      let diagnostic = "";
-      child.stderr.on("data", (chunk) => {
-        diagnostic += chunk.toString();
-      });
-      t.after(async () => {
-        t.diagnostic(diagnostic);
-        if (child.exitCode === null && child.signalCode === null) {
-          const exited = once(child, "exit");
-          child.kill("SIGINT");
-          await exited;
-        }
-      });
-      const startup = await new Promise<{ port: number; ca: string }>((fulfill, reject) => {
-        let output = "";
-        child.on("error", reject);
-        child.once("exit", () => reject(new Error(`sender exited: ${diagnostic}`)));
-        child.stdout.on("data", (bytes) => {
-          output += bytes.toString();
-          if (output.includes("\n")) {
-            try {
-              fulfill(JSON.parse(output.split("\n")[0]!));
-            } catch (error) {
-              reject(error);
-            }
-          }
-        });
-      });
-      if (scenario === "authority unavailable") {
+      const gateway = await launchStrandsSender(t, binary!, gatewayPath);
+      if (scenario.fault === "authority unavailable") {
         fixture.authority.forceShutdown();
       }
       const before = fixture.secretReads;
-      const socket = connect(startup.port, "127.0.0.1");
-      await once(socket, "connect");
-      const connected = once(socket, "data");
-      socket.write(
-        `CONNECT provider.example.test:${providerPort} HTTP/1.1\r\nHost: provider.example.test:${providerPort}\r\n\r\n`,
-      );
-      assert.match((await connected)[0].toString(), /200/);
-      const tls = connectTls({
-        socket,
-        servername: "provider.example.test",
-        ca: await readFile(startup.ca),
-      });
-      t.after(() => tls.destroy());
-      await once(tls, "secureConnect");
       const body = JSON.stringify({ model: "fixture-model", input: "hello", store: false });
-      const response = new Promise<string>((fulfill, reject) => {
-        let output = "";
-        tls.on("data", (chunk) => {
-          output += chunk.toString();
-        });
-        tls.on("end", () => fulfill(output));
-        tls.on("error", reject);
-        tls.setTimeout(25000, () => tls.destroy(new Error("response timeout")));
-      });
-      const untrusted =
-        scenario === "duplicate authorization"
-          ? "Authorization: Bearer oce-placeholder\r\nauthorization: Bearer oce-placeholder\r\n"
-          : sensitive
-            ? `${scenario === "unknown header" ? "x-unknown-client-field" : scenario}: ${scenario === "authorization" ? "Bearer " : ""}${sensitiveValue}\r\n`
-            : "";
-      // OpenAI Node 7.5.0 responses.create header shape, including Undici transport metadata.
-      // Keep this wire control runnable without installing the SDK in the workspace.
-      const sdkHeaders =
-        scenario === "SDK wire" ||
-        (sensitive && scenario !== "authorization" && scenario !== "duplicate authorization")
-          ? "Authorization: Bearer oce-placeholder\r\nAccept: application/json\r\nUser-Agent: OpenAI/JS 7.5.0\r\nX-Stainless-Arch: x64\r\nX-Stainless-Lang: js\r\nX-Stainless-OS: Linux\r\nX-Stainless-Package-Version: 7.5.0\r\nX-Stainless-Retry-Count: 0\r\nX-Stainless-Runtime: node\r\nX-Stainless-Runtime-Version: v24.22.1\r\nAccept-Encoding: gzip, deflate, br\r\nAccept-Language: *\r\nSec-Fetch-Mode: cors\r\n"
-          : "";
-      tls.write(
-        `POST /v1/responses HTTP/1.1\r\nHost: provider.example.test:${providerPort}\r\n${sdkHeaders}${untrusted}Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
-      );
-      const received = await response;
+      const headers = `${scenario.sdkWire ? sdkHeaders : ""}${scenario.untrustedHeader ? `${scenario.untrustedHeader}\r\n` : ""}`;
+      const received = await sendThroughStrandsGateway(t, gateway, providerPort, headers, body);
+      const diagnostic = gateway.diagnostics();
       assert.doesNotMatch(received, /synthetic-key-initial|untrusted-placeholder/);
-      if (sensitive) {
+      if (scenario.untrustedHeader) {
         assert.equal(resolutions, 0, "unsupported headers must never enter OCE classification");
         assert.ok("auditSink" in fixture);
         assert.doesNotMatch(JSON.stringify(fixture.auditSink.events), new RegExp(sensitiveValue));
         assert.doesNotMatch(diagnostic, new RegExp(sensitiveValue));
       }
-      if (scenario === "allow" || scenario === "SDK wire") {
+      if (scenario.outcome === "allow") {
         assert.equal(accepted, 1, diagnostic);
         assert.ok(applicationBytes > 0);
         assert.match(received, /fixture answer/, diagnostic);
         assert.equal(fixture.secretReads, before + 1);
         assert.equal(fixture.providerRequests[0].authorization, "Bearer synthetic-key-initial");
-        if (scenario === "SDK wire") {
+        if (inspectSdk) {
           assert.equal(resolutions, 1);
           assert.ok("auditSink" in fixture);
           assert.doesNotMatch(
@@ -216,16 +180,14 @@ for (const scenario of scenarios) {
             /oce-placeholder|OpenAI\/JS|stainless/,
           );
           assert.doesNotMatch(diagnostic, /oce-placeholder|OpenAI\/JS|stainless/);
-          const exited = once(child, "exit");
-          child.kill("SIGINT");
-          await exited;
+          await gateway.stop();
           assert.ok(
             !(await readFile(join(directory, "history.redb"))).includes(
               Buffer.from("oce-placeholder"),
             ),
           );
         }
-      } else if (scenario === "replace" || scenario === "lost reply") {
+      } else if (scenario.outcome === "withhold") {
         assert.equal(accepted, 1, diagnostic);
         assert.ok(applicationBytes > 0);
         assert.doesNotMatch(received, /fixture answer/);
@@ -234,7 +196,7 @@ for (const scenario of scenarios) {
         assert.equal(accepted, 0, diagnostic);
         assert.equal(applicationBytes, 0, diagnostic);
         assert.doesNotMatch(received, /fixture answer/);
-        assert.equal(fixture.secretReads, before + (scenario === "withdraw" ? 1 : 0));
+        assert.equal(fixture.secretReads, before + (scenario.fault === "withdraw" ? 1 : 0));
       }
     },
   );
