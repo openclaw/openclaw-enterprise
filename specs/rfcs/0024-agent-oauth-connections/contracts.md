@@ -8,59 +8,58 @@ This companion defines the Driver contract changes, failure behavior, and requir
 outcomes for [RFC-0024](index.md). The RFC owns the decision, connection
 templates, consent rules, and personal-Agent boundary.
 
-## Credential Refresh Driver
+For either template type, the source becomes `ready` only after the OCE Token Service
+durably accepts the grant and first access token. If the handoff outcome is unknown,
+the source stays `registering` and OCC never replays the code. The Token Service keeps
+the grant in encrypted custody, serializes background refresh per source, and commits
+each access token with any replacement refresh token. OpenShell presents an eligible
+prepared token for the deployed binding or refuses the request. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
-`CredentialRefreshDriver` gains these optional methods beside the existing device
-methods. A Driver that omits them offers no browser connections.
+## MCP authorization
+
+OCE uses the official TypeScript MCP client to discover the protected resource and
+authorization server for the MCP URL an administrator enters. Discovery runs under
+the Installation's management egress policy and needs no client credentials. The
+administrator supplies a preregistered client or approves Dynamic Client Registration
+(DCR) at the advertised `registration_endpoint`. If the issuer omits that endpoint
+or refuses registration, Console asks for a preregistered client.
+
+On save, OCE rechecks the metadata and pins the server URL, resource, issuer,
+endpoints, client registration, and at least one approved scope from the challenge
+or resource metadata. Client ID Metadata Documents (CIMD) are deferred pending a
+stable HTTPS document that the issuer can fetch with the installation's callback URI.
+
+At **Connect**, the owner selects scopes in Console. Before creating the source,
+OCC checks that the selection is a nonempty subset of the template version's
+approved scopes and includes every required scope. OCE uses the SDK to start
+authorization with those scopes, the pinned resource, a random `state`, and a
+PKCE challenge. The owner grants consent at the issuer.
+At callback, OCE checks the session, state, and issuer, then exchanges the code
+once using the verifier, pinned client registration, token endpoint, and resource.
+
+OCE checks the granted scopes against the owner's selection and hands the refresh
+grant and first access token to the Token Service. The handoff identifies the
+source, pinned client registration, issuer, token endpoint, resource, and selected
+scopes. The Token Service uses those
+values for refresh and checks each renewed grant before use. Changed endpoints
+require a new version and consent. The worker exposes the tools the server lists
+for the connection (`tools/list`). [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
+
+## Credential Refresh Driver
 
 ### Browser authorization
 
-OCC owns the connection session and calls the Driver's browser authorization
-methods for setup and code exchange. After exchange, the OCE Token Service
-keeps the grant in encrypted custody and refreshes access tokens in the
-background. It serializes refresh per source and atomically commits the access token
-with any replacement refresh token. OpenShell presents an eligible, prepared
-token for the deployed binding or refuses the request. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
+For a template with configured OAuth endpoints, OCC owns the session and calls
+the Driver's optional browser methods.
 
-- `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri, selectedScopes? })`
-  returns `{ authorizationUrl, privateState }`. MCP requires the owner's validated
-  `selectedScopes`. Configured OAuth uses the version's fixed scopes. The Driver
-  creates the PKCE verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
-  `privateState` is opaque to OCC.
+- `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri })`
+  returns `{ authorizationUrl, privateState }`. The Driver uses the version's fixed
+  scopes and creates the PKCE verifier, a random `state`, and a nonce for
+  `accountIdentity: oidc`. `privateState` is opaque to OCC.
 - `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
   `state` and exchanges the code using the verifier and pinned client registration.
-  The Driver hands the validated refresh grant and first usable access token to
-  the Token Service, bound to the source and its approved OAuth context. It returns
-  `ready` only after the Token Service durably accepts them. An uncertain handoff
-  leaves the source `registering` and never replays the code. OCC receives status
-  and an optional verified `accountEmail`.
-
-### MCP authorization
-
-The administrator enters the MCP server URL. OCE uses the official TypeScript
-MCP client to discover the protected resource and its authorization server under
-the Installation's management egress policy. The administrator supplies a
-preregistered client ID and any required secret, or approves Dynamic Client
-Registration (DCR) at the issuer's advertised `registration_endpoint`. If the
-issuer omits that endpoint or refuses registration, Console asks for a
-preregistered client.
-
-Client ID Metadata Documents (CIMD) are deferred. Supporting CIMD would require
-a stable HTTPS document the issuer can fetch, listing the installation's exact
-callback URI.
-
-At setup, the template version records the resolved client, server URL, resource,
-issuer, approved endpoints, and at least one scope approved from the challenge
-and resource metadata.
-
-At **Connect**, the owner chooses from the entire approved scope list.
-OCC validates the nonempty selection and required scopes before creating a
-source. OCE checks the requested scopes, validates the callback issuer, and
-verifies the granted scopes at exchange. The Token Service refreshes with the
-same pinned client, resource, and token endpoint. It checks each renewed grant
-against the connection's selected scopes before use.
-Changed endpoints require a new version and consent. The deployed worker exposes
-every tool the server lists for that connection (`tools/list`). [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
+  The Driver hands the validated grant and first access token to the Token Service.
+  OCC receives status and an optional verified `accountEmail`.
 
 ### Client registrations
 
@@ -81,9 +80,10 @@ within an authorization server. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/
 
 Each connection template version and credential source records its
 `clientRegistrationId`. The Driver keeps referenced client secret versions
-available across replicas and restarts. The Token Service can use the exact
-registration and secret version bound to the source for refresh. OCC stores
-the registration reference. Client secrets and refresh grants stay out of the
+available across replicas and restarts. For a confidential MCP client, OCE must
+authenticate the code exchange with the pinned registration and secret version.
+The Token Service uses the same pinned version for refresh. OCC stores the
+registration reference. Client secrets and refresh grants stay out of the
 worker's OpenShell attachment.
 
 ### OIDC account identity
@@ -169,7 +169,7 @@ installation cannot enforce the executable restriction recorded at consent.
 | Consent denied, popup closed, or session expired            | Pending source deleted                           | Connect again                                  |
 | `state` mismatch, reuse, or another user's session          | `400`; no exchange                               | The owner connects again                       |
 | Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`              | Administrator corrects the connection template |
-| Timeout after the exchange started                          | Source stays `registering`                       | Delete and reconnect; OCC never replays a code |
+| Exchange or grant handoff outcome unknown                   | Source stays `registering`                       | Delete and reconnect; OCC never replays a code |
 | Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`     | **Reconnect** and redeploy                     |
 | Driver unavailable before source creation                   | `503`; no source created                         | Retry                                          |
 | OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                      | Administrator corrects `issuer` or URLs        |
@@ -199,10 +199,15 @@ issue seven-day refresh tokens.
   the new access token. With no eligible prepared token, verify that OpenShell
   refuses the request without contacting the issuer.
 - **MCP.** Verify supplied clients, successful DCR, and the prompt for a supplied
-  client when DCR is unavailable or refused. On a dedicated worker, verify a Console tool call uses the selected scopes and that
-  an unselected scope stays unavailable after refresh. Bind two different MCP
-  servers, including one on a nondefault port, and verify each placeholder works
-  only at its own endpoint.
+  client when DCR is unavailable or refused. With the Driver's browser methods
+  unavailable, verify OCE discovers metadata, redirects the owner for consent,
+  and exchanges the code with PKCE. Verify the Token Service then receives the
+  grant for the pinned resource and selected scopes.
+  Withhold handoff confirmation and verify the source stays `registering` and the
+  issuer sees only one code exchange. On a dedicated worker, verify a tool call
+  uses the selected scopes and an unselected scope stays unavailable after refresh.
+  Bind two MCP servers, one on a nondefault port, and verify each placeholder
+  works only at its own endpoint.
 - **Client registrations.** Two connection templates with the same `clientId` in
   two Keycloak realms keep independent secrets: rotating one leaves the other's
   sources refreshing.

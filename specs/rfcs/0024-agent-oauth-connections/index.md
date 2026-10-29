@@ -8,7 +8,7 @@ author: mrunalp
 
 - **ID:** RFC-0024
 - **Created:** 2026-10-20
-- **Last updated:** 2026-10-23
+- **Last updated:** 2026-10-29
 - **RFC PR:** [#3068](https://github.com/openclaw/openclaw-enterprise/pull/3068)
 - **Implementation plan:** Not yet written; the next step is `$spec plan RFC-0024`
 - **Companion:** [Driver contracts, failure, and verification](contracts.md)
@@ -27,11 +27,11 @@ Agent. The Agent's tool, such as `gog`, can then read that user's Gmail. Only th
 user can use the Agent.
 
 Installation administrators define connections as Installation-wide **connection
-templates**, which Presets can reference. OCE handles client setup, consent,
-and the authorization-code exchange. For MCP it uses the official TypeScript
-MCP client. After exchange, the OCE Token Service keeps the grant and refreshes
-access tokens in the background. OpenShell presents the prepared token at the
-approved endpoint. The deployed tool receives only a placeholder.
+templates**, which Presets can reference. For MCP templates, OCE uses the official
+TypeScript MCP client to discover the server's OAuth settings, start consent, and
+exchange the code. OCE hands the authorized grant to the Token Service, which
+keeps it and refreshes access tokens in the background. OpenShell presents the
+prepared token at the approved endpoint. The deployed tool receives only a placeholder.
 OCE core contains no provider-specific endpoints, scopes, or binaries.
 
 ## Motivation
@@ -96,7 +96,7 @@ Namespace.
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `displayName`                       | The label on the **Connect** button and consent warning.                                                                                        |
 | `issuer`                            | The authorization server's identifier, an exact `https` URL. It scopes the client ID and is the expected `iss` for `accountIdentity: oidc`.     |
-| `authorizationUrl`, `tokenUrl`      | Where OCC sends the user, and where the Driver exchanges the code. Exact `https` URLs.                                                          |
+| `authorizationUrl`, `tokenUrl`      | Exact `https` URLs for browser consent and the authorization-code exchange.                                                                     |
 | `clientId`, `clientSecret`          | For a preregistered client, its ID and any required secret. DCR supplies these for an MCP client registered at setup.                           |
 | `scopes`, `authorizationParameters` | Fixed scopes for configured OAuth. MCP owners pick a subset. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
 | `endpoint`                          | Credential destination (`host`, `port`, `path`). `access` is `read-only` or `full` for `oauth2`, and `full` for `mcp_oauth`.                    |
@@ -130,8 +130,9 @@ An edit never changes what an existing connection does. Changing any field excep
 `displayName` creates a new connection template version. The credential source
 records the version and the values its owner approved: issuer and its URLs, client
 registration, this connection's scopes, authorization parameters, endpoint and
-access, variable, binary, and OIDC settings. OCC and both Drivers use only that
-record, so an administrator cannot redirect a user's refresh grant or credential.
+access, variable, binary, and OIDC settings. These pinned values govern code
+exchange, token refresh, and credential delivery, so later edits cannot redirect
+a user's grant or credential.
 Source configuration is already immutable.
 
 After a new version, existing connections keep working and Agent details show
@@ -199,9 +200,9 @@ Preset stays valid.
 These changes require review of this RFC before implementation. The
 [companion](contracts.md) defines their inputs, results, and failure behavior.
 
-1. **`CredentialRefreshDriver`** exposes browser authorization, client registration,
-   and OIDC provider verification to OCC. After exchange, the Driver hands the
-   source's grant and first access token to the OCE Token Service for refresh.
+1. **`CredentialRefreshDriver`** manages client registrations and OIDC provider
+   verification. Its browser authorization methods handle configured OAuth templates.
+   For MCP, OCE runs the SDK flow and hands the grant directly to the Token Service.
 2. **Protected egress** uses the [RFC-0023 contract](../0023-egress-proxy-credential-lifecycle/contracts.md).
    The sender must enforce the consented destination and HTTP methods. Admission
    must also establish the promised executable restriction before the Agent can
@@ -243,23 +244,24 @@ sequenceDiagram
   end
 ```
 
-_The diagram shows a template with configured OAuth endpoints. MCP adds scope
-selection before the redirect and uses the
-[MCP authorization contract](contracts.md#mcp-authorization)._
+_The diagram shows configured OAuth. For MCP, OCE handles the redirect, code
+exchange, and grant handoff through its [MCP authorization flow](contracts.md#mcp-authorization)._
 
 1. For MCP, the owner selects scopes in Console before starting OAuth.
    `POST /namespaces/:namespaceId/agents/:agentId/connections` takes the template
    ID and, for MCP, the displayed template version and `selectedScopes`. OCC
    checks template `use`, confirms the caller owns the Agent, and validates the
-   selection. It then registers an empty source as `registering` and calls
-   `startBrowserAuthorization`. It stores `privateState` in a Namespace Secret, as
-   device login does, and returns the source ID and `authorizationUrl`.
+   selection. It creates a source in `registering`, starts MCP authorization with the SDK
+   or configured OAuth with `startBrowserAuthorization`, and stores private session
+   state in a Namespace Secret. It returns the source ID and `authorizationUrl`.
 2. The console shows the destination and scopes the tool is requesting, then
    opens the consent URL in a popup. When a browser blocks popups, it redirects
    the page.
 3. `GET /oauth/callback` requires the session that started the connection. OCC
    finds the session by a hash of `state`, rejects reuse or an age above ten
-   minutes, and calls `completeBrowserAuthorization` once. The response sets
+   minutes, and consumes the callback once. For MCP, OCE exchanges the code and
+   hands the validated grant and first access token to the Token Service. For
+   configured OAuth, OCC calls `completeBrowserAuthorization`. The response sets
    `Referrer-Policy: no-referrer` and redirects without the query string. OCC
    excludes the code from logs and audit.
 4. On `ready`, OCC adds the source to the Agent's `credentialSources` and grants
@@ -287,9 +289,8 @@ integration, real-cluster, and live-provider outcomes.
 - **Connection settings inside Presets.** A Preset copy is editable by the Agent
   creator, which would let a creator change scopes, endpoints, or the OAuth client.
   It would also copy client secrets into every Namespace that holds the Preset.
-- **OCC exchanges the code and stores the refresh token as a Secret.** This needs no
-  new Refresh Driver methods, but it puts a rotating refresh token in OCC storage
-  and inherits the `issuerRotated` update hazards.
+- **Store the refresh token in a Namespace Secret.** Keeping a rotating grant in
+  OCC storage would inherit the `issuerRotated` update hazards.
 - **Installation-owned Secrets for the OAuth client secret.** The Driver already
   manages the client registration. Adding an Installation Secret would introduce
   a new Secret scope solely for this feature.
