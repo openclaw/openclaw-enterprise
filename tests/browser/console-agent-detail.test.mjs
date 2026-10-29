@@ -2973,7 +2973,8 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
       { exact: true },
     )
     .waitFor();
-  await page.getByText(`Request ID: ${requestId}`, { exact: true }).first().waitFor();
+  await page.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+  assert.equal((await page.locator("body").innerText()).split(requestId).length - 1, 1);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   const html = await page.content();
   for (const value of [

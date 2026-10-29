@@ -2436,7 +2436,7 @@ async function loadPage({
           onProtectedReadDenied(error, receipt) {
             if (lifetime.isCurrent(viewState.active)) {
               agentContext.drafts.clear();
-              showAgentReadFailure(current, namespaceId, error).append(receipt);
+              showAgentReadFailure(current, namespaceId, error, receipt);
             }
           },
         },
@@ -2725,7 +2725,7 @@ async function locateAgentNamespace(agentId, excluded) {
   return { namespaceId: null, complete };
 }
 
-function showAgentReadFailure(current, selectedNamespace, error) {
+function showAgentReadFailure(current, selectedNamespace, error, receipt) {
   resetReads();
   if ([400, 403, 404].includes(error.status)) {
     clearRetainedViewsForNamespace(selectedNamespace);
@@ -2744,8 +2744,11 @@ function showAgentReadFailure(current, selectedNamespace, error) {
     // A permission refusal offers the header's Refresh, not a Retry that repeats it.
     error.status === 403 ? undefined : "Retry",
     error.status === 403 ? undefined : () => void loadPage(),
-    error.requestId,
+    receipt ? undefined : error.requestId,
   );
+  if (receipt) {
+    shell.view.append(receipt);
+  }
   if (error.status === 403) {
     shell.refresh.disabled = false;
   }

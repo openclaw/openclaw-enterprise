@@ -657,7 +657,8 @@ for (const c of readRefusals) {
     const requestId = (await (await response).json()).meta.requestId;
     await page.getByText(SAVE_READ_REFUSED, { exact: true }).waitFor();
     assert.ok(requestId);
-    await page.getByText(`Request ID: ${requestId}`, { exact: true }).first().waitFor();
+    await page.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+    assert.equal((await page.locator("body").innerText()).split(requestId).length - 1, 1);
     assert.deepEqual(nonAuthWriteRequests(requests), []);
     // A truthful receipt survives, but the denied preflight must retire all protected editors.
     const absent = async () => {
@@ -675,7 +676,23 @@ for (const c of readRefusals) {
     await absent();
     assert.equal((await page.content()).includes(agent.name), false);
     // Fresh admission and history must not reattach the discarded editor or its draft.
+    const passiveRefusal =
+      c.tab === "credentials"
+        ? page.waitForResponse(
+            (response) =>
+              response.url().endsWith(`/agents/${agent.id}`) && response.status() === 403,
+          )
+        : null;
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    if (passiveRefusal) {
+      const passiveId = (await (await passiveRefusal).json()).meta.requestId;
+      await page
+        .getByText(`Request ID: ${passiveId}`, { exact: true })
+        .waitFor({ state: "attached" });
+      await page.getByText("Request details", { exact: true }).click();
+      await page.getByText(`Request ID: ${passiveId}`, { exact: true }).waitFor();
+      assert.equal((await page.locator("body").innerText()).split(passiveId).length - 1, 1);
+    }
     await page
       .getByRole("heading", {
         name: c.tab === "credentials" ? "Access denied" : "Configuration unavailable",
@@ -1207,6 +1224,9 @@ for (const { resource, status } of [
       )
       .waitFor();
     if (denial) {
+      const requestId = (await (await response).json()).meta.requestId;
+      assert.ok(requestId);
+      assert.equal((await page.locator("body").innerText()).split(requestId).length - 1, 1);
       const html = await page.content();
       for (const secret of [original, replacement, bot]) {
         assert.equal(html.includes(secret.id), false);
