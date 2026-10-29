@@ -329,6 +329,19 @@ export function validateConfigurationSettings(
 }
 
 /**
+ * The rules above that Agent save and deploy admission run again on a stored Configuration, so
+ * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
+ * 2767). The upgrade helper's startup preflight (scripts/upgrade-startup-preflight.mjs) runs it
+ * from the selected controller image on each Agent the upgrade will deploy, before any OCC
+ * writer stops (finding 2809).
+ */
+export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
+  validateWorkspaceBootstrapSettings(values);
+  refuseRetiredOpenClawSettings(values);
+  refuseOpenClawSandbox(values);
+}
+
+/**
  * A literal gateway.auth.password. The bundled Configuration Drivers' credential rules
  * (validateModelCredentialReferences) run it again on every write and at deployment, which
  * refuses a stored document that predates the rule.

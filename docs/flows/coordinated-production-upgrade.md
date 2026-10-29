@@ -115,6 +115,16 @@ Each Pod checks the stored Installation name from `occ installation get` with
 the image's `isName`, as the controller does after reading the database
 (`INSTALLATION_NAME_INVALID`); an image without the rule skips it.
 
+A runtime upgrade reads each recorded Agent's draft (`occ agent get`, then
+`occ configuration get` for its Configuration) into private evidence. The helper adds them,
+gzipped, to the temporary Secret, and only the API Pod mounts them. That Pod runs the
+image's `refuseStoredConfigurationSettings`
+(`packages/occ/src/configuration-settings.ts`), which Agent save and deploy admission
+run on a stored Configuration. A refused draft, such as one that keeps a setting the
+image's OpenClaw retired, stops preparation with each Agent and OCC's deploy message.
+An image without the function, or drafts too large for the Secret, skip the check with
+a warning; deploy admission still refuses them after the controller moves.
+
 Experimental two-cluster Pods also run
 `KubernetesComputeDriver.verifyExecutionTenantGrants` for their component; startup
 does not. Where each Pod's identity holds the release-era grant in an execution
@@ -331,6 +341,7 @@ Agents or Secrets.
 
 ## Changelog
 
+- 2026-10-29: Check recorded Agent drafts with the selected image's deploy rules before writers stop. (fix-2809-2810)
 - 2026-10-28 18:11: Check Helm status before reconciliation reads. (authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a - 541cc3f43bdfb09615ecee0cfb79c533e6a0b56c)
 - 2026-10-28 21:01: Check API themes before writer quiescence. (authoring-run/bf262f39-fa9d-4e70-94e1-e2fc516234e9 - 304fcfb169bc8403794e8562a08b1e3ee4cc23ac)
 
