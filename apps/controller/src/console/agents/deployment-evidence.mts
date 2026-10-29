@@ -375,7 +375,26 @@ export function createDeploymentStatusPanel(
     }, DEPLOYMENT_POLL_MS);
   }
 
-  async function loadStatus(refreshAgent = false, poll = false) {
+  function finishRecord(previousStatus: Deployment["status"] | null, overviewRead = false) {
+    if (refreshQueued) {
+      refreshQueued = false;
+      void loadStatus(true);
+    } else if (
+      !overviewRead &&
+      deploymentPending(previousStatus) &&
+      !error &&
+      record &&
+      !deploymentPending(record.status)
+    ) {
+      // Either reader can discover completion. Reuse that verified record while
+      // refreshing current-version information, without another deployment GET.
+      void loadStatus(true, true, record);
+    } else {
+      schedulePoll();
+    }
+  }
+
+  async function loadStatus(refreshAgent = false, poll = false, verifiedRecord?: Deployment) {
     if (loading || !context.isCurrent()) {
       return;
     }
@@ -394,7 +413,7 @@ export function createDeploymentStatusPanel(
     render();
     try {
       const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
-        readDeployment(context, path, revision.id),
+        verifiedRecord ?? readDeployment(context, path, revision.id),
         refreshAgent ? (context.request(path) as Promise<AgentReadWire>) : null,
         refreshAgent ? readRevisionPage(context.request, path) : null,
       ]);
@@ -464,21 +483,7 @@ export function createDeploymentStatusPanel(
       if (context.isCurrent() && started === generation) {
         loading = false;
         publish(poll);
-        if (
-          refreshQueued ||
-          (poll &&
-            deploymentPending(previousStatus) &&
-            !error &&
-            !deploymentPending(record?.status))
-        ) {
-          // A recorded result can change the current version; reread it once.
-          // Only a queued user refresh makes this full reread visible as manual work.
-          const quiet = !refreshQueued;
-          refreshQueued = false;
-          void loadStatus(true, quiet);
-        } else {
-          schedulePoll();
-        }
+        finishRecord(previousStatus, refreshAgent);
       }
     }
   }
@@ -651,7 +656,6 @@ export function createDeploymentStatusPanel(
         { className: "muted" },
         `Most recent visible deployment · v${revision.revision}`,
       ),
-      renderStatus(),
       ...(record
         ? [
             element(
@@ -661,6 +665,7 @@ export function createDeploymentStatusPanel(
             ),
           ]
         : []),
+      renderStatus(),
       ...(overviewUnavailable
         ? [
             statusBlock(
@@ -741,19 +746,14 @@ export function createDeploymentStatusPanel(
       if (!context.isCurrent() || next.deploymentId !== revision.id) {
         return;
       }
+      const previousStatus = lastRecord?.status ?? null;
       generation += 1;
-      const queued = refreshQueued;
-      refreshQueued = false;
       loading = false;
       record = next;
       lastRecord = next;
       error = null;
       publish(true);
-      if (queued) {
-        void loadStatus(true);
-      } else {
-        schedulePoll();
-      }
+      finishRecord(previousStatus);
     },
     rerender() {
       if (record?.error) {

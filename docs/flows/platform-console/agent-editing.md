@@ -8,9 +8,8 @@ last_updated_session: authoring-run/26ccef3f-405c-4275-bef6-7c1722ae15c8
 
 ## Overview
 
-Trace Agent edits and credentials. See the
-[parent flow](../platform-console.md); [workspace files](agent-workspace-files.md) and
-[stop and deletion](agent-stop-and-deletion.md) have their own traces.
+Trace Agent edits. Related flows: [parent](../platform-console.md),
+[workspace files](agent-workspace-files.md), [stop and deletion](agent-stop-and-deletion.md).
 
 ## Entry Points
 
@@ -65,8 +64,7 @@ The page reads Agent, readable versions, and current Configuration
 `getAgentForBrowsing`, and `getRevisionForBrowsing` for browsing.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` turns
 payload-decode failures into metadata plus `configurationReadError`; queries
-and operational reads remain strict. Drafts and versions decode independently.
-Navigation stays; unreadable drafts refuse editing and deployment without defaults.
+and operational reads remain strict. Unreadable drafts refuse editing and deployment without defaults.
 **Selected for service** uses `activeRevisionId`; **Viewing version** selects a draft
 or read-only version without activation. **Load older versions** appends pages,
 retains selection, and focuses the picker after the last page. The picker marks
@@ -77,15 +75,16 @@ superseded/stopped outcomes.
 (`agents/deployment-evidence.mts`); polling continues across tabs.
 `detail.mts:renderTab` offers **Retry** for transient snapshot errors.
 Completion and late reads after `FIRST_ACTIVITY_WAIT_MS` start folded unless
-cleanup, warnings, or overview errors need attention. Pending work and errors
-remain visible outside Deployment; overview errors preserve recorded outcomes.
+cleanup, warnings, or overview errors need attention. Pending work/errors
+remain visible across tabs; overview errors preserve outcomes.
 
 `createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` until completion/refusal.
 Transient errors retain progress; initial errors permit fallback. `invalidate`/`fail`
 revoke matching cached and pending reads. `onFreshRecord` shares fresh
 GETs with current matching activity; `show` never republishes. Refusals override
 intervening successes. Pending polls preserve disclosure; refusals open it.
-Terminal polls reread record/Agent/revisions. **Refresh deployment** queues one reread;
+Either reader’s terminal transition rereads Agent/revisions, discarding older overview work.
+**Refresh deployment** queues one reread;
 **Refresh record** preserves focus and ignores repeats. Error space protects
 diagnostics; matching errors share one alert.
 
@@ -340,6 +339,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 11:40: Share terminal overview refresh. (terminal-transition - 4f6e05487f336db326b46bd87fb3100ad99b660d)
 
 - 2026-10-29 11:30: Share successful record reads. (same-record-recovery - aaa139e48b1ec5a56b7196da984b213df8fe5511)
 

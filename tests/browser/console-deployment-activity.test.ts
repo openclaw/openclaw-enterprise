@@ -129,6 +129,99 @@ async function deploymentFixture(t: TestContext) {
   return { fixture, namespace, agent, revisionId, url, control, unavailableDuring };
 }
 
+for (const source of ["selected", "automatic", "overlapping refresh"] as const) {
+  test(
+    `terminal ${source} record refreshes current version once`,
+    { timeout: 30_000 },
+    async (t) => {
+      const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+      const member = await fixture.createNamespaceMember(
+        "terminal-reader",
+        namespace.id,
+        AGENT_READ,
+      );
+      const { page } = await newPage(t, fixture);
+      await trackSettledFetches(page);
+      const agentUrl = url.split("/deployments/")[0]!;
+      const counts = { record: 0, agent: 0, revisions: 0 };
+      page.on("request", (request) => {
+        if (request.method() !== "GET") {
+          return;
+        }
+        if (request.url() === url) {
+          counts.record++;
+        } else if (request.url() === agentUrl) {
+          counts.agent++;
+        } else if (request.url().split("?")[0] === `${agentUrl}/revisions`) {
+          counts.revisions++;
+        }
+      });
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, revisionId, "deployment"),
+        member.credentials,
+      );
+      const card = page.locator(".version-deployment-record");
+      const activity = page.getByRole("region", { name: "Deployment activity" });
+      await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+      await waitForIdleFetches(page);
+      assert.match(await page.locator("main").innerText(), /Selected for service\nNone/);
+      counts.record = counts.agent = counts.revisions = 0;
+      const route = page.url();
+      const refresh = card.getByRole("button", { name: "Refresh record", exact: true });
+      const release = Promise.withResolvers<void>();
+      if (source === "overlapping refresh") {
+        const ready = Promise.withResolvers<void>();
+        let held = false;
+        await page.route(agentUrl, async (request) => {
+          if (held) {
+            await request.continue();
+            return;
+          }
+          held = true;
+          const response = await request.fetch();
+          assert.equal(response.status(), 200);
+          assert.equal((await response.json()).data.activeRevisionId, undefined);
+          ready.resolve();
+          await release.promise;
+          await request.fulfill({ response });
+        });
+        // The full refresh already owns an overview read. Its captured old Agent response
+        // must be discarded, then one fresh pair must establish the new current version.
+        await activity.getByRole("button", { name: "Refresh deployment" }).click();
+        await ready.promise;
+      }
+      // Use the real state transaction for current-version selection. Only worker
+      // progress is projected: this fixture does not execute a Compute Driver.
+      await fixture.activateRevision(namespace.id, agent.id, revisionId, undefined);
+      control.succeeded = true;
+      if (source !== "automatic") {
+        await refresh.press("Enter");
+      }
+      await card.getByText("Recorded outcome: Completed", { exact: true }).waitFor();
+      release.resolve();
+      await page
+        .getByText("v1 remains selected for service. Browsing does not deploy or roll back.", {
+          exact: true,
+        })
+        .waitFor();
+      await waitForIdleFetches(page);
+      assert.match(await page.locator("main").innerText(), /Selected for service\nv1/);
+      assert.match(await activity.innerText(), /Recorded status: Completed/);
+      assert.equal(page.url(), route);
+      if (source !== "automatic") {
+        assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+      }
+      assert.deepEqual(counts, {
+        record: source === "overlapping refresh" ? 2 : 1,
+        agent: source === "overlapping refresh" ? 2 : 1,
+        revisions: source === "overlapping refresh" ? 2 : 1,
+      });
+    },
+  );
+}
+
 for (const viewport of [
   { width: 1440, height: 1000 },
   { width: 390, height: 844 },
