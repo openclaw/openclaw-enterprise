@@ -39,16 +39,18 @@ test("Namespace deletion reports authorized blockers through the Agent workflow 
     configurationIds.add((await fixture.createConfiguration(namespace.id)).id);
   }
   // Finding 2724: Namespace delete does not grant reads of its contents. The conflict counts
-  // the remaining resources but names none of them, in the list or in the message.
+  // the remaining resources (the Agent's Secret too) but names none of them, in the list or
+  // in the message.
   const unreadable = await fixture.request("DELETE", path, { session });
   assertApiError(unreadable, 409, "NAMESPACE_NOT_EMPTY");
   assert.deepEqual(unreadable.body.error.remainingResources, [
     { kind: "Agents", count: 1, ids: [] },
     { kind: "Configurations", count: 22, ids: [] },
+    { kind: "Secrets", count: 1, ids: [] },
   ]);
   assert.equal(
     unreadable.body.error.message,
-    "The requested Namespace is not empty. It still contains: Agents (1), Configurations (22).",
+    "The requested Namespace is not empty. It still contains: Agents (1), Configurations (22), Secrets (1).",
   );
 
   // With read grants the same conflict names the IDs, up to 20 per kind.
