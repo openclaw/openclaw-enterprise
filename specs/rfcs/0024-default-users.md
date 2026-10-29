@@ -4,7 +4,7 @@ implementation_status: Not implemented
 author: mrunalp
 ---
 
-# Proposal: Map identity provider groups to the Default User Role so users own their Namespaces
+# Proposal: Default users sign in through identity provider mappings and own their Namespaces
 
 - **ID:** RFC-0024 (provisional; renumber before merge)
 - **Created:** 2026-10-29
