@@ -2620,13 +2620,19 @@ select:not([multiple])[size="1"] {
   padding: 0;
   color: var(--muted);
 }
-.resource-row-actions .icon-button:not(:disabled):hover {
+.resource-row-actions .icon-button:not(:disabled, [aria-disabled="true"]):hover {
   border-color: var(--danger);
   background: var(--danger-subtle);
   color: var(--danger);
 }
 .resource-row-actions .icon-button:disabled {
   cursor: not-allowed;
+}
+/* A refused delete (the trash icon or Request deletion again) stays focusable so its reason is
+   reachable (finding D788); it looks disabled. */
+.resource-row-actions button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 .action-icon {
   width: 16px;
@@ -3182,6 +3188,21 @@ select:not([multiple])[size="1"] {
 }
 .credential-status-list dd {
   margin: 0;
+}
+/* A status such as "Bound · not read by the Slack settings · Agent access not confirmed" is wider
+   than a phone's value column, so it wraps inside the column rather than widening the page
+   (finding 2852). */
+.credential-status-list .badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* Channel Secrets also lists environment keys, which can outgrow the label column. */
+.channel-secrets .credential-status-list {
+  grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+}
+.channel-secrets .credential-status-list dt {
+  max-width: 20rem;
+  overflow-wrap: anywhere;
 }
 .credential-actions {
   justify-content: flex-start;

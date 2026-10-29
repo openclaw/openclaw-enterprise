@@ -7,6 +7,8 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 import type { Restriction } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   AGENT_READ,
@@ -21,6 +23,8 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   waitForEnabled,
+  selectSecret,
+  waitForInputValue,
   grantMember,
   grantStaleConfigurationUpdate,
   revokeMemberGrant,
@@ -614,23 +618,113 @@ for (const c of readRefusals) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace(`Read ${c.tab}`, { ready: true });
-    const agent = await fixture.createAgent(namespace.id, `Read ${c.tab}`, nativeValues("read"));
+    const secret = await fixture.createSecret(
+      namespace.id,
+      "Protected harness association",
+      "synthetic-value",
+    );
+    const marker = "protected-saved-document-marker";
+    const agent = await fixture.createAgent(
+      namespace.id,
+      `Protected ${c.tab} Agent title`,
+      nativeValues(marker),
+      {
+        executionMode: "dedicated",
+        harnessAuth: { method: "api_key", source: secret.ref },
+      },
+    );
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", c.tab).href);
+    const url = detailUrl(fixture, namespace.id, agent.id, "draft", c.tab).href;
+    await login(page, fixture, url);
     await c.edit(page);
-    fixture.policy.restrictions.push({
-      id: `deny-${c.tab}-read`,
+    const denied = c.deny(agent);
+    const restriction = restrict(fixture.policy, "read", denied.resourceKind, {
       namespaceId: namespace.id,
-      effect: "deny",
-      ...c.deny(agent),
+      resourceId: denied.resourceId,
     });
-    await c.save(page);
-    await page.getByText(SAVE_READ_REFUSED, { exact: true }).waitFor();
-    assert.deepEqual(
-      requests.filter(({ method }) => method === "PATCH"),
-      [],
+    const response = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        response
+          .url()
+          .endsWith(
+            `/${denied.resourceKind === "agent" ? "agents" : "configurations"}/${denied.resourceId}`,
+          ),
     );
+    await c.save(page);
+    assert.equal((await response).status(), 403);
+    const requestId = (await (await response).json()).meta.requestId;
+    await page.getByText(SAVE_READ_REFUSED, { exact: true }).waitFor();
+    assert.ok(requestId);
+    await page.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+    assert.equal((await page.locator("body").innerText()).split(requestId).length - 1, 1);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    // A truthful receipt survives, but the denied preflight must retire all protected editors.
+    const absent = async () => {
+      const html = await page.content();
+      for (const value of [secret.id, secret.name, marker, "edited after a revoke"]) {
+        assert.equal(html.includes(value), false, value);
+      }
+      assert.equal(await page.getByLabel("Configuration JSON", { exact: true }).count(), 0);
+      assert.equal(await page.getByLabel("API key Secret", { exact: true }).count(), 0);
+      if (c.tab === "credentials") {
+        assert.equal(html.includes(agent.name), false);
+        assert.equal(await page.getByRole("button", { name: "Deploy", exact: true }).count(), 0);
+      }
+    };
+    await absent();
+    assert.equal((await page.content()).includes(agent.name), false);
+    // Fresh admission and history must not reattach the discarded editor or its draft.
+    const passiveRefusal =
+      c.tab === "credentials"
+        ? page.waitForResponse(
+            (response) =>
+              response.url().endsWith(`/agents/${agent.id}`) && response.status() === 403,
+          )
+        : null;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    if (passiveRefusal) {
+      const passiveId = (await (await passiveRefusal).json()).meta.requestId;
+      await page
+        .getByText(`Request ID: ${passiveId}`, { exact: true })
+        .waitFor({ state: "attached" });
+      await page.getByText("Request details", { exact: true }).click();
+      await page.getByText(`Request ID: ${passiveId}`, { exact: true }).waitFor();
+      assert.equal((await page.locator("body").innerText()).split(passiveId).length - 1, 1);
+    }
+    await page
+      .getByRole("heading", {
+        name: c.tab === "credentials" ? "Access denied" : "Configuration unavailable",
+        exact: true,
+      })
+      .waitFor();
+    await absent();
+    await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+    await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+    await page.goBack();
+    await page
+      .getByRole("heading", {
+        name: c.tab === "credentials" ? "Access denied" : "Configuration unavailable",
+        exact: true,
+      })
+      .waitFor();
+    await absent();
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    liftRestriction(fixture.policy, restriction);
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    if (c.tab === "configuration") {
+      await page.getByRole("heading", { name: "Configuration unavailable", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Retry", exact: true }).click();
+      // Restoring access reads saved values, never the draft captured before revocation.
+      await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+      await openAdvancedSettings(page);
+      const value = await page.getByLabel("Configuration JSON", { exact: true }).inputValue();
+      assert.ok(value.includes(marker));
+      assert.equal(value.includes("edited after a revoke"), false);
+    } else {
+      await page.getByLabel("API key Secret", { exact: true }).waitFor();
+    }
   });
 }
 
@@ -1032,5 +1126,181 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
     assert.equal(policy.application, undefined);
     assert.equal(policy.version, preview ? 2 : 3);
     assert.deepEqual(policy.additions, preview ? [grant] : []);
+  });
+}
+
+// Binding persistence precedes access grants. A failed retry must retain that fact without
+// retaining any of the binding metadata or replaying the already successful PATCH.
+for (const { resource, status } of [
+  { resource: "agent", status: 403 },
+  { resource: "configuration", status: 403 },
+  { resource: "configuration", status: 503 },
+] as const) {
+  test(`saved channel bindings retain a sanitized receipt when ${resource} retry read answers ${status}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Saved binding retry", { ready: true });
+    const original = await fixture.createSecret(
+      namespace.id,
+      "Original retry app",
+      "synthetic-original",
+    );
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement retry app",
+      "synthetic-replacement",
+    );
+    const bot = await fixture.createSecret(namespace.id, "Retry bot", "synthetic-bot");
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Saved binding retry Agent",
+      nativeValues("retry-document", {
+        channels: {
+          slack: {
+            enabled: true,
+            mode: "socket",
+            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+          },
+        },
+      }),
+      {
+        executionMode: "dedicated",
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: original.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+        },
+      },
+    );
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href,
+    );
+    await waitForInputValue(page.getByLabel("Slack app token", { exact: true }), original.name);
+    await selectSecret(page, "Slack app token", replacement);
+    const noGrant = restrict(fixture.policy, "administer", "installation");
+    await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
+    const retry = page.getByRole("button", { name: "Retry Secret access", exact: true });
+    await waitForEnabled(retry);
+    const configPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    assert.equal(
+      (await fixture.request("GET", configPath)).data.secretBindings.SLACK_APP_TOKEN.source.id,
+      replacement.id,
+    );
+    assert.equal(pathRequests(requests, "PATCH", configPath).length, 1);
+    liftRestriction(fixture.policy, noGrant);
+    const deniedPath =
+      resource === "agent" ? `/namespaces/${namespace.id}/agents/${agent.id}` : configPath;
+    const denial =
+      status === 403
+        ? restrict(fixture.policy, "read", resource, {
+            namespaceId: namespace.id,
+            resourceId: resource === "agent" ? agent.id : agent.configurationId,
+          })
+        : null;
+    if (status === 503) {
+      await page.route(`${fixture.origin}${deniedPath}`, (route) =>
+        route.request().method() === "GET"
+          ? route.fulfill(
+              apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Temporarily unavailable"),
+            )
+          : route.continue(),
+      );
+    }
+    requests.length = 0;
+    const response = page.waitForResponse(
+      (r) => r.url().endsWith(deniedPath) && r.request().method() === "GET",
+    );
+    await retry.click();
+    assert.equal((await response).status(), status);
+    await page
+      .getByText(
+        new RegExp(
+          `Channel Secret bindings are saved\\. Could not read the ${resource === "agent" ? "Agent" : "Configuration"} before retrying Secret access`,
+        ),
+      )
+      .waitFor();
+    if (denial) {
+      const requestId = (await (await response).json()).meta.requestId;
+      assert.ok(requestId);
+      assert.equal((await page.locator("body").innerText()).split(requestId).length - 1, 1);
+      const html = await page.content();
+      for (const secret of [original, replacement, bot]) {
+        assert.equal(html.includes(secret.id), false);
+        assert.equal(html.includes(secret.name), false);
+      }
+      liftRestriction(fixture.policy, denial);
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    } else {
+      await page.unroute(`${fixture.origin}${deniedPath}`);
+    }
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    await waitForInputValue(page.getByLabel("Slack app token", { exact: true }), replacement.name);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    await page.getByRole("button", { name: "Retry Secret access", exact: true }).click();
+    await page.getByText("This Agent can use its saved Slack Secrets.", { exact: false }).waitFor();
+    assert.equal(pathRequests(requests, "PATCH", configPath).length, 0);
+    const grants = requests.filter(
+      ({ method, path }) => method === "POST" && path.endsWith("/iam/access-bindings"),
+    );
+    assert.equal(grants.length, 1);
+    const granted = grants[0]?.body;
+    assert.ok(granted && typeof granted === "object" && "resourceId" in granted);
+    assert.equal(granted.resourceId, replacement.id);
+  });
+}
+
+// A transport failure does not establish revoked read access: keep the staged document,
+// and permit one explicit retry after the dependency recovers.
+for (const c of readRefusals) {
+  test(`a transient read before saving the ${c.name} retains the editor for explicit retry`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Transient save read", { ready: true });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Transient save Agent",
+      nativeValues("transient-read"),
+    );
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", c.tab).href);
+    await c.edit(page);
+    const resource = c.deny(agent);
+    const path = `/namespaces/${namespace.id}/${resource.resourceKind === "agent" ? "agents" : "configurations"}/${resource.resourceId}`;
+    await page.route(`${fixture.origin}${path}`, (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Temporarily unavailable"))
+        : route.continue(),
+    );
+    const response = page.waitForResponse(
+      (r) => r.url().endsWith(path) && r.request().method() === "GET",
+    );
+    await c.save(page);
+    assert.equal((await response).status(), 503);
+    const save = page.getByRole("button", {
+      name: c.tab === "credentials" ? "Save authentication source" : "Save Configuration",
+      exact: true,
+    });
+    await waitForEnabled(save);
+    await page.getByRole("heading", { name: agent.name, exact: true }).waitFor();
+    if (c.tab === "configuration") {
+      assert.ok(
+        (await page.getByLabel("Configuration JSON", { exact: true }).inputValue()).includes(
+          "edited after a revoke",
+        ),
+      );
+    }
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    await page.unroute(`${fixture.origin}${path}`);
+    const saved = page.waitForResponse(
+      (r) => r.request().method() === "PATCH" && r.url().endsWith(path),
+    );
+    await save.click();
+    assert.equal((await saved).status(), 200);
+    assert.equal(pathRequests(requests, "PATCH", path).length, 1);
   });
 }

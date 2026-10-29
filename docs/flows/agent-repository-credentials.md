@@ -298,6 +298,13 @@ Maintenance uses 30 seconds, the selected native sender interval or a shorter Co
 interval. A missing known session is invalidated, never reminted after restart.
 Users may deploy another version during cleanup.
 
+[Preview, save and deploy](../../packages/occ/src/index.ts) offer or honor standing approval
+only when the selected repository policy explicitly permits it and supplies a current scope.
+The [worker](../../apps/controller/src/worker/repository-credentials.ts) repeats that
+[eligibility check](../../packages/occ/src/repository-approval.ts) after locking the Namespace
+and then the Agent. If permission is withdrawn or the scope fingerprint changes, it refuses
+with `REPOSITORY_STANDING_POLICY_CHANGED` before releasing successor credentials.
+
 If standing Git evidence is missing, the worker keeps Git closed and observes the existing
 Harness without preparing or activating it. It checks again within five seconds, rechecking
 model authority, withdrawal, stop and replacement each pass. Harness readiness is not Git

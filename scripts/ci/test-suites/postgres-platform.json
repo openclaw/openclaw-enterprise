@@ -438,7 +438,8 @@
     {
       "path": "tests/integration/postgres-standing-session-worker.test.ts",
       "expectedTests": [
-        "standing maintenance supervises missing Git evidence across restart and still withdraws model authority"
+        "standing maintenance supervises missing Git evidence across restart and still withdraws model authority",
+        "standing maintenance refuses withdrawn eligibility with unchanged scope"
       ]
     },
     {

@@ -346,3 +346,9 @@ export const RosterModelPrimary = {
   ...story("createRosterModelSelection"),
   name: "Change a roster's shared primary model",
 };
+
+export const PasswordSecretConflict = story("createPasswordSecretConflict");
+
+export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat");
+
+export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");

@@ -13,6 +13,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
 import {
+  eligibleRepositoryApprovalScope,
   isRepositoryCleanupWork,
   repositoryApprovalFingerprint,
   revisionAdmittedBeforeWork,
@@ -166,7 +167,8 @@ export class RepositoryCredentialLifecycle {
     if (snapshot.standingApprovalId !== undefined) {
       const binding = snapshot.bindings[0];
       const scope =
-        binding && driver.standingApprovalScope?.({ namespaceId: revision.namespaceId, binding });
+        binding &&
+        eligibleRepositoryApprovalScope(driver, { namespaceId: revision.namespaceId, binding });
       if (
         !binding ||
         snapshot.bindings.length !== 1 ||

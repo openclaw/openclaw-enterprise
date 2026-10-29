@@ -233,13 +233,16 @@ A save that rebinds such a Secret rereads the permission answer; Plugins, Reposi
 authentication source follow it without a reload.
 
 After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
-grants the Agent service principal access to selected Secrets through Namespace
-IAM. A failed grant leaves Configuration saved; a 403 is a known refusal that names the
-Installation administrator, who selects **Retry Secret access**; a timeout or 5xx stays unknown. A member's
-session sends no grant and says access was not verified until **Reload draft**. An administrator's console
-also reads Namespace IAM to mark a bound Slack Secret without an Agent grant.
-An uncertain PATCH blocks another
-channel write until Refresh. Disabling a draft channel changes Configuration
+grants the Agent service principal access to selected Secrets through Namespace IAM. A failed
+grant leaves Configuration saved; a 403 names the Installation administrator, who selects
+**Retry Secret access**; a timeout or 5xx stays unknown. A member's session sends no grant and
+says access was not verified until **Reload draft**. An administrator's console checks every
+bound Secret's grant, as deployment does; Deploy waits for those reads and rechecks before its
+POST, and a save or Retry during one reads again before naming Deploy.
+`agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
+Driver does; pickers appear only for standard keys. A 400 that
+`agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
+blocks another channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent.
 
 <span id="5-provision-initial-runtime-credentials"></span>
@@ -257,16 +260,19 @@ grants the Agent service principal exact Secret (`api_key` or imported `codex_pa
 or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
 
-Grant failure preserves saved authentication and freezes controls;
-`apps/controller/src/console/agents/credentials.mjs:grantWarning` words it as the
-Slack Secret path does; a member's session sends no grant and gets no retry. A refused or unconfirmed grant offers
-**Retry credential access**, which retries only the grant once the Agent's service
-principal and authentication binding still match; rereading bindings recovers lost
-responses. An uncertain PATCH requires **Reload authentication source** before saving
-or granting. Pending access survives navigation and blocks deployment until confirmed
-or reloaded, as does an administrator's Credentials tab once Namespace IAM shows no
-grant. A member's unverified grant blocks nothing. Admission remains authoritative;
-confirmed access does not prove provider readiness.
+Grant failure preserves saved authentication and freezes controls. `credentials.mjs:grantWarning`
+names the outcome; members send no grant and get no retry. **Retry credential access**
+rechecks identity and bindings before granting. Uncertain PATCH requires **Reload authentication
+source**. Pending access survives navigation and holds deployment until confirmed or reloaded;
+members' unverified grants do not. Administrator Namespace IAM denials also hold deployment.
+Admission remains authoritative; confirmed access does not prove provider readiness.
+
+Authentication and JSON Save preflight 403 call `detail.mts:retireSaveRead`. The shell's
+`onProtectedReadDenied` clears that Agent's scoped drafts and retires its view before
+completion handlers run. The causal receipt and request ID remain; history cannot restore data. Binding preflight uses the same boundary. Retry receipts preserve
+prior saved-binding success and identify the failed read, without names or identifiers.
+No write or grant starts on denied preflight. Transient reads and PATCH refusals keep their
+contextual recovery. Lifecycle polling remains separately owned.
 
 Deployment also authorizes the caller's Secret `operate` on each bound Secret. When the
 Agent's `permissions/secrets` answer lists one, Deploy is disabled with a note naming it; a
@@ -285,12 +291,6 @@ to check ownership/workloads and create missing whole Secrets, preserving matchi
 groups. Bytes enter neither Configuration nor audit.
 Failure admits no version; retry rechecks status. Missing credentials after an
 earlier version require operator investigation. Model/channel Secrets stay separate.
-
-On explicit submission, the panel rereads and refuses as channel saves do above, PATCHes every
-binding with `expectedGeneration`, then calls `ensureCredentialOperateBinding` for changed and
-pending Secrets. A refused or unconfirmed post-PATCH grant leaves bindings saved and blocks
-deployment in the current view; later saves retry still-referenced pending grants.
-Only a confirmed grant or confirmed removal of its reference clears the pending Secret.
 
 ### 6. Read and replace live workspace files
 
@@ -340,6 +340,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 - 2026-10-29 12:43: Preserve overlapping overview and record reads. (authoring-run/22e56d10-b3c5-43f9-b088-c060fbfbe64f - 4af87e8139aafb7469b60cf38846935c1266baed)
 
+- 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
+
 - 2026-10-29 11:50: Track terminal overview reconciliation. (terminal-regrant - 1a16ee6c8ff11aaa0b8ea2451aabbc5445d8a72c)
 
 - 2026-10-29 11:40: Share terminal overview refresh. (terminal-transition - 4f6e05487f336db326b46bd87fb3100ad99b660d)
@@ -360,10 +362,6 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 - 2026-10-28 10:57: Clarify keyboard focus during record refresh. (authoring-run/7832bcaa-29cd-4303-99ce-edf549ad55d6 - e7f7c242158627219f6ce9d398c5cc034d721f7e)
 
-- 2026-10-27 13:55: Document Deployment snapshot-read recovery; uncommitted changes. (authoring-run/99997d03-9533-4cff-b942-8fe773c472db - b1e6d83d1cde4741d6f0b857e30e473ec1f97a18)
-
-- 2026-10-27 09:30: Document the Agent detail version picker, Deployment tab, and direct Agent UI access. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
-
-- 2026-10-25: Move step 6 (workspace files) to [its own trace](agent-workspace-files.md); move older entries to history. (finding 2488)
+- 2026-10-27: Credentials follows the default Slack account's keys and every bound Secret's grant; Deploy waits for grant reads. (findings 2526, 2529, 2540-2542, 2554, 2558, 2575)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

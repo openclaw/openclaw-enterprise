@@ -17,7 +17,10 @@ import {
   UnixRepositoryCredentialControlClient,
   type RepositoryCredentialControlClient,
 } from "../../backends/repository-credentials/control-client.ts";
-import type { GitHubRepositoryRegistry } from "../../drivers/repo/github/credentials/registry.ts";
+import {
+  createGitHubRepositoryDeliveryResolver,
+  type GitHubRepositoryRegistry,
+} from "../../drivers/repo/github/credentials/registry.ts";
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
 import type { SelectedDriverConfiguration } from "../installation-config.ts";
 
@@ -88,7 +91,7 @@ export async function composeRepositoryAccess(input: {
       input.configuration,
     ),
     repositoryRegistry: registry,
-    resolveRepositoryDelivery: repositoryPolicy.resolveDelivery,
+    resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
     repositoryOwner: Object.freeze({
       ...(!input.protectedGit && { controlSocket: configuration.controlSocket }),
       driverId: selection.id,

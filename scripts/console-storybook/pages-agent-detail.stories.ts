@@ -129,6 +129,10 @@ export const ConfigurationError = {
   ...story("configurationError"),
   name: "Configuration unavailable",
 };
+export const ConfigurationReadDeniedReloadRefocus = {
+  ...story("configurationReadDeniedReloadRefocus"),
+  name: "Configuration read denied across reload and refocus",
+};
 export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration");
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
@@ -194,6 +198,7 @@ export const SharingHoldsNavigation = { ...story("agentSharingHoldsNavigation") 
 export const SharingHoldsAfterDelete = { ...story("agentSharingHoldsAfterDelete") };
 export const SharingRemoved = { ...story("agentSharingRemoved") };
 export const SharingDenied = { ...story("agentSharingDenied") };
+export const SharingRefusedOnReturn = { ...story("agentSharingRefusedOnReturn") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };
 
 export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");
@@ -241,3 +246,12 @@ export const PolicyApplied = story("policyApplied");
 export const PolicyRetryApplication = story("policyRetryApplication");
 export const PolicyEditingAdminDenied = story("policyEditingAdminDenied");
 export const PolicyNoNetworkLimits = story("policyNoNetworkLimits");
+
+export const AuthenticationReadDenied = {
+  ...story("authenticationReadDenied"),
+  name: "Authentication Save read denied",
+};
+export const ConfigurationSaveReadDenied = {
+  ...story("configurationSaveReadDenied"),
+  name: "Configuration Save read denied",
+};

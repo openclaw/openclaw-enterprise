@@ -1490,6 +1490,77 @@ test("Reads waiting behind a pending administration read end with their page", a
   }
 });
 
+// Finding D790. The Access tab's panel is built once per page. An administrator who opened it,
+// lost administration with the page open and came back to the tab found the panel read before:
+// "Current policy loaded." and an enabled Remove binding, while nothing said the policy reads were
+// now refused. A return reads the policy again, one list at a time, so the refusal is audited once
+// and takes the member path a reload takes: the tab gives way to Configuration and says why.
+test("A return to the Access tab after a revoke shows the member notice, audited once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked sharing", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Revoked sharing Agent", nativeValues("x"));
+  const account = await fixture.createNamespaceMember("revoked-sharer", namespace.id, AGENT_READ);
+  // A direct grant gives the panel a Remove binding to show.
+  const policyPath = `/namespaces/${namespace.id}/iam`;
+  const role = await fixture.request("POST", `${policyPath}/roles`, {
+    body: { permissions: [{ action: "operate", resourceKind: "agent" }] },
+  });
+  const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: account.principal.id,
+      roleId: role.data.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+    },
+  });
+  assert.equal(binding.status, 201);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const policyReads = (from) => requests.slice(from).filter(({ path }) => path.includes("/iam/"));
+  const iamDenials = () => authorizationDenials(fixture.auditSink, /^openclaw\.iam\./);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
+    account.credentials,
+  );
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+  const configurationTab = page.getByRole("tab", { name: "Configuration", exact: true });
+  const loaded = page.getByText("Current policy loaded.", { exact: true });
+  const remove = page.getByRole("button", { name: "Remove binding", exact: true });
+  await accessTab.click();
+  await loaded.waitFor();
+  await waitForEnabled(remove.first());
+  await configurationTab.click();
+  await waitForIdleFetches(page);
+  // An administrator's return reads the policy again and shows it as before.
+  let sent = requests.length;
+  await accessTab.click();
+  await waitForEnabled(remove.first());
+  await waitForIdleFetches(page);
+  assert.equal(await loaded.isVisible(), true);
+  assert.equal(policyReads(sent).length, 2);
+  await configurationTab.click();
+  await waitForIdleFetches(page);
+  assert.deepEqual(iamDenials(), []);
+
+  revoke();
+  sent = requests.length;
+  await accessTab.click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await accessTab.count(), 0);
+  assert.equal(await loaded.count(), 0);
+  assert.equal(await remove.count(), 0);
+  assert.equal(policyReads(sent).length, 1);
+  assert.equal(iamDenials().length, 1);
+});
+
 // Only a Backends refusal settles Installation administration as false (finding 2627). A read that
 // fails for another reason, here an unavailable dependency, says nothing about it: the
 // administrator keeps the Observability link.

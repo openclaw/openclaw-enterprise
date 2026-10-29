@@ -17,6 +17,14 @@ export const CredentialsServiceAccountReadDenied = {
   name: "Model authentication, editor may lack read on the ChatGPT service account",
 };
 export const CredentialsSlack = { ...story("credentialsSlack"), name: "Slack tokens missing" };
+export const CredentialsSlackOtherKeys = {
+  ...story("credentialsSlackOtherKeys"),
+  name: "Slack tokens on other keys",
+};
+export const CredentialsSlackHttp = {
+  ...story("credentialsSlackHttp"),
+  name: "Slack HTTP mode, bot token only",
+};
 export const CredentialsSlackReader = {
   ...story("credentialsSlackReader"),
   name: "Slack tokens, viewer can only read",
@@ -53,6 +61,14 @@ export const CredentialsSaveProvisioningReserved = {
   ...story("credentialsSaveProvisioningReserved"),
   name: "Secret choices after a refused save",
 };
+export const CredentialsSaveChannelRefused = {
+  ...story("credentialsSaveChannelRefused"),
+  name: "Channel Secret save refused for a channel setting",
+};
+export const CredentialsSaveChannelBindingRefused = {
+  ...story("credentialsSaveChannelBindingRefused"),
+  name: "Channel Secret save refused for a missing binding",
+};
 export const CredentialsSaveConflict = {
   ...story("credentialsSaveConflict"),
   name: "Secret choices after a conflict",
@@ -84,6 +100,19 @@ export const CredentialsSlackGrantDenied = {
 export const CredentialsSlackGrantMissing = {
   ...story("credentialsSlackGrantMissing"),
   name: "Slack Secret bound without an Agent grant",
+};
+export const CredentialsBindingReadDenied = story("credentialsBindingReadDenied");
+export const CredentialsSlackLeftoverGrantMissing = {
+  ...story("credentialsSlackLeftoverGrantMissing"),
+  name: "Slack key left bound without an Agent grant",
+};
+export const CredentialsSlackGrantReadPending = {
+  ...story("credentialsSlackGrantReadPending"),
+  name: "Slack grant read in progress",
+};
+export const CredentialsSlackSigningSecretMissing = {
+  ...story("credentialsSlackSigningSecretMissing"),
+  name: "Slack signing secret without a binding",
 };
 export const CredentialsSavePending = {
   ...story("credentialsSavePending"),
@@ -142,3 +171,8 @@ export const AuthSaveHoldsNavigation = {
 };
 export const AuthSaveUnknown = { ...story("authSaveUnknown"), name: "Authentication save unknown" };
 export const AuthenticationNavigation = story("authenticationNavigation");
+
+export const CredentialsSavedRetryReadDenied = {
+  ...story("credentialsSavedRetryReadDenied"),
+  name: "Saved channel bindings, retry read denied",
+};

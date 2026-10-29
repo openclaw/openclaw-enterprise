@@ -2007,7 +2007,23 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       assert.equal(await checkRefusal.count(), 1);
       assert.equal(await credentialsPanel.getByText(refusalText).count(), 0);
       assert.equal(pathRequests(requests, "PATCH", configurationPath).length, writesBeforeCheck);
+      // A denied binding preflight clears previously readable bindings. Recovery must read
+      // the saved state again rather than retry through controls built from the old snapshot.
+      const refusedHtml = await page.content();
+      for (const secret of [appSecret, botSecret, replacementSecret]) {
+        assert.equal(refusedHtml.includes(secret.name), false);
+        assert.equal(refusedHtml.includes(secret.id), false);
+      }
       await page.unroute(`${fixture.origin}${configurationPath}`, refusedCheck);
+      const freshConfiguration = page.waitForResponse(
+        (response) =>
+          response.url() === `${fixture.origin}${configurationPath}` &&
+          response.request().method() === "GET",
+      );
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
+      assert.equal((await freshConfiguration).status(), 200);
+      await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+      assert.equal(pathRequests(requests, "PATCH", configurationPath).length, writesBeforeCheck);
       const previousConfigurationWrites = pathRequests(requests, "PATCH", configurationPath).length;
       await page.route(`${fixture.origin}${configurationPath}`, (route) =>
         route.request().method() === "PATCH"

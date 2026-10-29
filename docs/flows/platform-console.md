@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-28
-last_updated_session: fix-3678
+updated: 2026-10-29
+last_updated_session: authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25
 ---
 
 # Platform console request flow
@@ -141,57 +141,49 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`agents/collection.mts:renderAgentList` sends plain clicks on row content to the
-Agent-name link, focused first to keep its return-focus target; links, buttons
-(even disabled), modified clicks and selected text are ignored.
+`agents/collection.mts:renderAgentList` focuses the Agent-name link for plain row
+clicks. Links, buttons (including disabled ones), modified clicks, and selected
+text keep their own behavior.
 
 `loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
-immediately shows **Loading agent details…** and **Back to Agents**. Its name,
-actions, and overview appear together after access checks. Back cancels the read;
-a second Back does nothing, and refocusing does not interrupt it. Other routes to
-an Agent keep the current page, or show loading after 400 ms on a fresh load.
-Once visible, loading stays at least 300 ms (`loadingMinimumMs`).
+shows **Loading agent details…** and **Back to Agents**, then reveals its name,
+actions, and overview after access checks. Back cancels once; refocus does not
+interrupt loading. Other Agent routes preserve the page or show loading after
+400 ms. Visible loading lasts at least 300 ms (`loadingMinimumMs`). Other first
+visits and Refresh show loading after 250 ms.
 
-Other first visits and Refresh show loading after 250 ms. A return or refocus
-keeps the current page inert, with its own header and disabled Namespace selector;
-after one second it says **Still checking…**. The Console retains up to 16 views
-by route, Namespace, and session owner, excluding passwords and discovery state.
-An interrupted return preserves the view; an interrupted Refresh discards it.
+Return and refocus checks keep the page inert, its header visible, and Namespace selection disabled;
+after one second they show **Still checking…**. The Console retains up to 16 views by
+route, Namespace, and session owner. Matching user and GET dependencies restore
+DOM, handlers, drafts, and debug disclosures. Changed data, newly readable
+Namespaces, and Refresh rebuild. Discovery state is not retained. Pending/failed reads, passwords, and
+mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
+Interrupted returns preserve the view; interrupted Refresh discards it.
 
-`apps/controller/src/console/api-client.mts:createApiClient` keeps the abort signal
-through the response body. Cancellation preserves its reason; a socket failure is an interrupted read,
-not invalid JSON. Neither replays the request.
+`api-client.mts:createApiClient` preserves abort reasons through response bodies.
+Socket failure means interrupted read, not invalid JSON. Neither replays requests.
 
-On return, `loadPage` checks the user and retained GET dependencies. A match
-restores the DOM, handlers, drafts, and expanded debug details. Changed data,
-a newly readable Namespace, or Refresh rebuilds the view. Pending or failed
-reads, password input, and mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
+**Back to Agents** waits for session, Namespace, permission, and collection checks,
+not row reads. The newest readable revisions page supplies each row;
+`agents/collection.mts:currentRevision` reads only an off-page current version.
+`deniedReadsFor` retains 403s. Reused deployment cells show **Reading deployment…**
+after 250 ms, for at least 150 ms, before fresh results. Back/refocus focuses the
+cell, not the old version link. Unfinished/failed row reads resume without blocking reuse.
 
-**Back to Agents:** session, Namespace, permission, and collection checks gate the
-list, not row reads. Each row's newest readable revisions page feeds its deployment
-and `agents/collection.mts:currentRevision`, which reads an off-page current version alone;
-`deniedReadsFor` keeps a `403`. On reuse, `renderAgentList` sets visible deployment
-cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, before paint, then shows
-each fresh result or refusal. Back or refocus from a deployment focuses that cell,
-not the old version's link. Unfinished or failed row reads never prevent reuse; resuming rereads them.
+Changed users or session keys clear retained views and drafts before private
+reads. Missing sessions open login; failed reads offer Retry. The
+[sign-in flow](platform-console/sign-in-return.md) owns provider discovery,
+one-use session binding, and destination recovery.
 
-A changed user or session key clears retained views and drafts before further
-private reads. Missing sessions open login; failed reads offer Retry.
-The [console sign-in flow](platform-console/sign-in-return.md) covers provider
-discovery, one-use session binding, and requested destination recovery.
-
-After authentication, `loadPage` reads `GET /namespaces`, preserving URL
-selection or choosing the first ready/readable Namespace. Unreadable IDs stay
-unavailable; selection never becomes an API query selector.
-
-`shell.mts:namespaceSelector` disables and hides choices through session and
-Namespace checks, naming a known selection; retained-view reads do not extend this.
-`shell.mts:createShell` listens for the 760px mobile breakpoint; widening closes
-the drawer without focusing its hidden toggle and releases `main.inert`.
-Load renders replace the shell; `createShell` activates a primary navigation link
-whose mouse press a render replaced before release.
-Empty lists show access guidance. `navigation.mts:navigate` returns Agent detail/creation
-to Agents; global pages remain open; recovered warnings disappear.
+After authentication, `GET /namespaces` preserves URL selection or chooses the
+first ready/readable Namespace. Unreadable IDs remain unavailable; selection
+never becomes an API query selector. `shell.mts:namespaceSelector` hides choices
+during session/Namespace checks, naming known selections; retained-view reads do
+not extend this. Widening past 760px closes the drawer, releases `main.inert`, and
+avoids focusing its hidden toggle. `createShell` preserves primary navigation
+presses across replacement renders. Empty lists explain access. Namespace
+navigation sends Agent detail/creation to Agents; global pages stay open and
+recovered warnings disappear.
 
 ### 3. Authorize the selected page resource
 
@@ -240,18 +232,17 @@ See [deletion](../guides/console/delete-namespace.md).
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
 Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
-omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.
-OCC authorizes writes ([Agent creation](../reference/console/create-and-deploy.md)).
+omission disables Create (`NAMESPACE_MISSING`), clears rows and feedback, closes
+confirmations, and ends polling. Its note replaces empty states. Late outcomes are
+generic, without replay; 401 expires the session. Focus: Search. Failed reads retry.
 
-The [creation flow](platform-console/agent-creation.md) traces the form: plugin
-fields and discovery, model choices, the starter template, repository options,
-provisioning, ordinary drafts, Secret grants, and harness authentication.
+See [Agent setup and provisioning](platform-console/agent-creation.md).
 
 ### 4–6. Edit the Agent and access runtime files
 
 [Agent editing](platform-console/agent-editing.md) traces version rendering,
 channels and credentials; [workspace files](platform-console/agent-workspace-files.md) and
-[stop and deletion](platform-console/agent-stop-and-deletion.md) have their own traces;
+[stop and deletion](platform-console/agent-stop-and-deletion.md) trace those operations;
 [Agent sharing](platform-console/agent-sharing.md) traces policy writes.
 
 `channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve. The
@@ -260,8 +251,8 @@ owns DM policies and channel-only reply defaults. Admission snapshots native val
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tab
-navigation with `console.mjs:loadPage`. For the same Agent, Namespace, and
-version, tab clicks/history replace only tab content; shell, native-admin panel,
+navigation with `console.mjs:loadPage`. For one Agent, Namespace, and
+version, tab clicks/history replace tab content; shell, native-admin panel,
 and version controls stay mounted. Configuration and Agent revision reads are shared;
 direct Workspace URLs start neither. Refresh, version changes, and successful
 channel/authentication edits reload fully. A `403` on the configuration or Agent revision
@@ -280,6 +271,9 @@ is mounted before applying a response; late reads cannot overwrite another tab.
 Password values clear while [draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels) retain edits. Channel
 Secret saves update the shared draft snapshot used by other tabs and deployment
 preflight.
+
+[Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
+owns receipts and draft retirement.
 
 **Open vN Logs** opens the failed version from any version or draft. Logs reserves space;
 Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
@@ -303,13 +297,18 @@ After full-page navigation settles, `loadPage` focuses the destination heading i
 focus fell to the body, using `preventScroll` to preserve return position. An Agent
 opened from the list focuses its heading when the title renders. Tabs (one Tab
 stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
-reads; generations reject late responses. Refocus coalesces events. Agent detail
-rechecks access in place, preserving controls, input, and saves; failures clear it.
+reads; generations reject late responses. Refocus coalesces events.
+`revalidateMountedAgent` rechecks session, Namespace, Agent, and version;
+unchanged access preserves controls, input, and saves.
+The same owner’s exact draft Configuration refusal preserves the partial Agent
+after reload/refocus on repeated 403 if that mounted path was never readable.
+Refocus sends a fresh GET.
+Lost access scrubs; Agent, session, and scope failures clear their protected views.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
 Returning to the tab restores focus after the unchanged view is admitted, if the control
 remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
 
-Authorization and dependency failures clear affected content and expose recovery;
+Other admission failures clear affected content;
 a current protected `401` clears all private state. `pagehide` clears
 private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
 a fresh load. Failure views show local reasons and `req_<UUID>` request IDs. The
@@ -318,8 +317,9 @@ rule, a typed 409 naming the state), set as text. Backend authorization denial c
 including other Namespace selections, because the permission is Installation-wide.
 
 The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
-Stop and Delete: acceptance is not completion, and uncertain outcomes block replay until
-readback. The [Agent reference](../reference/agents.md#deletion) owns asynchronous cleanup.
+acceptance, uncertainty, and replay guards. `agents/deletion.mts:refreshStatus` owns polling: 404 returns to Agents;
+Postacceptance 403 stops polling without claiming completion.
+The [Agent reference](../reference/agents.md#deletion) owns asynchronous cleanup.
 
 Logout first hides private state, then calls the sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -368,6 +368,17 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
+
+- 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
+
+- 2026-10-29 11:42: Keep contextual request recovery and scope binding scrubbing to its preflight. (authoring-run/221d2fc5-7549-4054-a3ab-6b078a1755ae - aa74d9bc28d8c)
+- 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
+
+- 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
+
+- 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 - 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
 

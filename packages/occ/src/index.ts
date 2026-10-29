@@ -12,8 +12,14 @@ export type {
   CredentialDeliveryReduction,
   CredentialDeliveryReductionProgress,
 } from "./state/credential-delivery-reductions.ts";
-export { repositoryApprovalFingerprint } from "./repository-approval.ts";
-import { repositoryApprovalFingerprint } from "./repository-approval.ts";
+export {
+  eligibleRepositoryApprovalScope,
+  repositoryApprovalFingerprint,
+} from "./repository-approval.ts";
+import {
+  eligibleRepositoryApprovalScope,
+  repositoryApprovalFingerprint,
+} from "./repository-approval.ts";
 
 export {
   postgresPreparedGitHubProof,
@@ -9693,7 +9699,7 @@ export class OpenClawController {
         "saved",
       );
       return (resolved?.resolution.bindings ?? []).flatMap((binding) => {
-        const scope = resolved!.driver.standingApprovalScope?.({ namespaceId, binding });
+        const scope = eligibleRepositoryApprovalScope(resolved!.driver, { namespaceId, binding });
         return scope
           ? [
               {
@@ -9994,7 +10000,10 @@ export class OpenClawController {
           const binding = resolved?.resolution.bindings[0];
           const scope =
             binding &&
-            resolved?.driver.standingApprovalScope?.({ namespaceId: namespace.id, binding });
+            eligibleRepositoryApprovalScope(resolved!.driver, {
+              namespaceId: namespace.id,
+              binding,
+            });
           if (requested.duration !== "until-removed" || !binding || !scope) {
             throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.notPermitted);
           }
@@ -10395,13 +10404,14 @@ export class OpenClawController {
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
           )!.driver;
+          const scope = eligibleRepositoryApprovalScope(driver, {
+            namespaceId: namespace.id,
+            binding,
+          });
           if (
-            !driver.allowsStandingApproval?.({ namespaceId: namespace.id, binding }) ||
+            !scope ||
             !isDeepStrictEqual(approval.binding, binding) ||
-            !isDeepStrictEqual(
-              approval.scope,
-              driver.standingApprovalScope?.({ namespaceId: namespace.id, binding }),
-            )
+            !isDeepStrictEqual(approval.scope, scope)
           ) {
             throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.policyChanged);
           }

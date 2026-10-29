@@ -233,7 +233,8 @@ project_yaml() {
 }
 
 # yaml_object FILE OUTPUT writes FILE's YAML object documents to OUTPUT as sorted
-# JSON and sets yaml_object_text to the same bytes; it fails without one.
+# JSON and sets yaml_object_text to the same bytes; it fails without one or if
+# any document is not an object.
 yaml_object() {
   local file=$1 output=$2 status=0
   yaml_json "$file" || status=$?
@@ -242,7 +243,7 @@ yaml_object() {
     printf '%s' "$yaml_object_text" >"$output" || return 1
     return 0
   fi
-  jq -eS 'select(type == "object")' <<<"$yaml_text" >"$output" || return 1
+  jq -eS -n 'inputs | if type == "object" then . else error("expected a YAML object") end' <<<"$yaml_text" >"$output" || return 1
   ((status == 0)) || return 1
   yaml_object_text=
   IFS= read -r -d '' yaml_object_text <"$output" || true

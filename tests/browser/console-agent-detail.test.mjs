@@ -78,7 +78,6 @@ import {
   AGENT_SAVE_DENIED,
   AGENT_SOURCES_DENIED,
   askForGrant,
-  callerDenied,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_UPDATE_DENIED,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -2960,25 +2959,40 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     [[agent.servicePrincipalId, replacementSecret.id]],
   );
 
-  // Retry rereads the Agent before any grant request. Native IAM now refuses that read: the
-  // warning is about the read, not a grant refusal, and Retry stays for when the read works.
+  // A denied retry read must retain the prior saved fact, but retire revoked metadata.
   const deniedRead = restrict(fixture.policy, "read", "agent", { resourceId: agent.id });
   requests.length = 0;
+  const refusedRead = page.waitForResponse(
+    (response) => response.url().endsWith(`/agents/${agent.id}`) && response.status() === 403,
+  );
   await page.getByRole("button", { name: "Retry credential access" }).click();
-  // The read's own refusal, named by the API (finding 2534), not grant advice such as "this
-  // write may have succeeded".
+  const requestId = (await (await refusedRead).json()).meta.requestId;
   await page
     .getByText(
-      new RegExp(
-        `^${RegExp.escape(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${callerDenied("Agent read", `Agent ${agent.id}`)}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
-      ),
+      "Authentication source saved. Could not read the Agent before retrying credential access. No access grant was sent.",
+      { exact: true },
     )
     .waitFor();
-  assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
-  await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
+  await page.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+  assert.equal((await page.locator("body").innerText()).split(requestId).length - 1, 1);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  const html = await page.content();
+  for (const value of [
+    agent.name,
+    originalSecret.name,
+    originalSecret.id,
+    replacementSecret.name,
+    replacementSecret.id,
+  ]) {
+    assert.equal(html.includes(value), false);
+  }
+  assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
   liftRestriction(fixture.policy, deniedRead);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await waitForEnabled(page.getByRole("button", { name: "Save authentication source" }));
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 
-  // A retry after this denial must not grant the Secret to a different service principal.
+  // Freshly read saved authentication must still refuse a changed service principal.
   const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
   assert.notEqual(other.servicePrincipalId, agent.servicePrincipalId);
   const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -2994,7 +3008,7 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   });
   requests.length = 0;
   const reread = page.waitForResponse(agentUrl);
-  const retry = page.getByRole("button", { name: "Retry credential access" });
+  const retry = page.getByRole("button", { name: "Save authentication source" });
   await retry.click();
   assert.equal((await reread).status(), 200);
   await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));

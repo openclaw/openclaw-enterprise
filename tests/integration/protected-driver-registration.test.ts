@@ -17,6 +17,9 @@ import {
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
 import { createServer } from "node:https";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { join } from "node:path";
@@ -423,9 +426,38 @@ function repositoryDeliveryFixture() {
   return { registry, revision, binding };
 }
 
-test("Repo normalizes exact repository and installation delivery without granting standing approval", () => {
+test("protected Git resolves repository and installation grants without granting standing approval", async (t) => {
   const { registry, revision, binding } = repositoryDeliveryFixture();
-  const resolve = createGitHubRepositoryDeliveryResolver(registry);
+  const directory = await temporaryDirectory(t, "repository-delivery-");
+  const registryPath = join(directory, "registry.json");
+  await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
+  const compose = () =>
+    composeRepositoryAccess({
+      backend: {
+        id: registry.backendId,
+        type: "github",
+        configuration: { registryPath },
+        drivers: { repo: "repo" },
+      },
+      selection: {
+        id: "repo",
+        implementation: "github",
+        definition: GitHubRepositoryPolicy,
+        configuration: { sessionDurationSeconds: 600 },
+      },
+      protectedGit: true,
+    });
+  const access = await compose();
+  const resolve = access.resolveRepositoryDelivery;
+  assert.deepEqual(
+    (
+      await access.repositoryPolicy.resolve({
+        namespaceId: revision.namespaceId,
+        bindings: [{ repositoryRef: "application", profile: "git-write" }],
+      })
+    ).bindings,
+    [binding],
+  );
   assert.deepEqual(resolve(revision), {
     binding,
     delivery: { repository: "example/application" },
@@ -469,10 +501,13 @@ test("Repo normalizes exact repository and installation delivery without grantin
       namespaces: r.namespaces.map((p) => ({ ...p, pushRefAllowlist: ["refs/heads/other"] })),
     })),
   });
+  await writeFile(registryPath, JSON.stringify(changedRef));
+  const replacement = await compose();
   assert.throws(
-    () => createGitHubRepositoryDeliveryResolver(changedRef)(revision),
+    () => replacement.resolveRepositoryDelivery(revision),
     /current exact registry grant/,
   );
+  assert.equal(resolve(revision).repository!.pushRef, "refs/heads/review/task");
   const installation = resolveGitHubRepositoryBinding(registry, {
     namespaceId: "namespace-a",
     repositoryRef: "installation",
