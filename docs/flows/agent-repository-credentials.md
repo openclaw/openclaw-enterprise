@@ -394,8 +394,4 @@ denied before reaching the provider, and chat continues.
 
 - 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
 
-- 2026-10-29 18:00: Hold a native deployment until its first GitHub token commits; on a quarantined token fail a new Agent's deployment and keep an existing Agent's new version running. (finding 2415, finding 2425)
-
-- 2026-10-29 14:26: Narrow sender binding and remove fresh legacy Git composition. (authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf - ea84f8a9595fc57e2b35bab4f9ad45f9174c8319)
-
 [Agent repository credential documentation history](agent-repository-credentials/history.md) preserves the older dated entries.

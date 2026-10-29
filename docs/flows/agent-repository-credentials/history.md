@@ -8,6 +8,10 @@ This record preserves the dated changes to the Agent repository credential flow.
 
 ## Changelog
 
+- 2026-10-29 18:00: Hold a native deployment until its first GitHub token commits; on a quarantined token fail a new Agent's deployment and keep an existing Agent's new version running. (finding 2415, finding 2425)
+
+- 2026-10-29 14:26: Narrow sender binding and remove fresh legacy Git composition. (authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf - ea84f8a9595fc57e2b35bab4f9ad45f9174c8319)
+
 - 2026-10-25 00:30: Answer repository options without a repository Driver with no options and `meta.notConfigured`. (finding 2387)
 
 - 2026-10-24 22:30: Name the missing repository Driver. (fix-2361-2362 - 476c1b350)
