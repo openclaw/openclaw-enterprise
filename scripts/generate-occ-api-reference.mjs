@@ -336,6 +336,11 @@ function generatedComment() {
   return "<!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->";
 }
 
+function tableOfContents(titles) {
+  const links = titles.map((title) => `- [${title}](#${tagAnchor(title)})`);
+  return `## Table of contents\n\n${links.join("\n")}`;
+}
+
 function introduction(document) {
   return [
     `Version \`${document.info.version}\`; OpenAPI \`${document.openapi}\`.`,
@@ -396,11 +401,7 @@ function referenceGroups(entries) {
 }
 
 function referencePage(document, groups, entries) {
-  const sections = [
-    `# ${document.info.title} reference`,
-    generatedComment(),
-    ...introduction(document),
-  ];
+  const sections = [];
   const schema = errorSchema(document, entries);
 
   if (schema) {
@@ -479,7 +480,17 @@ function referencePage(document, groups, entries) {
     );
   }
 
-  return `${sections.join("\n\n")}\n`;
+  const titles = sections
+    .filter((section) => section.startsWith("## "))
+    .map((heading) => heading.slice(3));
+  const page = [
+    `# ${document.info.title} reference`,
+    generatedComment(),
+    ...introduction(document),
+    tableOfContents(titles),
+    ...sections,
+  ];
+  return `${page.join("\n\n")}\n`;
 }
 
 function cheatSheetEntityOrder(title) {
@@ -553,10 +564,15 @@ function cheatSheetPage(entries) {
     groups.get(title).push({ ...entry, summary });
   }
 
-  const sections = ["# API cheat sheet", generatedComment(), "## Operations"];
   const entities = [...groups].sort(
     ([left], [right]) => cheatSheetEntityOrder(left) - cheatSheetEntityOrder(right),
   );
+  const sections = [
+    "# API cheat sheet",
+    generatedComment(),
+    tableOfContents(entities.map(([title]) => title)),
+    "## Operations",
+  ];
   for (const [title, operations] of entities) {
     operations.sort(
       (left, right) =>
