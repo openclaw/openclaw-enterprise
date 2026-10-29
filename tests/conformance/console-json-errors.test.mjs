@@ -74,6 +74,15 @@ test("space-like separators and curly quotes are named at their position (findin
     jsonObjectProblem("\u2018x\u2019"),
     named("", 'replace the curly quote \u2018 at the start with a straight quote (")'),
   );
+  // Autocorrect can also curl both quotes the closing way.
+  assert.equal(
+    jsonObjectProblem('{"a": \u201Db\u201D}'),
+    named(" at line 1, column 7", 'replace the curly quote \u201D there with a straight quote (")'),
+  );
+  assert.equal(
+    jsonObjectProblem("{\u2019a\u2019: 1}"),
+    named(" at line 1, column 2", 'replace the curly quote \u2019 there with a straight quote (")'),
+  );
   // Inside a string they are ordinary text.
   assert.equal(jsonObjectProblem('{"a": "\u201Cquoted\u201D\u2028\u3000"}'), undefined);
 });
