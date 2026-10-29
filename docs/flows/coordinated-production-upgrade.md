@@ -165,10 +165,10 @@ Reject ineligible Helm states before values or Secret reads.
 Values must match the baseline or candidate; Secret UID, Installation annotation
 and other data must match the baseline. Apply only saved reviewed candidates; reject drift.
 
-A newer Helm release with deployed candidate values skips Helm. Otherwise, retry
-requires the operator's migration-history check and no active initialization Job
-or Pod. Failed or disconnected migrations may have committed; these
-operator-owned checks do not roll them back.
+Skip Helm only if this attempt started it and its newer deployed release matches
+candidate values. Otherwise, require the operator's migration-history check and
+no active initialization Job or Pod. Failed or disconnected migrations may have
+committed; operator-owned checks do not roll them back.
 
 ### 3. Quiesce writers and run the candidate release
 
