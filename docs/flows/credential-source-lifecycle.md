@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-10-29
-last_updated_session: authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741
+last_updated_session: authoring-run/cf8bb25e-ffb8-4349-9770-a0b07d6bf50f
 ---
 
 # Credential source lifecycle Flow
@@ -85,11 +85,16 @@ rejects invalid values with `CredentialSourceConfigError` (`400 INVALID_REQUEST`
 before Secret reads, record creation, or gateway writes. OCC checks any returned
 normalized configuration against the catalog and stores it in the source record.
 
-`apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` and
-OpenShell's `normalizedSourceBaseUrl` enforce the
-[endpoint restrictions](../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
-OpenShell requires an exact DNS host; Compute also accepts IP hosts.
-Registration and attachment validate endpoints; cleanup uses owned identity.
+`apps/controller/src/drivers/openai-endpoint.ts:validateOpenAiSourceBaseUrl` shares
+OpenShell's strict source endpoint decision between request validation and stored-source
+use. Requests retain field-specific `400` errors; invalid stored endpoints retain `409`
+errors. Explicit URLs are normalized; an omitted URL stays omitted. Sources require an
+exact DNS host; Compute and Proxy provider normalization keep their broader URL rules.
+
+OpenShell's internal validator receives a lazy placement callback. Static OpenAI
+validation does not consult backend Gateway placement. OAuth2 validation resolves it
+to reject token endpoints in the Gateway's own Namespace; registration repeats that
+check with tenant placement. Source ownership and cleanup remain with the recorded Driver.
 
 ### 2. Read Secret values
 
@@ -329,6 +334,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 20:41: Validate static source endpoints without Gateway placement. (authoring-run/cf8bb25e-ffb8-4349-9770-a0b07d6bf50f - 2eed3c36a)
 
 - 2026-10-29 19:11: Use the recorded owner’s catalog for fresh source admission. (authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741 - 3a4244461)
 
