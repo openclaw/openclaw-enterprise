@@ -81,13 +81,13 @@ cleanup, warnings, or overview errors need attention. Pending work and errors
 remain visible outside Deployment; overview errors preserve recorded outcomes.
 
 `createDeploymentStatusPanel` polls every `DEPLOYMENT_POLL_MS` until completion
-or refusal. Transient failures label retained progress without reflow. Refusals clear both records. Pending
-polls and cleanup preserve disclosure choice; refusals and manual failures open it.
-Terminal polls reread record, Agent and revisions. **Refresh deployment** queues
-one full reread behind pending work. **Refresh record** preserves focus and ignores
-repeats. Shared transient reads retain the selected record; `fail` clears it and
-invalidates older reads; initial transient failures permit fallback. Reserved
-error space protects diagnostics position; one visible matching error gets the alert role.
+or refusal. Transient failures retain progress without reflow; initial failures permit
+fallback. Refusals in either panel clear matching records and invalidate older reads
+through `invalidate` and `fail`. Fresh reads recover; other versions remain independent.
+Pending polls preserve disclosure choice; refusals and manual failures open it.
+Terminal polls reread record, Agent and revisions. **Refresh deployment** queues one
+reread; **Refresh record** preserves focus and ignores repeats. Reserved error space
+protects diagnostics position; one visible matching error owns the alert role.
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
@@ -340,6 +340,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 11:19: Clear matching deployment evidence on selected-record refusal. (denial-coherence - e98223e893bcfb3ca23f0fb3ba4ea36af3a41f9d)
 
 - 2026-10-29 10:27: Retain deployment progress through transient reads. (authoring-run/26ccef3f-405c-4275-bef6-7c1722ae15c8 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 

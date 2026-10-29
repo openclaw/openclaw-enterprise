@@ -8,6 +8,7 @@ import type {
 } from "../../packages/occ/src/state/platform-state.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  AGENT_READ,
   detailUrl,
   login,
   nativeValues,
@@ -628,6 +629,171 @@ for (const refusal of [403, 404] as const) {
     assert.equal(requests.length, 0, "a definitive refusal stops automatic reads");
   });
 }
+
+// The selected record can refuse a read while the activity's older request is in flight.
+// Capture real controller responses and require their order: no successful read may
+// refresh the cache between the refusal and the stale delivery under test.
+for (const refusal of [403, 404] as const) {
+  for (const delayed of [200, 503] as const) {
+    test(
+      `selected ${refusal} invalidates activity before late ${delayed}`,
+      { timeout: 60_000 },
+      async (t) => {
+        const { fixture, namespace, agent, revisionId, url, control } = await deploymentFixture(t);
+        const member = await fixture.createNamespaceMember(
+          "record-reader",
+          namespace.id,
+          AGENT_READ,
+        );
+        const { page } = await newPage(t, fixture);
+        await trackSettledFetches(page);
+        await login(
+          page,
+          fixture,
+          detailUrl(fixture, namespace.id, agent.id, revisionId, "deployment").href,
+          member.credentials,
+        );
+        const card = page.locator(".version-deployment-record");
+        const activity = page.getByRole("region", { name: "Deployment activity" });
+        const refresh = card.getByRole("button", { name: "Refresh record", exact: true });
+        await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+        const held = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        t.after(() => release.resolve());
+        const responses: number[] = [];
+        page.on("response", (response) => {
+          if (response.url() === url) {
+            responses.push(response.status());
+          }
+        });
+        let first = true;
+        await page.route(url, async (route) => {
+          if (!first) {
+            await route.continue();
+            return;
+          }
+          first = false;
+          // A late success was fetched before revocation. A transient response is
+          // fetched after revocation is lifted, without any successful record read.
+          const response = delayed === 200 ? await route.fetch() : null;
+          if (response) {
+            assert.equal(response.status(), 200);
+            assert.equal((await response.json()).data.deploymentId, revisionId);
+          }
+          held.resolve();
+          await release.promise;
+          if (response) {
+            await route.fulfill({ response });
+          } else {
+            await route.continue();
+          }
+        });
+        await held.promise;
+        if (refusal === 403) {
+          fixture.policy.restrictions.push({
+            id: `deny-${revisionId}`,
+            namespaceId: namespace.id,
+            resourceKind: "agent_revision",
+            resourceId: revisionId,
+            action: "read",
+            effect: "deny",
+          });
+        } else {
+          control.missingRevision = true;
+        }
+        const denied = page.waitForResponse(url);
+        await refresh.focus();
+        await refresh.hover();
+        await refresh.press("Enter");
+        const response = await denied;
+        assert.equal(response.status(), refusal);
+        const body = await response.json();
+        assert.equal(body.data, undefined);
+        assert.equal(body.error.code, refusal === 403 ? "FORBIDDEN" : "NOT_FOUND");
+        const notice =
+          refusal === 403
+            ? body.error.message
+            : "Resource unavailable in this Namespace. Check the ID and your access.";
+        await card.getByText(notice, { exact: true }).waitFor();
+        await activity.getByText(notice, { exact: true }).waitFor();
+        assert.doesNotMatch(
+          await activity.innerText(),
+          /Recorded status:|Waiting for a worker claim/,
+        );
+        assert.deepEqual(responses, [refusal]);
+        assert.equal(await refresh.evaluate((el) => el === document.activeElement), true);
+        if (refusal === 403) {
+          fixture.policy.restrictions.pop();
+        }
+        control.missingRevision = false;
+        control.unavailable = delayed === 503;
+        const older = page.waitForResponse(url);
+        release.resolve();
+        assert.equal((await older).status(), delayed);
+        await waitForIdleFetches(page);
+        assert.deepEqual(responses, [refusal, delayed]);
+        await card.getByText(notice, { exact: true }).waitFor();
+        await activity.getByText(notice, { exact: true }).waitFor();
+        assert.doesNotMatch(
+          await card.innerText(),
+          /Recorded outcome:|No persisted startup failure/,
+        );
+        // Two real poll periods prove revoked data cannot restart automatic reads.
+        await page.waitForTimeout(DEPLOYMENT_POLL_MS * 2 + 100);
+        assert.deepEqual(responses, [refusal, delayed]);
+        control.unavailable = false;
+        control.claimed = true;
+        await refresh.press("Enter");
+        await card.getByText("Recorded outcome: In progress", { exact: true }).waitFor();
+        assert.equal(responses.at(-1), 200, "a fresh authorized read recovers");
+        await activity.getByRole("button", { name: "Refresh deployment", exact: true }).click();
+        await activity.getByText("Recorded status: In progress", { exact: true }).waitFor();
+        control.succeeded = true;
+        await card.getByText("Recorded outcome: Completed", { exact: true }).waitFor();
+        await activity.getByText("Recorded status: Completed", { exact: true }).waitFor();
+      },
+    );
+  }
+}
+
+test("a selected historical refusal leaves the latest deployment readable", async (t) => {
+  const { fixture, namespace, agent, revisionId, url } = await deploymentFixture(t);
+  const newest = await fixture.deployAgent(namespace.id, agent.id);
+  assert.notEqual(newest.id, revisionId);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "deployment").href,
+  );
+  const card = page.locator(".version-deployment-record");
+  const activity = page.getByRole("region", { name: "Deployment activity" });
+  await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+  await activity.getByText("Recorded status: Queued", { exact: true }).waitFor();
+  fixture.policy.restrictions.push({
+    id: `deny-old-${revisionId}`,
+    namespaceId: namespace.id,
+    resourceKind: "agent_revision",
+    resourceId: revisionId,
+    action: "read",
+    effect: "deny",
+  });
+  const denied = page.waitForResponse(url);
+  await card.getByRole("button", { name: "Refresh record", exact: true }).click();
+  assert.equal((await denied).status(), 403);
+  await card.getByRole("alert").waitFor();
+  const newestUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${newest.id}`;
+  const latest = page.waitForResponse(newestUrl);
+  await activity.getByRole("button", { name: "Refresh deployment", exact: true }).click();
+  const response = await latest;
+  assert.equal(response.status(), 200);
+  assert.equal((await response.json()).data.deploymentId, newest.id);
+  await waitForIdleFetches(page);
+  await activity.getByText("Recorded status: Queued", { exact: true }).waitFor();
+  await card.getByRole("alert").waitFor();
+  assert.doesNotMatch(await card.innerText(), /Recorded outcome:/);
+});
 
 // This non-browser check proves the fixture's failure injection reaches the real
 // status route and IAM evaluator. It does not prove DOM behavior or runtime work.

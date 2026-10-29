@@ -1776,6 +1776,7 @@ export async function renderAgentDetail(
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
   let activityPanel = deploymentStatus;
+  let invalidateActivity: ((cause: unknown) => void) | undefined;
   let activityRevisionId: string | null | undefined;
   let viewedSnapshot: Snapshot | null = null;
   let detailLoadFinished = false;
@@ -2555,7 +2556,7 @@ export async function renderAgentDetail(
           revealDetail,
         );
       };
-      const nextPanel: HTMLElement = mostRecent
+      const nextActivity = mostRecent
         ? createDeploymentStatusPanel(
             { ...context, failureText: (error) => recordedFailureText(error, mostRecent.id) },
             path,
@@ -2617,23 +2618,27 @@ export async function renderAgentDetail(
             // opens the details as any new outcome does.
             firstLoad ? () => detailShown : undefined,
           )
-        : element(
-            "section",
-            // With no versions the card would repeat the facts' "No readable deployments", so it
-            // stays out of the way of the draft's next step (UX spec 3.7).
-            {
-              className: "agent-card deployment-status",
-              hidden: revisionResult.status !== "rejected",
-            },
-            element("h2", {}, "Deployment activity"),
-            element(
-              "p",
-              { className: "muted" },
-              revisionResult.status === "rejected"
-                ? "Version history is unavailable."
-                : "No readable deployment records.",
-            ),
-          );
+        : null;
+      invalidateActivity = nextActivity?.invalidate;
+      const nextPanel: HTMLElement =
+        nextActivity ??
+        element(
+          "section",
+          // With no versions the card would repeat the facts' "No readable deployments", so it
+          // stays out of the way of the draft's next step (UX spec 3.7).
+          {
+            className: "agent-card deployment-status",
+            hidden: revisionResult.status !== "rejected",
+          },
+          element("h2", {}, "Deployment activity"),
+          element(
+            "p",
+            { className: "muted" },
+            revisionResult.status === "rejected"
+              ? "Version history is unavailable."
+              : "No readable deployment records.",
+          ),
+        );
       if (!mostRecent || !firstLoad) {
         showPanel(nextPanel);
       }
@@ -2764,6 +2769,11 @@ export async function renderAgentDetail(
         selected,
         {
           shared: activityRevisionId === selected,
+          onRefused: (cause) => {
+            if (activityRevisionId === selected) {
+              invalidateActivity?.(cause);
+            }
+          },
           hasVisibleReadError: (cause) => {
             if (activityRevisionId !== selected || !latestDeploymentUnavailable) {
               return false;

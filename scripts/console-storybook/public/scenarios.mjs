@@ -5978,6 +5978,29 @@ export const scenarios = {
       "Refresh again and press Tab before the response arrives. Completion leaves focus on the control you moved to.",
     ],
   },
+  deploymentRecordRefused: {
+    group: "Pages/Agent detail",
+    name: "Selected record refusal clears shared evidence",
+    path: `${candidateVersion}&tab=deployment`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        method: "GET",
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "A selected-record refresh loses access to the same version shown in Deployment activity. Both panels clear their previous evidence.",
+    steps: [
+      "Read the completed record, focus Refresh record, and press Enter. Both panels must show the refusal, with no completed outcome remaining.",
+      "Focus remains on Refresh record. Fold and unfold Deployment details: only the visible leading refusal owns the alert role.",
+    ],
+    gap: "Simulated UI proof only. The deployment browser suite verifies native IAM denial, missing records, stale deliveries, recovery, and version isolation with the real controller.",
+  },
   deploymentActivityLoading: {
     group: "Pages/Agent detail",
     name: "Deployment activity loading",

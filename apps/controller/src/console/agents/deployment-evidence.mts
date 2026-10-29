@@ -333,6 +333,7 @@ export function createDeploymentStatusPanel(
   // pending or how it ended, and its warning count.
   let previousSettled: string | undefined;
   let loading = false;
+  let generation = 0;
   // Quiet polls and their overview rereads leave Refresh alone until the reader presses it.
   let polling = false;
   let refreshQueued = false;
@@ -382,6 +383,7 @@ export function createDeploymentStatusPanel(
     pollTimer = undefined;
     // After a failed read, the record before it.
     const previousStatus = lastRecord?.status ?? null;
+    const started = generation;
     // A failed background check does not change recorded progress. A definitive refusal
     // clears both copies so a later transient failure cannot restore revoked evidence.
     loading = true;
@@ -396,7 +398,7 @@ export function createDeploymentStatusPanel(
         refreshAgent ? (context.request(path) as Promise<AgentReadWire>) : null,
         refreshAgent ? readRevisionPage(context.request, path) : null,
       ]);
-      if (!context.isCurrent()) {
+      if (!context.isCurrent() || started !== generation) {
         return;
       }
       if (
@@ -439,7 +441,7 @@ export function createDeploymentStatusPanel(
         }
       }
     } catch (cause) {
-      if (!context.isCurrent()) {
+      if (!context.isCurrent() || started !== generation) {
         return;
       }
       if (requestFailure(cause).status === 401) {
@@ -452,40 +454,9 @@ export function createDeploymentStatusPanel(
         lastRecord = null;
       }
     } finally {
-      if (context.isCurrent()) {
+      if (context.isCurrent() && started === generation) {
         loading = false;
-        // Revealing a final refusal can push the next focused control off screen.
-        // Keep it visible only if the reader could see it before the poll completed.
-        const focused = document.activeElement;
-        const position =
-          poll &&
-          error &&
-          !transientReadError(error) &&
-          !details.open &&
-          focused instanceof HTMLElement &&
-          section.parentElement?.contains(focused)
-            ? focused.getBoundingClientRect()
-            : null;
-        render();
-        onStatusChange({
-          outcome: record ? deploymentOutcome(record) : null,
-          record,
-          readFailed: error !== null,
-          readError: error,
-          transientFailure: error !== null && transientReadError(error),
-          overviewUnavailable,
-        });
-        if (
-          position &&
-          position.height > 0 &&
-          position.top >= 0 &&
-          position.bottom <= window.innerHeight &&
-          details.open &&
-          focused instanceof HTMLElement &&
-          document.activeElement === focused
-        ) {
-          focused.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
-        }
+        publish(poll);
         if (
           refreshQueued ||
           (poll &&
@@ -502,6 +473,41 @@ export function createDeploymentStatusPanel(
           schedulePoll();
         }
       }
+    }
+  }
+
+  function publish(poll: boolean) {
+    // Revealing a final refusal can push the next focused control off screen.
+    // Keep it visible only if the reader could see it before the poll completed.
+    const focused = document.activeElement;
+    const position =
+      poll &&
+      error &&
+      !transientReadError(error) &&
+      !details.open &&
+      focused instanceof HTMLElement &&
+      section.parentElement?.contains(focused)
+        ? focused.getBoundingClientRect()
+        : null;
+    render();
+    onStatusChange({
+      outcome: record ? deploymentOutcome(record) : null,
+      record,
+      readFailed: error !== null,
+      readError: error,
+      transientFailure: error !== null && transientReadError(error),
+      overviewUnavailable,
+    });
+    if (
+      position &&
+      position.height > 0 &&
+      position.top >= 0 &&
+      position.bottom <= window.innerHeight &&
+      details.open &&
+      focused instanceof HTMLElement &&
+      document.activeElement === focused
+    ) {
+      focused.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
     }
   }
 
@@ -704,6 +710,23 @@ export function createDeploymentStatusPanel(
   // New permission or binding information can change a recorded failure's wording.
   // It is not a user refresh of an unsuccessful read.
   return Object.assign(section, {
+    // A matching selected-record refusal revokes cached evidence and older reads together.
+    invalidate(cause: unknown) {
+      if (!context.isCurrent()) {
+        return;
+      }
+      generation += 1;
+      clearTimeout(pollTimer);
+      pollTimer = undefined;
+      loading = false;
+      refreshQueued = false;
+      record = null;
+      lastRecord = null;
+      error = cause;
+      overviewUnavailable = false;
+      overviewError = null;
+      publish(true);
+    },
     rerender() {
       if (record?.error) {
         render();
@@ -723,6 +746,7 @@ export function createVersionDeploymentEvidence(
     operateAllowed,
     isCurrentVersion,
     onRecord,
+    onRefused,
     hasVisibleReadError = () => false,
   }: {
     shared: boolean;
@@ -731,6 +755,7 @@ export function createVersionDeploymentEvidence(
     hasVisibleReadError?: (cause: unknown) => boolean;
     // Each record this panel shows, read here or handed over by the page.
     onRecord: (record: Deployment) => void;
+    onRefused: (cause: unknown) => void;
   },
 ) {
   const section = element("section", { className: "agent-card version-deployment-record" });
@@ -780,6 +805,9 @@ export function createVersionDeploymentEvidence(
       if (started === generation) {
         status = null;
         error = cause;
+        if (!transientReadError(cause)) {
+          onRefused(cause);
+        }
       }
     } finally {
       if (context.isCurrent() && started === generation) {
