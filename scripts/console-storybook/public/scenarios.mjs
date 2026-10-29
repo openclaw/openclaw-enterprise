@@ -5587,6 +5587,21 @@ export const scenarios = {
     ],
     gap: "The rejected credential is simulated deployment evidence; this story does not call a model provider.",
   },
+  draftRetiredSetting: {
+    group: "Pages/Agent detail",
+    name: "Next step for a draft with a retired setting",
+    path: draft,
+    deployed: true,
+    retiredSetting: true,
+    description:
+      "An older release saved this draft's security.preset, which the pinned OpenClaw has since retired. OCC refuses to deploy it, so Prepare this version shows OCC's refusal beside a disabled Deploy instead of Ready to deploy.",
+    steps: [
+      "In Prepare this version, the first step has an open ring with the detail Remove the retired setting.",
+      "Beside Deploy new version the status reads Configuration setting security.preset must be removed: the OpenClaw runtime retired it (configure the individual security controls explicitly). Deploy is disabled.",
+      "Open Configuration, remove security.preset and save: the status returns to Ready to deploy.",
+    ],
+    gap: "The stored setting is simulated; this story does not call OCC's deploy admission.",
+  },
   credentialRejectedBindingEditor: {
     group: "Pages/Agent detail",
     name: "Rejected credential, binding editor cannot deploy",

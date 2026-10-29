@@ -9,6 +9,9 @@ import {
   ConfigurationHarnessError,
   GatewayPasswordValueError,
 } from "./errors.ts";
+import { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
+
+export { RETIRED_OPENCLAW_SETTINGS } from "./retired-openclaw-settings.ts";
 
 /**
  * The Codex session approval policy setting. The pinned OpenClaw Gateway (openclaw/openclaw
@@ -177,28 +180,6 @@ export function validateWorkspaceBootstrapSettings(
 }
 
 /**
- * Settings the pinned OpenClaw (the commit in `deploy/runtime/openclaw-source.json`) retired,
- * with what replaces each. Its config validation refuses them and the Gateway does not start;
- * its `doctor --fix` would remove them, but it cannot rewrite the read-only Configuration OCE
- * mounts. The runtime image test checks the core settings against the pinned schema.
- */
-export const RETIRED_OPENCLAW_SETTINGS: readonly (readonly [string, string])[] = [
-  ["security.preset", "configure the individual security controls explicitly"],
-  [
-    "agents.defaults.compaction.memoryFlush.model",
-    "memory flushes use the session model and its fallbacks",
-  ],
-  [
-    "agents.defaults.embeddedAgent.cyberFailover.model",
-    "cyber-policy retries use the active model",
-  ],
-  [
-    "plugins.entries.codex.config.appServer.cyberFailover.model",
-    "cyber-policy retries use the active model",
-  ],
-];
-
-/**
  * Refuses a setting the pinned OpenClaw retired (RETIRED_OPENCLAW_SETTINGS), whatever its value:
  * the Gateway refuses the key itself. Configuration save runs it with the other content rules;
  * Agent save and deploy admission run it on the stored Configuration, so a row saved before the
@@ -208,17 +189,9 @@ export const RETIRED_OPENCLAW_SETTINGS: readonly (readonly [string, string])[] =
 export function refuseRetiredOpenClawSettings(
   values: Readonly<OpenClawConfigurationDocument>,
 ): void {
-  for (const [setting, replacement] of RETIRED_OPENCLAW_SETTINGS) {
-    const path = setting.split(".");
-    let parent: Record<string, unknown> | undefined = values;
-    for (const key of path.slice(0, -1)) {
-      parent = asRecord(parent?.[key]);
-    }
-    if (parent !== undefined && Object.hasOwn(parent, path.at(-1)!)) {
-      throw new ConfigurationHarnessError(
-        `Configuration setting ${setting} must be removed: the OpenClaw runtime retired it (${replacement}).`,
-      );
-    }
+  const message = retiredOpenClawSettingMessage(values);
+  if (message !== null) {
+    throw new ConfigurationHarnessError(message);
   }
 }
 

@@ -69,6 +69,10 @@ function configurationValues(scenario) {
   if (scenario.messageQueue !== undefined) {
     values.messages = { queue: structuredClone(scenario.messageQueue) };
   }
+  if (scenario.retiredSetting) {
+    // A setting an older release saved and the pinned OpenClaw has since retired.
+    values.security = { preset: "corporate" };
+  }
   if (scenario.slack) {
     values.channels.slack = {
       enabled: true,

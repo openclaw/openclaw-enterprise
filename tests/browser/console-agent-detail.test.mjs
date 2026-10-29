@@ -821,6 +821,72 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
   assert.deepEqual(revisions.data, []);
 });
 
+// A draft an older release saved with a setting the pinned OpenClaw has since retired: save
+// refuses the setting, and deploy admission refuses the stored row with the same message. The
+// draft's next step says that message with Deploy held, instead of "Ready to deploy." and a
+// refusal only after Deploy (finding 2810). Removing the setting makes the draft ready again.
+test("A draft that keeps a retired OpenClaw setting shows deployment's refusal before Deploy", async (t) => {
+  const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+  const fixture = await createConsoleAppFixture(t, { configurationDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Retired setting", { ready: true });
+  const values = nativeValues("retired-setting");
+  const agent = await fixture.createAgent(namespace.id, "Retired setting Agent", values);
+  const retired = { ...values, security: { preset: "corporate" } };
+  const reason =
+    "Configuration setting security.preset must be removed: the OpenClaw runtime retired it (configure the individual security controls explicitly).";
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const refusedSave = await fixture.request("PATCH", configurationPath, {
+    body: { values: retired },
+  });
+  assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+  assert.equal(refusedSave.body.error.message, reason);
+  // A row an older release saved with it still reads; the server refuses to deploy it.
+  const stored = configurationDriver.stored({
+    namespaceId: namespace.id,
+    id: agent.configurationId,
+  });
+  assert.ok(stored);
+  await configurationDriver.update({ ...stored, values: retired });
+
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const card = page.locator(".agent-draft-actions");
+  const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
+  await card.getByText(reason, { exact: true }).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await card.getByText("Ready to deploy.").count(), 0);
+  // The Configuration step stays open and says what to do.
+  const configurationStep = card.getByRole("listitem").first();
+  assert.notEqual(await configurationStep.getAttribute("data-state"), "done");
+  assert.match(
+    await configurationStep.locator(".checklist-detail").textContent(),
+    /^Remove the retired setting · Configuration /,
+  );
+  // Reading the draft sent no deployment.
+  assert.deepEqual(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`),
+    [],
+  );
+
+  // Deploy admission gives this exact text for the stored row (the page shows what it would say).
+  const refusedDeploy = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+    { body: {} },
+  );
+  assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
+  assert.equal(refusedDeploy.body.error.message, reason);
+
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await page.getByLabel("Configuration JSON", { exact: true }).fill(JSON.stringify(values));
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+  await waitForEnabled(deploy);
+  assert.equal(await card.getByText(reason).count(), 0);
+});
+
 test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed success", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

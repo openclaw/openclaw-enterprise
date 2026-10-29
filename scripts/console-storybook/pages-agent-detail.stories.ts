@@ -73,6 +73,7 @@ export const AgentHeader = story("agentHeader");
 export const AgentHeaderMobile = story("agentHeaderMobile");
 export const AgentHeaderNoClipboard = story("agentHeaderNoClipboard");
 export const DraftCredentialRejected = story("draftCredentialRejected");
+export const DraftRetiredSetting = story("draftRetiredSetting");
 export const CredentialRejectedBindingEditor = story("credentialRejectedBindingEditor");
 export const CredentialRejectedHiddenSecretUpdater = story("credentialRejectedHiddenSecretUpdater");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
