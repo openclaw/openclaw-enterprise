@@ -156,7 +156,7 @@ test("a draft's disabled Save, Discard and Use Preset name their reasons", async
   // Use Preset waits for a Preset; the status line under the chooser says so.
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  const status = page.getByText(/^Choose a Preset/);
+  const status = page.getByRole("status").filter({ hasText: /^Choose a Preset/ });
   await status.waitFor();
   await describedBy(page.getByRole("button", { name: "Use Preset" }), await status.textContent());
 });
