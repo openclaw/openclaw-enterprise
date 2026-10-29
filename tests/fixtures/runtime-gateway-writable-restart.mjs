@@ -424,8 +424,44 @@ export async function runWritableGatewayRestart(t) {
   // namespace and cannot verify that the holder stopped, so OpenClaw refuses to read the
   // configuration. The wrapper must hold that refusal under its own check and name the
   // lock, not report a tool policy failure (finding 2864). Recovery stays with the operator.
+  const pidNamespace = async (name) =>
+    (await runDocker(["exec", name, "readlink", "/proc/1/ns/pid"])).stdout.trim();
+  const killedNamespace = await pidNamespace(replacement.containerName);
   await killContainer(replacement.containerName);
+  // The kernel hands out the lowest free namespace inode number, so a container started at
+  // once can get the killed one back; OpenClaw then sees its own namespace, finds the
+  // holder's PID gone and recovers the lock. Placeholder containers take the freed number
+  // first, as other workloads on a node can, so the restart gets a new namespace.
+  const placeholders = [];
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const name = `${owner}-pidns-${attempt}`;
+    cleanup.push(() => runDocker(["rm", "-f", name]).catch(() => {}));
+    ownedContainers.push(name);
+    placeholders.push(name);
+    await runDocker([
+      "run",
+      "--detach",
+      "--name",
+      name,
+      "--pull=never",
+      "--network",
+      "none",
+      "--label",
+      `oce.proof.owner=${owner}`,
+      "--entrypoint",
+      "sleep",
+      image,
+      "600",
+    ]);
+    if ((await pidNamespace(name)) === killedNamespace) {
+      break;
+    }
+  }
   await runDocker(["start", replacement.containerName]);
+  assert.notEqual(await pidNamespace(replacement.containerName), killedNamespace);
+  for (const name of placeholders) {
+    await runDocker(["rm", "-f", name]);
+  }
   const lockHeld = await waitHeld(replacement.containerName, "a stale Gateway state lock");
   assert.equal(lockHeld?.failure?.check, "gateway-state-lock", JSON.stringify(lockHeld));
   assert.equal(lockHeld.failure.code, "UNAVAILABLE");
