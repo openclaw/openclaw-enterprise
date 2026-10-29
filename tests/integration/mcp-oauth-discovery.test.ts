@@ -123,7 +123,9 @@ test("discovery rejects a different issuer in authorization server metadata with
   const fixture = discoveryFixture();
   const fetchMetadata = async (url: string | URL, init?: RequestInit) => {
     const response = await fixture.fetchMetadata(url, init);
-    if (!url.toString().includes("oauth-authorization-server")) return response;
+    if (!url.toString().includes("oauth-authorization-server")) {
+      return response;
+    }
     return Response.json({ ...(await response.json()), issuer: "https://unexpected.example.test" });
   };
   await assert.rejects(

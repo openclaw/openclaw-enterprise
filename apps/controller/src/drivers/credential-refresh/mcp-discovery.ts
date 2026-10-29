@@ -36,7 +36,9 @@ export async function discoverMcpAuthorization(
 ) {
   const timeout = AbortSignal.timeout(10_000);
   const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  if (deadline.aborted) throw discoveryUnavailable();
+  if (deadline.aborted) {
+    throw discoveryUnavailable();
+  }
 
   const approved = new Map<string, LookupAddress[]>();
   async function pinEndpoint(value: string | URL) {
@@ -72,8 +74,12 @@ export async function discoverMcpAuthorization(
       lookup(host, options, callback) {
         const addresses = approved.get(host);
         const first = addresses?.[0];
-        if (!addresses || !first) return callback(new Error("Unapproved MCP discovery host."), "");
-        if (options.all) return callback(null, addresses);
+        if (!addresses || !first) {
+          return callback(new Error("Unapproved MCP discovery host."), "");
+        }
+        if (options.all) {
+          return callback(null, addresses);
+        }
         callback(null, first.address, first.family);
       },
     },
@@ -104,8 +110,12 @@ export async function discoverMcpAuthorization(
       await response.body?.cancel();
       throw new BrowserAuthorizationError("unsupported_mcp_metadata_response", "fix_configuration");
     }
-    if (headersOnly || !response.ok) await response.body?.cancel();
-    if (response.status >= 500) throw discoveryUnavailable();
+    if (headersOnly || !response.ok) {
+      await response.body?.cancel();
+    }
+    if (response.status >= 500) {
+      throw discoveryUnavailable();
+    }
     const body =
       headersOnly || !response.ok || !response.body ? null : await response.arrayBuffer();
     return new Response(body, {
@@ -175,9 +185,12 @@ export async function discoverMcpAuthorization(
       }),
     ]);
   } catch (error) {
-    if (deadline.aborted) throw discoveryUnavailable();
-    if (error instanceof BrowserAuthorizationError || error instanceof DependencyUnavailableError)
+    if (deadline.aborted) {
+      throw discoveryUnavailable();
+    }
+    if (error instanceof BrowserAuthorizationError || error instanceof DependencyUnavailableError) {
       throw error;
+    }
     // SDK, JSON and URL parser errors can include untrusted document values.
     throw new BrowserAuthorizationError("invalid_mcp_metadata", "fix_configuration");
   } finally {

@@ -398,7 +398,9 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
     const discover = button(
       "Discover",
       async () => {
-        if (!server.reportValidity()) return;
+        if (!server.reportValidity()) {
+          return;
+        }
         feedback.textContent = "";
         discover.disabled = server.disabled = true;
         try {
@@ -406,7 +408,9 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
             method: "POST",
             body: { serverUrl: server.value.trim() },
           });
-          if (!dialog.open || !isCurrent()) return;
+          if (!dialog.open || !isCurrent()) {
+            return;
+          }
           if (!metadata.scopes.length) {
             feedback.textContent =
               "This server advertised no scopes. A connection template requires at least one.";
@@ -552,7 +556,9 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
       { tone: "primary" },
     );
     dialog.append(note);
-    if (example) dialog.append(example);
+    if (example) {
+      dialog.append(example);
+    }
     if (mcp) {
       dialog.append(
         element(
