@@ -147,7 +147,10 @@ The artifacts' `build-record.json` records input commits, composed tree, actual
 Rust version and target, OCE revision, base image digest and every binary/bridge
 hash. Inspect the same record at `/opt/strands-box/build-record.json` in the image.
 `image-record.json` records the image manifest/config digests, archive hash and
-build-record hash outside the image. These records describe the controlled build;
+build-record hash outside the image. Image receipts establish identity only; matching
+labels do not prove that an image contains the payload. Zero-layer images are
+refused. Later layers can overwrite earlier files, so installed QA must verify
+the actual final files before accepting the image. These records describe the controlled build;
 they are not cryptographic attestations or a claim of deterministic binaries.
 The supported source-to-artifact guarantee requires the `build` command. Direct
 Dockerfile use verifies the supplied record and bytes but cannot establish who
@@ -238,7 +241,8 @@ this fixture, source, command arguments, or evidence.
   "agentId": "agt_<uuid>",
   "modelSecretId": "sec_<uuid>",
   "model": "<authorized-api-model>",
-  "runtimeImage": "<runtime-image>@sha256:<digest>"
+  "runtimeImage": "<runtime-image>@sha256:<digest>",
+  "runtimeBuildRecordFile": "/private/reviewed-build-record.json"
 }
 ```
 
@@ -250,6 +254,15 @@ OCC_TEST_QA_OPENAI_KEY_FILE="$MODEL_KEY_FILE" \
 OCC_TEST_QA_ARTIFACTS="$EVIDENCE_DIRECTORY" \
 node --test tests/integration/qa-matrix-real.test.mjs
 ```
+
+`runtimeBuildRecordFile` is mandatory: supply the reviewed build record from the
+build host, not a record copied out of the selected image. QA sends the official
+file-verification code and expected hashes from this checkout into each running
+container. It requires the normal `node` user (UID 1000), then checks the actual
+binaries, bridges and build record for hashes, file types, modes and access.
+This also runs after replacement and for the second Agent. A replaced bundled
+verifier or an in-image record cannot override the host expectations. Missing
+files, later-layer overwrites, wrong users and Pod identity changes fail QA.
 
 QA requires a nonempty image ID for every observed running container and checks
 it against the selected image. An existing fixture works unchanged when the

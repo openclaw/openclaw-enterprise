@@ -382,6 +382,7 @@ function recordImage(options: Options, packaging = false) {
   assert.equal(`sha256:${sha(manifest)}`, descriptor.digest, "OCI manifest digest mismatch");
   const parsed = JSON.parse(manifest.toString());
   assert.ok(Array.isArray(parsed.layers), "expected a single platform manifest, not an index");
+  assert.ok(parsed.layers.length > 0, "zero-layer images cannot contain the Box payload");
   assert.match(parsed.config.digest, /^sha256:[a-f0-9]{64}$/);
   const config = run("tar", ["-xOf", archive, `blobs/sha256/${parsed.config.digest.slice(7)}`]);
   assert.equal(`sha256:${sha(config)}`, parsed.config.digest, "OCI config digest mismatch");
@@ -401,6 +402,7 @@ function recordImage(options: Options, packaging = false) {
   }
   writeFileSync(join(out, "manifest.json"), manifest, { flag: "wx" });
   save(join(out, "image-record.json"), {
+    verification: "identity-only; installed payload verification is required by QA",
     manifestDigest: descriptor.digest,
     configDigest: parsed.config.digest,
     buildRecordSha256: sha(regular(join(artifacts, "build-record.json"))),
@@ -408,7 +410,7 @@ function recordImage(options: Options, packaging = false) {
     oceRevision: record.oceRevision,
   });
   console.log(
-    `Packaged ${descriptor.digest}; see ${out}/image-record.json. No image was published.`,
+    `Recorded identity ${descriptor.digest}; see ${out}/image-record.json. Payload remains unverified until installed QA. No image was published.`,
   );
 }
 const usage = `Usage: node deploy/runtime/strands-box/build.ts COMMAND [OPTIONS]

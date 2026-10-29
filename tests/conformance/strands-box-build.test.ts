@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, rm, readFile, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, readFile, symlink, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { strandsImageIdentity, assertStrandsRunningImage } from "../helpers/qa-strands-image.ts";
+import {
+  strandsPayloadProbe,
+  verifyPayloadFiles,
+} from "../../deploy/runtime/strands-box/payload.ts";
+import {
+  strandsImageIdentity,
+  assertStrandsRunningImage,
+  replacementRuntimePods,
+} from "../helpers/qa-strands-image.ts";
 
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 async function directory(t: TestContext) {
@@ -67,6 +75,25 @@ test("Box packaging refuses changed, absent, symlinked and non-ARM64 artifacts b
       },
     );
   assert.equal(invoke("verify").status, 0);
+  const probe = strandsPayloadProbe(await readFile(join(path, "build-record.json")));
+  const syntax = spawnSync(process.execPath, ["--input-type=module", "--check"], {
+    input: probe.script,
+    encoding: "utf8",
+  });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  const payloadPath = join(path, "strands-box");
+  await chmod(payloadPath, 0o555);
+  const installed = [{ path: payloadPath, sha256: hash(elf), mode: 0o555 }];
+  verifyPayloadFiles(installed);
+  await chmod(payloadPath, 0o755);
+  await writeFile(payloadPath, "later layer replaced the executable");
+  await chmod(payloadPath, 0o555);
+  assert.throws(() => verifyPayloadFiles(installed), /installed SHA-256 mismatch/u);
+  await chmod(payloadPath, 0o755);
+  await writeFile(payloadPath, elf);
+  await chmod(payloadPath, 0o555);
+  verifyPayloadFiles(installed);
+
   await t.test("offline OCI receipts verify the manifest and build-record digest", async () => {
     const layout = await directory(t);
     await mkdir(join(layout, "blobs/sha256"), { recursive: true });
@@ -117,12 +144,27 @@ test("Box packaging refuses changed, absent, symlinked and non-ARM64 artifacts b
         { encoding: "utf8" },
       );
     pack();
+    const empty = recordImage(join(layout, "empty-receipt"));
+    assert.equal(empty.status, 1);
+    assert.match(empty.stderr, /zero-layer images cannot contain the Box payload/u);
+    const nonemptyManifest = JSON.stringify({
+      schemaVersion: 2,
+      config: { digest: `sha256:${hash(config)}` },
+      layers: [{ digest: `sha256:${hash("payload placeholder")}` }],
+    });
+    await writeFile(join(layout, "blobs/sha256", hash(nonemptyManifest)), nonemptyManifest);
+    await writeFile(
+      join(layout, "index.json"),
+      JSON.stringify({ manifests: [{ digest: `sha256:${hash(nonemptyManifest)}` }] }),
+    );
+    pack();
     const accepted = recordImage(receipt);
     assert.equal(accepted.status, 0, accepted.stderr);
     const observed = JSON.parse(await readFile(join(receipt, "image-record.json"), "utf8"));
-    assert.equal(observed.manifestDigest, `sha256:${hash(manifest)}`);
+    assert.equal(observed.manifestDigest, `sha256:${hash(nonemptyManifest)}`);
+    assert.match(observed.verification, /identity-only/u);
     assert.equal(observed.buildRecordSha256, hash(await readFile(join(path, "build-record.json"))));
-    await writeFile(manifestPath, manifest + " ");
+    await writeFile(join(layout, "blobs/sha256", hash(nonemptyManifest)), nonemptyManifest + " ");
     pack();
     const rejected = recordImage(join(layout, "wrong-receipt"));
     assert.equal(rejected.status, 1);
@@ -140,6 +182,7 @@ test("Box packaging refuses changed, absent, symlinked and non-ARM64 artifacts b
   await writeFile(join(path, "bridge/inner.mjs"), "// synthetic bridge\n");
   const wrongArchitecture = Buffer.from(elf);
   wrongArchitecture.writeUInt16LE(62, 18);
+  await chmod(join(path, names[0]!), 0o755);
   await writeFile(join(path, names[0]!), wrongArchitecture);
   record.sha256[names[0]!] = hash(wrongArchitecture);
   await save();
@@ -225,4 +268,39 @@ test("Strands QA requires a running image and verifies index-to-ARM64 manifest m
   await assert.rejects(strandsImageIdentity(fixture), /manifest digest mismatch/u);
   await writeFile(fixture.runtimeImageIndexFile, index + " ");
   await assert.rejects(strandsImageIdentity(fixture), /index digest mismatch/u);
+});
+
+test("replacement observation tolerates a terminating predecessor but rejects active duplicates", () => {
+  const pod = (name: string, uid: string, role: string, deletionTimestamp?: string) => ({
+    metadata: {
+      name,
+      uid,
+      labels: { "openclaw.dev/workload-role": role },
+      ...(deletionTimestamp ? { deletionTimestamp } : {}),
+    },
+  });
+  const old = pod("old", "old-uid", "agent", "2026-10-29T00:00:00Z");
+  const replacement = pod("new", "new-uid", "agent");
+  const gateway = pod("gateway", "gateway-uid", "gateway");
+  assert.deepEqual(replacementRuntimePods([old, replacement, gateway], replacement), [
+    replacement,
+    gateway,
+  ]);
+  assert.throws(
+    () =>
+      replacementRuntimePods([pod("old", "old-uid", "agent"), replacement, gateway], replacement),
+    /exactly two active/u,
+  );
+  assert.throws(
+    () =>
+      replacementRuntimePods(
+        [replacement, gateway, pod("duplicate", "extra", "gateway")],
+        replacement,
+      ),
+    /exactly two active/u,
+  );
+  assert.throws(
+    () => replacementRuntimePods([old, pod("new", "different-uid", "agent"), gateway], replacement),
+    /replacement Pod is no longer active/u,
+  );
 });

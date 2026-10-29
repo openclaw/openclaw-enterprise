@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { replacementRuntimePods } from "./qa-strands-image.ts";
 
 /** Additional real workflows on the same admitted revision-Pod installation. */
 export async function verifyStrandsWorkspaceWorkflows(f) {
@@ -138,7 +139,10 @@ export async function verifyStrandsWorkspaceWorkflows(f) {
         ? next
         : undefined;
     });
-    f.observeRuntimeImages(owned(await objects("pods")), before.activeRevisionId);
+    await f.observeRuntimeImages(
+      replacementRuntimePods(owned(await objects("pods")), replacement),
+      before.activeRevisionId,
+    );
     await wait("replacement workspace enrolled", async () => {
       const nodes = await gateway("node.list");
       return nodes.nodes.some(
@@ -274,7 +278,7 @@ export async function verifyStrandsWorkspaceWorkflows(f) {
         ),
       );
       const pods = await objects("pods");
-      f.observeRuntimeImages(owned(pods, second.id), revision.id);
+      await f.observeRuntimeImages(owned(pods, second.id), revision.id);
       const claims = (id) =>
         owned(pods, id).flatMap((pod) =>
           pod.spec.volumes

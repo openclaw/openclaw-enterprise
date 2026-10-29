@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { protectedText, redactQaError } from "./qa-secrets.mjs";
 import { runQaCheck } from "./qa-check.mjs";
 import { strandsImageIdentity, assertStrandsRunningImage } from "./qa-strands-image.ts";
+import { strandsPayloadProbe } from "../../deploy/runtime/strands-box/payload.ts";
 
 const execute = promisify(execFile);
 const text = (message) =>
@@ -30,13 +31,24 @@ export async function verifyQaStrandsSandbox(artifacts) {
   assert.match(fixture.modelSecretId, /^sec_[a-f0-9-]+$/u);
   assert.match(fixture.runtimeImage, /@sha256:[a-f0-9]{64}$/u);
   const imageIdentity = await strandsImageIdentity(fixture);
+  assert.ok(
+    fixture.runtimeBuildRecordFile,
+    "runtimeBuildRecordFile is required for installed payload verification",
+  );
+  const payloadProbe = strandsPayloadProbe(await readFile(fixture.runtimeBuildRecordFile));
   const operatorKey = await protectedText(fixture.apiKeyFile, "local OCE operator key");
   const modelKey = await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model API key");
   const base = `/namespaces/${fixture.namespaceId}/agents/${fixture.agentId}`;
   const secretPath = `/namespaces/${fixture.namespaceId}/secrets/${fixture.modelSecretId}`;
   let fixtureConfigurationId;
   let fixtureConfigurationGeneration;
-  const result = { startedAt: new Date().toISOString(), imageIdentity, checks: [], revisions: [] };
+  const result = {
+    startedAt: new Date().toISOString(),
+    imageIdentity,
+    buildRecordSha256: payloadProbe.recordSha256,
+    checks: [],
+    revisions: [],
+  };
   const evidence = join(artifacts, "strands-sandbox.json");
   async function save() {
     await writeFile(evidence, JSON.stringify(result, null, 2) + "\n", { mode: 0o600 });
@@ -213,11 +225,42 @@ export async function verifyQaStrandsSandbox(artifacts) {
       ),
     );
   }
-  function observeRuntimeImages(pods, revisionId) {
+  async function observeRuntimeImages(pods, revisionId) {
     assert.equal(pods.length, 2, "dedicated Gateway and Box workloads");
     for (const pod of pods) {
       for (const container of pod.spec.containers) {
         assert.equal(container.image, fixture.runtimeImage, "test the selected immutable runtime");
+        assertStrandsRunningImage(pod, container, imageIdentity);
+        const verified = await kube(
+          "-n",
+          fixture.namespaceName,
+          "exec",
+          pod.metadata.name,
+          "-c",
+          container.name,
+          "--",
+          "node",
+          "--input-type=module",
+          "-e",
+          payloadProbe.script,
+        );
+        assert.equal(
+          verified.trim(),
+          payloadProbe.recordSha256,
+          "installed payload verification failed",
+        );
+        const current = JSON.parse(
+          await kube("-n", fixture.namespaceName, "get", "pod", pod.metadata.name, "-o", "json"),
+        );
+        assert.equal(
+          current.metadata.uid,
+          pod.metadata.uid,
+          "Pod changed during payload verification",
+        );
+        assert.equal(
+          assertStrandsRunningImage(current, container, imageIdentity),
+          assertStrandsRunningImage(pod, container, imageIdentity),
+        );
       }
     }
     (result.runtimeObservations ??= []).push({
@@ -231,6 +274,8 @@ export async function verifyQaStrandsSandbox(artifacts) {
           name: container.name,
           image: container.image,
           imageId: assertStrandsRunningImage(pod, container, imageIdentity),
+          payloadVerified: true,
+          payloadVerificationUid: 1000,
           resources: container.resources,
           securityContext: container.securityContext,
         })),
@@ -257,7 +302,7 @@ export async function verifyQaStrandsSandbox(artifacts) {
       420000,
     );
     const pods = owned(await objects("pods"));
-    observeRuntimeImages(pods, revision.id);
+    await observeRuntimeImages(pods, revision.id);
     const configuration = await gateway("config.get");
     assert.equal(
       configuration.config.plugins.entries.codex.config.appServer.sandbox,

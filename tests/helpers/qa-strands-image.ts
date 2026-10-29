@@ -83,3 +83,30 @@ export function assertStrandsRunningImage(
   );
   return status.imageID;
 }
+
+interface ReplacementPod {
+  metadata: {
+    name: string;
+    uid: string;
+    deletionTimestamp?: string;
+    labels?: Record<string, string>;
+  };
+}
+
+/** Only replacement recovery permits the terminating predecessor to coexist. */
+export function replacementRuntimePods<T extends ReplacementPod>(pods: T[], replacement: T): T[] {
+  const active = pods.filter((pod) => !pod.metadata.deletionTimestamp);
+  assert.equal(active.length, 2, "replacement must have exactly two active runtime Pods");
+  const selected = active.find(
+    (pod) =>
+      pod.metadata.uid === replacement.metadata.uid &&
+      pod.metadata.name === replacement.metadata.name,
+  );
+  assert.ok(selected, "the observed replacement Pod is no longer active");
+  assert.equal(selected.metadata.labels?.["openclaw.dev/workload-role"], "agent");
+  const gateways = active.filter(
+    (pod) => pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+  );
+  assert.equal(gateways.length, 1, "replacement requires exactly one live Gateway");
+  return [selected, gateways[0]!];
+}
