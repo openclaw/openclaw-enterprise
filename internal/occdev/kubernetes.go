@@ -576,14 +576,6 @@ func openShellOidcAuthConfiguration(external *externalOpenShell) map[string]any 
 }
 
 func openShellInstallationConfiguration(s *developmentState, workspaceResources []any, harnessResources map[string]any) map[string]any {
-	gatewayNamespace := openShellGatewayNamespace
-	if s.DeploymentMode == "k3d" {
-		gatewayNamespace = s.PlatformNamespace
-	}
-	gatewayLabels := map[string]string{
-		"app.kubernetes.io/name":     "openshell",
-		"app.kubernetes.io/instance": openShellGatewayService,
-	}
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
@@ -593,23 +585,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 					openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue,
 				},
 				"operatorWorkspaceResources": workspaceResources,
-				"networkPolicyResources": []any{
-					map[string]any{
-						"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
-						"metadata": map[string]string{"name": "allow-openshell-sandbox-callback"},
-						"spec": map[string]any{
-							"podSelector": map[string]any{"matchLabels": map[string]string{
-								openShellManagedByLabel:    openShellManagedByValue,
-								openShellBoundaryRoleLabel: openShellSupervisorRole,
-							}},
-							"policyTypes": []string{"Egress"},
-							"egress": []any{map[string]any{"to": []any{map[string]any{
-								"namespaceSelector": map[string]any{"matchLabels": map[string]string{"kubernetes.io/metadata.name": gatewayNamespace}},
-								"podSelector":       map[string]any{"matchLabels": gatewayLabels},
-							}}, "ports": []any{map[string]any{"protocol": "TCP", "port": 8080}}}},
-						},
-					},
-				},
+				"networkPolicyResources":     openShellSandboxCallbackPolicies(s),
 			},
 			"kubernetes": map[string]any{
 				"userNamespaces": false,

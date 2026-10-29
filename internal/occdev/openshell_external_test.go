@@ -36,6 +36,8 @@ func externalTestState(t *testing.T) *developmentState {
 			clientSecretPath: "/state/openshell-client-secret",
 			addresses:        []string{"203.0.113.10/32"},
 			port:             8443,
+			tokenAddresses:   []string{"198.51.100.20/32"},
+			tokenPort:        443,
 		},
 	}
 }
@@ -69,6 +71,36 @@ func TestReadExternalOpenShellSelection(t *testing.T) {
 	oidcOnly := map[string]string{"OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_ID": "occ-openshell"}
 	if _, err := readExternalOpenShell(oidcOnly); err == nil {
 		t.Fatal("OIDC variables without an endpoint must be rejected")
+	}
+	// The token URL follows the Backend parser's rule: https without credentials,
+	// query, or fragment, or cleartext to a numeric loopback address only.
+	// Assembled at runtime: a complete credentials-in-URL literal is what secret
+	// scanners flag, synthetic or not.
+	embeddedCredentials := "https://" + url.UserPassword("user", "pass").String() + "@idp.example.com/token"
+	for _, tokenURL := range []string{
+		"http://idp.example.com/token",
+		embeddedCredentials,
+		"https://idp.example.com/token?audience=x",
+		"ftp://idp.example.com/token",
+		"idp.example.com/token",
+	} {
+		invalid := map[string]string{}
+		for key, value := range complete {
+			invalid[key] = value
+		}
+		invalid["OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL"] = tokenURL
+		if _, err := readExternalOpenShell(invalid); err == nil {
+			t.Fatalf("token URL %q must be rejected", tokenURL)
+		}
+	}
+	// Cleartext is permitted only to a numeric loopback address.
+	loopback := map[string]string{}
+	for key, value := range complete {
+		loopback[key] = value
+	}
+	loopback["OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL"] = "http://127.0.0.1:8081/token"
+	if external, err := readExternalOpenShell(loopback); err != nil || external == nil {
+		t.Fatalf("a loopback token URL must be accepted: %v %v", external, err)
 	}
 	for _, endpoint := range []string{
 		"openshell-gateway.example.com:8443",
@@ -238,9 +270,39 @@ func TestExternalOpenShellNetworkPoliciesAdmitOnlyTheTranslatedAddress(t *testin
 	if err := json.Unmarshal(normalized, &egress); err != nil {
 		t.Fatal(err)
 	}
-	if len(egress) != 1 ||
-		!reflect.DeepEqual(egress[0]["to"], []any{map[string]any{"ipBlock": map[string]any{"cidr": "203.0.113.10/32"}}}) ||
-		!reflect.DeepEqual(egress[0]["ports"], []any{map[string]any{"protocol": "TCP", "port": float64(8443)}}) {
+	// The API and worker reach both the gateway and the issuer that mints their
+	// client-credentials token; each keeps its own translated address and port.
+	if len(egress) != 2 {
 		t.Fatalf("unexpected external egress: %#v", egress)
+	}
+	if !reflect.DeepEqual(egress[0]["to"], []any{map[string]any{"ipBlock": map[string]any{"cidr": "203.0.113.10/32"}}}) ||
+		!reflect.DeepEqual(egress[0]["ports"], []any{map[string]any{"protocol": "TCP", "port": float64(8443)}}) {
+		t.Fatalf("unexpected gateway egress: %#v", egress[0])
+	}
+	if !reflect.DeepEqual(egress[1]["to"], []any{map[string]any{"ipBlock": map[string]any{"cidr": "198.51.100.20/32"}}}) ||
+		!reflect.DeepEqual(egress[1]["ports"], []any{map[string]any{"protocol": "TCP", "port": float64(443)}}) {
+		t.Fatalf("unexpected token endpoint egress: %#v", egress[1])
+	}
+}
+
+func TestSelectExternalOpenShellRefusesTheProtectedProfile(t *testing.T) {
+	env := map[string]string{}
+	// The protected profile pins its own mTLS-authenticated gateway; selecting an
+	// external one beside it must fail before any cluster effect.
+	if external, err := selectExternalOpenShell(env, true); external != nil || err != nil {
+		t.Fatalf("an empty selection stays valid under protected egress: %v %v", external, err)
+	}
+	secret := filepath.Join(t.TempDir(), "client-secret")
+	if err := os.WriteFile(secret, []byte("test-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env = map[string]string{
+		"OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT":        "https://openshell-gateway.example.com:8443",
+		"OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL":          "https://idp.example.com/token",
+		"OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_ID":          "occ-openshell",
+		"OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_SECRET_FILE": secret,
+	}
+	if _, err := selectExternalOpenShell(env, true); err == nil || !strings.Contains(err.Error(), "protected egress profile") {
+		t.Fatalf("the protected profile must refuse an external gateway: %v", err)
 	}
 }
