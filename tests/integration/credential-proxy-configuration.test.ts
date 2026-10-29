@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -266,6 +267,7 @@ test("OpenShell discovery and policy use the installed configuration after calle
     id: "sandbox",
     implementation: "fixture",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     harnessResource: () => {
       throw new Error("Discovery must not access a Harness");

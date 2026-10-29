@@ -64,6 +64,7 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
 import {
+  LIVE_BUTTON,
   openAdvancedSettings,
   withholdPermissionSummary,
   assertRevisionUrl,
@@ -2091,8 +2092,15 @@ test("Agent draft plugin picker warns that API-key Codex Agents cannot use plugi
     .waitFor();
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  const unavailable = "Plugin browsing is unavailable with API-key authentication.";
+  await dialog.getByText(unavailable).waitFor();
+  // Load plugins and the pager are disabled for the reason that line gives, and each is
+  // described by it (finding D796).
+  for (const name of ["Load plugins", "Previous page", "Next page"]) {
+    const control = dialog.getByRole("button", { name, exact: true });
+    assert.equal(await control.isDisabled(), true, name);
+    assert.equal(await accessibleDescription(control), unavailable, name);
+  }
   // The empty list must not tell the user to load a catalog they cannot load.
   await dialog
     .getByText("To add a plugin by ID, choose Done and edit Plugin selections JSON.")
@@ -3294,7 +3302,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   requests.length = 0;
 
   const nextValues = nativeValues("after-unknown");
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nextValues, null, 2));
@@ -3374,6 +3382,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   });
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
 
   await login(
@@ -3383,6 +3392,14 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  // A slow permission answer reveals the page at FIRST_ACTIVITY_WAIT_MS, before the native admin
+  // status read it gates is sent. Clear the log only after that first read, so the reread below
+  // is the only one after the stop.
+  await waitForSettledFetches(
+    page,
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+    1,
+  );
   requests.length = 0;
 
   await page.getByRole("button", { name: "Stop Agent" }).click();

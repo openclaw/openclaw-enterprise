@@ -27,7 +27,7 @@ import {
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
+import { expectCreateAccess, waitForCreateFormReads } from "./console-agents-test-support.mjs";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,
@@ -38,6 +38,7 @@ import {
   NEW_SECRET_OPERATE_REMEDY,
   SECRET_OPERATE_DENIED,
   AGENT_CREATE_INSTALLATION_DENIED,
+  AGENT_CREATE_PERMISSIONS_UNREAD,
 } from "../helpers/refusal-text.mjs";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
@@ -122,16 +123,11 @@ test("a member with Agent create completes the default Preset path without Insta
     answers.filter((answer) => answer.startsWith("GET /installation ")),
     ["GET /installation 403"],
   );
-  const access = page.locator("#create-agent-access");
-  assert.equal(await access.getAttribute("role"), "status");
-  assert.equal(await access.getAttribute("data-tone"), "info");
-  assert.equal(await access.locator(".status-label").textContent(), "Your access");
-  assert.deepEqual(await access.locator(".status-body").allTextContents(), [
-    `${ACCESS_FROM_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
-  ]);
-  assert.equal(await access.isVisible(), true);
   // Above the form, not mid-form.
-  assert.equal(await access.evaluate((node) => node.nextElementSibling?.id), "create-agent-form");
+  await expectCreateAccess(page, {
+    tone: "info",
+    body: `${ACCESS_FROM_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
+  });
   assert.equal(await page.getByText(INSTALLATION_REFUSAL).count(), 0);
   // Without the Installation's capabilities the line under the fields claims no deploy outcome.
   assert.equal(
@@ -252,8 +248,8 @@ test("an administrator's form reads the Installation and shows no access note", 
 
 const ACCESS_WITHOUT_PRESET =
   "You can create Agents in Member team. Installation-wide capabilities are not readable with your access, so Create Agent checks the Configuration with the server before saving it.";
-const PERMISSIONS_UNREAD =
-  "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
+const PERMISSIONS_UNREAD = AGENT_CREATE_PERMISSIONS_UNREAD;
+const CHECKING_PERMISSIONS = "Checking your permissions in this Namespace…";
 const CREDENTIAL_ACCESS_UNCONFIRMED =
   "The Agent was created, but credential access is not confirmed.";
 
@@ -274,11 +270,12 @@ test("a member whose permission check failed is told so and retries only that ch
   await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
 
   // The refused Installation read and the failed permission check do not add up to "your account
-  // lacks Installation access": the form says which check failed and offers it again (finding 2110).
+  // lacks Installation access": the form says which check failed and offers it again (finding 2110),
+  // in a warning above the form rather than the hint under its fields (finding 2092).
   const status = page.locator("#create-agent-capability-status");
-  await page.getByText(PERMISSIONS_UNREAD, { exact: true }).waitFor();
+  await expectCreateAccess(page, { tone: "warning", body: PERMISSIONS_UNREAD, retry: true });
+  assert.equal(await status.textContent(), "");
   assert.equal(await page.getByText(INSTALLATION_REFUSAL).count(), 0);
-  assert.equal(await page.locator("#create-agent-access").isHidden(), true);
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await submit.isDisabled(), true);
   const retry = page.getByRole("button", { name: "Retry permission check", exact: true });
@@ -294,30 +291,31 @@ test("a member whose permission check failed is told so and retries only that ch
   });
   await retry.click();
   await failing.requested;
-  assert.equal(await status.textContent(), "Checking your permissions in this Namespace…");
+  await expectCreateAccess(page, { tone: "info", body: CHECKING_PERMISSIONS, retry: true });
   assert.equal(await retry.isDisabled(), true);
   failing.release();
-  await page.getByText(PERMISSIONS_UNREAD, { exact: true }).waitFor();
+  await expectCreateAccess(page, { tone: "warning", body: PERMISSIONS_UNREAD, retry: true });
   await waitForEnabled(retry);
+  // The retry takes focus back, so the reader can try again.
+  assert.equal(await retry.evaluate((node) => node === globalThis.document.activeElement), true);
   assert.equal(await submit.isDisabled(), true);
 
   // The retry rereads the permission answer only: the Installation read stays refused.
   const reread = await holdRequests(t, page, permissionsPath, { once: true });
   await retry.click();
   await reread.requested;
-  assert.equal(await status.textContent(), "Checking your permissions in this Namespace…");
+  await expectCreateAccess(page, { tone: "info", body: CHECKING_PERMISSIONS, retry: true });
   assert.equal(await retry.isDisabled(), true);
   reread.release();
-  const access = page.locator("#create-agent-access");
-  await access.waitFor();
+  await expectCreateAccess(page, {
+    tone: "info",
+    body: `${ACCESS_WITHOUT_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
+  });
   // The hidden retry hands focus to the answer, not the page.
   assert.equal(
     await page.evaluate(() => globalThis.document.activeElement?.id),
     "create-agent-access",
   );
-  assert.deepEqual(await access.locator(".status-body").allTextContents(), [
-    `${ACCESS_WITHOUT_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
-  ]);
   assert.equal(
     await status.textContent(),
     "Agents you create here are saved as drafts for later deployment.",

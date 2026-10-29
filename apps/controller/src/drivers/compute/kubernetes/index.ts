@@ -17,6 +17,7 @@ import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
+import { nativeOpenAiModelSelections } from "../../native-openai-catalog.ts";
 import {
   normalizeOpenAiBaseUrl,
   openAiBaseUrlRewritesIpv4,
@@ -221,6 +222,7 @@ import {
   computeWorkWaiting,
   currentComputeAbortSignal,
   isYieldingComputeStop,
+  recordNamespaceEnsureHint,
   withComputeAbortSignal,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -1078,7 +1080,13 @@ function prepareHarnessAuth(
   const environment: V1EnvVar[] = [];
   if (resolvedAuth.method === "api_key") {
     environment.push(
-      secret(harnessModelAuthentication(configuration).environmentName, resolvedAuth.backendRef),
+      secret(
+        harnessModelAuthentication(
+          configuration,
+          harness.id === "openclaw" && harness.mode === "embedded",
+        ).environmentName,
+        resolvedAuth.backendRef,
+      ),
     );
   } else if (
     resolvedAuth.method === "credential_source" &&
@@ -1216,6 +1224,7 @@ const GATEWAY_PASSWORD_KEY = "gateway-password";
 const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
 const MODEL_API_KEY = "OPENAI_API_KEY";
+const CUSTOM_MODEL_API_KEY = "OCE_MODEL_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 /** The provider credential whose token an account Secret holds, so a leftover can be revoked. */
 const SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION = "openclaw.dev/provider-credential-id";
@@ -2638,15 +2647,23 @@ function referenceSetting(value: unknown, setting: string): string | undefined {
 // The startup model probe gets only the selected provider's settings, the primary model's entry
 // and the binding's credential, so a reference there (other than the binding's apiKey) cannot
 // resolve. Another Compute may resolve it, so Configuration save accepts it; Kubernetes admission
-// names the setting, never its value (finding 2828).
+// names the setting, never its value (finding 2828). On Dedicated OpenClaw (`nativeAuthMethod`
+// set) the probe gets the primary model's entry as nativeRuntimeConfiguration renders it for the
+// native worker: no other entry can supply its endpoint (findings 2882, 2883), and the probe
+// resolves the same model ID and checked endpoint as the worker (finding 2903). The checked
+// endpoint is the provider default, not a row setting (finding 2904). No other authored provider
+// setting reaches that probe, as none reaches the worker (finding 2905).
 function harnessProbeConfiguration(
   configuration: OpenClawConfigurationDocument,
+  embedded = false,
   settingError: (setting: string, requirement: string) => Error = preparationSettingError,
+  nativeAuthMethod?: HarnessAuthSnapshot["method"],
 ): object {
   const model = harnessPrimaryModel(configuration);
-  const { providerId } = harnessModelAuthentication(configuration);
+  const { providerId, environmentName } = harnessModelAuthentication(configuration, embedded);
   const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
-  const fragment = provider === undefined ? undefined : { ...provider };
+  let fragment: Record<string, unknown> | undefined =
+    provider === undefined ? undefined : { ...provider };
   if (fragment !== undefined) {
     delete fragment.apiKey;
   }
@@ -2661,6 +2678,27 @@ function harnessProbeConfiguration(
       "must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential",
     );
   }
+  // A custom provider has no ambient native key name. Its isolated probe uses only
+  // the Compute-owned process environment, not caller Secret provider configuration.
+  if (fragment !== undefined && environmentName === CUSTOM_MODEL_API_KEY) {
+    fragment.apiKey = { source: "env", provider: "default", id: CUSTOM_MODEL_API_KEY };
+  }
+  if (nativeAuthMethod !== undefined) {
+    // An authored row may carry the provider prefix (openai/<id>); OpenClaw's probe then cannot
+    // route a known model whose row endpoint differs from the provider's, while the worker gets
+    // the split ID. The rendered row also makes its checked endpoint the provider default, so an
+    // unchecked provider baseUrl never reaches the probe.
+    const rendered = nativeRuntimeConfiguration(configuration, settingError, nativeAuthMethod);
+    const { id } = splitModelRef(model);
+    // The rendering holds one row for each selected model, the primary included.
+    const primary = rendered.models.providers.openai.models.find((row) => row.id === id)!;
+    // The row inherits its endpoint from the provider and the provider API is the row's, so the
+    // runtime's upfront credential check, which skips rows with their own baseUrl or another
+    // API, still applies (finding 2904). The worker gets provider-level model metadata on the
+    // row; on the provider it fails the probe's validation, and any other key skips that check.
+    const { baseUrl, ...row } = primary;
+    fragment = { baseUrl, api: row.api, models: [row] };
+  }
   return {
     agents: {
       defaults: {
@@ -2673,7 +2711,10 @@ function harnessProbeConfiguration(
 }
 
 // The immutable model selection owns both native credential projection and probing.
-function harnessModelAuthentication(configuration: OpenClawConfigurationDocument) {
+function harnessModelAuthentication(
+  configuration: OpenClawConfigurationDocument,
+  embedded = false,
+) {
   const providerId = splitModelRef(harnessPrimaryModel(configuration)).provider;
   if (providerId === "openai" || providerId === "codex") {
     return { providerId, environmentName: MODEL_API_KEY };
@@ -2681,26 +2722,17 @@ function harnessModelAuthentication(configuration: OpenClawConfigurationDocument
   if (providerId === "anthropic") {
     return { providerId, environmentName: "ANTHROPIC_API_KEY" };
   }
-  throw new ConfigurationFailure("Harness authentication requires a compatible model provider.");
-}
-
-function harnessModels(configuration: OpenClawConfigurationDocument): readonly string[] {
-  const agents = asRecord(configuration.agents);
-  const defaults = asRecord(agents?.defaults);
-  const entries = Object.values(asRecord(agents?.entries) ?? {});
-  const selections = [defaults?.model, ...entries.map((entry) => asRecord(entry)?.model)].filter(
-    (value) => value !== undefined,
-  );
-  const models = selections.flatMap((selection) => {
-    const value = asRecord(selection);
-    return typeof selection === "string"
-      ? [selection]
-      : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
-  });
-  if (models.some((model) => typeof model !== "string" || model.trim().length === 0)) {
-    throw new ConfigurationFailure("Harness authentication requires explicit model references.");
+  const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
+  if (embedded && provider !== undefined) {
+    if (provider.apiKey === undefined) {
+      throw callerSettingError(
+        `${keyedSettingPath("models.providers", providerId)}.apiKey`,
+        `must reference ${CUSTOM_MODEL_API_KEY}, which the Agent's Harness authentication binding supplies`,
+      );
+    }
+    return { providerId, environmentName: CUSTOM_MODEL_API_KEY };
   }
-  return [...new Set(models as string[])];
+  throw new ConfigurationFailure("Harness authentication requires a compatible model provider.");
 }
 
 // Every provider is checked, selected or not: a bare model name or a `/model` switch can still
@@ -2903,7 +2935,7 @@ function requireConfiguredModelProviders(
   try {
     const resolvable = withoutVariableProviders(configuration, options);
     harnessId = resolveConfiguredHarnessId(resolvable);
-    authentication = harnessModelAuthentication(resolvable);
+    authentication = harnessModelAuthentication(resolvable, harnessId === "openclaw");
   } catch (error) {
     if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
       return;
@@ -3031,7 +3063,7 @@ function nativeRuntimeConfiguration(
   configuration: OpenClawConfigurationDocument,
   createError: (setting: string, requirement: string) => Error,
   authMethod: HarnessAuthSnapshot["method"],
-): object {
+) {
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   if (asRecord(defaults?.embeddedAgent)?.runtimeServer !== undefined) {
     throw createError(
@@ -3039,7 +3071,10 @@ function nativeRuntimeConfiguration(
       "must be unset on Dedicated OpenClaw: the selected Compute Driver owns the runtime transport",
     );
   }
-  const models = harnessModels(configuration);
+  const selections = nativeOpenAiModelSelections(configuration);
+  if (selections === undefined) {
+    throw new ConfigurationFailure("Harness authentication requires explicit model references.");
+  }
   const providers = asRecord(asRecord(configuration.models)?.providers);
   const openai = asRecord(providers?.openai);
   const catalog = "models.providers.openai.models";
@@ -3052,18 +3087,13 @@ function nativeRuntimeConfiguration(
   if (openai.headers !== undefined) {
     throw createError("models.providers.openai.headers", "must be unset on Dedicated OpenClaw");
   }
-  const entries = openai.models.map((value) => asRecord(value));
-  const runtimeModels = models.map((reference) => {
-    const { provider, id } = splitModelRef(reference);
+  const runtimeModels = selections.map(({ provider, id, matches }) => {
     if (provider !== "openai" || !id) {
       throw createError(
         "agents.defaults.model",
         "and every agents.entries.*.model must select openai/<model> references on Dedicated OpenClaw",
       );
     }
-    const matches = entries.flatMap((entry, index) =>
-      entry?.id === id || entry?.id === reference ? [{ entry: entry!, index }] : [],
-    );
     if (matches.length !== 1) {
       throw createError(
         catalog,
@@ -4647,19 +4677,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
     }
-    const agents = asRecord(configuration.agents);
-    const defaults = asRecord(agents?.defaults);
-    const entries = Object.values(asRecord(agents?.entries) ?? {});
-    const selections = [defaults?.model, ...entries.map((entry) => asRecord(entry)?.model)].filter(
-      (value) => value !== undefined,
-    );
-    const models = selections.flatMap((selection) => {
-      const value = asRecord(selection);
-      return typeof selection === "string"
-        ? [selection]
-        : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
-    });
-    const authentication = harnessModelAuthentication(configuration);
+    const models = nativeOpenAiModelSelections(configuration)?.map(({ reference }) => reference);
+    const authentication = harnessModelAuthentication(configuration, embedded);
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
     // Codex qualifies model policy selectors, so it refuses every bare one, a little more than
@@ -4678,10 +4697,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
         : ["openai/", "codex/"];
     if (
       (embedded && authentication.providerId === "codex") ||
+      models === undefined ||
       models.length === 0 ||
       models.some(
         (model) =>
-          typeof model !== "string" ||
           !prefixes.some((prefix) => model.startsWith(prefix) && model.length > prefix.length),
       )
     ) {
@@ -4689,11 +4708,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Harness authentication requires a compatible model provider.",
       );
     }
+    // On Dedicated OpenClaw this renders the native catalog too (nativeRuntimeConfiguration).
     if (openclaw) {
-      harnessProbeConfiguration(configuration, callerSettingError);
-    }
-    if (native) {
-      nativeRuntimeConfiguration(configuration, callerSettingError, auth.method);
+      harnessProbeConfiguration(
+        configuration,
+        embedded,
+        callerSettingError,
+        native ? auth.method : undefined,
+      );
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
@@ -5677,7 +5699,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       } else if (this.preprovisionedNamespace) {
         await this.verifyExistingNetworkPolicies(name, ownership);
       }
-      await this.prepareNamespaceInfrastructure(ownership, name);
+      try {
+        await this.prepareNamespaceInfrastructure(ownership, name);
+      } catch (error) {
+        // Only this call reconciles the tenant resources. The Gateway uses the same helper.
+        if (
+          numericErrorStatus(error) === 403 &&
+          error instanceof (await import("@kubernetes/client-node")).ApiException
+        ) {
+          recordNamespaceEnsureHint("KUBERNETES_TENANT_ACCESS_DENIED");
+        }
+        throw error;
+      }
       if (!(await this.ensureGatewayNamespace(ownership))) {
         return result;
       }
@@ -11875,7 +11908,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           : undefined;
       const setup = await enrollment.createSetup(
         url,
-        this.workspaceNodeConnectionUrl(revision, namespace, url),
+        // Worker HTTP transfers share the node's base URL. They require the
+        // scoped route's path rewriting and trusted client attribution.
+        `${url}/node`,
         this.operationSignal(),
       );
       const setupData = {
@@ -11939,28 +11974,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const ca = await this.readNodeCa?.();
     return { name, ...(ca === undefined ? {} : { ca }) };
-  }
-
-  private workspaceNodeConnectionUrl(
-    revision: AgentRevision,
-    namespace: KubernetesNamespaceAddress,
-    gatewayUrl: string,
-  ): string {
-    // An in-cluster route is the Envoy Service, which attributes the proxied node
-    // client. Another hostname may resolve only outside the cluster, so
-    // same-cluster OpenShell then uses the Gateway Service directly.
-    const hostname = this.options.gatewayRouting?.hostname;
-    if (
-      this.sandboxDriverForRevision(revision)?.implementation !== "openshell" ||
-      this.options.executionCluster !== undefined ||
-      !hostname ||
-      /^[a-z0-9-]+\.[a-z0-9-]+\.svc(?:\.[a-z0-9.-]+)?$/.test(hostname)
-    ) {
-      return `${gatewayUrl}/node`;
-    }
-    const gatewayNamespace = this.gatewayNamespace(revision, namespace);
-    const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
-    return `ws://${gatewayName}.${gatewayNamespace.name}.svc.cluster.local:${this.options.network.gatewayPort}/node`;
   }
 
   private addWorkspaceNode(
@@ -15159,7 +15172,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             environment: [{ name: "CODEX_LOGIN_MODE", value: "protected-no-inference" }],
           }
         : prepareHarnessAuth(revision.harness, auth, revision.configuration);
-    const native = harnessModelAuthentication(revision.configuration);
+    const embedded = revision.harness.id === "openclaw" && revision.harness.mode === "embedded";
+    const native = harnessModelAuthentication(revision.configuration, embedded);
     return {
       ...prepared,
       environment: [
@@ -15171,7 +15185,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               { name: "OPENCLAW_HARNESS_CREDENTIAL_ENV", value: native.environmentName },
               {
                 name: "OPENCLAW_HARNESS_PROBE_CONFIG",
-                value: JSON.stringify(harnessProbeConfiguration(revision.configuration)),
+                value: JSON.stringify(
+                  harnessProbeConfiguration(
+                    revision.configuration,
+                    embedded,
+                    preparationSettingError,
+                    revision.harness.mode === "dedicated" ? revision.harnessAuth.method : undefined,
+                  ),
+                ),
               },
             ]
           : []),
@@ -15893,7 +15914,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const hasEnabledPlugins =
       pluginRuntime !== undefined &&
       Object.values(pluginRuntime.runtime.selections).some((selection) => selection.enabled);
-    const needsPluginStatus = needsPluginRuntime && hasEnabledPlugins;
+    const providerPreparesCodexPlugins =
+      dedicated &&
+      pluginRuntime?.runtime.kind === "codex" &&
+      (role === "agent"
+        ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
+        : // The initial Gateway must issue node setup before the provider has an
+          // endpoint. OpenShell already selects verifier delivery in prepareRevision.
+          this.sandboxDriver?.implementation === "openshell");
+    if (providerPreparesCodexPlugins && role === "gateway") {
+      variables.push({ name: "OPENCLAW_CODEX_PLUGINS_PREPARED", value: "true" });
+    }
+    const needsPluginStatus =
+      needsPluginRuntime && hasEnabledPlugins && !providerPreparesCodexPlugins;
     const statusRevisionId = configuration?.revisionId ?? ownership.revisionId;
     const needsRuntimeStatus =
       runtime !== undefined &&

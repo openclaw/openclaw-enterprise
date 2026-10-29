@@ -1,84 +1,31 @@
-import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { certificateAuthority, signedLeaf } from "./certificates.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
-/** Local test-owned CA and a localhost leaf; no host trust or credentials are read. */
+/**
+ * Local test-owned CA and a localhost leaf; no host trust or credentials are read.
+ * Callers pass the result straight to TLS servers as options, so no field may use a
+ * TLS option name: the CA is `authority`, not `ca`.
+ */
 export async function harnessTlsFixture(t) {
   const directory = await temporaryDirectory(t, "oce-harness-tls-");
-  const run = (...args) => {
-    const result = spawnSync("openssl", args, { cwd: directory, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr || result.error?.message);
-  };
-  run(
-    "req",
-    "-x509",
-    "-newkey",
-    "ec",
-    "-pkeyopt",
-    "ec_paramgen_curve:prime256v1",
-    "-nodes",
-    "-days",
-    "1",
-    "-keyout",
-    "ca.key",
-    "-out",
-    "ca.pem",
-    "-subj",
-    "/CN=Harness fixture CA",
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign,cRLSign",
-  );
-  run(
-    "req",
-    "-new",
-    "-newkey",
-    "ec",
-    "-pkeyopt",
-    "ec_paramgen_curve:prime256v1",
-    "-nodes",
-    "-keyout",
-    "server.key",
-    "-out",
-    "server.csr",
-    "-subj",
-    "/CN=localhost",
-  );
-  await writeFile(
-    join(directory, "server.ext"),
-    [
-      "basicConstraints=critical,CA:FALSE",
-      "keyUsage=critical,digitalSignature",
-      "extendedKeyUsage=serverAuth",
-      "subjectAltName=DNS:localhost",
-    ].join("\n"),
-  );
-  run(
-    "x509",
-    "-req",
-    "-in",
-    "server.csr",
-    "-CA",
-    "ca.pem",
-    "-CAkey",
-    "ca.key",
-    "-CAcreateserial",
-    "-days",
-    "1",
-    "-out",
-    "server.pem",
-    "-extfile",
-    "server.ext",
-  );
-  const rootCertificatePath = join(directory, "ca.pem");
+  const ca = await certificateAuthority(directory, { caName: "Harness fixture CA", days: 1 });
+  const leaf = await signedLeaf(directory, ca, {
+    name: "server",
+    // Not a host name: clients fall back to the CN when a leaf has no SAN, so only
+    // the SAN may name localhost.
+    commonName: "Harness fixture server",
+    subjectAltName: "DNS:localhost",
+    days: 1,
+  });
   return {
     directory,
-    rootCertificatePath,
-    caBundle: await readFile(rootCertificatePath, "utf8"),
-    cert: await readFile(join(directory, "server.pem"), "utf8"),
-    key: await readFile(join(directory, "server.key"), "utf8"),
+    authority: ca,
+    rootCertificatePath: ca.caPath,
+    caBundle: await readFile(ca.caPath, "utf8"),
+    cert: leaf.cert,
+    key: leaf.key,
+    certPath: leaf.certPath,
+    keyPath: leaf.keyPath,
   };
 }

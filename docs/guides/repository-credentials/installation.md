@@ -150,8 +150,8 @@ chart's tenant-worker RoleBinding in each tenant namespace as described in the
 With the feature enabled, that role includes the material Secret operations
 needed by Compute. The Agent never mounts the control socket or App key.
 
-Build the service with `pnpm credentials:build` and `pnpm credentials:image`,
-then publish and select its immutable image reference. Also build the full
+From the repository root, run `pnpm install --frozen-lockfile`. Then build the
+service with `pnpm credentials:build` and `pnpm credentials:image`, then publish and select its immutable image reference. Also build the full
 Agent runtime using the [repository-root Docker context](../repository-credentials.md#prepare-the-platform-installation).
 Add the following to your existing Helm values, replacing image and network
 placeholders before rendering:

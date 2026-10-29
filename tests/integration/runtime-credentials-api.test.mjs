@@ -466,20 +466,18 @@ test("Kubernetes without managed runtime credentials admits a draft deployment",
   assert.equal(admitted.data.revision, 1);
 });
 
-test("Kubernetes deploy names an unsupported Harness authentication model provider", async () => {
+test("Kubernetes deploy names an unconfigured Harness authentication model provider", async () => {
   const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
   const { namespace, agent } = await fixture.bootstrapAgent();
   const values = createHarnessConfiguration("openclaw", "gpt-4.1");
-  const { openai } = values.models.providers;
   values.agents.defaults = {
     model: "zai/glm-5",
     models: { "zai/glm-5": { agentRuntime: { id: "openclaw" } } },
   };
-  values.models.providers = {
-    zai: { ...openai, models: [{ ...openai.models[0], id: "glm-5", name: "glm-5" }] },
-  };
-  // The Configuration alone is valid: only the Agent's api_key binding, which the Kubernetes
-  // Driver projects only for providers it knows, makes the pair undeliverable.
+  // A custom provider needs an explicit catalog and credential reference. Keep this
+  // unsupported-binding scenario unconfigured; configured providers are supported.
+  values.models.providers = {};
+  // The draft Configuration can be stored, but its model has no deliverable provider.
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const stored = await fixture.request("GET", agentPath);
   const replaced = await fixture.request(

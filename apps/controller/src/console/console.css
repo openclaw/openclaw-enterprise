@@ -1874,6 +1874,39 @@ select:not([multiple])[size="1"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* An unavailable control that has a reason stays focusable so the reason is reachable (the
+   Open Agent UI, finding 2714; dom.mts setUnavailable, finding 2878). It looks like
+   button:disabled, but its label, fill and edge fade instead of the button, so its focus ring
+   keeps full contrast (finding 2863). */
+button.control-unavailable {
+  cursor: not-allowed;
+  color: color-mix(in srgb, currentColor 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-border-strong) 60%, var(--color-surface));
+}
+.agent-ui-unavailable[aria-disabled="true"],
+button.control-unavailable:is(.primary, .button--primary) {
+  cursor: not-allowed;
+  color: var(--color-on-accent);
+  background: color-mix(in srgb, var(--color-accent) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-surface));
+}
+/* An unavailable checkbox fades as a disabled one does; its label draws the focus ring, which the
+   fade would dim on the checkbox itself. */
+input[type="checkbox"].control-unavailable {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+input[type="checkbox"].control-unavailable:focus-visible {
+  outline: none;
+}
+label:has(> input[type="checkbox"].control-unavailable) {
+  width: fit-content;
+}
+label:has(> input[type="checkbox"].control-unavailable:focus-visible) {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-sm);
+}
 .native-admin-access .overview-text-button {
   margin-top: var(--space-1);
   text-decoration: underline;
@@ -1889,11 +1922,20 @@ select:not([multiple])[size="1"] {
   background: var(--color-surface);
   border-color: var(--color-border-strong);
 }
+/* An unavailable Deploy there fades as a secondary button does. */
 [aria-live="polite"]:has(
     > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
   )
   .agent-draft-actions
-  :is(.primary, .button--primary):not(:disabled):hover {
+  :is(.primary, .button--primary).control-unavailable {
+  color: color-mix(in srgb, var(--color-text-strong) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-border-strong) 60%, var(--color-surface));
+}
+[aria-live="polite"]:has(
+    > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
+  )
+  .agent-draft-actions
+  :is(.primary, .button--primary):not(:disabled, [aria-disabled="true"]):hover {
   background: var(--color-surface-hover);
 }
 /* A failed deployment is a full-width danger status block (spec 3.4): the stripe and wash come

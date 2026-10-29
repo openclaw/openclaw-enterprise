@@ -1,10 +1,11 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   ConfigurationHarnessError,
@@ -22,6 +23,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { assertProvisioningRepositoryStatus } from "../helpers/provisioning-repository-status.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
 import {
   conformanceKubernetesOptions,
@@ -1293,6 +1295,7 @@ test(
       id: "sandbox-repository-path",
       capability: "sandbox",
       implementation: "test-provisioning",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       repositoryAccess: Object.fromEntries(
         [
@@ -2083,6 +2086,7 @@ function sourceProvisioningDrivers() {
     id: "sandbox-source-provisioning",
     capability: "sandbox",
     implementation: "test-provisioning",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {
       assert.fail("this case ends at provisioning handoff");
@@ -3382,38 +3386,34 @@ test(
     // Native OpenClaw's private workspace preparation needs kubernetes.userNamespaces: false
     // and runs only after a deploy stopped its predecessors (finding 2334). Provisioning admits
     // the plan through the OpenShell Sandbox view, so a request is refused before it is stored.
-    let userNamespaces;
-    const fixture = await createFixture(context, {
+    const drivers = {
       computeDriver: createRuntimeComputeDriver(),
       configurationDriver: createProvisioningConfigurationDriver({
         id: "configuration-provisioning-openshell-openclaw",
       }),
       secretDriver: createTestSecretDriver({ id: "secret-provisioning" }),
-      sandboxDriver: {
-        id: "sandbox-provisioning",
-        capability: "sandbox",
-        implementation: "openshell",
-        facets: ["networking", "filesystem", "process"],
-        // OpenShell's own hook on a stand-in holding only the settings it reads, with the
-        // userNamespaces value this test changes (as workspace-setup-api does).
-        configureAgent(configuration, harness) {
-          return OpenShellSandboxDriver.prototype.configureAgent.call(
-            {
-              options: {
-                gateway: {},
-                kubernetes: { userNamespaces, sandboxDataMount: { mountPath: "/sandbox/data" } },
-              },
-            },
-            configuration,
-            harness,
-          );
+    };
+    const compose = (userNamespaces) => {
+      const sandbox = openShellSandbox(context, { userNamespaces }).sandboxDriver;
+      // Use the real constructed support declaration and transform. This persistence fixture
+      // ends before provider work and does not compose editable Sandbox network policy.
+      return createFixture(context, {
+        ...drivers,
+        sandboxDriver: {
+          id: sandbox.id,
+          capability: sandbox.capability,
+          implementation: sandbox.implementation,
+          facets: sandbox.facets,
+          supportsHarnessExecutionMode: sandbox.supportsHarnessExecutionMode,
+          configureAgent: sandbox.configureAgent.bind(sandbox),
+          async provisionHarness() {
+            assert.fail("this case ends at provisioning handoff");
+          },
+          async cleanup() {},
         },
-        async provisionHarness() {
-          assert.fail("this case ends at provisioning handoff");
-        },
-        async cleanup() {},
-      },
-    });
+      });
+    };
+    let fixture = await compose(true);
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     const openClawBody = () => {
@@ -3441,7 +3441,7 @@ test(
 
     // Admitted while the setting is off. After an operator turns it back on, a status read
     // still reports the stored work; only writes go through the Sandbox view again.
-    userNamespaces = false;
+    fixture = await compose(false);
     const admitted = await provision(openClawBody());
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
     // No worker runs here; a later test's worker must not run this job with its Drivers.
@@ -3449,7 +3449,7 @@ test(
       admitted.data.provisioning.workId,
       "OpenShell admission case ends at the status read",
     );
-    userNamespaces = true;
+    fixture = await compose(true);
     const status = await fixture.request("GET", admitted.data.provisioning.url);
     assert.equal(status.status, 200, JSON.stringify(status.body));
     assert.equal(status.data.workId, admitted.data.provisioning.workId);
@@ -3470,6 +3470,7 @@ test(
         id: "sandbox-provisioning",
         capability: "sandbox",
         implementation: "openshell",
+        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
         facets: ["networking", "filesystem", "process"],
         async provisionHarness() {
           assert.fail("a refused plan never reaches the Sandbox");
@@ -4854,10 +4855,10 @@ test(
   },
 );
 
-async function createFailedPreHandoffAgent(fixture) {
+async function createFailedPreHandoffAgent(fixture, overrides = {}) {
   const namespace = await fixture.bootstrapNamespace();
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
-  const body = provisioningBody(namespace.id, secrets);
+  const body = provisioningBody(namespace.id, secrets, overrides);
   const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
     body,
   });
@@ -5777,6 +5778,16 @@ test(
     const gone = await fixture.request("GET", configurationPath);
     assert.equal(gone.status, 404, JSON.stringify(gone.body));
   },
+);
+
+test(
+  "existing Agent provisioning status survives repository policy refusal while retry and IAM remain enforced",
+  { ...requiresPostgres, timeout: 60_000 },
+  (context) =>
+    assertProvisioningRepositoryStatus(failingTransportDriver(), async (options, overrides) => {
+      const fixture = await createFixture(context, options);
+      return { fixture, ...(await createFailedPreHandoffAgent(fixture, overrides)) };
+    }),
 );
 
 test(

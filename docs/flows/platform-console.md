@@ -152,8 +152,8 @@ interrupt loading. Other Agent routes preserve the page or show loading after
 400 ms. Visible loading lasts at least 300 ms (`loadingMinimumMs`). Other first
 visits and Refresh show loading after 250 ms.
 
-Return and refocus checks keep the page inert, its header visible, and Namespace selection disabled;
-after one second they show **Still checking…**. The Console retains up to 16 views by
+Return and refocus checks, not Tab laps, hold the page inert (header visible, Namespace selection
+disabled), showing **Still checking…** after one second. The Console retains up to 16 views by
 route, Namespace, and session owner. Matching user and GET dependencies restore
 DOM, handlers, drafts, and debug disclosures. Changed data, newly readable
 Namespaces, and Refresh rebuild. Discovery state is not retained. Pending/failed reads, passwords, and
@@ -300,9 +300,8 @@ stop; arrows move) and focused controls keep focus. Navigation, Namespace change
 reads; generations reject late responses. Refocus coalesces events.
 `revalidateMountedAgent` rechecks session, Namespace, Agent, and version;
 unchanged access preserves controls, input, and saves.
-The same owner’s exact draft Configuration refusal preserves the partial Agent
-after reload/refocus on repeated 403 if that mounted path was never readable.
-Refocus sends a fresh GET.
+Refocus sends a fresh GET. A repeated 403 on a never-readable draft Configuration
+keeps the partial Agent; a version proved unreadable is not read again.
 Lost access scrubs; Agent, session, and scope failures clear their protected views.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
 Returning to the tab restores focus after the unchanged view is admitted, if the control

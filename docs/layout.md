@@ -18,6 +18,11 @@ The configuration excludes `legacy/`; do not import archived implementations.
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
 `scripts/docs-site/` has its own package manifest, pnpm workspace, and lockfile;
 keep its dependency installation separate from the root workspace.
+API example metadata and export enrichment live in `scripts/api-examples.mjs`
+and `scripts/document-api-examples.mjs`; `scripts/docs-site/` owns the explorer
+and OpenAPI lint configuration. The controller route schemas remain the source
+of truth for HTTP behavior.
+
 The console Storybook in `scripts/console-storybook/` is also an isolated tool
 with its own manifest and lockfile. See [Console Storybook](contributing/console-storybook.md).
 
@@ -66,7 +71,10 @@ owning Driver or Backend and wire it through composition. See
 status, and remaining design requirements.
 
 Within `packages/contracts/src/`, `runtime-logs.ts` owns runtime inspection and
-container/Sandbox log types. `index.ts` remains their public export entrypoint.
+container/Sandbox log types. `driver.ts` owns the base `Driver` and registry types.
+Each Driver capability has one interface file named for it, such as `compute.ts` or
+`iam.ts`, with the request, context, and result types of that Driver. `index.ts`
+remains the public export entrypoint for all of them.
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.

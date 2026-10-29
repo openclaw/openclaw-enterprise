@@ -22,6 +22,7 @@
     "check:workspace": "node scripts/verify-workspace-boundary.mjs",
     "openapi:generate": "node scripts/generate-occ-openapi.mjs",
     "openapi:check": "node scripts/generate-occ-openapi.mjs --check",
+    "openapi:lint": "node scripts/docs-site/node_modules/@redocly/cli/bin/cli.js lint --config scripts/docs-site/redocly.yaml packages/contracts/openapi/occ-api.openapi.json",
     "start:controller": "node apps/controller/src/server.mjs",
     "start:controller:production": "NODE_ENV=production node apps/controller/src/server.mjs",
     "start:worker": "node apps/controller/src/worker.mjs",
