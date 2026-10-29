@@ -428,6 +428,37 @@ test("Retry after an offline Refresh still signs out on a 401", async (t) => {
   assert.equal(await page.locator(".shell").count(), 0);
 });
 
+// A session read the API does not answer within the console's 15 s request deadline says
+// nothing about the session either: the tab keeps its shell and names the connection.
+test("a Refresh whose session check times out keeps the signed-in shell", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Shell", { ready: true });
+  await fixture.createAgent(namespace.id, "Shell Agent");
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  await page.clock.install();
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).getByText("Shell Agent", { exact: true }).waitFor();
+  const { email, name } = fixture.credentials;
+
+  const held = await holdRequests(t, page, "**/api/auth/session", { once: true });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await held.requested;
+  await page.clock.runFor(15_000);
+  const unreachable = page.locator(".content .state-panel");
+  await unreachable
+    .getByRole("heading", { name: "Could not reach OpenClaw Enterprise", exact: true })
+    .waitFor();
+  const retry = unreachable.getByRole("button", { name: "Retry", exact: true });
+  assert.equal(await isFocused(retry), true, "focus is on Retry, not the page body");
+  assert.equal(
+    await page.getByRole("button", { name: `${name} ${email}`, exact: true }).isVisible(),
+    true,
+    "the account stays",
+  );
+  assert.doesNotMatch(await page.locator("body").innerText(), /Shell|Session unavailable/);
+});
+
 // Sign-in (UX spec 3.12): "Sign in" with the email hint as its one muted line, Email and
 // Password, a full-width primary, the ink wordmark, and the build in a muted footer.
 test("the sign-in page says Sign in, labels the email field and names the build", async (t) => {
