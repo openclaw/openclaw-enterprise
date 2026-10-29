@@ -221,7 +221,9 @@ Git token and the worker does not retry it. An active Agent or a working model
 reply does not prove Git access. On the native broker route, a new deployment
 fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`. A new Agent then stops until a
 deployment succeeds; an Agent that ran an earlier version keeps the failed
-version running without Git. On the OpenShell route, it can
+version running without Git. If the worker cannot read the key, the deployment
+fails at its convergence deadline instead, with `REPOSITORY_GIT_TOKEN_PENDING`
+for an Agent that ran an earlier version. On the OpenShell route, it can
 wait at `REPOSITORY_GIT_MATERIAL_PENDING` and fail at its convergence deadline.
 
 Put a key GitHub accepts in `private-key.pem` of the Secret selected by

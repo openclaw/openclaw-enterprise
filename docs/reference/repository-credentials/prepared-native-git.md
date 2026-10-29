@@ -165,12 +165,15 @@ on the Agent:
 | Existing: an earlier version was activated                  | The failed version keeps running without Git, so users can still chat with the Agent and it can report the problem. Its maintenance continues. The earlier version stopped serving when the new one was published. |
 
 A version stopped or superseded before activation does not make the Agent
-existing. Any other wait, for example an issuer change before the new version
-gets a token or an attempt whose result the worker did not record, ends at the
-deployment's convergence deadline with `CONVERGENCE_DEADLINE_EXCEEDED`. That
-version could still get a token later, so the controller retires it for every
-Agent. Correct the key or registry, then deploy a new version; if both are
-correct, deploy a new version. See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+existing. A token can also stay pending until the deployment's convergence
+deadline, for example when the worker cannot read the App key after a Secret
+rotation, restarts during a request, or the issuer changes. A new Agent's
+deployment then fails with `CONVERGENCE_DEADLINE_EXCEEDED` and its version is
+retired. An existing Agent's deployment fails with
+`REPOSITORY_GIT_TOKEN_PENDING` and the version keeps running as in the table.
+If the token is committed later, that version gets Git. Ask an Installation
+administrator to correct the key or registry, then deploy a new version; if both
+are correct, deploy a new version. See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
 
 This check runs only for a deployment. A running version whose token renewal
 fails reports it only in the worker log.

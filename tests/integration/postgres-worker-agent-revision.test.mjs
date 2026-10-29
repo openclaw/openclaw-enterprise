@@ -3649,7 +3649,8 @@ test(
 // whose token GitHub's answer quarantined: a new Agent's deployment fails and its version is
 // retired; an existing Agent's deployment fails but the version keeps running without Git, so
 // the Agent can still chat and report it. A token still pending at the convergence deadline
-// could yet commit, so that version is retired for every Agent.
+// (finding 2894: no attempt finished, for example an unreadable App key) ends the same way: a new
+// Agent's version is retired, an existing Agent's is kept and gets Git if the token arrives.
 for (const { agent, material } of [
   { agent: "new", material: "ready" },
   { agent: "new", material: "quarantined" },
@@ -3731,6 +3732,10 @@ for (const { agent, material } of [
         // A pending token ends at the convergence deadline.
         ...(material === "pending" ? { convergenceTimeoutMs: 3_000 } : {}),
         async repositoryGitMaterial(revisionId) {
+          // A later version (below) gets its token at once.
+          if (revisionId !== candidate.id) {
+            return "ready";
+          }
           checked.push(revisionId);
           // In production the worker's prepared owner reports the token state; this returns the
           // states its store returns (postgres-prepared-github-git-use test). Like the owner,
@@ -3759,13 +3764,17 @@ for (const { agent, material } of [
         return;
       }
       // A quarantined version is never prepared again, so its deployment fails at once instead
-      // of at the convergence deadline, and names the cause and the recovery.
+      // of at the convergence deadline, and names the cause and the recovery. A token still
+      // pending ends at the deadline: a new Agent's deployment names the deadline, an existing
+      // Agent's names the missing token and keeps the version.
       assert.equal(status.status, "failed");
       assert.equal(
         status.error.code,
         material === "quarantined"
           ? "REPOSITORY_GIT_TOKEN_QUARANTINED"
-          : "CONVERGENCE_DEADLINE_EXCEEDED",
+          : agent === "existing"
+            ? "REPOSITORY_GIT_TOKEN_PENDING"
+            : "CONVERGENCE_DEADLINE_EXCEEDED",
       );
       assert.match(status.error.message, /deploy a new version\.$/);
       const retirement = () =>
@@ -3774,7 +3783,7 @@ for (const { agent, material } of [
            WHERE revision_id = $1 AND idempotency_key LIKE $2`,
           [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
         );
-      if (agent !== "existing" || material === "pending") {
+      if (agent !== "existing") {
         // A new Agent fails: like any repository version that failed for good, its version is
         // retired, so the Agent has no running version until a deployment succeeds.
         await waitFor("the failed version's runtime retirement", async () =>
@@ -3788,20 +3797,33 @@ for (const { agent, material } of [
       // stopped serving when the pointer moved; this deployment neither stops its own version
       // nor retires the predecessor.
       assert.match(status.error.message, /keeps this version running without Git/);
-      // The pass ends with its completion event, after any Compute call it makes.
-      await completion(
+      // The pass ends with its completion event, after any Compute call it makes. A pass that
+      // throws after the failure committed (for example a Compute call for a claim it no longer
+      // holds) logs worker.error instead.
+      const ended = await completion(
         events,
         "the failed deployment's completion",
         ({ event, workId, outcome }) =>
-          event === "worker.completed" &&
-          workId === candidate.idempotencyKey &&
-          outcome === "permanent",
+          event === "worker.error" ||
+          (event === "worker.completed" &&
+            workId === candidate.idempotencyKey &&
+            outcome === "permanent"),
       );
+      assert.equal(ended.event, "worker.completed", JSON.stringify(ended));
       assert.equal(await pointer(), candidate.id);
       assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "running");
       assert.equal((await retirement()).rowCount, 0);
       assert.deepEqual(stopped, []);
       assert.deepEqual(retired, []);
+      // A pending token can still commit after the deadline and give the kept version Git: the
+      // prepared owner issues a token for an open session of the running Agent's active version
+      // (postgres-prepared-github-git-use test), and this version keeps its session open.
+      const openSessions = async () => [
+        ...new Set(
+          (await repositoryAttempts(fixture, candidate)).map(({ phase }) => phase === "open"),
+        ),
+      ];
+      assert.deepEqual(await openSessions(), [true]);
       // The failure starts the version's maintenance chain in the same transaction; its next
       // pass keeps the version active (and retires the superseded predecessor, as any does).
       const [maintenance] = (await fixture.advanceMaintenance(candidate)).rows;
@@ -3817,6 +3839,15 @@ for (const { agent, material } of [
       assert.equal(await pointer(), candidate.id);
       assert.deepEqual(stopped, []);
       assert.deepEqual(retired, [first.id]);
+      assert.deepEqual(await openSessions(), [true]);
+      // A later version whose token GitHub issues replaces the kept one as usual: its deployment
+      // succeeds, takes the pointer and retires the version that ran without Git.
+      const fixed = await fixture.revision(owner, 3, revisionOptions);
+      await fixture.work(fixed, "succeeded");
+      assert.equal((await fixture.deploymentStatus(owner, fixed)).status, "succeeded");
+      assert.equal(await pointer(), fixed.id);
+      assert.ok(retired.includes(candidate.id), retired.join());
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
     },
   );
 }

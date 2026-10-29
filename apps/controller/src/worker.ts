@@ -223,6 +223,13 @@ const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
   ...Object.values(REVISION_PENDING_CODES),
 ]);
 
+// A failed deployment whose version continueRevisionWithoutGit kept running (owner decision
+// 2026-10-28): its maintenance chain continues. Every other failed deployment ends it.
+const REVISION_KEPT_WITHOUT_GIT_CODES: ReadonlySet<string> = new Set([
+  "REPOSITORY_GIT_TOKEN_QUARANTINED",
+  "REPOSITORY_GIT_TOKEN_PENDING",
+]);
+
 // A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
 // An active revision's source is already consumed.
 function isCandidateDeployment(claim: ClaimedWork): boolean {
@@ -4315,7 +4322,7 @@ export class ControllerWorker {
           (original.state === "failed_permanent" &&
             // An existing Agent's version kept running without Git (continueRevisionWithoutGit)
             // is maintained: that failure queued this chain while the version was active.
-            original.reasonCode !== "REPOSITORY_GIT_TOKEN_QUARANTINED") ||
+            !REVISION_KEPT_WITHOUT_GIT_CODES.has(original.reasonCode ?? "")) ||
           original.reasonCode === "REVISION_SUPERSEDED"
         ) {
           // Maintenance must never prepare or reactivate a terminally failed deployment.
@@ -5895,6 +5902,27 @@ export class ControllerWorker {
     ) {
       return;
     }
+    if (
+      resolved.code === "CONVERGENCE_DEADLINE_EXCEEDED" &&
+      result.code === "REPOSITORY_GIT_MATERIAL_PENDING" &&
+      isCandidateDeployment(claim)
+    ) {
+      // Finding 2894: the deployment still waits for its version's first Git token (no attempt
+      // finished: an unreadable App key, a worker restart mid-request). An existing Agent keeps
+      // this version, as for a quarantined token. Compute's Sandbox install shares the wait
+      // code, so the token state decides; a read failure keeps the deadline failure.
+      const token = await this.repositoryGitMaterial?.(claim.revisionId!).catch(() => undefined);
+      if (
+        (token === "pending" || token === "quarantined") &&
+        (await this.continueRevisionWithoutGit(
+          claim,
+          token === "pending" ? "REPOSITORY_GIT_TOKEN_PENDING" : "REPOSITORY_GIT_TOKEN_QUARANTINED",
+          failureLogFields,
+        ))
+      ) {
+        return;
+      }
+    }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
@@ -6705,12 +6733,7 @@ export class ControllerWorker {
         // Agent keeps a version that has none.
         (!gitReady &&
           this.gatesRepositoryGitMaterial(claim, continuing.revision) &&
-          !(await this.activatedEarlierRevision(
-            unit,
-            queue,
-            continuing.agent,
-            continuing.revision,
-          )))
+          !(await this.activatedEarlierRevision(unit, queue, continuing.revision)))
       ) {
         return;
       }
@@ -6792,8 +6815,9 @@ export class ControllerWorker {
    * again, so it cannot regain Git unsupervised. Fails the deployment and starts this version's
    * maintenance chain in one transaction, under Namespace then Agent locks. Returns false when
    * the Agent has no earlier activated version or no longer runs this one; the caller then
-   * fails it for good. A token still pending at the convergence deadline is not continued: it
-   * could still commit, so that version is retired.
+   * fails it for good. A token still pending at the convergence deadline is continued the same
+   * way (REPOSITORY_GIT_TOKEN_PENDING, finding 2894): if it commits later, it gives Git to a
+   * version that is authorized and maintained.
    */
   private async continueRevisionWithoutGit(
     claim: ClaimedWork,
@@ -6810,7 +6834,7 @@ export class ControllerWorker {
         continuing === undefined ||
         !this.gatesRepositoryGitMaterial(claim, continuing.revision) ||
         this.revisionMaintenanceInterval(continuing.revision) === undefined ||
-        !(await this.activatedEarlierRevision(unit, queue, continuing.agent, continuing.revision))
+        !(await this.activatedEarlierRevision(unit, queue, continuing.revision))
       ) {
         return;
       }
@@ -6838,15 +6862,15 @@ export class ControllerWorker {
   }
 
   /**
-   * Whether an earlier version of the Agent's service principal was activated by its own
-   * deployment. A stopped or superseded deployment completes without activation and does not
-   * count (controllerWorkDeploymentStatus). Newest first; a fail path, so the linear scan is
-   * bounded by the Agent's revision history.
+   * Whether an earlier version of this Agent was activated by its own deployment. A stopped or
+   * superseded deployment completes without activation and does not count
+   * (controllerWorkDeploymentStatus). Revisions belong to one Agent, whose service principal
+   * never changes. Newest first; a fail path, so the linear scan is bounded by the Agent's
+   * revision history.
    */
   private async activatedEarlierRevision(
     unit: PlatformUnitOfWork,
     queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
-    agent: Readonly<Agent>,
     revision: Readonly<AgentRevision>,
   ): Promise<boolean> {
     const earlier = (
@@ -6854,15 +6878,7 @@ export class ControllerWorker {
     ).filter((candidate) => candidate.revision < revision.revision);
     for (const listed of earlier.reverse()) {
       const deployment = await queue.findWork(`agent_revision:${listed.id}:reconcile`);
-      if (deployment === undefined || controllerWorkDeploymentStatus(deployment) !== "succeeded") {
-        continue;
-      }
-      const prior = await unit.revisions.findRevision(
-        listed.namespaceId,
-        listed.agentId,
-        listed.id,
-      );
-      if (prior?.servicePrincipalId === agent.servicePrincipalId) {
+      if (deployment !== undefined && controllerWorkDeploymentStatus(deployment) === "succeeded") {
         return true;
       }
     }

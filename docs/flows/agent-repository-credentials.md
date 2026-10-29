@@ -314,7 +314,9 @@ deployment's Work then runs `apps/controller/src/worker.ts:ControllerWorker.asse
 until each open session has a committed token and fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`
 when an attempt is quarantined. For an existing Agent (`activatedEarlierRevision`),
 `continueRevisionWithoutGit` fails the deployment with `continuingRevision` and queues maintenance
-in one transaction under Namespace then Agent locks, so the version keeps running. Otherwise the
+in one transaction under Namespace then Agent locks, so the version keeps running. A token still
+pending at the convergence deadline takes the same path with `REPOSITORY_GIT_TOKEN_PENDING`;
+maintenance accepts only these two failure codes. Otherwise the
 version is retired like any failed repository version
 ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
@@ -357,7 +359,7 @@ remains retryable after partial failure; service restart cannot prove remote tok
 Compare `occ agent get AGENT_ID --output json` with the admitted `activeRevisionId`.
 Inspect worker events for
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
-`REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_CLEANUP_PENDING` or
+`REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
 A cleanup that stays pending logs `worker.repository-cleanup-warning` with its
 `cause` once.
@@ -389,6 +391,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
 
 - 2026-10-29 18:00: Hold a native deployment until its first GitHub token commits; on a quarantined token fail a new Agent's deployment and keep an existing Agent's new version running. (finding 2415, finding 2425)
 

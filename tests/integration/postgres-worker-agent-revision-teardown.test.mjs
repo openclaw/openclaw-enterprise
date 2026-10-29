@@ -627,6 +627,47 @@ for (const maintained of [true, false]) {
       const agent = await fixture.currentAgent(owner);
       assert.equal(agent.activeRevisionId, second.id);
       assert.equal(agent.desiredRuntimeState, "running");
+      if (!maintained) {
+        return;
+      }
+      // Finding 2895: a later pass can still queue this version's maintenance (a credential
+      // withdrawal on the running version does). Maintenance never prepares a version whose
+      // deployment failed for good; only a version kept without Git (REPOSITORY_GIT_TOKEN_*)
+      // keeps its chain. The refusal leaves the runtime alone.
+      const key = `agent_revision:${second.id}:maintenance:0`;
+      await fixture.state.transactWithQueue(async (unit, queue) => {
+        await unit.namespaces.lockNamespace(fixture.namespace.id);
+        await queue.enqueue({
+          idempotencyKey: key,
+          namespaceId: fixture.namespace.id,
+          agentId: owner.id,
+          revisionId: second.id,
+          actorId: fixture.actor.id,
+          availableAt: new Date(0),
+        });
+      });
+      const prepared = [];
+      iamUnavailable = false;
+      await fixture.start(
+        {
+          ...compute,
+          async prepareRevision(revision, deploymentContext) {
+            prepared.push(revision.id);
+            return compute.prepareRevision(revision, deploymentContext);
+          },
+        },
+        options,
+      );
+      await fixture.work({ id: second.id, idempotencyKey: key }, "failed_permanent");
+      await fixture.stop();
+      const refused = await fixture.observerPool.query(
+        "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
+        [key],
+      );
+      assert.equal(refused.rows[0].reason_code, "REVISION_SUPERSEDED");
+      assert.deepEqual(prepared, []);
+      assert.deepEqual(stopped, []);
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, second.id);
     },
   );
 }
