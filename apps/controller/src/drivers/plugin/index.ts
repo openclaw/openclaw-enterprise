@@ -5,7 +5,13 @@ import {
   requireConfiguration,
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
-import { googlePackage, managedGoogleInstall } from "./managed-catalog.ts";
+import {
+  googlePackage,
+  managedCredentialBinding,
+  managedGoogleInstall,
+  managedPluginCredentials,
+  requireManagedCredentialRuntime,
+} from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
   type JSONSchema,
@@ -357,6 +363,7 @@ class BundledPluginDriverBase {
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   readonly discoveryCredential = "none" as const;
+  readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
     policyScopeByPlugin: { [managedGoogleInstall.id]: managedGoogleInstall.policyScope },
@@ -375,10 +382,14 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     }
     if (
       google &&
-      (typeof google.enabled !== "boolean" || Object.keys(google).some((key) => key !== "enabled"))
+      (typeof google.enabled !== "boolean" ||
+        Object.keys(google).some((key) => key !== "enabled" && key !== "driverPolicy"))
     ) {
-      throw new ConfigurationHarnessError("Google Workspace supports plugin enablement only.");
+      throw new ConfigurationHarnessError(
+        "The Google Workspace package supports enablement and an optional credential slot.",
+      );
     }
+    managedCredentialBinding(selections);
     this.validate("openclaw", native, defaultApprovers);
   }
 
@@ -426,6 +437,10 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     selections: PluginDesiredState,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
     computeImplementation: string,
+    credentialRuntime?: {
+      readonly sandbox: string | undefined;
+      readonly gateway: string | undefined;
+    },
   ): void {
     if (!Object.hasOwn(selections, managedGoogleInstall.id)) {
       return;
@@ -437,6 +452,11 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     if (!placement.computeImplementations.includes(computeImplementation)) {
       throw new ConfigurationHarnessError("Google Workspace requires Kubernetes Compute.");
     }
+    requireManagedCredentialRuntime(
+      selections,
+      credentialRuntime?.sandbox,
+      credentialRuntime?.gateway,
+    );
   }
 
   validateAgentConfiguration(

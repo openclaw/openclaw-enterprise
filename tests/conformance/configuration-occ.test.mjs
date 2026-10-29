@@ -1250,6 +1250,20 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       );
     }
   }
+  // An owner can keep inline approvals for one Agent while other entries inherit the default.
+  const entryExec = { mode: "allowlist", strictInlineEval: true };
+  const revision = await deploy(
+    {
+      agents: {
+        ...codexValues.agents,
+        entries: { main: { tools: { exec: entryExec } } },
+      },
+    },
+    "dedicated",
+  );
+  assert.equal(revision.configuration.tools.exec.strictInlineEval, false);
+  assert.deepEqual(revision.configuration.agents.entries.main.tools.exec, entryExec);
+
   // Admission fills only unset settings. A value of the wrong type, or a
   // non-object on the path, stays for the Gateway's own validation, which refuses it at startup,
   // so it cannot loosen the setting.

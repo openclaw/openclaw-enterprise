@@ -9,6 +9,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
+import { resourceActionIcon } from "../resource-actions.mjs";
 import { button, element, setText, statusBlock, requestIdLine } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
@@ -59,45 +60,6 @@ interface AgentListContext extends AgentNavigation {
       rereadOnResume?: true;
     },
   ): Promise<unknown>;
-}
-
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-
-// Stroke icons on a 24-unit grid: a square for Stop and a trash can for Delete.
-const ACTION_ICONS = {
-  stop: [["rect", { x: 6, y: 6, width: 12, height: 12, rx: 1.5 }]],
-  delete: [
-    ["path", { d: "M4 7h16" }],
-    ["path", { d: "M10 11v6M14 11v6" }],
-    ["path", { d: "M6 7l1 13h10l1-13" }],
-    ["path", { d: "M9 7V4h6v3" }],
-  ],
-} as const;
-
-function actionIcon(name: RowAction) {
-  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
-  const attributes = {
-    class: "action-icon",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    "stroke-width": 2,
-    "stroke-linecap": "round",
-    "stroke-linejoin": "round",
-    "aria-hidden": "true",
-    focusable: "false",
-  };
-  for (const [key, value] of Object.entries(attributes)) {
-    svg.setAttribute(key, String(value));
-  }
-  for (const [tag, shapeAttributes] of ACTION_ICONS[name]) {
-    const shape = document.createElementNS(SVG_NAMESPACE, tag);
-    for (const [key, value] of Object.entries(shapeAttributes)) {
-      shape.setAttribute(key, String(value));
-    }
-    svg.append(shape);
-  }
-  return svg;
 }
 
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
@@ -726,7 +688,7 @@ export function renderAgentList(context: AgentListContext) {
     const stop = neverStarted
       ? null
       : button(
-          actionIcon("stop"),
+          resourceActionIcon("stop"),
           (event) => confirmAction(item, "stop", event.currentTarget as HTMLButtonElement),
           {
             className: "icon-button",
@@ -738,7 +700,7 @@ export function renderAgentList(context: AgentListContext) {
           },
         );
     const remove = button(
-      actionIcon("delete"),
+      resourceActionIcon("delete"),
       (event) => confirmAction(item, "delete", event.currentTarget as HTMLButtonElement),
       {
         className: "icon-button",
@@ -766,7 +728,7 @@ export function renderAgentList(context: AgentListContext) {
     return [
       element(
         "div",
-        { className: "agent-row-actions" },
+        { className: "resource-row-actions" },
         actions.stop ?? element("span", { className: "icon-button-spacer" }),
         actions.delete,
       ),

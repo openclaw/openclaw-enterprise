@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -1694,7 +1697,10 @@ test("Agent detail saves plugin changes for the next revision without changing a
 
   // A catalog entry is not a Configured selection after removal. Restoring the
   // original draft through its supported JSON editor must not revive stale UI.
-  await dialog.getByRole("button", { name: "Remove Calendar", exact: true }).click();
+  const removeCalendar = dialog.getByRole("button", { name: "Remove Calendar", exact: true });
+  assert.equal(await removeCalendar.isVisible(), false);
+  await dialog.getByRole("button", { name: "More actions", exact: true }).click();
+  await removeCalendar.click();
   assert.equal(await dialog.getByRole("heading", { name: "Calendar", exact: true }).count(), 0);
   await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
   await dialog.getByRole("heading", { name: "Calendar", exact: true }).waitFor();
@@ -2034,6 +2040,44 @@ test("Agent draft plugin picker warns that API-key Codex Agents cannot use plugi
   );
   await dialog.getByRole("button", { name: "Done" }).click();
   assert.equal(await page.getByLabel("Plugin selections JSON").isEnabled(), true);
+});
+
+test("Agent draft plugin browsing names the Plugin Driver, not API-key auth, under occ-plugin", async (t) => {
+  // Finding 2791: only the Codex Plugin Driver's catalog depends on Codex auth. Under the OCC
+  // Plugin Driver an API-key Codex Agent has no catalog because of the Driver.
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("OCC plugins on Codex", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "API-key Codex Agent",
+    nativeValues("occ-plugins-codex", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  assert.equal(agent.harnessAuth.method, "api_key");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  await login(page, fixture, url);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog
+    .getByText(
+      "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections.",
+    )
+    .waitFor();
+  assert.equal(
+    await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").count(),
+    0,
+  );
+  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/plugins`).length,
+    0,
+  );
 });
 
 test("Agent draft browses the curated catalog without a saved Secret", async (t) => {

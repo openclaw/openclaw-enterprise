@@ -1,6 +1,5 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
-import { displayDate } from "./agents/list.mjs";
-import { button, describeDisabled, element, type statusBlock, requestIdLine } from "./dom.mjs";
+import { button, describeDisabled, element, requestIdLine } from "./dom.mjs";
 import type { createNavigation, pages } from "./navigation.mjs";
 
 interface Account {
@@ -125,13 +124,6 @@ export function sorted<T extends { id: string; name?: string }>(items: readonly 
   );
 }
 
-// Status badges speak in words with a tone; Backend types are names, so they stay neutral.
-const namespaceStatuses = {
-  ready: { label: "Ready", tone: "success" },
-  provisioning: { label: "Provisioning", tone: "warning" },
-  deleting: { label: "Deleting", tone: "warning" },
-  failed: { label: "Failed", tone: "danger" },
-} satisfies Record<Namespace["status"], { label: string; tone: Parameters<typeof statusBlock>[0] }>;
 const backendTypes = {
   chatgpt: "ChatGPT",
   github: "GitHub",
@@ -837,27 +829,15 @@ export function createShell({
     );
   }
 
-  function renderRows(
-    view: HTMLElement,
-    ...[feature, items]:
-      ["namespaces", readonly Namespace[]] | ["backends", readonly BackendSummary[]]
-  ) {
+  function renderRows(view: HTMLElement, feature: "backends", items: readonly BackendSummary[]) {
     if (!items.length) {
       panel(
         view,
-        feature === "backends"
-          ? "No backends configured"
-          : `No accessible ${pages[feature].toLowerCase()}`,
-        feature === "backends"
-          ? "No experimental Backends are configured for this Installation."
-          : "Ask an Installation administrator to provision resources or grant access, then refresh.",
+        "No backends configured",
+        "No experimental Backends are configured for this Installation.",
         "Refresh",
         () => void loadPage(),
       );
-      return;
-    }
-    if (feature === "namespaces") {
-      renderNamespaceRows(view, items);
       return;
     }
     const list = element("ul", { className: "collection", "aria-label": pages[feature] });
@@ -876,79 +856,6 @@ export function createShell({
       );
     }
     view.replaceChildren(list);
-  }
-
-  // Namespaces read as a table (UX spec 3.12): Namespace with its ID beneath, Status, Created.
-  // The rows stay a list, so each row is one item to a screen reader, and the column names
-  // above them are visual only: each cell carries its own name. A row opens that Namespace's
-  // Agents (finding 1897).
-  function renderNamespaceRows(view: HTMLElement, items: readonly Namespace[]) {
-    const list = element("ul", {
-      className: "collection",
-      "aria-label": pages.namespaces,
-    });
-    for (const item of sorted(items)) {
-      const status = namespaceStatuses[item.status];
-      list.append(
-        element(
-          "li",
-          { className: "resource-linked namespace-row" },
-          element(
-            "div",
-            { className: "namespace-cell-name" },
-            element(
-              "p",
-              { className: "resource-name" },
-              namespaceLink(item.name ?? item.id, item.id),
-            ),
-            element("span", { className: "resource-id" }, item.id),
-          ),
-          element(
-            "span",
-            { className: "namespace-cell-status" },
-            element(
-              "span",
-              { className: "badge", ...(status ? { "data-tone": status.tone } : {}) },
-              status?.label ?? item.status,
-            ),
-          ),
-          element(
-            "span",
-            { className: "namespace-cell-created" },
-            element("span", { className: "namespace-cell-label" }, "Created "),
-            item.createdAt ? displayDate(item.createdAt) : "Unknown",
-          ),
-        ),
-      );
-    }
-    view.replaceChildren(
-      element(
-        "div",
-        { className: "resource-list namespace-table" },
-        element(
-          "div",
-          { className: "resource-list-header namespace-table-head", "aria-hidden": "true" },
-          element("span", {}, "Namespace"),
-          element("span", {}, "Status"),
-          element("span", {}, "Created"),
-        ),
-        list,
-      ),
-    );
-  }
-
-  function namespaceLink(name: string, id: string) {
-    const node = element("a", { href: pageUrl("agents", id) }, name);
-    // A revalidation that remounts the list returns focus to the same row.
-    node.dataset.returnFocusHref = node.href;
-    node.addEventListener("click", (event) => {
-      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-        return;
-      }
-      event.preventDefault();
-      navigate("agents", id);
-    });
-    return node;
   }
 
   function switchNamespace() {
