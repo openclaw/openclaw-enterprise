@@ -3725,7 +3725,9 @@ for (const { agent, material } of [
           return fixture.compute.retireRevision(revision);
         },
       };
+      const events = [];
       await fixture.start(compute, {
+        emit: (event) => events.push(event),
         // A pending token ends at the convergence deadline.
         ...(material === "pending" ? { convergenceTimeoutMs: 3_000 } : {}),
         async repositoryGitMaterial(revisionId) {
@@ -3786,6 +3788,15 @@ for (const { agent, material } of [
       // stopped serving when the pointer moved; this deployment neither stops its own version
       // nor retires the predecessor.
       assert.match(status.error.message, /keeps this version running without Git/);
+      // The pass ends with its completion event, after any Compute call it makes.
+      await completion(
+        events,
+        "the failed deployment's completion",
+        ({ event, workId, outcome }) =>
+          event === "worker.completed" &&
+          workId === candidate.idempotencyKey &&
+          outcome === "permanent",
+      );
       assert.equal(await pointer(), candidate.id);
       assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "running");
       assert.equal((await retirement()).rowCount, 0);
