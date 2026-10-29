@@ -45,6 +45,7 @@ export function createLifecycle(options: {
   providerActionMs: number;
   safetyMarginMs: number;
   admitted(): boolean;
+  authorizeStanding?: () => Promise<void>;
   changed(): void;
 }) {
   const { clock, custody, driver, queue } = options;
@@ -199,6 +200,10 @@ export function createLifecycle(options: {
               await waitForDrain(previous, controller.signal, deadline);
               ownedAttempt.context.assertAdmitted();
             }
+            if (options.authorizeStanding) {
+              await options.authorizeStanding();
+              ownedAttempt.context.assertAdmitted();
+            }
             const minimumValidityMs =
               Math.max(0, ...[...waiters].map((waiter) => waiter.deadline - clock.monotonicNow())) +
               options.safetyMarginMs;
@@ -319,6 +324,7 @@ export function createLifecycle(options: {
     const controller = new AbortController();
     let deadline = Infinity;
     const owned = attempt("retire", controller, () => deadline);
+    custody.bindRetirement(owned.context, record);
     void queue
       .run(
         controller.signal,
@@ -544,6 +550,9 @@ export function createLifecycle(options: {
       ) {
         throw new Error("USE_CLOSED");
       }
+    },
+    withUseBytes<T>(record: CapturedCredential, consume: (bytes: Uint8Array) => Promise<T>) {
+      return custody.withUseBytes(record, consume);
     },
     release(record: CapturedCredential) {
       if (record.uses <= 0) {

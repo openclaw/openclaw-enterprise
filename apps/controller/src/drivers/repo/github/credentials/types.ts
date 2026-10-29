@@ -4,22 +4,17 @@ import type { RepositoryBackendFactory, Clock } from "../../credentials/backend-
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 
 export type GitHubProfile = "git-read" | "git-write" | "git-full";
-/** Internal scope used only by the repository metadata lookup. */
-export type GitHubTokenProfile = GitHubProfile | "metadata-read";
-interface GitHubConfigurationBase {
+/** The last two scopes are internal; neither is accepted as a user-selected access profile. */
+export type GitHubTokenProfile =
+  GitHubProfile | "metadata-read" | "git-ref-write" | "git-ref-draft-pr";
+interface GitHubTokenConfigurationBase {
   readonly providerInstanceId: string;
   readonly configVersion: string;
   readonly repositoryId: string;
   readonly repository: string;
 }
-export interface GitHubAppConfiguration extends GitHubConfigurationBase {
-  readonly kind: "github-app";
-  readonly appId: string;
-  readonly installationId: string;
-  readonly privateKeyFile: string;
-}
 /** Development-only static token authority; production composition never selects it. */
-export interface GitHubTokenConfiguration extends GitHubConfigurationBase {
+export interface GitHubTokenConfiguration extends GitHubTokenConfigurationBase {
   readonly kind: "github-token";
   readonly tokenFile: string;
   readonly developmentOnly: true;
@@ -29,7 +24,6 @@ export interface GitHubTokenConfiguration extends GitHubConfigurationBase {
   readonly allowGraphql: boolean;
   readonly leaseSeconds: number;
 }
-export type GitHubConfiguration = GitHubAppConfiguration | GitHubTokenConfiguration;
 
 /** Derived from the token prefix; never secret and never more than the prefix. */
 export type GitHubTokenClass =
@@ -48,19 +42,15 @@ export interface GitHubStaticTokenOwner {
   /** Zero-fills the token; later withToken calls throw "authority-unavailable". */
   close(): void;
 }
-export type GitHubAuthority = GitHubKeyOwner | GitHubStaticTokenOwner;
 /** The token is copied; the caller zero-fills its own buffer. */
 export type GitHubStaticTokenOptions = Readonly<{ token: Uint8Array }>;
 export interface GitHubFactoryOptions {
-  readonly configuration: GitHubConfiguration;
-  /** Restricted service-internal token capability; never a user-facing access profile. */
-  readonly metadataOnly?: true;
+  readonly configuration: GitHubTokenConfiguration;
   readonly binding?: Readonly<{
     profile: GitHubTokenProfile;
     identity: RepositoryCredentialGrantIdentity;
-    pushRefAllowlist?: readonly string[];
   }>;
-  readonly authority: GitHubAuthority;
+  readonly authority: GitHubStaticTokenOwner;
   readonly gatewayOrigin: string;
   readonly limits: ServiceLimits;
   readonly clock: Clock;

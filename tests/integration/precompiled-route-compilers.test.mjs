@@ -5,8 +5,7 @@
 // every route schema, then feeds each run-time function and its precompiled twin the same
 // seeded corpus of valid and perturbed payloads.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
@@ -22,12 +21,12 @@ import {
 } from "../../apps/controller/src/http/route-compilers.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { perturbValue, sampleValue, seededRandom } from "../helpers/json-schema-samples.mjs";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const VALID_SAMPLES = 40;
 const PERTURBED_SAMPLES = 80;
 
-const directory = mkdtempSync(join(tmpdir(), "precompiled-route-compilers-"));
-test.after(() => rmSync(directory, { recursive: true, force: true }));
+const directory = fileTemporaryDirectory("precompiled-route-compilers-");
 
 const generated = await generatePrecompiledRouteCompilers(async () => {
   const app = createFastifyApp({

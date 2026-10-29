@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
+import { startFakePostgres } from "./fake-postgres-server.mjs";
 import {
   commandShim as fixtureCommandShim,
   startCommandServer,
@@ -13,9 +14,17 @@ import {
 // cleanup.mjs still start every command as a real process and own its timeouts, signals
 // and pipes; only the scenario logic below runs in the test process. A command sends
 // the environment variables below. The fixture directory the scenarios write to is the
-// server's, never the client's.
+// server's, never the client's. `compose up` starts a fake PostgreSQL server
+// (fake-postgres-server.mjs) for the port preparation publishes, where its administrative
+// SQL arrives (scripts/ci/postgres-admin.mjs); each query is logged as a "postgres"
+// command whose args are the database and the query. `compose down` stops it. The fake
+// listens on that port's Unix socket in OPENCLAW_CI_POSTGRES_SOCKET_DIR: the TCP port
+// preparation reserved and released can meanwhile be held by any process's connection
+// (its TIME_WAIT blocks a listener), which made 6 of 20 parallel runs fail.
 export const forwardedEnv = [
   "CI_FIXTURE_SCENARIO",
+  "OCC_POSTGRES_PORT",
+  "OPENCLAW_CI_POSTGRES_SOCKET_DIR",
   "CI_FIXTURE_LANE",
   "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
   "OCC_MIGRATION_DATABASE_URL",
@@ -30,7 +39,17 @@ function createStateStore() {
   return { json: "{}" };
 }
 
-async function fakeCommand({ command, args, env, cwd, root, store, hungCommandExitMs, io }) {
+async function fakeCommand({
+  command,
+  args,
+  env,
+  cwd,
+  root,
+  store,
+  postgresServers,
+  hungCommandExitMs,
+  io,
+}) {
   const { stdout, stderr, exit, exitAfter, closeStdout, lateStderr, readInput, holdPipes } = io;
   const scenario = env.CI_FIXTURE_SCENARIO;
   const initialState = store.json;
@@ -222,32 +241,30 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
     if (args[0] === "compose" && args[1] === "-f" && args[3] === "-p") {
       assert.match(args[4], /^openclaw_ci_pg_/);
       if (equals(args.slice(5), ["up", "-d", "--wait"])) {
+        const port = Number(env.OCC_POSTGRES_PORT);
+        assert.ok(Number.isSafeInteger(port) && port > 0 && port !== 55432);
+        assert.ok(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, "the fixture sets the socket directory");
+        postgresServers.set(
+          args[4],
+          await startFakePostgres({
+            port,
+            socketPath: join(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, `.s.PGSQL.${port}`),
+            onQuery: (query, { database }) => {
+              appendFileSync(
+                join(root, "commands.jsonl"),
+                JSON.stringify({ command: "postgres", args: [database, query], at: Date.now() }) +
+                  "\n",
+              );
+            },
+          }),
+        );
         return finish();
       }
       if (equals(args.slice(5), ["down", "--volumes", "--remove-orphans"])) {
+        await postgresServers.get(args[4])?.close();
+        postgresServers.delete(args[4]);
         return finish();
       }
-      if (args[5] === "exec" && args[8] === "psql") {
-        return finish();
-      }
-    }
-    if (
-      equals(args.slice(0, 3), ["inspect", "--format", "{{json .NetworkSettings.Networks}}"]) &&
-      args[3] === "k3d-" + state.cluster + "-server-0"
-    ) {
-      return finish(
-        JSON.stringify({
-          ["k3d-" + state.cluster]: {
-            Gateway: scenario === "public-gateway" ? "203.0.113.1" : "172.19.0.1",
-          },
-        }),
-      );
-    }
-    if (args[0] === "build" && args.includes("--build-arg")) {
-      assert.equal(args[args.indexOf("--build-arg") + 1], "RUNTIME_IMAGE=" + state.runtime);
-      assert.ok(args[args.indexOf("-f") + 1].endsWith("/Dockerfile.platform-fixture"));
-      state.tag = args[args.indexOf("-t") + 1];
-      return finish();
     }
     // The cache-only probe reports each image's config digest. In the engine-*
     // scenarios the cache resolves to images the engine may hold: engine-holds-images
@@ -264,6 +281,7 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
       assert.equal(args.includes("--load") || args.includes("--cache-to"), false);
       // A cache miss builds every step in the probe; this one outlasts the lane's time.
       if (scenario === "image-probe-hung") {
+        stderr("#12 [openclaw-build 5/9] RUN pnpm build\n");
         return hang();
       }
       const role = args.includes("--target") ? "controller" : "runtime";
@@ -327,6 +345,25 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
       state[role] = args[2];
       return finish();
     }
+    // The warm job builds the runtime image's OpenClaw build stage alone first.
+    if (
+      equals(args.slice(0, 6), [
+        "buildx",
+        "build",
+        "--output",
+        "type=cacheonly",
+        "--target",
+        "openclaw-build",
+      ])
+    ) {
+      assert.equal(
+        args.includes("--load") || args.includes("-t") || args.includes("--cache-to"),
+        false,
+      );
+      assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
+      assert.equal(state.runtime, undefined, "the stage builds before the runtime image");
+      return finish();
+    }
     // The warm job's cache export, after that image's build and load.
     if (equals(args.slice(0, 4), ["buildx", "build", "--output", "type=cacheonly"])) {
       assert.equal(args.includes("--load") || args.includes("-t"), false);
@@ -360,6 +397,7 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
     ) {
       assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
       if (scenario === "image-build-hung") {
+        stderr("#14 exporting to image\n");
         return hang();
       }
       state.runtime = args[args.indexOf("-t") + 1];
@@ -1009,13 +1047,21 @@ export function commandShim(options) {
 }
 
 // One server per fixture, writing to the fixture directory root.
-export function startFixtureCommandServer({ root, hungCommandExitMs }) {
+export async function startFixtureCommandServer({ root, hungCommandExitMs }) {
   assert.ok(Number.isSafeInteger(hungCommandExitMs));
   assert.ok(typeof root === "string" && root.length > 0);
   const store = createStateStore();
-  return startCommandServer({
+  const postgresServers = new Map();
+  const server = await startCommandServer({
     forwardedEnv,
     handle: ({ command, args, env, cwd, io }) =>
-      fakeCommand({ command, args, env, cwd, root, store, hungCommandExitMs, io }),
+      fakeCommand({ command, args, env, cwd, root, store, postgresServers, hungCommandExitMs, io }),
   });
+  return {
+    ...server,
+    close: async () => {
+      await Promise.all([...postgresServers.values()].map((postgres) => postgres.close()));
+      await server.close();
+    },
+  };
 }

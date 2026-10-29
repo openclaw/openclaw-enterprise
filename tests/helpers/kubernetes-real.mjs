@@ -9,8 +9,10 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { captureChild } from "./child-processes.mjs";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { kubectlGetJson } from "./kubernetes-api-read.mjs";
+import { waitFor as pollFor } from "./wait-for.mjs";
 
 const execute = promisify(execFile);
 
@@ -27,7 +29,7 @@ export function diagnosticDeadlinePassed() {
   return diagnosticDeadline.getStore()?.aborted === true;
 }
 
-async function kubectlFor(selection, ...args) {
+async function kubectlFor(selection, args, options) {
   // Inside a failure diagnostic, kubectl stops at its deadline (finding 1557).
   const signal = diagnosticDeadline.getStore();
   signal?.throwIfAborted();
@@ -37,6 +39,7 @@ async function kubectlFor(selection, ...args) {
   }
   const { stdout } = await execute("kubectl", kubectlArguments(selection, args), {
     maxBuffer: 4 * 1024 * 1024,
+    ...options,
     signal,
   });
   return stdout;
@@ -630,7 +633,7 @@ export function inlineProbeCommand(source, ...probeArguments) {
 
 export function createKubernetesClient({
   selection,
-  kubectl = (...args) => kubectlFor(selection, ...args),
+  kubectl = (...args) => kubectlFor(selection, args),
   waitTimeoutMs = 240_000,
   waitIntervalMs = 750,
 }) {
@@ -644,17 +647,16 @@ export function createKubernetesClient({
   };
   const resources = async (kind, namespace, ...args) =>
     JSON.parse(await kubectl("get", kind, "--namespace", namespace, ...args, "-o", "json")).items;
-  const waitFor = async (description, operation, timeoutMs = waitTimeoutMs) => {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const result = await operation();
-      if (result !== undefined && result !== false) {
-        return result;
-      }
-      await delay(waitIntervalMs);
-    }
-    assert.fail(`Timed out waiting for ${description}.`);
-  };
+  // `operation` may also return false for "not yet".
+  const waitFor = (description, operation, timeoutMs = waitTimeoutMs) =>
+    pollFor(
+      description,
+      async () => {
+        const result = await operation();
+        return result === false ? undefined : result;
+      },
+      { timeoutMs, intervalMs: waitIntervalMs },
+    );
 
   return {
     kubectlArguments: kubectlArgumentsForSelection,
@@ -668,25 +670,14 @@ export function createKubernetesClient({
 }
 
 async function applyManifest(kubectlArgumentsForSelection, manifest, { redactions = [] } = {}) {
-  await new Promise((resolve, reject) => {
-    const child = spawn("kubectl", kubectlArgumentsForSelection(["apply", "-f", "-"]), {
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr = `${stderr}${chunk.toString()}`.slice(-4096);
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`kubectl apply failed (${code}): ${redact(stderr, redactions)}`));
-      }
-    });
-    child.stdin.once("error", reject);
-    child.stdin.end(manifest);
-  });
+  const { status, stderr } = await captureChild(
+    "kubectl",
+    kubectlArgumentsForSelection(["apply", "-f", "-"]),
+    { input: manifest },
+  );
+  if (status !== 0) {
+    throw new Error(`kubectl apply failed (${status}): ${redact(stderr.slice(-4096), redactions)}`);
+  }
 }
 
 function redact(value, redactions) {
@@ -702,8 +693,12 @@ export async function validateExplicitK3dLoopbackContext(selection) {
     "OCC_TEST_KUBERNETES_KUBECONFIG must explicitly select disposable k3d.",
   );
   assert.match(kubernetesContext ?? "", /^k3d-/, "a dedicated k3d-* context is required");
+  // Flattening reads local files, where kubectl's API request timeout does not apply.
   const configuration = JSON.parse(
-    await kubectlFor(selection, "config", "view", "--minify", "--flatten", "-o", "json"),
+    await kubectlFor(selection, ["config", "view", "--minify", "--flatten", "-o", "json"], {
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+    }),
   );
   assert.equal(configuration.contexts?.length, 1);
   assert.equal(configuration.contexts[0].name, kubernetesContext);
@@ -721,6 +716,13 @@ export async function validateExplicitK3dLoopbackContext(selection) {
 export function kubernetesHash(value, length = 12) {
   return sha256Hex(value, length);
 }
+
+// The production Gateway memory limit (deploy/examples/production/installation.yaml,
+// docs/guides/deploy/installation-profiles.md). Fixtures that run a real Gateway
+// turn set it, so they hold the Gateway to what production allows: OpenClaw
+// starts most of its worker threads on the first turn (finding 2700).
+export const productionGatewayMemoryLimitGi = 4;
+export const productionGatewayMemoryLimit = `${productionGatewayMemoryLimitGi}Gi`;
 
 export function createKubernetesInstallationConfiguration({
   authentication,

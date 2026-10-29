@@ -8,6 +8,7 @@ import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/inde
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
+import { ConsoleThemeError, loadConsoleTheme } from "./composition/console-theme.ts";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
@@ -17,13 +18,20 @@ import { composeProduction } from "./composition/production.ts";
 import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure, startupConfigurationFailure } from "./startup-failure.ts";
+import {
+  startupDependencyFailure,
+  startupConfigurationFailure,
+  startupListenerFailure,
+} from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
 function startupFailureCode(error) {
+  if (error instanceof ConsoleThemeError) {
+    return "CONSOLE_THEME_INVALID";
+  }
   if (error instanceof PresetFileError) {
     return "PRESET_FILE_INVALID";
   }
@@ -93,7 +101,8 @@ function startupFailureCode(error) {
 export function startupFailureFields(error) {
   return (
     startupDependencyFailure(error) ??
-    startupConfigurationFailure(error) ?? { code: startupFailureCode(error) }
+    startupConfigurationFailure(error) ??
+    startupListenerFailure(error) ?? { code: startupFailureCode(error) }
   );
 }
 
@@ -268,6 +277,8 @@ function configuration(env) {
         : { channelDirectoryManagedProxyHost }),
       ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
       agentRuntimeLogsEnabled,
+      // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
+      apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
     });
   }
 
@@ -315,6 +326,7 @@ export async function startApi(env) {
     phaseStartedAt = now;
   };
   const settings = configuration(env);
+  const consoleTheme = await loadConsoleTheme(env.OCC_CONSOLE_THEME_DIR);
   const metricsSettings = metricsConfiguration(env, settings.mode, settings.port);
   const metrics = metricsSettings === undefined ? undefined : createOccMetrics("api");
   const startupConfiguration = await loadStartupConfigurationSnapshot({
@@ -328,6 +340,7 @@ export async function startApi(env) {
   }
   const compositionSettings = {
     ...settings,
+    ...(consoleTheme === undefined ? {} : { consoleTheme }),
     logger,
     logging,
     metrics,

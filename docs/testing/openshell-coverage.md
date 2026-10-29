@@ -4,6 +4,44 @@ These are the checks in `tests/integration/sandbox-driver-openshell-k3d-real.tes
 Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell-sandbox).
 Unless a section says otherwise, the checks run in the default Codex scenario.
 
+## Gateway tool policy
+
+The dedicated Agent policy scenario uses the existing production deployment owner
+for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. With an explicit
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL`, both use `OPENAI_API_KEY`; the full lane still
+requires `CODEX_ACCESS_TOKEN` for its other owners.
+
+The scenario deploys the first revision with Gateway managed mode off so a human
+administrator can run the command-job control. The dedicated model tool policy
+still applies. A live model turn enters through the authenticated Envoy route
+as a Control UI administrator. The test checks a shell task and child task on the Harness,
+creation and execution of a caller-owned schedule, and an allowed schedule update.
+It then checks refusals to convert that schedule to a command or retarget it to
+another Agent. After a human converts the same owned job to a disabled command,
+model attempts to update, enable or run it must leave the job unchanged and the
+command canary absent. A foreign-job update is also refused. Direct human updates
+and a successful canary command remain positive controls.
+
+These refusals exercise the composed caller-scope and command-job restrictions.
+OpenClaw also tests the individual guards independently.
+
+Separate `tools.invoke` probes check an excluded administrative tool and a denied
+message action. They are direct invocation checks, not model-origin execution.
+
+The scenario then enables Gateway managed mode and deploys a revision with a
+narrower tool policy. The Gateway refuses the saved command job. The test
+observes replacement Gateway and Harness Pods and retirement of the old Sandbox
+before continuing the same conversation. It checks that the removed tool is
+withheld from discovery or that its reconstructed callback refuses execution,
+while a permitted automation call still succeeds. This tests policy activation
+through replacement after old work ends. It does not test mid-turn policy changes.
+
+These are fixture assertions; passing evidence remains tied to the tested source
+and images recorded in the implementation PR. A reconstructed Codex thread proves
+that excluded declarations are omitted, not that an old callback was retained and
+denied. The retained/fallback callback paths also have focused OpenClaw owner tests.
+Harness-local configuration, credentials and process protection remain separate work.
+
 ## Credential source and Harness
 
 Both modes compose the `openshell` Backend with the Sandbox and Credential
@@ -106,11 +144,16 @@ asserting:
   and stays queued. Once the gateway is back, the redeploy activates and serves
   a turn without operator action.
 
-After the restart, an OAuth2 source whose refresh was due may fail with
-`refresh_configuration_invalid` and be retried only an hour later
-([NVIDIA/OpenShell#4526](https://github.com/NVIDIA/OpenShell/issues/4526)).
-The test accepts that state and requires a forced rotation to restore the
-token.
+After the restart, each OAuth2 source must mint a fresh token without a forced
+rotation. OpenShell keeps refresh status across restarts, so a `ready` read alone
+can describe an earlier mint. The test takes each source's first post-restart
+`lastRefreshAt` as a baseline and requires `ready` with a strictly later one,
+for all three sources under one deadline. A `refresh_configuration_invalid`
+failure fails at once: it means the gateway checked the Workspace before loading
+its namespace allowlist
+([NVIDIA/OpenShell#4526](https://github.com/NVIDIA/OpenShell/issues/4526),
+fixed in v0.1.5). The outage summary records, for each source, whether it was
+due when the gateway restarted.
 
 ## Absence checks and a second Agent
 

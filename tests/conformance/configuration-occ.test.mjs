@@ -7,7 +7,6 @@ import {
   resolveApprovedProductionHarness,
 } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   AuthorizationDeniedError,
   ConfigurationHarnessError,
@@ -28,6 +27,17 @@ import {
   registerAndSelectDrivers,
 } from "../helpers/development.mjs";
 import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
+import { refusedAnswer } from "../helpers/refusal-answers.mjs";
+import { GATEWAY_MANAGED_MODE_DENIED } from "../helpers/refusal-text.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import {
+  OPENCLAW_SANDBOX_SETTINGS,
+  admittedConfiguration,
+  openClawSandboxRefusal,
+  withSetting,
+} from "../helpers/admitted-configuration.mjs";
 
 const administrator = "principal-configuration-administrator";
 const deployOnly = "principal-configuration-deploy-only";
@@ -109,7 +119,7 @@ async function fixture(options = {}) {
         providers: { teamstore: { source: "store" } },
         defaults: { store: "teamstore" },
       },
-      agents: { defaults: { sandbox: { mode: "all" } } },
+      agents: { defaults: { sandbox: { scope: "agent" } } },
       plugins: { entries: { example: { enabled: true, regions: ["west"], retryCount: 2 } } },
     },
   });
@@ -165,6 +175,208 @@ async function fixture(options = {}) {
     state,
   };
 }
+
+test("partial Agent updates keep completed workspace topology unless its Configuration or mode changes", async () => {
+  const { controller, iamState, namespace, state } = await fixture();
+  grantRole(iamState, administrator, {
+    id: "managed-mode-administrator",
+    permissions: { installation: ["administer"] },
+    resource: { kind: "installation", id: installation.id },
+  });
+  // Use the production Driver's workspace admission rules without a cluster client.
+  const compute = createTestKubernetesComputeDriver("partial-update-compute", {
+    gatewayRuntime: true,
+  });
+  registerAndSelectDrivers(controller, [compute]);
+  const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+  values.agents.defaults.workspace = "/home/node/workspace";
+  const configuration = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values,
+  });
+  const agent = await controller.createAgent(
+    administrator,
+    {
+      namespaceId: namespace.id,
+      name: "Partial update workspace",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      initialWorkspaceFiles: { "USER.md": "Synthetic workspace owner" },
+    },
+    resolveApprovedDevelopmentHarness,
+  );
+  // Retain the metadata a successful initial deployment leaves, with no staged bytes.
+  const setup = await state.read((view) => view.workspaceSetups.find(namespace.id, agent.id));
+  await state.transact((unit) => unit.workspaceSetups.complete(namespace.id, agent.id, setup.id));
+  const identity = { namespaceId: namespace.id, agentId: agent.id };
+  const update = (body) =>
+    controller.updateAgent(
+      administrator,
+      {
+        ...identity,
+        ...body,
+      },
+      resolveApprovedDevelopmentHarness,
+    );
+  const workspaceError = {
+    name: "ConfigurationHarnessError",
+    message: /^Configuration setting agents\.defaults\.workspace must be /u,
+  };
+  // The same Configuration's workspace is valid only for dedicated execution.
+  await assert.rejects(
+    update({ gatewayManagedMode: false, executionMode: "embedded" }),
+    workspaceError,
+  );
+  const edited = structuredClone(values);
+  edited.agents.defaults.workspace = "/srv/experiment";
+  await controller.updateConfiguration(administrator, {
+    namespaceId: namespace.id,
+    configurationId: configuration.id,
+    values: edited,
+  });
+  // A later Configuration edit may break deployment without locking unrelated Agent edits.
+  for (const body of [
+    { configurationId: configuration.id, gatewayManagedMode: false },
+    { gatewayManagedMode: true },
+    { gatewayManagedMode: false, executionMode: agent.executionMode },
+  ]) {
+    const saved = await update(body);
+    assert.equal(saved.gatewayManagedMode, body.gatewayManagedMode);
+    assert.equal(saved.configurationId, configuration.id);
+    assert.equal(saved.executionMode, agent.executionMode);
+  }
+  const other = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values: edited,
+  });
+  await assert.rejects(update({ configurationId: other.id }), workspaceError);
+  const saved = await controller.getAgent(administrator, namespace.id, agent.id);
+  assert.equal(saved.configurationId, configuration.id);
+  assert.equal(saved.executionMode, agent.executionMode);
+  assert.equal(saved.gatewayManagedMode, false);
+});
+
+test("a new Agent's Gateway managed mode defaults to what the selected Compute Driver enforces", async () => {
+  const { configuration, controller, iamState, namespace } = await fixture();
+  const create = (name, extra = {}) =>
+    controller.createAgent(administrator, {
+      namespaceId: namespace.id,
+      name,
+      configurationId: configuration.id,
+      ...extra,
+    });
+  const unsupported = {
+    name: "ConfigurationHarnessError",
+    message: "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.",
+  };
+  // Kubernetes without a Gateway runtime cannot apply managed mode (finding 2676). The default
+  // is off, which needs no Installation administer: there is nothing to opt out of.
+  registerAndSelectDrivers(controller, [createTestKubernetesComputeDriver("no-gateway-runtime")]);
+  const unmanaged = await create("No Gateway runtime");
+  assert.equal(unmanaged.gatewayManagedMode, false);
+  // Asking for it is refused at save and in the create preflight, not at the next deploy.
+  await assert.rejects(
+    create("Managed without runtime", { gatewayManagedMode: true }),
+    unsupported,
+  );
+  await assert.rejects(
+    controller.validateAgentCreate(administrator, {
+      namespaceId: namespace.id,
+      configuration: { kind: "agent", values: configuration.values },
+      gatewayManagedMode: true,
+    }),
+    unsupported,
+  );
+  // Turning it on later is an Installation administrator's change, refused for the same reason.
+  grantRole(iamState, administrator, {
+    id: "managed-mode-administrator",
+    permissions: { installation: ["administer"] },
+    resource: { kind: "installation", id: installation.id },
+  });
+  await assert.rejects(
+    controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: unmanaged.id,
+      gatewayManagedMode: true,
+    }),
+    unsupported,
+  );
+  // With a Gateway runtime the Driver enforces managed mode, so it is on by default.
+  registerAndSelectDrivers(controller, [
+    createTestKubernetesComputeDriver("gateway-runtime", { gatewayRuntime: true }),
+  ]);
+  assert.equal((await create("Gateway runtime")).gatewayManagedMode, true);
+});
+
+test("only an Installation administrator opts an Agent out of Gateway managed mode or changes it later", async () => {
+  const { configuration, controller, iamState, namespace } = await fixture();
+  // This fixture's administrator holds Agent create and update in the Namespace but not
+  // Installation administer: the managed-mode member persona.
+  const member = administrator;
+  const installationAdministrator = "principal-configuration-installation-administrator";
+  iamState.identities.push({
+    kind: "principal",
+    id: installationAdministrator,
+    issuer: "configuration-conformance",
+    subject: installationAdministrator,
+  });
+  grantRole(iamState, installationAdministrator, {
+    id: "managed-mode-installation-administrator",
+    permissions: {
+      installation: ["administer"],
+      agent: ["create", "read", "update"],
+      configuration: ["read"],
+    },
+  });
+  // The denial names the one field that needs the grant (finding 2691).
+  const denied = { status: 403, code: "FORBIDDEN", message: GATEWAY_MANAGED_MODE_DENIED };
+  const refused = (work) => refusedAnswer(work, { actorId: member });
+  const create = (principalId, name, mode) =>
+    controller.createAgent(principalId, {
+      namespaceId: namespace.id,
+      name,
+      configurationId: configuration.id,
+      ...(mode === undefined ? {} : { gatewayManagedMode: mode }),
+    });
+  const validate = (mode) =>
+    controller.validateAgentCreate(member, {
+      namespaceId: namespace.id,
+      name: "Managed mode preflight",
+      configuration: { kind: "agent", values: configuration.values },
+      ...(mode === undefined ? {} : { gatewayManagedMode: mode }),
+    });
+
+  // Opting out at create, or in its preflight, is the Installation administrator's decision.
+  assert.deepEqual(await refused(() => create(member, "Member opt-out", false)), denied);
+  assert.deepEqual(await refused(() => validate(false)), denied);
+  // The default and an explicit on need only the Agent create grant.
+  await validate(undefined);
+  await validate(true);
+  assert.equal((await create(member, "Member default", undefined)).gatewayManagedMode, true);
+  assert.equal((await create(member, "Member explicit on", true)).gatewayManagedMode, true);
+
+  // Once an Installation administrator turns it off, turning it back on is a change too.
+  const optedOut = await create(installationAdministrator, "Administrator opt-out", false);
+  assert.equal(optedOut.gatewayManagedMode, false);
+  const identity = { namespaceId: namespace.id, agentId: optedOut.id };
+  assert.deepEqual(
+    await refused(() => controller.updateAgent(member, { ...identity, gatewayManagedMode: true })),
+    denied,
+  );
+  // Sending the saved value changes nothing, so the member's ordinary update grant suffices.
+  const unchanged = await controller.updateAgent(member, {
+    ...identity,
+    gatewayManagedMode: false,
+  });
+  assert.equal(unchanged.gatewayManagedMode, false);
+  const enabled = await controller.updateAgent(installationAdministrator, {
+    ...identity,
+    gatewayManagedMode: true,
+  });
+  assert.equal(enabled.gatewayManagedMode, true);
+});
 
 test("concurrent Configuration updates serialize into distinct server-managed generations", async () => {
   const { configuration, controller, namespace } = await fixture();
@@ -726,7 +938,10 @@ test("a Configuration left ahead of its record by failed updates recovers on the
     resolveApprovedDevelopmentHarness,
   );
   assert.equal(revision.configurationGeneration, 4);
-  assert.deepEqual(revision.configuration, admitLoggingConfiguration(valuesWith(["east"]), "info"));
+  assert.deepEqual(
+    revision.configuration,
+    admittedConfiguration(servedAs(valuesWith(["east"]), agent.name), "info"),
+  );
   // Lost write 1 to 2; lost retry 2 to 3 and its compensation 3 to 2; failed retry 2 to 3;
   // recovery 3 to 4.
   assert.deepEqual(steps, [
@@ -917,12 +1132,180 @@ test("Agent deployment snapshots its selected Configuration and Compute identity
   assert.equal(revision.configurationId, configuration.id);
   assert.equal(revision.configurationKind, "agent");
   assert.equal(revision.configurationGeneration, configuration.generation);
-  assert.deepEqual(revision.configuration, admitLoggingConfiguration(configuration.values, "info"));
+  assert.deepEqual(
+    revision.configuration,
+    admittedConfiguration(servedAs(configuration.values, agent.name), "info"),
+  );
   assert.equal(Object.isFrozen(configuration.values.models.providers.openai.apiKey), true);
   assert.equal(Object.isFrozen(revision.configuration.plugins.entries.example.regions), true);
   assert.equal(agent.executionMode, "embedded");
   assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
   assert.deepEqual(revision.compute, { id: compute.id, implementation: compute.implementation });
+});
+
+test("Agent deployment keeps the display name its Configuration sets", async () => {
+  const { agent, configuration, controller, namespace } = await fixture();
+  // The Configuration owner chose this name for the Control UI; the OCC Agent name must not
+  // replace it, and the entry's other identity settings stay as written.
+  const values = {
+    ...configuration.values,
+    agents: {
+      ...configuration.values.agents,
+      // A roster entry selects its own model when agents.defaults.model is unset.
+      entries: {
+        main: {
+          model: "openai/gpt-4.1",
+          models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+          identity: { name: "Configured name", emoji: "🦞" },
+        },
+      },
+    },
+  };
+  await controller.updateConfiguration(administrator, {
+    namespaceId: namespace.id,
+    configurationId: configuration.id,
+    values,
+  });
+
+  const revision = await controller.deployAgent(
+    administrator,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+
+  assert.notEqual(agent.name, "Configured name");
+  assert.deepEqual(revision.configuration, admittedConfiguration(values, "info"));
+});
+
+// Every Compute Driver renders the defaults OCE admits. Embedded and dedicated Gateways
+// keep explicit choices about steering, workspace access, and command approvals.
+test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable and steering to the Configuration", async () => {
+  const { agent, configuration, controller, namespace } = await fixture();
+  const codexValues = {
+    agents: {
+      defaults: {
+        model: { primary: "codex/gpt-4.1" },
+        models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
+  const deploy = async (values, executionMode) => {
+    const selected = await controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+    await controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: selected.id,
+      executionMode,
+    });
+    return controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    );
+  };
+  const cases = {
+    // Admission fills each default, keeps the settings beside them (the base's sandbox scope, an
+    // empty applyPatch, the queue mode), and adds no steering value.
+    unset: { messages: { queue: { mode: "collect" } }, tools: { exec: { applyPatch: {} } } },
+    // An explicit strictInlineEval `true` is kept beside the filled mode: inline programs then wait
+    // for an approval, as that Configuration asks.
+    "an explicit inline-program rule": {
+      tools: { exec: { strictInlineEval: true } },
+    },
+    // Explicit values reach the Gateway as written; inline programs need no approval in an
+    // explicit mode "full" either.
+    "explicit looser values": {
+      messages: { queue: { allowCollaborativeSteering: true } },
+      tools: { exec: { mode: "full", applyPatch: { enabled: true, workspaceOnly: false } } },
+    },
+    // An explicit steering restriction is kept, and so is an exec
+    // mode "ask" for an operator who connects an approval channel; beside it admission fills no
+    // strictInlineEval.
+    "explicit stricter values": {
+      messages: { queue: { allowCollaborativeSteering: false } },
+      tools: { exec: { mode: "ask", applyPatch: { enabled: true, workspaceOnly: true } } },
+    },
+    // A legacy exec security or ask value is an explicit policy too: admission
+    // fills no mode beside it, since the Gateway would apply a mode over it, and no
+    // strictInlineEval.
+    "a legacy exec security": { tools: { exec: { security: "allowlist" } } },
+    "a legacy exec ask": { tools: { exec: { ask: "always" } } },
+  };
+  for (const [executionMode, base] of [
+    ["embedded", configuration.values],
+    ["dedicated", codexValues],
+  ]) {
+    for (const [name, settings] of Object.entries(cases)) {
+      const values = { ...base, ...settings };
+      const revision = await deploy(values, executionMode);
+      assert.equal(revision.harness.mode, executionMode, name);
+      assert.deepEqual(
+        revision.configuration,
+        admittedConfiguration(servedAs(values, agent.name), "info"),
+        `${executionMode}: ${name}`,
+      );
+    }
+  }
+  // An owner can keep inline approvals for one Agent while other entries inherit the default.
+  const entryExec = { mode: "allowlist", strictInlineEval: true };
+  const revision = await deploy(
+    {
+      agents: {
+        ...codexValues.agents,
+        entries: { main: { tools: { exec: entryExec } } },
+      },
+    },
+    "dedicated",
+  );
+  assert.equal(revision.configuration.tools.exec.strictInlineEval, false);
+  assert.deepEqual(revision.configuration.agents.entries.main.tools.exec, entryExec);
+
+  // Admission fills only unset settings. A value of the wrong type, or a
+  // non-object on the path, stays for the Gateway's own validation, which refuses it at startup,
+  // so it cannot loosen the setting.
+  for (const tools of [{ exec: { mode: 1, applyPatch: { workspaceOnly: "no" } } }, ["read"]]) {
+    const invalid = await deploy({ ...codexValues, tools }, "dedicated");
+    assert.deepEqual(invalid.configuration.tools, tools);
+    assert.equal(invalid.configuration.messages, undefined);
+  }
+});
+
+// The rule's refused and accepted values, for every Agent and for one Agent's entry, which
+// overrides it (findings 2767, 2773). configuration-controller.test.mjs proves that each save
+// path, Agent save and deployment run it.
+test("Configuration save refuses OpenClaw's sandbox and keeps the values the OCE runtime runs", async () => {
+  const { controller, namespace } = await fixture();
+  const save = (values) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+  for (const setting of OPENCLAW_SANDBOX_SETTINGS) {
+    const entry = ["agents", "entries", "main", ...setting.entry];
+    for (const value of setting.refused) {
+      for (const [path, values] of [
+        [setting.path, withSetting({}, setting.path, value)],
+        // An accepted value for every Agent does not admit an Agent's entry that turns it on.
+        [entry, withSetting(withSetting({}, setting.path, setting.accepted[0]), entry, value)],
+      ]) {
+        await assert.rejects(save(values), {
+          name: "ConfigurationHarnessError",
+          message: openClawSandboxRefusal(setting, path),
+        });
+      }
+    }
+    for (const value of setting.accepted) {
+      const values = withSetting(withSetting({}, setting.path, value), entry, value);
+      assert.deepEqual((await save(values)).values, values, JSON.stringify(values));
+    }
+  }
+  const values = { agents: { defaults: { sandbox: { mode: "off", scope: "session" } } } };
+  assert.deepEqual((await save(values)).values, values);
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {
@@ -1199,6 +1582,12 @@ test("Agent roster refusals name the setting and the fix", () => {
   const message = configurationRefusal({ agents: { entries: { [long]: false } } });
   assert.equal(Array.from(message).length, 256, message);
   assert.ok(message.endsWith("… must be an object."), message);
+  // A path that exactly fills the cap is kept whole.
+  const fits = "x".repeat(256 - "Configuration setting agents.entries. must be an object.".length);
+  assert.equal(
+    configurationRefusal({ agents: { entries: { [fits]: false } } }),
+    `Configuration setting agents.entries.${fits} must be an object.`,
+  );
 });
 
 test("model policy refusals name the Configuration setting", () => {
@@ -1465,8 +1854,23 @@ for (const scope of ["primary", "default-fallback", "entry-fallback", "provider-
     );
 
     assert.deepEqual(configuration.values, values);
-    // Admission freezes the original fallback order for the runtime to execute.
-    assert.deepEqual(admitted.configuration, admitLoggingConfiguration(values, "info"));
+    // Admission freezes the original fallback order for the runtime to execute, and names the
+    // sole roster entry after the OCC Agent.
+    assert.deepEqual(
+      admitted.configuration,
+      admittedConfiguration(
+        {
+          ...values,
+          agents: {
+            ...values.agents,
+            entries: {
+              main: { ...values.agents.entries.main, identity: { name: dedicated.name } },
+            },
+          },
+        },
+        "info",
+      ),
+    );
     assert.deepEqual(admitted.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
     assert.equal(admitted.compute.id, "configuration-occ-compute");
   });
@@ -1480,9 +1884,13 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
     models: { [model]: { agentRuntime: { id: runtimeId } } },
   });
   const scenarios = [
+    // Every deployment refuses these too, so save refuses them first with its text (finding 1828).
     ...[null, "openai/gpt-4.1-mini", [42], ["/missing-provider"]].map((fallbacks) => ({
       name: `malformed fallback selection ${JSON.stringify(fallbacks)} cannot be admitted`,
       executionMode: "embedded",
+      saveRefusal: Array.isArray(fallbacks)
+        ? "Configuration setting agents.defaults.model must name each model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1."
+        : "Configuration setting agents.defaults.model.fallbacks must be an array.",
       values: {
         agents: {
           defaults: {
@@ -1694,8 +2102,8 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
   for (const { name, executionMode, values, saveRefusal } of scenarios) {
     const { agent, controller, namespace } = await fixture();
     if (saveRefusal !== undefined) {
-      // Every deployment refuses a fallback on another provider, so Configuration save refuses
-      // it first, naming the setting (finding 1298).
+      // Every deployment refuses a fallback on another provider or a malformed selection, so
+      // Configuration save refuses it first, naming the setting (findings 1298 and 1828).
       await assert.rejects(
         controller.createConfiguration(administrator, {
           namespaceId: namespace.id,
@@ -1858,6 +2266,9 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
         configurationGeneration: embedded.configurationGeneration,
         harness: embedded.harness,
         createdAt: embedded.createdAt,
+        // The deployment the listing names: the one admitted above, still queued.
+        deploymentStatus: "queued",
+        deploymentErrorCode: null,
       },
     ],
   );
@@ -2006,6 +2417,22 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
       modes: [],
     })),
     { name: "full", sandbox: conformanceSandbox("full", facets), modes: ["dedicated"] },
+    // Admission's Sandbox view can refuse OpenClaw on Driver settings alone (finding 2347). The
+    // capability carries that refusal, so a reader learns which setting to change (finding 2373).
+    {
+      name: "full but its Agent view refuses OpenClaw",
+      sandbox: {
+        ...conformanceSandbox("refuses-openclaw", facets),
+        configureAgent(values, harness) {
+          if (harness.id === "openclaw") {
+            throw new ConfigurationHarnessError("This Sandbox Driver refuses OpenClaw.");
+          }
+          return values;
+        },
+      },
+      modes: [],
+      settingRefusals: { dedicated: "This Sandbox Driver refuses OpenClaw." },
+    },
     {
       name: "full but unavailable",
       sandbox: conformanceSandbox("unavailable", facets),
@@ -2034,6 +2461,7 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
       capabilities.openclaw,
       {
         executionModes: shape.modes,
+        ...(shape.settingRefusals ? { settingRefusals: shape.settingRefusals } : {}),
         ...(shape.unavailable ? { sandboxDriverUnavailable: true } : {}),
       },
       shape.name,
@@ -2066,6 +2494,11 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
           continue;
         }
         admitted = false;
+        // A setting refusal is the message admission itself returns.
+        const settingRefusal = shape.settingRefusals?.[executionMode];
+        if (settingRefusal !== undefined) {
+          assert.equal(error.message, settingRefusal, label);
+        }
       }
       assert.equal(admitted, shape.modes.includes(executionMode), label);
     }

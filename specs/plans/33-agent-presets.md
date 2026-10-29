@@ -169,7 +169,7 @@ retain their current behavior.
 2. Implement CRUD in OCC and controller routes, including IAM resource registration,
    Namespace deletion checks, policy cleanup, and audit. Reuse existing transactions.
 3. Implement deterministic variable rendering and the selector, input form, and one-time prefill
-   action in [console Agent creation](../../apps/controller/src/console/agents/create.mjs);
+   action in [console Agent creation](../../apps/controller/src/console/agents/create.mts);
    preserve auth/channel controls and partial-save recovery. Expose editable
    plugin selections and Secret bindings when needed to submit all template fields.
 4. Add a current Preset reference and usage guide when implementation ships.
@@ -178,15 +178,15 @@ retain their current behavior.
 
 ## Verification
 
-| Required outcome                                     | Implementation proof                                                                                                                                                                                                                            |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CRUD persists with correct isolation and permissions | Real HTTP and PostgreSQL integration: restart/read, rename conflict, denied actions, filtered lists, variable definition round trips, and Namespace deletion with a remaining Preset.                                                           |
-| Partial templates cover the ordinary launch contract | Browser flow selects a model/Harness template, fills variables and missing fields, edits rendered values, saves all supported fields including plugins and Secret bindings, and deploys through existing APIs.                                  |
-| Variables resolve predictably                        | Browser/API integration covers declared defaults, required inputs, scalar types, interpolation, key collisions, escaping, preserved runtime placeholders/SecretRefs, and invalid references; failures save nothing.                             |
-| Copies are independent                               | Create two Agents, edit one, update/delete the Preset before and after deployment, then redeploy; saved drafts and prior revisions retain their own values.                                                                                     |
-| Presets do not bypass admission                      | Deny cross-Namespace sources, missing credential grants, and invalid model/Harness combinations through the real creation/deployment path; no workload is admitted.                                                                             |
+| Required outcome                                     | Implementation proof                                                                                                                                                                                                                   |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CRUD persists with correct isolation and permissions | Real HTTP and PostgreSQL integration: restart/read, rename conflict, denied actions, filtered lists, variable definition round trips, and Namespace deletion with a remaining Preset.                                                  |
+| Partial templates cover the ordinary launch contract | Browser flow selects a model/Harness template, fills variables and missing fields, edits rendered values, saves all supported fields including plugins and Secret bindings, and deploys through existing APIs.                         |
+| Variables resolve predictably                        | Browser/API integration covers declared defaults, required inputs, scalar types, interpolation, key collisions, escaping, preserved runtime placeholders/SecretRefs, and invalid references; failures save nothing.                    |
+| Copies are independent                               | Create two Agents, edit one, update/delete the Preset before and after deployment, then redeploy; saved drafts and prior revisions retain their own values.                                                                            |
+| Presets do not bypass admission                      | Deny cross-Namespace sources, missing credential grants, and invalid model/Harness combinations through the real creation/deployment path; no workload is admitted.                                                                    |
 | Recovery retains user work                           | Browser integration covers one-time prefill, ordinary draft edits, explicit restart, Configuration-only success, locked Configuration inputs after partial save, lost responses, and explicit retry without duplicate silent creation. |
-| Launch still works                                   | Extend the existing real-runtime Agent integration with a Preset-derived Agent and prove one real model response; unavailable credentials/infrastructure remain an explicit verification gap.                                                   |
+| Launch still works                                   | Extend the existing real-runtime Agent integration with a Preset-derived Agent and prove one real model response; unavailable credentials/infrastructure remain an explicit verification gap.                                          |
 
 ## Implementation status
 

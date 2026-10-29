@@ -21,7 +21,9 @@ import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
+  revisionAdmittedBeforeWork,
 } from "../../packages/occ/src/state/controller-work.ts";
+import { DEPLOYMENT_FAILED, WORKSPACE_SETUP_RETRYING } from "../helpers/refusal-text.mjs";
 
 // Findings 1093 and 1094: stops that yield during their Gateway drain (#2145) are rechecked on
 // a faster-growing cadence, do not count as due Work for another draining stop, and log their
@@ -228,6 +230,16 @@ test("a yielded predecessor stop defers as PREDECESSOR_STOP_YIELDED", () => {
   assert.equal(isStopYieldedCode("REFUSED_CANDIDATE_STOP_PENDING"), false);
 });
 
+// Finding 1195: a stop owns the revisions admitted no later than its work was created. Both
+// stamps are truncated to milliseconds, so a revision admitted in the stop's millisecond
+// belongs to it; otherwise the stop would end STOP_SUPERSEDED and leave that revision running.
+test("a stop owns a revision admitted in the same millisecond as its work", () => {
+  const stop = { createdAt: new Date("2026-10-24T12:00:00.123Z") };
+  assert.equal(revisionAdmittedBeforeWork({ createdAt: "2026-10-24T12:00:00.122Z" }, stop), true);
+  assert.equal(revisionAdmittedBeforeWork({ createdAt: "2026-10-24T12:00:00.123Z" }, stop), true);
+  assert.equal(revisionAdmittedBeforeWork({ createdAt: "2026-10-24T12:00:00.124Z" }, stop), false);
+});
+
 // Finding 1107: lease recovery gives a deployment whose predecessor stop started one more attempt
 // instead of failing it on its limit; its progress says why.
 test("a deployment recovered to finish its predecessor stop says so in its progress", () => {
@@ -301,8 +313,7 @@ test("a deployment whose workspace setup Kubernetes is retrying says so in its p
       lastAttempt: {
         at: at.toISOString(),
         code: "WORKSPACE_SETUP_RETRYING",
-        message:
-          "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
+        message: WORKSPACE_SETUP_RETRYING,
       },
       nextAttemptAt: availableAt.toISOString(),
     },
@@ -314,8 +325,7 @@ test("a refused workspace setup fails the deployment saying a retry cannot help"
     deploymentErrorForWork({ state: "failed_permanent", reasonCode: "WORKSPACE_SETUP_REFUSED" }),
     {
       code: "WORKSPACE_SETUP_REFUSED",
-      message:
-        "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.",
+      message: DEPLOYMENT_FAILED.WORKSPACE_SETUP_REFUSED,
     },
   );
 });

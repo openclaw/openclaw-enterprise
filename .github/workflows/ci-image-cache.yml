@@ -31,6 +31,7 @@ on:
       - scripts/*.mjs
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.mjs
+      - scripts/ci/resource-names.mjs
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
       - tsconfig.base.json
@@ -55,7 +56,7 @@ concurrency:
 
 env:
   CI: "1"
-  NODE_VERSION: "24.16.0"
+  NODE_VERSION: "24.22.1"
 
 jobs:
   warm:

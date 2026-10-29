@@ -45,6 +45,10 @@ these restrictions. Its controller and HTTP operation are named
 expect this API to change when Guardrails replaces it.
 Disabling editing preserves approved additions and previously admitted work.
 Revocation requires an explicit policy change or Agent shutdown.
+Without per-Agent network policy support, enabling editing returns HTTP 409;
+disabling it stays allowed. When the Installation selects no Sandbox Driver,
+validate, save and apply return the same 409 right after authorization. Policy GET
+then returns `capability: null` and the cause in `unavailableReason`.
 
 The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
 the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS
@@ -83,8 +87,11 @@ Restrictions are removed with their policy.
 
 Saving additions requires `expectedVersion` and advances the desired policy
 version. It performs no provider mutation. Deploy explicitly to freeze selected
-Driver defaults and approved additions into a new immutable AgentRevision;
+Driver defaults and approved additions into a new AgentRevision;
 deployment retains its usual authorization and interruption behavior.
+In the Console, **Save and apply to current revision** proceeds to application
+only when the save response identifies this policy, its next version, and the
+rules shown in review. An unconfirmed save requires a policy refresh.
 
 Live application additionally requires a supporting Driver, enabled editing, the
 expected desired version, and the exact running revision. OCC records a durable
@@ -99,8 +106,31 @@ version to match. `failed` includes an unconfirmed outcome: the provider may hav
 accepted a request before a connection or worker was lost. Exhausted stale work,
 its failed application, and audit evidence commit in one transaction; interruption
 rolls back all three so a later worker can retry recovery. Refresh, inspect, and
-retry explicitly. Failure never triggers automatic redeployment. The last
+retry explicitly. Failure never triggers automatic redeployment.
+
+A `failed` application carries a `reason` code. The console shows its meaning
+and next step. The worker repeats its checks on every pass, including passes
+after it sent the policy. A failure after a send can leave the Sandbox running
+that policy, and the worker does not send it again:
+
+| `reason`                               | Cause and next step                                                                                    |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `SANDBOX_POLICY_REVISION_CHANGED`      | The current version changed or the Agent stopped. Apply again.                                         |
+| `AUTHORIZATION_DENIED`                 | The requester lost Agent `manage_policy` or SandboxPolicy `update`. Ask an Installation administrator. |
+| `SANDBOX_POLICY_CEILING_CHANGED`       | The delegation ceiling no longer covers every rule. Remove those rules and save.                       |
+| `SANDBOX_POLICY_UNSUPPORTED`           | The version's Sandbox Driver cannot apply or refused the rules. Deploy instead.                        |
+| `SANDBOX_POLICY_PROTECTED_EXECUTION`   | The version runs under protected execution. Remove the saved rules.                                    |
+| `SANDBOX_POLICY_VALIDATION_FAILED`     | The Driver settings refused the rules. Review, correct and save them.                                  |
+| `SANDBOX_POLICY_PLACEMENT_UNAVAILABLE` | The Compute Driver changed since the version deployed. Deploy a new version.                           |
+| `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure. Refresh and apply again.                                                |
+| `SANDBOX_POLICY_UNCONFIRMED`           | No confirmation in time; the provider may have applied part. Refresh and retry.                        |
+
+The last
 confirmed live version remains recorded separately when desired additions change.
+Policy GET returns the running revision as `defaultsRevisionId` and the saved
+policy version it was deployed with as `deployedPolicyVersion`. When that version
+is the saved version and no application targets that revision, the Sandbox
+enforces the saved rules without live application. The console shows **Deployed**.
 Revision snapshots and attributable audit evidence preserve the original admission.
 The console shows read-only defaults from the running revision, or the selected
 Driver before deployment, separately from the delegation ceiling and additions.
@@ -123,9 +153,33 @@ The console's **Policy denials** tab uses the existing bounded, exact-revision
 Sandbox log path and its `read_logs`/administration rules. Typed metadata is
 optional. Recognized OpenShell records are parsed by the Driver; OCC validates,
 redacts, and applies the normal output and retention limits. Unknown fields stay
-unknown. **Denials in the loaded window** counts retained records, not requests
-or lifetime denials. Buffer gaps, withheld records, permission denial, and missing
+unknown. The denial count describes retained records, not unique requests or
+lifetime denials. The console retains up to 1,000 log records and initially shows
+five denials per page, newest first. Search filters the loaded window. Follow
+collects new records without moving inspected rows; **Show newest** displays them. Buffer gaps, withheld records, permission denial, and missing
 metadata remain visible. An empty successful read says **No denials in this window.**
+
+The **Network policy** card precedes the denial log and distinguishes saved
+policy from confirmed live application. **Allow this** prefills one exact rule;
+**Allow selected** stages eligible denials selected across pages. **Select page**
+selects only the visible page. Repeated executable/host/port requests and requests
+covered by existing rules do not create additional rules. The complete proposed
+policy preserves existing rules and passes the normal preview, save, and apply
+admission. Selecting denials grants no access until the user reviews and saves.
+**Manage rules** searches and pages explicit rules, five at a time, with separate
+controls to edit or remove a rule. Installation defaults stay read-only.
+The **Policy editing** switch sits beside **Manage rules**. With editing off,
+**View rules**, suggestions, and **View network limits** remain available for
+inspection; mutation controls are hidden. The ceiling has a separate read-only
+dialog. **Policy details** on the page shows versions and Installation defaults.
+Suggestions initially show three entries, with an explicit action to show the rest.
+Their executable basenames have expandable full paths. Bulk review shows selected
+record and new-rule counts, repeated requests, and already-covered requests.
+The rule dialog footer offers review for unsaved changes, application for saved
+changes, and **Done** when no action remains. Save feedback distinguishes saved,
+pending, confirmed, and unconfirmed outcomes. **Refresh status** only reads;
+**Retry application** requires an explicit refresh of the failed application and
+rechecks application authority. Neither action starts a deployment.
 
 Provider suggestions use a separate authorized and audited read. OpenShell's
 `GetDraftPolicy` returns aggregated chunks, including its lifecycle and observation

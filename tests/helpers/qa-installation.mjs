@@ -4,12 +4,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, copyFile, chmod, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
+import { availablePort } from "./available-port.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
-import { loadYaml, dumpYaml, unusedPort, waitFor } from "./qa-utils.mjs";
+import { grantQaRepositoryBranch } from "./qa-repository.mjs";
+import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
   registerQaSecret,
@@ -380,7 +381,7 @@ export async function createQaInstallation(
   const stateDirectory = join(directory, "state");
   const ports = new Set();
   while (ports.size < 4) {
-    ports.add(await unusedPort());
+    ports.add(await availablePort());
   }
   const [apiPort, kubePort, browserPort, postgresPort] = [...ports];
   const env = {
@@ -417,19 +418,7 @@ export async function createQaInstallation(
     const registry = JSON.parse(
       await protectedText(join(sourceInput, "registry.json"), "repository registry"),
     );
-    assert.equal(registry.repositories.length, 1, "select exactly one authorized repository");
-    const refs = ["openclaw-git-full", "codex-git-full", "codex-git-read"].map(
-      (name) => `refs/heads/oce-qa-${suffix}-${name}`,
-    );
-    for (const policy of registry.repositories[0].namespaces) {
-      if (policy.pushRefAllowlist) {
-        assert.ok(
-          refs.every((ref) => allowsPushRef(policy.pushRefAllowlist, ref)),
-          "selected registry must authorize the run-owned branch names",
-        );
-      }
-      policy.pushRefAllowlist = refs;
-    }
+    grantQaRepositoryBranch(registry, suffix);
     await writeFile(join(repositoryInput, "registry.json"), JSON.stringify(registry), {
       mode: 0o600,
     });
@@ -520,6 +509,7 @@ export async function createQaInstallation(
         cluster,
         "-f",
         join(stateDirectory, "compose.yaml"),
+        ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
         ...args,
       ]);
     },
@@ -614,7 +604,7 @@ export async function createQaInstallation(
     },
     async gatewayUrl(agent) {
       const pod = await f.pod(agent, "gateway");
-      const port = await unusedPort();
+      const port = await availablePort();
       const child = spawn(
         "kubectl",
         [
@@ -812,6 +802,78 @@ export async function createQaInstallation(
   return f;
 }
 
+export async function prepareQaConsoleTheme(f) {
+  const themeDirectory = join(f.directory, "console-theme");
+  await mkdir(themeDirectory);
+  for (const name of ["theme.json", "logo.png"]) {
+    await copyFile(
+      join(repository, "deploy/examples/console-theme", name),
+      join(themeDirectory, name),
+    );
+  }
+  if (f.controlPlane === "compose") {
+    f.consoleThemeComposeFile = await f.write("console-theme.compose.json", {
+      services: {
+        controller: {
+          environment: { OCC_CONSOLE_THEME_DIR: "/etc/openclaw/console-theme" },
+          volumes: [
+            {
+              type: "bind",
+              source: themeDirectory,
+              target: "/etc/openclaw/console-theme",
+              read_only: true,
+            },
+          ],
+        },
+      },
+    });
+    await f.compose("up", "-d", "--no-deps", "--force-recreate", "controller");
+  } else {
+    const namespace = f.state.platformNamespace;
+    await f.apply({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { name: "qa-console-theme", namespace },
+      data: { "theme.json": await readFile(join(themeDirectory, "theme.json"), "utf8") },
+      binaryData: {
+        "logo.png": (await readFile(join(themeDirectory, "logo.png"))).toString("base64"),
+      },
+    });
+    await f.run("helm", [
+      "upgrade",
+      "openclaw-enterprise",
+      join(repository, "deploy/helm/openclaw-enterprise"),
+      "--kubeconfig",
+      join(f.stateDirectory, "kubeconfig"),
+      "--kube-context",
+      `k3d-${f.cluster}`,
+      "--namespace",
+      namespace,
+      "--reuse-values",
+      "--set",
+      "api.consoleTheme.configMapName=qa-console-theme",
+      "--set-string",
+      "api.consoleTheme.checksum=qa-first",
+    ]);
+    await f.kubectl(
+      "-n",
+      namespace,
+      "rollout",
+      "status",
+      "deployment/openclaw-enterprise-api",
+      "--timeout=300s",
+    );
+  }
+  await waitFor("mounted console theme after API restart", async () => {
+    try {
+      const response = await fetch(f.apiUrl + "/console/login");
+      return response.ok && (await response.text()).includes("<title>Example Agents</title>");
+    } catch {
+      return false;
+    }
+  });
+}
+
 export async function prepareQaPreset(f, presetName) {
   assert.ok(
     !f.retained && f.pendingRepositories.size === 0,
@@ -819,14 +881,9 @@ export async function prepareQaPreset(f, presetName) {
   );
   const codex = presetName === "Codex";
   const desiredPlugin = codex ? "codex-plugin" : "occ-plugin";
-  const gatewayResources = f.configuration.drivers.compute.configuration.resources.gateway;
-  // The full native repository workload exceeded the launcher's 2 GiB default.
-  // Keep both installation variants on the same explicit acceptance-test budget.
-  if (
-    f.configuration.drivers.plugin?.id !== desiredPlugin ||
-    gatewayResources.limits.memory !== "4Gi"
-  ) {
-    gatewayResources.limits.memory = "4Gi";
+  // The launcher's Gateway resources match the production example, whose memory
+  // limit covers the full native repository workload; only the plugin varies.
+  if (f.configuration.drivers.plugin?.id !== desiredPlugin) {
     assert.ok(
       f.agents.every((agent) => agent.stopped),
       "stop the prior Agent before changing the installation runtime configuration",

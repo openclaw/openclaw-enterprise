@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "./password-hasher.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -24,7 +24,7 @@ const adminPassword = "postgres-development-password";
 const origin = "http://127.0.0.1";
 
 // Bootstraps the shared development Installation once per database; later suites reuse it.
-async function ensureBootstrap(t, { label, authSecret }) {
+export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
   const observer = new pg.Pool({ connectionString: databaseUrl, max: 2 });
   t.after(() => observer.end());
   if ((await new PostgresPlatformState(observer).loadInstallation()) !== undefined) {
@@ -47,13 +47,19 @@ async function ensureBootstrap(t, { label, authSecret }) {
  * and Secret are the test Drivers.
  *
  * @param t the test context; pools and the app close after it.
+ * @param {object} options
  * @param options.label names the Drivers (`<label>-pg-iam`, …) and, when this run bootstraps
  *   the database, its Installation.
  * @param options.authSecret the session signing secret (at least 32 characters).
- * @param options.createAuditSink receives the PostgreSQL audit sink and returns the sink the
+ * @param [options.createAuditSink] receives the PostgreSQL audit sink and returns the sink the
  *   app writes to (default: that sink).
- * @param options.appOptions extra Fastify app options, such as `agentRuntimeLogs`. They are
+ * @param [options.appOptions] extra Fastify app options, such as `agentRuntimeLogs`. They are
  *   spread last, so they may also replace a default above.
+ * @param [options.controllerOptions]
+ * @param [options.stateOptions]
+ * @param [options.sandboxDriver]
+ * @param [options.transportDatabaseUrl]
+ * @param [options.poolOptions]
  * @returns `{ pool, state, controller, computeDriver, app, principal, inject, deployAgent }`.
  *   `inject(method, url, body)` sends an administrator request. `deployAgent(name)` creates a
  *   ready Namespace, an Agent Configuration and API-key Secret, and an Agent whose
@@ -68,13 +74,16 @@ export async function createPostgresAgentApp(
     createAuditSink = (persisted) => persisted,
     appOptions,
     controllerOptions,
+    stateOptions,
     sandboxDriver,
+    transportDatabaseUrl = databaseUrl,
+    poolOptions = {},
   },
 ) {
-  await ensureBootstrap(t, { label, authSecret });
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+  await ensurePostgresAgentBootstrap(t, { label, authSecret });
+  const pool = new pg.Pool({ connectionString: transportDatabaseUrl, max: 6, ...poolOptions });
   t.after(() => pool.end());
-  const state = new PostgresPlatformState(pool);
+  const state = new PostgresPlatformState(pool, stateOptions);
   const installation = await state.loadInstallation();
   assert.ok(installation);
   const auth = await createPostgresControllerAuth({

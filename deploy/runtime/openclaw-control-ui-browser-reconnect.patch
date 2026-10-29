@@ -1,0 +1,349 @@
+diff --git a/ui/src/api/gateway-browser-socket.ts b/ui/src/api/gateway-browser-socket.ts
+index 38da3458db1566c6c593f8a1a5ee7f14461f8601..6334b7acee58cf2eb8a0f050d6296ae70e6b9fc5 100644
+--- a/ui/src/api/gateway-browser-socket.ts
++++ b/ui/src/api/gateway-browser-socket.ts
+@@ -37,7 +37,10 @@ export function formatBrowserWebSocketConstructorError(err: unknown, url: string
+   };
+ }
+ 
+-export async function probeGatewayReachability(url: string, signal: AbortSignal): Promise<boolean> {
++export async function probeGatewayReachability(
++  url: string,
++  signal: AbortSignal,
++): Promise<"live" | "access-denied" | "unavailable"> {
+   try {
+     const gateway = new URL(url, window.location.href);
+     gateway.protocol = gateway.protocol.replace(/^ws/u, "http");
+@@ -46,7 +49,7 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
+       window.location.href,
+     );
+     if (probe.origin !== new URL(window.location.href).origin) {
+-      return false;
++      return "unavailable";
+     }
+     const response = await fetch(probe, {
+       cache: "no-store",
+@@ -55,20 +58,25 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
+       redirect: "error",
+       signal,
+     });
++    // A sign-in proxy and an access policy can both refuse this request. This is
++    // a hint to offer a browser navigation, never a diagnosis or an access decision.
++    if (response.status === 401 || response.status === 403) {
++      return "access-denied";
++    }
+     if (!response.ok) {
+-      return false;
++      return "unavailable";
+     }
+     const body: unknown = await response.json();
+-    return (
+-      body !== null &&
++    return body !== null &&
+       typeof body === "object" &&
+       "ok" in body &&
+       body.ok === true &&
+       "status" in body &&
+       body.status === "live"
+-    );
++      ? "live"
++      : "unavailable";
+   } catch {
+-    return false;
++    return "unavailable";
+   }
+ }
+ 
+diff --git a/ui/src/api/gateway-connect-errors.ts b/ui/src/api/gateway-connect-errors.ts
+index 1baf7e29daad53407e044c0d62904f6a35fd6238..c71f5f94198c30e80dbb7532c9cc5c9ebaf06736 100644
+--- a/ui/src/api/gateway-connect-errors.ts
++++ b/ui/src/api/gateway-connect-errors.ts
+@@ -22,6 +22,7 @@ export type GatewayBrowserCloseInfo = {
+   error?: ErrorShape;
+   willRetry: boolean;
+   busy?: boolean;
++  browserAccessDenied?: true;
+ };
+ 
+ export class GatewayRequestError extends GatewayProtocolRequestError {
+diff --git a/ui/src/api/gateway-reachability.node.test.ts b/ui/src/api/gateway-reachability.node.test.ts
+index 1f70fd5f455d69e12b9769061e295a5c8d632044..3e89cfec94a66623f7c80bb95c4428a95d46b7bc 100644
+--- a/ui/src/api/gateway-reachability.node.test.ts
++++ b/ui/src/api/gateway-reachability.node.test.ts
+@@ -27,8 +27,11 @@ it.each([
+   { name: "live Gateway", body: { ok: true, status: "live" }, status: 200, busy: true },
+   { name: "unavailable HTTP server", body: { ok: false }, status: 503, busy: false },
+   { name: "unrelated HTTP server", body: { ok: true }, status: 200, busy: false },
++  { name: "sign-in required", body: {}, status: 401, busy: false, denied: true },
++  { name: "access refused", body: {}, status: 403, busy: false, denied: true },
++  { name: "missing Gateway", body: {}, status: 404, busy: false },
+   { name: "offline Gateway", body: null, status: 0, busy: false },
+-])("classifies a failed upgrade against a $name", async ({ body, status, busy }) => {
++])("classifies a failed upgrade against a $name", async ({ body, status, busy, denied }) => {
+   fetchProbe.mockImplementation(() =>
+     status
+       ? Promise.resolve(Response.json(body, { status }))
+@@ -45,6 +48,7 @@ it.each([
+     expect.objectContaining({ code: 1006, willRetry: true, ...(busy ? { busy: true } : {}) }),
+   );
+   expect(onClose.mock.calls[0]?.[0].busy === true).toBe(busy);
++  expect(onClose.mock.calls[0]?.[0].browserAccessDenied === true).toBe(denied === true);
+ });
+ 
+ it.each(["cross-origin", "opened"])("does not probe a %s transport", async (kind) => {
+diff --git a/ui/src/api/gateway.ts b/ui/src/api/gateway.ts
+index 18148532607e27b555f7fa990b16bcf043c5646f..d90d53158281ca4ee18ab210e896216edefea625 100644
+--- a/ui/src/api/gateway.ts
++++ b/ui/src/api/gateway.ts
+@@ -217,14 +217,17 @@ export class GatewayBrowserClient {
+             this.reachabilityProbe = probe;
+             const timeout = setTimeout(() => probe.abort(), 1_000);
+             void probeGatewayReachability(this.opts.url, probe.signal)
+-              .then((reachable) => {
++              .then((reachability) => {
+                 clearTimeout(timeout);
+                 // A new socket or explicit stop retires this failed upgrade's evidence.
+                 if (this.reachabilityProbe === probe) {
+                   this.reachabilityProbe = null;
+                   this.opts.onClose?.({
+                     ...info,
+-                    ...(reachable && !probe.signal.aborted ? { busy: true } : {}),
++                    ...(!probe.signal.aborted && reachability === "live" ? { busy: true } : {}),
++                    ...(!probe.signal.aborted && reachability === "access-denied"
++                      ? { browserAccessDenied: true }
++                      : {}),
+                   });
+                 }
+               })
+diff --git a/ui/src/app/app-shell-view.test.ts b/ui/src/app/app-shell-view.test.ts
+index 2708f32ef422ea9b6881005c190b3aceba53d80a..a498cbdcc3db389bc444faba94c36ed75c622f46 100644
+--- a/ui/src/app/app-shell-view.test.ts
++++ b/ui/src/app/app-shell-view.test.ts
+@@ -316,6 +316,24 @@ it("keeps pages interactive through transport loss and fences reload-required",
+   }
+ });
+ 
++it("keeps the current route mounted while offering a return to the Agent root", async () => {
++  const { runtime, query, refresh } = await mountShell();
++  const initial = runtime.context.gateway.snapshot;
++  const snapshot = vi.spyOn(runtime.context.gateway, "snapshot", "get");
++  const outlet = query("openclaw-router-outlet")!;
++  snapshot.mockReturnValue({ ...initial, phase: "reconnecting", browserAccessDenied: true });
++  refresh();
++  expect(query('.lazy-view-error a[href="/"]')?.getAttribute("target")).toBe("_self");
++  expect(query("openclaw-router-outlet")).toBe(outlet);
++  expect(outlet.hasAttribute("hidden")).toBe(true);
++  expect(outlet.hasAttribute("inert")).toBe(true);
++  snapshot.mockReturnValue({ ...initial, phase: "connected", browserAccessDenied: false });
++  refresh();
++  expect(query('.lazy-view-error a[href="/"]')).toBeNull();
++  expect(query("openclaw-router-outlet")).toBe(outlet);
++  expect(outlet.hasAttribute("hidden")).toBe(false);
++});
++
+ it("keeps one sidebar through drawer and settings takeover transitions", async () => {
+   let mobile = false;
+   mockMobile(() => mobile);
+diff --git a/ui/src/app/app-shell-view.tsx b/ui/src/app/app-shell-view.tsx
+index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323954a02ac 100644
+--- a/ui/src/app/app-shell-view.tsx
++++ b/ui/src/app/app-shell-view.tsx
+@@ -101,6 +101,11 @@ export function ApplicationShell(props: {
+     projectOwner(sessionOwner(), (sessions) => sessions.state.result?.sessions),
+   );
+   const shellConnectionStatus = createMemo(() => view().shellConnectionStatus);
++  // The browser can reopen the Agent root for sign-in while the tab keeps its local draft.
++  const offerBrowserReconnect = () =>
++    view().gatewaySnapshot.browserAccessDenied === true &&
++    !view().nativeEmbed &&
++    window.top === window;
+   const footerStatus = createMemo(() =>
+     shellConnectionStatus() || view().connectionRecovery ? view().gatewayStatus : null,
+   );
+@@ -363,6 +368,19 @@ export function ApplicationShell(props: {
+           onMouseDown={beginNativeWindowDragFromTopInset}
+           inert={view().mobileNavLayout && view().navDrawerOpen}
+         >
++          <Show when={offerBrowserReconnect()}>
++            <section class="lazy-view-error" role="status">
++              <div class="lazy-view-error__title">{t("connection.browserReconnectTitle")}</div>
++              <div class="lazy-view-error__subtitle">
++                {t("connection.browserReconnectExplanation")}
++              </div>
++              <div class="lazy-view-error__actions">
++                <a class="btn primary" href="/" target="_self" rel="noreferrer">
++                  {t("connection.browserReconnectAction")}
++                </a>
++              </div>
++            </section>
++          </Show>
+           <Show
+             when={
+               floatingSidebarAttentionVisible(view().floatingUpdateCard) ||
+@@ -386,8 +404,9 @@ export function ApplicationShell(props: {
+           >
+             <RouterOutlet
+               ref={(element) => (props.host.routeOutlet = element)}
+-              inert={view().reloadRequired}
+-              aria-disabled={view().reloadRequired ? "true" : undefined}
++              hidden={offerBrowserReconnect()}
++              inert={offerBrowserReconnect() || view().reloadRequired}
++              aria-disabled={offerBrowserReconnect() || view().reloadRequired ? "true" : undefined}
+               router={view().runtime.router}
+               retryContext={view().context}
+               retryEnabled={view().gatewayConnected}
+diff --git a/ui/src/app/gateway-page-activation.test.ts b/ui/src/app/gateway-page-activation.test.ts
+index 6b01e8f70ae1ced8ea00efcfe46ff6e3abb182c8..7ad3624bc5828f3c29a3cc32e50bbe8960f4be66 100644
+--- a/ui/src/app/gateway-page-activation.test.ts
++++ b/ui/src/app/gateway-page-activation.test.ts
+@@ -183,6 +183,15 @@ it("cuts short transport backoff after a successful fresh probe", async () => {
+   expect(connect).toHaveBeenCalledOnce();
+ });
+ 
++it("does not treat a refused reachability probe as a live Gateway", async () => {
++  const { connect, fetchProbe } = setupRecovery();
++  // A sign-in proxy refusal is browser-access evidence, not Gateway liveness.
++  fetchProbe.mockImplementation(async () => Response.json({}, { status: 401 }));
++  await vi.advanceTimersByTimeAsync(20_000);
++  expect(fetchProbe).toHaveBeenCalled();
++  expect(connect).not.toHaveBeenCalled();
++});
++
+ it.each([
+   "young opening",
+   "opened socket",
+diff --git a/ui/src/app/gateway-page-activation.ts b/ui/src/app/gateway-page-activation.ts
+index 48f5744f7258685b41a22025a6cd5543cc314e0a..8ad772395e67ebe0f78ff0cf321c5c8da10547b8 100644
+--- a/ui/src/app/gateway-page-activation.ts
++++ b/ui/src/app/gateway-page-activation.ts
+@@ -69,9 +69,9 @@ export function startGatewayPageActivation(
+       probe = controller;
+       const timeout = setTimeout(() => controller.abort(), 1_500);
+       try {
+-        const reachable = await probeGatewayReachability(client.gatewayUrl, controller.signal);
++        const reachability = await probeGatewayReachability(client.gatewayUrl, controller.signal);
+         if (
+-          reachable &&
++          reachability === "live" &&
+           !controller.signal.aborted &&
+           shouldProbe() &&
+           gateway.snapshot.client === client &&
+diff --git a/ui/src/app/gateway-store.observers.test.ts b/ui/src/app/gateway-store.observers.test.ts
+index 8adcff4da2675804542eb7977d68fa12105d3f20..a5125ca83842490eae4731feed13bb6a808f4b75 100644
+--- a/ui/src/app/gateway-store.observers.test.ts
++++ b/ui/src/app/gateway-store.observers.test.ts
+@@ -493,6 +493,23 @@ describe("createApplicationGateway connection ownership", () => {
+     }
+   });
+ 
++  it("offers browser recovery only for an established connection and retires it on recovery or replacement", () => {
++    gateway.start();
++    const original = current();
++    const refused = { code: 1006, reason: "", willRetry: true, browserAccessDenied: true } as const;
++    original.testOptions.onClose?.(refused);
++    expect(gateway.snapshot.browserAccessDenied).toBe(false);
++    original.testOptions.onHello?.(HELLO);
++    original.testOptions.onClose?.(refused);
++    expect(gateway.snapshot.browserAccessDenied).toBe(true);
++    original.testOptions.onHello?.(HELLO);
++    expect(gateway.snapshot.browserAccessDenied).toBe(false);
++    original.testOptions.onClose?.(refused);
++    gateway.connect();
++    original.testOptions.onClose?.(refused);
++    expect(gateway.snapshot.browserAccessDenied).toBe(false);
++  });
++
+   it("switches Gateway selection, credentials, and first-retry ownership together", () => {
+     const otherGateway = "wss://other-gateway.example.test";
+     const selection = {
+diff --git a/ui/src/app/gateway-store.ts b/ui/src/app/gateway-store.ts
+index 8fa1879e4d4fbc89cb659cd84f68aeaa54677f83..1c58df9c09f730ce9ca7cc590d0daafb3d8e68a7 100644
+--- a/ui/src/app/gateway-store.ts
++++ b/ui/src/app/gateway-store.ts
+@@ -190,6 +190,7 @@ export function createApplicationGateway(
+   };
+   const setConnectionSnapshot = (patch: Partial<ApplicationGatewaySnapshot>) =>
+     setSnapshot({
++      browserAccessDenied: false,
+       hello: null,
+       pluginCapabilities: null,
+       canvasPluginSurfaceUrl: null,
+@@ -516,7 +517,7 @@ export function createApplicationGateway(
+       onConnecting: () => client === nextClient && setSnapshot({ reconnectAt: undefined }),
+       onReconnectScheduled: (delayMs) =>
+         client === nextClient && setSnapshot({ reconnectAt: Date.now() + delayMs }),
+-      onClose: ({ code, reason, error, willRetry, busy }) => {
++      onClose: ({ code, reason, error, willRetry, busy, browserAccessDenied }) => {
+         if (client !== nextClient) {
+           return;
+         }
+@@ -590,6 +591,7 @@ export function createApplicationGateway(
+                 : t(willRetry ? "connection.interruptedRetrying" : "connection.interrupted", {
+                     code: String(code),
+                   }),
++          browserAccessDenied: everConnected && browserAccessDenied === true,
+           lastErrorCode: startupPending ? null : busy ? "GATEWAY_BUSY" : lastErrorCode,
+           lastErrorAuthReason: startupPending ? null : readConnectionAuthReason(error?.details),
+         });
+diff --git a/ui/src/app/gateway.ts b/ui/src/app/gateway.ts
+index 5419f99999f0837122e0c142600f8c0961de5223..4e196edb77a19f20a28e37fd58fe2201b0859fc4 100644
+--- a/ui/src/app/gateway.ts
++++ b/ui/src/app/gateway.ts
+@@ -29,6 +29,8 @@ export type ApplicationGatewaySnapshot = {
+   /** The live transport/admission fact; retained hello metadata does not authorize dispatch. */
+   phase: ApplicationGatewayPhase;
+   offlineStable: boolean;
++  /** A same-origin HTTP refusal during reconnect, not a verdict about the session. */
++  browserAccessDenied?: boolean;
+   /** Memory-only desired-state changes waiting for the same admitted identity. */
+   deferredIntentCount?: number;
+   deferredIntentDraining?: boolean;
+diff --git a/ui/src/app/router-outlet.tsx b/ui/src/app/router-outlet.tsx
+index cfe905152f8d70f15df13fe2ce3103a530e69e43..106573515193c39fb9279c9b6a284ab07a77dd9d 100644
+--- a/ui/src/app/router-outlet.tsx
++++ b/ui/src/app/router-outlet.tsx
+@@ -126,6 +126,7 @@ function renderRouterOutlet(
+ }
+ 
+ export type RouterOutletProps = {
++  hidden?: boolean;
+   inert?: boolean;
+   "aria-disabled"?: "true" | "false";
+   router?: ApplicationRouter;
+@@ -466,6 +467,7 @@ export function RouterOutlet(props: RouterOutletProps): SolidJSX.Element {
+ 
+   return (
+     <openclaw-router-outlet
++      hidden={props.hidden}
+       inert={props.inert}
+       aria-disabled={props["aria-disabled"]}
+       onOpenclaw-route-element={elements.register}
+diff --git a/ui/src/i18n/locales/en.ts b/ui/src/i18n/locales/en.ts
+index ca35a766a3002b5a6e8923fcc1694b9cc65609fd..e598e1a4ad5e132e7ea41a0957cd7b96092f2215 100644
+--- a/ui/src/i18n/locales/en.ts
++++ b/ui/src/i18n/locales/en.ts
+@@ -1361,6 +1361,9 @@ const startupEnglish = {
+     "reload-required": "Refresh required",
+     offline: "Disconnected",
+     reconnecting: "Reconnecting…",
++    browserReconnectTitle: "Reconnect to the Gateway",
++    browserReconnectExplanation: "Your sign-in may have expired, or your access may have changed.",
++    browserReconnectAction: "Reconnect in browser",
+     interruptedRetrying:
+       "Connection to the Gateway was interrupted. Reconnecting automatically. (WebSocket {code})",
+     interrupted:
+diff --git a/ui/src/styles/layout.css b/ui/src/styles/layout.css
+index 995470c81ff714a6d085de86316ba57ddbabaeaf..92a6fb5909064172ad5aa2e1be1a38b8574c95b7 100644
+--- a/ui/src/styles/layout.css
++++ b/ui/src/styles/layout.css
+@@ -3395,6 +3395,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
+   min-height: 0;
+ }
+ 
++.content > openclaw-router-outlet[hidden] {
++  display: none;
++}
++
+ @media (forced-colors: active), (prefers-contrast: more) {
+   .shell {
+     background-image: none;

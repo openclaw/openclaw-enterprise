@@ -69,9 +69,7 @@ export async function submitChatTurnWithAssistantProof(
 
 export async function waitForStockUi(page) {
   await page.waitForFunction(
-    () =>
-      globalThis.customElements.get("openclaw-app") !== undefined &&
-      globalThis.document.querySelector("openclaw-app") !== null,
+    () => globalThis.openclawControlUi?.snapshot().booted === true,
     undefined,
     { timeout: 120_000 },
   );

@@ -79,6 +79,9 @@ test(
                 repositoryInputs: selection.repository,
               }),
           );
+          const cells = selection.cells.filter(
+            (cell) => cell.installation === installation && cell.scenarios.length > 0,
+          );
           let browser;
           let repositoryReady;
           if (f && selection.browser) {
@@ -86,7 +89,10 @@ test(
               installationContext,
               installation,
               "authenticated console login",
-              () => createQaBrowser(f),
+              () =>
+                createQaBrowser(f, {
+                  themed: cells.some((cell) => cell.scenarios.includes("model-ui")),
+                }),
             );
           }
           if (f && selection.repository) {
@@ -100,9 +106,7 @@ test(
               },
             );
           }
-          for (const selectedCell of selection.cells.filter(
-            (value) => value.installation === installation && value.scenarios.length > 0,
-          )) {
+          for (const selectedCell of cells) {
             const { preset, cell } = selectedCell;
             await installationContext.test(
               `Standard ${preset}`,
@@ -158,10 +162,11 @@ test(
                     "console-secrets",
                     async (agent, step) => {
                       await step(
-                        "console Secret lifecycle and Agent Configuration references",
+                        "console Secret lifecycle, Agent references and Namespace deletion blockers",
                         async () => {
                           assert.ok(browser, "blocked by browser setup failure");
                           await browser.verifySecrets(agent);
+                          await browser.verifyNamespaceDeletionBlockers(agent);
                         },
                       );
                     },
@@ -194,6 +199,7 @@ test(
                               (await f.pod(agent, "gateway")).metadata.uid,
                               gateway.pod.metadata.uid,
                             );
+                            assert.equal(agent.revision.gatewayManagedMode, true);
                             assert.equal(
                               (
                                 await f.api(
@@ -208,6 +214,7 @@ test(
                             await f.record(`${preset}-model`, {
                               agentId: agent.id,
                               revisionId: agent.revision.id,
+                              gatewayManagedMode: agent.revision.gatewayManagedMode,
                               podUid: gateway.pod.metadata.uid,
                               nativePodUid: nativePod.metadata.uid,
                               images: gateway.pod.status.containerStatuses.map(
@@ -234,10 +241,10 @@ test(
                     },
                   ],
                   [
-                    "git-full",
+                    "git-write",
                     async (agent, step) => {
                       await step(
-                        "native repository clone/edit/commit/push/PR and disposal",
+                        "native repository clone/edit/commit/push to the granted branch and disposal",
                         async () => {
                           assert.ok(repositoryReady, "blocked by repository setup failure");
                           await verifyQaRepository(f, agent);
@@ -270,13 +277,13 @@ test(
                       },
                     ],
                     [
-                      "git-read",
+                      "git-push-denied",
                       async (agent, step) => {
                         await step(
-                          "read-only repository push rejected and session disposed",
+                          "push outside the granted branch rejected and session disposed",
                           async () => {
                             assert.ok(repositoryReady, "blocked by repository setup failure");
-                            await verifyQaRepository(f, agent, "git-read");
+                            await verifyQaRepository(f, agent, "git-push-denied");
                           },
                         );
                       },

@@ -27,7 +27,12 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
    is unavailable for this Installation and suggests another authentication method.
    No device code or provider link appears. Switch to API key and confirm the form
    remains usable.
-6. Switch the harness to OpenClaw. ChatGPT OAuth disappears and API-key
+6. Open **ChatGPT sign-in start unconfirmed (Experimental)** and choose **Sign in
+   with OAuth**. The preview interrupts the response. Confirm the Console explains
+   that sign-in may have started and says to wait for an administrator to investigate
+   the pending attempt. Switch to API key, then back to OAuth. Sign-in stays disabled,
+   and the request log shows one start with no poll or cancellation.
+7. Switch the harness to OpenClaw. ChatGPT OAuth disappears and API-key
    authentication is selected. Switching providers also clears the selected model
    credential. A staged login is discarded only through its explicit control.
 

@@ -67,9 +67,21 @@ export const SandboxPolicyViewResponse = Type.Object(
         policy: SandboxPolicySchema,
         configuration: Type.Optional(DriverConfigurationDescriptorSchema),
         editingEnabled: Type.Boolean(),
+        protectedExecution: Type.Boolean({
+          description:
+            "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+        }),
         ceiling: SandboxNetworkGrantsSchema,
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
+        deployedPolicyVersion: Type.Optional(
+          Type.Integer({
+            minimum: 1,
+            maximum: 2147483647,
+            description:
+              "The saved policy version the active revision (defaultsRevisionId) was deployed with. Its Sandbox enforces that version without a live application.",
+          }),
+        ),
         capability: Type.Union([
           Type.Null(),
           Type.Object(
@@ -77,6 +89,12 @@ export const SandboxPolicyViewResponse = Type.Object(
             { additionalProperties: false },
           ),
         ]),
+        unavailableReason: Type.Optional(
+          Type.String({
+            description:
+              "Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give.",
+          }),
+        ),
       },
       { additionalProperties: false },
     ),
@@ -84,6 +102,8 @@ export const SandboxPolicyViewResponse = Type.Object(
   },
   { additionalProperties: false },
 );
+export type SandboxPolicyViewWire = Type.Static<typeof SandboxPolicyViewResponse>["data"];
+
 export const SandboxPolicyUpdateBody = Type.Object(
   { expectedVersion: SandboxPolicyVersion, additions: SandboxNetworkGrantsSchema },
   { additionalProperties: false },

@@ -11,11 +11,12 @@ import { once } from "node:events";
 import { after } from "node:test";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
-import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createControllerAuth } from "./password-hasher.mjs";
 import { backendSummariesFromDefinitions } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
@@ -24,6 +25,7 @@ import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -41,25 +43,29 @@ export const backendFixtures = Object.freeze([
 function computeDriver({
   repositoryCredentials = false,
   channelRuntime = false,
+  routed = true,
   discoverHarnessModels = async () => [],
   agentProvisioning = false,
   sandboxDriver,
   credentialGatewayDriver,
+  // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
+  // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
+  implementation = "test-memory-lifecycle",
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
+    gatewayRuntime: true,
     repositoryCredentials,
     sandboxDriver,
     credentialGatewayDriver,
     channelRuntime,
+    routed,
   });
 
   return Object.assign(driver, {
-    implementation: "test-memory-lifecycle",
-    // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
-    // does not provision unless repository credentials ask for them.
-    ...(channelRuntime && !repositoryCredentials
-      ? { requiresAgentRuntimeCredentials: undefined }
-      : {}),
+    implementation,
+    // Gateway startup and transport credentials are simulated unless repository credentials
+    // are in scope. Console, OCC and IAM routes still use production code.
+    ...(repositoryCredentials ? {} : { requiresAgentRuntimeCredentials: undefined }),
     // Most Console cases use drafts. Branch-selection tests can retain the actual
     // Compute capability while verifying that their flow avoids the durable queue.
     ...(agentProvisioning ? {} : { agentProvisioning: undefined }),
@@ -85,6 +91,13 @@ function computeDriver({
     },
     async retireRevision() {},
   });
+}
+
+// The default model credential Secret's name for createAgent. An Agent name may use all of the
+// Name rule's characters, so "Auth <Agent name>" is cut to that length (in code points); the cut
+// can land after a space, which a Name cannot end with.
+function authSecretName(agentName) {
+  return Array.from(`Auth ${agentName}`).slice(0, NAME_MAX_CHARACTERS).join("").trimEnd();
 }
 
 function spkiHash(cert) {
@@ -246,6 +259,7 @@ export function fileConsoleApp(options = {}) {
 }
 
 export async function createConsoleAppFixture(t, options = {}) {
+  const defaultAgentGatewayManagedMode = options.agentGatewayManagedMode;
   const installationId = `ins_${randomUUID()}`;
   // The ports are part of the origins the app is configured with, so hold them until the
   // listeners bind them; a released probe port can be taken by another listener meanwhile.
@@ -294,7 +308,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       permissions: role.permissions.map((item) => ({ ...item })),
     })),
     bindings: seed.bindings.map((binding) => ({ ...binding })),
-    restrictions: [],
+    restrictions: /** @type {import("../../packages/contracts/src/index.ts").Restriction[]} */ ([]),
   };
   // These grant-free accounts are fixture setup. Accounts added later through
   // createAccountWithPolicy are also shareable, because State resolves identities live.
@@ -318,14 +332,16 @@ export async function createConsoleAppFixture(t, options = {}) {
       return super.transact((unit) => policyUnit.run(unit, () => work(unit)));
     }
   }
-  const platformState =
+  const basePlatformState =
     options.state ??
     new ConsolePlatformState({
+      preparedTokenProof: options.preparedTokenProof,
       auditSink,
       // Live lookup, so people enrolled after construction can be bound like in Postgres.
       resolveIAMIdentity: (identityId) =>
         policy.identities.find((identity) => identity.id === identityId),
     });
+  const platformState = options.wrapState?.(basePlatformState) ?? basePlatformState;
   const iamDriver = new NativeIAMDriver(
     {
       async loadNativeIAMState() {
@@ -337,22 +353,21 @@ export async function createConsoleAppFixture(t, options = {}) {
           const namespaces = await view.namespaces.listNamespaces();
           const roles = [];
           const bindings = [];
-          const identities = [];
+          const principals = [];
           for (const namespace of namespaces) {
-            // Browser-created Agents must participate in the same live IAM evaluation
-            // as their browser-created credential grants.
-            for (const agent of await view.agents.listAgents(namespace.id)) {
-              identities.push({
+            principals.push(...(await view.iamPolicy.listServicePrincipals(namespace.id)));
+            principals.push(
+              ...(await view.agents.listAgents(namespace.id)).map((agent) => ({
                 id: agent.servicePrincipalId,
-                kind: "service_principal",
                 namespaceId: agent.namespaceId,
                 agentId: agent.id,
-              });
-            }
+                kind: "service_principal",
+              })),
+            );
             roles.push(...(await view.iamPolicy.listRoles(namespace.id)));
             bindings.push(...(await view.iamPolicy.listAccessBindings(namespace.id)));
           }
-          return { roles, bindings, identities };
+          return { roles, bindings, principals };
         };
         const unit = policyUnit.getStore();
         const managed = await (unit ? readPolicy(unit) : platformState.read(readPolicy));
@@ -360,8 +375,8 @@ export async function createConsoleAppFixture(t, options = {}) {
           ...policy,
           identities: [
             ...policy.identities,
-            ...managed.identities.filter(
-              (identity) => !policy.identities.some((existing) => existing.id === identity.id),
+            ...managed.principals.filter(
+              (principal) => !policy.identities.some((identity) => identity.id === principal.id),
             ),
           ],
           roles: [...policy.roles, ...managed.roles],
@@ -371,6 +386,8 @@ export async function createConsoleAppFixture(t, options = {}) {
     },
     { id: "console-native-iam" },
   );
+  /** @type {((native: NativeIAMDriver) => NonNullable<import("../../packages/occ/src/index.ts").ControllerOptions["authorize"]>) | undefined} */
+  const authorizeWith = options.authorizeWith;
   const backends = options.backends ?? backendFixtures;
   const publicOrigin = options.publicOrigin === true ? origin : options.publicOrigin;
   const backendSummaries = Object.hasOwn(options, "backendSummaries")
@@ -386,8 +403,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   ) {
     // Native value validation (Preset seeding, inline credential checks) needs the
     // real storage Driver; the in-memory test Driver accepts any values.
-    const root = await mkdtemp(join(tmpdir(), "occ-console-configuration-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
+    const root = await temporaryDirectory(t, "occ-console-configuration-");
     configurationDriver = new FilesystemConfigurationDriver(root);
   }
   let controller;
@@ -404,10 +420,12 @@ export async function createConsoleAppFixture(t, options = {}) {
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
         channelRuntime: options.channelRuntime === true,
+        routed: options.routed !== false,
         discoverHarnessModels: options.discoverHarnessModels,
         agentProvisioning: options.agentProvisioning,
         sandboxDriver: options.sandboxDriver,
         credentialGatewayDriver: options.credentialGatewayDriver,
+        implementation: options.computeImplementation,
       }),
     configurationDriver:
       configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
@@ -417,6 +435,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     ...(options.observabilityUrl === undefined
       ? {}
       : { observabilityUrl: options.observabilityUrl }),
+    ...(options.consoleTheme === undefined ? {} : { consoleTheme: options.consoleTheme }),
     ...(options.nativeAdmin === undefined ? {} : { nativeAdmin: options.nativeAdmin }),
     ...(options.agentRuntimeLogs === undefined
       ? {}
@@ -428,6 +447,8 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
+        preparedTokens: options.preparedTokens,
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
         driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),
@@ -439,6 +460,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.nativeWorkerSupport === undefined
           ? {}
           : { nativeWorkerSupport: options.nativeWorkerSupport }),
+        ...(options.credentialProxyCapacity === undefined
+          ? {}
+          : { credentialProxyCapacity: options.credentialProxyCapacity }),
       });
       const modelBackends = backends.filter((backend) => backend.type === "chatgpt");
       if (modelBackends.length > 0) {
@@ -566,6 +590,11 @@ export async function createConsoleAppFixture(t, options = {}) {
 
   const adminSession = await signIn();
 
+  /**
+   * @param {string} method
+   * @param {string} path
+   * @param {{session?: typeof adminSession | null, headers?: Record<string, string>, body?: unknown}} [options]
+   */
   async function request(method, path, { session = adminSession, headers = {}, body } = {}) {
     const result = await rawRequest(method, path, {
       headers:
@@ -638,21 +667,41 @@ export async function createConsoleAppFixture(t, options = {}) {
     return configuration.data;
   }
 
-  function grantAgentSecretOperate(agent, source) {
+  // The listed bindings createAgent adds for each Agent's model credential (finding 2260).
+  const modelGrantBindingIds = new Set();
+
+  // Grants the Agent operate on one Secret, as an Installation administrator's console does. The
+  // Agent's service principal and its role are added on the first grant; a repeat changes nothing.
+  // The evaluator reads this fixture policy, while the Namespace's IAM API lists only what it
+  // stored, so a `listed` grant is also written through that API: the console's policy reads
+  // then see it, as they see a production grant (finding 1920).
+  async function grantAgentSecretOperate(
+    agent,
+    source,
+    { listed = true, modelGrant = false } = {},
+  ) {
     const roleId = `auth-${agent.id}`;
-    policy.identities.push({
-      id: agent.servicePrincipalId,
-      kind: "service_principal",
-      namespaceId: agent.namespaceId,
-      agentId: agent.id,
-    });
-    policy.roles.push({
-      id: roleId,
-      namespaceId: agent.namespaceId,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
+    const bindingId = `${roleId}-${source.id}`;
+    if (policy.bindings.some((binding) => binding.id === bindingId)) {
+      return;
+    }
+    if (!policy.identities.some((identity) => identity.id === agent.servicePrincipalId)) {
+      policy.identities.push({
+        id: agent.servicePrincipalId,
+        kind: "service_principal",
+        namespaceId: agent.namespaceId,
+        agentId: agent.id,
+      });
+    }
+    if (!policy.roles.some((role) => role.id === roleId)) {
+      policy.roles.push({
+        id: roleId,
+        namespaceId: agent.namespaceId,
+        permissions: [{ action: "operate", resourceKind: "secret" }],
+      });
+    }
     policy.bindings.push({
-      id: roleId,
+      id: bindingId,
       namespaceId: agent.namespaceId,
       subjectKind: "identity",
       subjectId: agent.servicePrincipalId,
@@ -660,6 +709,46 @@ export async function createConsoleAppFixture(t, options = {}) {
       resourceKind: "secret",
       resourceId: source.id,
     });
+    if (listed) {
+      const binding = await listSecretOperate(agent, source);
+      if (modelGrant) {
+        modelGrantBindingIds.add(binding.id);
+      }
+    }
+  }
+
+  // The Namespace's listed access bindings, without the model-credential grants createAgent
+  // lists: what the console or the test itself granted since.
+  async function addedAccessBindings(namespaceId) {
+    const bindings = await request("GET", `/namespaces/${namespaceId}/iam/access-bindings`);
+    assert.equal(bindings.status, 200, JSON.stringify(bindings.body));
+    return bindings.data.filter(({ id }) => !modelGrantBindingIds.has(id));
+  }
+
+  async function listSecretOperate(agent, source) {
+    const iamPath = `/namespaces/${agent.namespaceId}/iam`;
+    const permissions = [{ action: "operate", resourceKind: "secret" }];
+    const roles = await request("GET", `${iamPath}/roles`);
+    assert.equal(roles.status, 200, JSON.stringify(roles.body));
+    let listedRole = roles.data.find(({ name }) => name === "Fixture Agent Secret operate");
+    if (!listedRole) {
+      const created = await request("POST", `${iamPath}/roles`, {
+        body: { name: "Fixture Agent Secret operate", permissions },
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      listedRole = created.data;
+    }
+    const binding = await request("POST", `${iamPath}/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: listedRole.id,
+        resourceKind: "secret",
+        resourceId: source.id,
+      },
+    });
+    assert.equal(binding.status, 201, JSON.stringify(binding.body));
+    return binding.data;
   }
 
   async function createAgent(namespaceId, name, values = {}, options = {}) {
@@ -672,7 +761,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         ? {
             method: "api_key",
             source: (
-              await createSecret(namespaceId, `Auth ${name}`, `test-api-key-${randomUUID()}`)
+              await createSecret(namespaceId, authSecretName(name), `test-api-key-${randomUUID()}`)
             ).ref,
           }
         : (options.harnessAuth ?? null);
@@ -686,11 +775,22 @@ export async function createConsoleAppFixture(t, options = {}) {
           ? {}
           : { credentialSources: options.credentialSources }),
         ...(options.executionMode === undefined ? {} : { executionMode: options.executionMode }),
+        ...(defaultAgentGatewayManagedMode === undefined
+          ? {}
+          : { gatewayManagedMode: defaultAgentGatewayManagedMode }),
       },
     });
     assert.equal(agent.status, 201);
+    // An Installation administrator's console reads the model credential's grant as it reads bound
+    // channel Secrets' grants, so it is listed too (finding 2260).
     if (harnessAuth?.method === "api_key") {
-      grantAgentSecretOperate(agent.data, harnessAuth.source);
+      await grantAgentSecretOperate(agent.data, harnessAuth.source, { modelGrant: true });
+    }
+    // The console grants the Agent each Secret its Configuration binds when it binds it.
+    for (const { source } of Object.values(options.secretBindings ?? {})) {
+      if (source?.kind === "secret") {
+        await grantAgentSecretOperate(agent.data, source);
+      }
     }
     return agent.data;
   }
@@ -734,6 +834,10 @@ export async function createConsoleAppFixture(t, options = {}) {
     return secret.data;
   }
 
+  /**
+   * @param {string} label
+   * @param {(principal: import("../../packages/contracts/src/index.ts").Principal) => void} configurePolicy
+   */
   async function createAccountWithPolicy(label, configurePolicy) {
     const accountCredentials = {
       email: `${label}-${randomUUID()}@example.com`,
@@ -747,6 +851,56 @@ export async function createConsoleAppFixture(t, options = {}) {
     return { credentials: accountCredentials, principal: createdSeed.principal };
   }
 
+  /**
+   * Runs `run` while the real IAM Driver throws on each authorization request `failing` selects,
+   * as an IAM outage on those decisions would, and restores the Driver afterwards.
+   * @template T
+   * @param {(request: { action: string, resource: { kind: string, id: string } }) => boolean} failing
+   * @param {() => Promise<T>} run
+   * @returns {Promise<T>}
+   */
+  async function withIamOutage(failing, run) {
+    const authorize = iamDriver.authorize;
+    iamDriver.authorize = async (request) => {
+      if (failing(request)) {
+        throw new Error("IAM outage");
+      }
+      return authorize.call(iamDriver, request);
+    };
+    try {
+      return await run();
+    } finally {
+      iamDriver.authorize = authorize;
+    }
+  }
+
+  /**
+   * A Namespace member: an account whose one Role in `namespaceId` holds exactly `grants`, as
+   * [action, resourceKind] pairs. It has no Installation access.
+   * @param {string} label
+   * @param {string} namespaceId
+   * @param {readonly (readonly [
+   *   import("../../packages/contracts/src/index.ts").Permission["action"],
+   *   import("../../packages/contracts/src/index.ts").Permission["resourceKind"],
+   * ])[]} grants
+   */
+  function createNamespaceMember(label, namespaceId, grants) {
+    return createAccountWithPolicy(label, (principal) => {
+      policy.roles.push({
+        id: `role-${label}`,
+        namespaceId,
+        permissions: grants.map(([action, resourceKind]) => ({ action, resourceKind })),
+      });
+      policy.bindings.push({
+        id: `binding-${label}`,
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: `role-${label}`,
+      });
+    });
+  }
+
   return {
     origin,
     browserArgs,
@@ -754,8 +908,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     memoryDatabase,
     provisionedAccounts,
     policy,
+    // The sink State and the API audit to: `options.auditSink`, or one the fixture made.
+    auditSink,
     // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.
     iamDriver,
+    withIamOutage,
     rawRequest,
     request,
     signIn,
@@ -765,16 +922,62 @@ export async function createConsoleAppFixture(t, options = {}) {
     updateConfiguration,
     createAgent,
     grantAgentSecretOperate,
+    addedAccessBindings,
     updateAgent,
     deployAgent,
     activateRevision,
     seedActiveAgentRevision,
     createSecret,
     createAccountWithPolicy,
+    createNamespaceMember,
     registerCleanupBeforeAppClose,
     app,
     get controller() {
       return controller;
     },
   };
+}
+
+// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
+// grant or revoke after sign-in: State reads the policy on each request.
+export function memberRole(fixture, label) {
+  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
+  assert.ok(role, `member ${label} has a Role`);
+  return role;
+}
+
+/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
+export function grantMember(fixture, label, grants) {
+  memberRole(fixture, label).permissions.push(
+    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
+  );
+}
+
+// The authorization denials an InMemoryAuditSink recorded: all of them, or those for `action`,
+// an exact action name or a RegExp for a family of actions.
+export function authorizationDenials(auditSink, action) {
+  const matches =
+    action === undefined
+      ? () => true
+      : typeof action === "string"
+        ? (name) => name === action
+        : (name) => action.test(name);
+  return auditSink
+    .list()
+    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
+}
+
+// Runs `send` and returns its response with the checks its authorization denials name, as
+// { action, kind, id }, so a refusal can be shown to be audited once, for its own target.
+export async function denialsDuring(auditSink, send) {
+  const before = authorizationDenials(auditSink).length;
+  const response = await send();
+  const denials = authorizationDenials(auditSink)
+    .slice(before)
+    .map(({ authorization: { action, resource } }) => ({
+      action,
+      kind: resource.kind,
+      id: resource.id,
+    }));
+  return { response, denials };
 }

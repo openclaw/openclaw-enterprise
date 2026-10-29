@@ -1,6 +1,6 @@
 ---
 created: 2026-08-28
-updated: 2026-10-17
+updated: 2026-10-26
 last_updated_session: fix-1692
 ---
 
@@ -72,33 +72,35 @@ supplies Kubernetes Compute's optional Sandbox Driver. Selected hooks require
 `setLifecycleDrivers`; unsupported capabilities stop startup. Every worker runs
 available Compute preflight before emitting `worker.started` and entering `run()`.
 
-Metrics scrapes read lifecycle and backlog state over one read-only connection
-through `packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`,
-without runtime probes; a failed collection discards its connection
-([metrics contract](../reference/metrics.md#shared-snapshots-and-outages)).
-Transport loss during release rejects the snapshot; the error listener stays
-attached until release returns. Metrics follow finalization independently of logging.
+Metrics scrapes read lifecycle and backlog state through
+`packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`
+without runtime probes; the
+[metrics contract](../reference/metrics.md#shared-snapshots-and-outages) owns
+connection and outage handling. Transport loss during release rejects the
+snapshot; the error listener stays attached until release returns. Metrics
+follow finalization independently of logging.
 
-### 2. Commit API admission and the durable work record
+<span id="2-commit-api-admission-and-the-durable-work-record" class="anchor-alias"></span>
+
+### 2. Save the admission decision and queue the operation
 
 `apps/controller/src/http/agents.ts:createAgentHandlers`,
 `packages/occ/src/index.ts:OpenClawController`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
-After authentication and authorization, operations call
-`operations.append`, which verifies exact ownership and invokes
-`PostgresWorkQueue.enqueue`. State, admission audit and work commit or roll back
+Authorized operations call `operations.append`, which verifies exact ownership
+and invokes `PostgresWorkQueue.enqueue`. State, admission audit and work commit or roll back
 together.
 
-Agent deployment keeps the validated `deploy` authorization request and decision
-with the saved version until the API appends its audit event, which uses that
-decision's IAM Driver, principal, exact Agent target and evidence even if Driver
-selection changes first; the API neither reauthorizes nor relabels it. Audit
+Agent deployment keeps the validated `deploy` request and decision with the
+saved version; the API's audit event uses that decision's IAM Driver, principal,
+exact Agent target and evidence even if Driver selection changes first, without
+reauthorizing or relabeling. Audit
 failure rolls back the version, desired runtime state and queued work; an
 unknown PostgreSQL commit outcome remains unknown and is not retried.
 
-The queue freezes actor, Namespace owner, lifecycle target, and exact Agent and
-immutable Agent revision for version work. Agent lifecycle work identifies its
+For work on an Agent revision, the queue records the original actor, Namespace
+owner, lifecycle target, Agent ID, and revision ID. Agent lifecycle work identifies its
 Agent and `stopped` or `deleted` target without a version. Reusing an idempotency
 key with a different actor, owner, or target is rejected. The API returns accepted
 state before the worker invokes Compute.
@@ -222,17 +224,17 @@ the worker invokes neither independently.
 `withClaimHeartbeat()` renews before each effect and every third of the lease
 duration, so sequences of short effects cannot starve renewal. Lease loss,
 heartbeat failure, or shutdown aborts Compute and raises `WorkClaimLostError`;
-expired or replaced claim tokens cannot publish results. A renewal that gets no
-answer, as on a silent database connection, cannot extend the claim: Compute is
-aborted when the last confirmed lease runs out, measured from when that renewal
-was sent, so no later than another worker could recover the claim; an in-flight
-request can still complete. Successful renewals
+expired or replaced claim tokens cannot publish results. An unanswered renewal
+(such as on a silent database connection) cannot extend the claim: Compute aborts
+when the last confirmed lease, measured from that renewal's send time, runs out,
+before another worker could recover the claim; an in-flight request can still
+complete. Successful renewals
 request throttled health updates without delaying effects or renewal; health
 failure does not imply lease loss.
 
-Compute owns infrastructure and Sandbox dispatch. See the
-[Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
-and [Docker execution flow](docker-compose-development.md).
+The [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
+and [Docker execution flow](docker-compose-development.md) own infrastructure and
+Sandbox dispatch.
 
 When `prepareRevision` rejects, the worker asks Compute for an optional validated
 failure description (Kubernetes names the stage and maps only reviewed
@@ -315,7 +317,7 @@ budget, deadline, in-lease shutdowns and, once recorded, lost claims. The
 recheck doubles the readiness cadence per failed (not `stopYielded`) stop in
 evidence, up to 5 minutes, but is at least four times the stop's duration.
 Each deferral records the refusal (`repeatEvidence`) for deployment status and
-`worker.completed`. Later passes retry only that stop, and errors keep waiting,
+`worker.completed`. Later passes retry only that stop, and outages keep waiting,
 unless superseded or an authorization or backend refusal lifted (past the
 deadline, the stop then publishes `CONVERGENCE_DEADLINE_EXCEEDED`).
 
@@ -397,21 +399,18 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs)
   require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
-  and append-failure rollback on the authenticated route after changing IAM Drivers.
-- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) verifies
-  composition; [k3d integration](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)
-  verifies infrastructure.
+  and append-failure rollback after an IAM Driver change.
+- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) and
+  [k3d](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs) tests
+  verify composition and infrastructure.
 
 ## Related docs
 
 - [Agent repository session preparation and durable cleanup](agent-repository-credentials.md)
 - [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
-- [Controller reference](../reference/controller.md)
-- [Deployment guide: development and production](../guides/deploy.md)
 - [Controller settings](../reference/settings.md)
 - [IAM authorization](../reference/authorization.md)
 - [Production startup flow](production-startup.md)
-- [Docker Compose development flow](docker-compose-development.md)
 - [Harness execution topology](harness-execution-topology.md)
 - [Compute Driver contract](../reference/drivers/compute.md)
 - [Sandbox Driver contract](../reference/drivers/sandbox.md)

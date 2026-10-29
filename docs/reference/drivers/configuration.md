@@ -1,10 +1,14 @@
+---
+kind: reference/driver
+---
+
 # ConfigurationDriver contract
 
 ## Overview
 
 `ConfigurationDriver` stores native Agent configuration for a specific OpenClaw
 Namespace. OpenClaw Control Plane (OCC) assigns resource IDs, owns generations,
-authorizes requests, and creates immutable Agent revisions. The Driver owns
+authorizes requests, and creates Agent revisions. The Driver owns
 the storage representation; it does not deploy Agents or authorize callers.
 
 Trusted Installation YAML requires this capability. It defaults to bundled
@@ -101,7 +105,7 @@ the `AgentRevision`. Later storage updates or deletion cannot change that saved 
 - [Kubernetes Configuration storage](../configuration/kubernetes.md): default for
   trusted YAML; one OCC-owned ConfigMap per Configuration in the tenant Namespace. Its [implementation](../../../apps/controller/src/drivers/configuration/kubernetes/index.ts)
   validates ownership and storage before use.
-- [Filesystem development Driver](../../../apps/controller/src/drivers/configuration/filesystem/index.ts): default Compose storage beneath `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, persisted in a controller-only named volume. It writes through an exclusively created private temporary file, closes it before atomic rename, and removes that file if writing or renaming fails. Cleanup targets only that write's file; the prior destination stays intact until rename succeeds. Directories use `0700` and files `0600`. It validates safe IDs; OCC still validates the document.
+- [Filesystem development Driver](../../../apps/controller/src/drivers/configuration/filesystem/index.ts): default Compose storage beneath `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, persisted in a controller-only named volume. It writes through an exclusively created private temporary file, closes it before atomic rename, and removes that file if writing or renaming fails. Cleanup targets only that write's file; the prior destination stays intact until rename succeeds. Directories use `0700` and files `0600`. It sets the open temporary file to `0600` before writing, so an owner-masking umask cannot make a successful replacement unreadable. It validates safe IDs; OCC still validates the document.
 
 ## Related
 

@@ -9,6 +9,7 @@ import type { GitHubTokenProfile } from "./types.ts";
 import { allowsGraphqlInput, allowsReadOnlyGraphqlInput } from "./graphql-input.ts";
 import { allowsReceivePackInput } from "./routes/receive-pack.ts";
 import { createResponsePolicy } from "./response.ts";
+import { createMetadataResponsePolicy } from "./metadata-response.ts";
 import { classifyRoute, nativeGraphqlAccept } from "./routes/classification.ts";
 import type { GitHubGraphqlMode, Route } from "./routes/classification.ts";
 
@@ -149,7 +150,13 @@ export function createRoutePolicy(options: RoutePolicyOptions): RoutePolicy {
       targetBytes: options.limits.targetBytes,
       graphql: options.graphql ?? "token-bounded",
     });
-  const responsePolicy = createResponsePolicy(options, (head) => route(head) !== undefined);
+  const metadataPolicy =
+    options.profile === "metadata-read"
+      ? createMetadataResponsePolicy(options.repository, options.repositoryId)
+      : undefined;
+  const responsePolicy = metadataPolicy
+    ? () => metadataPolicy
+    : createResponsePolicy(options, (head) => route(head) !== undefined);
   const dependencies: PlanDependencies = {
     route,
     responsePolicy,

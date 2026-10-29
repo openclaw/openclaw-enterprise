@@ -3,8 +3,13 @@ import { randomUUID } from "node:crypto";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  InMemoryPlatformState,
+  OpenClawController,
+  sanitizeSandboxLogLines,
+} from "../../packages/occ/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { openShellLogDecisions } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import {
   authenticatedHeaders,
@@ -18,6 +23,16 @@ import { grantRole } from "./iam-grants.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 
 export const runtimeLogPodUid = "0f3b6c1e-7d52-4f4b-9a2e-5c6d7e8f9a01";
+
+/**
+ * The runtime log records a read of raw OpenShell Sandbox lines produces: the Driver's
+ * decoration over the whole read, then OCC's sanitizer. Console tests that route the log
+ * page serve these, so what they render is what the product parses.
+ */
+export function openShellSandboxRecords(lines, sandbox = "browser-policy") {
+  return sanitizeSandboxLogLines({ source: "sandbox", sandbox }, openShellLogDecisions(lines))
+    .records;
+}
 
 /**
  * A Compute Driver that implements the runtime log contract over in-memory Pod state.
@@ -224,6 +239,58 @@ export function createRuntimeLogComputeDriver(options = {}) {
 }
 
 /**
+ * A Sandbox Driver that stands in for the provider (OpenShell) only: it names one Sandbox per
+ * revision and answers from `state`. `state.lines` (or `state.error`) answer the Sandbox log
+ * read, decoded by the OpenShell Driver's own decision parser; `state.harness` (or
+ * `state.harnessError`) answers the Harness observation, such as a Sandbox a node restart left
+ * stopped. OCC's handling of both is the production code path.
+ */
+export function createProviderSandboxDriver({ id = "console-sandbox" } = {}) {
+  const state = {
+    lines: [],
+    error: undefined,
+    harness: { state: "running" },
+    harnessError: undefined,
+  };
+  const logRequests = [];
+  const sandboxName = (revision) => `sb-${revision.id.slice(4, 12)}`;
+  const driver = {
+    id,
+    capability: "sandbox",
+    implementation: "openshell",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness(context) {
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: sandboxName(context.revision),
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+    async cleanup() {},
+    async readSandboxLogs(context, request) {
+      logRequests.push({ namespace: context.namespace.name, ...request });
+      if (state.error !== undefined) {
+        throw state.error;
+      }
+      return {
+        sandbox: sandboxName(context.revision),
+        observedAt: "2026-09-30T12:00:05.000Z",
+        lines: openShellLogDecisions(state.lines),
+        bufferTotal: state.lines.length,
+      };
+    },
+    async observeHarness() {
+      if (state.harnessError !== undefined) {
+        throw state.harnessError;
+      }
+      return state.harness;
+    },
+  };
+  return { driver, state, logRequests };
+}
+
+/**
  * The production controller app over in-memory state with native IAM, one deployed
  * embedded Agent, and helpers to add principals with exact Agent grants.
  */
@@ -307,17 +374,28 @@ export async function createRuntimeLogFixture(options = {}) {
   });
   assert.equal(bootstrap.status, 201, bootstrap.text);
 
-  async function deployAgent(label = "runtime-logs") {
+  async function createReadyNamespace(label) {
     const namespace = await request("POST", "/namespaces", {
       body: { name: `${label}-${randomUUID().slice(0, 8)}` },
     });
     assert.equal(namespace.status, 201, namespace.text);
     await controller.handleNamespaceLifecycle(admin.seed.principal.id, namespace.data.id, "ready");
-    const secret = await request("POST", `/namespaces/${namespace.data.id}/secrets`, {
-      body: { name: "Model API key", value: `model-key-${randomUUID()}` },
+    return namespace.data;
+  }
+
+  /**
+   * Deploys an embedded Agent in a new ready Namespace or, with `namespace`, beside the Agents
+   * already there: a sibling of the same kind and Namespace that an exact grant must not reach.
+   */
+  async function deployAgent(label = "runtime-logs", { namespace: shared } = {}) {
+    const namespace = shared ?? (await createReadyNamespace(label));
+    // Secret and Agent names are unique within a Namespace, so a sibling's carry its label.
+    const suffix = shared === undefined ? "" : ` ${label}`;
+    const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
+      body: { name: `Model API key${suffix}`, value: `model-key-${randomUUID()}` },
     });
     assert.equal(secret.status, 201, secret.text);
-    const configuration = await request("POST", `/namespaces/${namespace.data.id}/configurations`, {
+    const configuration = await request("POST", `/namespaces/${namespace.id}/configurations`, {
       // Dedicated revisions under a Sandbox Driver run the Codex Harness.
       body: {
         kind: "agent",
@@ -328,9 +406,9 @@ export async function createRuntimeLogFixture(options = {}) {
       },
     });
     assert.equal(configuration.status, 201, configuration.text);
-    const agent = await request("POST", `/namespaces/${namespace.data.id}/agents`, {
+    const agent = await request("POST", `/namespaces/${namespace.id}/agents`, {
       body: {
-        name: "Runtime log Agent",
+        name: `Runtime log Agent${suffix}`,
         configurationId: configuration.data.id,
         // A selected Sandbox Driver provisions dedicated Harnesses only.
         executionMode: options.sandboxDriver === undefined ? "embedded" : "dedicated",
@@ -341,23 +419,23 @@ export async function createRuntimeLogFixture(options = {}) {
     policy.identities.push({
       id: `service-agent-${agent.data.id}`,
       kind: "service_principal",
-      namespaceId: namespace.data.id,
+      namespaceId: namespace.id,
       agentId: agent.data.id,
     });
     grantRole(policy, `service-agent-${agent.data.id}`, {
       id: `auth-${agent.data.id}`,
-      namespaceId: namespace.data.id,
+      namespaceId: namespace.id,
       permissions: { secret: ["operate"] },
       resource: { kind: "secret", id: secret.data.id },
     });
     const deployed = await request(
       "POST",
-      `/namespaces/${namespace.data.id}/agents/${agent.data.id}/deploy`,
+      `/namespaces/${namespace.id}/agents/${agent.data.id}/deploy`,
     );
     assert.equal(deployed.status, 202, deployed.text);
-    const base = `/namespaces/${namespace.data.id}/agents/${agent.data.id}/deployments/${deployed.data.id}`;
+    const base = `/namespaces/${namespace.id}/agents/${agent.data.id}/deployments/${deployed.data.id}`;
     return {
-      namespace: namespace.data,
+      namespace,
       agent: agent.data,
       revisionId: deployed.data.id,
       runtimePath: `${base}/runtime`,

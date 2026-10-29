@@ -1,10 +1,5 @@
-import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
-import { setTimeout as delay } from "node:timers/promises";
+import { chmod, readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
 import {
@@ -12,6 +7,7 @@ import {
   cleanupLogging,
   prepareLogging,
 } from "../../scripts/ci/logging.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const digest = "a".repeat(64);
 const collectorImage = `registry.example/otelcol@sha256:${digest}`;
@@ -58,25 +54,13 @@ async function readJsonlPayloads(path) {
   }
 }
 
-async function waitFor(check, description) {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (await check()) {
-      return;
-    }
-    await delay(250);
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
-}
-
 function payloadContains(value, payloads) {
   return JSON.stringify(payloads).includes(value);
 }
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-logging-test-"));
+  const root = await temporaryDirectory(t, "ci-logging-test-");
   await chmod(root, 0o700);
-  t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
 
@@ -91,5 +75,4 @@ export {
   prepareLogging,
   readJsonlPayloads,
   selectedCollectorSmoke,
-  waitFor,
 };

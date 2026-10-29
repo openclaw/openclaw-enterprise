@@ -11,8 +11,37 @@ import {
   requiresPostgres,
 } from "./postgres-backend-state.mjs";
 import { waitFor } from "./wait-for.mjs";
+import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
+
+// Keep the two worker roles distinct. Tests can still replace the boundary's methods
+// after a worker starts to simulate a lost response or a changed grant.
+function repositoryWorkerRoles(driver) {
+  if (driver === undefined) {
+    return {};
+  }
+  const { id, implementation } = driver;
+  return {
+    repositoryPolicy: {
+      id,
+      implementation,
+      capability: driver.capability,
+      listOptions: (input) => driver.listOptions(input),
+      resolve: (input) => driver.resolve(input),
+    },
+    nativeRepositorySender: {
+      id,
+      implementation,
+      maintenanceIntervalMs: driver.maintenanceIntervalMs,
+      durableBrokerReceipts: driver.durableBrokerReceipts,
+      checkAdmissionReady: (signal) => driver.checkAdmissionReady(signal),
+      open: (input, signal) => driver.open(input, signal),
+      status: (sessionId, signal) => driver.status(sessionId, signal),
+      close: (sessionId, signal) => driver.close(sessionId, signal),
+    },
+  };
+}
 
 // Admission locks a Namespace, then its Agent. Every worker transaction that locks a claim's
 // Agent must already hold the Namespace (#1742), or it deadlocks with a concurrent deploy,
@@ -60,7 +89,7 @@ const disposeLimitsMs = {
   "worker stop": 30_000,
   "pool end": 15_000,
   // Waits for the CI state lock, which other files' test databases also take. The drop's lock
-  // wait shares this limit; its psql command has its own (scripts/ci/cleanup.mjs).
+  // wait shares this limit; the drop itself has its own (scripts/ci/cleanup.mjs).
   "drop database": 120_000,
 };
 
@@ -197,6 +226,11 @@ export function createWorkerRevisionFixtures(
           await run("worker stop", () => worker.stop());
         }
         for (const pool of pools) {
+          // pg-pool's end() resolves once its idle clients are removed, before their sessions
+          // close. The drop below can end a session still closing; the server's 57P01 then
+          // reaches the pool's idle listener, which re-emits it on the pool, and with no
+          // listener that throws in this test's teardown (finding 2379). The pool is done.
+          pool.on("error", () => {});
           // A pool already ending was ended by its worker's stop or by the test.
           if (!pool.ending) {
             await run("pool end", () => pool.end());
@@ -230,6 +264,7 @@ export function createWorkerRevisionFixtures(
       onProgress,
       metrics,
       repoDriver,
+      driverSelections = {},
       secretAuthMethod = "api_key",
       // Shorter teardown step limits, for a test of the teardown itself.
       disposeLimitsMs: limitsMs,
@@ -260,6 +295,7 @@ export function createWorkerRevisionFixtures(
     const createWorkerPool = () => createPool(1);
     let workerPool = createWorkerPool();
     const state = new PostgresPlatformState(observerPool);
+    repoDriver?.bindReceiptState?.(state);
     const installation = await ensureInstallation(state, "revision-worker");
     const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
       ["deploy", "agent"],
@@ -303,7 +339,13 @@ export function createWorkerRevisionFixtures(
           }),
     };
     const secretDriver = createBackendWorkerDrivers(compute, []).secretDriver;
-    const controller = createBackendController({ installation, state }, { backends: [] });
+    const controller = createBackendController(
+      { installation, state },
+      {
+        backends: [],
+        driverConfigurations: installationDriverConfigurations({ drivers: driverSelections }),
+      },
+    );
     controller.registerDriver(secretDriver);
     controller.selectDriver("secret", secretDriver.id);
     const secretRoleId = `role-${randomUUID()}`;
@@ -327,6 +369,7 @@ export function createWorkerRevisionFixtures(
         grantHarnessSecret = true,
         auth = "secret",
         nonModelSources = 0,
+        modelConfig = {},
       } = {},
     ) {
       const id = `agt_${randomUUID()}`;
@@ -340,6 +383,7 @@ export function createWorkerRevisionFixtures(
           type: "bearer-token",
           config: { host: `api-${index}.example.com`, env_var: `TOOL_TOKEN_${index}` },
           secrets: {},
+          ownerCapability: "credential_gateway",
           driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,
           state: "registering",
           createdAt: new Date().toISOString(),
@@ -361,8 +405,9 @@ export function createWorkerRevisionFixtures(
           namespaceId: namespace.id,
           name: `${label}-${randomUUID()}`,
           type: "openai",
-          config: {},
+          config: modelConfig,
           secrets: {},
+          ownerCapability: "credential_gateway",
           driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,
           state: "registering",
           createdAt: new Date().toISOString(),
@@ -479,6 +524,7 @@ export function createWorkerRevisionFixtures(
       {
         harness,
         sandboxDriverId,
+        protectedRepositoryDriver,
         repositoryCredentials,
         actorId = actor.id,
         plugins,
@@ -537,11 +583,13 @@ export function createWorkerRevisionFixtures(
         namespaceId: namespace.id,
         agentId: owner.id,
         revision: number,
+        gatewayManagedMode: owner.gatewayManagedMode,
         backendId: owner.backendId,
         configuration: { revision: String(number) },
         configurationId: owner.configurationId,
         configurationKind: "agent",
         configurationGeneration: 1,
+        executionAdmission: { version: 2, mode: "unprotected" },
         harness: approvedHarness,
         compute: { id: compute.id, implementation: compute.implementation },
         ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
@@ -552,6 +600,51 @@ export function createWorkerRevisionFixtures(
         ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
         createdAt: new Date(Date.now() + controllerSkewMs).toISOString(),
       };
+      if (protectedRepositoryDriver) {
+        const sandbox = protectedRepositoryDriver.require("sandbox");
+        await state.transact(async (unit) => {
+          const auth = await controller.admitHarnessAuth(unit, actorId, owner);
+          assert.deepEqual(auth, harnessAuth);
+          const sources = await controller.admitCredentialSources(unit, actorId, owner, sandbox);
+          assert.deepEqual(sources, credentialSources);
+          const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
+          const plan = (chosen) =>
+            controller.admitProxyPlan(
+              unit,
+              owner,
+              candidate.id,
+              configuration,
+              sandbox.id,
+              repositoryCredentials,
+              chosen,
+            );
+          await assert.rejects(
+            plan({ ...auth, sourceId: "unselected" }),
+            /created or adopted under the Proxy/,
+          );
+          const egressPlan = await plan(auth);
+          assert.deepEqual(egressPlan.harnessCredentialSource, auth);
+          assert.deepEqual(
+            egressPlan.routes,
+            [],
+            "no model route or credential was granted to Git",
+          );
+          Object.assign(candidate, {
+            configuration,
+            egressPlan,
+            executionAdmission: {
+              version:
+                egressPlan.repositoryGitAuthorization === "request-hook-observed"
+                  ? 6
+                  : egressPlan.repositoryGitAuthorization === "online-request"
+                    ? 5
+                    : 4,
+              mode: "protected",
+            },
+            sandboxDriverId: sandbox.id,
+          });
+        });
+      }
       const idempotencyKey = `agent_revision:${candidate.id}:reconcile`;
       let admitted;
       await state.transactWithQueue(async (unit, queue) => {
@@ -629,7 +722,9 @@ export function createWorkerRevisionFixtures(
     function start(
       computeDriver,
       {
-        emit = () => {},
+        emit = /** @type {NonNullable<Parameters<typeof createControllerWorker>[0]["emit"]>} */ (
+          () => {}
+        ),
         convergenceTimeoutMs,
         providers,
         pool = workerPool,
@@ -639,8 +734,12 @@ export function createWorkerRevisionFixtures(
       const configuredDrivers = createBackendWorkerDrivers(computeDriver, providers ?? []);
       const drivers = transformDrivers({
         ...configuredDrivers,
+        installation: {
+          ...configuredDrivers.installation,
+          drivers: { ...configuredDrivers.installation.drivers, ...driverSelections },
+        },
         secretDriver,
-        ...(repoDriver === undefined ? {} : { repoDriver }),
+        ...repositoryWorkerRoles(repoDriver),
       });
       worker = createControllerWorker({
         metrics,

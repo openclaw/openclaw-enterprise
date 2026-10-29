@@ -6,17 +6,27 @@
 //
 // `images` builds the controller and runtime images from this checkout (reading
 // the hosted image caches when available), adds a private test CA to the
-// runtime image's trust store, and pushes both to a loopback registry so Local
-// Setup can select them by digest. `run` starts the Kubernetes-only Local Setup
-// with those images, answers api.openai.com from a stand-in Responses provider,
-// runs scripts/first-agent.mjs for an embedded OpenClaw Agent, deploys one
-// dedicated Codex Agent through the API, reads both Agents' logs through
-// `occ agent logs`, stops and starts each once, and checks that every reported
-// status matches the cluster and a real model turn.
+// runtime image's trust store, and publishes both to a local registry, reachable
+// on loopback, so Local Setup can select them by digest. `run` starts the
+// Kubernetes-only Local Setup with those images, answers api.openai.com from a
+// stand-in Responses provider, runs scripts/first-agent.mjs for an embedded
+// OpenClaw Agent, deploys one dedicated Codex Agent through the API, reads both
+// Agents' logs through `occ agent logs`, stops and starts each once, and checks
+// that every reported status matches the cluster and a real model turn.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, realpath, rm, statfs, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  copyFile,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  statfs,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -31,10 +41,17 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
+import { ensureImage } from "./image-pull.mjs";
+import {
+  openclawBuildArguments,
+  openclawBuildValues,
+  readOpenclawSource,
+} from "../lib/openclaw-source.mjs";
+import { compareEvents, eventObservedTime } from "./kubernetes-event-time.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");
-const workDirectory = resolve(
+export const workDirectory = resolve(
   process.env.OCC_FIRST_AGENT_SMOKE_DIRECTORY ??
     join(process.env.RUNNER_TEMP ?? "/tmp", "first-agent-smoke"),
 );
@@ -77,7 +94,7 @@ const registry = slotNames.registry;
 const registryImage =
   "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
 const nodeBaseImage =
-  "docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0";
+  "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a";
 // Agent NetworkPolicies allow model egress only to public addresses on TCP/443,
 // and OpenClaw refuses provider addresses in private or special-use ranges. The
 // stand-in provider therefore uses a globally routable address, reachable only
@@ -85,7 +102,7 @@ const nodeBaseImage =
 const modelNetwork = { name: slotNames.model, subnet: slotNames.subnet };
 const modelAddress = slotNames.modelAddress;
 const nodeModelAddress = slotNames.nodeModelAddress;
-const modelContainer = slotNames.model;
+export const modelContainer = slotNames.model;
 const noncePattern = "OCE_SMOKE_[A-Za-z0-9-]+|FIRST_AGENT_[A-Za-z0-9-]+";
 const minute = 60_000;
 // Both stop requests share one serial worker. Per Agent, allow the selected
@@ -100,7 +117,7 @@ function log(message) {
   process.stdout.write(`[first-agent-smoke] ${message}\n`);
 }
 
-function run(command, args, { env = process.env, input, timeout = 5 * minute, label } = {}) {
+export function run(command, args, { env = process.env, input, timeout = 5 * minute, label } = {}) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(command, args, { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
     const stdout = [];
@@ -278,7 +295,7 @@ async function exportEnvironment(values) {
 // ---------------------------------------------------------------------------
 // images
 
-function cacheArguments(role) {
+function cacheSources(role) {
   // Restore only: main's cache is written by the warm workflow alone.
   if (
     process.env.GITHUB_ACTIONS !== "true" ||
@@ -288,7 +305,11 @@ function cacheArguments(role) {
     return [];
   }
   const scope = `oce-ci-${role}-${process.platform}-${process.arch}-v1`;
-  return ["--cache-from", `type=gha,version=2,scope=${scope},timeout=60s`];
+  return [`type=gha,version=2,scope=${scope},timeout=60s`];
+}
+
+function cacheArguments(role) {
+  return cacheSources(role).flatMap((source) => ["--cache-from", source]);
 }
 
 // The image lanes and the warm job build with a fixed SOURCE_DATE_EPOCH, and
@@ -297,10 +318,22 @@ function cacheArguments(role) {
 // smoke run reinstalled both images' packages (finding 1273). It sets only
 // timestamps (image config, history, WORKDIR); the smoke reads none of them.
 // RUN steps do not see it: an `ARG SOURCE_DATE_EPOCH` would change their keys.
-const cacheBuildArguments = ["--build-arg", "SOURCE_DATE_EPOCH=0"];
+const cacheEpoch = "0";
+const cacheBuildArguments = ["--build-arg", `SOURCE_DATE_EPOCH=${cacheEpoch}`];
 
+// Local Setup selects images by registry digest, which the engine records when it
+// pushes or pulls a tag.
 async function pushedDigest(tag) {
   await run("docker", ["push", tag], { timeout: 10 * minute });
+  return recordedDigest(tag);
+}
+
+async function pulledDigest(tag) {
+  await run("docker", ["pull", tag], { timeout: 10 * minute });
+  return recordedDigest(tag);
+}
+
+async function recordedDigest(tag) {
   const { stdout } = await run("docker", [
     "image",
     "inspect",
@@ -314,7 +347,126 @@ async function pushedDigest(tag) {
   return reference;
 }
 
-async function buildImages() {
+// Local Setup's PostgreSQL pin: developmentPostgres in internal/occdev/openshell_k3d.go.
+export const postgresImage =
+  "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae";
+
+// The image-pull.mjs retry helper over `run`.
+async function pullExecFile(command, args, { timeoutMs }) {
+  try {
+    return await run(command, args, { timeout: timeoutMs });
+  } catch (error) {
+    error.stderr = error.result?.stderr ?? "";
+    error.timedOut = error.result?.signal === "SIGKILL";
+    throw error;
+  }
+}
+
+// Fetch an image manifest from the loopback registry by digest and check its
+// bytes against that digest.
+export async function registryManifest({ registry, path, digest, fetchRegistry = fetch }) {
+  const reference = `${registry}/${path}@${digest}`;
+  const response = await fetchRegistry(`http://${registry}/v2/${path}/manifests/${digest}`, {
+    headers: {
+      accept:
+        "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
+    },
+    redirect: "error",
+    signal: AbortSignal.timeout(30_000),
+  });
+  assert.ok(response.ok, `registry manifest ${reference}: HTTP ${response.status}`);
+  const manifest = Buffer.from(await response.arrayBuffer());
+  assert.equal(
+    `sha256:${createHash("sha256").update(manifest).digest("hex")}`,
+    digest,
+    `the registry manifest does not match ${reference}`,
+  );
+  return JSON.parse(manifest.toString("utf8"));
+}
+
+// Copy the pinned PostgreSQL image into the loopback registry, so the k3d node
+// pulls it by digest like the checkout's images, instead of Local Setup pulling
+// it from Docker Hub and exporting and importing it beside the cluster checks.
+// The engine verified the pin when it pulled the image. Its push recompresses
+// the layers, so the registry digest differs from the pin, but the registry's
+// manifest must name the pinned image's config, which fixes every layer's
+// uncompressed digest (containerd checks them as it unpacks). The engine's
+// containerd image store reports other IDs and pushes indexes, so there the
+// copy is skipped and PostgreSQL keeps the archive path.
+export async function publishPostgresImage({
+  registry,
+  runCommand = run,
+  fetchRegistry = fetch,
+  pull = (image) => ensureImage(image, { execFile: pullExecFile }),
+}) {
+  assert.match(registry, /^127\.0\.0\.1:\d+$/, "the PostgreSQL copy needs a loopback registry");
+  const { stdout: driverStatus } = await runCommand("docker", [
+    "info",
+    "--format",
+    "{{json .DriverStatus}}",
+  ]);
+  if (driverStatus.includes("io.containerd.snapshotter")) {
+    log("PostgreSQL keeps the archive path: the engine uses the containerd image store");
+    return undefined;
+  }
+  await pull(postgresImage);
+  const id = (
+    await runCommand("docker", ["image", "inspect", "--format", "{{.Id}}", postgresImage])
+  ).stdout.trim();
+  assert.match(id, /^sha256:[a-f0-9]{64}$/, `no image ID for ${postgresImage}`);
+  const tag = `${registry}/oce-smoke/postgres:${/:([^:/@]+)@/.exec(postgresImage)[1]}`;
+  await runCommand("docker", ["tag", id, tag]);
+  // This push's own digest: a long-lived engine keeps every digest it ever
+  // recorded for the image.
+  const { stdout } = await runCommand("docker", ["push", tag], { timeout: 10 * minute });
+  const digest = /: digest: (sha256:[a-f0-9]{64}) size: \d+/.exec(stdout)?.[1];
+  assert.ok(digest, `docker push reported no digest for ${tag}`);
+  const reference = `${registry}/oce-smoke/postgres@${digest}`;
+  const manifest = await registryManifest({
+    registry,
+    path: "oce-smoke/postgres",
+    digest,
+    fetchRegistry,
+  });
+  assert.equal(
+    manifest.config?.digest,
+    id,
+    `the registry copy of PostgreSQL is not the pinned image: ${reference}`,
+  );
+  return reference;
+}
+
+// The image selection Local Setup reads. The prepared-Git acceptance keeps
+// the archive path for every image, so it selects no registry and no
+// PostgreSQL copy.
+export function smokeImageEnvironment({
+  preparedGit,
+  repository = {},
+  registryContainer,
+  controller,
+  runtime,
+  postgres,
+  providerImage,
+  modelDirectory,
+}) {
+  return {
+    ...repository,
+    // The k3d node pulls the controller, runtime and PostgreSQL images from
+    // this loopback registry by digest instead of importing exported archives.
+    ...(preparedGit
+      ? {}
+      : {
+          OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: registryContainer,
+          ...(postgres ? { OCC_DEVELOPMENT_POSTGRES_IMAGE: postgres } : {}),
+        }),
+    OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
+    OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
+    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
+    ...(providerImage ? { OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE: providerImage } : {}),
+  };
+}
+
+async function buildImages({ preparedGit = false } = {}) {
   const revision = (await run("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
   await mkdir(workDirectory, { recursive: true });
@@ -326,7 +478,14 @@ async function buildImages() {
       run,
     }),
   );
-  await step("loopback registry", () =>
+  if (preparedGit) {
+    const name = "skipper-prepared-compute-model.mjs";
+    const companion = join(modelDirectory, name);
+    await copyFile(join(root, "tests", "fixtures", name), companion);
+    await chmod(companion, 0o644); // The model fixture runs as the image's non-root user.
+    await rm(join(modelDirectory, "ca-key.pem"));
+  }
+  const registryContainer = await step("loopback registry", () =>
     run("docker", [
       "run",
       "--detach",
@@ -338,8 +497,278 @@ async function buildImages() {
     ]),
   );
   const controllerTag = `${registry}/oce-smoke/controller:${revision}`;
-  const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
   const smokeRuntimeTag = `${registry}/oce-smoke/runtime:${revision}`;
+  // The only difference from the checkout's runtime image: the stand-in
+  // provider's private CA in the system store (Codex) and for Node (OpenClaw).
+  // Labels, user, entrypoint and every other layer are inherited unchanged.
+  const context = join(workDirectory, "runtime-trust");
+  await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
+  const driver = await builderDriver();
+  // Both finish before a failure is reported, so neither keeps running unseen.
+  const settled = await Promise.allSettled([
+    driver === "docker-container"
+      ? bakeAndPushImages({
+          revision,
+          controllerTag,
+          smokeRuntimeTag,
+          context,
+          // The prepared-Git acceptance imports archives, so the engine needs both.
+          load: preparedGit,
+        })
+      : buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }),
+    // The prepared-Git acceptance keeps the archive path for every image.
+    preparedGit
+      ? undefined
+      : step("PostgreSQL image to the loopback registry", () => publishPostgresImage({ registry })),
+  ]);
+  const failure = settled.find(({ status }) => status === "rejected");
+  if (failure) {
+    throw failure.reason;
+  }
+  const [[controller, runtime, providerImage], postgres] = settled.map(({ value }) => value);
+  const repository = {};
+  if (preparedGit) {
+    const tag = `${registry}/oce-smoke/repository:${revision}`;
+    await step("repository service image build", () =>
+      run(
+        "docker",
+        [
+          "buildx",
+          "build",
+          "--load",
+          ...cacheArguments("runtime"),
+          ...cacheBuildArguments,
+          "--file",
+          "deploy/runtime/Dockerfile",
+          "--target",
+          "repository-credentials-service",
+          "--label",
+          `org.opencontainers.image.revision=${revision}`,
+          "--tag",
+          tag,
+          ".",
+        ],
+        { timeout: 30 * minute, label: "repository-build" },
+      ),
+    );
+    repository.OCC_DEVELOPMENT_REPOSITORY_IMAGE = await pushedDigest(tag);
+    repository.OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER = registryContainer.stdout.trim();
+  }
+  await exportEnvironment(
+    smokeImageEnvironment({
+      preparedGit,
+      repository,
+      registryContainer: slotNames.registryContainer,
+      controller,
+      runtime,
+      postgres,
+      providerImage,
+      modelDirectory,
+    }),
+  );
+  log(`controller ${controller}`);
+  log(`runtime ${runtime}`);
+  if (postgres) {
+    log(`PostgreSQL ${postgres}`);
+  }
+}
+
+async function builderDriver() {
+  const { stdout } = await run("docker", ["buildx", "inspect"]);
+  return /^Driver:\s+(\S+)/m.exec(stdout)?.[1] ?? "";
+}
+
+// The stand-in model provider runs tests/fixtures/runtime-model-probe-endpoint.mjs,
+// which needs Node and the `ws` package the runtime image ships. This image is
+// the runtime image's Node base with only that package, so the engine loads a
+// small image instead of the whole runtime image.
+export const providerImageDockerfile = [
+  "ARG NODE_RUNTIME_BASE_IMAGE",
+  "FROM ${NODE_RUNTIME_BASE_IMAGE}",
+  "COPY --from=smoke-runtime-base /app/node_modules/ws/ /app/node_modules/ws/",
+  `RUN node -e 'if (typeof require("/app/node_modules/ws").WebSocketServer !== "function") process.exit(1)'`,
+  "USER node",
+  "",
+].join("\n");
+
+// The runtime image's pinned Node base, which the provider image shares.
+export function runtimeNodeBaseImage(dockerfile) {
+  const image = /^ARG NODE_RUNTIME_BASE_IMAGE=(\S+@sha256:[a-f0-9]{64})$/m.exec(dockerfile)?.[1];
+  assert.ok(image, "deploy/runtime/Dockerfile pins no NODE_RUNTIME_BASE_IMAGE");
+  return image;
+}
+
+// The bake definition for the checkout's images. With `load` (the prepared-Git
+// acceptance, which imports archives) the engine also loads the controller and
+// runtime images. Without it they only go to the registry: Local Setup reads
+// their revision labels there and the node pulls them by digest; the engine
+// loads only the stand-in provider's image.
+export function smokeBakeDefinition({
+  revision,
+  controllerTag,
+  smokeRuntimeTag,
+  context,
+  providerContext,
+  nodeRuntimeBaseImage,
+  openclawSource,
+  registryAddress,
+  load,
+  caches = cacheSources,
+}) {
+  const outputs = (tag) => [
+    ...(load ? [`type=docker,name=${tag}`] : []),
+    `type=image,name=${registryAddress}${tag.slice(registry.length)},push=true,registry.insecure=true`,
+  ];
+  const target = {
+    "smoke-controller": {
+      context: root,
+      target: "runtime",
+      args: { NODE_BASE_IMAGE: nodeBaseImage, SOURCE_DATE_EPOCH: cacheEpoch },
+      labels: { "org.opencontainers.image.revision": revision },
+      "cache-from": caches("controller"),
+      pull: false,
+      output: outputs(controllerTag),
+    },
+    "smoke-runtime-base": {
+      context: root,
+      dockerfile: "deploy/runtime/Dockerfile",
+      args: {
+        ...openclawBuildValues(openclawSource),
+        OCC_BUILD_REVISION: revision,
+        SOURCE_DATE_EPOCH: cacheEpoch,
+      },
+      "cache-from": caches("runtime"),
+      pull: false,
+    },
+    "smoke-runtime": {
+      context,
+      contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+      args: { RUNTIME_IMAGE: "smoke-runtime-base" },
+      output: outputs(smokeRuntimeTag),
+    },
+  };
+  if (!load) {
+    target["smoke-provider"] = {
+      context: providerContext,
+      contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+      args: { NODE_RUNTIME_BASE_IMAGE: nodeRuntimeBaseImage },
+      output: [`type=docker,name=${providerImageTag(revision)}`],
+    };
+  }
+  return { target };
+}
+
+// A builder in its own container (the hosted job's) builds, adds the trust
+// layer and pushes both images in one bake. The push sends the compressed
+// layers the hosted cache already holds, so only layers this checkout changed
+// are compressed. The builder reaches the registry over the default bridge
+// network, so it must run there (setup-buildx's default) or on the host
+// network. Unless `load` is set, neither image is loaded into the engine, and
+// the bake's metadata names their registry digests.
+async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context, load }) {
+  const address = (
+    await run("docker", [
+      "inspect",
+      "--format",
+      '{{with index .NetworkSettings.Networks "bridge"}}{{.IPAddress}}{{end}}',
+      slotNames.registryContainer,
+    ])
+  ).stdout.trim();
+  assert.match(address, /^\d+\.\d+\.\d+\.\d+$/, "registry has no bridge address");
+  const providerContext = join(workDirectory, "provider-image");
+  await mkdir(providerContext, { recursive: true });
+  await writeFile(join(providerContext, "Dockerfile"), providerImageDockerfile);
+  const nodeRuntimeBaseImage = runtimeNodeBaseImage(
+    await readFile(join(root, "deploy/runtime/Dockerfile"), "utf8"),
+  );
+  const definition = smokeBakeDefinition({
+    revision,
+    controllerTag,
+    smokeRuntimeTag,
+    context,
+    providerContext,
+    nodeRuntimeBaseImage,
+    openclawSource: await readOpenclawSource(),
+    registryAddress: `${address}:5000`,
+    load,
+  });
+  const targets = Object.keys(definition.target).filter((name) => name !== "smoke-runtime-base");
+  const file = join(workDirectory, "images.bake.json");
+  const metadataFile = join(workDirectory, "images.metadata.json");
+  await writeFile(file, `${JSON.stringify(definition, null, 2)}\n`);
+  // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
+  await step("controller and runtime image builds", () =>
+    // The trust and provider contexts lie outside the working directory, so
+    // bake needs explicit read grants (its check sometimes missed them, by
+    // target order).
+    run(
+      "docker",
+      [
+        "buildx",
+        "bake",
+        `--allow=fs.read=${context}`,
+        `--allow=fs.read=${providerContext}`,
+        "--file",
+        file,
+        "--metadata-file",
+        metadataFile,
+        ...targets,
+      ],
+      {
+        // Single-platform image manifests without attestation indexes, so the
+        // recorded digest is the image manifest's.
+        env: { ...process.env, BUILDX_NO_DEFAULT_ATTESTATIONS: "1" },
+        timeout: 40 * minute,
+        label: "image-bake",
+      },
+    ),
+  );
+  if (load) {
+    // The engine pulls the same tags back from loopback, which records their
+    // digests without copying layers it already loaded.
+    return step("registry digests", () =>
+      Promise.all([pulledDigest(controllerTag), pulledDigest(smokeRuntimeTag)]),
+    );
+  }
+  const references = bakeReferences(JSON.parse(await readFile(metadataFile, "utf8")), {
+    controllerTag,
+    smokeRuntimeTag,
+  });
+  // Local Setup reads both from loopback; check here that they are there.
+  await step("registry digests", () =>
+    Promise.all(
+      references.map((reference) => {
+        const [name, digest] = reference.split("@");
+        return registryManifest({ registry, path: name.slice(registry.length + 1), digest });
+      }),
+    ),
+  );
+  return [...references, providerImageTag(revision)];
+}
+
+// The provider image's local name: per slot and revision.
+export function providerImageTag(revision) {
+  return `${slotNames.model}-provider:${revision}`;
+}
+
+// Registry references for the pushed images, from the bake's metadata file.
+export function bakeReferences(metadata, { controllerTag, smokeRuntimeTag }) {
+  const pinned = (name, tag) => {
+    const digest = metadata[name]?.["containerimage.digest"];
+    assert.match(
+      digest ?? "",
+      /^sha256:[a-f0-9]{64}$/,
+      `bake metadata has no containerimage.digest for ${name}`,
+    );
+    return `${tag.slice(0, tag.lastIndexOf(":"))}@${digest}`;
+  };
+  return [pinned("smoke-controller", controllerTag), pinned("smoke-runtime", smokeRuntimeTag)];
+}
+
+// The engine's own builder: build, add the trust layer, then push.
+async function buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }) {
+  const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
+  const sourceArguments = openclawBuildArguments(await readOpenclawSource());
   // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
   await step("controller and runtime image builds", () =>
     Promise.all([
@@ -372,6 +801,7 @@ async function buildImages() {
           "--load",
           ...cacheArguments("runtime"),
           ...cacheBuildArguments,
+          ...sourceArguments,
           "--pull=false",
           "--file",
           "deploy/runtime/Dockerfile",
@@ -385,11 +815,6 @@ async function buildImages() {
       ),
     ]),
   );
-  // The only difference from the checkout's runtime image: the stand-in
-  // provider's private CA in the system store (Codex) and for Node (OpenClaw).
-  // Labels, user, entrypoint and every other layer are inherited unchanged.
-  const context = join(workDirectory, "runtime-trust");
-  await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
   await step("runtime trust layer", () =>
     run("docker", [
       "buildx",
@@ -404,26 +829,25 @@ async function buildImages() {
       context,
     ]),
   );
-  const [controller, runtime] = await step("registry digests", () =>
+  return step("registry digests", () =>
     Promise.all([pushedDigest(controllerTag), pushedDigest(smokeRuntimeTag)]),
   );
-  await exportEnvironment({
-    OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
-    OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
-    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
-  });
-  log(`controller ${controller}`);
-  log(`runtime ${runtime}`);
 }
 
 // ---------------------------------------------------------------------------
 // run
 
-function createApi(origin, key) {
+export function createApi(origin, key) {
   return async (method, path, body) => {
+    const url = new URL(path, origin);
+    assert.equal(
+      url.origin,
+      origin,
+      "refusing to send the smoke key outside the controller origin",
+    );
     let response;
     try {
-      response = await fetch(new URL(path, origin), {
+      response = await fetch(url, {
         method,
         redirect: "error",
         signal: AbortSignal.timeout(30_000),
@@ -559,16 +983,21 @@ async function printWatchLog() {
   }
 }
 
-async function startLocalSetup(environment) {
-  const stopWatching = watchCluster();
-  try {
-    await run(occ, ["dev", "up"], { env: environment, timeout: 25 * minute, label: "dev-up" });
-  } catch (error) {
-    await stopWatching({ finalCapture: true });
-    await printWatchLog();
-    throw error;
+export async function startLocalSetup(environment, { privateInstall = false } = {}) {
+  if (privateInstall) {
+    // Private acceptance retains only named stages, never installation or cluster logs.
+    await run(occ, ["dev", "up"], { env: environment, timeout: 30 * minute });
+  } else {
+    const stopWatching = watchCluster();
+    try {
+      await run(occ, ["dev", "up"], { env: environment, timeout: 25 * minute, label: "dev-up" });
+    } catch (error) {
+      await stopWatching({ finalCapture: true });
+      await printWatchLog();
+      throw error;
+    }
+    await stopWatching();
   }
-  await stopWatching();
   const directory = environment.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   const key = JSON.parse(await readFile(state.keyPath, "utf8"));
@@ -583,7 +1012,7 @@ async function startLocalSetup(environment) {
   };
 }
 
-function kubectl(stack, args, options = {}) {
+export function kubectl(stack, args, options = {}) {
   return run("kubectl", ["--kubeconfig", stack.kubeconfig, "--context", stack.context, ...args], {
     timeout: 2 * minute,
     ...options,
@@ -592,9 +1021,16 @@ function kubectl(stack, args, options = {}) {
 
 // Answer api.openai.com inside the cluster with the stand-in provider. Agent
 // Pods reach it through their ordinary model egress NetworkPolicy and verify
-// its certificate against the CA added to the runtime image.
-async function routeModelProvider(stack, modelDirectory, runtimeImage, credentialDigests) {
+// its certificate against the CA added to the runtime image. `providerImage`
+// runs it: the runtime image, or the smoke's provider image (Node and `ws`).
+export async function routeModelProvider(
+  stack,
+  modelDirectory,
+  providerImage,
+  { journey = "PROBE_PUBLIC_READ_JOURNEY", cleanup = [], credentialDigests } = {},
+) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
+  cleanup.push(() => run("docker", ["network", "rm", modelNetwork.name]));
   // Fixed addresses: Docker would otherwise give the node the provider's address.
   await run("docker", [
     "network",
@@ -604,6 +1040,14 @@ async function routeModelProvider(stack, modelDirectory, runtimeImage, credentia
     modelNetwork.name,
     `k3d-${stack.state.cluster}-server-0`,
   ]);
+  cleanup.push(() =>
+    run("docker", [
+      "network",
+      "disconnect",
+      modelNetwork.name,
+      `k3d-${stack.state.cluster}-server-0`,
+    ]),
+  );
   const providerArgs = [
     "run",
     "--detach",
@@ -624,17 +1068,23 @@ async function routeModelProvider(stack, modelDirectory, runtimeImage, credentia
     "--env",
     `PROBE_ENDPOINT_ECHO_PATTERN=${noncePattern}`,
     "--env",
-    "PROBE_ENDPOINT_CREDENTIAL_DIGESTS",
-    "--env",
-    "PROBE_PUBLIC_READ_JOURNEY=1",
+    `${journey}=1`,
+    // With digests, the stand-in answers only these credentials and names each caller.
+    ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),
     "--entrypoint",
     "node",
-    runtimeImage,
+    providerImage,
     "/fixture/endpoint.mjs",
   ];
-  await run("docker", providerArgs, {
-    env: { ...process.env, PROBE_ENDPOINT_CREDENTIAL_DIGESTS: JSON.stringify(credentialDigests) },
+  const { stdout: containerId } = await run("docker", providerArgs, {
+    env: {
+      ...process.env,
+      ...(credentialDigests === undefined
+        ? {}
+        : { PROBE_ENDPOINT_CREDENTIAL_DIGESTS: JSON.stringify(credentialDigests) }),
+    },
   });
+  cleanup.push(() => run("docker", ["rm", "--force", containerId.trim()]));
   await waitFor(
     "the stand-in provider to listen",
     async () => ({ done: (await modelEvents()).some(({ event }) => event === "listening") }),
@@ -837,23 +1287,32 @@ async function gatewayTurn({ prompt }) {
       }),
       signal: AbortSignal.timeout(170_000),
     });
-    const text = await response.text();
-    let content;
-    try {
-      content = JSON.parse(text).choices?.[0]?.message?.content;
-    } catch {
-      content = undefined;
-    }
+    const payload = await response.json().catch(() => undefined);
+    const message = response.status === 200 ? payload?.choices?.[0]?.message : undefined;
     process.stdout.write(
       JSON.stringify({
         status: response.status,
-        content: typeof content === "string" ? content : undefined,
-        body: response.status === 200 ? undefined : text.slice(0, 2_000),
+        role: message?.role === "assistant" ? "assistant" : undefined,
+        content: typeof message?.content === "string" ? message.content : undefined,
+        invalidResponse: payload === undefined,
       }),
     );
-  } catch (error) {
-    process.stdout.write(JSON.stringify({ error: String(error?.message ?? error) }));
+  } catch {
+    process.stdout.write("{}");
   }
+}
+
+export function assertChatReply(result, nonce, label) {
+  assert.ok(result.status !== undefined, `${label}: chat request failed before an HTTP response`);
+  assert.equal(result.status, 200, `${label}: chat turn failed`);
+  assert.ok(!result.invalidResponse, `${label}: chat turn returned an unreadable response`);
+  assert.ok(result.role === "assistant", `${label}: reply was not an assistant message`);
+  // This smoke uses a deterministic provider that returns the nonce verbatim.
+  // Whitespace is harmless; an echoed prompt is not a completed answer.
+  assert.ok(
+    typeof result.content === "string" && result.content.trim() === nonce,
+    `${label}: assistant reply did not equal the nonce`,
+  );
 }
 
 async function chatTurn(stack, agent, revisionId) {
@@ -867,11 +1326,7 @@ async function chatTurn(stack, agent, revisionId) {
     { input: script, timeout: 4 * minute },
   );
   const result = JSON.parse(stdout);
-  assert.equal(result.status, 200, `${agent.label}: chat turn failed ${JSON.stringify(result)}`);
-  assert.ok(
-    result.content?.includes(nonce),
-    `${agent.label}: reply did not carry the nonce ${JSON.stringify(result)}`,
-  );
+  assertChatReply(result, nonce, agent.label);
   const transport = await assertModelAnswered(nonce, agent.label);
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
 }
@@ -895,16 +1350,101 @@ async function readLogs(stack, agent, source) {
   );
 }
 
-async function stopAgent(stack, agent) {
-  const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
-  assert.equal(stopped.desiredRuntimeState, "stopped", `${agent.label}: stop not accepted`);
-  // The active revision clears only after Compute reports shutdown; still
-  // verify that no Agent workload remains after the controller reports it.
-  await observeAgentStop(
-    agent.label,
-    () => stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
-    () => agentPods(stack, agent.id, { includeTerminating: true }),
+// Finding 2198: a stopped Gateway left its agent database lease unreleased,
+// and its Pod and logs were gone before diagnostics ran. Keep the end of each
+// stopping Gateway's log, which carries OpenClaw's shutdown and the agent
+// database clean-close receipt.
+const STOPPED_GATEWAY_LOG_LINES = 300;
+const STOPPED_GATEWAY_LOG_SETTLE_MS = 15_000;
+
+// One line naming how the stopped Gateway's shutdown ended, for green runs too.
+export function stoppedGatewaySummary(output) {
+  const receipts = [...output.matchAll(/agent database clean-close receipt: ([a-z-]+)/g)].map(
+    (match) => match[1],
   );
+  // OpenClaw's gateway/shutdown wording; other subsystems also log "shutdown failed".
+  const shutdown =
+    /shutdown (completed cleanly|failed) in \d+ms|shutdown completed in \d+ms (with warnings)/.exec(
+      output,
+    );
+  const outcome = shutdown === null ? "not logged" : (shutdown[1] ?? `completed ${shutdown[2]}`);
+  return `shutdown ${outcome}; clean-close receipts: ${
+    receipts.length === 0 ? "none" : receipts.join(", ")
+  }`;
+}
+
+// Follows a Gateway container's log until the container exits, keeping the last lines.
+function followGatewayLog(stack, pod) {
+  const child = spawn(
+    "kubectl",
+    [
+      "--kubeconfig",
+      stack.kubeconfig,
+      "--context",
+      stack.context,
+      "logs",
+      "--follow",
+      "--tail",
+      String(STOPPED_GATEWAY_LOG_LINES),
+      "-n",
+      pod.metadata.namespace,
+      pod.metadata.name,
+      "-c",
+      "gateway",
+    ],
+    { cwd: root, stdio: ["ignore", "pipe", "ignore"] },
+  );
+  let lines = [];
+  let partial = "";
+  child.stdout.on("data", (chunk) => {
+    const parts = (partial + chunk.toString()).split("\n");
+    partial = parts.pop();
+    lines.push(...parts);
+    if (lines.length > 2 * STOPPED_GATEWAY_LOG_LINES) {
+      lines = lines.slice(-STOPPED_GATEWAY_LOG_LINES);
+    }
+  });
+  const closed = new Promise((resolveClosed) => {
+    child.once("error", resolveClosed);
+    child.once("close", resolveClosed);
+  });
+  return {
+    async finish() {
+      const settle = delay(STOPPED_GATEWAY_LOG_SETTLE_MS, undefined, { ref: false });
+      await Promise.race([closed, settle]);
+      child.kill("SIGKILL");
+      return [...lines, ...(partial === "" ? [] : [partial])]
+        .slice(-STOPPED_GATEWAY_LOG_LINES)
+        .join("\n");
+    },
+  };
+}
+
+async function stopAgent(stack, agent) {
+  // A failed Pod read only loses the kept log; it must not fail the stop.
+  const gateways = (await agentPods(stack, agent.id).catch(() => [])).filter(
+    (pod) => pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+  );
+  if (gateways.length === 0) {
+    log(`${agent.label}: no running gateway Pod to follow through the stop`);
+  }
+  const followers = gateways.map((pod) => followGatewayLog(stack, pod));
+  try {
+    const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
+    assert.equal(stopped.desiredRuntimeState, "stopped", `${agent.label}: stop not accepted`);
+    // The active revision clears only after Compute reports shutdown; still
+    // verify that no Agent workload remains after the controller reports it.
+    await observeAgentStop(
+      agent.label,
+      () => stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
+      () => agentPods(stack, agent.id, { includeTerminating: true }),
+    );
+  } finally {
+    agent.stoppedGatewayLogs = await Promise.all(followers.map((follower) => follower.finish()));
+    for (const output of agent.stoppedGatewayLogs) {
+      log(`${agent.label}: stopped gateway ${stoppedGatewaySummary(output)}`);
+    }
+  }
 }
 
 async function deployAgent(stack, agent) {
@@ -1498,6 +2038,25 @@ req.on('error', error => { clearTimeout(timer); process.exit(error.message === '
   }
 }
 
+// Finding 2224: `kubectl --sort-by=.lastTimestamp` put events that carry only eventTime (written
+// through events.k8s.io) first, so the 20 kB tail printed could drop the newest of them. Order by the
+// last observed instant (compareEvents), newest last; equal instants keep the API's order.
+export function clusterEventLines(list) {
+  return [...(list.items ?? [])]
+    .sort(compareEvents)
+    .map((event) => {
+      const time = eventObservedTime(event) ?? "unknown-time";
+      const object = event.involvedObject ?? {};
+      const count = event.series?.count ?? event.count ?? 1;
+      return `${time} ${event.metadata?.namespace ?? "-"} ${event.type ?? "-"} ${
+        event.reason ?? "-"
+      } ${object.kind ?? "-"}/${object.name ?? "-"}${count > 1 ? ` x${count}` : ""}: ${
+        event.message ?? ""
+      }`;
+    })
+    .join("\n");
+}
+
 async function diagnostics(stack) {
   log("collecting diagnostics");
   const attempt = async (label, operation) => {
@@ -1515,9 +2074,11 @@ async function diagnostics(stack) {
     return;
   }
   await attempt("pods", () => kubectl(stack, ["get", "pods", "-A", "-o", "wide"]));
-  await attempt("events", () =>
-    kubectl(stack, ["get", "events", "-A", "--sort-by=.lastTimestamp"]),
-  );
+  await attempt("events", async () => ({
+    stdout: clusterEventLines(
+      JSON.parse((await kubectl(stack, ["get", "events", "-A", "-o", "json"])).stdout),
+    ),
+  }));
   for (const agent of stack.agents ?? []) {
     const stopState = await agentStopDiagnostic(() =>
       stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
@@ -1530,6 +2091,9 @@ async function diagnostics(stack) {
       await attempt(`${agent.label} ${source} logs`, () =>
         cli(stack, ["agent", "logs", agent.id, "--source", source, "--tail", "300"]),
       );
+    }
+    for (const [index, output] of (agent.stoppedGatewayLogs ?? []).entries()) {
+      process.stdout.write(`----- ${agent.label} stopped gateway ${index + 1} logs\n${output}\n`);
     }
   }
   try {
@@ -1605,8 +2169,9 @@ async function smoke() {
       routeModelProvider(
         stack,
         modelDirectory,
-        process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
-        credentialDigests,
+        process.env.OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE ||
+          process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
+        { credentialDigests },
       ),
     );
     // The two Agents are independent; deploy them together to bound CI time.
@@ -1679,12 +2244,14 @@ async function summarize() {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const command = process.argv[2];
   try {
-    if (command === "images") {
-      await buildImages();
+    if (command === "images" || command === "prepared-git-images") {
+      await buildImages({ preparedGit: command === "prepared-git-images" });
     } else if (command === "run") {
       await smoke();
     } else {
-      throw new Error("Usage: node scripts/ci/first-agent-smoke.mjs images|run");
+      throw new Error(
+        "Usage: node scripts/ci/first-agent-smoke.mjs images|prepared-git-images|run",
+      );
     }
   } catch (error) {
     process.stderr.write(`first-agent-smoke: ${error.stack ?? error.message}\n`);

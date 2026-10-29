@@ -1,19 +1,17 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:https";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { chromium } from "playwright";
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
@@ -21,7 +19,6 @@ test(
   requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
-    const certificateDirectory = await mkdtemp(join(tmpdir(), "oce-session-cookie-"));
     let app;
     let browser;
     let proxy;
@@ -34,63 +31,42 @@ test(
         await new Promise((resolve) => proxy.close(resolve));
       }
       await pool.end();
-      await rm(certificateDirectory, { recursive: true, force: true });
     });
-    const certificate = join(certificateDirectory, "certificate.pem");
-    const key = join(certificateDirectory, "key.pem");
-    execFileSync(
-      "openssl",
-      [
-        "req",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-nodes",
-        "-keyout",
-        key,
-        "-out",
-        certificate,
-        "-days",
-        "1",
-        "-subj",
-        "/CN=console.example.test",
-        "-addext",
-        "subjectAltName=DNS:console.example.test,DNS:sibling.example.test",
-      ],
-      { stdio: "ignore" },
-    );
-    proxy = createServer(
-      { cert: await readFile(certificate), key: await readFile(key) },
-      (incoming, outgoing) => {
-        if (incoming.headers.host?.startsWith("sibling.example.test:")) {
-          const attributes = "; Domain=example.test; Path=/; Secure; HttpOnly; SameSite=Lax";
-          outgoing.setHeader("set-cookie", [
-            `${plantedCookie}${attributes}`,
-            `${plantedCookie.replace("__Host-", "__Secure-")}${attributes}`,
-          ]);
-          outgoing.end("Cookies sent");
-          return;
-        }
-        const upstream = httpRequest(
-          {
-            hostname: "127.0.0.1",
-            port: upstreamPort,
-            method: incoming.method,
-            path: incoming.url,
-            headers: incoming.headers,
-          },
-          (response) => {
-            outgoing.writeHead(response.statusCode, response.headers);
-            response.pipe(outgoing);
-          },
-        );
-        upstream.on("error", () => {
-          outgoing.writeHead(502);
-          outgoing.end();
-        });
-        incoming.pipe(upstream);
-      },
-    );
+    // Registered after the hook above, so it is removed after the servers close.
+    const certificateDirectory = await temporaryDirectory(t, "oce-session-cookie-");
+    const { key, cert } = await selfSigned(certificateDirectory, {
+      commonName: "console.example.test",
+      subjectAltName: "DNS:console.example.test,DNS:sibling.example.test",
+    });
+    proxy = createServer({ cert, key }, (incoming, outgoing) => {
+      if (incoming.headers.host?.startsWith("sibling.example.test:")) {
+        const attributes = "; Domain=example.test; Path=/; Secure; HttpOnly; SameSite=Lax";
+        outgoing.setHeader("set-cookie", [
+          `${plantedCookie}${attributes}`,
+          `${plantedCookie.replace("__Host-", "__Secure-")}${attributes}`,
+        ]);
+        outgoing.end("Cookies sent");
+        return;
+      }
+      const upstream = httpRequest(
+        {
+          hostname: "127.0.0.1",
+          port: upstreamPort,
+          method: incoming.method,
+          path: incoming.url,
+          headers: incoming.headers,
+        },
+        (response) => {
+          outgoing.writeHead(response.statusCode, response.headers);
+          response.pipe(outgoing);
+        },
+      );
+      upstream.on("error", () => {
+        outgoing.writeHead(502);
+        outgoing.end();
+      });
+      incoming.pipe(upstream);
+    });
     await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
     const port = proxy.address().port;
     const origin = `https://console.example.test:${port}`;

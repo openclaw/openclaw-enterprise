@@ -19,7 +19,7 @@ function refuse(reason) {
 
 async function readManifest() {
   const manifest = JSON.parse(
-    await readFile(join(directory, "meta/canonical-history.json"), "utf8"),
+    await readFile(join(directory, "meta/_canonical-history.json"), "utf8"),
   );
   const journal = JSON.parse(await readFile(join(directory, "meta/_journal.json"), "utf8"));
   const expected = manifest.entries.map(({ sha256: _hash, ...entry }) => entry);
@@ -39,6 +39,9 @@ async function readManifest() {
     refuse("the migration source set differs");
   }
   for (const [index, entry] of manifest.entries.entries()) {
+    if (index > 0 && entry.when <= manifest.entries[index - 1].when) {
+      refuse(`migration timestamp does not advance for ${entry.tag}`);
+    }
     if (migrations[index].hash !== entry.sha256 || migrations[index].folderMillis !== entry.when) {
       refuse(`source bytes differ for ${entry.tag}`);
     }
@@ -100,217 +103,149 @@ function receiptsMatchEntries(receipts, entries) {
 
 function requireReceiptsMatchEntries(receipts, entries) {
   if (!receiptsMatchEntries(receipts, entries)) {
-    refuse("the applied receipts differ from canonical history");
+    refuse(
+      "the applied receipts differ from canonical history; pre-merge preview histories are unsupported; preserve the database with its matching release or explicitly reset a disposable preview",
+    );
   }
 }
 
 function classifyReceipts(receipts, manifest) {
+  const expected = manifest.entries;
   const providerCompleted = manifest.compatibleLineages?.providerCompleted;
-  if (providerCompleted !== undefined && receipts.length >= providerCompleted.entries.length) {
-    const providerEntries = [
+  const providerCount = providerCompleted?.entries.length ?? 0;
+  const providerLineage =
+    providerCount > 0 &&
+    receipts.length >= providerCount &&
+    receiptsMatchEntries(receipts, [
       ...providerCompleted.entries,
-      ...manifest.entries.slice(providerCompleted.entries.length),
-    ];
-    if (receiptsMatchEntries(receipts, providerEntries)) {
-      if (receipts.length === manifest.entries.length) {
-        return "completed";
-      }
-      if (receipts.length === 32) {
-        return "backendTerminology";
-      }
-      if (receipts.length === 33) {
-        return "prePluginApprovers";
-      }
-      if (receipts.length === 34) {
-        return "preBrokerReceipts";
-      }
-      if (receipts.length === 36) {
-        return "preDeploymentProgress";
-      }
-      if (receipts.length === 35) {
-        return "preAgentDeletion";
-      }
-      if (receipts.length === 37) {
-        return "preHumanAuthentication";
-      }
-      if (receipts.length === 38) {
-        return "preAgentDeletionTakeover";
-      }
-      if (receipts.length === 39) {
-        return "preNamespaceDeletionTakeover";
-      }
-      if (receipts.length === 40) {
-        return "preRepositoryAccess";
-      }
-      if (receipts.length === 41) {
-        return "preRestrictionReadLogs";
-      }
-      if (receipts.length === 42) {
-        return "preOAuth";
-      }
-      if (receipts.length === 43) {
-        return "preCredentialWithdrawals";
-      }
-      if (receipts.length === 44) {
-        return "preBrokerReceiptFence";
-      }
-      if (receipts.length === 45) {
-        return "preModelProbeFailureCause";
-      }
-      if (receipts.length === 46) {
-        return "preProvisioningConfigurationRelease";
-      }
-      if (receipts.length === 47) {
-        return "preAdministratorCredentialSourceGrants";
-      }
-      if (receipts.length === 48) {
-        return "preCodexPatSources";
-      }
-      if (receipts.length === 49) {
-        return "preAgentCredentialSources";
-      }
-      if (receipts.length === 50) {
-        return "preCredentialWithdrawalRequester";
-      }
-      if (receipts.length === 51) {
-        return "preProvisioningDeploymentOutcome";
-      }
-      if (receipts.length === 58) {
-        return "preSandboxPolicyAdministrator";
-      }
-      if (receipts.length === 57) {
-        return "preSandboxPolicies";
-      }
-      if (receipts.length === 52) {
-        return "preComputePreparationFailureEvidence";
-      }
-      if (receipts.length === 53) {
-        return "preCredentialSourcePat";
-      }
-      if (receipts.length === 54) {
-        return "preComputeRevisionAdmission";
-      }
-      if (receipts.length === 55) {
-        return "preHeldAuthenticationSession";
-      }
-      if (receipts.length === 56) {
-        return "preCanonicalHarnessAuth";
-      }
-      return "providerCompleted";
-    }
-    if (!receiptsMatchEntries(receipts, manifest.entries)) {
-      refuse("the applied receipts differ from canonical history");
-    }
-  } else {
-    requireReceiptsMatchEntries(receipts, manifest.entries);
+      ...expected.slice(providerCount),
+    ]);
+  if (!providerLineage) {
+    requireReceiptsMatchEntries(receipts, expected);
+  } else if (receipts.length === providerCount) {
+    return "providerCompleted";
   }
-  if (receipts.length === 58) {
-    return "preSandboxPolicyAdministrator";
-  }
-  if (receipts.length === 57) {
-    return "preSandboxPolicies";
-  }
-  if (receipts.length === 0) {
+  // The Provider and canonical lineages share every subsequent migration and catalog.
+  return catalogAtMigrationCount(receipts.length, expected.length);
+}
+
+function catalogAtMigrationCount(count, completedCount) {
+  if (count === 0) {
     return "empty";
   }
-  if (receipts.length === 24) {
+  if (count === 24) {
     return "prePresetsMain";
   }
-  if (receipts.length === 25) {
+  if (count === 25) {
     return "main";
   }
-  if (receipts.length === manifest.entries.length) {
+  if (count === completedCount) {
     return "completed";
   }
-  if (receipts.length === 27) {
+  if (count === 27) {
     return "repositoryCredentials";
   }
-  if (receipts.length === 28) {
+  if (count === 28) {
     return "repositoryRetention";
   }
-  if (receipts.length === 29) {
+  if (count === 29) {
     return "workspaceSetup";
   }
-  if (receipts.length === 30) {
+  if (count === 30) {
     return "agentProvisioning";
   }
-  if (receipts.length === 31) {
+  if (count === 31) {
     return "backendCompleted";
   }
-  if (receipts.length === 32) {
+  if (count === 32) {
     return "backendTerminology";
   }
-  if (receipts.length === 33) {
+  if (count === 33) {
     return "prePluginApprovers";
   }
-  if (receipts.length === 34) {
+  if (count === 34) {
     return "preBrokerReceipts";
   }
-  if (receipts.length === 36) {
+  if (count === 36) {
     return "preDeploymentProgress";
   }
-  if (receipts.length === 35) {
+  if (count === 35) {
     return "preAgentDeletion";
   }
-  if (receipts.length === 37) {
+  if (count === 37) {
     return "preHumanAuthentication";
   }
-  if (receipts.length === 38) {
+  if (count === 38) {
     return "preAgentDeletionTakeover";
   }
-  if (receipts.length === 39) {
+  if (count === 39) {
     return "preNamespaceDeletionTakeover";
   }
-  if (receipts.length === 40) {
+  if (count === 40) {
     return "preRepositoryAccess";
   }
-  if (receipts.length === 41) {
+  if (count === 41) {
     return "preRestrictionReadLogs";
   }
-  if (receipts.length === 42) {
+  if (count === 42) {
     return "preOAuth";
   }
-  if (receipts.length === 43) {
+  if (count === 43) {
     return "preCredentialWithdrawals";
   }
-  if (receipts.length === 44) {
+  if (count === 44) {
     return "preBrokerReceiptFence";
   }
-  if (receipts.length === 45) {
+  if (count === 45) {
     return "preModelProbeFailureCause";
   }
-  if (receipts.length === 46) {
+  if (count === 46) {
     return "preProvisioningConfigurationRelease";
   }
-  if (receipts.length === 47) {
+  if (count === 47) {
     return "preAdministratorCredentialSourceGrants";
   }
-  if (receipts.length === 48) {
+  if (count === 48) {
     return "preCodexPatSources";
   }
-  if (receipts.length === 49) {
+  if (count === 49) {
     return "preAgentCredentialSources";
   }
-  if (receipts.length === 50) {
+  if (count === 50) {
     return "preCredentialWithdrawalRequester";
   }
-  if (receipts.length === 51) {
+  if (count === 51) {
     return "preProvisioningDeploymentOutcome";
   }
-  if (receipts.length === 52) {
+  if (count === 52) {
     return "preComputePreparationFailureEvidence";
   }
-  if (receipts.length === 53) {
+  if (count === 53) {
     return "preCredentialSourcePat";
   }
-  if (receipts.length === 54) {
+  if (count === 54) {
     return "preComputeRevisionAdmission";
   }
-  if (receipts.length === 55) {
+  if (count === 55) {
     return "preHeldAuthenticationSession";
   }
-  if (receipts.length === 56) {
+  if (count === 56) {
     return "preCanonicalHarnessAuth";
+  }
+  if (count === 57) {
+    return "preSandboxPolicies";
+  }
+  if (count === 58) {
+    return "preSandboxPolicyAdministrator";
+  }
+  if (count === 59) {
+    return "preCredentialProxy";
+  }
+  if (count === 62) {
+    return "prePreparedAttemptSettlement";
+  }
+  if (count === 63) {
+    return "preGatewayManagedMode";
   }
   refuse("an incomplete or unsupported development history is installed");
 }
@@ -368,7 +303,9 @@ async function preflight(client, manifest) {
   } else if (ledger !== manifest.ledgerCatalogs.completed) {
     refuse("the Drizzle ledger objects or privileges have changed");
   }
-  if (catalogDigest(await migrationCatalog(client)) !== manifest.catalogs[shape]) {
+  const native = manifest.catalogs[shape];
+  const actual = catalogDigest(await migrationCatalog(client));
+  if (actual !== native && actual !== manifest.logicalRestoreCatalogs?.[native]) {
     refuse(`catalog objects or effective grants differ for ${shape}`);
   }
   if (shape === "providerCompleted" || shape === "backendCompleted") {

@@ -81,6 +81,8 @@ function codexInput(codex = {}) {
 
 const repositoryInput = {
   enabled: true,
+  authority: "prepared-git",
+  preparedCustodySecretName: "occ-repository-custody",
   image: `registry.example.invalid/repository@sha256:${"c".repeat(64)}`,
   backendId: "github-primary",
   registryConfigMapName: "occ-repository-registry",
@@ -90,6 +92,21 @@ const repositoryInput = {
   publicCaSecretName: "occ-repository-ca",
   upstreamCidrs: ["192.0.2.30/32"],
 };
+
+test("profile renderer refuses the retired signing gateway without preparing outputs", async () => {
+  for (const authority of [undefined, "github-app", "github-app-registry"]) {
+    await withProfile(
+      { ...input({}), ...codexInput(), repository: { ...repositoryInput, authority } },
+      ({ directory, renderer }) => {
+        assert.equal(renderer.ok, false);
+        assert.match(renderer.output, /repository.authority must explicitly select prepared-git/);
+        assert.equal(existsSync(join(directory, "values.yaml")), false);
+        assert.equal(existsSync(join(directory, "installation.yaml")), false);
+      },
+      "codex",
+    );
+  }
+});
 
 const oidcEndpoints = {
   issuer: "https://sso.example.com/realm",

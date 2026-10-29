@@ -37,6 +37,18 @@ send the withdraw request again to retry it on their own authority.
 means Compute cannot reach the version's Sandbox as configured, or found an
 object it does not own; the attempt fails without retries, even with
 maintenance. Correct the cause, then send the request again.
+`CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT` means Compute cannot remove
+the source from that version's running policy. It also fails without retries.
+A Credential Proxy that reduces policy in place does so only for the selected
+version, so another version's withdrawal, such as one for a later version that
+failed or is still deploying, ends with this reason. The withdrawal stays
+`pending`, so that version cannot use the source, and the read can report it with
+that version's `revisionId` and `withdrawalInProgress: false`. The next
+deployment that succeeds retires every earlier version, including that one, and
+the read then stops reporting it. If that version's own deployment selects it
+instead, the deployment queues one more attempt as it completes, so its policy
+is reduced without a new request. If that deployment selects it but fails
+before completing, send the request again.
 
 The worker retries an unconfirmed withdrawal a few times with backoff
 (`OCC_WORKER_MAX_ATTEMPTS`; by default about 12 seconds). If those attempts run

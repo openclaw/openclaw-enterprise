@@ -130,8 +130,9 @@ Driver loads current policy for each identity lookup and authorization decision;
 packaged Drivers must do the same, which operator review verifies because the
 runtime cannot enforce package internals. Packaged factories must return their exact server-owned capability
 and identity. The Helm upgrade hook's `installation-check` also runs this loader
-with only `NODE_ENV`, `OCC_CONFIG_PATH` and the Installation and repository
-mounts, so factories must defer other environment and file reads past construction.
+with only `NODE_ENV`, `OCC_CONFIG_PATH`, the API's optional `OCC_CONSOLE_THEME_DIR`
+and the Installation, theme and repository mounts, so factories must defer other
+environment and file reads past construction.
 
 Kubernetes-specific image and projected-credential requirements apply only to
 bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
@@ -176,8 +177,8 @@ their existing Harness-owned runtime topology.
 
 - Run `node --test tests/integration/driver-plugin-installation.test.mjs` for
   real installed IAM, Compute, and Configuration packages; production admission;
-  IAM allow/deny evidence; Configuration CRUD; and OCC provisioning of
-  `/tmp/local-test`.
+  IAM allow/deny evidence; Configuration CRUD; and OCC provisioning of an
+  evidence file in a per-run temporary directory.
 - Startup failures emit `startup-error` or `worker.startup-error`; inspect
   Driver identity, persisted policy, capability contracts, and lifecycle stages.
 - The integration uses `InMemoryPlatformState`; it does not prove a running
@@ -196,6 +197,10 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-22: Driver factories in `installation-check` can see `OCC_CONSOLE_THEME_DIR` and the theme mount. (fix-1022d)
+
+- 2026-10-22: The installed Compute fixture provisions into a per-run temporary directory instead of a fixed `/tmp/local-test`. (harden-1022c)
 
 - 2026-10-20 05:56: Assign structural validation and accepted input ownership to the platform; Driver semantic callbacks return only field errors. (authoring-run/5095b5aa-1826-472c-a40d-c34550457c0e - 01ee10b27e1de60faccccf2f386cff394c1afedc)
 

@@ -1,41 +1,25 @@
 import assert from "node:assert/strict";
 import { execFile, fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { createServer as httpsServer } from "node:https";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { selfSigned } from "../helpers/certificates.mjs";
 
 const execute = promisify(execFile);
 
 test("real peer-status HTTPS transport authenticates its revision and verifies server trust", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-peer-status-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const certificate = join(directory, "certificate.pem");
-  const privateKey = join(directory, "key.pem");
-  await execute("openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-days",
-    "1",
-    "-subj",
-    "/CN=localhost",
-    "-addext",
-    "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    "-keyout",
-    privateKey,
-    "-out",
-    certificate,
-  ]);
+  const directory = await temporaryDirectory(t, "oce-peer-status-");
+  const { keyPath: privateKey, certPath: certificate } = await selfSigned(directory);
 
   // The generated status server binds this port on all interfaces. Hold it there until the
   // server answers on it, so no other socket takes it first.
@@ -61,7 +45,7 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
     execArgv: [...process.execArgv, ...reservedPortArgs(reservation)],
     stdio: ["ignore", "ignore", "pipe", "ipc"],
   });
-  t.after(() => child.kill("SIGTERM"));
+  t.after(() => stopProcess(child));
   await once(child, "message");
   // "ready" follows listen() before the bind completes. A 401 can only come from the status
   // server (the reservation resets connections), so it is bound and the hold can end.
@@ -108,10 +92,7 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
       incoming.pipe(upstream);
     },
   );
-  proxy.listen(0, "127.0.0.1");
-  await once(proxy, "listening");
-  t.after(() => new Promise((resolve) => proxy.close(resolve)));
-  const url = `https://127.0.0.1:${proxy.address().port}/status`;
+  const url = `https://127.0.0.1:${await listen(t, proxy)}/status`;
   const clientFile = join(directory, "client.cjs");
   await writeFile(
     clientFile,

@@ -85,8 +85,11 @@ import {
   AgentProvisioningStatusResponse,
   AgentRuntimeCredentialResponse,
   AgentRuntimeImagesResponse,
+  AgentHarnessStatusResponse,
   AgentCallerPermissionsResponse,
+  AgentSecretPermissionsResponse,
   NamespaceCallerPermissionsResponse,
+  NamespaceSecretPermissionsResponse,
   AgentResponse,
   AgentReadResponse,
   AgentRevisionListResponse,
@@ -119,18 +122,6 @@ import {
 
 const ErrorResponseRef = Type.Ref("ErrorResponse");
 const SecretResponseRef = Type.Ref("SecretResponse");
-const RepositoryOptionsQuery = Type.Object(
-  {
-    descriptionRefs: Type.Optional(
-      Type.String({
-        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(,[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,19}$",
-        maxLength: 2579,
-        description: "Up to 20 visible repository references to enrich with provider descriptions.",
-      }),
-    ),
-  },
-  { additionalProperties: false },
-);
 const CredentialSourceResponseRef = Type.Ref("CredentialSourceResponse");
 
 const readErrors = {
@@ -515,6 +506,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       response: { 200: NamespaceCallerPermissionsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getNamespaceSecretPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/permissions/secrets",
+    action: "openclaw.namespaces.permissions.read",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary:
+      "Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceSecretPermissionsResponse, ...readErrors },
     },
   },
   {
@@ -1272,7 +1280,7 @@ export const occApiRoutes = [
     summary: "List approved repository choices for Agent creation in one Namespace",
     tags: ["Agents"],
     schema: {
-      querystring: RepositoryOptionsQuery,
+      querystring: EmptyQuery,
       params: NamespaceParams,
       response: {
         200: RepositoryOptionListResponse,
@@ -1280,7 +1288,7 @@ export const occApiRoutes = [
         409: ErrorResponseRef,
         503: Type.Ref("ErrorResponse", {
           description:
-            "Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved.",
+            "Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks, because the selected Compute or Sandbox Driver cannot support repository credentials or the selected repository Driver is unavailable. Without repository settings the answer is 200 with `meta.notConfigured` instead. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved.",
         }),
       },
     },
@@ -1296,7 +1304,7 @@ export const occApiRoutes = [
     summary: "List approved repository choices for updating one Agent",
     tags: ["Agents"],
     schema: {
-      querystring: RepositoryOptionsQuery,
+      querystring: EmptyQuery,
       params: AgentParams,
       response: {
         200: RepositoryOptionListResponse,
@@ -1332,12 +1340,104 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
     summary:
-      "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
+      "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ValidateAgentCreateBody,
+      response: { 204: Type.Null(), ...createErrors },
+    },
+  },
+  {
+    operationId: "listAgentStandingApprovals",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/repository-approvals",
+    action: "openclaw.agents.repository_approvals.list",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Read attributable repository approvals and removed generations for one Agent",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: {
+        200: Type.Object({
+          data: Type.Array(
+            Type.Object({
+              id: Type.String(),
+              repositoryRef: Type.String(),
+              profile: Type.String(),
+              generation: Type.Integer({ minimum: 1 }),
+              scopeFingerprint: Type.String(),
+              status: Type.Union([Type.Literal("active"), Type.Literal("removed")]),
+              approvedBy: Type.String(),
+              createdAt: Type.String(),
+              revokedAt: Type.Optional(Type.String()),
+            }),
+          ),
+          meta: Type.Object({ requestId: Type.String() }),
+        }),
+        ...readErrors,
+      },
+    },
+  },
+  {
+    operationId: "listAgentStandingApprovalScopes",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/repository-approval-scopes",
+    action: "openclaw.agents.repository_approval_scopes.list",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Review resolved repository scope before explicitly approving it",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: {
+        200: Type.Object({
+          data: Type.Array(
+            Type.Object({
+              repositoryRef: Type.String(),
+              binding: Type.Record(Type.String(), Type.Unknown()),
+              scope: Type.Record(Type.String(), Type.Unknown()),
+              scopeFingerprint: Type.String(),
+            }),
+          ),
+          meta: Type.Object({ requestId: Type.String() }),
+        }),
+        ...readErrors,
+        // The Agent's saved repository selections are no longer approved.
+        409: ErrorResponseRef,
+      },
+    },
+  },
+  {
+    operationId: "removeAgentStandingApproval",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/repository-approvals/:approvalId/remove",
+    action: "openclaw.agents.repository_approvals.remove",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Remove repository approval independently of configuration or runtime cleanup",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object(
+        {
+          namespaceId: NamespaceId,
+          agentId: AgentId,
+          approvalId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+        },
+        { additionalProperties: false },
+      ),
+      body: Type.Object(
+        { expectedGeneration: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) },
+        { additionalProperties: false },
+      ),
       response: { 204: Type.Null(), ...createErrors },
     },
   },
@@ -1611,6 +1711,22 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "getAgentHarnessStatus",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/harness-status",
+    action: "openclaw.agents.harness_status.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentHarnessStatusResponse, ...readErrors },
+    },
+  },
+  {
     operationId: "getAgentCallerPermissions",
     method: "GET",
     path: "/namespaces/:namespaceId/agents/:agentId/permissions",
@@ -1625,6 +1741,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentCallerPermissionsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getAgentSecretPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/permissions/secrets",
+    action: "openclaw.agents.permissions.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentSecretPermissionsResponse, ...readErrors },
     },
   },
   {
@@ -1689,7 +1822,14 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: WorkspaceFileParams,
-      response: { 200: WorkspaceFileResponse, ...readErrors },
+      response: {
+        200: WorkspaceFileResponse,
+        ...readErrors,
+        409: Type.Ref("ErrorResponse", {
+          description:
+            "Conflict. The Agent has no running version: deploy it, or wait until its deployment finishes.",
+        }),
+      },
     },
   },
   {

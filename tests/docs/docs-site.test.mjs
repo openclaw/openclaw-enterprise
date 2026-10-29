@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
 import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
@@ -13,6 +12,7 @@ import {
   writeComputeMatrixReadme,
   writeDocsConfig,
 } from "../helpers/docs-site.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function markdownFiles(directory) {
   const result = [];
@@ -93,7 +93,15 @@ test("docs build renders every authored page and preserves repository ownership"
     /GET \/namespaces\/\{namespaceId\}\/agents\/\{agentId\}\/workspace\/files\/\{name\}/,
   );
   const architecture = await readFile(join(root, "dist/docs/design/index.html"), "utf8");
-  assert.match(architecture, /mermaid/);
+  assert.match(architecture, /<img\b[^>]*src="\/assets\/oce-architecture\.svg"/);
+  assert.deepEqual(
+    await readFile(join(root, "dist/docs/assets/oce-architecture.svg")),
+    await readFile(join(root, "docs/assets/oce-architecture.svg")),
+    "The published architecture image must preserve the authored SVG",
+  );
+  // The overview uses an SVG; the deployment chapter still exercises Mermaid rendering.
+  const workloads = await readFile(join(root, "dist/docs/design/workloads/index.html"), "utf8");
+  assert.match(workloads, /<figure\b[^>]*data-mermaid=/);
   const asset = await readFile(join(root, "dist/docs/assets/lobster-mech-transparent.png"));
   assert.equal(asset.readUInt32BE(0), 0x89504e47, "Brand asset must remain a PNG");
 });
@@ -248,8 +256,7 @@ test("docs validation checks Markdown links in deploy example YAML comments", as
 });
 
 test("spec validation rejects links to missing headings", async (t) => {
-  const fixture = await mkdtemp(join(tmpdir(), "enterprise-specs-check-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const fixture = await temporaryDirectory(t, "enterprise-specs-check-");
   await mkdir(join(fixture, "specs/rfcs"), { recursive: true });
   await mkdir(join(fixture, "docs"), { recursive: true });
   await writeFile(join(fixture, "docs/guide.md"), "# Guide\n\n## Setup\n\n## Setup\n");
@@ -364,8 +371,7 @@ for (const [kind, label] of [
   ["plugin", "Plugin"],
 ]) {
   test(`${label} matrix generator updates only its block and checks without writing`, async (t) => {
-    const fixture = await mkdtemp(join(tmpdir(), "enterprise-matrix-generator-"));
-    t.after(() => rm(fixture, { recursive: true, force: true }));
+    const fixture = await temporaryDirectory(t, "enterprise-matrix-generator-");
     await mkdir(join(fixture, "docs/assets"), { recursive: true });
     await mkdir(join(fixture, "docs/reference/drivers"), { recursive: true });
     await writeFile(

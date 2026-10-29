@@ -128,15 +128,14 @@ runs:
     - name: Check Go CLI
       if: inputs.lane == 'checks-baseline-1'
       shell: bash
-      run: pnpm cli:check && pnpm cli:test
+      run: pnpm cli:check && node scripts/ci/go-test.mjs
     - name: Typecheck and build workspace output
-      # The only typecheck: `pnpm build` and `pnpm typecheck` are the same
-      # `tsc --build`, which fails on a type error. Some part 2 tests read
-      # apps/controller/dist; part 1 reads no tsc output. Every mode that
-      # can change TypeScript sources runs both parts (CI Impact).
+      # This one compiler run builds the workspace (some part 2 tests read
+      # apps/controller/dist) and checks TypeScript tests without emitting them.
+      # CI Impact also selects part 2 for a change confined to a TypeScript test.
       if: inputs.lane == 'checks-baseline-2'
       shell: bash
-      run: pnpm build
+      run: pnpm typecheck
     - name: Build Go CLI for development installation proof
       if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
       shell: bash
@@ -150,14 +149,14 @@ runs:
       shell: bash
       run: node apps/controller/src/precompile-route-schemas.mjs
     - name: Prepare hosted platform disk capacity
-      if: (inputs.lane == 'repository-credentials-platform' || startsWith(inputs.lane, 'k3d-observability')) && runner.environment == 'github-hosted'
+      if: startsWith(inputs.lane, 'k3d-observability') && runner.environment == 'github-hosted'
       shell: bash
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs.lane }}
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3' || inputs.lane == 'repository-credentials-platform'
+      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -174,7 +173,7 @@ runs:
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3' || inputs.lane == 'repository-credentials-platform') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
@@ -201,14 +200,19 @@ runs:
         # container.
         NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
       run: |
+        launch=()
         if [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
           # Hosted runners have been lost mid-lane (suspected memory pressure); a
           # lost runner skips every later step, so the sampler also logs live.
           bash scripts/ci/memory-sampler.sh "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" &
           sampler=$!
           trap 'kill "$sampler" 2>/dev/null || true' EXIT
+        elif [[ "${{ inputs.lane }}" == checks-browser || "${{ inputs.lane }}" == checks-browser-2 ]]; then
+          # Actions sends cancellation to the step's entry process. Let the browser
+          # runner receive it directly so it can stop its detached test processes.
+          launch=(exec)
         fi
-        node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+        "${launch[@]}" node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
     - name: Show last memory samples
       if: (failure() || cancelled()) && inputs.lane == 'k3d-fixture-configuration'
       continue-on-error: true

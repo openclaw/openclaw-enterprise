@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { chartTooling, helmTemplate } from "../helpers/production-chart.mjs";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -126,29 +127,6 @@ function render(
   };
 }
 
-function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraArgs = []) {
-  return execFileSync(
-    helm,
-    [
-      "template",
-      releaseName,
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      "openclaw-system",
-      "--values",
-      join(output.directory, "values.yaml"),
-      ...extraValueFiles.flatMap((path) => ["--values", path]),
-      ...extraArgs,
-    ],
-    {
-      cwd: repository,
-      encoding: "utf8",
-      maxBuffer: 2_000_000,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-}
-
 test(
   "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer",
   { skip: helmSkip },
@@ -203,7 +181,6 @@ test(
 );
 
 test("reader fixture waits for a current ready endpoint owned by its Service", async (t) => {
-  const { chartTooling } = await import("../helpers/production-chart.mjs");
   const tooling = await chartTooling();
   if (tooling.skip) {
     t.skip(tooling.skip);

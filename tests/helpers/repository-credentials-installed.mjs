@@ -12,6 +12,7 @@ import {
   createKubernetesInstallationConfiguration,
   kubernetesHash,
   kubectlArguments,
+  productionGatewayMemoryLimit,
 } from "./kubernetes-real.mjs";
 import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
 import { ensureEnvoyGatewayControllers } from "./envoy-workspace-gateway.mjs";
@@ -259,8 +260,9 @@ export async function createInstalledRepositoryFixture(
     cluster: system,
     codexSeccompProfile: process.env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE,
   });
-  // Match production Gateway headroom; real plugin startup can exceed the generic 1 GiB fixture limit.
-  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";
+  // Real plugin startup and the first turn exceed the generic 1 GiB fixture limit.
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory =
+    productionGatewayMemoryLimit;
   if (dedicated) {
     // Use the same authenticated route for native node enrollment and task
     // submission. The production Driver owns enrollment and shared storage.

@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import { describe, test } from "node:test";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import {
   adminEmail,
   admitted,
+  caseDatabasesAvailable,
   cleanupKubernetesNamespaces,
   createConfiguration,
   createKubernetesConfiguredAgent as createConfiguredAgent,
   createKubernetesHarnessAuth,
-  databaseUrl,
   defaultAgentConfigurationValues,
   grantTenantAccess,
   pollUntil,
+  prepareCaseDatabase,
   request,
   requiresPostgresAndKubernetesConfiguration,
   startKubernetesController,
@@ -21,9 +22,11 @@ import {
   waitForNamespaceReady,
 } from "../helpers/postgres-platform-state.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
 
-// Revision lists return summaries, newest first (finding 1323).
-const revisionSummary = (revision) => ({
+// Revision lists return summaries, newest first (finding 1323), each with its deployment's
+// status. An activated revision's deployment is finishing or has finished, with no error.
+const revisionSummary = (revision, deploymentStatus) => ({
   id: revision.id,
   namespaceId: revision.namespaceId,
   agentId: revision.agentId,
@@ -33,14 +36,35 @@ const revisionSummary = (revision) => ({
   configurationGeneration: revision.configurationGeneration,
   harness: revision.harness,
   createdAt: revision.createdAt,
+  deploymentStatus,
+  deploymentErrorCode: null,
 });
+const activatedStatuses = (listed) => {
+  const statuses = listed.map((item) => item.deploymentStatus);
+  for (const status of statuses) {
+    assert.ok(status === "running" || status === "succeeded", `deployment status ${status}`);
+  }
+  return statuses;
+};
 
-test(
+// Each case owns a database (prepareCaseDatabase), so its own Installation, and its own scoped
+// controller identity, platform namespace, ClusterRoles and binding (named from a random hash).
+// Its tenant namespaces are named from random Namespace IDs; it deletes the ones it creates,
+// and the one its bootstrap default Namespace gets stays until the lane deletes the cluster.
+// Its API and worker connect only to its database, so neither claims another case's work,
+// and every count and row a case asserts is its own. Nothing cluster-scoped is shared beyond
+// what the lane's other files already use at the same time, so under the CI runner the cases
+// run two at a time (the describe at the end of this file).
+const ownDatabase = { lane: "k3d-fixture-state", testFile: import.meta.url };
+const cases = [];
+const stateCase = (...definition) => cases.push(definition);
+
+stateCase(
   "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
   requiresPostgresAndKubernetesConfiguration,
   async (context) => {
     const { Pool } = await import("pg");
-    const pool = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString: await prepareCaseDatabase(context, ownDatabase) });
     context.after(() => pool.end());
 
     const first = await startKubernetesController(context);
@@ -151,12 +175,12 @@ test(
   },
 );
 
-test(
+stateCase(
   "real OCC creates concurrent Namespace Agents and durably associates revisions with their owner",
   requiresPostgresAndKubernetesConfiguration,
   async (context) => {
     const { Pool } = await import("pg");
-    const pool = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString: await prepareCaseDatabase(context, ownDatabase) });
     context.after(() => pool.end());
     const process = await startKubernetesController(context);
 
@@ -185,11 +209,13 @@ test(
         name: `first-${randomUUID()}`,
         configurationId: firstConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
+        gatewayManagedMode: false,
       }),
       request(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
         name: `second-${randomUUID()}`,
         configurationId: secondConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
+        gatewayManagedMode: false,
       }),
     ]);
     assert.equal(first.status, 201);
@@ -265,7 +291,7 @@ test(
       method: "api_key",
       source: first.data.harnessAuth.source,
     });
-    assert.deepEqual(revision.configuration, admitted(firstValues));
+    assert.deepEqual(revision.configuration, admitted(servedAs(firstValues, first.data.name)));
     assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
     assert.deepEqual(revision.compute, {
       id: "compute-kubernetes",
@@ -296,7 +322,8 @@ test(
     ]);
     assert.equal(firstHistory.status, 200);
     assert.equal(secondHistory.status, 200);
-    assert.deepEqual(firstHistory.data, [revisionSummary(revision)]);
+    const [firstStatus] = activatedStatuses(firstHistory.data);
+    assert.deepEqual(firstHistory.data, [revisionSummary(revision, firstStatus)]);
     assert.deepEqual(secondHistory.data, []);
 
     const actor = await pool.query(
@@ -327,7 +354,7 @@ test(
       configuration_id: revision.configurationId,
       configuration_kind: revision.configurationKind,
       configuration_generation: revision.configurationGeneration,
-      draft_spec: admitted(firstValues),
+      draft_spec: admitted(servedAs(firstValues, first.data.name)),
       harness_auth: {
         method: "api_key",
         source: first.data.harnessAuth.source,
@@ -335,6 +362,7 @@ test(
       },
       harness: revision.harness,
       compute: revision.compute,
+      execution_admission: { version: 2, mode: "unprotected" },
     });
     assert.equal(persistedRevision.rows[0].active_revision_id, revision.id);
     assert.equal(activeAgent.activeRevisionId, revision.id);
@@ -371,12 +399,12 @@ test(
   },
 );
 
-test(
+stateCase(
   "independent PostgreSQL API and worker provision isolated Namespaces, activate admitted revisions, and tombstone deletion",
   requiresPostgresAndKubernetesConfiguration,
   async (context) => {
     const { Pool } = await import("pg");
-    const pool = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString: await prepareCaseDatabase(context, ownDatabase) });
     context.after(() => pool.end());
     const api = await startKubernetesController(context);
 
@@ -516,12 +544,12 @@ test(
   },
 );
 
-test(
+stateCase(
   "PostgreSQL API and worker preserve immutable deployments, stable identities, and tenant isolation",
   requiresPostgresAndKubernetesConfiguration,
   async (context) => {
     const { Pool } = await import("pg");
-    const pool = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString: await prepareCaseDatabase(context, ownDatabase) });
     context.after(() => pool.end());
     let api = await startKubernetesController(context);
 
@@ -680,6 +708,7 @@ test(
       "configurationId",
       "configurationKind",
       "createdAt",
+      "gatewayManagedMode",
       "harness",
       "harnessAuth",
       "id",
@@ -696,7 +725,10 @@ test(
       method: "api_key",
       source: primary.harnessAuth.source,
     });
-    assert.deepEqual(firstRevision.configuration, admitted(persistedConfigValues));
+    assert.deepEqual(
+      firstRevision.configuration,
+      admitted(servedAs(persistedConfigValues, primary.name)),
+    );
     assert.deepEqual(firstRevision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
     assert.deepEqual(firstRevision.compute, {
       id: "compute-kubernetes",
@@ -741,7 +773,10 @@ test(
     assert.equal(secondRevision.configurationId, primaryConfiguration.id);
     assert.equal(secondRevision.configurationGeneration, 3);
     assert.deepEqual(secondRevision.harnessAuth, firstRevision.harnessAuth);
-    assert.deepEqual(secondRevision.configuration, admitted(replacementConfigValues));
+    assert.deepEqual(
+      secondRevision.configuration,
+      admitted(servedAs(replacementConfigValues, primary.name)),
+    );
 
     for (const [namespaceId, agent, revision] of [
       [namespaceA, primary, secondRevision],
@@ -769,9 +804,10 @@ test(
       `/namespaces/${namespaceA}/agents/${primary.id}/revisions`,
     );
     assert.equal(history.status, 200);
+    const [secondStatus, earlierStatus] = activatedStatuses(history.data);
     assert.deepEqual(history.data, [
-      revisionSummary(secondRevision),
-      revisionSummary(firstRevision),
+      revisionSummary(secondRevision, secondStatus),
+      revisionSummary(firstRevision, earlierStatus),
     ]);
     const firstRevisionRead = await request(
       api,
@@ -802,7 +838,7 @@ test(
       configuration_id: firstRevision.configurationId,
       configuration_kind: firstRevision.configurationKind,
       configuration_generation: firstRevision.configurationGeneration,
-      draft_spec: admitted(persistedConfigValues),
+      draft_spec: admitted(servedAs(persistedConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",
         source: primary.harnessAuth.source,
@@ -810,12 +846,13 @@ test(
       },
       harness: firstRevision.harness,
       compute: firstRevision.compute,
+      execution_admission: { version: 2, mode: "unprotected" },
     });
     assert.deepEqual(persistedRevisions.rows[1].admitted_spec, {
       configuration_id: secondRevision.configurationId,
       configuration_kind: secondRevision.configurationKind,
       configuration_generation: secondRevision.configurationGeneration,
-      draft_spec: admitted(replacementConfigValues),
+      draft_spec: admitted(servedAs(replacementConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",
         source: primary.harnessAuth.source,
@@ -823,6 +860,7 @@ test(
       },
       harness: secondRevision.harness,
       compute: secondRevision.compute,
+      execution_admission: { version: 2, mode: "unprotected" },
     });
     assert.equal(
       persistedRevisions.rows[0].service_principal_id,
@@ -907,5 +945,15 @@ test(
         resource_id === secondRevision.id && action === "openclaw.agents.lifecycle.activate",
     );
     assert.equal(secondActivation.details.previousRevisionId, firstRevision.id);
+  },
+);
+
+describe(
+  "PostgreSQL platform state on live Kubernetes",
+  { concurrency: caseDatabasesAvailable ? 2 : 1 },
+  () => {
+    for (const definition of cases) {
+      test(...definition);
+    }
   },
 );

@@ -1,6 +1,7 @@
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import {
   failureSecrets,
@@ -28,6 +29,12 @@ import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mj
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  assertNativeCronRunSucceeded,
+  assertCodexPolicyChild,
+  findCodexPolicyChild,
+  createNativePluginAssertions,
+} from "../helpers/plugin-driver-real.mjs";
+import {
   assertExposedCodexInitializes,
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -49,7 +56,12 @@ import {
   retryKubectlRead,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
-import { observeSandboxProbe } from "../helpers/k3d-failure-diagnostics.mjs";
+import {
+  assertGatewayPolicyRunSucceeded,
+  observeSandboxProbe,
+  tokenEchoDigest,
+  tokenEchoReply,
+} from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -207,6 +219,7 @@ const {
   assertGatewayBootstrapPolicies,
   assertNoSecretBytes,
   requestCodexTurnFromGatewayPod,
+  readCodexThreadFromGatewayPod,
   startGatewayPortForward,
 } = fixture;
 
@@ -305,6 +318,8 @@ async function createScopedController(context, identifier, platformNamespace, ku
             ],
             verbs: ["get", "list", "create", "patch", "delete"],
           },
+          // This fixture identity also serves the Configuration Driver, which replaces ConfigMaps.
+          { apiGroups: [""], resources: ["configmaps"], verbs: ["update"] },
           // As the chart's tenant worker role: a Pod annotation syncs a running Gateway's
           // workspace node at once, and its private status port answers through the Pod proxy.
           { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch", "patch"] },
@@ -413,6 +428,7 @@ function nativeCodexConfiguration(gatewayAuth) {
 
 function nativeOpenClawConfiguration(gatewayAuth, controlUiOrigins = []) {
   const configuration = createHarnessConfiguration("openclaw", providerModel);
+  configuration.models.providers.openai.baseUrl = modelBaseUrl;
   configuration.models.providers.openai.models[0].input = ["text", "image"];
   configuration.secrets = {
     providers: {
@@ -677,7 +693,18 @@ async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
 
 function summarizeWorkerEvent(event) {
   return Object.fromEntries(
-    ["event", "operation", "revisionId", "outcome", "code", "attempt"]
+    [
+      "event",
+      "operation",
+      "revisionId",
+      "outcome",
+      "code",
+      "attempt",
+      "cause",
+      "dependency",
+      "method",
+      "grpcStatus",
+    ]
       .map((key) => [key, event[key]])
       .filter(([, value]) => typeof value === "string" || typeof value === "number"),
   );
@@ -928,8 +955,12 @@ function credentialBridgeResource(context, claimName, subPath) {
       nativeTemporaryMountPath,
     );
   }
-  const nodeSetupCode = optionalSecretEnvironment(context.requirements, "OPENCLAW_NODE_SETUP_CODE");
-  const nodeCa = literalEnvironment(context.requirements, "OPENCLAW_NODE_CA_PEM");
+  const nodeSetupCode = needsNativeTemporary
+    ? undefined
+    : optionalSecretEnvironment(context.requirements, "OPENCLAW_NODE_SETUP_CODE");
+  const nodeCa = needsNativeTemporary
+    ? undefined
+    : literalEnvironment(context.requirements, "OPENCLAW_NODE_CA_PEM");
   return {
     apiVersion: "batch/v1",
     kind: "Job",
@@ -1007,7 +1038,9 @@ function credentialBridgeResource(context, claimName, subPath) {
                     : [
                         'printf "%s" "$OPENCLAW_NODE_SETUP_CODE" > /bootstrap/openclaw-node-setup-code',
                       ]),
-                  'printf "%s" "$OPENCLAW_NODE_CA_PEM" > /bootstrap/openclaw-node-ca.pem',
+                  ...(nodeCa === undefined
+                    ? []
+                    : ['printf "%s" "$OPENCLAW_NODE_CA_PEM" > /bootstrap/openclaw-node-ca.pem']),
                   ...(needsPluginRuntime
                     ? [
                         "cp /source-plugin-runtime/runtime.json /bootstrap/plugin-runtime/runtime.json",
@@ -1021,7 +1054,7 @@ function credentialBridgeResource(context, claimName, subPath) {
                   ...(nodeSetupCode === undefined
                     ? []
                     : ["chmod 0444 /bootstrap/openclaw-node-setup-code"]),
-                  "chmod 0444 /bootstrap/openclaw-node-ca.pem",
+                  ...(nodeCa === undefined ? [] : ["chmod 0444 /bootstrap/openclaw-node-ca.pem"]),
                   ...(needsPluginRuntime
                     ? [
                         "chmod 0444 /bootstrap/plugin-runtime/runtime.json /bootstrap/plugin-runtime/config.toml",
@@ -1038,7 +1071,7 @@ function credentialBridgeResource(context, claimName, subPath) {
               env: [
                 ...(appServerToken === undefined ? [] : [appServerToken]),
                 ...(nodeSetupCode === undefined ? [] : [nodeSetupCode]),
-                nodeCa,
+                ...(nodeCa === undefined ? [] : [nodeCa]),
               ],
               volumeMounts: [
                 { name: "bootstrap", mountPath: "/bootstrap", subPath },
@@ -1238,12 +1271,16 @@ function bridgeRequirements(context, claimName, subPath) {
       : [
           `process.env.APP_SERVER_TOKEN = require("node:fs").readFileSync("${credentialMountPath}/app-server-token", "utf8");`,
         ]),
-    ...(nodeSetupCode === undefined
+    ...(nodeSetupCode === undefined || needsNativeTemporary
       ? []
       : [
           `process.env.OPENCLAW_NODE_SETUP_CODE = require("node:fs").readFileSync("${credentialMountPath}/openclaw-node-setup-code", "utf8");`,
         ]),
-    `process.env.OPENCLAW_NODE_CA_PEM = require("node:fs").readFileSync("${credentialMountPath}/openclaw-node-ca.pem", "utf8");`,
+    ...(needsNativeTemporary
+      ? []
+      : [
+          `process.env.OPENCLAW_NODE_CA_PEM = require("node:fs").readFileSync("${credentialMountPath}/openclaw-node-ca.pem", "utf8");`,
+        ]),
   ].join("\n");
   const runtimeCommand = structuredClone(context.requirements.command);
   const programIndex = inlineNodeProgramIndex(runtimeCommand);
@@ -1260,7 +1297,9 @@ function bridgeRequirements(context, claimName, subPath) {
   const environment = context.requirements.environment
     .filter(
       ({ name }) =>
-        !["APP_SERVER_TOKEN", "OPENCLAW_NODE_SETUP_CODE", "OPENCLAW_NODE_CA_PEM"].includes(name),
+        name !== "APP_SERVER_TOKEN" &&
+        (needsNativeTemporary ||
+          !["OPENCLAW_NODE_SETUP_CODE", "OPENCLAW_NODE_CA_PEM"].includes(name)),
     )
     .map((entry) => {
       if (entry.name === "HOME") {
@@ -1300,7 +1339,11 @@ function bridgeRequirements(context, claimName, subPath) {
         mountPath: effectiveNodeStateMountPath,
         readOnly: false,
       },
-      { claimName, subPath, mountPath: credentialMountPath, readOnly: true },
+      // Native enrollment uses the real Driver's provider-managed files, so it needs
+      // no duplicate bootstrap mount in OpenShell's reserved /run control directory.
+      ...(needsNativeTemporary
+        ? []
+        : [{ claimName, subPath, mountPath: credentialMountPath, readOnly: true }]),
       ...(needsPluginRuntime
         ? [
             {
@@ -1517,7 +1560,11 @@ function assertBridgedNativeStateMount(pod) {
   const nativeInference = JSON.parse(
     environment.find(({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG")?.value,
   );
-  assert.ok(nativeInference.models.providers.openai.models.length > 0);
+  assert.equal(
+    nativeInference.models.providers.openai.baseUrl,
+    normalizeOpenAiBaseUrl(modelBaseUrl),
+  );
+  assert.equal(nativeInference.models.providers.openai.models[0].id, providerModel);
   assert.deepEqual(nativeInference.models.providers.openai.apiKey, {
     source: "env",
     provider: "model",
@@ -1655,7 +1702,7 @@ function createIntegrationSandboxDriverFactory(
   // once the upstream gateway can bind each Sandbox to Compute's exact Agent ServiceAccount.
   function agentSandboxServiceAccount(context) {
     return (
-      context.requirements.workloadIdentity?.serviceAccountName ??
+      context.requirements?.workloadIdentity?.serviceAccountName ??
       openShellAgentName(context.revision.agentId)
     );
   }
@@ -1765,7 +1812,20 @@ function createIntegrationSandboxDriverFactory(
                 harnessServiceUrls.set(context.revision.id, serviceUrl);
               },
             });
-      return new OpenShellSandboxDriver(optionsFor(requirements, namespaceName), {
+      const options = optionsFor(requirements, namespaceName);
+      if (enableCompatibilityBridges && context !== undefined) {
+        // The bridge removes projected-token requirements for upstream OpenShell;
+        // workspace preparation must still use the existing Compute-owned identity.
+        options.gateway.operatorWorkspaceResources = [
+          ...(options.gateway.operatorWorkspaceResources ?? []),
+          {
+            apiVersion: "v1",
+            kind: "ServiceAccount",
+            metadata: { name: agentSandboxServiceAccount(context), namespace: namespaceName },
+          },
+        ];
+      }
+      return new OpenShellSandboxDriver(options, {
         id: selection.id,
         implementation: "openshell",
         backend: backendFor(gatewayClient),
@@ -1860,7 +1920,7 @@ function createIntegrationSandboxDriverFactory(
               sandboxServiceAccountName: agentSandboxServiceAccount(context),
               exact: context.requirements.workloadIdentity !== undefined,
             });
-            // The production Codex proof hands the real Driver exactly what Compute rendered;
+            // Both production Harness proofs hand the real Driver exactly what Compute rendered;
             // unsupported shapes fail closed before OpenShell creates provider resources.
             return await delegate(
               context.requirements,
@@ -1918,6 +1978,36 @@ function createIntegrationSandboxDriverFactory(
           throw error;
         }
       },
+      // Compute admits the workspace-node connection only from the revision's
+      // supervisor Pod, which the real Driver labels from the gateway's Sandbox record.
+      async workspaceNodePeerLabels(context) {
+        const endpoint = existingEndpointForNamespace(context);
+        return await delegate(undefined, context.namespace.name, endpoint).workspaceNodePeerLabels(
+          context,
+        );
+      },
+      // Compute activates only a Harness that completes the authenticated handshake.
+      async harnessStatus(context) {
+        const endpoint = await endpointForNamespace(context, {
+          sandboxServiceAccountName: agentSandboxServiceAccount(context),
+          exact: context.requirements.workloadIdentity !== undefined,
+        });
+        return await delegate(
+          context.requirements,
+          context.namespace.name,
+          endpoint,
+          context,
+        ).harnessStatus(context);
+      },
+      // Compute drops a native worker's exposure once its node has enrolled (finding 1657).
+      async withdrawHarnessExposure(context) {
+        const endpoint = await endpointForNamespace(context, {
+          sandboxServiceAccountName: agentSandboxServiceAccount(context),
+        });
+        await delegate(undefined, context.namespace.name, endpoint).withdrawHarnessExposure(
+          context,
+        );
+      },
       // Compute asks for the OpenShell-exposed Codex endpoint and points the Agent Gateway at it.
       // The real Driver supports this only for dedicated Codex, so the bridge proof omits it.
       ...(enableCompatibilityBridges
@@ -1934,42 +2024,6 @@ function createIntegrationSandboxDriverFactory(
                 endpoint,
                 context,
               ).harnessEndpoint(context);
-            },
-            // Compute activates only a Harness that completes the authenticated handshake.
-            async harnessStatus(context) {
-              const endpoint = await endpointForNamespace(context, {
-                sandboxServiceAccountName: agentSandboxServiceAccount(context),
-                exact: context.requirements.workloadIdentity !== undefined,
-              });
-              return await delegate(
-                context.requirements,
-                context.namespace.name,
-                endpoint,
-                context,
-              ).harnessStatus(context);
-            },
-            // Compute drops a native worker's exposure once its node has enrolled (finding 1657).
-            async withdrawHarnessExposure(context) {
-              const endpoint = await endpointForNamespace(context, {
-                sandboxServiceAccountName: agentSandboxServiceAccount(context),
-                exact: context.requirements.workloadIdentity !== undefined,
-              });
-              await delegate(
-                context.requirements,
-                context.namespace.name,
-                endpoint,
-                context,
-              ).withdrawHarnessExposure(context);
-            },
-            // Compute admits the workspace-node connection only from the revision's
-            // supervisor Pod, which the real Driver labels from the gateway's Sandbox record.
-            async workspaceNodePeerLabels(context) {
-              const endpoint = existingEndpointForNamespace(context);
-              return await delegate(
-                undefined,
-                context.namespace.name,
-                endpoint,
-              ).workspaceNodePeerLabels(context);
             },
           }),
       async cleanup(context) {
@@ -2070,6 +2124,14 @@ function createIntegrationSandboxDriverFactory(
     const forward = await startOpenShellGatewayPortForward(namespaceName);
     gatewayState.set(namespaceName, { ...prior, endpoint: forward.url, forward });
   };
+  // Ends the Namespace gateway's port-forward but keeps its endpoint, so every client then finds
+  // nothing listening there, as through the Service of a gateway with no Pods, until
+  // restartGatewayForward replaces it.
+  createDriver.closeGatewayForward = async (namespaceName) => {
+    const state = gatewayState.get(namespaceName);
+    assert.ok(state, `OpenShell gateway for namespace ${namespaceName} was not initialized.`);
+    await state.forward.stop();
+  };
   createDriver.disposeGatewayForwards = disposeGatewayForwards;
   createDriver.provisioningFailures = provisioningFailures;
   createDriver.harnessServiceUrls = harnessServiceUrls;
@@ -2141,7 +2203,14 @@ function withUnauthorizedTokenSourceDiagnostic(computeDriver, tokenSources) {
 
 async function prepareProductionInstallation(
   context,
-  { harnessId = "codex", controllerPort } = {},
+  {
+    harnessId = "codex",
+    controllerPort,
+    controlUiOrigin,
+    gatewayManagedMode,
+    withOAuthToolSources = true,
+    enableCompatibilityBridges = harnessId === "openclaw",
+  } = {},
 ) {
   const kubeconfig = await validateOpenShellPrerequisites();
   const policyFixtureUrl = process.env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL;
@@ -2241,8 +2310,9 @@ async function prepareProductionInstallation(
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     await apiServerPodProxySourceCidrs();
   if (harnessId === "openclaw") {
-    // scripts/k3d builds this runtime from an OpenClaw source with native worker support.
-    configuration.runtime = { nativeWorkerSupport: "custom-image" };
+    if (enableCompatibilityBridges) {
+      configuration.runtime = { nativeWorkerSupport: "custom-image" };
+    }
     configuration.drivers.compute.configuration.runtime.nativeOpenClawSessionCapacity = 2;
     // The node and two retained session workers share one container; the single-Harness
     // 2 GiB budget OOM-kills the second turn. Keep Compute and Sandbox budgets aligned.
@@ -2251,25 +2321,14 @@ async function prepareProductionInstallation(
       configuration.drivers.compute.configuration.resources.agent.limits.memory;
     configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "16Gi";
     configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
-    // Automatic enrollment egress belongs to the Driver's Codex runtime provider. The native
-    // verification bridge must admit only its Node executable and exact Gateway endpoint.
-    configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
-      name: "workspace-node-enrollment",
-      binaries: [{ path: "/usr/local/bin/node" }],
-      endpoints: [
-        {
-          host: workspaceGateway.routing.hostname,
-          ports: [workspaceGateway.routing.endpointPort],
-          tls: "skip",
-          enforcement: "enforce",
-        },
-      ],
-    });
+  }
+  if (!enableCompatibilityBridges) {
+    configuration.drivers.compute.configuration.servicePrincipalCredentials = { mode: "disabled" };
   }
   // A disposable Keycloak issues OAuth2 tokens over HTTPS signed by a private CA. The Namespace
   // gateway is configured to trust that CA so it can mint and refresh tokens itself.
   const keycloak =
-    harnessId === "codex"
+    harnessId === "codex" && withOAuthToolSources
       ? await startKeycloak({
           context,
           kubectl,
@@ -2319,11 +2378,13 @@ async function prepareProductionInstallation(
   configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
     workspaceGateway.nativeOptions.gatewayAuth.trustedProxies;
   delete configuration.drivers.compute.configuration.network.gatewayClients;
-  configuration.drivers.sandbox.configuration.policy.filesystem.readWrite.push(
-    "/home/node/.openclaw-node",
-  );
-  // For Codex, the Sandbox Driver adds the workspace node's Gateway egress rule itself
-  // (`workspace-node-enrollment`); a second rule for the same host and port is ambiguous.
+  if (harnessId === "codex" || enableCompatibilityBridges) {
+    configuration.drivers.sandbox.configuration.policy.filesystem.readWrite.push(
+      "/home/node/.openclaw-node",
+    );
+  }
+  // The Sandbox Driver adds each Harness's workspace-node enrollment rule;
+  // a second rule for the same host and port is ambiguous.
   configuration.drivers.secret.configuration.authentication = controller.authentication;
   const gatewayApiKeyPath = join(directory, "workspace-gateway-api-key");
   await writeFile(gatewayApiKeyPath, workspaceGateway.apiKey, { mode: 0o600 });
@@ -2343,7 +2404,7 @@ async function prepareProductionInstallation(
     OpenShellGateway,
     operatorKubernetes,
     {
-      enableCompatibilityBridges: harnessId === "openclaw",
+      enableCompatibilityBridges,
       ...(keycloak === undefined ? {} : { gatewayTrustPem: keycloak.caPem }),
     },
   );
@@ -2621,23 +2682,28 @@ async function prepareProductionInstallation(
       ? undefined
       : await registerRefreshSources(request, namespaceId, tokenEcho, keycloak, placement);
 
+  const nativeConfiguration =
+    harnessId === "openclaw"
+      ? nativeOpenClawConfiguration(
+          workspaceGateway.nativeOptions.gatewayAuth,
+          controllerPort === undefined
+            ? []
+            : [`http://127.0.0.1:${demoControlUiPort}`, `http://localhost:${demoControlUiPort}`],
+        )
+      : nativeCodexConfiguration(workspaceGateway.nativeOptions.gatewayAuth);
+  if (controlUiOrigin !== undefined) {
+    nativeConfiguration.gateway.controlUi = { enabled: true, allowedOrigins: [controlUiOrigin] };
+  }
   const agentConfiguration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
     kind: "agent",
-    values:
-      harnessId === "openclaw"
-        ? nativeOpenClawConfiguration(
-            workspaceGateway.nativeOptions.gatewayAuth,
-            controllerPort === undefined
-              ? []
-              : [`http://127.0.0.1:${demoControlUiPort}`, `http://localhost:${demoControlUiPort}`],
-          )
-        : nativeCodexConfiguration(workspaceGateway.nativeOptions.gatewayAuth),
+    values: nativeConfiguration,
   });
   assert.equal(agentConfiguration.status, 201, JSON.stringify(agentConfiguration.error));
   const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
     name: `openshell-${randomUUID()}`,
     configurationId: agentConfiguration.data.id,
     executionMode: "dedicated",
+    ...(gatewayManagedMode === undefined ? {} : { gatewayManagedMode }),
     harnessAuth: { method: "credential_source", sourceId: modelSource.data.id },
     // Console creation includes initial files. Keep this normal setup path in the
     // real Sandbox proof so credential-only fixtures cannot hide delivery gaps.
@@ -2870,14 +2936,87 @@ async function prepareProductionInstallation(
     );
     assertNoProjectedAgentIdentity(harnessPod);
     assertApprovedOpenShellPrivileges(harnessPod);
-  } else {
+  } else if (enableCompatibilityBridges) {
     assertBridgedNativeStateMount(harnessPod);
     await assertBridgedServicePrincipalToken(
       placement,
       harnessPod,
       configuration.drivers.compute.configuration.servicePrincipalCredentials,
     );
-    assertApprovedOpenShellPrivileges(harnessPod, { compatibilityBridge: true });
+    assertApprovedOpenShellPrivileges(harnessPod);
+  } else {
+    assertNoProjectedAgentIdentity(harnessPod);
+    assertApprovedOpenShellPrivileges(harnessPod);
+    const mounts = harnessContainer.volumeMounts ?? [];
+    const environment = harnessContainer.env ?? [];
+    const nodeState = environment.find(({ name }) => name === "OPENCLAW_NODE_STATE_DIR")?.value;
+    assert.match(nodeState ?? "", /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}\/state$/u);
+    const stateMount = mounts.find(({ mountPath }) => `${mountPath}/state` === nodeState);
+    assert.equal(
+      stateMount?.subPath,
+      `workspace-node-${hash(agent.data.id, 12)}-${hash("harness:openclaw", 12)}`,
+    );
+    assert.notEqual(stateMount.readOnly, true);
+    for (const [mountPath, subPath] of [
+      ["/sandbox/enterprise", "workspace"],
+      ["/sandbox/.openclaw-runtime", `openshell-runtime-${hash(deployed.data.id, 16)}`],
+    ]) {
+      const mount = mounts.find((entry) => entry.mountPath === mountPath);
+      assert.equal(mount?.subPath, subPath);
+      assert.notEqual(mount.readOnly, true);
+    }
+    for (const name of ["APP_SERVER_TOKEN", "OPENCLAW_NODE_SETUP_CODE"]) {
+      assert.equal(
+        environment.some((entry) => entry.name === name),
+        false,
+        `native enrollment must use the provider's setup-envelope file without ${name}`,
+      );
+    }
+    // Enrollment still uses the provider's setup file. This separate verifier
+    // authenticates held startup failures without delivering the transport token.
+    assert.deepEqual(
+      environment.filter(({ name }) => name === "APP_TOKEN_SHA"),
+      [
+        {
+          name: "APP_TOKEN_SHA",
+          value: createHash("sha256").update(transport.appServerToken).digest("hex"),
+        },
+      ],
+      "the native failure endpoint must receive exactly its literal transport verifier",
+    );
+    await kubectl(
+      "exec",
+      harnessPod.metadata.name,
+      "-n",
+      placement,
+      "-c",
+      "agent",
+      "--",
+      "test",
+      "-w",
+      nodeState,
+    );
+    const relayPolicy = await resource(
+      "networkpolicy",
+      `allow-gateway-workspace-node-${hash(agent.data.id, 12)}`,
+      gatewayPlacement,
+    );
+    const sandboxId = harnessPod.metadata.labels["openshell.ai/boundary-pair"];
+    assert.ok(sandboxId);
+    assert.deepEqual(
+      relayPolicy.spec.ingress.flatMap(({ from }) => from),
+      [
+        {
+          namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": placement } },
+          podSelector: {
+            matchLabels: {
+              "openshell.ai/sandbox-id": sandboxId,
+              "openshell.ai/boundary-role": "supervisor",
+            },
+          },
+        },
+      ],
+    );
   }
   process.stderr.write(
     "OpenShell integration: approved mounts and privileges verified; checking secret exposure.\n",
@@ -2929,6 +3068,10 @@ async function prepareProductionInstallation(
     modelSecretId: modelSecret.data.id,
     sourceRoleId: sourceRole.data.id,
     controllerUrl,
+    // This is the existing authenticated Envoy route, including the host TLS relay.
+    gatewayAdminUrl: `wss://${workspaceGatewayHostname(workspaceGateway)}:${workspaceGateway.routing.endpointPort}/namespaces/${namespaceId}/agents/${agent.data.id}`,
+    gatewayApiKeySecretName: workspaceGateway.apiKeySecretName,
+    platformNamespace,
     credentials: adminCredentials,
     ...(toolSources === undefined ? {} : { toolSources, tokenEcho }),
     ...(untrustedTls === undefined ? {} : { untrustedTls, untrustedTlsSource }),
@@ -2937,10 +3080,12 @@ async function prepareProductionInstallation(
     setPolicyWriteBarrier: createSandboxDriver.setPolicyWriteBarrier,
     gatewayClient: (auth) => createSandboxDriver.gatewayClientForNamespace(placement, auth),
     restartGatewayForward: () => createSandboxDriver.restartGatewayForward(placement),
+    closeGatewayForward: () => createSandboxDriver.closeGatewayForward(placement),
     observerPool,
     policyFixturePool,
     pauseWorker,
     resumeWorker: startWorker,
+    workerEvents: events,
     provisioningFailure: (revisionId) => createSandboxDriver.provisioningFailures.get(revisionId),
     diagnoseAgentRevision: (agentId, revisionId) =>
       writeWorkerCompletionDiagnostics({
@@ -3550,16 +3695,7 @@ async function assertRefreshCredentialSources(topology) {
     // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
     // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
     // check below treats it as a missing token.
-    const echoed = (source) => {
-      const echo = commands.find(({ command }) => String(command).includes(source.url));
-      assert.ok(echo, `the Harness must call ${source.url}`);
-      const output = String(echo.aggregatedOutput ?? "").trim();
-      try {
-        return JSON.parse(output);
-      } catch {
-        return { unparsed: redactLogLine(output, secrets, 1_000) };
-      }
-    };
+    const echoed = (source) => tokenEchoReply(commands, source.url, secrets);
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
   };
   // The Sandbox supervisor picks up a re-minted token on its provider poll, every 10 seconds by
@@ -3579,11 +3715,13 @@ async function assertRefreshCredentialSources(topology) {
     assert.equal(
       observed?.placeholder,
       false,
-      observed?.unparsed === undefined
-        ? `${source.type} must arrive substituted`
-        : `${source.type} must arrive substituted; the echo call printed ${JSON.stringify(observed.unparsed)}`,
+      `${source.type} must arrive substituted: ${observed?.shown}`,
     );
-    assert.equal(observed?.jwt?.valid, true, `${source.type} must carry a valid Keycloak token`);
+    assert.equal(
+      observed?.jwt?.valid,
+      true,
+      `${source.type} must carry a valid Keycloak token: ${observed?.shown}`,
+    );
     assert.equal(observed.jwt.iss, keycloak.issuer);
     assert.equal(observed.jwt.azp, source.clientId);
   };
@@ -3707,12 +3845,7 @@ async function assertRefreshCredentialSources(topology) {
 
 /** Reports why another Agent's revision did not activate, before the fixture removes it. */
 async function diagnoseAdditionalAgent(topology, agentId, revisionId, deploymentPath) {
-  const secrets = failureSecrets([
-    process.env,
-    Object.fromEntries(
-      (topology.toolSources ?? []).map(({ token }, index) => [`TOOL_TOKEN_${index}`, token]),
-    ),
-  ]);
+  const secrets = turnFailureSecrets(topology);
   const write = (label, value) =>
     process.stderr.write(
       `OpenShell second Agent ${label}: ${redactLogLine(JSON.stringify(value), secrets, 4000)}\n`,
@@ -3831,6 +3964,7 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
 async function assertNonModelCredentialSource(topology) {
   const { request, namespaceId, toolSources, observerPool } = topology;
   const [toolA, toolB] = toolSources;
+  const secrets = turnFailureSecrets(topology);
   const agentId = topology.agent.id;
   const current = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(current.status, 200, JSON.stringify(current.error));
@@ -3867,21 +4001,20 @@ async function assertNonModelCredentialSource(topology) {
       .filter((item) => item?.type === "commandExecution");
     const environment = commands.find(({ command }) => String(command).includes("cut -c1-9"));
     assert.ok(environment, "the Harness must read its tool placeholder");
-    const digest = (tool) => {
-      const echo = commands.find(({ command }) => String(command).includes(tool.url));
-      assert.ok(echo, `the Harness must call ${tool.url}`);
-      try {
-        return JSON.parse(String(echo.aggregatedOutput ?? "").trim()).digest;
-      } catch {
-        return undefined;
-      }
-    };
+    // Each tool's echo reply carries `shown`: the command, its exit code and what it printed,
+    // redacted, so a failed check names its cause (finding 2281).
     return {
       placeholder: String(environment.aggregatedOutput ?? "").trim(),
-      a: digest(toolA),
-      b: digest(toolB),
+      a: tokenEchoReply(commands, toolA.url, secrets),
+      b: tokenEchoReply(commands, toolB.url, secrets),
     };
   };
+  // Digests are compared, never shown; `shown` says what the command printed instead. A checked
+  // call whose output is not JSON fails in tokenEchoDigest.
+  const assertDelivered = (observed, tool, message) =>
+    assert.equal(tokenEchoDigest(observed) === tool.digest, true, `${message}: ${observed.shown}`);
+  const assertWithheld = (observed, tool, message) =>
+    assert.equal(tokenEchoDigest(observed) === tool.digest, false, `${message}: ${observed.shown}`);
   const withdrawalPath = (tool) =>
     `/namespaces/${namespaceId}/agents/${agentId}/credential-sources/${tool.id}`;
   const readWithdrawal = async (tool) => {
@@ -3894,8 +4027,8 @@ async function assertNonModelCredentialSource(topology) {
   const before = await call();
   // A real token starts with oce-tool-; only a placeholder starts with the OpenShell prefix.
   assert.equal(before.placeholder, "openshell");
-  assert.equal(before.a, toolA.digest, "OpenShell must substitute tool A's token");
-  assert.equal(before.b, toolB.digest, "OpenShell must substitute tool B's token");
+  assertDelivered(before.a, toolA, "OpenShell must substitute tool A's token");
+  assertDelivered(before.b, toolB, "OpenShell must substitute tool B's token");
 
   // A second Agent authenticates with its own model source and attaches tool A only. OpenShell
   // gives it tool A's token, and tool B's endpoint receives no token from it, because only
@@ -3932,8 +4065,8 @@ async function assertNonModelCredentialSource(topology) {
   );
   const secondBefore = await call(second.agent.id);
   assert.equal(secondBefore.placeholder, "openshell");
-  assert.equal(secondBefore.a, toolA.digest, "the second Agent must receive tool A's token");
-  assert.notEqual(secondBefore.b, toolB.digest, "an unattached source must not be delivered");
+  assertDelivered(secondBefore.a, toolA, "the second Agent must receive tool A's token");
+  assertWithheld(secondBefore.b, toolB, "an unattached source must not be delivered");
 
   // Two requesters withdraw different sources from the running revision, sharing one worker
   // claim. The second, operator B, held the actor's grants when the withdrawal was recorded
@@ -3994,16 +4127,16 @@ async function assertNonModelCredentialSource(topology) {
   // In the same running Harness, the gateway no longer delivers tool A's token, still
   // delivers tool B's, and model turns succeed.
   const after = await call();
-  assert.notEqual(after.a, toolA.digest, "a withdrawn token must not be delivered");
-  assert.equal(after.b, toolB.digest, "a denied withdrawal must not detach its source");
+  assertWithheld(after.a, toolA, "a withdrawn token must not be delivered");
+  assertDelivered(after.b, toolB, "a denied withdrawal must not detach its source");
   const unchanged = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(unchanged.data.activeRevisionId, revision.id, "withdrawal must not redeploy");
   // The withdrawal detaches tool A from the first Agent's Sandbox only. The provider and the
   // second Agent's attachment stay, so its running Harness still receives the token.
   const secondAfter = await call(second.agent.id);
-  assert.equal(
+  assertDelivered(
     secondAfter.a,
-    toolA.digest,
+    toolA,
     "another Agent's withdrawal must not detach the source from this Agent",
   );
   const secondWithdrawal = await request(
@@ -4013,8 +4146,8 @@ async function assertNonModelCredentialSource(topology) {
   assert.equal(secondWithdrawal.status, 404, JSON.stringify(secondWithdrawal.data));
   // Whether each echo endpoint received the source's real token; digests compared, never shown.
   const delivered = (observedCall) => ({
-    toolA: observedCall.a === toolA.digest,
-    toolB: observedCall.b === toolB.digest,
+    toolA: observedCall.a.digest === toolA.digest,
+    toolB: observedCall.b.digest === toolB.digest,
   });
   process.stderr.write(
     `OpenShell integration: tool token delivery ${JSON.stringify({
@@ -4595,6 +4728,9 @@ function turnFailureSecrets(topology, gatewayPassword) {
       GATEWAY_PASSWORD: gatewayPassword,
       APP_SERVER_TOKEN: topology.appServerToken,
     },
+    Object.fromEntries(
+      (topology.toolSources ?? []).map(({ token }, index) => [`TOOL_TOKEN_${index}`, token]),
+    ),
   ]);
 }
 
@@ -6663,6 +6799,27 @@ async function assertOpenShellGatewayOutage(topology) {
   let outageSecretId;
   let redeployed;
   let failure;
+  const refreshSources = [
+    ...(topology.refreshSources?.bound ?? []),
+    ...(topology.refreshSources === undefined ? [] : [topology.refreshSources.unbound]),
+  ];
+  const refreshPath = (refreshSource) =>
+    `/namespaces/${namespaceId}/credential-sources/${refreshSource.id}`;
+  // When each OAuth2 source is next due, by the gateway's own clock, before it stops. Compared
+  // with the restarted container's start, it shows whether the first startup sweep had work.
+  const dueBeforeOutage = new Map();
+  for (const refreshSource of refreshSources) {
+    const read = await request("GET", refreshPath(refreshSource));
+    dueBeforeOutage.set(refreshSource.id, read.data?.status?.refresh?.nextRefreshAt);
+  }
+  let gatewayRestartedAt;
+  // The controller reaches this gateway through a kubectl port-forward. Once the Pod is gone,
+  // kubectl still accepts one connection, closes it before the HTTP/2 handshake and only then
+  // exits, so for about a second gRPC reports "Failed to connect", which the client's
+  // unanswered-request allowlist (finding 2042) does not count as an outage, so a pass then spends
+  // an attempt (finding 2104). A Service with no ready endpoints refuses connections; closing the
+  // forward first makes this endpoint do the same.
+  await topology.closeGatewayForward();
   await scale(0);
   try {
     await waitFor(
@@ -6755,6 +6912,10 @@ async function assertOpenShellGatewayOutage(topology) {
       activeRevisionUnchanged: during.data?.activeRevisionId === activeRevisionId,
       gatewayStopped: (await gatewayPods()).length === 0,
     };
+    if (work.attempt_count !== 0) {
+      // Names the failure class of the pass that spent the attempt (finding 2104).
+      await topology.diagnoseRevision(redeployed.data.id);
+    }
   } catch (error) {
     failure = error;
   }
@@ -6762,6 +6923,8 @@ async function assertOpenShellGatewayOutage(topology) {
   try {
     await scale(1);
     await waitForOpenShellGateway(placement);
+    gatewayRestartedAt = (await gatewayPods())[0]?.status?.containerStatuses?.[0]?.state?.running
+      ?.startedAt;
     await topology.restartGatewayForward();
   } catch (error) {
     failure ??= error;
@@ -6826,42 +6989,63 @@ async function assertOpenShellGatewayOutage(topology) {
     assert.equal(JSON.stringify(turn).includes(modelCredential), false);
     observed.recovery.turn = new RegExp(nonce).test(turn.assistant);
   }
-  // The gateway mints OAuth2 tokens itself. Its first refresh sweep after a restart runs before
-  // it has loaded its operator namespace allowlist, so a source due then fails with
-  // refresh_configuration_invalid, which OpenShell retries only after an hour. A forced mint,
-  // the operator's documented recovery, must restore the token at once.
-  // TODO(NVIDIA/OpenShell#4526): once OpenShell retries that failure promptly, require
-  // each source to recover without the rotation.
-  const refreshSources = [
-    ...(topology.refreshSources?.bound ?? []),
-    ...(topology.refreshSources === undefined ? [] : [topology.refreshSources.unbound]),
-  ];
-  observed.recovery.refresh = [];
-  for (const refreshSource of refreshSources) {
-    const refreshPath = `/namespaces/${namespaceId}/credential-sources/${refreshSource.id}`;
-    const settled = await waitFor(
-      `${refreshSource.type} refresh state after the gateway outage`,
-      async () => {
-        const read = await request("GET", refreshPath);
-        const refresh = read.data?.status?.refresh;
-        return refresh !== undefined && refresh.state !== "pending" ? refresh : undefined;
-      },
-      120_000,
-    );
-    let rotated = null;
-    if (settled.state !== "ready") {
-      const rotation = await request("POST", `${refreshPath}/rotate`);
-      rotated = {
-        httpStatus: rotation.status,
-        state: rotation.data?.status?.refresh?.state ?? null,
+  // The gateway mints OAuth2 tokens itself, and its first refresh sweep runs at startup. Since
+  // NVIDIA/OpenShell#4527 that sweep waits for the operator namespace listing and reports a
+  // missing listing as retryable, so each source must mint again on its own, without a
+  // rotation. A `refresh_configuration_invalid` failure means the startup race of #4526 is back.
+  // OpenShell persists refresh status, so a `ready` read alone can describe a mint from before
+  // the restart. The first post-restart `lastRefreshAt` is the baseline; only a `ready` read
+  // with a strictly later one, both from the gateway's clock, proves a fresh mint. These
+  // sources re-mint about every minute (Keycloak's 360 s tokens, OCC's 300 s refresh_before),
+  // and a retryable failure is retried after 60 seconds, so all three share one deadline.
+  observed.recovery.refresh = await Promise.all(
+    refreshSources.map(async (refreshSource) => {
+      const states = [];
+      const dueBefore = dueBeforeOutage.get(refreshSource.id);
+      let baseline;
+      let fresh = false;
+      try {
+        await waitFor(
+          `${refreshSource.type} to mint a fresh token after the gateway restart`,
+          async () => {
+            const read = await request("GET", refreshPath(refreshSource));
+            const refresh = read.data?.status?.refresh;
+            if (refresh === undefined || refresh.state === "pending") {
+              return undefined;
+            }
+            const state = `${refresh.state}:${refresh.failureCode ?? "-"}`;
+            if (states.at(-1) !== state) {
+              states.push(state);
+            }
+            if (refresh.failureCode === "refresh_configuration_invalid") {
+              return true;
+            }
+            if (refresh.lastRefreshAt === undefined) {
+              return undefined;
+            }
+            baseline ??= refresh.lastRefreshAt;
+            fresh =
+              refresh.state === "ready" &&
+              refresh.failureCode === undefined &&
+              Date.parse(refresh.lastRefreshAt) > Date.parse(baseline);
+            return fresh ? true : undefined;
+          },
+          300_000,
+        );
+      } catch (error) {
+        failure ??= error;
+      }
+      return {
+        type: refreshSource.type,
+        states,
+        fresh,
+        dueAtRestart:
+          dueBefore === undefined || gatewayRestartedAt === undefined
+            ? null
+            : Date.parse(dueBefore) <= Date.parse(gatewayRestartedAt),
       };
-    }
-    observed.recovery.refresh.push({
-      type: refreshSource.type,
-      afterRestart: `${settled.state}:${settled.failureCode ?? "-"}`,
-      rotated,
-    });
-  }
+    }),
+  );
   // A registration whose gateway call failed may stay listed as `deleting`; deleting it again
   // removes it once the gateway answers and the creation fence has passed.
   const leftover = listed.data?.find(({ name }) => name === registrationName);
@@ -6887,7 +7071,8 @@ async function assertOpenShellGatewayOutage(topology) {
   assert.deepEqual(observed.sourceRead, { httpStatus: 200, state: "failed" });
   assert.deepEqual(observed.registration, { httpStatus: 503, code: "DEPENDENCY_UNAVAILABLE" });
   assert.equal(observed.redeployDuringOutage.gatewayStopped, true);
-  assert.equal(observed.redeployDuringOutage.status, "queued");
+  // A started deploy reads as running between passes (finding 2456).
+  assert.equal(observed.redeployDuringOutage.status, "running");
   // The outage spends no attempt: the pass waits on the gateway (finding 2040).
   assert.equal(
     observed.redeployDuringOutage.work.last_attempt_code,
@@ -6904,14 +7089,9 @@ async function assertOpenShellGatewayOutage(topology) {
   );
   assert.equal(observed.recovery.sourceState, "ready");
   assert.equal(observed.recovery.turn, true, "the new revision must serve a model turn.");
-  for (const { type, afterRestart, rotated } of observed.recovery.refresh) {
-    assert.ok(
-      ["ready:-", "failed:refresh_configuration_invalid"].includes(afterRestart),
-      `${type} reported an unexpected refresh state after the gateway restart: ${afterRestart}`,
-    );
-    if (rotated !== null) {
-      assert.deepEqual(rotated, { httpStatus: 200, state: "ready" }, `${type} rotation`);
-    }
+  for (const { type, states, fresh } of observed.recovery.refresh) {
+    assert.equal(states.at(-1), "ready:-", `${type} refresh after the gateway restart`);
+    assert.equal(fresh, true, `${type} must mint a token after the gateway restart`);
   }
   // Once the outage registration is gone, its Secret is unbound and can be deleted.
   if (outageSecretId !== undefined) {
@@ -7156,6 +7336,913 @@ if (demoStatePath !== undefined) {
   assert.equal(selectedHarness, "openclaw", "the OpenShell browser demo requires openclaw.");
 }
 
+// Exercise the regular dedicated Agent path with live inference and a real
+// administrator-origin chat. Direct tools.invoke probes are recorded separately:
+// an unavailable tool in a model response is not an invocation-denial proof.
+test(
+  "OpenShell dedicated Agents enforce Gateway tool policy during normal work",
+  { ...requiresOpenShellK3d, timeout: 2_400_000 },
+  async (context) => {
+    const controlUiOrigin = "http://127.0.0.1";
+    const topology = await prepareProductionInstallation(context, {
+      harnessId: selectedHarness,
+      controlUiOrigin,
+      // An administrator must be able to run the command that the model is denied.
+      gatewayManagedMode: false,
+      withOAuthToolSources: false,
+      enableCompatibilityBridges: false,
+    });
+    const apiSecret = await resource(
+      "secret",
+      topology.gatewayApiKeySecretName,
+      topology.platformNamespace,
+    );
+    const apiKey = Buffer.from(apiSecret.data.occ, "base64").toString();
+    const { GatewayClient } = await import(controllerRequire.resolve("@openclaw/gateway-client"));
+    const connectGateway = async () => {
+      const connected = Promise.withResolvers();
+      // Envoy authenticates the fixture API key and supplies the configured identity.
+      // The Gateway derives controlUiAdmin after authentication; no internal flags
+      // or device-auth exceptions are supplied by this test.
+      const connectedClient = new GatewayClient({
+        url: topology.gatewayAdminUrl,
+        origin: controlUiOrigin,
+        edgeAuthHeaders: { "x-api-key": apiKey },
+        clientName: "openclaw-control-ui",
+        mode: "ui",
+        role: "operator",
+        scopes: [],
+        deviceIdentity: null,
+        onHelloOk: connected.resolve,
+        onConnectError: connected.reject,
+      });
+      context.after(() => connectedClient.stopAndWait());
+      const helloTimeout = setTimeout(
+        () => connected.reject(new Error("Gateway admin connection timed out")),
+        15_000,
+      );
+      connectedClient.start();
+      let hello;
+      try {
+        hello = await connected.promise;
+      } finally {
+        clearTimeout(helloTimeout);
+      }
+      assert.equal(hello.auth?.role, "operator");
+      assert.ok(hello.auth.scopes.includes("operator.admin"));
+      return connectedClient;
+    };
+    let client = await connectGateway();
+    assert.equal(topology.revision.gatewayManagedMode, false);
+    const sessionKey = `agent:main:gateway-policy-${randomUUID()}`;
+    const execPod = async (pod, namespace, args) => ({
+      label: `${namespace}/${pod.metadata.name}`,
+      stdout: await kubectl(
+        "exec",
+        pod.metadata.name,
+        "-n",
+        namespace,
+        "-c",
+        pod === topology.gatewayPod ? "gateway" : "agent",
+        "--",
+        ...args,
+      ),
+    });
+    const native = createNativePluginAssertions({
+      gatewayUrl: async () => {
+        throw new Error("this proof uses authenticated chat.send");
+      },
+      execGateway: (_agent, args) => execPod(topology.gatewayPod, topology.gatewayPlacement, args),
+      execCodex: (_agent, args) => execPod(topology.harnessPod, topology.placement, args),
+      waitFor,
+      proofMode: selectedHarness,
+    });
+    const waitForTurn = async (targetSessionKey, marker, timeoutMs = 600_000) => {
+      return await waitFor(
+        `Gateway policy turn ${marker}`,
+        async () => {
+          const history = await client.request("chat.history", {
+            sessionKey: targetSessionKey,
+            limit: 30,
+          });
+          return history.messages?.some((message) => {
+            if (message.role !== "assistant") {
+              return false;
+            }
+            assert.notEqual(message.stopReason, "error", "the live model turn must complete");
+            const parts = Array.isArray(message.content) ? message.content : [];
+            const text =
+              typeof message.content === "string"
+                ? message.content
+                : parts
+                    .filter((part) => part.type === "text")
+                    .map((part) => part.text)
+                    .join("\n");
+            return (
+              text.includes(marker) &&
+              message.stopReason !== "toolUse" &&
+              !parts.some((part) => part.type === "toolCall")
+            );
+          })
+            ? history
+            : undefined;
+        },
+        timeoutMs,
+      );
+    };
+    const waitForRunCompletion = async (runId, deadline, protectedUpdate) => {
+      assert.ok(typeof runId === "string" && runId.length > 0);
+      // A transcript terminal can precede accounting. The RPC-owned wait closes
+      // only after dispatch publishes its completed result, including accounting.
+      return waitFor(
+        `Gateway policy run ${runId}`,
+        async () => {
+          const remaining = Math.max(0, deadline - Date.now());
+          const outcome = await client.request(
+            "agent.wait",
+            { runId, timeoutMs: Math.min(3_000, remaining) },
+            { timeoutMs: Math.max(1, remaining) },
+          );
+          assert.equal(outcome.runId, runId);
+          if (
+            ["pending", "timeout"].includes(outcome.status) &&
+            outcome.endedAt === undefined &&
+            outcome.stopReason === undefined
+          ) {
+            return undefined;
+          }
+          await assertGatewayPolicyRunSucceeded(client, outcome, protectedUpdate);
+          return outcome;
+        },
+        Math.max(0, deadline - Date.now()),
+      );
+    };
+    const turn = async (prompt, marker, protectedUpdate) => {
+      const deadline = Date.now() + 600_000;
+      const sent = await client.request("chat.send", {
+        sessionKey,
+        idempotencyKey: randomUUID(),
+        message: `${prompt} End your reply with exactly ${marker}.`,
+      });
+      await waitForRunCompletion(sent.runId, deadline, protectedUpdate);
+      return waitForTurn(sessionKey, marker, Math.max(0, deadline - Date.now()));
+    };
+    const exists = async (pod, namespace, path) =>
+      JSON.parse(
+        (
+          await execPod(pod, namespace, [
+            "node",
+            "-e",
+            "process.stdout.write(JSON.stringify(require('node:fs').existsSync(process.argv[1])))",
+            path,
+          ])
+        ).stdout,
+      );
+    // The native gpt-6-astra deployment uses Code Mode. Bind its complete program
+    // so a returned value proves this real call rather than model-written JSON.
+    const codeModeCallSpec = (code) => {
+      const codeModeCall = { title: "Gateway policy qualification", code, awaitResults: true };
+      return {
+        prompt: `Call exec exactly once with ${JSON.stringify(codeModeCall)}.`,
+        evidence: { toolName: "exec", codeModeCall },
+      };
+    };
+    const toolCallSpec = (name, args) =>
+      selectedHarness === "openclaw"
+        ? codeModeCallSpec(`return await ${name}(${JSON.stringify(args)});`)
+        : {
+            prompt: `Call ${name} exactly once with ${JSON.stringify(args)}.`,
+            evidence: { toolName: name, expectedArguments: args },
+          };
+    const catalogExpression = ({ present, absent }) =>
+      `catalog.all().filter(tool => ${JSON.stringify([...present, ...absent])}.includes(tool.toolName)).map(tool => ({name: tool.toolName, source: tool.source, callableName: tool.callableName}))`;
+    const proof = {
+      scenarioComplete: false,
+      harness: selectedHarness,
+      revisionId: topology.revision.id,
+      gateway: {
+        uid: topology.gatewayPod.metadata.uid,
+        containers: topology.gatewayPod.status.containerStatuses.map(({ name, imageID }) => ({
+          name,
+          imageID,
+        })),
+      },
+      harnessPod: {
+        uid: topology.harnessPod.metadata.uid,
+        containers: topology.harnessPod.status.containerStatuses.map(({ name, imageID }) => ({
+          name,
+          imageID,
+        })),
+      },
+      caller: "authenticated Control UI operator.admin through Envoy",
+      modelTurns: [],
+      modelProbeOmissions:
+        selectedHarness === "codex"
+          ? [
+              {
+                kind: "command-conversion-denied",
+                reason:
+                  "Source/schema coverage only: Codex's advertised automations schema omits command payloads, and the Gateway adapter validates callback arguments against that schema. This case does not test an invalid model invocation.",
+              },
+            ]
+          : [],
+      directInvocationProbes: [],
+    };
+    // Retain completed-phase evidence even if a later assertion fails.
+    context.after(() => context.diagnostic(JSON.stringify(proof)));
+    // Keep config evidence bounded; never export the native snapshot or credentials.
+    const { config } = await client.request("config.get", {});
+    proof.effectivePolicy = {
+      gatewayPolicy: config.tools?.gatewayPolicy,
+      modelSelectionScope: config.agents?.defaults?.modelSelectionScope,
+      cronTriggersEnabled: config.cron?.triggers?.enabled,
+    };
+    assert.ok(proof.effectivePolicy.gatewayPolicy?.allow?.includes("automations"));
+    assert.equal(proof.effectivePolicy.gatewayPolicy.allow.includes("openclaw"), false);
+    assert.deepEqual(proof.effectivePolicy.gatewayPolicy.automations, {
+      scope: "caller",
+      allowCommandJobs: false,
+    });
+    assert.equal(proof.effectivePolicy.modelSelectionScope, "session");
+    assert.equal(proof.effectivePolicy.cronTriggersEnabled, false);
+    // Image IDs above join these launched binaries to the candidate's source receipt.
+    proof.gatewayVersion = (
+      await execPod(topology.gatewayPod, topology.gatewayPlacement, ["openclaw", "--version"])
+    ).stdout.trim();
+    proof.harnessVersion = (
+      await execPod(topology.harnessPod, topology.placement, [
+        selectedHarness === "codex" ? "codex" : "openclaw",
+        "--version",
+      ])
+    ).stdout.trim();
+    const taskMarker = `TASK-${randomUUID()}`;
+    const taskPath = `/tmp/${taskMarker}`;
+    const taskCommand = `node -e ${JSON.stringify(`require('node:fs').writeFileSync('${taskPath}',require('node:os').hostname());console.log('${taskMarker}')`)}`;
+    const nativeTask = toolCallSpec("exec", { command: taskCommand, awaitResults: true });
+    await turn(
+      selectedHarness === "openclaw"
+        ? nativeTask.prompt
+        : `Use your shell tool to run ${taskCommand}. Report the real tool output.`,
+      taskMarker,
+    );
+    const taskEvidence = await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: taskMarker,
+      ...(selectedHarness === "openclaw" ? nativeTask.evidence : { toolName: "bash" }),
+      resultPattern: taskMarker,
+      ...(selectedHarness === "openclaw" ? { expectedExitCode: 0 } : {}),
+    });
+    const taskHost = (
+      await execPod(topology.harnessPod, topology.placement, [
+        "node",
+        "-e",
+        "process.stdout.write(require('node:fs').readFileSync(process.argv[1],'utf8'))",
+        taskPath,
+      ])
+    ).stdout;
+    assert.equal(taskHost, topology.harnessPod.metadata.name);
+    assert.equal(await exists(topology.gatewayPod, topology.gatewayPlacement, taskPath), false);
+    proof.modelTurns.push({
+      ...taskEvidence,
+      kind: "workspace-task",
+      sessionKey,
+      marker: taskMarker,
+      executedOnHarnessPod: true,
+    });
+
+    const scheduledMarker = `SCHEDULED-${randomUUID()}`;
+    const scheduledCall = toolCallSpec("agents_list", {});
+    const name = `policy-schedule-${randomUUID()}`;
+    const jobDefinition = {
+      name,
+      enabled: false,
+      schedule: { kind: "every", everyMs: 86_400_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "agentTurn",
+        message: `${scheduledCall.prompt} Then reply with ${scheduledMarker}.`,
+        toolsAllow: ["agents_list"],
+      },
+      delivery: { mode: "none" },
+    };
+    const createMarker = `CREATE-${randomUUID()}`;
+    const createCall = toolCallSpec("automations", { action: "add", job: jobDefinition });
+    await turn(createCall.prompt, createMarker);
+    await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: createMarker,
+      ...createCall.evidence,
+      resultPattern: name,
+    });
+    const listed = await client.request("cron.list", { includeDisabled: true });
+    const job = listed.jobs.find((candidate) => candidate.name === name);
+    assert.ok(job, "the model must create the scoped ordinary job");
+    assert.equal(job.enabled, false);
+    assert.deepEqual(job.payload.toolsAllow, ["agents_list"]);
+    assert.equal(job.owner?.agentId, "main");
+    assert.equal(job.owner?.sessionKey, sessionKey);
+    const updatedName = `policy-updated-${randomUUID()}`;
+    const updateMarker = `UPDATE-${randomUUID()}`;
+    const ordinaryUpdate = { action: "update", jobId: job.id, job: { name: updatedName } };
+    const updateCall = toolCallSpec("automations", ordinaryUpdate);
+    await turn(updateCall.prompt + " Do not change any other job fields.", updateMarker);
+    const updateEvidence = await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: updateMarker,
+      ...updateCall.evidence,
+      resultPattern: updatedName,
+    });
+    const updatedJob = await client.request("cron.get", { id: job.id });
+    assert.equal(updatedJob.name, updatedName);
+    assert.deepEqual(updatedJob.owner, job.owner);
+    assert.deepEqual(updatedJob.payload, job.payload);
+    proof.modelTurns.push({ kind: "scoped-update", ...updateEvidence, jobId: job.id });
+    const runMarker = `RUN-${randomUUID()}`;
+    const runCall = toolCallSpec("automations", { action: "run", runMode: "force", jobId: job.id });
+    await turn(runCall.prompt + " Do not create another job.", runMarker);
+    await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: runMarker,
+      ...runCall.evidence,
+      resultPattern: "runId",
+    });
+    const run = await waitFor(
+      "scheduled Agent task completion",
+      async () => {
+        const result = await client.request("cron.runs", { id: job.id, limit: 10 });
+        return result.entries?.find(
+          (entry) => entry.status === "ok" && entry.summary?.includes(scheduledMarker),
+        );
+      },
+      600_000,
+    );
+    assert.ok(run.sessionKey, "scheduled execution must retain its actual session identity");
+    const runKeyParts = run.sessionKey.split(":");
+    assert.deepEqual(runKeyParts.slice(0, -1), ["agent", "main", "cron", job.id, "run"]);
+    assert.ok(runKeyParts.at(-1), "the cron run key must retain its initial session identity");
+    assert.ok(typeof run.sessionId === "string" && run.sessionId.length > 0);
+    // Cron removes the run alias after persisting the stable row. Its final session ID may rotate.
+    const scheduledSessionKey = `agent:main:cron:${job.id}`;
+    const scheduledEvidence = await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey: scheduledSessionKey,
+      turnMarker: scheduledMarker,
+      ...scheduledCall.evidence,
+      resultPattern: "main",
+    });
+    assert.equal(
+      scheduledEvidence.sessionId,
+      run.sessionId,
+      "the persisted transcript must belong to this completed cron run",
+    );
+    proof.modelTurns.push({
+      kind: "scoped-schedule",
+      sessionKey,
+      jobId: job.id,
+      scheduledSessionKey: run.sessionKey,
+      persistedSessionKey: scheduledSessionKey,
+      scheduledEvidence,
+    });
+
+    const foreignJob = await client.request("cron.add", {
+      ...jobDefinition,
+      name: `foreign-${randomUUID()}`,
+      owner: {
+        agentId: "main",
+        sessionKey: `agent:main:foreign-${randomUUID()}`,
+        accountId: `foreign-${randomUUID()}`,
+      },
+    });
+    const foreignBefore = await client.request("cron.get", { id: foreignJob.id });
+    const foreignMarker = `FOREIGN-${randomUUID()}`;
+    const foreignCall = toolCallSpec("automations", {
+      action: "update",
+      jobId: foreignJob.id,
+      job: { name: "model-must-not-set-this" },
+    });
+    await turn(
+      foreignCall.prompt + " Report the returned error; do not retry or use another interface.",
+      foreignMarker,
+    );
+    const foreignEvidence = await native.assertSessionToolPolicyDeniedEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: foreignMarker,
+      ...foreignCall.evidence,
+      resultPattern: `Automation not found: ${foreignJob.id}`,
+    });
+    assert.deepEqual(await client.request("cron.get", { id: foreignJob.id }), foreignBefore);
+    await client.request("cron.update", {
+      id: foreignJob.id,
+      patch: { name: "human-admin-update" },
+    });
+    const foreignAfter = await client.request("cron.get", { id: foreignJob.id });
+    assert.equal(foreignAfter.name, "human-admin-update");
+    proof.modelTurns.push({
+      kind: "foreign-job-denied",
+      ...foreignEvidence,
+      jobId: foreignJob.id,
+      rejectingOwner: "caller scope",
+      unchangedAfterModel: true,
+      humanUpdateSucceeded: true,
+    });
+
+    const commandPath = `/tmp/DENIED-COMMAND-${randomUUID()}`;
+    const commandPayload = {
+      kind: "command",
+      argv: ["node", "-e", `require('node:fs').writeFileSync('${commandPath}','denied-command')`],
+      toolsAllow: [],
+    };
+    const ordinaryBefore = await client.request("cron.get", { id: job.id });
+    const updateProbes = [
+      [
+        "cross-agent-session-target",
+        { sessionTarget: `session:agent:outside-${randomUUID()}:main` },
+        "session target outside caller scope",
+      ],
+    ];
+    // Code Mode can submit these exact arguments to its real callable. Codex's
+    // schema omits command payloads; its invalid-input coverage remains source-only.
+    if (selectedHarness === "openclaw") {
+      updateProbes.unshift([
+        "command-conversion",
+        { payload: commandPayload },
+        ["automation command payloads cannot be created or edited", "job.payload.kind:"],
+      ]);
+    }
+    for (const [attempt, patch, resultPattern] of updateProbes) {
+      const marker = `UPDATE-DENIED-${randomUUID()}`;
+      const args = { action: "update", jobId: job.id, job: patch };
+      const invocation = toolCallSpec("automations", args);
+      await turn(
+        invocation.prompt + " Report the returned error; do not retry or use another interface.",
+        marker,
+        { attempt, before: ordinaryBefore },
+      );
+      const evidence = await native.assertSessionToolPolicyDeniedEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: marker,
+        ...invocation.evidence,
+        resultPattern,
+      });
+      assert.deepEqual(await client.request("cron.get", { id: job.id }), ordinaryBefore);
+      assert.equal(
+        await exists(topology.gatewayPod, topology.gatewayPlacement, commandPath),
+        false,
+      );
+      proof.modelTurns.push({
+        kind: `${attempt}-denied`,
+        ...evidence,
+        jobId: job.id,
+        unchangedAfterModel: true,
+      });
+    }
+
+    const childMarker = `CHILD-${randomUUID()}`;
+    const spawnMarker = `SPAWN-${randomUUID()}`;
+    if (selectedHarness === "openclaw") {
+      const childLabel = `policy-child-${randomUUID()}`;
+      const childResult = `OC-CHILD-${randomUUID()}`;
+      // Child exclusions and Gateway policy must also remove deferred catalog entries.
+      const intrinsicChildExclusions = ["agents_list", "automations"];
+      const administrativeCatalogWithholding = [
+        "gateway",
+        "plugins",
+        "openclaw",
+        "nodes",
+        "terminal",
+        "secrets",
+        "gateway_exec",
+        "gateway_process",
+      ];
+      const childExclusions = [...intrinsicChildExclusions, ...administrativeCatalogWithholding];
+      const childCatalog = { present: ["read"], absent: childExclusions };
+      const childProgram = codeModeCallSpec(
+        `const command = await exec(${JSON.stringify({ command: `node -e ${JSON.stringify(`console.log(6*7, "${childResult}")`)}`, awaitResults: true })}); return {...command, catalog: ${catalogExpression(childCatalog)}};`,
+      );
+      const childTask = `${childProgram.prompt} Inspect the returned command and admitted catalog. Do not use another interface. End your reply with exactly ${childMarker}.`;
+      const spawnCall = toolCallSpec("sessions_spawn", { label: childLabel, task: childTask });
+      const spawnHistory = await turn(
+        spawnCall.prompt + " Do not perform its task yourself.",
+        spawnMarker,
+      );
+      const spawnEvidence = await native.assertSessionToolCallEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: spawnMarker,
+        ...spawnCall.evidence,
+        resultPattern: "accepted",
+      });
+      const spawnResultMessage = spawnHistory.messages.find(
+        (message) =>
+          message.role === "toolResult" && message.toolCallId === spawnEvidence.toolCallId,
+      );
+      assert.ok(spawnResultMessage, "history must retain the successful spawn result");
+      assert.notEqual(spawnResultMessage.__openclaw?.truncated, true);
+      const spawnEnvelope = JSON.parse(
+        spawnResultMessage.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("\n"),
+      );
+      // History retains tool JSON content but projects away arbitrary result details.
+      const accepted = spawnEnvelope.value;
+      assert.equal(accepted.status, "accepted");
+      assert.ok(
+        typeof accepted.childSessionKey === "string" && accepted.childSessionKey.length > 0,
+      );
+      const childDeadline = Date.now() + 600_000;
+      await waitForRunCompletion(accepted.runId, childDeadline);
+      const child = await waitFor(
+        "the labeled child of the tested parent",
+        async () => {
+          const listed = await client.request("sessions.list", {
+            spawnedBy: sessionKey,
+            label: childLabel,
+          });
+          const matches = listed.sessions?.filter((entry) => entry.label === childLabel) ?? [];
+          assert.ok(matches.length <= 1, "the parent must create exactly one labeled child");
+          return matches[0];
+        },
+        Math.max(0, childDeadline - Date.now()),
+      );
+      assert.notEqual(child.key, sessionKey);
+      assert.equal(child.key, accepted.childSessionKey);
+      await waitForTurn(child.key, childMarker, Math.max(0, childDeadline - Date.now()));
+      const allowed = await native.assertSessionToolCallEvidence(topology.agent, {
+        sessionKey: child.key,
+        turnMarker: childMarker,
+        ...childProgram.evidence,
+        resultPattern: `42 ${childResult}`,
+        expectedExitCode: 0,
+        expectedCatalog: childCatalog,
+      });
+      // The exact program inspects the actual complete catalog. Outer exec-only
+      // transcripts cannot establish that an arbitrary nested tool was never called.
+      assert.deepEqual(await client.request("cron.get", { id: foreignJob.id }), foreignAfter);
+      proof.modelTurns.push({
+        kind: "child-capability-withholding",
+        parentSessionKey: sessionKey,
+        childSessionKey: child.key,
+        childRunId: accepted.runId,
+        spawnEvidence,
+        allowed,
+        intrinsicChildExclusions,
+        administrativeCatalogWithholding,
+        admittedCatalog: allowed.catalog,
+        foreignJobUnchanged: true,
+      });
+    } else {
+      const childResult = `NATIVE-CHILD-${randomUUID()}`;
+      await turn(
+        `Use the advertised native spawn_agent schema to create exactly one fresh child with no inherited conversation. Discover the tool if needed. Give the child this task: use a native shell tool to execute node -e 'console.log(6*7, "${childResult}")', verify the output is 42 followed by that marker, then reply with exactly ${childMarker}. Wait for completion before replying. Do not run the command in the parent or ask the child to use Gateway tools.`,
+        spawnMarker,
+      );
+      const binding = await native.readCodexSessionBinding(topology.agent, { sessionKey });
+      const parent = await readCodexThreadFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod: topology.gatewayPod.metadata.name,
+        threadId: binding.threadId,
+      });
+      const childId = findCodexPolicyChild(parent, childMarker);
+      const child = await waitFor(
+        "completed fresh native Codex child",
+        async () => {
+          const observed = await readCodexThreadFromGatewayPod({
+            namespace: topology.gatewayPlacement,
+            gatewayPod: topology.gatewayPod.metadata.name,
+            threadId: childId,
+          });
+          return observed.turns?.some(
+            (turn) =>
+              turn.status === "completed" &&
+              turn.items.some(
+                (item) => item.type === "agentMessage" && item.text.includes(childMarker),
+              ),
+          )
+            ? observed
+            : undefined;
+        },
+        600_000,
+      );
+      const parentMetadata = await native.readCodexThreadMetadata(topology.agent, parent);
+      const childMetadata = await native.readCodexThreadMetadata(topology.agent, child);
+      proof.modelTurns.push({
+        kind: "fresh-native-child",
+        ...assertCodexPolicyChild({
+          parent,
+          child,
+          parentMetadata,
+          childMetadata,
+          childMarker,
+          childResult,
+        }),
+      });
+    }
+
+    await client.request("cron.update", {
+      id: job.id,
+      patch: { payload: commandPayload },
+    });
+    const commandBefore = await client.request("cron.get", { id: job.id });
+    assert.deepEqual(commandBefore.owner, job.owner);
+    assert.equal(commandBefore.enabled, false);
+    const commandEvidence = [];
+    // Command jobs are operator-only even when they retain this model caller's owner.
+    for (const [kind, operation] of [
+      [
+        "kind-less-command-update-denied",
+        { action: "update", job: { payload: { timeoutSeconds: 1 } } },
+      ],
+      ["command-enable-denied", { action: "update", job: { enabled: true } }],
+      ["command-run-denied", { action: "run" }],
+    ]) {
+      const marker = `COMMAND-${randomUUID()}`;
+      const args = { ...operation, jobId: job.id };
+      const invocation = toolCallSpec("automations", args);
+      context.diagnostic(`Gateway command-job probe: ${kind}`);
+      await turn(
+        invocation.prompt + " Report the returned error; do not retry or use another interface.",
+        marker,
+      );
+      const evidence = await native.assertSessionToolPolicyDeniedEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: marker,
+        ...invocation.evidence,
+        // Update preflights use cron.get's legacy CLI wording; run does not.
+        resultPattern:
+          operation.action === "update"
+            ? `cron job not found: ${job.id}`
+            : `Automation not found: ${job.id}`,
+      });
+      assert.deepEqual(await client.request("cron.get", { id: job.id }), commandBefore);
+      assert.equal(
+        await exists(topology.gatewayPod, topology.gatewayPlacement, commandPath),
+        false,
+      );
+      commandEvidence.push({ kind, ...evidence });
+    }
+    const humanCommandMarker = `HUMAN-COMMAND-${randomUUID()}`;
+    const humanCommandPath = `/tmp/${humanCommandMarker}`;
+    const humanCommandJob = await client.request("cron.add", {
+      ...jobDefinition,
+      name: `human-command-${randomUUID()}`,
+      payload: {
+        kind: "command",
+        argv: [
+          "node",
+          "-e",
+          `require('node:fs').writeFileSync('${humanCommandPath}','${humanCommandMarker}')`,
+        ],
+        toolsAllow: [],
+      },
+    });
+    const humanCommandRun = await assertNativeCronRunSucceeded({
+      request: (method, params) => client.request(method, params),
+      waitFor,
+      jobId: humanCommandJob.id,
+    });
+    assert.equal(
+      (
+        await execPod(topology.gatewayPod, topology.gatewayPlacement, [
+          "node",
+          "-e",
+          "process.stdout.write(require('node:fs').readFileSync(process.argv[1],'utf8'))",
+          humanCommandPath,
+        ])
+      ).stdout,
+      humanCommandMarker,
+    );
+    assert.equal(await exists(topology.gatewayPod, topology.gatewayPlacement, commandPath), false);
+    assert.deepEqual(await client.request("cron.get", { id: job.id }), commandBefore);
+    proof.modelTurns.push({
+      kind: "command-run-denied",
+      ...commandEvidence.at(-1),
+      additionalChecks: commandEvidence.slice(0, -1),
+      jobId: job.id,
+      rejectingOwner: "caller scope",
+      unchangedAfterModel: true,
+      humanCommandSucceeded: true,
+      humanCommandRun: { ...humanCommandRun, marker: humanCommandMarker },
+      deniedMarkerAbsentAfterControl: true,
+    });
+
+    const password = await diagnosticGatewayPassword(topology);
+    const forwarding = await startGatewayPortForward(
+      topology.gatewayPlacement,
+      openShellGatewayName(topology.agent.id),
+    );
+    context.after(() => forwarding.stop());
+    for (const [tool, args, expectedStatus] of [
+      ["openclaw", {}, 404],
+      [
+        "message",
+        { action: "set-profile", channel: "matrix", displayName: "must-not-change" },
+        403,
+      ],
+    ]) {
+      const response = await fetch(`${forwarding.url}/tools/invoke`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${password}`, "content-type": "application/json" },
+        body: JSON.stringify({ tool, args, sessionKey }),
+      });
+      const result = await response.json();
+      assert.equal(response.status, expectedStatus);
+      if (expectedStatus === 403) {
+        assert.match(result.error?.message ?? "", /Gateway tool policy denies/);
+      }
+      proof.directInvocationProbes.push({ tool, action: args.action, status: response.status });
+    }
+    const beforeMarker = `BEFORE-REDEPLOY-${randomUUID()}`;
+    const beforeCall = toolCallSpec("agents_list", {});
+    const beforeHistory = await turn(beforeCall.prompt, beforeMarker);
+    await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: beforeMarker,
+      ...beforeCall.evidence,
+      resultPattern: "main",
+    });
+    assert.ok(typeof beforeHistory.sessionId === "string" && beforeHistory.sessionId.length > 0);
+    const beforeBinding =
+      selectedHarness === "codex"
+        ? await native.readCodexSessionBinding(topology.agent, { sessionKey })
+        : undefined;
+    const oldRevisionId = topology.revision.id;
+    const oldHarnessUid = topology.harnessPod.metadata.uid;
+    const oldGatewayUid = topology.gatewayPod.metadata.uid;
+    const configPath = `/namespaces/${topology.namespaceId}/configurations/${topology.agent.configurationId}`;
+    const source = await topology.request("GET", configPath);
+    assert.equal(source.status, 200, JSON.stringify(source.error));
+    const values = structuredClone(source.data.values);
+    values.tools ??= {};
+    values.tools.gatewayPolicy = {
+      ...structuredClone(proof.effectivePolicy.gatewayPolicy),
+      allow: proof.effectivePolicy.gatewayPolicy.allow.filter((name) => name !== "agents_list"),
+    };
+    const updated = await topology.request("PATCH", configPath, { values });
+    assert.equal(updated.status, 200, JSON.stringify(updated.error));
+    await client.stopAndWait();
+    await forwarding.stop();
+    const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+    const managed = await topology.request("PATCH", agentPath, { gatewayManagedMode: true });
+    assert.equal(managed.status, 200, JSON.stringify(managed.error));
+    const redeployed = await topology.request("POST", `${agentPath}/deploy`);
+    assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+    assert.equal(redeployed.data.gatewayManagedMode, true);
+    assert.notEqual(redeployed.data.id, oldRevisionId);
+    assert.equal(redeployed.data.configurationGeneration, updated.data.generation);
+    await waitFor("narrower Gateway policy revision activation", async () => {
+      const observed = await topology.request("GET", agentPath);
+      assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      const status = await topology.request(
+        "GET",
+        `${agentPath}/deployments/${redeployed.data.id}`,
+      );
+      assert.equal(status.status, 200, JSON.stringify(status.error));
+      assert.notEqual(status.data.status, "failed", "the policy replacement must activate");
+      return observed.data.activeRevisionId === redeployed.data.id || undefined;
+    });
+    topology.harnessPod = await waitForProviderHarnessPod(topology.placement, redeployed.data);
+    topology.gatewayPod = await waitFor("the replacement Agent Gateway Pod", async () => {
+      const pod = await resource(
+        "pod",
+        await currentGatewayPod(topology),
+        topology.gatewayPlacement,
+      );
+      return pod.metadata.uid !== oldGatewayUid &&
+        pod.status?.conditions?.some(
+          (condition) => condition.type === "Ready" && condition.status === "True",
+        )
+        ? pod
+        : undefined;
+    });
+    topology.revision = redeployed.data;
+    assert.notEqual(topology.harnessPod.metadata.uid, oldHarnessUid);
+    assert.notEqual(topology.gatewayPod.metadata.uid, oldGatewayUid);
+    await waitFor("the old policy Sandbox retirement", async () => {
+      const sandboxes = await fixture.customResources(
+        "sandboxes.agents.x-k8s.io",
+        topology.placement,
+      );
+      return (
+        !sandboxes.some(
+          (sandbox) =>
+            sandbox.metadata.labels?.["openshell.ai/sandbox-name"] ===
+            `os-${hash(oldRevisionId, 16)}`,
+        ) || undefined
+      );
+    });
+    client = await connectGateway();
+    const currentConfig = await client.request("config.get", {});
+    assert.deepEqual(currentConfig.config.tools.gatewayPolicy, values.tools.gatewayPolicy);
+    await assert.rejects(
+      client.request("cron.run", { id: humanCommandJob.id, mode: "force" }),
+      /OPENCLAW_DISABLE_CRON_HOST_EXECUTION/,
+    );
+    const restored = await client.request("chat.history", { sessionKey, limit: 30 });
+    assert.equal(restored.sessionId, beforeHistory.sessionId);
+    assert.ok(
+      JSON.stringify(restored.messages).includes(beforeMarker),
+      "the original conversation history must survive redeployment",
+    );
+    const afterMarker = `AFTER-REDEPLOY-${randomUUID()}`;
+    const afterCatalog = { present: ["read"], absent: ["agents_list"] };
+    const afterList = toolCallSpec("automations", { action: "list" });
+    const afterCatalogCall = codeModeCallSpec(
+      `return {catalog: ${catalogExpression(afterCatalog)}};`,
+    );
+    const afterHistory = await turn(
+      selectedHarness === "openclaw"
+        ? `${afterCatalogCall.prompt} Then ${afterList.prompt}`
+        : "If your tool interface still exposes agents_list, invoke it exactly once and report its refusal. Do not use another interface or substitute tool. Then call automations with action=list exactly once.",
+      afterMarker,
+    );
+    assert.equal(afterHistory.sessionId, beforeHistory.sessionId);
+    await native.assertSessionToolCallEvidence(topology.agent, {
+      sessionKey,
+      turnMarker: afterMarker,
+      ...afterList.evidence,
+      resultPattern: "jobs",
+    });
+    const afterSearch =
+      selectedHarness === "openclaw"
+        ? await native.assertSessionToolCallEvidence(topology.agent, {
+            sessionKey,
+            turnMarker: afterMarker,
+            ...afterCatalogCall.evidence,
+            expectedCatalog: afterCatalog,
+          })
+        : undefined;
+    let afterBinding;
+    let retainedDeclaration = false;
+    if (selectedHarness === "codex") {
+      afterBinding = await native.readCodexSessionBinding(topology.agent, { sessionKey });
+      const thread = await readCodexThreadFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod: topology.gatewayPod.metadata.name,
+        threadId: afterBinding.threadId,
+      });
+      const metadata = await native.readCodexThreadMetadata(topology.agent, thread);
+      retainedDeclaration = metadata.tools.some((tool) => tool.name === "agents_list");
+    }
+    if (retainedDeclaration) {
+      await native.assertSessionToolPolicyDeniedEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: afterMarker,
+        toolName: "agents_list",
+        expectedArguments: {},
+        resultPattern: "OpenClaw tool is not available for this turn: agents_list",
+      });
+    } else if (selectedHarness === "codex") {
+      await native.assertNoSessionToolCallEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: afterMarker,
+        toolName: "agents_list",
+      });
+    }
+    const afterForwarding = await startGatewayPortForward(
+      topology.gatewayPlacement,
+      openShellGatewayName(topology.agent.id),
+    );
+    context.after(() => afterForwarding.stop());
+    const removed = await fetch(`${afterForwarding.url}/tools/invoke`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${await diagnosticGatewayPassword(topology)}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ tool: "agents_list", args: {}, sessionKey }),
+    });
+    assert.equal(removed.status, 404);
+    proof.directInvocationProbes.push({
+      tool: "agents_list",
+      status: removed.status,
+      afterRedeploy: true,
+    });
+    proof.redeployment = {
+      previousRevisionId: oldRevisionId,
+      revisionId: topology.revision.id,
+      sessionKey,
+      sessionId: afterHistory.sessionId,
+      historyPreserved: true,
+      ...(beforeBinding === undefined
+        ? {}
+        : {
+            previousNativeThreadId: beforeBinding.threadId,
+            nativeThreadId: afterBinding.threadId,
+            nativeThreadOutcome:
+              beforeBinding.threadId === afterBinding.threadId ? "retained" : "reconstructed",
+          }),
+      removedToolEvidence: retainedDeclaration
+        ? "actual callback denied"
+        : afterSearch
+          ? "direct schema absent; exact deferred discovery withheld; no model call"
+          : "catalog omitted; no model call",
+      ...(afterSearch ? { catalogSearch: afterSearch } : {}),
+      allowedGatewayOperationSucceeded: true,
+    };
+    proof.scenarioComplete = true;
+  },
+);
+
 test(
   networkPolicyOnly
     ? "OpenShell Agent network policy lifecycle"
@@ -7187,10 +8274,21 @@ test(
       );
       assert.ok(topology.sandbox.metadata.name);
       if (selectedHarness === "openclaw") {
+        // A native worker exposes held startup failures only until its node enrolls.
+        // Confirm Workspace visibility before treating an absent service as withdrawn.
+        const nativeGateway = topology.gatewayClient();
+        assert.ok(
+          await nativeGateway.getWorkspace(topology.placement, AbortSignal.timeout(10_000)),
+        );
         assert.equal(
-          topology.harnessServiceUrl,
+          await nativeGateway.getService(
+            topology.placement,
+            topology.sandbox.metadata.name,
+            "",
+            AbortSignal.timeout(10_000),
+          ),
           undefined,
-          "native OpenClaw must not request an inbound OpenShell service exposure.",
+          "native OpenClaw must withdraw its startup-failure exposure after enrollment.",
         );
         process.stderr.write(
           "OpenShell integration: verifying dedicated native workspace file access.\n",
@@ -7202,6 +8300,23 @@ test(
           );
           await holdNativeOpenClawDemo(context, topology);
         } else {
+          // Restarting OCC exercises its active-revision sweep, which withdraws native
+          // exposure without rendered Harness requirements or a preparation pass.
+          await topology.pauseWorker();
+          const sweepStart = topology.workerEvents.length;
+          await topology.resumeWorker();
+          await waitFor("native exposure withdrawal after worker restart", () =>
+            topology.workerEvents
+              .slice(sweepStart)
+              .some(
+                (event) =>
+                  event.event === "worker.harness-exposure-withdrawn" &&
+                  event.revisionId === topology.revision.id &&
+                  event.agentId === topology.agent.id,
+              )
+              ? true
+              : undefined,
+          );
           process.stderr.write(
             "OpenShell integration: starting successive native worker sessions through Gateway.\n",
           );

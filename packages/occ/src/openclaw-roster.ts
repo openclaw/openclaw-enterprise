@@ -5,7 +5,7 @@ import type {
 import { asRecord } from "@openclaw-enterprise/utils";
 
 import { canSpell } from "./configuration-settings.ts";
-import { requireAgentsShape, requireFallbackProviders } from "./configured-harness.ts";
+import { requireAgentsShape, requireModelSelections } from "./configured-harness.ts";
 import { agentEntryMessage, ConfigurationHarnessError } from "./errors.ts";
 
 // Every Kubernetes topology (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned
@@ -127,9 +127,45 @@ function canFillExplicit(
 }
 
 /**
+ * The Configuration values a deployment admits with the OCC Agent name as the served OpenClaw
+ * Agent's display name. The Control UI shows `identity.name` of the first roster entry, or of
+ * main when the roster is omitted, and falls back to "Assistant". An omitted roster gains the
+ * main entry the Gateway already serves. A name the Configuration sets wins, and
+ * a roster of several entries keeps the names its entries set: the OCC Agent is the Gateway, not
+ * one of them. Shapes the roster rules refuse pass through unchanged for those rules to name.
+ */
+export function withAgentIdentityName(
+  values: Readonly<OpenClawConfigurationDocument>,
+  name: string,
+): OpenClawConfigurationDocument {
+  const agents = values.agents === undefined ? {} : asRecord(values.agents);
+  if (agents === undefined || agents.list !== undefined) {
+    return values;
+  }
+  const entries = agents.entries === undefined ? { main: {} } : asRecord(agents.entries);
+  const keys = Object.keys(entries ?? {});
+  if (entries === undefined || keys.length !== 1) {
+    return values;
+  }
+  const entry = asRecord(entries[keys[0]!]);
+  const identity = entry?.identity === undefined ? {} : asRecord(entry.identity);
+  if (entry === undefined || identity === undefined || identity.name !== undefined) {
+    return values;
+  }
+  return {
+    ...values,
+    agents: {
+      ...agents,
+      entries: { [keys[0]!]: { ...entry, identity: { ...identity, name } } },
+    },
+  };
+}
+
+/**
  * Refuses, when a Configuration is saved, an agents roster that every deployment refuses, with
- * the deployment's text: resolveConfiguredHarnessId's shape rules and its fallback provider rule
- * first, as deployment checks them first, then the OpenClaw Gateway's. Rules that depend on the
+ * the deployment's text: resolveConfiguredHarnessId's shape rules and its model selection rules
+ * (each model a <provider>/<model> reference, each fallback on the primary's provider) first, as
+ * deployment checks them first, then the OpenClaw Gateway's. Rules that depend on the
  * topology, such as dedicated OpenClaw serving the main Agent, stay at deployment because a
  * Configuration does not fix one. A Preset save runs them too (finding 1308), with `options`
  * locating its unfilled variables.
@@ -139,6 +175,6 @@ export function requireDeployableRoster(
   options?: ConfigurationValidationOptions,
 ): void {
   requireAgentsShape(values);
-  requireFallbackProviders(values, options);
+  requireModelSelections(values, options);
   requireOpenClawRoster(values, options);
 }

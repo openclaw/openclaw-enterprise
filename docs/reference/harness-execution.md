@@ -274,7 +274,7 @@ explains exact ordering and failure handling.
 Ordinary thread resume permits an OpenClaw-owned remote connection after
 ownership and non-running-thread checks. Manual adoption requires local stdio
 and an OpenClaw-owned Codex home
-([runtime checks](https://github.com/openclaw/openclaw/blob/f8386bc7df0a6c9eda7a28ae81943c5c06a414ff/extensions/codex/src/app-server/thread-lifecycle-adoption.ts#L174-L264)).
+([runtime checks](https://github.com/openclaw/openclaw/blob/9cc4450e9d79a993a51dc6fa362468f46c6f1819/extensions/codex/src/app-server/thread-lifecycle-adoption.ts#L187-L300)).
 
 Retained Gateway state and Harness rollouts do not guarantee session recovery
 or continuation of interrupted turns. OCE's end-to-end dedicated restart
@@ -318,11 +318,7 @@ workflow used by dedicated Codex; no startup override is required.
 A custom image can declare
 [`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration). Without native-worker support, deploy and provisioning answer
 `400 INVALID_REQUEST`, the Console withholds Dedicated OpenClaw, and retry
-rechecks support. Deployment requires the qualifying SandboxDriver,
-admitted authentication, and supported projections above. Compute places model
-metadata and the credential reference only in the native node's configuration;
-the Gateway does not receive that inference credential. A missing model or disconnected node
-fails the turn without Gateway inference fallback.
+rechecks support.
 
 ## Related
 

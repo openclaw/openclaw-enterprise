@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 import { promisify } from "node:util";
 import { Agent, request as httpRequest } from "node:http";
 import test from "node:test";
@@ -22,6 +22,8 @@ import {
   startController,
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { AGENT_NAME_CONFLICT, callerDenied } from "../helpers/refusal-text.mjs";
 
 async function ensureInstallation(state, name) {
   const existing = await state.loadInstallation();
@@ -107,6 +109,7 @@ test(
       configurationId: `cfg_${randomUUID()}`,
       backendId: null,
       harnessAuth: null,
+      gatewayManagedMode: true,
       draft_spec: {},
       executionMode: "embedded",
       servicePrincipalId: `service-agent-${randomUUID()}`,
@@ -118,6 +121,7 @@ test(
       agentId,
       revision: 1,
       backendId: null,
+      gatewayManagedMode: agent.gatewayManagedMode,
       configurationId: `cfg_${randomUUID()}`,
       configurationKind: "agent",
       configurationGeneration: 1,
@@ -127,6 +131,7 @@ test(
         id: "compute-local-development",
         implementation: "deterministic-local-development",
       },
+      executionAdmission: { version: 2, mode: "unprotected" },
       servicePrincipalId: agent.servicePrincipalId,
       createdAt,
     };
@@ -412,10 +417,7 @@ test(
     );
     assert.deepEqual(requeued.rows, [{ state: "queued", completed_at: null, reason_code: null }]);
 
-    await pool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [workId],
-    );
+    await makeWorkDue(pool, workId);
     const secondClaim = await claimProvisioningWork(pool, workId);
     const settledBeforeFailure = await state.transact((unit) =>
       unit.provisioning.settleEffect(workId, {
@@ -481,10 +483,7 @@ test(
     );
     assert.deepEqual(retryWork.rows, [{ state: "queued", completed_at: null, reason_code: null }]);
 
-    await pool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [workId],
-    );
+    await makeWorkDue(pool, workId);
     const terminalClaim = await claimProvisioningWork(pool, workId);
     const cancelled = await state.transact((unit) =>
       unit.provisioning.cancel(terminalClaim, {
@@ -554,7 +553,7 @@ test(
         generation: 1,
         createdAt,
       });
-      await unit.agents.createAgent({
+      const agent = await unit.agents.createAgent({
         id: agentId,
         namespaceId,
         name: "Provisioning success",
@@ -573,12 +572,14 @@ test(
         agentId,
         revision: 1,
         backendId: null,
+        gatewayManagedMode: agent.gatewayManagedMode,
         configurationId,
         configurationKind: "agent",
         configurationGeneration: 1,
         configuration: { agents: { defaults: { model: "test/model" } } },
         harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
         compute: { id: "compute-provisioning-success", implementation: "deterministic-test" },
+        executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
         servicePrincipalId: `service-agent-${agentId}`,
         createdAt,
@@ -605,8 +606,7 @@ test(
       ),
       {
         name: "ResourceStateConflictError",
-        message:
-          "An Agent with this name already exists in this Namespace. Choose a different name.",
+        message: AGENT_NAME_CONFLICT,
       },
     );
 
@@ -916,6 +916,9 @@ test(
     );
     for (const [offset, invalid] of [
       null,
+      "api_key",
+      false,
+      2,
       {},
       { ...fixture.revision.harnessAuth, secretDriverId: "" },
       { ...fixture.revision.harnessAuth, secretValue: "sentinel-not-a-reference" },
@@ -1890,6 +1893,7 @@ test(
         agentId: agent.id,
         revision: 1,
         backendId: null,
+        gatewayManagedMode: agent.gatewayManagedMode,
         configurationId: configuration.id,
         configurationKind: "agent",
         configurationGeneration: 1,
@@ -1899,6 +1903,7 @@ test(
           id: "compute-local-development",
           implementation: "deterministic-local-development",
         },
+        executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
         servicePrincipalId: agent.servicePrincipalId,
         plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
@@ -1968,10 +1973,17 @@ test(
     const detail = await request(api, "GET", agentPath);
     assert.equal(detail.status, 200);
     assert.deepEqual(detail.data, degradedAgent);
+    // An Agent update checks the sources its saved settings bind, which this Agent's unreadable
+    // settings do not show: the sources answer stays false, even for a caller with every grant.
+    const permissions = await request(api, "GET", `${agentPath}/permissions`);
+    assert.equal(permissions.status, 200);
+    assert.equal(permissions.data.update, true);
+    assert.equal(permissions.data.configurationRead, true);
+    assert.equal(permissions.data.agentSourcesOperate, false);
 
     // The list carries summaries, newest first. It never decodes a snapshot, so the
     // unreadable revision lists like any other; its exact read reports the error.
-    const revisionSummary = (item) => ({
+    const revisionSummary = (item, deploymentStatus) => ({
       id: item.id,
       namespaceId: item.namespaceId,
       agentId: item.agentId,
@@ -1981,12 +1993,15 @@ test(
       configurationGeneration: item.configurationGeneration,
       harness: item.harness,
       createdAt: item.createdAt,
+      deploymentStatus,
+      deploymentErrorCode: null,
     });
+    // The planted revision has no deployment work; the deployed one is queued.
     const revisions = await request(api, "GET", revisionPath);
     assert.equal(revisions.status, 200);
     assert.deepEqual(revisions.data, [
-      revisionSummary({ ...healthyRevision.data, id: malformedRevisionId, revision: 2 }),
-      revisionSummary(healthyRevision.data),
+      revisionSummary({ ...healthyRevision.data, id: malformedRevisionId, revision: 2 }, null),
+      revisionSummary(healthyRevision.data, "queued"),
     ]);
     const validDetail = await request(api, "GET", `${revisionPath}/${revision.id}`);
     assert.equal(validDetail.status, 200);
@@ -1997,8 +2012,7 @@ test(
 
     // The compiled CLI consumes the same supported metadata/error variants over
     // the shipped API's real HTTP listener. A retired saved enum is not a runtime.
-    const cliDirectory = await mkdtemp(join(tmpdir(), "oce-cli-browsing-"));
-    context.after(() => rm(cliDirectory, { recursive: true, force: true }));
+    const cliDirectory = await temporaryDirectory(context, "oce-cli-browsing-");
     const cli = join(cliDirectory, "occ");
     const execute = promisify(execFile);
     await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
@@ -2108,15 +2122,16 @@ test(
 
     // The degraded response has the same exact-resource IAM boundary as a
     // healthy response; neither metadata nor decode errors may leak on denial.
-    for (const [resourceKind, resourceId, listPath, detailPath, visible] of [
+    for (const [resourceKind, kindLabel, resourceId, listPath, detailPath, visible] of [
       [
         "agent_revision",
+        "AgentRevision",
         malformedRevisionId,
         revisionPath,
         `${revisionPath}/${malformedRevisionId}`,
-        [revisionSummary(healthyRevision.data)],
+        [revisionSummary(healthyRevision.data, "queued")],
       ],
-      ["agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
+      ["agent", "Agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
     ]) {
       await pool.query(
         `INSERT INTO occ.iam_restrictions
@@ -2129,9 +2144,10 @@ test(
       assert.deepEqual(filtered.data, visible);
       const denied = await request(api, "GET", detailPath);
       assert.equal(denied.status, 403);
+      // The Restriction reads as any missing grant on the ID the path named.
       assert.deepEqual(denied.error, {
         code: "FORBIDDEN",
-        message: "The exact platform operation was not authorized.",
+        message: callerDenied(`${kindLabel} read`, `${kindLabel} ${resourceId}`),
       });
       assert.equal(denied.data, undefined);
     }
@@ -2187,6 +2203,7 @@ test(
           agentId: agent.id,
           revision,
           backendId: null,
+          gatewayManagedMode: agent.gatewayManagedMode,
           configurationId: configuration.id,
           configurationKind: "agent",
           configurationGeneration: 1,
@@ -2196,6 +2213,7 @@ test(
             id: "compute-local-development",
             implementation: "deterministic-local-development",
           },
+          executionAdmission: { version: 2, mode: "unprotected" },
           harnessAuth: { method: "runtime" },
           servicePrincipalId: agent.servicePrincipalId,
           plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },

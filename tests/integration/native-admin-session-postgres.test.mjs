@@ -4,15 +4,15 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { createConnection } from "node:net";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import pg from "pg";
 
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
@@ -20,14 +20,16 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectJson as inject } from "../helpers/inject-json.mjs";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "postgres-admin@openclaw.local";
@@ -106,8 +108,7 @@ function nativeComputeDriver(upstreamPort) {
 }
 
 async function startNativeHttpsUpstream(t) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-native-admin-pg-upstream-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw-native-admin-pg-upstream-");
   const keyPath = join(directory, "tls.key");
   const certPath = join(directory, "tls.crt");
   const generated = spawnSync(
@@ -129,12 +130,13 @@ async function startNativeHttpsUpstream(t) {
       "-addext",
       "subjectAltName=DNS:localhost,IP:127.0.0.1",
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", timeout: 10_000 },
   );
   assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
 
   const requests = [];
   const upgrades = [];
+  const peers = [];
   const upgradedSockets = new Set();
   const cert = await readFile(certPath, "utf8");
   const server = createServer({ key: await readFile(keyPath), cert }, async (request, response) => {
@@ -151,6 +153,7 @@ async function startNativeHttpsUpstream(t) {
     response.end("native postgres upstream\n");
   });
   server.on("upgrade", (request, socket) => {
+    peers.push(socket);
     upgradedSockets.add(socket);
     socket.once("close", () => upgradedSockets.delete(socket));
     upgrades.push({ url: request.url, headers: { ...request.headers } });
@@ -178,7 +181,7 @@ async function startNativeHttpsUpstream(t) {
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
-  return { port: address.port, requests, upgrades, cert };
+  return { port: address.port, requests, upgrades, peers, cert };
 }
 
 async function ensureBootstrap(t) {
@@ -246,7 +249,7 @@ async function createApi(t, label, upstreamPort, options = {}) {
     configurationDriver,
     secretDriver,
     resolveHarness: resolveApprovedHarness,
-    auditSink: state.auditSink,
+    auditSink: options.auditSink?.(state.auditSink) ?? state.auditSink,
     auth,
     development: { enabled: false },
     publicOrigin,
@@ -265,20 +268,6 @@ async function createApi(t, label, upstreamPort, options = {}) {
     }
   });
   return { app, auth, controller, iamDriver, state, pool };
-}
-
-async function inject(app, method, url, { session, headers = {}, body } = {}) {
-  return app.inject({
-    method,
-    url,
-    headers: {
-      host: "127.0.0.1",
-      ...(session === undefined ? {} : authenticatedHeaders(session)),
-      ...headers,
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
-  });
 }
 
 async function signIn(app, credentials = { email: adminEmail, password: adminPassword }) {
@@ -348,6 +337,7 @@ async function createNativeAgent(api, session, upstream) {
       name: `Native admin Agent ${randomUUID()}`,
       configurationId: configuration.id,
       harnessAuth: { method: "api_key", source: secret.ref },
+      gatewayManagedMode: false,
     },
   });
   assert.equal(agentResponse.statusCode, 201, agentResponse.body);
@@ -481,10 +471,10 @@ async function openNativeWebSocket(port, native, cookie, path = "/session/socket
     received += chunk.toString("latin1");
   };
   socket.on("data", onData);
-  const deadline = Date.now() + 5_000;
-  while (!received.includes("\r\n\r\n") && Date.now() < deadline) {
-    await delay(25);
-  }
+  await waitUntil("the WebSocket upgrade response", () => received.includes("\r\n\r\n"), {
+    timeoutMs: 5_000,
+    intervalMs: 25,
+  });
   assert.match(received, /^HTTP\/1\.1 101 /);
   return socket;
 }
@@ -548,30 +538,27 @@ async function assertSocketClosesAfterMutation(socket, mutate) {
 }
 
 async function waitForAuditActions(pool, namespaceId, agentId, actions) {
-  const remaining = new Set(actions);
-  const deadline = Date.now() + 5_000;
+  let remaining = actions;
   let rows = [];
-  while (Date.now() < deadline) {
-    const result = await pool.query(
-      `SELECT action, actor_id, outcome, details
+  await waitUntil(
+    () => `audit actions ${remaining.join(", ")}`,
+    async () => {
+      const result = await pool.query(
+        `SELECT action, actor_id, outcome, details
          FROM occ.audit_events
         WHERE namespace_id = $1
           AND resource_kind = 'agent'
           AND resource_id = $2
           AND action = ANY($3::text[])
         ORDER BY occurred_at, id`,
-      [namespaceId, agentId, actions],
-    );
-    rows = result.rows;
-    for (const row of rows) {
-      remaining.delete(row.action);
-    }
-    if (remaining.size === 0) {
-      break;
-    }
-    await delay(50);
-  }
-  assert.deepEqual([...remaining], [], `missing audit actions: ${[...remaining].join(", ")}`);
+        [namespaceId, agentId, actions],
+      );
+      rows = result.rows;
+      remaining = actions.filter((action) => !rows.some((row) => row.action === action));
+      return remaining.length === 0;
+    },
+    { timeoutMs: 5_000, intervalMs: 50 },
+  );
   for (const action of actions) {
     const row = rows.find((candidate) => candidate.action === action);
     assert.ok(row, `${action} audit row must exist`);
@@ -589,11 +576,11 @@ async function waitForAuthorizationDenialAudit(
   actorId,
   options = {},
 ) {
-  const deadline = Date.now() + 5_000;
-  let row;
-  while (Date.now() < deadline) {
-    const result = await pool.query(
-      `SELECT id, kind, action, actor_id, outcome, details
+  const row = await waitFor(
+    `${action} authorization-denial audit row`,
+    async () => {
+      const result = await pool.query(
+        `SELECT id, kind, action, actor_id, outcome, details
          FROM occ.audit_events
         WHERE namespace_id = $1
           AND resource_kind = 'agent'
@@ -605,22 +592,19 @@ async function waitForAuthorizationDenialAudit(
           AND ($6::boolean IS NULL OR (details->'nativeAdmin' ? 'revisionId') = $6)
         ORDER BY occurred_at DESC, id DESC
         LIMIT 1`,
-      [
-        namespaceId,
-        agentId,
-        action,
-        actorId ?? null,
-        options.excludeId ?? null,
-        options.leaseRenewal ?? null,
-      ],
-    );
-    row = result.rows[0];
-    if (row !== undefined) {
-      break;
-    }
-    await delay(50);
-  }
-  assert.ok(row, `${action} authorization-denial audit row must exist`);
+        [
+          namespaceId,
+          agentId,
+          action,
+          actorId ?? null,
+          options.excludeId ?? null,
+          options.leaseRenewal ?? null,
+        ],
+      );
+      return result.rows[0];
+    },
+    { timeoutMs: 5_000, intervalMs: 50 },
+  );
   assert.equal(row.kind, "authorization_denial");
   assert.equal(row.outcome, "denied");
   assert.equal(row.details?.__occAuditMetadata?.reasonCode, "AUTHORIZATION_DENIED");
@@ -682,13 +666,13 @@ async function parentSessionRow(api) {
   return storedSession.rows[0];
 }
 
-async function openNativeAdminSocketScenario(t, label) {
+async function openNativeAdminSocketScenario(t, label, options = {}) {
   await ensureBootstrap(t);
   const upstream = await startNativeHttpsUpstream(t);
   trustLocalUpstreamCertificate(t, upstream.cert);
   const [apiA, apiB] = await Promise.all([
     createApi(t, `${label}-a`, upstream.port),
-    createApi(t, `${label}-b`, upstream.port),
+    createApi(t, `${label}-b`, upstream.port, options),
   ]);
   t.after(() => Promise.allSettled([apiA.app.close(), apiB.app.close()]));
   const session = await signIn(apiA.app);
@@ -733,6 +717,55 @@ async function assertRevokedHttp(api, native, nativeCookie) {
   const denied = await nativeGet(api, native, nativeCookie, "/after-revocation");
   assert.notEqual(denied.statusCode, 200);
   return denied;
+}
+
+function within(promise, milliseconds, description) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(description)), milliseconds);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// Keep the real PostgreSQL append; only its timing is controlled. Session and
+// NativeIAM decisions still come from the composed controller and database.
+function holdLeaseDenialAppend(onEntered) {
+  const entered = Promise.withResolvers();
+  const gate = Promise.withResolvers();
+  const pending = [];
+  let attempts = 0;
+  let released = false;
+  return {
+    entered: entered.promise,
+    attempts: () => attempts,
+    released: () => released,
+    wrap(sink) {
+      return {
+        append(event) {
+          if (
+            event.kind !== "authorization_denial" ||
+            event.action !== "openclaw.agents.native_admin.proxy.authorize" ||
+            event.details?.nativeAdmin?.revisionId === undefined
+          ) {
+            return sink.append(event);
+          }
+          attempts += 1;
+          onEntered();
+          entered.resolve(event);
+          const append = gate.promise.then(() => sink.append(event));
+          pending.push(append);
+          return append;
+        },
+      };
+    },
+    async release() {
+      released = true;
+      gate.resolve();
+      await within(Promise.all(pending), 5_000, "the retained denial append did not settle");
+    },
+  };
 }
 
 test(
@@ -847,8 +880,60 @@ test(
   "PostgreSQL native admin WebSocket lease closes at the next renewal after IAM administer restriction",
   { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "iam-restriction");
-    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
+    const startedAt = performance.now();
+    const phases = [];
+    const mark = (phase) =>
+      phases.push({ phase, elapsedMs: Math.round(performance.now() - startedAt) });
+    const audit = holdLeaseDenialAppend(() => mark("denial_append_pending"));
+    t.after(() => audit.release());
+    const scenario = await openNativeAdminSocketScenario(t, "iam-restriction", {
+      auditSink: audit.wrap,
+    });
+    const peer = scenario.upstream.peers[0];
+    assert.ok(peer, "the real HTTPS upstream must own the admitted relay");
+    // Closed-stream write callbacks below are the oracle for their expected errors.
+    scenario.socket.on("error", () => {});
+    peer.on("error", () => {});
+    let clientBytes = "";
+    let peerBytes = "";
+    scenario.socket.on("data", (chunk) => {
+      clientBytes += chunk.toString();
+    });
+    peer.on("data", (chunk) => {
+      peerBytes += chunk.toString();
+    });
+    const clientClosed = new Promise((resolve) => scenario.socket.once("close", resolve));
+    const peerClosed = new Promise((resolve) => peer.once("close", resolve));
+    const leaseDenialCount = async () => {
+      const result = await scenario.apiA.pool.query(
+        `SELECT count(*)::int AS count FROM occ.audit_events
+          WHERE namespace_id = $1 AND resource_id = $2
+            AND kind = 'authorization_denial'
+            AND action = 'openclaw.agents.native_admin.proxy.authorize'
+            AND details->'nativeAdmin'->>'revisionId' = $3`,
+        [scenario.namespace.id, scenario.agent.id, scenario.revision.id],
+      );
+      return result.rows[0].count;
+    };
+    try {
+      scenario.socket.write("allowed-client-message");
+      peer.write("allowed-upstream-message");
+      await waitFor(
+        "allowed application bytes across both relay directions",
+        () =>
+          clientBytes.includes("allowed-upstream-message") &&
+          peerBytes.includes("allowed-client-message"),
+        2_000,
+      );
+      mark("allowed_bidirectional_relay");
+      assert.equal(await leaseDenialCount(), 0);
+      const closure = within(
+        Promise.all([clientClosed, peerClosed]),
+        3_500,
+        "both relay ends must close before the five-second fallback and audit release",
+      );
+      // Attach a rejection observer while the actual database restriction commits.
+      void closure.catch(() => {});
       const restricted = await scenario.apiA.pool.query(
         `INSERT INTO occ.iam_restrictions
            (id, namespace_id, action, resource_kind, resource_id, effect)
@@ -856,30 +941,72 @@ test(
         [`restriction-native-admin-${randomUUID()}`, scenario.namespace.id, scenario.agent.id],
       );
       assert.equal(restricted.rowCount, 1);
-    });
-    t.diagnostic(`IAM administer restriction closed native admin WebSocket in ${closedAfterMs}ms`);
-    await assertSocketAuditCloseReason(scenario, "authorization_denied");
-    // Lease renewals check the socket's revision, so their denials record it; the HTTP
-    // denial carries none. That keeps a second, overlapping renewal's denial from passing
-    // for the HTTP one.
-    const leaseDenial = await waitForAuthorizationDenialAudit(
-      scenario.apiA.pool,
-      scenario.namespace.id,
-      scenario.agent.id,
-      "openclaw.agents.native_admin.proxy.authorize",
-      scenario.principal.id,
-      { leaseRenewal: true },
-    );
-    assert.equal(leaseDenial.details.nativeAdmin.revisionId, scenario.revision.id);
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
-    await waitForAuthorizationDenialAudit(
-      scenario.apiA.pool,
-      scenario.namespace.id,
-      scenario.agent.id,
-      "openclaw.agents.native_admin.proxy.authorize",
-      scenario.principal.id,
-      { excludeId: leaseDenial.id, leaseRenewal: false },
-    );
+      mark("restriction_commit_acknowledged");
+      await within(audit.entered, 3_000, "the real denied renewal must reach its audit append");
+      await closure;
+      mark("both_transport_ends_closed");
+      assert.equal(audit.released(), false);
+      assert.equal(audit.attempts(), 1);
+      assert.equal(await leaseDenialCount(), 0, "denial persistence must still be pending");
+      await assertSocketAuditCloseReason(scenario, "authorization_denied");
+      assert.equal(scenario.socket.destroyed, true);
+      assert.equal(peer.destroyed, true);
+
+      const before = { clientBytes, peerBytes };
+      // Check actual writes after close, without a sleep or teardown closing the sockets.
+      for (const socket of [scenario.socket, peer]) {
+        const error = await within(
+          new Promise((resolve) => socket.write("after-revocation-message", resolve)),
+          1_000,
+          "a post-revocation write must complete with failure",
+        );
+        assert.ok(error, "a closed relay must refuse later application bytes");
+      }
+      assert.deepEqual({ clientBytes, peerBytes }, before);
+      mark("later_application_bytes_refused");
+      assert.equal(audit.released(), false);
+      mark("audit_gate_released");
+      await audit.release();
+
+      // The lease denial names its revision; the later HTTP denial does not.
+      const leaseDenial = await waitForAuthorizationDenialAudit(
+        scenario.apiA.pool,
+        scenario.namespace.id,
+        scenario.agent.id,
+        "openclaw.agents.native_admin.proxy.authorize",
+        scenario.principal.id,
+        { leaseRenewal: true },
+      );
+      assert.equal(leaseDenial.details.nativeAdmin.revisionId, scenario.revision.id);
+      assert.equal(await leaseDenialCount(), 1);
+      mark("attributable_lease_denial_persisted_once");
+      await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+      await waitForAuthorizationDenialAudit(
+        scenario.apiA.pool,
+        scenario.namespace.id,
+        scenario.agent.id,
+        "openclaw.agents.native_admin.proxy.authorize",
+        scenario.principal.id,
+        { excludeId: leaseDenial.id, leaseRenewal: false },
+      );
+      assert.equal(await leaseDenialCount(), 1);
+      assert.equal(audit.attempts(), 1);
+    } finally {
+      t.diagnostic(`Composed native-admin revocation phases: ${JSON.stringify(phases)}`);
+      try {
+        await audit.release();
+      } finally {
+        scenario.socket.destroy();
+        peer.destroy();
+        const closed = await Promise.allSettled([
+          scenario.apiA.app.close(),
+          scenario.apiB.app.close(),
+        ]);
+        for (const result of closed) {
+          assert.equal(result.status, "fulfilled", "both owned API replicas must close");
+        }
+      }
+    }
   },
 );
 

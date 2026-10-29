@@ -40,9 +40,9 @@ export interface DriverCustody {
     bytes: Uint8Array,
     observation: CaptureObservation,
   ): CredentialRef;
-  withAccess<T>(
+  withRetirement<T>(
+    attempt: AttemptContext,
     credential: CredentialRef,
-    purpose: "authenticate" | "retire",
     consume: (bytes: Uint8Array) => Promise<T>,
   ): Promise<T>;
   retainRenewal(bytes: Uint8Array): RenewalRef;
@@ -101,11 +101,14 @@ export interface ExchangeLimits {
   readonly stallMs: number;
   readonly connectMs: number;
 }
-export interface ResponsePolicy {
-  readonly body: "stream" | "bounded-json" | "bounded-raw";
+export type ResponsePolicy = {
   headers(status: number, headers: HeaderFields): HeaderFields;
+  readonly parseJson?: (source: string) => JsonValue;
   readonly rewriteJson: ((value: JsonValue) => JsonValue) | undefined;
-}
+} & (
+  | { readonly body: "stream"; readonly trailers?: never }
+  | { readonly body: "bounded-json" | "bounded-raw"; readonly trailers?: "forbid" }
+);
 export interface RequestPlan {
   readonly [planIdentity]: true;
   readonly origin: string;
@@ -118,17 +121,29 @@ export interface RequestPlan {
   readonly responsePolicy: ResponsePolicy;
   /** When set, the complete request body is buffered and must pass before dispatch. */
   readonly inputPolicy?: (body: Uint8Array) => InputVerdict;
+  /** Bind the validated complete request to a one-use prepared material selection. */
+  readonly bindRequestDigest?: true;
+  /** Immutable, non-secret operation scope included in the digest, never upstream headers. */
+  readonly digestScope?: readonly string[];
 }
 /**
  * `true` admits the body; `false` refuses it as 400 `unsupported-request`; a refusal
  * object answers with its own status, stable code and service-owned message instead.
  */
 export type InputVerdict =
-  boolean | Readonly<{ status: 400 | 413; code: string; message?: string }>;
+  | boolean
+  | Readonly<{ body: Uint8Array }>
+  | Readonly<{ status: 400 | 413; code: string; message?: string }>;
 export interface PrivateUpstreamRequest {
   readonly plan: RequestPlan;
   readonly headers: HeaderFields;
+  /** If supplied, the service returns only the durable receipt, never the provider response.
+   * Settlement has its own bounded lifetime even if the client has gone away. */
+  readonly settle?: (
+    result: { created: JsonValue } | "not-submitted" | "outcome_unknown",
+  ) => Promise<OperationReceipt>;
 }
+export type OperationReceipt = Readonly<{ kind: "recorded"; status: number; body: JsonValue }>;
 export type Denied = Readonly<{ kind: "denied"; status: number; code: string }>;
 export interface RepositoryBackend {
   readonly binding: RepositoryCredentialGrantIdentity;
@@ -143,11 +158,15 @@ export interface RepositoryBackend {
   finalize(attempt: AttemptContext): Promise<FinalizeOutcome>;
   settle(original: AcquireOutcome | RetireOutcome | FinalizeOutcome): Promise<void>;
   plan(request: SessionAuthenticatedRequest): RequestPlan | Denied;
-  withAuthentication<T>(
+  /**
+   * The trusted lifecycle owner invokes the returned authenticator with temporary bytes
+   * from the exact credential record identified by `credential`. The reference alone
+   * does not grant access to bytes; the authenticator must not retain them.
+   */
+  prepareAuthentication(
     credential: CredentialRef,
     plan: RequestPlan,
-    send: (request: PrivateUpstreamRequest) => Promise<T>,
-  ): Promise<T>;
+  ): <T>(bytes: Uint8Array, send: (request: PrivateUpstreamRequest) => Promise<T>) => Promise<T>;
 }
 export interface ResolvedGrant {
   readonly binding: RepositoryCredentialGrantIdentity;
@@ -163,3 +182,28 @@ export interface RepositoryBackendFactory {
   ): RepositoryBackend;
   unauthenticated(head: RequestHead): Readonly<{ kind: "challenge"; realm: string }> | Denied;
 }
+
+/** An exchange capability, with no provider acquisition, retention or retirement methods. */
+export interface PreparedRepositoryBackend {
+  readonly binding: RepositoryCredentialGrantIdentity;
+  plan(request: SessionAuthenticatedRequest): RequestPlan | Denied;
+  authorize(
+    request: RequestPlan,
+    requestDigestSha256: string,
+    bounds: Bounds,
+  ): Promise<
+    | Readonly<{
+        headers: HeaderFields;
+        settle?: NonNullable<PrivateUpstreamRequest["settle"]>;
+        /** Checked synchronously at the actual upstream request start. */
+        assertSendStart(): void;
+      }>
+    | OperationReceipt
+  >;
+}
+
+export interface PreparedRepositoryBackendFactory extends Omit<RepositoryBackendFactory, "create"> {
+  createPrepared(authority: AuthorityIdentity, selection: ResolvedGrant): PreparedRepositoryBackend;
+}
+
+export type RepositoryServiceFactory = RepositoryBackendFactory | PreparedRepositoryBackendFactory;

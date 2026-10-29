@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cli = join(root, "scripts/docs-site/word-count.mjs");
 
 async function fixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), "enterprise-docs-length-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "enterprise-docs-length-");
   execFileSync("git", ["init"], { cwd: directory, stdio: "ignore" });
   return directory;
 }

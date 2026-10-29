@@ -4,7 +4,7 @@ import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -21,8 +21,16 @@ export async function createConsoleRepositoryLaunchFixture(
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
   };
+  // Dedicated Agents need gateway routing, node enrollment and a Gateway node selector, or
+  // deployment admission refuses them.
   const compute = new KubernetesComputeDriver(
     {
+      gatewayRouting: {
+        hostname: "agents.example.test",
+        gatewayName: "gateways",
+        gatewayNamespace: "controller",
+        envoyNamespace: "envoy",
+      },
       authentication: { mode: "inCluster" },
       images: { gateway: "gateway:local", agent: "agent:local", requireImmutableDigest: false },
       resources: {
@@ -34,7 +42,6 @@ export async function createConsoleRepositoryLaunchFixture(
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
         gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-        gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
         repositoryCredentials: {
           namespace: "controller",
           podLabels: { app: "credentials" },
@@ -45,10 +52,11 @@ export async function createConsoleRepositoryLaunchFixture(
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
+        gatewayNodeSelector: { "oce-role": "control" },
         channels: { proxyUrl: "http://10.42.0.15:3128" },
       },
     },
-    { id: "console-launch-compute" },
+    { id: "console-launch-compute", nodeEnrollment: {} },
   );
   // This draft/deploy fixture has no PostgreSQL provisioning queue.
   compute.agentProvisioning = undefined;
@@ -175,7 +183,7 @@ export async function createConsoleRepositoryLaunchFixture(
     ...controlNamespace,
     status: { phase: "Active" },
   });
-  const repo = new GitHubRepoDriver(
+  const repo = new GitHubRepositoryPolicy(
     {
       id: provider.id,
       client: new UnixRepositoryCredentialControlClient({
@@ -231,11 +239,20 @@ export async function createConsoleRepositoryLaunchFixture(
     "Demo model credential",
     "synthetic-model-credential",
   );
-  async function grantModelAccess(agent) {
-    const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-      body: { name: "Model access", permissions: [{ action: "operate", resourceKind: "secret" }] },
-    });
-    assert.equal(role.status, 201);
+  // Grants the Agent operate on one Secret through the Namespace IAM API, as an Installation
+  // administrator's console does; the console's policy reads list these grants.
+  let secretRole;
+  async function grantSecretAccess(agent, secret) {
+    if (!secretRole) {
+      const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
+        body: {
+          name: "Agent Secret access",
+          permissions: [{ action: "operate", resourceKind: "secret" }],
+        },
+      });
+      assert.equal(role.status, 201);
+      secretRole = role.data;
+    }
     const binding = await fixture.request(
       "POST",
       `/namespaces/${namespace.id}/iam/access-bindings`,
@@ -243,13 +260,14 @@ export async function createConsoleRepositoryLaunchFixture(
         body: {
           subjectKind: "identity",
           subjectId: agent.servicePrincipalId,
-          roleId: role.data.id,
+          roleId: secretRole.id,
           resourceKind: "secret",
-          resourceId: modelSecret.id,
+          resourceId: secret.id,
         },
       },
     );
     assert.equal(binding.status, 201);
   }
-  return { fixture, namespace, modelSecret, grantModelAccess };
+  const grantModelAccess = (agent) => grantSecretAccess(agent, modelSecret);
+  return { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess };
 }

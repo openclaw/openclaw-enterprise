@@ -6,11 +6,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { once } from "node:events";
-import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { composeConfiguration } from "../helpers/compose.mjs";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   createFixture,
   matchingInstallationId,
@@ -66,12 +67,7 @@ server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address()
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
-  t.after(async () => {
-    if (child.exitCode === null && !child.killed) {
-      child.kill();
-      await once(child, "exit");
-    }
-  });
+  t.after(() => stopProcess(child));
   const [port] = await once(child.stdout, "data");
   fixture.env.OPENCLAW_DEV_PORT = String(port).trim();
   return requestLog;
@@ -378,6 +374,29 @@ for (const scenario of [
   });
 }
 
+test("Kubernetes dev-up keeps the failed stack for inspection when KEEP_ON_FAILURE is set", async (t) => {
+  // The inspection override must skip rollback entirely: the state directory,
+  // cluster, and any copied service key stay for diagnosis, and the operator
+  // gets a cleanup hint naming occ dev down instead of a rollback error.
+  const fixture = await kubernetesFixture(t, "api-unauthorized");
+  fixture.env.OCC_DEVELOPMENT_KEEP_ON_FAILURE = "1";
+  const keyOutput = join(fixture.directory, "retained-key.json");
+  const result = await fixture.start(["--key-output", keyOutput]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /authorization failed/);
+  assert.match(result.stdout, /OCC_DEVELOPMENT_KEEP_ON_FAILURE is set; kept the failed stack/);
+  assert.doesNotMatch(result.stderr, /rollback incomplete; preserving/);
+  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  await assert.ok((await stat(directory)).isDirectory());
+  // The authorization failure happens before the service key is copied, so
+  // the kept stack holds no key material to clean up.
+  await assert.rejects(stat(keyOutput), { code: "ENOENT" });
+  // The kept stack must still clean up through the recorded state.
+  const cleaned = await runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
+});
+
 test("Kubernetes-only dev-up stops and rolls back when the node resolver refuses queries", async (t) => {
   const fixture = await kubernetesFixture(t, "node-dns-refused");
   fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
@@ -440,16 +459,19 @@ test("cancelling Kubernetes startup during readiness rolls back its owned resour
   });
   // Wait for the real client to reach readiness, after all owned resources
   // exist, so cancellation must execute rollback rather than fail preflight.
-  const deadline = Date.now() + 15_000;
-  while (
-    !(await readJsonLines(fixture.requestLog)).some((row) => row.url === "/api/auth/session")
-  ) {
-    assert.ok(
-      Date.now() < deadline && child.exitCode === null,
-      output || "startup did not reach readiness",
-    );
-    await delay(20);
-  }
+  await waitUntil(
+    () => `startup to reach readiness: ${output}`,
+    async () => {
+      if (
+        (await readJsonLines(fixture.requestLog)).some((row) => row.url === "/api/auth/session")
+      ) {
+        return true;
+      }
+      assert.equal(child.exitCode, null, output || "startup exited before readiness");
+      return false;
+    },
+    { timeoutMs: 15_000 },
+  );
   child.kill("SIGTERM");
   const [status, signal] = await exited;
   assert.notEqual(status, 0, output);
@@ -566,11 +588,7 @@ for (const scenario of ["cancelled-creation", "cluster-create-failed", "node-dns
         await work;
       });
       if (scenario === "cancelled-creation") {
-        const deadline = Date.now() + 15_000;
-        while (!existsSync(started)) {
-          assert.ok(Date.now() < deadline, "creation did not start");
-          await delay(20);
-        }
+        await waitUntil("creation to start", () => existsSync(started), { timeoutMs: 15_000 });
         controller.abort();
       }
       const failure = await work;

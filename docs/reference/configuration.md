@@ -18,15 +18,18 @@ Every Agent Configuration has the required, immutable `kind: "agent"`. Its
 `values` holds the native OpenClaw document, including `env`, `file`, and `exec`
 SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
 Secrets to selected gateway environment variables; the Secret Driver stores the
-values separately. The Configuration Driver stores the native document. The
-bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry, so values
-must serialize to less than 1 MiB; a save over that is refused with
+values separately. A reviewed Configuration Driver, bundled or installed, stores
+the native document in development and production. The bundled Kubernetes Driver
+uses one `openclaw.json` ConfigMap entry, so values must serialize to less than
+1 MiB; a save over that is refused with
 `400 INVALID_REQUEST` and a message naming the limit. Configuration POST/PATCH
 bodies allow six times 1 MiB plus 32 KiB (6.2 MiB), room for the values and the
 envelope in six-byte JSON escapes; a caller without the create or update grant
-is refused before the body is read. Reviewed
-bundled and installed Configuration Drivers are available in development and
-production.
+is refused before the body is read.
+
+Console presentation uses a separate API-only [theme bundle](console/theming.md),
+selected with `OCC_CONSOLE_THEME_DIR`. It does not change persisted Installation
+or Agent configuration.
 
 ## Installation startup configuration
 
@@ -52,10 +55,6 @@ Secret Driver operations do not include Installation management. Installed
 Drivers remain trusted, unsandboxed controller code. Invalid production YAML,
 unsupported settings, and unavailable Drivers stop startup before requests run.
 
-Each selected Driver validates its own closed configuration schema; unknown
-fields fail startup. OCC routes authorization through the selected IAM Driver,
-whose reviewed implementation is trusted to enforce its policy.
-
 The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
 network additions. It grants no default access; an absent or empty array delegates
 none. API and worker must use the same trusted value. See
@@ -75,8 +74,7 @@ leading zeros; shorthand, hex, a single integer, a leading zero, or any `@`
 before the host stops API and worker startup with log code
 `OBSERVABILITY_URL_INVALID` until you correct the URL and restart. A tab, newline,
 or a backslash before the query is refused the same way; a backslash in the query
-stays. A DNS name is unchanged. See the
-[breaking-change notice](../guides/deploy/breaking-changes.md). Unknown fields
+stays. A DNS name is unchanged. Unknown fields
 fail startup. The API exposes the URL only after an
 Installation `administer` check; the console hides the link when unset or
 unauthorized. The destination handles its own authentication. This setting does
@@ -109,7 +107,7 @@ Agent Configuration. A representative request body is:
 {
   "kind": "agent",
   "values": {
-    "agents": { "defaults": { "sandbox": { "mode": "all" } } }
+    "agents": { "defaults": { "skipBootstrap": true } }
   }
 }
 ```
@@ -129,7 +127,7 @@ requires the replacement `values` and may also set `secretBindings` and
 ```json
 {
   "values": {
-    "agents": { "defaults": { "sandbox": { "mode": "all" } } }
+    "agents": { "defaults": { "skipBootstrap": false } }
   },
   "expectedGeneration": 1
 }
@@ -152,8 +150,7 @@ replaces whichever generation is current, without this freshness check. The
 console's Configuration and channel saves include it.
 
 Creation requires `kind: "agent"`; missing or unsupported kinds are rejected.
-Additional consumer kinds are reserved for future approved resources and are
-not accepted. `values` must be a JSON object. It can contain the nested objects,
+`values` must be a JSON object. It can contain the nested objects,
 arrays, strings, finite numbers, booleans, and nulls used by native OpenClaw
 configuration. OCC preserves the native document without interpreting its
 fields or resolving SecretRefs, except that Configuration create and update,
@@ -184,15 +181,29 @@ too; an Agent ID or `agents.ownership` that waits on a variable is checked as
 far as its written text goes, and in full once filled. A Configuration saved before
 this check still reads, and Kubernetes deployment still refuses it; only a write
 that keeps the roster is refused. SSH Compute deployment does not check rosters.
-Rules that depend on the topology stay at deployment, because a Configuration
-does not fix one: dedicated execution's `main` Agent rules, for example. Agent
-deployment separately validates supported
-runtime selection, topology, and Secret binding ownership before admission.
+Topology rules, such as dedicated execution's `main` Agent rules, stay at
+deployment: a Configuration does not fix a topology.
+Every write and Preset save also refuses, with the `400` every deployment gives,
+an `agents.defaults.model` or `agents.entries.<id>.model` primary or fallback
+that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included),
+fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
+`agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
+optional file list, an `agents.defaults.sandbox.mode` or
+`agents.entries.<id>.sandbox.mode` other than `off`, and a `tools.exec.host` or
+`agents.entries.<id>.tools.exec.host` other than `auto`, `gateway` or `node`,
+naming the setting. A
+Preset value that waits on a variable
+is checked as far as its written text goes, and in full once filled. A
+Configuration saved before these checks still reads; deployment refuses it, and
+only a write that keeps the value is refused.
+
+OCC also refuses `security.preset`. Remove it and [set the controls you need](../guides/console/configuration-plugins-and-files.md#configuration-tab).
+OpenClaw's `doctor --fix` removes the field without translating its restrictions.
+See [OpenClaw's repair behavior](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/docs/gateway/doctor/config-migrations.md#removed-security-presets).
+
 Creation requires `create` permission for Configurations in the
 exact parent Namespace. Reads, updates, and deletes require the corresponding
-permission for the exact Configuration. Authentication failures return `401`,
-malformed inputs `400`, denied operations `403`, missing resources `404`,
-dependency conflicts `409`, and unavailable authorization or storage `503`.
+permission for the exact Configuration. Unauthenticated requests return `401`.
 
 ## Credentials and channels
 
@@ -216,15 +227,19 @@ outside the Agent's Namespace or to a Configuration whose `kind` is not
 `"agent"`. Agent creation, update, and deployment separately require `read`
 permission for the exact referenced Configuration. Deployment deeply
 snapshots its admitted native document, including unresolved inline SecretRefs,
-into the immutable `AgentRevision.configuration` field and records
-`configurationId`, `configurationKind`, and `configurationGeneration` as
-separate Agent revision fields. A selected [SandboxDriver](drivers/sandbox.md) may
+into the `AgentRevision.configuration` field and records
+`configurationId`, `configurationKind`, and `configurationGeneration` beside
+it. A selected [SandboxDriver](drivers/sandbox.md) may
 transform a copy through `configureAgent` before admission; the reusable
-Configuration and its generation remain unchanged. The snapshot contains that
-effective document, and its metadata identifies the source generation.
-Subsequent Configuration updates do not change a
-running gateway or existing version; only a later explicit deployment observes
-the next generation. Deleting a Configuration still referenced by an Agent
+Configuration and its generation remain unchanged. The snapshot adds the
+[Agent display name](agents/deployment.md#versions-and-deployment) to that document;
+its metadata names the source generation. Where unset, OCC sets
+`tools.exec.applyPatch.workspaceOnly: true` and `agents.defaults.sandbox.mode: "off"`.
+OCE isolates the Agent and has no Gateway approval screen. Unless `tools.exec`
+sets `security` or `ask`, OCC defaults `tools.exec.mode` to `"full"` and, in that
+mode, `tools.exec.strictInlineEval` to `false`.
+Later Configuration updates change no running gateway or existing version
+until the next deployment. Deleting a Configuration still referenced by an Agent
 returns `409`.
 
 Native OpenClaw provider settings in `values.channels` follow the same
@@ -238,11 +253,10 @@ environment-variable names. `secretBindings` remain separate from `values` so
 OCC can authorize, validate, and freeze delivery references without rewriting
 the native OpenClaw document.
 
-AgentRevisions retain their selected Compute Driver identity and immutable
-Configuration snapshot. Compute runtime settings are loaded from Installation
-startup YAML and are not copied into that snapshot. See the
+AgentRevisions also keep the selected Compute Driver identity. Compute runtime
+settings come from Installation startup YAML and are not in the snapshot; see the
 [Agent revision contract](agents/deployment.md#versions-and-deployment) for the fields
-admission freezes; immutable Configuration does not freeze all Driver settings.
+admission freezes.
 
 ## Kubernetes storage
 
@@ -278,6 +292,44 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
   IAM service are available, Kubernetes authentication and TLS are valid,
   tenant placement is ready, exact namespaced ConfigMap access exists, and the
   tenant-owned ConfigMap contains one valid `openclaw.json` document.
+
+## Gateway tool policy
+
+Dedicated OpenClaw on Kubernetes and Codex on Kubernetes or Docker apply the
+Gateway policy after plugin grants; embedded OpenClaw applies a policy only when the
+Configuration sets one. Model access requires concrete names in
+`tools.gatewayPolicy.allow`. Plugin approval and `tools.alsoAllow` alone grant
+no model tools.
+
+Select reviewed task tools, for example:
+
+```json
+{
+  "tools": {
+    "gatewayPolicy": {
+      "allow": ["sessions", "read", "diffs"],
+      "actions": { "sessions": ["patch"] }
+    }
+  }
+}
+```
+
+Enable Diffs as a plugin. Omitting the policy uses the
+[baseline](../../apps/controller/src/drivers/compute/gateway-tool-policy.ts);
+empty `allow` withholds Gateway tools. Action-bearing tools, such as `dashboard`,
+require explicit allowed actions. Baseline actions can only narrow; administrative tools and
+additional baseline actions are rejected. Profiles, denies and Codex dynamic-tool
+exclusions still apply. Save and deployment refuse such a policy; a running
+revision keeps an older one until its next deployment.
+
+Dedicated composition also sets `automations.scope: "caller"` and
+`allowCommandJobs: false` under `tools.gatewayPolicy`, plus `agents.defaults.modelSelectionScope: "session"` and
+`cron.triggers.enabled: false`.
+
+Deploy a revision to change the saved policy after old work ends.
+[Gateway managed mode](agents/gateway-managed-mode.md) governs local allowlist
+changes. The [deployment flow](../flows/agent-plugins.md#4-prepare-native-runtime-state-and-hand-off-readiness)
+details compatibility checks.
 
 ## Related
 

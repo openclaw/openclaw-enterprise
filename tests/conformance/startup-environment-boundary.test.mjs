@@ -108,3 +108,54 @@ test("API startup and bootstrap configuration read settings only from their env 
     assert.deepEqual(environmentReads(`${source}\n${allowed}\n`), []);
   }
 });
+
+// The compositions take a password hasher only from a code-only dependencies argument after
+// their configuration (composeProduction's 2nd, composePostgresDevelopment's 4th). API startup
+// must never pass one, so no setting can replace scrypt (postgres-password-default proves the
+// compositions ignore a hasher in their configuration).
+const compositionArity = { composeProduction: 1, composePostgresDevelopment: 3 };
+
+function compositionCalls(source) {
+  const calls = [];
+  function visit(node) {
+    if (!node || typeof node.type !== "string") {
+      return;
+    }
+    if (node.type === "CallExpression" && Object.hasOwn(compositionArity, node.callee?.name)) {
+      calls.push({ name: node.callee.name, arguments: node.arguments.length });
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (["comments", "tokens", "loc", "range"].includes(key)) {
+        continue;
+      }
+      for (const item of Array.isArray(child) ? child : [child]) {
+        visit(item);
+      }
+    }
+  }
+  visit(parsers.typescript.parse(source));
+  return calls;
+}
+
+test("API startup composes without code-only dependencies such as a password hasher", async () => {
+  const source = await readFile(
+    new URL("../../apps/controller/src/api-startup.mjs", import.meta.url),
+    "utf8",
+  );
+  const calls = compositionCalls(source);
+  assert.deepEqual([...new Set(calls.map(({ name }) => name))].sort(), [
+    "composePostgresDevelopment",
+    "composeProduction",
+  ]);
+  for (const call of calls) {
+    assert.ok(call.arguments <= compositionArity[call.name], `${call.name}: ${call.arguments}`);
+  }
+  // Passing the dependencies argument is caught when appended to the real file.
+  for (const extra of [
+    "composeProduction(config, { passwordHasher });",
+    "composePostgresDevelopment(settings, drivers, factory, { passwordHasher });",
+  ]) {
+    const appended = compositionCalls(`${source}\n${extra}\n`).at(-1);
+    assert.ok(appended.arguments > compositionArity[appended.name], extra);
+  }
+});

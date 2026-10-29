@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { getEventListeners } from "node:events";
+import { getEventListeners, once } from "node:events";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { connect } from "node:net";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { connect, createServer as createNetServer } from "node:net";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createSecureServer } from "node:http2";
+import { createServer as createHttpsServer, get as httpsGet } from "node:https";
 import test from "node:test";
 import {
   GrpcOpenShellGatewayClient,
@@ -27,6 +27,11 @@ import {
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
+import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
+import { agentClients } from "../helpers/egress-custody-observations.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -45,9 +50,9 @@ const rpcStatus = protobuf.parse(
   { keepCase: true },
 ).root;
 
-function bindWireServer(server) {
+function bindWireServer(server, credentials = grpc.ServerCredentials.createInsecure()) {
   return new Promise((resolve, reject) =>
-    server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
+    server.bindAsync("127.0.0.1:0", credentials, (error, value) =>
       error ? reject(error) : resolve(value),
     ),
   );
@@ -329,15 +334,13 @@ test("OpenShell HTTP origins keep port 80 in native gRPC connections", async (t)
     const upstream = track(
       connect(port, "127.0.0.1", () => {
         socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-        if (head.length > 0) {
-          upstream.write(head);
-        }
-        socket.pipe(upstream);
-        upstream.pipe(socket);
       }),
     );
-    upstream.on("error", () => socket.destroy());
-    socket.on("close", () => upstream.destroy());
+    // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+    if (head.length > 0) {
+      upstream.write(head);
+    }
+    relaySockets(socket, upstream);
   });
   t.after(async () => {
     for (const socket of sockets) {
@@ -610,10 +613,12 @@ test("OpenShell client serializes v0.1.5 create-time service exposure", async ()
         assert.ok(error instanceof DependencyUnavailableError);
         assert.equal(error.grpcStatus, grpc.status.INVALID_ARGUMENT);
         assert.equal(error.code, undefined);
-        assert.equal(
-          error.message,
-          "OpenShell CreateSandbox failed with gRPC status 3: sandbox spec rejected by the Kubernetes driver",
-        );
+        assert.equal(error.message, "OpenShell CreateSandbox failed with gRPC status 3.");
+        assert.deepEqual(error.requestDiagnostic, {
+          method: "CreateSandbox",
+          grpcStatus: grpc.status.INVALID_ARGUMENT,
+          validationCategory: "UNKNOWN",
+        });
         return true;
       },
     );
@@ -1373,9 +1378,78 @@ test("OpenShell client serializes v0.1.5 credential providers, profiles, and att
   }
 });
 
+// Namespace cleanup finds prepared Git profiles by listing them (finding 2206): a profile on a
+// later page, or one without annotations, must still decode with its owner annotation intact.
+test("OpenShell client lists a Workspace's provider profiles across pages", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const requests = [];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    ListProviderProfiles(call, callback) {
+      requests.push(call.request);
+      callback(
+        null,
+        call.request.page_token === ""
+          ? { profiles: [{ id: "openai", scope: "platform" }], next_page_token: "page-2" }
+          : {
+              profiles: [
+                {
+                  id: "oce-git-" + "a".repeat(32),
+                  resource_version: "3",
+                  annotations: { "openclaw.dev/prepared-git-binding": "a".repeat(48) },
+                  scope: "workspace",
+                },
+              ],
+            },
+      );
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  try {
+    const profiles = await client.listProviderProfiles(
+      "tenant-workspace",
+      AbortSignal.timeout(5_000),
+    );
+    assert.deepEqual(
+      profiles.map(({ id, resourceVersion, annotations }) => ({
+        id,
+        resourceVersion,
+        annotations,
+      })),
+      [
+        { id: "openai", resourceVersion: "0", annotations: {} },
+        {
+          id: "oce-git-" + "a".repeat(32),
+          resourceVersion: "3",
+          annotations: { "openclaw.dev/prepared-git-binding": "a".repeat(48) },
+        },
+      ],
+    );
+    // Namespace cleanup reads the server-set scope to skip platform profiles.
+    assert.deepEqual(
+      profiles.map(({ definition }) => definition?.scope),
+      ["platform", "workspace"],
+    );
+    assert.deepEqual(
+      requests.map(({ workspace_scope, page_token }) => [workspace_scope?.workspace, page_token]),
+      [
+        ["tenant-workspace", ""],
+        ["tenant-workspace", "page-2"],
+      ],
+    );
+  } finally {
+    client.close();
+    server.forceShutdown();
+  }
+});
+
 test("OpenShell client retries setup after a failed first connection", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openshell-client-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openshell-client-");
   const rootCertificatePath = join(directory, "ca.pem");
   // Nothing listens here; once setup succeeds the call fails on the transport.
   const client = new GrpcOpenShellGatewayClient({
@@ -1400,13 +1474,14 @@ test("OpenShell client retries setup after a failed first connection", async (t)
   }
 });
 
-// Findings 2040 and 2042: only a gateway that did not answer (grpc-js reached nothing at its
-// address, or lost the connection under the call) is a Sandbox gateway outage, which a revision
-// pass waits out instead of spending its attempt budget. It stays a DependencyUnavailableError
-// (HTTP 503, other work's retries), keeps its gRPC status, and never carries the gateway's text.
-// An UNAVAILABLE the gateway answers itself (at the pinned OpenShell: resource admission's
-// Kubernetes 403/401/TLS errors, credential driver errors) and every other failure keep the
-// ordinary class, so they spend the attempt budget and fail within it.
+// Findings 2040, 2042 and 2048-2050: only a gateway that did not answer (grpc-js reached nothing
+// at its address, lost the connection under the call, or had no connection by the deadline) is a
+// Sandbox gateway outage, which a revision pass waits out instead of spending its attempt budget.
+// It stays a DependencyUnavailableError (HTTP 503, other work's retries), keeps its gRPC status,
+// and never carries the gateway's text. A status the gateway answers itself (at the pinned
+// OpenShell: resource admission's Kubernetes 403/401/TLS errors, credential driver errors, or an
+// interceptor's chosen reason, even one that reads like grpc-js's own) and every other failure
+// keep the ordinary class, so they spend the attempt budget and fail within it.
 test("OpenShell client names only an unanswered gateway request a Sandbox gateway outage", async (t) => {
   // The class the worker's revision pass waits on.
   const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
@@ -1424,10 +1499,24 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
     grpc.status.INTERNAL,
     grpc.status.DEADLINE_EXCEEDED,
     grpc.status.UNKNOWN,
+  ].map((code) => ({ code, details: refusal }));
+  // Finding 2048: an interceptor relays the reason and status it chooses, so the gateway can
+  // answer with the very details grpc-js uses for an unanswered request.
+  const lookalikes = [
+    [grpc.status.UNAVAILABLE, "Connection dropped"],
+    [grpc.status.UNAVAILABLE, "read ECONNRESET"],
+    [grpc.status.UNAVAILABLE, "Stream refused by server"],
+    [grpc.status.UNAVAILABLE, "Name resolution failed for target dns:openshell:8080"],
+    [
+      grpc.status.UNAVAILABLE,
+      "No connection established. Last error: connect ECONNREFUSED 10.0.0.1:8080. Resolution note: ",
+    ],
+    [grpc.status.DEADLINE_EXCEEDED, "Deadline exceeded after 1.000s,Waiting for LB pick"],
   ];
+  answers.push(...lookalikes.map(([code, details]) => ({ code, details })));
   const server = new grpc.Server();
   server.addService(OpenShell.service, {
-    Health: (_call, callback) => callback({ code: answers.shift(), details: refusal }),
+    Health: (_call, callback) => callback(answers.shift()),
     CreateSandbox: (_call, callback) =>
       callback({ code: grpc.status.UNAVAILABLE, details: refusal }),
     ExecSandbox: (call) => call.emit("error", { code: grpc.status.UNAVAILABLE, details: refusal }),
@@ -1461,11 +1550,11 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
     stdin: "",
     timeoutSeconds: 5,
   };
-  const outage = (error) => {
+  const outage = (error, code = grpc.status.UNAVAILABLE) => {
     assert.ok(error instanceof SandboxGatewayUnavailableError, String(error));
     assert.ok(error instanceof DependencyUnavailableError);
     assert.ok(!(error instanceof TransientDependencyError));
-    assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+    assert.equal(error.grpcStatus, code);
     return true;
   };
   const answered = (code) => (error) => {
@@ -1484,15 +1573,27 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
   for (const code of [grpc.status.INTERNAL, grpc.status.DEADLINE_EXCEEDED, grpc.status.UNKNOWN]) {
     await assert.rejects(client.health(AbortSignal.timeout(2_000)), answered(code));
   }
-  // CreateSandbox names the gateway's reason, as before finding 2040.
+  // The gateway answered in its own response (grpc-js keeps its content-type and date headers as
+  // the status metadata), so even grpc-js's own wording is an ordinary failed request.
+  for (const [code, details] of lookalikes) {
+    await assert.rejects(client.health(AbortSignal.timeout(2_000)), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError, details);
+      assert.ok(!(error instanceof SandboxGatewayUnavailableError), details);
+      assert.equal(error.grpcStatus, code);
+      return true;
+    });
+  }
+  // CreateSandbox keeps closed diagnostics (finding 2040): the gateway's reason stays out of
+  // the message, which HTTP dependency logging also emits.
   await assert.rejects(client.createSandbox(sandbox, AbortSignal.timeout(2_000)), (error) => {
     assert.ok(error instanceof DependencyUnavailableError, String(error));
     assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
     assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
     assert.equal(
       error.message,
-      `OpenShell CreateSandbox failed with gRPC status ${grpc.status.UNAVAILABLE}: ${refusal}`,
+      `OpenShell CreateSandbox failed with gRPC status ${grpc.status.UNAVAILABLE}.`,
     );
+    assert.equal(error.message.includes(refusal), false);
     return true;
   });
   await assert.rejects(
@@ -1537,6 +1638,164 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
   });
   t.after(() => refused.close());
   await assert.rejects(refused.health(AbortSignal.timeout(5_000)), outage);
+
+  // The gateway's host goes away under a call: its TCP reset reaches grpc-js as "read ECONNRESET".
+  const resetSockets = [];
+  const reset = createH2cServer();
+  reset.on("connection", (socket) => resetSockets.push(socket));
+  reset.on("stream", (stream) => {
+    stream.on("error", () => {});
+    for (const socket of resetSockets) {
+      socket.resetAndDestroy();
+    }
+  });
+  await new Promise((resolve) => reset.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => reset.close(resolve)));
+  const resetClient = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${reset.address().port}`,
+  });
+  t.after(() => resetClient.close());
+  await assert.rejects(resetClient.health(AbortSignal.timeout(5_000)), outage);
+
+  // The gateway's Service name no longer resolves (a deleted Service). The .invalid name never
+  // resolves (RFC 6761); a resolver that cannot be reached fails the lookup the same way.
+  const deleted = new GrpcOpenShellGatewayClient({ endpoint: "openshell-gone.invalid:8080" });
+  t.after(() => deleted.close());
+  await assert.rejects(deleted.health(AbortSignal.timeout(15_000)), outage);
+
+  // A connection that never gets as far as HTTP/2 (a lost node or a stale Service address drops
+  // the connect; here a listener accepts and stays silent) leaves the request unsent until its
+  // deadline: grpc-js answers DEADLINE_EXCEEDED while it still waits for a connection.
+  const silentSockets = [];
+  const silent = createNetServer((socket) => {
+    silentSockets.push(socket);
+    socket.on("error", () => {});
+  });
+  await new Promise((resolve) => silent.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    for (const socket of silentSockets) {
+      socket.destroy();
+    }
+    return new Promise((resolve) => silent.close(resolve));
+  });
+  const blackholed = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${silent.address().port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => blackholed.close());
+  await assert.rejects(blackholed.health(AbortSignal.timeout(5_000)), (error) =>
+    outage(error, grpc.status.DEADLINE_EXCEEDED),
+  );
+
+  // A gateway that received the request but never answered it is not an outage: grpc-js sent the
+  // request, so its DEADLINE_EXCEEDED names the remote address, not "Waiting for LB pick", and the
+  // request spends the attempt budget like any other failed request.
+  const hungSessions = [];
+  const hung = createH2cServer();
+  hung.on("session", (session) => hungSessions.push(session));
+  hung.on("stream", (stream) => stream.on("error", () => {}));
+  await new Promise((resolve) => hung.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    for (const session of hungSessions) {
+      session.destroy();
+    }
+    return new Promise((resolve) => hung.close(resolve));
+  });
+  const unanswering = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${hung.address().port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => unanswering.close());
+  await assert.rejects(unanswering.health(AbortSignal.timeout(5_000)), (error) => {
+    assert.ok(error instanceof DependencyUnavailableError, String(error));
+    assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+    assert.equal(error.grpcStatus, grpc.status.DEADLINE_EXCEEDED);
+    return true;
+  });
+
+  // A status sent in trailers after the response headers carries no other metadata, so only its
+  // code and exact details tell it from grpc-js's own: none of these is an unanswered request.
+  const trailers = [
+    [grpc.status.UNAVAILABLE, "Connection dropped by gateway policy"],
+    [grpc.status.UNAVAILABLE, "policy: Connection dropped"],
+    [grpc.status.INTERNAL, "Connection dropped"],
+  ];
+  const trailing = createH2cServer();
+  trailing.on("stream", (stream) => {
+    const [code, details] = trailers.shift();
+    stream.respond(
+      { ":status": 200, "content-type": "application/grpc" },
+      { waitForTrailers: true },
+    );
+    stream.on("wantTrailers", () =>
+      stream.sendTrailers({ "grpc-status": String(code), "grpc-message": encodeURI(details) }),
+    );
+    stream.end();
+  });
+  await new Promise((resolve) => trailing.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => trailing.close(resolve)));
+  const trailed = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${trailing.address().port}`,
+  });
+  t.after(() => trailed.close());
+  for (const [code, details] of [...trailers]) {
+    await assert.rejects(trailed.health(AbortSignal.timeout(5_000)), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError, details);
+      assert.ok(!(error instanceof SandboxGatewayUnavailableError), details);
+      assert.equal(error.grpcStatus, code);
+      return true;
+    });
+  }
+
+  // Finding 2104: a kubectl port-forward whose Pod is gone accepts one connection, closes it
+  // before the HTTP/2 handshake ("Failed to connect"), then exits. That close is not an
+  // unanswered request, and grpc-js repeats it until its next connection attempt (about a
+  // second later); only once nothing listens is it an outage. The OpenShell k3d proof closes
+  // its forward before stopping the gateway, so its passes see only the refusal.
+  const staleSockets = [];
+  const stale = createNetServer((socket) => {
+    staleSockets.push(socket);
+    socket.on("error", () => {});
+    socket.end();
+    stale.close();
+  });
+  await new Promise((resolve) => stale.listen(0, "127.0.0.1", resolve));
+  // grpc-js leaves its end of the closed connection open, so the test destroys this one.
+  t.after(() => {
+    for (const socket of staleSockets) {
+      socket.destroy();
+    }
+    if (stale.listening) {
+      stale.close();
+    }
+  });
+  const forwarded = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${stale.address().port}`,
+  });
+  t.after(() => forwarded.close());
+  const ordinary = (error) => {
+    assert.ok(error instanceof DependencyUnavailableError, String(error));
+    assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+    assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+    return true;
+  };
+  await assert.rejects(forwarded.health(AbortSignal.timeout(5_000)), ordinary);
+  let closed;
+  for (const deadline = Date.now() + 10_000; closed === undefined && Date.now() < deadline;) {
+    const error = await forwarded.health(AbortSignal.timeout(5_000)).then(
+      () => null,
+      (cause) => cause,
+    );
+    assert.notEqual(error, null, "a stale forward's health retry must not succeed");
+    if (error instanceof SandboxGatewayUnavailableError) {
+      closed = error;
+    } else {
+      ordinary(error);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  assert.ok(closed !== undefined, "a closed forward must read as an outage");
+  outage(closed);
 });
 
 function selfSignedCertificate(directory, name, subjectAltName) {
@@ -1596,8 +1855,7 @@ async function tlsHealthGateway(keyPath, certPath, bind, seen) {
 
 test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP and sends no SNI", async (t) => {
   const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
-  const directory = await mkdtemp(join(tmpdir(), "openshell-grpc-tls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openshell-grpc-tls-");
   // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
   // The probe only binds, so it needs no certificate.
   const probe = createSecureServer();
@@ -1702,6 +1960,224 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
       "an untrusting client never reaches the gateway over the trusting client's connection",
     );
   });
+});
+
+// Exercise the real grpc-js connector with signed client certificates. This proves
+// transport identity and isolation, not the supplier's application authorization.
+function signedClientCertificate(directory, name, ca) {
+  const keyPath = join(directory, `${name}.key`);
+  const certPath = join(directory, `${name}.crt`);
+  const csrPath = join(directory, `${name}.csr`);
+  for (const args of [
+    [
+      "req",
+      "-new",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-keyout",
+      keyPath,
+      "-out",
+      csrPath,
+      "-subj",
+      "/CN=openshell-client/OU=openshell-user",
+    ],
+    [
+      "x509",
+      "-req",
+      "-in",
+      csrPath,
+      "-CA",
+      ca.certPath,
+      "-CAkey",
+      ca.keyPath,
+      "-set_serial",
+      "2",
+      "-days",
+      "1",
+      "-out",
+      certPath,
+    ],
+  ]) {
+    const generated = spawnSync("openssl", args, { encoding: "utf8" });
+    assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  }
+  return { mode: "mtls", certificatePath: certPath, privateKeyPath: keyPath };
+}
+
+async function mutualTls(t) {
+  const directory = await temporaryDirectory(t, "openshell-mtls-");
+  const identity = selfSignedCertificate(directory, "server", "DNS:localhost,IP:127.0.0.1");
+  const authority = selfSignedCertificate(directory, "client-ca", "DNS:client-ca.invalid");
+  const auth = signedClientCertificate(directory, "client", authority);
+  const tls = {
+    key: readFileSync(identity.keyPath),
+    cert: readFileSync(identity.certPath),
+    ca: readFileSync(authority.certPath),
+  };
+  return { tls, auth, rootCertificatePath: identity.certPath, directory };
+}
+
+test("OpenShell mTLS authenticates DNS and IP channels and refuses missing or foreign identities", async (t) => {
+  const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
+  const { tls, auth, rootCertificatePath, directory } = await mutualTls(t);
+  const foreignCA = selfSignedCertificate(directory, "foreign-ca", "DNS:foreign.invalid");
+  const foreign = signedClientCertificate(directory, "foreign", foreignCA);
+  const seen = [];
+  const server = createSecureServer({
+    ...tls,
+    requestCert: true,
+    rejectUnauthorized: true,
+  });
+  server.on("stream", (stream, headers) => {
+    const socket = stream.session.socket;
+    seen.push({
+      authorized: socket.authorized,
+      subject: socket.getPeerCertificate().subject,
+      sni: socket.servername,
+      authorization: headers.authorization,
+    });
+    stream.respond(
+      { ":status": 200, "content-type": "application/grpc" },
+      { waitForTrailers: true },
+    );
+    stream.on("wantTrailers", () => stream.sendTrailers({ "grpc-status": "0" }));
+    stream.end(Buffer.from([0, 0, 0, 0, 2, 0x08, 0x01]));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  for (const host of ["localhost", "127.0.0.1"]) {
+    await t.test(host, async (t) => {
+      const makeClient = (clientAuth, trustedServer = rootCertificatePath) => {
+        const client = new GrpcOpenShellGatewayClient({
+          endpoint: `https://${host}:${server.address().port}`,
+          rootCertificatePath: trustedServer,
+          auth: clientAuth,
+          requestTimeoutMs: 1_000,
+        });
+        t.after(() => client.close());
+        return client;
+      };
+      await makeClient(auth).health(AbortSignal.timeout(5_000));
+      assert.equal(seen.at(-1).authorized, true);
+      assert.equal(seen.at(-1).subject.CN, "openshell-client");
+      assert.equal(seen.at(-1).subject.OU, "openshell-user");
+      assert.equal(seen.at(-1).sni, host === "localhost" ? "localhost" : false);
+      assert.equal(seen.at(-1).authorization, undefined);
+      const count = seen.length;
+      // None may reuse the authenticated channel of the successful client.
+      for (const rejected of [
+        makeClient(undefined),
+        makeClient(foreign),
+        makeClient(auth, foreignCA.certPath),
+      ]) {
+        await assert.rejects(rejected.health(AbortSignal.timeout(5_000)), (error) => {
+          assert.ok(error instanceof DependencyUnavailableError, String(error));
+          // A refused identity is never a Sandbox gateway outage: waiting cannot fix it (owner
+          // rule: retry network failures and timeouts, never an authentication failure). The IP
+          // channel proves it. localhost can also resolve to ::1, where nothing listens here,
+          // and grpc-js reports only the last address's error, which can be that refused connect.
+          if (host === "127.0.0.1") {
+            assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+          }
+          return true;
+        });
+      }
+      assert.equal(seen.length, count, "unverified peers never reach an RPC");
+      await assert.rejects(
+        makeClient({ ...auth, privateKeyPath: join(directory, "missing.key") }).health(
+          AbortSignal.timeout(5_000),
+        ),
+        { code: "ENOENT" },
+      );
+    });
+  }
+  assert.throws(
+    () => new GrpcOpenShellGatewayClient({ endpoint: "http://127.0.0.1:1", auth }),
+    /mTLS requires an HTTPS/,
+  );
+  assert.throws(
+    () =>
+      new GrpcOpenShellGatewayClient({
+        endpoint: "https://127.0.0.1:1",
+        auth: { ...auth, certificatePath: "relative.crt" },
+      }),
+    /paths must be absolute/,
+  );
+});
+
+test("OpenShell service transport never sends the administrator mTLS identity", async (t) => {
+  const { tls, auth, rootCertificatePath } = await mutualTls(t);
+  const listen = async (options, handler) => {
+    const server = createHttpsServer({ ...tls, ...options }, handler);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    return server;
+  };
+  const serviceDocument = (server) => {
+    const client = new GrpcOpenShellGatewayClient({
+      endpoint: `https://127.0.0.1:${server.address().port}`,
+      rootCertificatePath,
+      auth,
+    });
+    t.after(() => client.close());
+    return client.getServiceDocument(
+      "https://harness.example.invalid",
+      "/status",
+      "scoped-service-token",
+      AbortSignal.timeout(5_000),
+    );
+  };
+
+  // First prove that this listener requests and accepts the administrator certificate.
+  const peers = [];
+  const strict = await listen(
+    { requestCert: true, rejectUnauthorized: true },
+    (request, response) => {
+      peers.push(request.socket.getPeerCertificate().subject.CN);
+      response.writeHead(204).end();
+    },
+  );
+  const status = await new Promise((resolve, reject) => {
+    const request = httpsGet(
+      {
+        host: "127.0.0.1",
+        port: strict.address().port,
+        ca: tls.cert,
+        cert: readFileSync(auth.certificatePath),
+        key: readFileSync(auth.privateKeyPath),
+        agent: false,
+        signal: AbortSignal.timeout(5_000),
+      },
+      (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      },
+    );
+    request.once("error", reject);
+  });
+  assert.equal(status, 204);
+  assert.deepEqual(peers, ["openshell-client"]);
+
+  // On the service path the same listener must see a missing certificate, not just
+  // an arbitrary connection failure. Sending the administrator identity would succeed.
+  const rejected = once(strict, "tlsClientError", { signal: AbortSignal.timeout(5_000) });
+  const [[error]] = await Promise.all([
+    rejected,
+    assert.rejects(serviceDocument(strict), DependencyUnavailableError),
+  ]);
+  assert.equal(error.code, "ERR_SSL_PEER_DID_NOT_RETURN_A_CERTIFICATE");
+  assert.equal(peers.length, 1, "the service request never reached an authenticated socket");
+
+  const requests = [];
+  const service = await listen({}, (request, response) => {
+    requests.push(request.headers.authorization);
+    response.writeHead(200, { "content-type": "application/json" }).end('{"ready":true}');
+  });
+  assert.deepEqual(await serviceDocument(service), { status: 200, json: { ready: true } });
+  assert.deepEqual(requests, ["Bearer scoped-service-token"]);
 });
 
 test("OpenShell client cancels an in-flight provider request", async () => {
@@ -1959,6 +2435,169 @@ test("OpenShell client reads v0.1.5 sandbox logs with nanosecond times", async (
   }
 });
 
+function pinnedService(fixture = "openshell-v0.1.5-wire.proto") {
+  const definition = loader.loadSync(join(import.meta.dirname, "../fixtures", fixture), {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: false,
+    oneofs: true,
+  });
+  return grpc.loadPackageDefinition(definition).openshell.v1.OpenShell.service;
+}
+
+test("installed custody observer follows the supplier's structured push shape through GetSandboxLogs", async (t) => {
+  const workspace = "tenant-workspace";
+  const sandbox = "selected-enrolled-sandbox";
+  const sandboxId = "immutable-sandbox-id";
+  const supervisor = {
+    metadata: {
+      uid: "supervisor-uid",
+      namespace: workspace,
+      labels: {
+        "openshell.ai/sandbox-id": sandboxId,
+        "openshell.ai/boundary-role": "supervisor",
+      },
+    },
+    status: { containerStatuses: [{ containerID: "supervisor-container-id", restartCount: 0 }] },
+  };
+  // Shape produced by the Rust LogPushLayer, with source and sandbox ID set by
+  // the gateway. Exercise real protobuf and the production client's mapped fields.
+  const id = "0199f07b-a105-7001-8900-0123456789ab";
+  const entry = (event, changes, requestId = id) => ({
+    sandbox_id: sandboxId,
+    source: "sandbox",
+    level: "INFO",
+    target: "openshell_supervisor_network::l7::rest::credentials",
+    message: "Protected response custody transition",
+    event_time: { seconds: "1790000000", nanos: 123_000_000 },
+    fields: { request_id: requestId, response_custody_event: event },
+    ...changes,
+  });
+  const initial = entry(null, {
+    source: "gateway",
+    target: "ocsf",
+    message: "startup",
+    fields: {},
+  });
+  let reply;
+  const server = new grpc.Server();
+  server.addService(pinnedService(), {
+    GetSandboxLogs(call, callback) {
+      assert.deepEqual(call.request, {
+        sandbox,
+        workspace_scope: { workspace, selection: "workspace" },
+        lines: 2000,
+      });
+      const response = reply();
+      if (response === undefined) {
+        return; // Deliberately leave this read pending until the observer cancels it.
+      }
+      const [logs, buffer_total = logs.length] = response;
+      callback(null, { logs, buffer_total });
+    },
+  });
+  const port = await bindWireServer(server);
+  const gatewayClient = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  t.after(() => {
+    gatewayClient.close();
+    server.forceShutdown();
+  });
+  const start = async (deliveryTimeoutMs = 3000) => {
+    reply = () => [[initial]];
+    const custody = createCustodyTransitions(
+      {
+        gatewayClient,
+        workspace,
+        sandbox,
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+      },
+      { deliveryTimeoutMs, pollIntervalMs: 5 },
+    );
+    return { custody, before: await custody.snapshot() };
+  };
+  await t.test(
+    "partial batch at origin hold then terminal batch through FIN, same operation",
+    async () => {
+      const { custody, before } = await start();
+      const events = ["resolve_accepted", "permit_accepted"];
+      let n = 0;
+      reply = () => [[initial, ...events.slice(0, n++).map((event) => entry(event))]];
+      assert.equal(await custody.expectAfter(before, events), id);
+      events.push("response_released");
+      assert.equal(await custody.expectAfter(before, events), id);
+    },
+  );
+  const denied = ["resolve_refused", "no_permit", "response_blocked"];
+  const lines = denied.map((event) => entry(event));
+  await t.test(
+    "negative requires affirmative no_permit, not silence or a missing prefix",
+    async () => {
+      const { custody, before } = await start(250);
+      await assert.rejects(
+        custody.expectAfter(before, denied),
+        /unobservable before delivery deadline/,
+      );
+      reply = () => [[initial, ...lines.slice(1)]];
+      await assert.rejects(custody.expectAfter(before, denied), /missing, or ambiguous/);
+      // Use a fresh observer; the damaged sequence above cannot be repaired by polling.
+      const fresh = await start();
+      reply = () => [[initial, ...lines]];
+      assert.equal(await fresh.custody.expectAfter(fresh.before, denied), id);
+    },
+  );
+  await t.test(
+    "delivery deadline during an in-flight log read is explicitly unobservable",
+    async () => {
+      const { custody, before } = await start(150);
+      reply = () => undefined;
+      await assert.rejects(custody.expectAfter(before, denied), (error) => {
+        assert.match(
+          error.message,
+          /unobservable before delivery deadline.*GetSandboxLogs read timed out/,
+        );
+        assert.equal(error.cause.name, "TimeoutError");
+        return true;
+      });
+    },
+  );
+  for (const [name, logs, error, bufferTotal] of [
+    [
+      "foreign source",
+      [initial, entry(denied[0], { source: "gateway" })],
+      /not the selected supervisor INFO/,
+    ],
+    [
+      "foreign target",
+      [initial, entry(denied[0], { target: "other" })],
+      /not the selected supervisor INFO/,
+    ],
+    ["foreign sandbox", [initial, entry(denied[0], { sandbox_id: "other" })], /foreign Sandbox/],
+    [
+      "invalid request ID",
+      [initial, entry(denied[0], {}, "malformed")],
+      /malformed supplier custody/,
+    ],
+    ["unknown transition", [initial, entry("future_transition")], /malformed supplier custody/],
+    [
+      "mixed request IDs",
+      [initial, lines[0], entry(denied[1], {}, id.replace(/ab$/, "cd"))],
+      /missing, or ambiguous/,
+    ],
+    ["lost baseline", lines, /supplier log prefix changed/],
+    ["full ring could conceal loss", Array(2000).fill(initial), /incomplete supplier log ring/],
+    ["ambiguous or truncated ring", [initial, ...lines], /incomplete supplier log ring/, 2000],
+  ]) {
+    await t.test("reject " + name, async () => {
+      const { custody, before } = await start();
+      reply = () => [logs, bufferTotal];
+      await assert.rejects(custody.expectAfter(before, denied), error);
+    });
+  }
+});
+
 test("OpenShell client refuses a sandbox log response over its 4 MiB receive limit", async () => {
   // OpenShell does not bound a log line, and OCC buffers the whole read before it
   // withholds oversized lines. The receive limit is that read's memory bound.
@@ -2069,6 +2708,7 @@ test("OpenShell client serializes v0.1.5 provider updates and detach receipts", 
       "sandbox-wire",
       "oce-cs-000000000000000000000000",
       AbortSignal.timeout(2_000),
+      { expectedResourceVersion: "17", requestId: "expiry-detach-wire" },
     );
     const status = await client.getSandboxProviderStatus(
       "tenant-workspace",
@@ -2109,7 +2749,9 @@ test("OpenShell client serializes v0.1.5 provider updates and detach receipts", 
     assert.equal(requests.detaches[0].workspace_scope.workspace, "tenant-workspace");
     assert.equal(requests.detaches[0].sandbox, "sandbox-wire");
     assert.equal(requests.detaches[0].provider, "oce-cs-000000000000000000000000");
-    assert.deepEqual(detached, { receiptId: "receipt-detach" });
+    assert.equal(requests.detaches[0].expected_resource_version, "17");
+    assert.equal(requests.detaches[0].request_id, "expiry-detach-wire");
+    assert.deepEqual(detached, { receiptId: "receipt-detach", detached: true });
     assert.equal(requests.statuses[0].receipt_id, "receipt-detach");
     assert.equal(status.state, "PROVIDER_READINESS_STATE_REVOKED");
     // An empty value would leave the old credential in place, so the client refuses it.
@@ -2427,4 +3069,109 @@ test("OpenShell client serializes v0.1.5 gateway-owned refresh", async () => {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
   }
+});
+
+test("installed workload clients select the enrolled Sandbox at authenticated ExecSandbox; a lost Exit is not replayed", async (t) => {
+  const { tls, auth, rootCertificatePath } = await mutualTls(t);
+  // Record the real clients' mTLS RPCs, independently of any kubectl or cluster.
+  // Only an installed run can establish that the supplier launched the filtered child.
+  const { GetSandbox } = pinnedService();
+  const { ExecSandbox } = pinnedService("openshell-workload-exec.proto");
+  const binding = { sandboxName: "managed-reader", sandboxId: "enrolled-id" };
+  const workspace = "managed-workspace";
+  const launches = [];
+  const phases = [];
+  let selectedId = binding.sandboxId;
+  let loseExit = false;
+  const server = new grpc.Server();
+  server.addService(
+    { GetSandbox, ExecSandbox },
+    {
+      GetSandbox({ request }, callback) {
+        callback(null, {
+          sandbox: {
+            metadata: {
+              id: selectedId,
+              name: request.name,
+              workspace: request.workspace_scope.workspace,
+            },
+          },
+        });
+      },
+      ExecSandbox(call) {
+        const { request } = call;
+        const dispatch = phases.find((entry) => entry.requestId === request.request_id);
+        launches.push({ request, dispatch });
+        call.write({ stdout: { data: Buffer.from("recipient") } });
+        call.write({ stderr: { data: Buffer.from("diagnostic") } });
+        call.write({ stdout: { data: Buffer.from("-bytes") } });
+        if (!loseExit) {
+          call.write({ exit: {} });
+        }
+        call.end();
+      },
+    },
+  );
+  const credentials = grpc.ServerCredentials.createSsl(
+    tls.ca,
+    [{ cert_chain: tls.cert, private_key: tls.key }],
+    true,
+  );
+  const port = await bindWireServer(server, credentials);
+  t.after(() => server.forceShutdown());
+  const backend = {
+    endpoint: `https://127.0.0.1:${port}`,
+    rootCertificatePath,
+    auth,
+  };
+  const gatewayClient = new GrpcOpenShellGatewayClient(backend);
+  t.after(() => gatewayClient.close());
+  const execWorkload = createManagedWorkloadExec(t, {
+    backend,
+    workspace,
+    gatewayClient,
+    checkpoint: (phase, details) => phases.push({ phase, ...details }),
+  });
+  const inAgent = async (...command) => {
+    const { stdout, stderr, exitCode } = await execWorkload(binding, command);
+    assert.equal(exitCode, 0);
+    assert.equal(stderr.toString(), "diagnostic");
+    return stdout.toString();
+  };
+  const target = "https://provider.test/repos/fixture/repository";
+  const { curl, throughFin } = agentClients({ inAgent }, new URL(target).origin);
+  assert.deepEqual(await Promise.all([curl(), throughFin()]), [
+    "recipient-bytes",
+    "recipient-bytes",
+  ]);
+
+  assert.deepEqual(launches.map(({ request }) => request.command[0]).sort(), ["curl", "node"]);
+  for (const { request, dispatch } of launches) {
+    assert.equal(request.sandbox, binding.sandboxName);
+    assert.equal(request.workspace_scope.workspace, workspace);
+    assert.equal(request.command.at(-1), target, "ordinary argv, not a shell command string");
+    assert.equal(request.no_login_shell, true);
+    assert.equal(request.execution_timeout.seconds, "120");
+    assert.equal(
+      dispatch.phase,
+      "managed-workload-exec-dispatch-unknown",
+      "persisted before launch",
+    );
+    assert.equal(dispatch.sandboxId, binding.sandboxId);
+  }
+  assert.notEqual(launches[0].dispatch.requestId, launches[1].dispatch.requestId);
+
+  loseExit = true;
+  await assert.rejects(curl(), /Unconfirmed managed workload exec/);
+  assert.equal(
+    launches.length,
+    3,
+    "even clean gRPC completion cannot cause a missing Exit to be retried",
+  );
+  assert.equal(phases.at(-1).phase, "managed-workload-exec-unconfirmed");
+  assert.equal(phases.at(-1).requestId, launches[2].dispatch.requestId);
+
+  selectedId = "replaced-id";
+  await assert.rejects(curl(), /supplier Sandbox replaced/);
+  assert.equal(launches.length, 3, "an old enrolled recipient never silently switches Sandbox");
 });
