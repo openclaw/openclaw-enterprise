@@ -20,22 +20,31 @@ type externalOpenShell struct {
 	oidcTokenURL     string
 	oidcClientID     string
 	clientSecretPath string
-	// addresses and port are the translated exact gateway targets, resolved once
-	// per start for NetworkPolicies, which cannot select hostnames.
-	addresses []string
-	port      int
+	// addresses and port are the translated exact gateway targets, and
+	// tokenAddresses and tokenPort the issuer's, resolved once per start for
+	// NetworkPolicies, which cannot select hostnames.
+	addresses      []string
+	port           int
+	tokenAddresses []string
+	tokenPort      int
 }
 
-// resolve translates the endpoint host to exact addresses for NetworkPolicy
-// egress rules, the same translation production egress configuration documents
-// for its /32 endpoints.
+// resolve translates the endpoint and token endpoint hosts to exact addresses
+// for NetworkPolicy egress rules, the same translation production egress
+// configuration documents for its /32 endpoints.
 func (e *externalOpenShell) resolve() error {
 	addresses, port, err := openShellExternalAddresses(e.endpoint)
 	if err != nil {
 		return err
 	}
+	tokenAddresses, tokenPort, err := openShellExternalAddresses(e.oidcTokenURL)
+	if err != nil {
+		return fmt.Errorf("resolve the OpenShell OIDC token endpoint: %w", err)
+	}
 	e.addresses = addresses
 	e.port = port
+	e.tokenAddresses = tokenAddresses
+	e.tokenPort = tokenPort
 	return nil
 }
 
@@ -66,9 +75,9 @@ func readExternalOpenShell(env map[string]string) (*externalOpenShell, error) {
 	if err != nil {
 		return nil, err
 	}
-	tokenURL, err := url.Parse(oidc["OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL"])
-	if err != nil || !tokenURL.IsAbs() || (tokenURL.Scheme != "https" && tokenURL.Scheme != "http") {
-		return nil, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL must be an absolute http or https URL")
+	tokenURL, err := openShellOidcTokenURL(oidc["OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL"])
+	if err != nil {
+		return nil, err
 	}
 	secretPath := oidc["OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_SECRET_FILE"]
 	if !filepath.IsAbs(secretPath) {
@@ -83,24 +92,65 @@ func readExternalOpenShell(env map[string]string) (*externalOpenShell, error) {
 	}
 	return &externalOpenShell{
 		endpoint:         origin,
-		oidcTokenURL:     oidc["OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL"],
+		oidcTokenURL:     tokenURL,
 		oidcClientID:     oidc["OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_ID"],
 		clientSecretPath: secretPath,
 	}, nil
 }
 
-// openShellExternalEndpoint accepts the Backend's origin forms: an http or https
-// origin without credentials, path, query, or fragment.
+// selectExternalOpenShell reads, validates, and resolves the external gateway
+// selection for a start. The protected egress profile refuses the combination:
+// it pins its own mTLS-authenticated in-cluster gateway, and its Helm values
+// and egress authority cannot carry an OIDC-authenticated external connection.
+func selectExternalOpenShell(env map[string]string, protectedEgress bool) (*externalOpenShell, error) {
+	external, err := readExternalOpenShell(env)
+	if err != nil {
+		return nil, err
+	}
+	if external == nil {
+		return nil, nil
+	}
+	if protectedEgress {
+		return nil, fmt.Errorf("the protected egress profile cannot select an external OpenShell gateway; unset OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT or disable protected egress")
+	}
+	if err := external.resolve(); err != nil {
+		return nil, err
+	}
+	return external, nil
+}
+
+// openShellOidcTokenURL applies the Backend parser's rule so a launcher
+// selection cannot reach Installation startup before failing: https without
+// credentials, query, or fragment, or cleartext to a numeric loopback address.
+func openShellOidcTokenURL(value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || !parsed.IsAbs() {
+		return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL must be an absolute URL")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL must not include credentials, a query, or a fragment")
+	}
+	loopback := parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1"
+	if parsed.Scheme == "https" || (parsed.Scheme == "http" && loopback) {
+		return parsed.String(), nil
+	}
+	return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL must be https, or http to a numeric loopback address")
+}
+
+// openShellExternalEndpoint accepts a Backend-compatible https origin without
+// credentials, path, query, or fragment. The rendered Backend authenticates with
+// OIDC, which the parser admits only over TLS, so cleartext endpoints are
+// refused here instead of failing later at Installation startup.
 func openShellExternalEndpoint(value string) (string, error) {
 	if !strings.Contains(value, "://") {
-		return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT must include an http or https scheme")
+		return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT must include an https scheme")
 	}
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT is invalid: %w", err)
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT must use http or https")
+	if parsed.Scheme != "https" {
+		return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT must use https")
 	}
 	if parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT must be an origin without credentials, path, query, or fragment")
