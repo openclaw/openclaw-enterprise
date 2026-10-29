@@ -5,6 +5,16 @@ export interface ConnectionEndpoint {
   readonly path: string;
 }
 
+/** Public OAuth metadata used to configure an MCP Connection Template. */
+export interface McpAuthorizationMetadata {
+  readonly serverUrl: string;
+  readonly resource: string;
+  readonly issuer: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly scopes: readonly string[];
+}
+
 /** The values a person approves when they connect; any change creates a new version. */
 export interface ConnectionTemplateValues {
   /** MCP transport and OAuth resource identifiers approved with this version. */

@@ -27,7 +27,9 @@ To set up Gmail, follow
 - A configured public origin. The callback URI is `<public origin>/oauth/callback`;
   OCC answers `503` to a connect request without one.
 
-Without the Drivers, template and connect operations return `501`.
+MCP metadata discovery runs in the OCE API. Administrators can preview it before
+selecting credential Drivers. Saving a template or starting a configured OAuth
+connection returns `501` if the required Drivers are missing.
 
 ### Token endpoint egress
 
@@ -72,10 +74,10 @@ register with the provider.
 ### Discover an MCP connection template
 
 In **Settings → Connection templates**, select **New MCP connection template** and
-enter the MCP server URL. The Credential
-Refresh Driver uses the TypeScript MCP client to discover the resource, issuer,
-OAuth endpoints, and proposed scopes. Discovery supports publicly routable HTTPS
-servers with one authorization server. It runs without the client secret.
+enter the MCP server URL. The OCE API uses the TypeScript MCP client to discover
+the resource, issuer, OAuth endpoints, and proposed scopes. Discovery supports
+publicly routable HTTPS servers with one authorization server. It runs without
+the client secret.
 
 Review the values, choose the scopes, and enter the registered OAuth client. OCC
 checks the server metadata again before saving the version or registering the

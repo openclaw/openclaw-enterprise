@@ -1,7 +1,7 @@
 ---
 created: "2026-10-20"
-updated: "2026-10-28"
-last_updated_session: "authoring-run/6d878668-6673-4fd1-8383-71f47974a66c"
+updated: "2026-10-29"
+last_updated_session: "authoring-run/ef89923d-dc3b-4533-8dec-acb1460ffdb4"
 ---
 
 # Agent OAuth connection lifecycle Flow
@@ -17,11 +17,12 @@ source is deleted. This flow stops when the source is bound, or when disconnect
 removes it. Deployment and attachment continue in the
 [credential source lifecycle](credential-source-lifecycle.md).
 
-Administrators can prepare an MCP connection in Settings. The selected Credential
-Refresh Driver reads the server's public metadata and OCC checks it again before
-registering the client. The version records the server URL and OAuth resource.
-On this stack, Agent connection admission stops before registering a source for
-an MCP template because the selected driver hands refresh to OpenShell.
+Administrators can prepare an MCP connection template in Settings. The OCE API
+uses the MCP SDK to read the server's public OAuth metadata, then repeats discovery
+when the administrator saves. OCC checks the settings against that metadata before
+registering the client. The saved version pins the server URL and OAuth resource.
+Connecting an Agent returns `501` before creating a credential source. That step
+requires the Token Service to accept the OAuth grant for refresh.
 [Connection template setup](../reference/connection-templates.md#discover-an-mcp-connection-template)
 
 ## Entry Points
@@ -211,6 +212,8 @@ deletion.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 20:34: Identify the OCE API as the owner of MCP discovery. (authoring-run/ef89923d-dc3b-4533-8dec-acb1460ffdb4 - 1cd6b9b7)
 
 - 2026-10-28 15:12: Document MCP discovery and Agent admission. (authoring-run/6d878668-6673-4fd1-8383-71f47974a66c - 11c02a29)
 

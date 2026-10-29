@@ -588,6 +588,7 @@ export interface RuntimeLogReadGrant {
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
 export interface ControllerOptions {
+  readonly discoverMcpAuthorization?: (serverUrl: string) => Promise<McpAuthorizationMetadata>;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   readonly authorize?: (
     request: AuthorizationRequest,
@@ -1659,6 +1660,7 @@ export class OpenClawController {
   readonly installation: Readonly<Installation>;
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  private readonly mcpDiscovery?: ControllerOptions["discoverMcpAuthorization"];
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
@@ -1700,6 +1702,7 @@ export class OpenClawController {
     });
     validateSandboxNetworkGrants(options.sandboxNetworkPolicyCeiling ?? []);
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    this.mcpDiscovery = options.discoverMcpAuthorization;
     this.authorization = options.authorize;
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
@@ -6058,14 +6061,13 @@ export class OpenClawController {
   }
 
   private async discoverMcpAuthorization(serverUrl: string): Promise<McpAuthorizationMetadata> {
-    const refresh = this.connectionRefreshDriver();
-    if (!refresh.discoverMcpAuthorization) {
+    if (!this.mcpDiscovery) {
       throw new NotImplementedError(
         "connection_templates",
-        "The selected Credential Refresh Driver does not support MCP discovery.",
+        "MCP discovery is unavailable in this controller.",
       );
     }
-    return refresh.discoverMcpAuthorization(serverUrl);
+    return this.mcpDiscovery(serverUrl);
   }
 
   async createConnectionTemplate(
@@ -6498,14 +6500,6 @@ export class OpenClawController {
     await this.authorize(principalId, "read", agentRef);
     await this.authorize(principalId, "update", agentRef);
     await this.authorizeConnectionTemplateUse(principalId, input.connectionTemplateId, namespaceId);
-    const refresh = this.connectionRefreshDriver();
-    const secrets = this.secretDriver();
-    if (!secrets.withValue) {
-      throw new NotImplementedError(
-        "connection_templates",
-        "Connections require a Secret Driver that can read stored values.",
-      );
-    }
     const { template, agent } = await this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       if (namespace.status !== "ready") {
@@ -6544,6 +6538,14 @@ export class OpenClawController {
       throw new NotImplementedError(
         "mcp_oauth",
         "Connecting this MCP account requires a credential service that prepares and delivers the access token.",
+      );
+    }
+    const refresh = this.connectionRefreshDriver();
+    const secrets = this.secretDriver();
+    if (!secrets.withValue) {
+      throw new NotImplementedError(
+        "connection_templates",
+        "Connections require a Secret Driver that can read stored values.",
       );
     }
     // The source is registered before consent with the approved values; its refresh is

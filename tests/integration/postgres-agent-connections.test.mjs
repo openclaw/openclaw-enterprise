@@ -231,7 +231,7 @@ function selectConnectionDrivers(fixture) {
   fixture.controller.selectDriver("credential_gateway", gateway.id);
   fixture.controller.registerDriver(refresh);
   fixture.controller.selectDriver("credential_refresh", refresh.id);
-  return { ...openShell, refreshDriver: refresh };
+  return openShell;
 }
 
 test(
@@ -835,14 +835,6 @@ test(
   },
   async (t) => {
     const consoleOrigin = `https://127.0.0.1:${consolePort}`;
-    const fixture = await createPostgresAgentApp(t, {
-      label: `mcp-settings-${randomUUID().slice(0, 8)}`,
-      authSecret: "openclaw-mcp-settings-auth-secret-minimum-32-bytes",
-      authOrigin: consoleOrigin,
-      appOptions: { publicOrigin: consoleOrigin },
-    });
-    const { namespace, agent } = await fixture.deployAgent("MCP Settings");
-    const { refreshDriver, providers } = selectConnectionDrivers(fixture);
     const metadata = {
       serverUrl: "https://tools.example.test:8443/tenant/mcp",
       resource: "https://tools.example.test:8443",
@@ -853,10 +845,18 @@ test(
     };
     // The provider's discovery result is controlled. Settings, admission, registration,
     // template storage, and the Agent's connection endpoint run through the production app.
-    t.mock.method(refreshDriver, "discoverMcpAuthorization", async (serverUrl) => {
+    const discoverMcpAuthorization = t.mock.fn(async (serverUrl) => {
       assert.equal(serverUrl, metadata.serverUrl);
       return metadata;
     });
+    const fixture = await createPostgresAgentApp(t, {
+      label: `mcp-settings-${randomUUID().slice(0, 8)}`,
+      authSecret: "openclaw-mcp-settings-auth-secret-minimum-32-bytes",
+      authOrigin: consoleOrigin,
+      controllerOptions: { discoverMcpAuthorization },
+      appOptions: { publicOrigin: consoleOrigin },
+    });
+    const { namespace, agent } = await fixture.deployAgent("MCP Settings");
     const { page, pageErrors } = await openSettingsBrowser(t, fixture.app, consoleOrigin);
     await page.goto(`${consoleOrigin}/console/settings`);
     await page.getByRole("button", { name: "New MCP connection template" }).click();
@@ -865,6 +865,8 @@ test(
     await discovery.getByRole("button", { name: "Discover", exact: true }).click();
     const editor = page.getByRole("dialog", { name: "New MCP connection template" });
     await editor.getByText(metadata.resource, { exact: true }).waitFor();
+    // The Installation admin can preview metadata before selecting any credential drivers.
+    assert.equal(discoverMcpAuthorization.mock.callCount(), 1);
     assert.doesNotMatch(await editor.innerText(), /\bnull\b/);
     const name = `Tools ${randomUUID()}`;
     await editor.getByLabel("Name", { exact: true }).fill(name);
@@ -876,6 +878,7 @@ test(
     await editor.getByRole("button", { name: "Create template" }).click();
     await editor.getByText("Choose scopes from those discovered for this MCP server.").waitFor();
     await scopes.fill("documents:read");
+    const { providers } = selectConnectionDrivers(fixture);
     const creating = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
@@ -884,6 +887,7 @@ test(
     await editor.getByRole("button", { name: "Create template" }).click();
     const created = await creating;
     assert.equal(created.status(), 201, (await created.json()).error?.message);
+    assert.equal(discoverMcpAuthorization.mock.callCount(), 2);
 
     await editor.waitFor({ state: "detached" });
     const row = page.getByRole("listitem").filter({ hasText: name });

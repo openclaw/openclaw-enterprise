@@ -5,7 +5,7 @@ import {
   DependencyUnavailableError,
   mcpCredentialEndpoint,
 } from "../../packages/occ/src/index.ts";
-import { discoverMcpAuthorization } from "../../apps/controller/src/drivers/credential-refresh/mcp-discovery.ts";
+import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
 
 const server = "https://mcp.example.test/mcp";
 const resource = "https://mcp.example.test";

@@ -27,7 +27,6 @@ import {
   type OpenShellRefreshStatus,
 } from "../sandbox/openshell-gateway-client.ts";
 
-import { discoverMcpAuthorization } from "./mcp-discovery.ts";
 import {
   browserAuthorizationState,
   exchangeAuthorizationCode,
@@ -163,7 +162,6 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   readonly implementation: string;
   private readonly backend: Backend<OpenShellGateway>;
   private readonly clientWorkspace: string | undefined;
-  readonly discoverMcpAuthorization = discoverMcpAuthorization;
 
   constructor(configuration: unknown, selection: OpenShellCredentialRefreshSelection) {
     OpenShellCredentialRefreshDriver.validateConfiguration(configuration);
