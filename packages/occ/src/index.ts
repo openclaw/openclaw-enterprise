@@ -9220,11 +9220,16 @@ export class OpenClawController {
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "update", {
+    const sandboxPolicy = {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
-    });
+    } as const;
+    await this.authorize(principalId, "update", sandboxPolicy);
+    // Finding 2874: apply admits the saved additions (ceiling and Driver refusals name them)
+    // and returns the saved policy, so it needs SandboxPolicy read before either, even with
+    // no additions. Deploy needs read only when saved additions exist (finding 2151).
+    await this.authorize(principalId, "read", sandboxPolicy);
     // The cause comes before the editing setting and version checks it would otherwise hide (D774).
     this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {

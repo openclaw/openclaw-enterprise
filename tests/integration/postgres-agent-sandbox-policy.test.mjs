@@ -1057,5 +1057,44 @@ test(
       await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
       revisions,
     );
+    // Finding 2874: live application with update but not read gets the read refusal, not the
+    // ceiling's 409 naming the saved additions, and requests nothing.
+    const unreadableApply = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 2, revisionId: revision.id },
+      app,
+    );
+    assert.equal(unreadableApply.statusCode, 403, unreadableApply.body);
+    assert.equal(Object.hasOwn(unreadableApply.json().error, "details"), false);
+    // Update alone still saves. Apply returns the saved policy, so read is required even when
+    // the saved version has no additions to admit.
+    const emptied = await inject("PUT", path, { expectedVersion: 2, additions: [] }, app);
+    assert.equal(emptied.statusCode, 200, emptied.body);
+    const emptyApply = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 3, revisionId: revision.id },
+      app,
+    );
+    assert.equal(emptyApply.statusCode, 403, emptyApply.body);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT document->'application' AS application FROM occ.sandbox_policies WHERE id=$1",
+          [previous.id],
+        )
+      ).rows,
+      [{ application: null }],
+    );
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+          [namespace.id],
+        )
+      ).rows,
+      jobs.rows,
+    );
   },
 );
