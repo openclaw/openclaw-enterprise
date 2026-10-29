@@ -408,17 +408,33 @@ test("a refused refresh clears its loading hint while a choice awaits permission
   });
   const first = await fixture.createSecret(namespace.id, "First credential", "synthetic-first");
   const second = await fixture.createSecret(namespace.id, "Second credential", "synthetic-second");
-  const agent = await fixture.createAgent(namespace.id, "Pending draft", nativeValues("pending", { harnessId: "codex" }), {
-    executionMode: "dedicated",
-    harnessAuth: { method: "api_key", source: first.ref },
-  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Pending draft",
+    nativeValues("pending", { harnessId: "codex" }),
+    {
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: first.ref },
+    },
+  );
   const member = await fixture.createNamespaceMember("pending-picker", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
   const collection = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
-  const permission = await holdRequests(t, page, `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions/secrets`, {
-    once: true, afterServer: true,
-  });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href, member.credentials);
+  const permission = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions/secrets`,
+    {
+      once: true,
+      afterServer: true,
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href,
+    member.credentials,
+  );
   const input = page.getByLabel("API key Secret", { exact: true });
   await waitForInputValue(input, first.name);
   await input.fill("");
@@ -434,15 +450,29 @@ test("a refused refresh clears its loading hint while a choice awaits permission
     const refused = page.waitForResponse((r) => r.url() === collection);
     refresh.release();
     assert.equal((await refused).status(), 403);
-    const permissionResponse = page.waitForResponse((r) => r.url().endsWith(`/agents/${agent.id}/permissions/secrets`));
+    const permissionResponse = page.waitForResponse((r) =>
+      r.url().endsWith(`/agents/${agent.id}/permissions/secrets`),
+    );
     permission.release();
     assert.equal((await permissionResponse).status(), 200);
-    await page.waitForFunction((id) => !(document.getElementById(id) as HTMLInputElement).disabled, await input.getAttribute("id"));
+    const inputId = await input.getAttribute("id");
+    assert.ok(inputId, "Secret input must have an id");
+    await page.waitForFunction(
+      (id) => !(document.getElementById(id) as HTMLInputElement).disabled,
+      inputId,
+    );
     const status = page.locator(`#${await input.getAttribute("aria-describedby")}`);
     assert.doesNotMatch(await status.innerText(), /Loading available Secrets/);
     await input.fill("");
     assert.equal(await page.getByRole("option", { name: second.name, exact: true }).count(), 0);
-    assert.equal(await page.getByRole("link", { name: "View harness authentication Secret metadata (opens in new tab)" }).count(), 0);
+    assert.equal(
+      await page
+        .getByRole("link", {
+          name: "View harness authentication Secret metadata (opens in new tab)",
+        })
+        .count(),
+      0,
+    );
   } finally {
     refresh.release();
     permission.release();
