@@ -29,9 +29,10 @@ user can use the Agent.
 Installation administrators define connections as Installation-wide **connection
 templates**, which Presets can reference. For MCP templates, OCE uses the official
 TypeScript MCP client to discover the server's OAuth settings, start consent, and
-exchange the code. OCE hands the authorized grant to the Token Service, which
-keeps it and refreshes access tokens in the background. OpenShell presents the
-prepared token at the approved endpoint. The deployed tool receives only a placeholder.
+exchange the code. OCE stores the tokens through the Secret Driver and gives
+the Token Service the Secret reference for background refresh. OpenShell presents
+the prepared access token at the approved endpoint. The deployed tool receives
+only a placeholder.
 OCE core contains no provider-specific endpoints, scopes, or binaries.
 
 ## Motivation
@@ -202,7 +203,7 @@ These changes require review of this RFC before implementation. The
 
 1. **`CredentialRefreshDriver`** manages client registrations and OIDC provider
    verification. Its browser authorization methods handle configured OAuth templates.
-   For MCP, OCE runs the SDK flow and hands the grant directly to the Token Service.
+   For MCP, OCE runs the SDK flow and registers the stored grant for refresh.
 2. **Protected egress** uses the [RFC-0023 contract](../0023-egress-proxy-credential-lifecycle/contracts.md).
    The sender must enforce the consented destination and HTTP methods. Admission
    must also establish the promised executable restriction before the Agent can
@@ -223,6 +224,7 @@ sequenceDiagram
   participant API as OCC API and console
   participant OAuth as OCE browser authorization (Driver)
   participant Issuer as OAuth issuer
+  participant Secrets as Secret Driver
   participant Tokens as OCE Token Service
   User->>API: Connect on the personal Agent
   API->>OAuth: startBrowserAuthorization
@@ -234,8 +236,10 @@ sequenceDiagram
   OAuth->>Issuer: Exchange code with PKCE verifier
   alt Exchange succeeds
     Issuer-->>OAuth: Access token and refresh grant
-    OAuth->>Tokens: Hand off validated grant and first access token for this source
-    Tokens-->>OAuth: Committed
+    OAuth->>Secrets: Store validated tokens for this source
+    Secrets-->>OAuth: Stored Secret reference
+    OAuth->>Tokens: Register reference and approved OAuth settings for refresh
+    Tokens-->>OAuth: Refresh registered
     OAuth-->>API: ready
     API-->>User: Connected and ready for deployment checks
   else Consent denied, state invalid, or exchange refused
@@ -259,9 +263,10 @@ exchange, and grant handoff through its [MCP authorization flow](contracts.md#mc
    the page.
 3. `GET /oauth/callback` requires the session that started the connection. OCC
    finds the session by a hash of `state`, rejects reuse or an age above ten
-   minutes, and consumes the callback once. For MCP, OCE exchanges the code and
-   hands the validated grant and first access token to the Token Service. For
-   configured OAuth, OCC calls `completeBrowserAuthorization`. The response sets
+   minutes, and consumes the callback once. For MCP, OCE exchanges the code.
+   For configured OAuth, OCC calls `completeBrowserAuthorization`. Both follow
+   the [token storage and refresh contract](contracts.md#token-storage-and-refresh).
+   The response sets
    `Referrer-Policy: no-referrer` and redirects without the query string. OCC
    excludes the code from logs and audit.
 4. On `ready`, OCC adds the source to the Agent's `credentialSources` and grants
@@ -289,8 +294,10 @@ integration, real-cluster, and live-provider outcomes.
 - **Connection settings inside Presets.** A Preset copy is editable by the Agent
   creator, which would let a creator change scopes, endpoints, or the OAuth client.
   It would also copy client secrets into every Namespace that holds the Preset.
-- **Store the refresh token in a Namespace Secret.** Keeping a rotating grant in
-  OCC storage would inherit the `issuerRotated` update hazards.
+- **Let users edit or mount the connection's Secret.** A manual update could
+  overwrite a rotated refresh token, and a mount could expose it to the worker.
+  Connection setup and refresh have write access. The stored token set cannot be
+  mounted into a workload.
 - **Installation-owned Secrets for the OAuth client secret.** The Driver already
   manages the client registration. Adding an Installation Secret would introduce
   a new Secret scope solely for this feature.

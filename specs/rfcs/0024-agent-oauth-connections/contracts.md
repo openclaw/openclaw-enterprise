@@ -8,12 +8,23 @@ This companion defines the Driver contract changes, failure behavior, and requir
 outcomes for [RFC-0024](index.md). The RFC owns the decision, connection
 templates, consent rules, and personal-Agent boundary.
 
-For either template type, the source becomes `ready` only after the OCE Token Service
-durably accepts the grant and first access token. If the handoff outcome is unknown,
-the source stays `registering` and OCC never replays the code. The Token Service keeps
-the grant in encrypted custody, serializes background refresh per source, and commits
-each access token with any replacement refresh token. OpenShell presents an eligible
-prepared token for the deployed binding or refuses the request. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
+## Token storage and refresh
+
+After either code exchange, OCE stores the validated refresh token, access token, and
+expiry together through the Secret Driver. OCE registers the Secret reference and
+the source's approved OAuth settings with the Token Service for background refresh.
+The source becomes `ready` after both the write and registration are confirmed.
+If either outcome is unknown, the source stays `registering` and OCC never replays
+the authorization code. Deleting a pending source also removes any tokens stored
+for it. [Secret Driver](../../../docs/reference/drivers/secret.md)
+
+When the source's refresh strategy calls for renewal, the Token Service reads the
+current token set through the Secret Driver and requests a new access token from
+the pinned issuer. It validates the response and writes the new token set back
+through the Secret Driver, retaining the current refresh token if the issuer omits
+a replacement. The Token Service serializes refresh attempts that share a rotating
+grant and prevents stale writes. OpenShell can present the renewed access token
+only after the write succeeds. [Credential lifecycle](../0023-egress-proxy-credential-lifecycle/protocol.md#prepare-and-renew-credentials)
 
 ## MCP authorization
 
@@ -37,12 +48,11 @@ PKCE challenge. The owner grants consent at the issuer.
 At callback, OCE checks the session, state, and issuer, then exchanges the code
 once using the verifier, pinned client registration, token endpoint, and resource.
 
-OCE checks the granted scopes against the owner's selection and hands the refresh
-grant and first access token to the Token Service. The handoff identifies the
-source, pinned client registration, issuer, token endpoint, resource, and selected
-scopes. The Token Service uses those
-values for refresh and checks each renewed grant before use. Changed endpoints
-require a new version and consent. The worker exposes the tools the server lists
+OCE checks the granted scopes against the owner's selection before storing the
+tokens. The refresh registration binds the Secret reference to the source, client
+registration, issuer, token endpoint, resource, and selected scopes. The Token
+Service uses those pinned values and checks each renewed grant before use.
+Changed endpoints require a new version and consent. The worker exposes the tools the server lists
 for the connection (`tools/list`). [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
 ## Credential Refresh Driver
@@ -58,7 +68,8 @@ the Driver's optional browser methods.
   `accountIdentity: oidc`. `privateState` is opaque to OCC.
 - `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
   `state` and exchanges the code using the verifier and pinned client registration.
-  The Driver hands the validated grant and first access token to the Token Service.
+  The Driver completes [token storage and refresh registration](#token-storage-and-refresh)
+  before reporting `ready`.
   OCC receives status and an optional verified `accountEmail`.
 
 ### Client registrations
@@ -194,17 +205,20 @@ issue seven-day refresh tokens.
   delayed or has failed after disconnect. Prove that codes and
   tokens are absent from responses, logs, and audit.
 - **Refresh ownership.** For both configured OAuth and MCP, observe the Token
-  Service refresh the access token with the issuer in the background. Send a
-  worker request with the same placeholder and verify that OpenShell presents
-  the new access token. With no eligible prepared token, verify that OpenShell
-  refuses the request without contacting the issuer.
+  Service read the current Secret when renewal is due and write the refreshed
+  tokens back through the Secret Driver. Have the issuer rotate the refresh token
+  once and omit its replacement on the next renewal. Verify the following refresh
+  uses the rotated token. Fail a Secret write and verify OpenShell never serves
+  the candidate access token. After a successful write, verify OpenShell presents
+  the new access token for the same worker placeholder. With no eligible prepared
+  token, verify that OpenShell refuses the request without contacting the issuer.
 - **MCP.** Verify supplied clients, successful DCR, and the prompt for a supplied
   client when DCR is unavailable or refused. With the Driver's browser methods
   unavailable, verify OCE discovers metadata, redirects the owner for consent,
-  and exchanges the code with PKCE. Verify the Token Service then receives the
-  grant for the pinned resource and selected scopes.
-  Withhold handoff confirmation and verify the source stays `registering` and the
-  issuer sees only one code exchange. On a dedicated worker, verify a tool call
+  and exchanges the code with PKCE. Verify the Token Service receives the stored
+  Secret reference, pinned resource, and selected scopes. Withhold confirmation
+  of storage or refresh registration and verify the source stays `registering`
+  and the issuer sees only one code exchange. On a dedicated worker, verify a tool call
   uses the selected scopes and an unselected scope stays unavailable after refresh.
   Bind two MCP servers, one on a nondefault port, and verify each placeholder
   works only at its own endpoint.
