@@ -65,6 +65,7 @@ export const LatestDeploymentDenied = story("agentsDeploymentDenied");
 export const LatestDeploymentLoading = story("agentsDeploymentLoading");
 export const CurrentVersionOlder = story("agentsCurrentVersionOlder");
 export const CurrentVersionDenied = story("agentsCurrentVersionDenied");
+export const CurrentVersionHidden = story("agentsCurrentVersionHidden");
 export const ReturnWhileDeploymentsLoad = {
   ...story("agentsReturnWhileDeploymentsLoad"),
   name: "Return while deployments load",

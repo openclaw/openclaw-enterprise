@@ -194,6 +194,7 @@ export const SharingHoldsNavigation = { ...story("agentSharingHoldsNavigation") 
 export const SharingHoldsAfterDelete = { ...story("agentSharingHoldsAfterDelete") };
 export const SharingRemoved = { ...story("agentSharingRemoved") };
 export const SharingDenied = { ...story("agentSharingDenied") };
+export const SharingRefusedOnReturn = { ...story("agentSharingRefusedOnReturn") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };
 
 export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");

@@ -64,7 +64,8 @@ interface AgentListContext extends AgentNavigation {
 
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
-// Returns it with the rest of its page.
+// Returns it with the rest of its page, and whether that page lists every readable version: the
+// API sends a cursor only when it found an older one the caller can read.
 async function latestReadableRevision(context: AgentListContext, path: string) {
   let cursor: string | null = null;
   do {
@@ -72,32 +73,39 @@ async function latestReadableRevision(context: AgentListContext, path: string) {
       cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
       { ...rowRead, includeMeta: true },
     )) as AgentRevisionListResponse;
+    cursor = page.meta?.nextCursor ?? null;
     const [latest] = page.data;
     if (latest) {
-      return { latest, page: page.data };
+      return { latest, page: page.data, complete: cursor === null };
     }
-    cursor = page.meta?.nextCursor ?? null;
   } while (cursor);
-  return { latest: null, page: [] };
+  return { latest: null, page: [], complete: true };
 }
 
+// A current version the caller cannot read, and whether it is newer than every version they can.
+const UNREADABLE = "unreadable";
+const NEWER_UNREADABLE = "newer-unreadable";
+type CurrentVersion = AgentRevisionMetadata | typeof UNREADABLE | typeof NEWER_UNREADABLE | null;
+
 // The current version, `activeId`, for the Agents list (finding 2093). It is usually on the
-// newest readable page; otherwise it is older or unreadable, so it is read on its own. That page
-// lists only readable versions, so a refusal is remembered like the Agent page's denied reads
-// (an audited 403 per list view otherwise). An unreadable or unread version is null.
+// newest readable page. When that page lists every readable version, one it does not list is
+// unreadable, and the list says so without reading it, as the Agent page does: the read was an
+// audited 403 on every list load (finding D789). Otherwise it may be on an older page, so it is
+// read on its own, and a refusal is remembered like the Agent page's denied reads. A version
+// that could not be read for another reason is null.
 async function currentRevision(
   context: AgentListContext,
   path: string,
   activeId: string | undefined,
-  page: readonly AgentRevisionMetadata[],
-) {
+  { page, complete }: { page: readonly AgentRevisionMetadata[]; complete: boolean },
+): Promise<Exclude<CurrentVersion, typeof NEWER_UNREADABLE>> {
   const listed = page.find((revision) => revision.id === activeId);
-  if (!activeId || listed || !page.length) {
+  if (!activeId || listed) {
     return listed ?? null;
   }
   const activePath = `${path}/${encodeURIComponent(activeId)}`;
-  if (context.deniedReads?.has(activePath)) {
-    return null;
+  if (complete || context.deniedReads?.has(activePath)) {
+    return UNREADABLE;
   }
   try {
     return (await context.request(activePath, rowRead)) as AgentRevisionMetadata;
@@ -108,6 +116,7 @@ async function currentRevision(
     }
     if (status === 403) {
       context.deniedReads?.remember(activePath);
+      return UNREADABLE;
     }
     return null;
   }
@@ -244,30 +253,45 @@ export function renderAgentList(context: AgentListContext) {
   function readDeployment(item: AgentRead) {
     const agentPath = agentRequestPath(item.id);
     const revisions = latestReadableRevision(context, `${agentPath}/revisions`);
+    const deployment = revisions.then(async ({ latest }) => {
+      if (!latest) {
+        return null;
+      }
+      const status = (await context.request(
+        `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
+        rowRead,
+      )) as AgentDeploymentStatusWire;
+      // A rejected model credential is worded for the caller, as on the Agent's page (finding
+      // D752), so that row waits for its permission answer.
+      const code = status.status === "failed" ? status.error?.code : undefined;
+      const credentialAsk =
+        code === "RUNTIME_AUTHENTICATION_FAILED"
+          ? credentialRejectedAsk(
+              code,
+              "harnessAuth" in item ? item.harnessAuth : undefined,
+              await permissionAnswers.get(item.id),
+            )
+          : undefined;
+      return { revision: latest, status, credentialAsk };
+    });
     return {
-      current: revisions.then(({ page }) =>
-        currentRevision(context, `${agentPath}/revisions`, item.activeRevisionId, page),
-      ),
-      deployment: revisions.then(async ({ latest }) => {
-        if (!latest) {
-          return null;
+      deployment,
+      current: revisions.then(async (found): Promise<CurrentVersion> => {
+        const active = await currentRevision(
+          context,
+          `${agentPath}/revisions`,
+          item.activeRevisionId,
+          found,
+        );
+        if (active !== UNREADABLE) {
+          return active;
         }
-        const status = (await context.request(
-          `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
-          rowRead,
-        )) as AgentDeploymentStatusWire;
-        // A rejected model credential is worded for the caller, as on the Agent's page (finding
-        // D752), so that row waits for its permission answer.
-        const code = status.status === "failed" ? status.error?.code : undefined;
-        const credentialAsk =
-          code === "RUNTIME_AUTHENTICATION_FAILED"
-            ? credentialRejectedAsk(
-                code,
-                "harnessAuth" in item ? item.harnessAuth : undefined,
-                await permissionAnswers.get(item.id),
-              )
-            : undefined;
-        return { revision: latest, status, credentialAsk };
+        // A succeeded deployment makes its version current, so an unreadable current version
+        // beside the newest readable one's succeeded deployment is newer, as on the Agent page.
+        const latest = await deployment.catch(() => null);
+        return latest && deploymentOutcome(latest.status) === "succeeded"
+          ? NEWER_UNREADABLE
+          : UNREADABLE;
       }),
     };
   }
@@ -309,14 +333,30 @@ export function renderAgentList(context: AgentListContext) {
       });
     }
   }
-  // Fills a row's Current version cell: the version's number once its row's read finds it, else
-  // its ID as before, for a current version the reader cannot read (finding 2093).
-  function fillCurrent(
-    current: HTMLTableCellElement,
-    item: AgentRead,
-    active: AgentRevisionMetadata | null,
-  ) {
+  // Fills a row's Current version cell: the version's number once its row's read finds it
+  // (finding 2093), words for one the reader cannot read (finding D789), else its ID.
+  function fillCurrent(current: HTMLTableCellElement, item: AgentRead, active: CurrentVersion) {
     if (!item.activeRevisionId) {
+      return;
+    }
+    if (active === UNREADABLE || active === NEWER_UNREADABLE) {
+      const text =
+        active === NEWER_UNREADABLE
+          ? "A newer version you cannot read"
+          : "A version you cannot read";
+      const shown = current.querySelector(".agent-version-unreadable");
+      if (shown) {
+        setText(shown, text);
+        return;
+      }
+      // A retained row's link gives way to the words; focus on it moves to the row's Agent link.
+      const focused = current.contains(current.ownerDocument.activeElement);
+      current.replaceChildren(
+        element("span", { className: "muted agent-version-unreadable" }, text),
+      );
+      if (focused) {
+        current.closest("tr")?.querySelector("a")?.focus({ preventScroll: true });
+      }
       return;
     }
     const label = active ? `v${active.revision}` : shortId(item.activeRevisionId);
@@ -346,7 +386,7 @@ export function renderAgentList(context: AgentListContext) {
     );
     const fillVersion = fillAfterReading(
       current.querySelector(".delayed-status"),
-      (active: AgentRevisionMetadata | null) => fillCurrent(current, item, active),
+      (active: CurrentVersion) => fillCurrent(current, item, active),
     );
     void reads.current.then(
       (active) => context.isCurrent() && fillVersion(active),

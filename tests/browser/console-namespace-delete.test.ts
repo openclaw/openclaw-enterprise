@@ -4,6 +4,7 @@ import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { namespaceDeleteDenied } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -160,12 +161,23 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, member.credentials);
   const remove = page.getByRole("button", { name: "Delete Restricted cleanup", exact: true });
-  await page.waitForFunction(
-    () =>
-      document.querySelector<HTMLButtonElement>('[aria-label="Delete Restricted cleanup"]')
-        ?.disabled === true,
-  );
+  // No Namespace Role grants delete, so the reason names who can delete, not a grant to ask for.
+  // The icon stays in the Tab order, so a keyboard user reaches the reason, and it opens nothing
+  // (finding D788).
+  await page
+    .getByRole("button", {
+      name: "Delete Restricted cleanup",
+      exact: true,
+      description: namespaceDeleteDenied("Restricted cleanup"),
+    })
+    .waitFor();
   assert.equal(await remove.isDisabled(), true);
+  assert.equal(await remove.getAttribute("aria-disabled"), "true");
+  await remove.focus();
+  assert.equal(await remove.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await remove.click({ force: true });
+  assert.equal(await page.locator("dialog[open]").count(), 0);
   grantMember(fixture, label, [["delete", "namespace"]]);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await remove.click();

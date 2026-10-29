@@ -2616,13 +2616,18 @@ select:not([multiple])[size="1"] {
   padding: 0;
   color: var(--muted);
 }
-.resource-row-actions .icon-button:not(:disabled):hover {
+.resource-row-actions .icon-button:not(:disabled, [aria-disabled="true"]):hover {
   border-color: var(--danger);
   background: var(--danger-subtle);
   color: var(--danger);
 }
 .resource-row-actions .icon-button:disabled {
   cursor: not-allowed;
+}
+/* A refused delete stays focusable so its reason is reachable (finding D788); it looks disabled. */
+.resource-row-actions .icon-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 .action-icon {
   width: 16px;

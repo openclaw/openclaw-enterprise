@@ -714,3 +714,7 @@ export const workspaceWithoutRunningVersion = (agentId) =>
   `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`;
 export const workspaceVersionStarting = (agentId) =>
   `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`;
+// Finding D788. Namespace IAM Roles cannot grant Namespace delete, so a member's trash icon names
+// who can delete the Namespace instead of a grant to ask for.
+export const namespaceDeleteDenied = (name) =>
+  `Only an Installation administrator can delete a Namespace. Ask one to delete ${name}.`;

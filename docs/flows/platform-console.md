@@ -169,7 +169,8 @@ reads, password input, and mutations prevent reuse; read-only catalog and diagno
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
 list, not row reads. Each row's newest readable revisions page feeds its deployment
-and `agents/collection.mts:currentRevision`, which reads an off-page current version alone;
+and `agents/collection.mts:currentRevision`. When that page lists every readable revision,
+an unlisted current version is unreadable and is not read; otherwise it is read alone, and
 `deniedReadsFor` keeps a `403`. On reuse, `renderAgentList` sets visible deployment
 cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, before paint, then shows
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,

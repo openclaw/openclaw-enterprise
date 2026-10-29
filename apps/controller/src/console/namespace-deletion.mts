@@ -12,7 +12,7 @@ import {
 import type { NamespacePageContext } from "./namespaces.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
 import { describeFailure } from "./agents/list.mjs";
-import { askForGrant } from "./agents/access-reasons.mjs";
+import { namespaceDeleteDenied } from "./agents/access-reasons.mjs";
 
 interface DeletionContext extends NamespacePageContext {
   onRemoved(namespace: Namespace): void;
@@ -21,7 +21,6 @@ interface DeletionContext extends NamespacePageContext {
 }
 
 const POLL_MS = 3000;
-const DENIED = `You do not have permission to delete this Namespace. ${askForGrant("Namespace delete on it")}`;
 
 /** One exact Namespace owns its confirmation, request outcome, and teardown observation. */
 export function createNamespaceDeletion(context: DeletionContext, namespace: Namespace) {
@@ -75,12 +74,21 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     refresh.hidden = !deleting && !unknown;
     retry.hidden = !deleting || unknown;
     const checking = reading && !quiet;
-    remove.disabled = pending || checking || denied || accessEnded;
-    retry.disabled = pending || checking || denied || accessEnded;
+    const busy = pending || checking || accessEnded;
+    // A refused delete stays in the Tab order (aria-disabled, not disabled), so a keyboard user
+    // reaches its reason (finding D788). openConfirmation ignores it.
+    for (const control of [remove, retry]) {
+      control.disabled = busy;
+      if (denied && !busy) {
+        control.setAttribute("aria-disabled", "true");
+      } else {
+        control.removeAttribute("aria-disabled");
+      }
+    }
     refresh.disabled = pending || checking;
     let text = message;
     if (!text && denied) {
-      text = DENIED;
+      text = namespaceDeleteDenied(namespace.name);
     } else if (!text && deleting) {
       text =
         "Deletion started. Cleanup runs in the background. If it does not finish, ask an operator to check teardown before requesting deletion again.";
@@ -90,8 +98,9 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       ...(text ? [statusBlock(unknown || accessEnded ? "warning" : "info", null, text)] : []),
       ...(support ? [support] : []),
     ]);
-    describeDisabled(remove, remove.disabled ? feedback : null);
-    describeDisabled(retry, retry.disabled ? feedback : null);
+    // Each links the reason only while it is unavailable, disabled or aria-disabled.
+    describeDisabled(remove, feedback);
+    describeDisabled(retry, feedback);
   }
 
   function schedulePoll() {
@@ -441,7 +450,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         requestId = error.requestId;
         if (error.status === 403) {
           denied = true;
-          message = error.serverMessage ?? DENIED;
+          message = error.serverMessage ?? namespaceDeleteDenied(namespace.name);
         } else if (error.status === 400 || error.status === 409 || error.status === 429) {
           message = describeFailure(cause, { mutation: true });
         } else {

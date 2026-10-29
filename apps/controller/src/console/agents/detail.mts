@@ -4015,6 +4015,7 @@ export async function renderAgentDetail(
       // page with the page's context, as it was on the overview: a share or removal in flight
       // finishes, and its progress shows again, when the reader leaves the tab and comes back.
       state.reusable = false;
+      const returning = accessPanel !== null;
       accessPanel ??= renderAgentAccess(context, agent, {
         onWriting: (writing) => {
           sharingWrite = writing;
@@ -4039,7 +4040,10 @@ export async function renderAgentDetail(
         // Back to a tab whose policy read was refused.
         leaveDeniedAccess();
       } else {
-        content.append(accessPanel);
+        content.append(accessPanel.section);
+        if (returning) {
+          accessPanel.recheck();
+        }
       }
       state.loading = false;
       content.style.minHeight = "";

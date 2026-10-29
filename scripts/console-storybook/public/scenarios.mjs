@@ -4440,6 +4440,21 @@ export const scenarios = {
     description:
       "An Agent's other controls retain their own permissions when sharing administration is unavailable.",
   },
+  agentSharingRefusedOnReturn: {
+    group: "Pages/Agent detail",
+    name: "Sharing refused on return",
+    path: `${draft}&tab=access`,
+    // The first policy read succeeds; the reread on the return to the tab is refused.
+    rules: [{ suffix: "/iam/roles", status: 403, skip: 1 }],
+    actions: [{ text: "Current policy loaded." }, click("Configuration"), click("Access")],
+    description:
+      "The story loads the Access tab, opens Configuration, then returns to Access, whose policy reread is refused as after a revoke. The tab gives way to Configuration and says why; the earlier grants and Remove binding are gone.",
+    steps: [
+      "Configuration is selected and the note reads “The Access tab needs Installation administration, which your access does not include. Showing Configuration.” The Access tab is gone.",
+      "The request log shows one refused /iam/roles read on the return and no /iam/access-bindings read after it.",
+    ],
+    gap: "Simulated UI proof: the refused reread stands in for administration revoked while the page is open.",
+  },
   agentSharingUnknown: {
     group: "Pages/Agent detail",
     name: "Sharing outcome uncertain",
@@ -5433,9 +5448,31 @@ export const scenarios = {
       },
     ],
     description:
-      "The current v6 is off the first page and its own read is refused, so Current version keeps its short ID. The console remembers the refusal for the session, as the Agent page does, and does not ask again.",
+      "The current v6 is off the first page and its own read is refused, so Current version says the reader cannot read it. The console remembers the refusal for the session, as the Agent page does, and does not ask again.",
     steps: [
-      'Current version shows the short ID as a link, in code type, and Latest deployment reads "v7 · Failed".',
+      'Current version reads "A version you cannot read" in muted text, with no link and no ID, and Latest deployment reads "v7 · Failed". Beside a failed deployment, the current version may be older or newer.',
+    ],
+  },
+  agentsCurrentVersionHidden: {
+    group: "Pages/Agents",
+    name: "Current version newer and unreadable",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    // A newer v8 the viewer cannot read is current; the list shows v6 and v7 only.
+    candidateSuperseded: true,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "Every version the reader can read is on the first page, and the current one is not among them, so the list says so without reading it. v7's deployment succeeded, so the current version is newer.",
+    steps: [
+      'Current version reads "A newer version you cannot read", with no link and no ID, and Latest deployment reads "v7 · Completed".',
+      "The request log shows no read of the current version.",
     ],
   },
   agentsReturnWhileDeploymentsLoad: {
