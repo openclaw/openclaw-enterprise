@@ -116,7 +116,7 @@ function regular(path: string, mode?: number, owner = currentUid()) {
     assert.ok(stat.isFile(), `not a regular file: ${path}`);
     assert.equal(stat.uid, owner, `${path}: unexpected file owner`);
     if (mode !== undefined) {
-      assert.equal(stat.mode & 0o777, mode, `${path}: installed mode mismatch`);
+      assert.equal(stat.mode & 0o7777, mode, `${path}: installed mode mismatch`);
     }
     return readFileSync(fd);
   } finally {

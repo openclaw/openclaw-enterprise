@@ -22,8 +22,8 @@ export function verifyPayloadFiles(files: PayloadFile[]): void {
       const stat = fstatSync(fd);
       assert.ok(stat.isFile(), `${file.path}: expected a regular file`);
       assert.equal(stat.uid, file.uid, `${file.path}: unexpected file owner`);
-      assert.equal(stat.mode & 0o777, file.mode, `${file.path}: installed mode mismatch`);
-      // Opening proves readability; exact 0555 mode grants execution to node.
+      assert.equal(stat.mode & 0o7777, file.mode, `${file.path}: installed mode mismatch`);
+      // Opening proves readability; mode verification does not prove effective execution.
       const actual = createHash("sha256").update(readFileSync(fd)).digest("hex");
       assert.equal(actual, file.sha256, `${file.path}: installed SHA-256 mismatch`);
     } finally {

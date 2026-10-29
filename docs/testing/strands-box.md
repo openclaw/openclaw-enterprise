@@ -259,7 +259,10 @@ node --test tests/integration/qa-matrix-real.test.mjs
 build host, not a record copied out of the selected image. QA sends the official
 file-verification code and expected hashes from this checkout into each running
 container. It requires the normal `node` user (UID 1000), then checks the actual
-binaries, bridges and build record for hashes, file types, modes and access.
+binaries, bridges and build record for hashes, file types, exact permission and
+special mode bits, and readability. Effective execution under ACLs or `noexec`
+mounts requires actually running the installed binaries as the normal runtime
+user; file verification alone does not establish it.
 This also runs after replacement and for the second Agent. A replaced bundled
 verifier or an in-image record cannot override the host expectations. Missing
 files, later-layer overwrites, wrong owners/users and Pod identity changes fail QA.

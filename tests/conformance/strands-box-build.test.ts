@@ -87,6 +87,8 @@ test("Box packaging refuses changed, absent, symlinked and non-ARM64 artifacts b
   await chmod(payloadPath, 0o555);
   const installed = [{ path: payloadPath, sha256: hash(elf), mode: 0o555, uid: uid }];
   verifyPayloadFiles(installed);
+  await chmod(payloadPath, 0o4555);
+  assert.throws(() => verifyPayloadFiles(installed), /installed mode mismatch/u);
   await chmod(payloadPath, 0o755);
   await writeFile(payloadPath, "later layer replaced the executable");
   await chmod(payloadPath, 0o555);
