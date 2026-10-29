@@ -1387,7 +1387,8 @@ function iamReads(requests) {
 // its harness authentication Secret, from the Namespace's roles and access bindings. The page
 // confirms her administration when it loads, and she opens Credentials later. Revoked in between,
 // her first open was refused, and audited, twice: the grant read sent both lists at once. It reads
-// one list at a time, so the revoke costs one audited refusal and the bindings are never sent.
+// one list at a time, so the revoke costs one audited refusal and the bindings are never sent,
+// also when the permission answer that would settle the refusal fails.
 test("A first Credentials open after a revoke reads the grant policy once, audited once", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1400,32 +1401,54 @@ test("A first Credentials open after a revoke reads the grant policy once, audit
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
-    account.credentials,
+  const configuration = String(
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
   );
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(page, fixture, configuration, account.credentials);
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version", exact: true }));
   await waitForIdleFetches(page);
   // The page load's probe confirmed administration, so the console sends the grant read.
   assert.equal(requests.filter(({ path }) => path === "/observability").length, 1);
 
-  revoke();
-  const audited = authorizationDenials(fixture.auditSink).length;
-  const sent = requests.length;
-  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
-  await page.getByRole("tab", { name: "Credentials", selected: true }).waitFor();
-  await page.locator("#harness-auth-method").waitFor();
+  const openCredentialsAfterRevoke = async (end) => {
+    end();
+    const audited = authorizationDenials(fixture.auditSink).length;
+    const sent = requests.length;
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+    await page.getByRole("tab", { name: "Credentials", selected: true }).waitFor();
+    await page.locator("#harness-auth-method").waitFor();
+    await waitForIdleFetches(page);
+    assert.deepEqual(
+      authorizationDenials(fixture.auditSink)
+        .slice(audited)
+        .map(({ action }) => action),
+      ["openclaw.iam.roles.list"],
+    );
+    assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
+  };
+  await openCredentialsAfterRevoke(revoke);
+
+  // A refused roles read ends the grant read. Here the permission answer asked after that refusal
+  // fails, which settles nothing: the console still takes her for an administrator and would send
+  // a bindings read, refused and audited again.
+  const again = grantInstallationAdministration(fixture, account.principal);
+  await page.goto(configuration);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version", exact: true }));
   await waitForIdleFetches(page);
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }) => action),
-    ["openclaw.iam.roles.list"],
+  let rolesSent = false;
+  page.on("request", (request) => {
+    rolesSent ||= new URL(request.url()).pathname.endsWith("/iam/roles");
+  });
+  const permissionsPath = `/namespaces/${namespace.id}/permissions`;
+  await page.route(
+    (address) => new URL(address).pathname === permissionsPath,
+    (route) =>
+      rolesSent
+        ? route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."))
+        : route.fallback(),
   );
-  assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
+  await openCredentialsAfterRevoke(again);
 });
 
 // Finding 2919, bound Slack Secrets. An administrator's console reads each bound Slack Secret's
