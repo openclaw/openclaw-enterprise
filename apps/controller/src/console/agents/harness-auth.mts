@@ -7,7 +7,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { element } from "../dom.mjs";
-import { message, namespacePath } from "./list.mjs";
+import { message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { createDeviceLogin, type DeviceLogin } from "./device-login.mjs";
@@ -218,12 +218,12 @@ export function createHarnessAuthFields(
   const runtimeHint = element(
     "p",
     { className: "hint" },
-    "Configured on the runtime host; not validated by OCC.",
+    "Configured on the runtime host; OpenClaw Enterprise does not check it.",
   );
   const validationHint = element(
     "p",
     { className: "hint" },
-    "Managed sources are checked during deployment. Operator-managed credentials are not validated by OCC. Selection does not establish provider login or model readiness.",
+    "Managed sources are checked during deployment. OpenClaw Enterprise does not check operator-managed credentials. Selection does not establish provider login or model readiness.",
   );
   const section = element(
     "fieldset",
@@ -304,7 +304,7 @@ export function createHarnessAuthFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
-        feedback.textContent = `Service accounts unavailable. ${message(error)}`;
+        feedback.textContent = `Service Accounts unavailable. ${message(error, false, namespaceListNeed("Service Accounts"))}`;
       }
     });
   return {
@@ -353,7 +353,7 @@ export function createHarnessAuthFields(
         (method.value !== "api_key" && method.value !== "codex_pat") ||
         !selectedSecretSource?.id
       ) {
-        throw new Error("Choose an OCC Secret.");
+        throw new Error("Choose a Secret.");
       }
       return method.value === "api_key"
         ? { method: "api_key", source: selectedSecretSource }

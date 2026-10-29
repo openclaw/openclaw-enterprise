@@ -7,7 +7,8 @@ dedicated Codex exposes its app-server.
 ## Credential attachments
 
 For an Agent revision that uses a [credential source](../../credential-sources.md),
-Compute passes one attachment per source in `credentialAttachments`. The Driver
+the paired Credential Gateway issues one attachment per source. Compute passes
+them to the OpenShell Sandbox Driver in `credentialAttachments`. The Driver
 appends each attachment's provider name to the static `providers` list in
 `SandboxSpec`, rejecting a name outside the OCC `oce-cs-` provider shape or one
 that repeats a static provider. Startup rejects
@@ -74,3 +75,17 @@ service, Sandbox or credential attachment is gone only if `GetWorkspace` answers
 and a second read still misses it (OpenShell hides unauthorized Sandboxes as
 missing); a refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's
 sweep covers Agent revisions without a current reconciliation pass and failed candidates.
+
+## Harness observation
+
+OpenShell reads the phase from `GetSandbox`. A completed phase maps to `lost`
+with `HARNESS_EXITED`. An error phase, including a deleted or evicted Pod, maps
+to `lost` with `SANDBOX_FAILED`. An unreadable record is `unknown`.
+
+OpenShell normally sets `restart_policy: ALWAYS`. The repository Git path sets
+`NEVER`, and older Sandboxes can also retain `NEVER`. When the gateway reports a starting
+process with an exit code and a positive restart count, the Driver returns
+`starting` with `HARNESS_RESTARTING`. It maps the `GetSandbox` fields `exit_code` and
+`restart_count` to `exitCode` and `restarts`. On first startup the Driver
+returns plain `starting`. OCC diagnostics mark a restarting Harness as a failed
+`sandbox` check while the gateway attempts the restart.

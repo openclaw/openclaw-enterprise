@@ -11,6 +11,7 @@ import {
   settledView,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // The page header (UX plan D3, spec 3.2): collections show the Namespace selector as one compact
 // 32 px control beside Refresh; an Agent's page and Create Agent lead with ← Agents and carry the
@@ -152,7 +153,7 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
     await page.getByRole("heading", { name: LONG_NAME, level: 1 }).waitFor();
     await page
       .locator(".content .page-header")
-      .getByRole("button", { name: "Create new version" })
+      .getByRole("button", { name: "Open draft" })
       .waitFor();
     await page.locator("#namespace-selector:not(:disabled)").waitFor();
 
@@ -176,7 +177,7 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
       {
         "← Agents": "header",
         Refresh: "actions",
-        "Create new version": "actions",
+        "Open draft": "actions",
         "Copy Agent ID": "meta",
         Namespace: "meta",
       },
@@ -211,6 +212,12 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
         );
       }
     }
+
+    // Replacing the rail with a picker must not introduce horizontal overflow on phones.
+    const picker = page.getByRole("combobox", { name: "Viewing version", exact: true });
+    const bounds = await picker.boundingBox();
+    assert.ok(bounds, `${size}: picker is visible`);
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width, `${size}: picker fits`);
 
     // The copy button puts the ID on the clipboard and says so.
     await header.getByRole("button", { name: "Copy Agent ID" }).click();
@@ -307,13 +314,7 @@ test("Settings offers no Namespace recovery, which needs the selector it no long
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/backends?namespace=${revoked.id}`);
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
-  fixture.policy.restrictions.push({
-    id: "deny-revoked-read",
-    namespaceId: revoked.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "read", "namespace", { namespaceId: revoked.id });
 
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   const recover = page.getByRole("button", { name: "Switch Namespace", exact: true });

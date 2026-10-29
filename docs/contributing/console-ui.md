@@ -32,6 +32,9 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   the intended resource and confirms the expected saved state. If the write may have
   committed but you cannot confirm it, say the outcome is unknown and read that same
   resource again. Do not repeat the write to find out.
+- **Disabled controls.** Show the reason next to a disabled control, and link it with
+  `describeDisabled(control, reason)` wherever the control's state changes, so a screen
+  reader reads the reason with the control.
 
 ## Extend the shared styles
 
@@ -42,11 +45,13 @@ font, pair type sizes with their line heights (for example, `--text-md` with
 The [token checks](../../tests/conformance/console-design-tokens.test.mjs)
 cover these scales and the supported breakpoints.
 
-Navigation pairs the wordmark with a 48 × 38 px
+Navigation pairs the wordmark with a
 [mascot for dark surfaces](../../apps/controller/src/console/oce-mascot-inverse.png).
 The white contour is part of that artwork and dims with the header under a modal.
 On a phone the wordmark scales from 14 to 18 px, leaving room for both 44 px controls.
-Sign-in, forced colours, and operator-supplied logos use their original artwork.
+Navigation logos fit within 48 × 48 px and keep their aspect ratio, including
+operator-supplied logos and forced-colour artwork. Sign-in uses the original
+artwork at 40 × 40 px.
 
 Keep a one-page layout with that page. When another page needs the same
 pattern, move the shared rule next to the component it extends and use it in

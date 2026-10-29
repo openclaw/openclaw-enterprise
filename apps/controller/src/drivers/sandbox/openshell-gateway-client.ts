@@ -4,6 +4,7 @@ import {
   OpenShellDeletionUnconfirmedError,
   OpenShellGatewayFailure,
   OpenShellGatewayUnavailableError,
+  GRPC_DEADLINE_EXCEEDED,
   GRPC_UNAVAILABLE,
   OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
@@ -706,32 +707,61 @@ function createSandboxValidationCategory(
   return "UNKNOWN";
 }
 
-// gRPC UNAVAILABLE says two different things. grpc-js synthesises it, with these fixed details,
+// gRPC UNAVAILABLE says two different things. grpc-js makes it up, with these fixed details,
 // when it never reached the gateway or lost the connection under a call: the gateway did not
 // answer. The gateway also sends UNAVAILABLE itself, with its own reason, for failures that do
 // not clear by themselves (at the pinned OpenShell, resource admission's Kubernetes 401/403/TLS
-// errors, credential driver errors, finding 2042). Only the first is an outage. The list is an
+// errors, credential driver errors, finding 2042), and a gateway interceptor sends any reason it
+// chooses with the status it chooses (finding 2048). Only the first is an outage. The list is an
 // allowlist on purpose: anything else, including a TLS failure (an untrusted gateway certificate,
-// a refused client certificate, a connection closed during the handshake) and an HTTP status from
-// a proxy in front of the gateway, is an ordinary failed request on the attempt budget.
-const UNANSWERED_REQUEST_DETAILS: readonly RegExp[] = [
+// a refused client certificate, a connection closed during the handshake), a connection closed
+// before HTTP/2 starts ("Failed to connect": a plaintext client at a TLS port reads the same as
+// a stale port-forward, finding 2049) and an HTTP status or gRPC reply from a proxy in front of
+// the gateway, is an ordinary failed request on the attempt budget.
+const UNANSWERED_REQUESTS: readonly (readonly [code: number, details: RegExp])[] = [
   // The connection closed or was reset under an in-flight call (the gateway process is gone).
-  /^Connection dropped$/u,
-  /^(?:read|write) (?:ECONNRESET|ETIMEDOUT)$/u,
+  [GRPC_UNAVAILABLE, /^Connection dropped$/u],
+  [GRPC_UNAVAILABLE, /^(?:read|write) (?:ECONNRESET|ETIMEDOUT)$/u],
   // The gateway refused the stream before handling it (shutting down, or at its stream limit).
-  /^Stream refused by server$/u,
-  // No address for the gateway, or no connection to any of them: nothing listens there.
-  /^Name resolution failed for target /u,
-  /^No connection established\. Last error: (?:No addresses resolved|(?:Error: )?(?:connect (?:ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)|(?:read|write) (?:ECONNRESET|ETIMEDOUT|EPIPE)))\b/u,
+  [GRPC_UNAVAILABLE, /^Stream refused by server$/u],
+  // No address for the gateway, or no connection to it: nothing listens there. grpc-js's DNS
+  // lookup rejects a name without addresses, so "No addresses resolved" never occurs here.
+  [GRPC_UNAVAILABLE, /^Name resolution failed for target /u],
+  [
+    GRPC_UNAVAILABLE,
+    /^No connection established\. Last error: (?:Error: )?(?:connect (?:ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)|(?:read|write) (?:ECONNRESET|ETIMEDOUT|EPIPE))\b/u,
+  ],
+  // The deadline passed while grpc-js still had no connection to send the request on: a connect
+  // nobody answers (a lost node, a stale Service address) or a listener that never starts HTTP/2.
+  [
+    GRPC_DEADLINE_EXCEEDED,
+    /^Deadline exceeded after \d+\.\d{3}s(?:,[a-z ]+: \d+\.\d{3}s)*,Waiting for LB pick$/u,
+  ],
 ];
 
-/** True only for grpc-js's own UNAVAILABLE for a gateway that did not answer (finding 2042). */
+/**
+ * grpc-js gives a status it makes up itself empty metadata. A status the gateway sends before
+ * any response message is the whole response in one HEADERS frame (tonic answers interceptor
+ * refusals and handler errors that way), whose other headers stay as metadata (content-type,
+ * date). Only a status in trailers after response headers, such as an error in the middle of
+ * an ExecSandbox stream, can carry none; there the details alone decide.
+ */
+function noServerMetadata(error: unknown): boolean {
+  const metadata = asRecord(asRecord(error)?.metadata);
+  const getMap = metadata?.getMap;
+  return (
+    typeof getMap === "function" && Object.keys(asRecord(getMap.call(metadata)) ?? {}).length === 0
+  );
+}
+
+/** True only for grpc-js's own status for a gateway that did not answer (findings 2042, 2048). */
 function gatewayDidNotAnswer(error: unknown): boolean {
+  const code = rawStatusCode(error);
   const details = asRecord(error)?.details;
   return (
-    rawStatusCode(error) === GRPC_UNAVAILABLE &&
     typeof details === "string" &&
-    UNANSWERED_REQUEST_DETAILS.some((pattern) => pattern.test(details))
+    noServerMetadata(error) &&
+    UNANSWERED_REQUESTS.some(([status, pattern]) => status === code && pattern.test(details))
   );
 }
 
@@ -740,8 +770,9 @@ function gatewayRequestFailure(
   error: unknown,
   unanswered: boolean = gatewayDidNotAnswer(error),
 ): OpenShellGatewayRequestFailure | OpenShellGatewayUnavailableError {
-  return unanswered
-    ? new OpenShellGatewayUnavailableError(gatewayRequestFailureMessage(method, error))
+  const grpcStatus = rawStatusCode(error);
+  return unanswered && grpcStatus !== undefined
+    ? new OpenShellGatewayUnavailableError(gatewayRequestFailureMessage(method, error), grpcStatus)
     : new OpenShellGatewayRequestFailure(method, error);
 }
 const CLIENT_MODULE = "@grpc/grpc-js";
@@ -1791,6 +1822,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         signal,
       );
     } catch (error) {
+      signal.throwIfAborted();
       const { grpc } = await this.ensureClient();
       if (statusCode(error) === grpc.status.NOT_FOUND) {
         return undefined;

@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { listen } from "../helpers/listen.mjs";
 import {
@@ -16,6 +17,7 @@ import {
   stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const SESSION = "**/api/auth/session";
 const activeView = '.content [aria-live="polite"]:not([inert])';
@@ -188,16 +190,6 @@ function goTo(page, url) {
   }, url);
 }
 
-function revokeNamespace(fixture, namespace, id) {
-  fixture.policy.restrictions.push({
-    id,
-    namespaceId: namespace.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
-}
-
 // Marks the content view node, so a test can tell a remounted retained node from a rebuild.
 function tagView(page, tag) {
   return page.evaluate((value) => {
@@ -253,7 +245,7 @@ for (const moveToSidebar of [false, true]) {
       running: true,
     });
     await openAgent(page, "Header Agent");
-    const action = page.locator(".page-header").getByRole("button", { name: "Create new version" });
+    const action = page.locator(".page-header").getByRole("button", { name: "Open draft" });
     const sidebar = page.getByRole("link", NAMESPACES);
     await action.focus();
     assert.equal(await hasFocus(action), true);
@@ -333,7 +325,7 @@ test("Back to a retained Agent page after access was revoked never shows the cac
   await page.getByRole("link", { name: "Revoked Agent" }).waitFor();
   await page.locator(activeView).waitFor();
 
-  revokeNamespace(fixture, namespace, "revoke-retained-agent-namespace");
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // Record every DOM state and painted frame from Back until the refusal.
   await page.evaluate((configurationId) => {
     const seen = [];
@@ -562,15 +554,12 @@ for (const c of [
     ],
   },
   {
-    title: "Create new version keeps the Agent page until the draft's overview reveals",
+    title: "Open draft keeps the Agent page until the draft's overview reveals",
     namespace: "Draft reveal",
     agents: ["Draft Agent"],
     prepare: (page) => openAgent(page, "Draft Agent"),
     enter: (page) =>
-      page
-        .locator(".content .page-header")
-        .getByRole("button", { name: "Create new version" })
-        .click(),
+      page.locator(".content .page-header").getByRole("button", { name: "Open draft" }).click(),
     revision: /revision=draft/,
     frames: [
       "agents | Draft Agent | selector | Agent",
@@ -1644,7 +1633,7 @@ test("A chat link's Agent lookup that answers after a manual navigation is ignor
 test("A Namespace revoked during a first visit's admission is not repainted by Back", async (t) => {
   const { fixture, namespace, page } = await openList(t, "Revoked during visit", "Revoked Agent");
   await tagView(page, "list");
-  revokeNamespace(fixture, namespace, "revoke-during-first-visit");
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // The first visit's admission read drops the Namespace, so its retained list is discarded.
   await page.getByRole("link", NAMESPACES).click();
   await page.locator(settledView).waitFor();
@@ -1757,14 +1746,7 @@ test("A chat link that cannot be resolved says so on the Agents list, once", asy
   // A lookup that fails for another reason (here 503) asks to try again instead.
   const key = "d".repeat(32);
   await page.route(`**/native-admin/return/${key}`, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." },
-        meta: { requestId: "req_test_chat_link" },
-      }),
-    }),
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Unavailable.")),
   );
   await openChatLink(page, key);
   await page.getByText("This Agent chat link could not be opened. Try the link again.").waitFor();

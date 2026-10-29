@@ -3,6 +3,10 @@ import { story } from "./story.ts";
 export default { title: "Components/Channels" };
 
 export const Slack = { ...story("slack"), name: "Slack configured" };
+export const SlackDisableReplaceDenied = {
+  ...story("slackDisableReplaceDenied"),
+  name: "Slack Disable, editor must replace the bot token Secret",
+};
 export const SlackDmPolicy = { ...story("slackDmPolicy") };
 export const SlackEnterpriseDm = { ...story("slackEnterpriseDm") };
 export const SlackThreadedDefault = { ...story("slackThreadedDefault") };
@@ -28,6 +32,10 @@ export const SlackRestrictedUsers = {
 export const SlackChannelAccessIncomplete = {
   ...story("slackChannelAccessIncomplete"),
   name: "Slack sender access incomplete",
+};
+export const SlackTokensMissing = {
+  ...story("slackTokensMissing"),
+  name: "Slack token Secrets missing",
 };
 export const SlackSecretMenu = { ...story("slackSecretMenu"), name: "Slack Secret menu" };
 export const SlackSecretNameCollision = story("slackSecretNameCollision");

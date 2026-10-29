@@ -16,7 +16,10 @@ import {
 } from "../../scripts/ci/openshell.mjs";
 import { withEnvironment } from "../helpers/environment.mjs";
 import { prependPath } from "../helpers/fake-commands.mjs";
-import { observeSandboxProbe } from "../helpers/k3d-failure-diagnostics.mjs";
+import {
+  assertGatewayPolicyRunSucceeded,
+  observeSandboxProbe,
+} from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -41,6 +44,61 @@ function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
     context: `k3d-${name}`,
   };
 }
+
+test("a failed protected update reports its stored job state without disclosing Gateway text", async (t) => {
+  const attempt = "cross-agent-session-target";
+  const before = { id: "job-1", sessionTarget: "isolated", payload: { message: "private job" } };
+  const runId = "7f397a07-2e4a-49b1-bb45-d2db87fc4032";
+  const failed = { runId, status: "error", endedAt: 42, error: "private provider detail" };
+  for (const [jobState, current, terminal, metadata] of [
+    ["unchanged", structuredClone(before), failed, "errorText=present"],
+    [
+      "changed",
+      { ...before, sessionTarget: "private target" },
+      { ...failed, stopReason: "private stop reason", terminalReply: { text: "private reply" } },
+      "errorText=present, stopReason=other",
+    ],
+    [
+      "unavailable",
+      undefined,
+      {
+        runId,
+        status: "timeout",
+        stopReason: "timeout",
+        timeoutPhase: "provider",
+        providerStarted: true,
+      },
+      "stopReason=timeout, timeoutPhase=provider, providerStarted=true",
+    ],
+  ]) {
+    const requests = [];
+    const client = {
+      async request(...args) {
+        requests.push(args);
+        if (!current) {
+          throw new Error("private read failure");
+        }
+        return current;
+      },
+    };
+    await assert.rejects(
+      assertGatewayPolicyRunSucceeded(client, terminal, { attempt, before }),
+      (error) => {
+        assert.equal(error.actual, terminal.status);
+        assert.equal(
+          error.message.split("\n")[0],
+          `Gateway policy run ${runId} must succeed (attempt=${attempt}, job=${jobState}, ${metadata})`,
+        );
+        assert.doesNotMatch(error.message, /private/);
+        return true;
+      },
+    );
+    assert.deepEqual(requests, [["cron.get", { id: before.id }, { timeoutMs: 3_000 }]]);
+  }
+  const request = t.mock.fn();
+  await assertGatewayPolicyRunSucceeded({ request }, { runId, status: "ok" }, { attempt, before });
+  assert.equal(request.mock.callCount(), 0);
+});
 
 test("kubectl asset selection supports the pinned OpenShell CI host platforms", () => {
   assert.equal(selectKubectlAsset("darwin", "arm64").name, "kubectl-darwin-arm64");
@@ -80,16 +138,16 @@ test("OpenShell Helm chart image values use the v0.1.5 registry and digest contr
   );
 });
 
-// Finding 1846: the worker claimed the work again between the queued read and the deployment read,
-// so the proof saw `running` while nothing had activated. Each poll replays one interleaving.
-test("OpenShell outage proof rereads a deployment the worker claimed again between reads", async () => {
+// Finding 1846: the worker can claim the work again between reads. The status is read only once
+// the work is queued after an attempt, and a started deployment reads as `running` then (finding
+// 2456), so that read ends the wait with the work it followed.
+test("OpenShell outage proof reads the status only for work queued after an attempt", async () => {
   const queued = (attempt) => ({ state: "queued", reason_code: null, attempt_count: attempt });
   const claimed = (attempt) => ({ state: "claimed", reason_code: null, attempt_count: attempt });
   const polls = [
     [queued(0), undefined],
-    [queued(3), "running"],
-    [claimed(4), undefined],
-    [queued(4), "queued"],
+    [claimed(1), undefined],
+    [queued(1), "running"],
   ];
   let reads = 0;
   const poll = outageAttemptRead({
@@ -107,12 +165,7 @@ test("OpenShell outage proof rereads a deployment the worker claimed again betwe
   for (; reads < polls.length; reads += 1) {
     results.push(await poll());
   }
-  assert.deepEqual(results, [
-    undefined,
-    undefined,
-    undefined,
-    { work: queued(4), status: "queued" },
-  ]);
+  assert.deepEqual(results, [undefined, undefined, { work: queued(1), status: "running" }]);
   // A revision that failed or activated during the outage ends the wait, so the proof fails on it.
   for (const status of ["failed", "succeeded", null]) {
     const ended = await outageAttemptRead({
@@ -138,14 +191,14 @@ test("OpenShell outage proof counts a pass that waited on the gateway without an
       readWork: async () => work,
       readStatus: async () => {
         statusReads += 1;
-        return "queued";
+        return "running";
       },
     })();
   // Not claimed yet, or a pass that waited on something else: no proof, and no status read.
   assert.equal(await read({ ...waited, last_attempt_code: null }), undefined);
   assert.equal(await read({ ...waited, last_attempt_code: "REVISION_INCOMPLETE" }), undefined);
   assert.equal(statusReads, 0);
-  assert.deepEqual(await read(waited), { work: waited, status: "queued" });
+  assert.deepEqual(await read(waited), { work: waited, status: "running" });
   assert.equal(statusReads, 1);
 });
 
@@ -214,7 +267,8 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   t.after(() => {
     process.env.PATH = path;
   });
-  const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({});
+  const { requestCodexTurnFromGatewayPod, readCodexThreadFromGatewayPod } =
+    createOpenShellKubernetesFixture({});
 
   for (const event of [
     "late result",
@@ -362,6 +416,52 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     }
     assert.deepEqual(attempts, [1], event);
   }
+
+  await t.test("thread reads ignore unrelated notifications without starting work", async () => {
+    const thread = { id: "requested-thread", turns: [] };
+    const methods = [];
+    peer.once("connection", (socket) => {
+      socket.on("message", (data) => {
+        const { method, id, params } = JSON.parse(data);
+        methods.push(method);
+        const send = (message) => socket.send(JSON.stringify(message));
+        if (method === "initialize") {
+          return send({ id, result: {} });
+        }
+        if (method === "initialized") {
+          return;
+        }
+        assert.equal(method, "thread/read");
+        assert.deepEqual(params, { threadId: thread.id, includeTurns: true });
+        // Other clients can execute work while this client only reads a saved thread.
+        send({
+          method: "item/started",
+          params: {
+            threadId: "other-thread",
+            turnId: "other-turn",
+            item: {
+              id: "other-command",
+              type: "commandExecution",
+              command: "echo unrelated",
+              status: "inProgress",
+            },
+          },
+        });
+        send({
+          method: "turn/completed",
+          params: { threadId: "other-thread", turn: { id: "other-turn", status: "completed" } },
+        });
+        send({ id, result: { thread } });
+      });
+    });
+    const actual = await readCodexThreadFromGatewayPod({
+      namespace: "fixture",
+      gatewayPod: "fixture",
+      threadId: thread.id,
+    });
+    assert.deepEqual(actual, thread);
+    assert.deepEqual(methods, ["initialize", "initialized", "thread/read"]);
+  });
 });
 
 test("OpenShell probe waits for a command that outlives its turn up to the fixture's bound", async (t) => {

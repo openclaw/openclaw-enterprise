@@ -23,6 +23,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -453,12 +454,14 @@ test("first draft deployment provisions generated credentials and later revision
 
 test("Kubernetes without managed runtime credentials admits a draft deployment", async () => {
   const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
-  const { namespace, agent } = await fixture.bootstrapAgent();
+  const { agent, agentPath } = await fixture.bootstrapAgent();
+  // This credential-admission fixture has no Gateway runtime to apply managed mode.
+  const updated = await fixture.request("PATCH", agentPath, {
+    body: { configurationId: agent.configurationId, gatewayManagedMode: false },
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
 
-  const admitted = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
+  const admitted = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
   assert.equal(admitted.data.revision, 1);
 });
@@ -512,11 +515,50 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
   assert.equal((await fixture.request("GET", agentPath)).status, 200);
 });
 
+test("Kubernetes names a model provider reference the startup model check cannot resolve", async () => {
+  const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
+  const { namespace, agent } = await fixture.bootstrapAgent();
+  const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+  values.models.providers.openai.baseUrl = "${MODEL_HOST}";
+  // Configuration save accepts the reference: another Compute's runtime may resolve it.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stored = await fixture.request("GET", agentPath);
+  const replaced = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${stored.data.configurationId}`,
+    { body: { values } },
+  );
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  // Kubernetes probes the model with only the api_key binding's credential, so deploy and the
+  // Agent's saves name the setting and the reason, not a generic topology conflict (finding 2828).
+  const message =
+    "Configuration setting models.providers.openai.baseUrl must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential.";
+  const refused = (response) => {
+    assertApiError(response, 400, "INVALID_REQUEST");
+    assert.equal(response.body.error.message, message);
+  };
+  refused(await fixture.request("POST", `${agentPath}/deploy`));
+  refused(
+    await fixture.request("PATCH", agentPath, {
+      body: { configurationId: stored.data.configurationId },
+    }),
+  );
+  refused(
+    await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        name: "Probe reference Agent",
+        configurationId: stored.data.configurationId,
+        executionMode: "embedded",
+        harnessAuth: stored.data.harnessAuth,
+      },
+    }),
+  );
+});
+
 test("Kubernetes names a Harness authentication method the execution mode cannot use, at save and deploy", async () => {
   const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
   const { namespace, agent, configuration, secret } = await fixture.bootstrapAgent();
-  const message =
-    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
+  const message = EMBEDDED_API_KEY_REQUIRED;
   const agentsPath = `/namespaces/${namespace.id}/agents`;
   const agentPath = `${agentsPath}/${agent.id}`;
   const refused = (response) => {

@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { text } from "node:stream/consumers";
 import type { TestContext } from "node:test";
-import { availablePort } from "./available-port.mjs";
+import { reservePort, reservedPortArgs } from "./available-port.mjs";
 import { harnessTlsFixture } from "./harness-tls.mjs";
 import { listen } from "./listen.mjs";
 import { waitFor } from "./wait-for.mjs";
@@ -90,12 +90,16 @@ export async function standingGitConversation(t: TestContext, executable: string
         "Compute may not supply the model credential",
       );
       const dir = tls.directory;
-      const port = await availablePort();
+      // The Harness binds this port on every interface, first for native enrollment and then
+      // for the Codex app-server. Hold it until the enrollment listener answers.
+      const reservation = await reservePort({ host: "0.0.0.0" });
+      t.after(() => reservation.release());
+      const { port } = reservation;
       const appToken = randomUUID();
       await symlink(executable, join(dir, "codex"));
       const entrypoint = join(dir, "harness.cjs");
       await writeFile(entrypoint, AGENT_RUNTIME_ENTRYPOINT);
-      const child = spawn(process.execPath, [entrypoint], {
+      const child = spawn(process.execPath, [...reservedPortArgs(reservation), entrypoint], {
         cwd: dir,
         env: {
           ...environment,
@@ -141,6 +145,8 @@ export async function standingGitConversation(t: TestContext, executable: string
         assert.equal(result.status, 200, "native enrollment challenge must be available");
         return result.json();
       });
+      // Release before the Codex app-server, which cannot share the held port, binds it.
+      await reservation.release();
       assert.equal(responses.length, 0, "not even a probe before signed Compute release");
       assert.deepEqual(
         [challenge.inference, challenge.routeCount],

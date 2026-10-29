@@ -9,7 +9,6 @@ export const expectedFullLanes = [
   "postgres-auth",
   "postgres-platform",
   "images-packaging",
-  "images-model-probes",
   "images-runtime-startup",
   "images-runtime-startup-2",
   "images-runtime-startup-3",

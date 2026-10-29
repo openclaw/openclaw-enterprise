@@ -1,6 +1,5 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
-import { displayDate } from "./agents/list.mjs";
-import { button, element, type statusBlock } from "./dom.mjs";
+import { button, describeDisabled, element, requestIdLine } from "./dom.mjs";
 import type { createNavigation, pages } from "./navigation.mjs";
 
 interface Account {
@@ -35,7 +34,7 @@ export function brandContents(placement: "navigation" | "sign-in") {
   const mascot = "/console/oce-mascot.png";
   const src =
     document.querySelector<HTMLMetaElement>('meta[name="occ-console-logo"]')?.content ?? mascot;
-  const size = placement === "navigation" ? "20" : "40";
+  const size = placement === "navigation" ? "48" : "40";
   const image = element("img", { src, alt: "", width: size, height: size });
   const logo =
     placement === "navigation" && src === mascot
@@ -52,6 +51,10 @@ export function brandContents(placement: "navigation" | "sign-in") {
   return [logo, element("span", { className: "brand-name", title: displayName }, displayName)];
 }
 
+// The page panel's sentence that says why no Namespace can be selected. The header's disabled
+// selector is described by it (finding D749); the panel renders below the header afterwards.
+export const NAMESPACE_ACCESS_REASON_ID = "namespace-access-reason";
+
 export function panel(
   target: HTMLElement,
   title: string,
@@ -66,7 +69,7 @@ export function panel(
       { className: "state-panel", role: "status" },
       element("h2", {}, title),
       element("p", {}, description),
-      requestId ? element("p", { className: "request-id" }, `Request ID: ${requestId}`) : null,
+      requestId ? requestIdLine(requestId) : null,
       action ? button(actionLabel, action) : null,
     ),
   );
@@ -121,13 +124,6 @@ export function sorted<T extends { id: string; name?: string }>(items: readonly 
   );
 }
 
-// Status badges speak in words with a tone; Backend types are names, so they stay neutral.
-const namespaceStatuses = {
-  ready: { label: "Ready", tone: "success" },
-  provisioning: { label: "Provisioning", tone: "warning" },
-  deleting: { label: "Deleting", tone: "warning" },
-  failed: { label: "Failed", tone: "danger" },
-} satisfies Record<Namespace["status"], { label: string; tone: Parameters<typeof statusBlock>[0] }>;
 const backendTypes = {
   chatgpt: "ChatGPT",
   github: "GitHub",
@@ -157,6 +153,8 @@ export function createShell({
   let namespaces: readonly Namespace[] = [];
   let namespaceId: string | null = null;
   let observabilityUrl: string | null = null;
+  // The shown shell's Observability link, if any.
+  let observabilityLink: HTMLAnchorElement | null = null;
   let menuControls: ReturnType<typeof createAccountMenus> | null = null;
   let drawerControls: {
     shell: HTMLElement;
@@ -349,9 +347,25 @@ export function createShell({
     };
   }
 
+  // A reader with no Namespace sees a panel whose sentence says why the selector is disabled
+  // (finding D749). Only a shown panel describes it: on any other page, such as Settings, the
+  // selector names no reason that is not there.
+  function describeNamespaceSelector(select: HTMLSelectElement) {
+    describeDisabled(
+      select,
+      session && !namespaceAdmissionPending && namespaces.length === 0
+        ? // The page view may still be detached from the document while it renders.
+          (select.closest(".shell") ?? document).querySelector<HTMLElement>(
+            `#${NAMESPACE_ACCESS_REASON_ID}`,
+          )
+        : null,
+    );
+  }
+
   function updateNamespaceSelector(select: HTMLSelectElement) {
     const readable = namespaceAdmissionPending ? [] : namespaces;
     select.disabled = namespaceAdmissionPending || !session || readable.length === 0;
+    describeNamespaceSelector(select);
     select.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
       // Once this session knows the Namespace list, admission names the selection instead of
@@ -361,8 +375,9 @@ export function createShell({
         : "Checking access…";
       if (session && !namespaceAdmissionPending) {
         // The page's panel names the missing access; the disabled selector only says it is empty
-        // (finding 2371).
-        placeholder = namespaceId === null ? "None" : "Namespace unavailable";
+        // (finding 2371). Its "Namespace" label already names the kind, so the compact control
+        // fits the whole word (finding 2423).
+        placeholder = namespaceId === null ? "None" : "Unavailable";
       }
       select.append(element("option", { value: "", disabled: true, selected: true }, placeholder));
     }
@@ -582,20 +597,20 @@ export function createShell({
       });
       nav.append(link);
     }
+    observabilityLink = null;
     if (session && observabilityUrl) {
-      nav.append(
-        element(
-          "a",
-          {
-            href: observabilityUrl,
-            target: "_blank",
-            rel: "noopener noreferrer",
-          },
-          element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
-          "Observability",
-          externalLinkIcon(),
-        ),
+      observabilityLink = element(
+        "a",
+        {
+          href: observabilityUrl,
+          target: "_blank",
+          rel: "noopener noreferrer",
+        },
+        element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
+        "Observability",
+        externalLinkIcon(),
       );
+      nav.append(observabilityLink);
     }
     const revision =
       document.querySelector<HTMLMetaElement>('meta[name="occ-build-revision"]')?.content ?? "";
@@ -626,7 +641,9 @@ export function createShell({
               "span",
               {
                 className: "occ-version",
-                title: knownRevision ? `OCC commit ${revision}` : "OCC build revision unavailable",
+                title: knownRevision
+                  ? `Control plane commit ${revision}`
+                  : "Control plane build revision unavailable",
               },
               knownRevision ? revision.slice(0, 8) : "dev",
             )
@@ -812,27 +829,15 @@ export function createShell({
     );
   }
 
-  function renderRows(
-    view: HTMLElement,
-    ...[feature, items]:
-      ["namespaces", readonly Namespace[]] | ["backends", readonly BackendSummary[]]
-  ) {
+  function renderRows(view: HTMLElement, feature: "backends", items: readonly BackendSummary[]) {
     if (!items.length) {
       panel(
         view,
-        feature === "backends"
-          ? "No backends configured"
-          : `No accessible ${pages[feature].toLowerCase()}`,
-        feature === "backends"
-          ? "No experimental Backends are configured for this Installation."
-          : "Ask an administrator to provision resources or grant access, then refresh.",
+        "No backends configured",
+        "No experimental Backends are configured for this Installation.",
         "Refresh",
         () => void loadPage(),
       );
-      return;
-    }
-    if (feature === "namespaces") {
-      renderNamespaceRows(view, items);
       return;
     }
     const list = element("ul", { className: "collection", "aria-label": pages[feature] });
@@ -853,79 +858,6 @@ export function createShell({
     view.replaceChildren(list);
   }
 
-  // Namespaces read as a table (UX spec 3.12): Namespace with its ID beneath, Status, Created.
-  // The rows stay a list, so each row is one item to a screen reader, and the column names
-  // above them are visual only: each cell carries its own name. A row opens that Namespace's
-  // Agents (finding 1897).
-  function renderNamespaceRows(view: HTMLElement, items: readonly Namespace[]) {
-    const list = element("ul", {
-      className: "collection",
-      "aria-label": pages.namespaces,
-    });
-    for (const item of sorted(items)) {
-      const status = namespaceStatuses[item.status];
-      list.append(
-        element(
-          "li",
-          { className: "resource-linked namespace-row" },
-          element(
-            "div",
-            { className: "namespace-cell-name" },
-            element(
-              "p",
-              { className: "resource-name" },
-              namespaceLink(item.name ?? item.id, item.id),
-            ),
-            element("span", { className: "resource-id" }, item.id),
-          ),
-          element(
-            "span",
-            { className: "namespace-cell-status" },
-            element(
-              "span",
-              { className: "badge", ...(status ? { "data-tone": status.tone } : {}) },
-              status?.label ?? item.status,
-            ),
-          ),
-          element(
-            "span",
-            { className: "namespace-cell-created" },
-            element("span", { className: "namespace-cell-label" }, "Created "),
-            item.createdAt ? displayDate(item.createdAt) : "Unknown",
-          ),
-        ),
-      );
-    }
-    view.replaceChildren(
-      element(
-        "div",
-        { className: "resource-list namespace-table" },
-        element(
-          "div",
-          { className: "resource-list-header namespace-table-head", "aria-hidden": "true" },
-          element("span", {}, "Namespace"),
-          element("span", {}, "Status"),
-          element("span", {}, "Created"),
-        ),
-        list,
-      ),
-    );
-  }
-
-  function namespaceLink(name: string, id: string) {
-    const node = element("a", { href: pageUrl("agents", id) }, name);
-    // A revalidation that remounts the list returns focus to the same row.
-    node.dataset.returnFocusHref = node.href;
-    node.addEventListener("click", (event) => {
-      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-        return;
-      }
-      event.preventDefault();
-      navigate("agents", id);
-    });
-    return node;
-  }
-
   function switchNamespace() {
     namespaceSelect?.focus();
   }
@@ -936,6 +868,62 @@ export function createShell({
         control.close();
       }
     }
+  });
+  // A load render can replace a pressed primary navigation link before release, so the browser
+  // cannot dispatch its click to that link. Activate only its replacement in the shown sidebar.
+  const primaryNavLink = ".sidebar .nav a[data-nav]";
+  let pressedLink: HTMLAnchorElement | null = null;
+  app.addEventListener(
+    "mousedown",
+    (event) => {
+      pressedLink =
+        event.isTrusted &&
+        event.button === 0 &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.target instanceof Element
+          ? event.target.closest<HTMLAnchorElement>(primaryNavLink)
+          : null;
+    },
+    { capture: true },
+  );
+  app.addEventListener("mouseleave", () => {
+    pressedLink = null;
+  });
+  app.addEventListener("mouseup", (event) => {
+    const pressed = pressedLink;
+    pressedLink = null;
+    const sidebar = drawerControls?.sidebar;
+    const released =
+      event.target instanceof Element
+        ? event.target.closest<HTMLAnchorElement>(primaryNavLink)
+        : null;
+    if (
+      !pressed ||
+      pressed.isConnected ||
+      !sidebar ||
+      !released ||
+      !event.isTrusted ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey ||
+      sameControl(pressed, sidebar) !== released
+    ) {
+      return;
+    }
+    const suppressDuplicate = (click: MouseEvent) => {
+      if (click.isTrusted) {
+        click.preventDefault();
+        click.stopImmediatePropagation();
+      }
+    };
+    released.addEventListener("click", suppressDuplicate, true);
+    setTimeout(() => released.removeEventListener("click", suppressDuplicate, true));
+    released.click();
   });
   document.addEventListener("keydown", (event) => {
     if (!drawerControls?.shell.classList.contains("drawer-open")) {
@@ -965,6 +953,12 @@ export function createShell({
     renderRows,
     switchNamespace,
     updateNamespaces,
+    // The page view calls this once it shows (or replaces) the no-Namespace panel.
+    describeNamespaceSelector() {
+      if (namespaceSelect) {
+        describeNamespaceSelector(namespaceSelect);
+      }
+    },
     // The shown shell's control, outside its page view, that matches one from an earlier
     // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
     // toggle. A new shell's account menus start closed, so their items give way to their toggle (the
@@ -991,6 +985,13 @@ export function createShell({
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);
+    },
+    // The shown page learned that the caller does not administer the Installation, whose
+    // administrators alone get the link (finding D760).
+    dropObservabilityLink() {
+      observabilityUrl = null;
+      observabilityLink?.remove();
+      observabilityLink = null;
     },
     setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;

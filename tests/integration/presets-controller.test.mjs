@@ -22,7 +22,7 @@ import {
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
 import {
@@ -30,6 +30,7 @@ import {
   partialWrite,
 } from "../helpers/partial-write-authorization.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
 
 async function createFixture(t, options = {}) {
   const root = await temporaryDirectory(t, "occ-presets-");
@@ -473,9 +474,10 @@ describe("Presets", { concurrency: 2 }, () => {
     const session = await fixture.signIn(member.credentials);
     // Over the general 64 KiB limit and under the Preset route limit (6 MiB + 8 KiB).
     const declaredBytes = 6 * 1024 * 1024;
+    // Each refusal names the grant it checked, the same before and after the body arrives.
     const forbidden = {
-      code: "FORBIDDEN",
-      message: "The exact platform operation was not authorized.",
+      POST: { code: "FORBIDDEN", message: createDenied("Preset", namespace.id) },
+      PATCH: { code: "FORBIDDEN", message: callerDenied("Preset update", `Preset ${existing.id}`) },
     };
     for (const [method, path, action, grant, targetId] of [
       ["POST", collection(namespace.id), "openclaw.presets.create", "create", namespace.id],
@@ -493,7 +495,7 @@ describe("Presets", { concurrency: 2 }, () => {
         body: { name: "Unauthorized", template: {} },
       });
       assert.equal(small.status, 403, `${method}: ${JSON.stringify(small.body)}`);
-      assert.deepEqual(small.body.error, forbidden, method);
+      assert.deepEqual(small.body.error, forbidden[method], method);
       const auditStart = fixture.audit.events.length;
       const refused = await partialWrite({
         origin: fixture.origin,
@@ -506,7 +508,7 @@ describe("Presets", { concurrency: 2 }, () => {
       });
       assert.notEqual(refused, null, `${method}: the controller waited for the unread body`);
       assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
-      assert.deepEqual(refused.body.error, forbidden, method);
+      assert.deepEqual(refused.body.error, forbidden[method], method);
       // The refusal keeps its audit row, naming the exact grant the write itself checks.
       assertWriteAuthorizationDenial(
         fixture.audit.events.slice(auditStart),
@@ -1750,12 +1752,9 @@ describe("Presets", { concurrency: 2 }, () => {
     const frozen = await staleCopy("Frozen presets");
     const open = await staleCopy("Open presets");
     // An administrator froze one Namespace's Presets before the upgrade.
-    fixture.policy.restrictions.push({
+    restrict(fixture.policy, "update", "preset", {
       id: "freeze-presets",
       namespaceId: frozen.namespace.id,
-      action: "update",
-      resourceKind: "preset",
-      effect: "deny",
     });
     const { lines, emit } = captureLog();
     const refreshes = () => auditFrom(fixture, "installation-defaults-refresh");
@@ -1835,12 +1834,9 @@ describe("Presets", { concurrency: 2 }, () => {
     };
     // An operator removed one default copy, then froze the Namespace's Presets.
     const frozen = await missingDefault("Frozen presets");
-    fixture.policy.restrictions.push({
+    restrict(fixture.policy, "create", "preset", {
       id: "freeze-preset-creation",
       namespaceId: frozen.id,
-      action: "create",
-      resourceKind: "preset",
-      effect: "deny",
     });
     // Another Namespace is missing the same default and may still receive it.
     const open = await missingDefault("Open presets");

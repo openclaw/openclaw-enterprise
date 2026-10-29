@@ -29,11 +29,17 @@ jobs:
   # The ordinary PR signal is in ci.yml. The label requests extra coverage; it
   # does not grant trust. PR jobs use the normal pull_request merge commit
   # and the existing integration-qa-pr environment.
+  # Push runs are paused until the integration-qa-pr credentials work again
+  # (finding 2524: CODEX_ACCESS_TOKEN failed from 2026-10-23). The schedule,
+  # full-qa and manual runs are unchanged. To run on every main push again, set
+  # the repository variable QA_ADVISORY_ON_PUSH to 'true'. The other jobs need
+  # this one, so they skip with it.
   eligibility:
     name: Select advisory QA
     if: >-
       (github.ref == 'refs/heads/main' &&
-        (github.event_name == 'push' || github.event_name == 'schedule' ||
+        ((github.event_name == 'push' && vars.QA_ADVISORY_ON_PUSH == 'true') ||
+         github.event_name == 'schedule' ||
          (github.event_name == 'workflow_dispatch' && github.actor != 'dependabot[bot]'))) ||
       (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
@@ -64,7 +70,7 @@ jobs:
         with:
           lane: dev-up-k3d
           profile: full
-          node-version: "24.16.0"
+          node-version: "24.22.1"
           artifact-prefix: qa-advisory-local-installation
           job-timeout-minutes: 180
       - name: Show Docker Hub pull endpoints
@@ -99,7 +105,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: "24.16.0"
+          node-version: "24.22.1"
       - name: Materialize selected QA credentials
         env:
           CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
@@ -108,7 +114,7 @@ jobs:
         with:
           lane: qa-matrix
           profile: full
-          node-version: "24.16.0"
+          node-version: "24.22.1"
           artifact-prefix: qa-advisory-${{ matrix.installation }}
           job-timeout-minutes: 120
       - name: Summarize selected scenarios
@@ -161,6 +167,6 @@ jobs:
         with:
           lane: openshell
           profile: full
-          node-version: "24.16.0"
+          node-version: "24.22.1"
           artifact-prefix: qa-advisory
           job-timeout-minutes: 120

@@ -273,6 +273,8 @@ an ordinary document does not exempt that document.
 
 ## Documentation editing
 
+Human-verified documents must include `human_verified: true` in their YAML frontmatter.
+
 Before creating, updating, or reviewing documentation and specifications, read
 and apply [technical-writing](.agents/skills/technical-writing/SKILL.md).
 Use ASD-STE100 (Simplified Technical English) and complete its required
@@ -507,7 +509,5 @@ controls:
   `pnpm format:check` when an installed dependency graph matches the current
   manifests. These checks include authored `docs/**/*.md`; the generated
   `docs/reference/api.md` is excluded and verified by `pnpm openapi:check`.
-  Never reconcile or install dependencies as a side effect of agent
-  verification; use dependency-independent Node tests if manifests changed.
 - Check root workspace isolation with `pnpm check:workspace`.
 - Never run `npm run precommit`.

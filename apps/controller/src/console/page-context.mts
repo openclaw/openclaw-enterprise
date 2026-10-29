@@ -37,12 +37,16 @@ export interface ConsolePageContext extends Pick<Navigation, "navigate" | "pageU
   isCurrent(): boolean;
   onResume(handler: () => void): void;
   onRevalidate(check: () => Promise<unknown>): () => void;
+  /** Run when Installation administration settles as ended while this page is mounted. */
+  onAdministrationEnded?(handler: () => void): void;
   onExpired(): void;
   setTitle(title: string): void;
   setTabNavigation(handler: TabNavigation): void;
   setPageActions(node: HTMLElement): void;
   setLeaveGuard(guard: LeaveGuard): void;
   setWriteInFlight(check: () => boolean): void;
+  /** The Namespace permission answer's secrets.create; undefined when it is unknown. */
+  secretsCreateAllowed?(): Promise<boolean | undefined>;
   /** Run after an Agent detail page that loaded behind a stand-in is visible. */
   revealed?(then?: () => void): void;
 }

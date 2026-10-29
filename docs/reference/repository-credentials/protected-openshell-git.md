@@ -140,8 +140,11 @@ grpc_endpoint = "https://openclaw-enterprise-openshell-git.openclaw-system.svc:8
 tls_ca_cert_path = "/etc/openshell/certs/oce-git-ca.pem"
 audience = "oce-prepared-git"
 max_payload_bytes = 4194304
-timeout = "3s"
+timeout = "5s"
 ```
+
+The `github-installation` preview requires exactly `5s` here. OCE still caps its
+authorization decision at three seconds.
 
 Start the configured OCE worker before restarting the Gateway: Gateway startup
 calls authenticated `Describe` and refuses an unavailable or incompatible service.
@@ -176,7 +179,9 @@ Namespace with `accessMode: installation`, and select that reference with
 `profile: github-installation` in the Agent's `repositoryBindings`, as its only
 binding (Agent save and deploy refuse it next to another). No default profile or
 wildcard selects this scope. The installed sender must positively confirm
-`github_installation` support.
+`github_installation` support. With the bundled OpenShell Credential Proxy, that
+needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
+`409 RESOURCE_CONFLICT`, and on a gateway other than 0.1.5, `503`.
 
 OCE does not add a ref allowlist to installation scope. GitHub's membership,
 permissions and branch rules set its limit. See

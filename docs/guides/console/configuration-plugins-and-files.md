@@ -21,11 +21,45 @@ In the draft, **Enable gateway password access** stages the generated-password
 reference; authentication mode and proxy settings stay unchanged. The Compute
 Driver owns the password; the Console shows only its reference.
 
+**Collaboration and safety** shows two Gateway settings as a deployment of the
+draft applies them, and whether each value is the default or set in the
+Configuration:
+
+- **Other participants can steer a running turn**
+  (`messages.queue.allowCollaborativeSteering`, default on): another Gateway
+  participant in the conversation can add guidance to a running turn. The turn
+  keeps the identity and permissions of the participant who started it, even when
+  the participant steering has fewer. Participants are channel users or local
+  operators with distinct Gateway identities. OCE native admin and workspace
+  access share one Gateway identity, so this setting does not separate OCE users.
+  When steering is off, the Gateway queues their message as a separate turn by
+  default. If you set `messages.queue.collaborativeSteeringFallback` to `"reject"`,
+  the Gateway asks the participant to resend the message with `/followup`.
+- **apply_patch changes files only in the workspace**
+  (`tools.exec.applyPatch.workspaceOnly`, default on).
+
+**Strict mode** turns collaborative steering off and restricts `apply_patch` to
+the workspace. Turning Strict mode off removes those two settings. Setting an
+individual toggle back to its default removes just that value. Changing the
+toggles requires Configuration `update`. Save the draft, then deploy a new version.
+
 **Edit Configuration** edits native JSON. **Save Configuration** requires an object;
 **Cancel** discards edits. **Edit current Configuration** opens the current draft's editor,
-not a historical copy. Saving preserves Secret bindings and saved versions;
+not a historical copy. Without Configuration `update`, or Secret `operate` on a Secret the
+Configuration binds, it reads **Open draft** and opens the draft read-only. Saving preserves Secret bindings and saved versions;
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.
+
+If a draft contains `security.preset`, remove that field in **Edit Configuration**.
+If you used `corporate`, set the restrictions you relied on explicitly before
+saving. For example, set `tools.fs.workspaceOnly` to
+`true` to confine file tools to the workspace, or set `session.dmScope` to
+`"per-account-channel-peer"` to separate direct-message sessions. Strict mode
+leaves those settings alone. Also review any restrictions you relied on for
+command approvals, elevated execution, session visibility, and messaging between
+Agents or conversations. OCE isolates each Agent and requires OpenClaw's own
+sandbox to stay off. See the [former preset values](https://github.com/openclaw/openclaw/blob/762a2fe60cc37cf6b8c9d05e61c329866e0d3f6f/docs/gateway/security/presets.md#what-the-presets-select)
+and [OCE's deployment defaults](../../reference/configuration.md#agent-references-and-immutable-versions).
 
 Unsaved edits, pending saves, and stale or unknown outcomes block deployment,
 tab switching, and version navigation. Save checks Configuration association and
@@ -37,7 +71,7 @@ Configuration JSON. See the [Configuration reference](../../reference/configurat
 
 ## Plugins tab
 
-In **Create new version** → **Plugins**, edit the Agent's existing selections and
+In **Open draft** → **Plugins**, edit the Agent's existing selections and
 tool policies with **Configure plugins** or **Plugin selections JSON**. With a bound
 Service Accounts token Secret, the tab preloads the first catalog page for the
 picker. Search and tool lookups show loading indicators. Dedicated Codex browsing
@@ -63,6 +97,10 @@ selections on the next deployment. The selected Plugin Driver validates policy
 at save and deployment; installation and app access are checked later during
 startup. A rejected save leaves the running version unchanged. For policy
 limits and errors, see [Agent plugins](../../reference/agent-plugins.md).
+Without Agent `update`, the selections and default plugin approvers show as a read-only summary
+with no editor, and a note names the grant to ask for. Every Agent save also needs `operate` on each Secret and credential
+source that the Agent and its Configuration bind, and `read` on a ChatGPT service account it uses
+for authentication; without them, the selections show as that summary too, and a note says so.
 
 If you see **Plugin selections changed**, the Console stopped before saving.
 If you see **Outcome unknown**, your changes may already be saved. Note any edits
@@ -75,7 +113,7 @@ new version**. Otherwise, edit the reloaded settings and save only the changes
 you still need.
 
 When viewing a saved version, the **Plugins** tab shows that version's
-saved selection. Return to **Create new version** to make another edit.
+saved selection. Return to **Open draft** to make another edit.
 Native `values.plugins` in **Edit Configuration** controls the runtime's native
 plugin allowlist and is separate from these Agent-owned selections.
 
@@ -95,6 +133,9 @@ version. They are not historical copies or Configuration fields.
 | `IDENTITY.md` | Agent identity and presentation.                  |
 | `USER.md`     | Context about the person the Agent assists.       |
 
+Choose a file with its desktop tab or the phone **Workspace file** dropdown.
+The description explains its role. Switching files keeps unsaved text and each
+file's indicator shows Unsaved, Loading, Missing, Read-only, or Needs attention.
 Each editor loads independently. Its status reports loading, success, or failure.
 **Reload** replaces unsaved edits with current contents. **Save** immediately
 creates or replaces that one file; it does not deploy a version. Save is disabled

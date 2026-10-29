@@ -203,11 +203,11 @@ try {
     });
     repositoryGitTransport = await bindRepositoryGitTransport(
       drivers,
-      preparedRepositoryGit,
+      preparedRepositoryGit.protectedGit,
       pool,
       (event) => emitOccLogEvent(logger, event),
     );
-  } else if (drivers?.repositoryGitDriver || drivers?.openShellGit) {
+  } else if (drivers?.repositoryGitDriver || drivers?.repositoryTransport) {
     throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;

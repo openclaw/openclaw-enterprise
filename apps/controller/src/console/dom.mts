@@ -166,6 +166,17 @@ export function dismissOnBackdrop(dialog: HTMLDialogElement) {
 }
 
 /**
+ * A dialog's `close` event fires a task after the dialog closes, so the reader may already have
+ * moved focus on, for example to a field they are typing in (finding 2862). True only while focus
+ * is still in `dialog` or was dropped to the page, where a close handler may return it to the
+ * dialog's opener without taking it from anything else.
+ */
+export function mayReturnFocus(dialog: Element) {
+  const active = document.activeElement;
+  return active === null || active === document.body || dialog.contains(active);
+}
+
+/**
  * A phone's on-screen keyboard shrinks the visual viewport, not the layout viewport a modal
  * dialog sits in, so a bottom sheet's actions ended up under the keyboard (finding 1957). This
  * mirrors how far the visible area is inset from the layout viewport's top and bottom
@@ -245,23 +256,33 @@ export function jsonObjectProblem(text: string): string | undefined {
   try {
     parsed = JSON.parse(text);
   } catch {
-    if (!text.trim()) {
+    // Only JSON whitespace is blank: trim() also strips a byte order mark or a space-like
+    // character, which the message below names (finding 1959).
+    if (!/[^ \t\n\r]/.test(text)) {
       return "Enter a valid JSON object.";
     }
     const offset = jsonErrorOffset(text);
     if (offset === undefined) {
       return "Invalid JSON. Enter a valid JSON object.";
     }
-    // A character pasted from a file or a document can be invisible, or look like a space, so a
-    // bare position would point at nothing wrong; the message names it.
-    const unseen = UNSEEN_CHARACTERS[text.charAt(offset)];
-    if (offset === 0 && unseen) {
-      return `Invalid JSON: remove the ${unseen} at the start. Enter a valid JSON object.`;
+    // A character pasted from a file or a document can be invisible, look like a space, or be a
+    // curly quote a word processor put in, so a bare position would point at nothing visibly
+    // wrong; the message names it.
+    const character = text.charAt(offset);
+    const unseen = UNSEEN_CHARACTERS[character];
+    const fix = unseen
+      ? (place: string) => `remove the ${unseen} ${place}`
+      : CURLY_QUOTES.has(character)
+        ? (place: string) =>
+            `replace the curly quote ${character} ${place} with a straight quote (")`
+        : undefined;
+    if (offset === 0 && fix) {
+      return `Invalid JSON: ${fix("at the start")}. Enter a valid JSON object.`;
     }
     const lines = text.slice(0, offset).split(/\r\n?|\n/);
     const where = `line ${lines.length}, column ${visibleLength(lines.at(-1) ?? "") + 1}`;
-    return unseen
-      ? `Invalid JSON at ${where}: remove the ${unseen} there. Enter a valid JSON object.`
+    return fix
+      ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
       : `Invalid JSON at ${where}. Enter a valid JSON object.`;
   }
   return parsed === null || Array.isArray(parsed) || typeof parsed !== "object"
@@ -415,8 +436,14 @@ const JSON_LITERALS: Record<string, string> = { t: "true", f: "false", n: "null"
 const UNSEEN_CHARACTERS: Record<string, string> = {
   "\uFEFF": "invisible byte order mark",
   "\u200B": "invisible zero-width space",
+  "\u2028": "invisible line separator",
+  "\u2029": "invisible paragraph separator",
   "\u00A0": "non-breaking space",
+  "\u202F": "narrow non-breaking space",
+  "\u3000": "full-width space",
 };
+// Typographic quotes that word processors and chat apps substitute for straight ones.
+const CURLY_QUOTES = new Set(["\u201C", "\u201D", "\u2018", "\u2019"]);
 
 const graphemes =
   typeof Intl.Segmenter === "function"
@@ -461,6 +488,44 @@ function undescribe(control: Element, id: string) {
     control.setAttribute("aria-describedby", others.join(" "));
   } else {
     control.removeAttribute("aria-describedby");
+  }
+}
+
+let reasonIds = 0;
+
+/**
+ * Links a disabled control to the sentence that says why (finding D749), so assistive technology
+ * reads the reason with the control, as a sighted reader sees it nearby. Call it wherever the
+ * control's disabled state or the reason changes: while the control is disabled (or
+ * aria-disabled) and `reason` shows text, the reason joins the control's description; otherwise
+ * the link is removed. A reason given by ID may render later, such as a page panel under the
+ * header's selector. Other descriptions, such as a field's help or error, are kept.
+ */
+export function describeDisabled(
+  control: HTMLElement,
+  reason: HTMLElement | string | null | undefined,
+) {
+  const disabled =
+    (control as HTMLElement & { disabled?: boolean }).disabled === true ||
+    control.getAttribute("aria-disabled") === "true";
+  let id: string | undefined;
+  if (!disabled || !reason) {
+    id = undefined;
+  } else if (typeof reason === "string") {
+    id = reason;
+  } else if (!reason.hidden && reason.textContent?.trim()) {
+    id = reason.id ||= `disabled-reason-${++reasonIds}`;
+  }
+  const linked = control.dataset.disabledReason;
+  if (linked && linked !== id) {
+    undescribe(control, linked);
+    delete control.dataset.disabledReason;
+  }
+  if (id && !(control.getAttribute("aria-describedby") ?? "").split(/\s+/).includes(id)) {
+    describe(control, id);
+  }
+  if (id && linked !== id) {
+    control.dataset.disabledReason = id;
   }
 }
 
@@ -724,6 +789,23 @@ export function statusBlock(
     actions.length ? element("div", { className: "status-actions" }, ...actions) : null,
   );
 }
+
+// One way to show a request ID (finding 2538): the words "Request ID:" and the ID, on their own
+// line under a failure that has room for one, otherwise after its one line of text.
+export const requestIdText = (requestId: string) => `Request ID: ${requestId}`;
+export const requestIdLine = (requestId: string) =>
+  element("p", { className: "request-id" }, requestIdText(requestId));
+export const withRequestId = (text: string, requestId: string | undefined) =>
+  requestId ? `${text} ${requestIdText(requestId)}` : text;
+// A settled permission refusal keeps its request ID for whoever traces the denial, behind a
+// disclosure, so it is not read as part of the reason (finding D770).
+export const requestIdDisclosure = (requestId: string) =>
+  element(
+    "details",
+    { className: "disclosure" },
+    element("summary", {}, "Request details"),
+    requestIdLine(requestId),
+  );
 
 /**
  * Gives a feedback line that switches between a quiet hint and a refusal its look: a status

@@ -1,10 +1,41 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+
+test("Google packaging refuses substituted ClawHub skill bytes before installing the CLI", async (t) => {
+  const directory = await temporaryDirectory(t, "runtime-google-");
+  const upstream = join(directory, "upstream.md");
+  await writeFile(upstream, "Changed instructions under the same ClawHub version.\n");
+  const google = new URL("../../apps/controller/plugins/oce-google-workspace/", import.meta.url);
+  await symlink(new URL("skills/", google), join(directory, "skills"), "dir");
+  const manifest = JSON.parse(
+    await readFile(new URL("ai.openclaw.oce/release.json", google), "utf8"),
+  );
+  manifest.clawhub.sourceUrl = pathToFileURL(upstream).href;
+  manifest.artifacts["linux-amd64"].url = pathToFileURL(
+    join(directory, "unreachable-archive"),
+  ).href;
+  await writeFile(join(directory, "release.json"), JSON.stringify(manifest));
+  const result = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL("../../deploy/runtime/google/install-gog.mts", import.meta.url)),
+      directory,
+      "linux-amd64",
+      directory,
+      fileURLToPath(new URL("../../scripts/ci/download-pinned.sh", import.meta.url)),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /checksum did NOT match/);
+  await assert.rejects(readFile(join(directory, "gog")), { code: "ENOENT" });
+});
 
 test("runtime assembly preserves executable assets and links while excluding development files", async (t) => {
   const directory = await temporaryDirectory(t, "runtime-assets-");
@@ -92,9 +123,26 @@ packages:
   );
   const sourceAlias = join(directory, "source-alias");
   await symlink(root, sourceAlias, "dir");
+  // This assembly fixture has its own identity; it is not an upstream source checkout.
+  const sourceManifest = join(directory, "openclaw-source.json");
+  const sourceIdentity = {
+    commit: "a".repeat(40),
+    sourceArchiveSha256: "b".repeat(64),
+    buildTimestamp: "2026-01-01T00:00:00Z",
+  };
+  await writeFile(sourceManifest, JSON.stringify(sourceIdentity));
+  // Refuse stale metadata before pruning the input tree or writing provenance.
+  const refused = spawnSync(
+    process.execPath,
+    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output, sourceManifest],
+    { encoding: "utf8", env: { ...process.env, GIT_COMMIT: "c".repeat(40) } },
+  );
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /GIT_COMMIT must match the OpenClaw source manifest/);
+  assert.equal(await readFile(join(root, "src/server.ts"), "utf8"), files["src/server.ts"]);
   execFileSync(
     process.execPath,
-    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output],
+    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output, sourceManifest],
     {
       env: { ...process.env, GIT_COMMIT: "a".repeat(40) },
     },
@@ -138,6 +186,8 @@ packages:
     "../codex/bin.js",
   );
   const provenance = JSON.parse(await readFile(join(output, "provenance.json"), "utf8"));
+  assert.equal(provenance.commit, sourceIdentity.commit);
+  assert.equal(provenance.sourceArchiveSha256, sourceIdentity.sourceArchiveSha256);
   assert.equal(
     provenance.runtimeContentsSha256,
     createHash("sha256").update(contents).digest("hex"),
@@ -166,9 +216,11 @@ packages:
   // The per-patch fields recorded before `patches` keep their names and values.
   for (const [field, file] of [
     ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
-    ["openclawConnectPatchSha256", "openclaw-connect-ephemeral-expired-setup.patch"],
     ["codexDependencyPinPatchSha256", "stock-codex-0.163.0-alpha.2-dependency-pin.patch"],
-    ["openclawRequiredWorkerAuthorityPatchSha256", "openclaw-required-worker-authority.patch"],
+    [
+      "openclawRequiredWorkerAuthorityRegressionPatchSha256",
+      "openclaw-required-worker-authority-regression.patch",
+    ],
   ]) {
     assert.equal(provenance[field], provenance.patches[file], field);
   }

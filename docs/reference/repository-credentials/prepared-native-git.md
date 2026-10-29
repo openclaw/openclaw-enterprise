@@ -23,6 +23,12 @@ For the protected OpenShell qualification boundary, see [OpenShell Git](protecte
    Git operation and proposed refs. It sends only after the worker authorizes that
    use of the prepared credential. An authorization record is not a delivery receipt.
 
+If standing approval is withdrawn before the worker’s final authorization check, the
+request is denied. After the worker issues a one-use permit, withdrawal denies fresh
+requests but cannot invalidate that permit. The permitted send can start after withdrawal
+is acknowledged, within its original send deadline and unless cancelled. A possible
+dispatch must not be replayed.
+
 Reads cover the repository, not just the review branch. GitHub's `contents: write`
 permission is not branch-scoped: protect important refs at GitHub independently,
 without an App bypass. The Git-only profile exposes fetch and push, not GitHub REST or GraphQL.
@@ -117,15 +123,25 @@ the Agent received, and `reason` says where the broker refused the request:
 | --------------------- | ------------------------------------------------------------------------------------------------------ |
 | `session_unavailable` | The session is closed, expired or unknown to this broker                                               |
 | `capacity`            | The session has four requests in progress, or the broker is at its total limit (`exchange-capacity`)   |
-| `request_refused`     | The route does not admit the request, for example a GitHub API request on the Git-only profile         |
+| `request_refused`     | A wrong `Host` or bad framing, or the route does not admit it (a GitHub API request on Git-only)       |
 | `input_refused`       | The request body was refused, for example a push to another ref or a draft with another head or base   |
 | `not_dispatched`      | The worker did not authorize the send, for example after withdrawal, or the GitHub connection failed   |
 | `operation_conflict`  | The grant's draft allowance was already used                                                           |
 | `credential_refused`  | The route does not accept the credential, for example a request for a repository that no binding names |
 | `service_error`       | An internal broker failure                                                                             |
 
-The line also carries `status`, `operation` (such as `git-push`) once the route is known,
-and the session ID, Namespace and `repositoryRef`. It never carries the session credential,
+The line also carries `status`, and `operation` (such as `git-push`) once the route is known.
+A draft create that GitHub did not receive, for example because the connection failed, gets a
+`409` receipt with `not-submitted` and logs `not_dispatched`. An uncertain push or draft
+(`exchange-uncertain`, `outcome_unknown`) is not a refusal and is not logged.
+
+The session ID, Namespace and `repositoryRef` appear only when the credential names an open
+session. A `session_unavailable` line has none of them, because the broker no longer knows the
+session, for example after a worker Pod
+[restart](../../guides/repository-credentials/installation.md#install-and-verify). Match it by
+time to that restart or to the session's end. A request refused while the broker reads its
+head, for example for a wrong `Host`, is logged only when its credential names an open session.
+A line never carries the session credential,
 a token, a URL or a ref. Unauthenticated requests are part of Git's normal authentication and
 are not logged.
 

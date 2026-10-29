@@ -236,3 +236,19 @@ new line, so the output has no blank first line under nindent.
       - "169.254.0.0/16"
 {{- end -}}
 {{- end -}}
+
+{{/*
+"true" when an API sign-in egress NetworkPolicy allows HTTPS to any address (a provider enabled
+with empty egressCidrs), else "false". The API then tries Slack directly instead of naming a
+missing Slack proxy (OCC_API_HTTPS_EGRESS_OPEN).
+*/}}
+{{- define "openclaw.api.httpsEgressOpen" -}}
+{{- $open := false -}}
+{{- range $name := list "github" "google" "oidc" -}}
+{{- $provider := get $.Values.auth $name -}}
+{{- if and $provider $provider.enabled (empty $provider.egressCidrs) -}}
+{{- $open = true -}}
+{{- end -}}
+{{- end -}}
+{{- ternary "true" "false" $open -}}
+{{- end -}}

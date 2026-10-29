@@ -22,6 +22,7 @@ import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sa
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
@@ -423,7 +424,8 @@ test("zero-route admission has no business allow and an older supplier cannot cl
   );
   const assertAvailable = () => f.egress.sourceControl.assertAvailable(AbortSignal.timeout(5000));
   await assertAvailable();
-  const unavailable = /no negotiated protected egress authority/;
+  // A gateway state an operator fixes: a 503 that names it (finding 2536).
+  const unavailable = { name: "RetryLaterError", message: PROXY_REGISTRATION_UNAVAILABLE };
   observed.requiredCapabilities = old;
   await assert.rejects(assertAvailable, unavailable, "complete supported, incomplete required");
   delete observed.requiredCapabilities;

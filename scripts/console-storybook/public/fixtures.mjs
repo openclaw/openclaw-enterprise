@@ -66,6 +66,13 @@ function configurationValues(scenario) {
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
     };
   }
+  if (scenario.messageQueue !== undefined) {
+    values.messages = { queue: structuredClone(scenario.messageQueue) };
+  }
+  if (scenario.retiredSetting) {
+    // A setting an older release saved and the pinned OpenClaw has since retired.
+    values.security = { preset: "corporate" };
+  }
   if (scenario.slack) {
     values.channels.slack = {
       enabled: true,
@@ -76,8 +83,10 @@ function configurationValues(scenario) {
       ...(scenario.slackEnterpriseOrgInstall ? { enterpriseOrgInstall: true } : {}),
       dmPolicy: scenario.slackPolicy ?? "pairing",
       groupPolicy: scenario.slackPolicy === "open" ? "open" : "allowlist",
-      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      ...(scenario.slackTokens ?? {
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      }),
       allowFrom:
         scenario.slackAllowFrom ?? (scenario.slackPolicy === "open" ? ["*"] : ["UDEMO123"]),
       channels: slackChannels(scenario),
@@ -162,7 +171,7 @@ function candidateDeploymentError(scenario, checkedAt) {
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
       message:
-        "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
+        "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.",
       data: {
         runtimeFailure: {
           component: "gateway",
@@ -174,17 +183,22 @@ function candidateDeploymentError(scenario, checkedAt) {
       },
     };
   }
+  // A scenario can name any failure code with the message OCC returns for it.
+  if (scenario.candidateFailure) {
+    return scenario.candidateFailure;
+  }
   if (scenario.candidateDependencyUnavailable) {
     return {
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
     };
   }
   if (scenario.candidateSelected) {
     return {
       code: "REVISION_FINALIZATION_INCOMPLETE",
-      message: "Deployment reconciliation failed.",
+      message:
+        "Deployment failed. Check this version's logs; if they show nothing, ask an Installation administrator to check the controller worker log for this code.",
     };
   }
   return {
@@ -265,6 +279,7 @@ export function installFixture(scenario, evidence) {
           createdAt,
         },
       ];
+  const namespaceDeletionReads = new Map();
   const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
@@ -303,8 +318,9 @@ export function installFixture(scenario, evidence) {
     config.values.agents.defaults.model = "codex/gpt-5.1";
   }
   if (scenario.slack && scenario.slackBindings !== false) {
-    const keys =
-      scenario.slackBindings === "app"
+    const keys = Array.isArray(scenario.slackBindings)
+      ? scenario.slackBindings
+      : scenario.slackBindings === "app"
         ? ["SLACK_APP_TOKEN"]
         : ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"];
     for (const key of keys) {
@@ -398,6 +414,7 @@ export function installFixture(scenario, evidence) {
     desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
     configurationId: config.id,
     executionMode: "dedicated",
+    gatewayManagedMode: true,
     harnessAuth: selectedAuth,
     credentialSources: structuredClone(
       scenario.credentialSources ??
@@ -410,7 +427,9 @@ export function installFixture(scenario, evidence) {
     servicePrincipalId: "identity_demo_agent",
     createdAt,
     activeRevisionId:
-      scenario.stopNoSelection || scenario.firstDeploymentFailed ? null : selectedRevisionId,
+      scenario.stopNoSelection || scenario.firstDeploymentFailed || scenario.firstDeploymentQueued
+        ? null
+        : selectedRevisionId,
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),
@@ -437,6 +456,7 @@ export function installFixture(scenario, evidence) {
       agentId: owner.id,
       revision,
       backendId: owner.backendId ?? null,
+      gatewayManagedMode: owner.gatewayManagedMode,
       configurationId: configuration.id,
       configurationKind: configuration.kind,
       configurationGeneration: configuration.generation,
@@ -458,6 +478,7 @@ export function installFixture(scenario, evidence) {
         : {}),
       harness: { id: harnessId, version: "demo", mode: owner.executionMode },
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },
+      ...(scenario.policyState ? { sandboxDriverId: "sandbox-story" } : {}),
       servicePrincipalId: owner.servicePrincipalId,
       ...(owner.repositoryBindings?.length
         ? {
@@ -502,14 +523,31 @@ export function installFixture(scenario, evidence) {
           Date.parse(createdAt) - (scenario.revisionHistory - number) * 86_400_000,
         ).toISOString();
         revisions.set(older.id, older);
+        // An earlier version whose deployment failed before a later one succeeded.
+        if (scenario.earlierFailedVersion === number) {
+          deployments.set(older.id, {
+            deploymentId: older.id,
+            namespaceId,
+            agentId: agent.id,
+            status: "failed",
+            cleanup: null,
+            progress: null,
+            error: candidateDeploymentError(scenario, older.createdAt),
+            warnings: [],
+          });
+        }
       }
     }
     deployments.set(revisionId, {
       deploymentId: revisionId,
       namespaceId,
       agentId: agent.id,
-      // A failed first deployment selects no version for service.
-      status: scenario.firstDeploymentFailed ? "failed" : "succeeded",
+      // A failed or still queued first deployment selects no version for service.
+      status: scenario.firstDeploymentFailed
+        ? "failed"
+        : scenario.firstDeploymentQueued
+          ? "queued"
+          : "succeeded",
       progress: null,
       error: scenario.firstDeploymentFailed
         ? candidateDeploymentError(scenario, currentRevision.createdAt)
@@ -718,9 +756,49 @@ export function installFixture(scenario, evidence) {
     namespaceId,
     agentId: agent.id,
     version: 1,
-    additions: scenario.policyState === "protected" ? [policyGrant] : [],
+    additions:
+      scenario.policyState === "protected"
+        ? [policyGrant]
+        : Array.from({ length: scenario.policyRuleCount ?? 0 }, (_, index) => ({
+            ...structuredClone(policyGrant),
+            id: `explicit-${index + 1}`,
+            host: `allowed-${index + 1}.example.org`,
+          })),
   };
-  if (scenario.policyState === "failed") {
+  if (scenario.policyRuleCount) {
+    sandboxPolicy.applied = {
+      revisionId: candidateRevisionId,
+      policyVersion: 1,
+      providerVersion: "4",
+      appliedAt: createdAt,
+    };
+  }
+  const policyCeiling = scenario.policyCeiling ?? [
+    policyGrant,
+    ...(scenario.policyDenialCount
+      ? [{ ...policyGrant, id: "observed-services-ceiling", host: "*.example.org" }]
+      : []),
+    ...sandboxPolicy.additions,
+    ...(scenario.policySuggestions ?? []).map((entry) => entry.grant),
+  ];
+  if (scenario.policyInitialOutcome) {
+    sandboxPolicy.version = 2;
+    if (scenario.policyInitialOutcome !== "saved") {
+      sandboxPolicy.application = {
+        id: "00000000-0000-4000-8000-000000000009",
+        revisionId: candidateRevisionId,
+        policyVersion: 2,
+        state: scenario.policyInitialOutcome,
+        requestedBy: "identity_demo",
+        requestedAt: createdAt,
+      };
+    }
+    if (scenario.policyInitialOutcome === "applied") {
+      sandboxPolicy.applied.policyVersion = 2;
+    }
+  }
+  let policyNewRead = false;
+  if (scenario.policyState === "failed" || scenario.policyState === "failedCeiling") {
     sandboxPolicy.application = {
       id: "00000000-0000-4000-8000-000000000009",
       revisionId: candidateRevisionId,
@@ -728,10 +806,21 @@ export function installFixture(scenario, evidence) {
       state: "failed",
       requestedBy: "identity_demo",
       requestedAt: createdAt,
-      reason: "SANDBOX_POLICY_UNCONFIRMED",
+      reason:
+        scenario.policyState === "failed"
+          ? "SANDBOX_POLICY_UNCONFIRMED"
+          : "SANDBOX_POLICY_CEILING_CHANGED",
     };
   }
-  const response = (data, status = 200, errorCode, meta = {}, errorMessage, details) =>
+  const response = (
+    data,
+    status = 200,
+    errorCode,
+    meta = {},
+    errorMessage,
+    details,
+    remainingResources,
+  ) =>
     new Response(
       JSON.stringify({
         ...(errorCode
@@ -740,6 +829,7 @@ export function installFixture(scenario, evidence) {
                 code: errorCode,
                 message: errorMessage ?? "The selected preview simulates this failure.",
                 ...(details ? { details } : {}),
+                ...(remainingResources ? { remainingResources } : {}),
               },
             }
           : { data }),
@@ -939,6 +1029,62 @@ export function installFixture(scenario, evidence) {
       }
       return response(namespaces);
     }
+    const namespaceMatch = path.match(/^\/namespaces\/([^/]+)$/);
+    if (namespaceMatch) {
+      const item = namespaces.find((namespace) => namespace.id === namespaceMatch[1]);
+      if (!item) {
+        return error(404, "NOT_FOUND");
+      }
+      if (method === "DELETE") {
+        if (scenario.namespaceDeleteOutcome === "blocked") {
+          return response(
+            null,
+            409,
+            "NAMESPACE_NOT_EMPTY",
+            {},
+            "The requested Namespace is not empty. It still contains Agents, Configurations and Secrets.",
+            undefined,
+            [
+              { kind: "Agents", count: 1, ids: ["agt_00000000-0000-4000-8000-000000000003"] },
+              {
+                kind: "Configurations",
+                count: 3,
+                ids: ["cfg_00000000-0000-4000-8000-000000000004"],
+              },
+              // The caller cannot read this Secret, so the API counts it without its ID.
+              { kind: "Secrets", count: 1, ids: [] },
+            ],
+          );
+        }
+        if (scenario.namespaceDeleteOutcome === "forbidden") {
+          return error(
+            403,
+            "FORBIDDEN",
+            "Not authorized: Namespace delete is required on this Namespace.",
+          );
+        }
+        item.status = "deleting";
+        namespaceDeletionReads.set(item.id, 0);
+        if (scenario.namespaceDeleteOutcome === "pending") {
+          await new Promise((resolve) => setTimeout(resolve, 20000));
+        }
+        if (scenario.namespaceDeleteOutcome === "unknown") {
+          return error(503, "DEPENDENCY_UNAVAILABLE");
+        }
+        return response(item, 202);
+      }
+      if (method === "GET") {
+        if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {
+          const reads = (namespaceDeletionReads.get(item.id) ?? 0) + 1;
+          namespaceDeletionReads.set(item.id, reads);
+          if (reads > 1) {
+            namespaces.splice(namespaces.indexOf(item), 1);
+            return error(404, "NOT_FOUND");
+          }
+        }
+        return response(item);
+      }
+    }
     if (path === "/backends" && method === "GET") {
       return response(backends);
     }
@@ -952,7 +1098,16 @@ export function installFixture(scenario, evidence) {
       const [, ns, resource] = match;
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
-          return response({ agents: { create: true } });
+          return response({
+            delete: !scenario.namespaceDeleteDenied && !scenario.namespaceDeleteRestricted,
+            agents: { create: true },
+            secrets: { create: true },
+            // A member refused delete is no Installation administrator; an administrator is
+            // refused it only by a Restriction.
+            installation: {
+              administer: !scenario.observabilityDenied && !scenario.namespaceDeleteDenied,
+            },
+          });
         }
         return response([]);
       }
@@ -1220,7 +1375,24 @@ export function installFixture(scenario, evidence) {
         }
       }
       if (resource === "permissions" && method === "GET") {
-        return response({ agents: { create: !scenario.readOnlyPermissionSummary } });
+        return response({
+          delete: !scenario.namespaceDeleteDenied && !scenario.namespaceDeleteRestricted,
+          agents: {
+            create: !scenario.readOnlyPermissionSummary && !scenario.agentCreateRestricted,
+          },
+          secrets: { create: !scenario.secretCreateNotPermitted },
+          // A read-only member is no Installation administrator either, nor is a member refused
+          // Namespace delete.
+          installation: {
+            administer:
+              !scenario.readOnlyPermissionSummary &&
+              !scenario.observabilityDenied &&
+              !scenario.namespaceDeleteDenied,
+          },
+        });
+      }
+      if (resource === "permissions/secrets" && method === "GET") {
+        return response({ operateDenied: scenario.secretOperateDenied ?? [] });
       }
       if (resource === "agents") {
         if (method === "GET") {
@@ -1318,10 +1490,11 @@ export function installFixture(scenario, evidence) {
                       code: "REVISION_STOPPED",
                       message: "Deployment ended because the Agent was stopped.",
                     }
-                  : {
+                  : (scenario.provisionedDeploymentError ?? {
                       code: "DEPENDENCY_UNAVAILABLE",
-                      message: "Deployment reconciliation failed.",
-                    },
+                      message:
+                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
+                    }),
             warnings: [],
           });
         }
@@ -1410,7 +1583,7 @@ export function installFixture(scenario, evidence) {
                             code: "REVISION_STOPPED",
                             message: "The Agent was stopped before its first deployment finished.",
                           }
-                        : {
+                        : (scenario.provisionedDeploymentError ?? {
                             code:
                               scenario.provisionedDeploymentStatus === "failed"
                                 ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
@@ -1419,7 +1592,7 @@ export function installFixture(scenario, evidence) {
                               scenario.provisionedDeploymentStatus === "failed"
                                 ? "Harness credential initialization failed. Correct the cause and deploy again."
                                 : "The worker could not finish provisioning.",
-                          },
+                          }),
                   }
                 : {}),
               ...(current.status === "succeeded" || current.reads > 1
@@ -1527,7 +1700,11 @@ export function installFixture(scenario, evidence) {
             // Simulate another operator saving between reads; HTTP workflow coverage uses real saves.
             sandboxPolicy.version = read;
           }
-          if (sandboxPolicy.application?.state === "pending" && ++policyPolls > 1) {
+          if (
+            sandboxPolicy.application?.state === "pending" &&
+            !scenario.policyKeepPending &&
+            ++policyPolls > 1
+          ) {
             sandboxPolicy.application.state = "applied";
             sandboxPolicy.application.providerVersion = "5";
             sandboxPolicy.applied = {
@@ -1542,7 +1719,7 @@ export function installFixture(scenario, evidence) {
             configuration: policyDescriptor,
             editingEnabled: policyEditing,
             protectedExecution: scenario.policyState === "protected",
-            ceiling: [policyGrant],
+            ceiling: policyCeiling,
             defaults:
               scenario.policyState === "unsupported"
                 ? null
@@ -1555,13 +1732,23 @@ export function installFixture(scenario, evidence) {
                       },
                     ],
                   },
+            // The candidate version was deployed with policy v1; later saves need an application
+            // (D773).
             ...(scenario.policyState === "unsupported" || scenario.policyState === "protected"
               ? {}
-              : { defaultsRevisionId: candidateRevisionId }),
+              : { defaultsRevisionId: candidateRevisionId, deployedPolicyVersion: 1 }),
             capability:
               scenario.policyState === "unsupported"
                 ? null
                 : { live: true, wildcards: true, portRanges: true },
+            // The API names why per-Agent network policy is unavailable (D774).
+            ...(scenario.policyState === "unsupported"
+              ? {
+                  unavailableReason: scenario.policyNoSandboxDriver
+                    ? "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules."
+                    : "The selected Sandbox Driver does not support per-Agent network policy.",
+                }
+              : {}),
           });
           if (scenario.policyState === "refreshRace" && (read === 2 || read === 3)) {
             await new Promise((resolve) => setTimeout(resolve, read === 2 ? 300 : 1500));
@@ -1573,6 +1760,9 @@ export function installFixture(scenario, evidence) {
           suffix === "/sandbox-policy/networking/editing" &&
           method === "PATCH"
         ) {
+          if (scenario.policyAdminDenied) {
+            return error(403, "AUTHORIZATION_DENIED");
+          }
           policyEditing = body.enabled;
           return response({ ...agent, sandboxPolicyEditing: policyEditing });
         }
@@ -1641,7 +1831,8 @@ export function installFixture(scenario, evidence) {
           }
           return response({
             recommendations:
-              scenario.policyState === "empty"
+              scenario.policySuggestions ??
+              (scenario.policyState === "empty"
                 ? []
                 : [
                     {
@@ -1653,7 +1844,7 @@ export function installFixture(scenario, evidence) {
                           : policyGrant,
                       observations: 4,
                     },
-                  ],
+                  ]),
             truncated: false,
           });
         }
@@ -1682,6 +1873,22 @@ export function installFixture(scenario, evidence) {
                     reason: "Destination is not in the network policy",
                   },
           };
+          if (url.searchParams.has("cursor") && scenario.policyNewDenials && !policyNewRead) {
+            policyNewRead = true;
+            return response({
+              revisionId: candidateRevisionId,
+              source: "sandbox",
+              stream,
+              observedAt: createdAt,
+              records: Array.from({ length: scenario.policyNewDenials }, (_, index) => ({
+                ...log,
+                time: new Date(Date.parse(createdAt) + (index + 1) * 1000).toISOString(),
+              })),
+              cursor: "simulated-policy-new-cursor",
+              withheld: 0,
+              truncated: false,
+            });
+          }
           return response({
             revisionId: candidateRevisionId,
             source: "sandbox",
@@ -1702,7 +1909,21 @@ export function installFixture(scenario, evidence) {
                           },
                         ]
                       : []),
-                    log,
+                    ...Array.from({ length: scenario.policyDenialCount ?? 1 }, (_, index) => ({
+                      ...log,
+                      time: new Date(
+                        Date.parse(createdAt) -
+                          ((scenario.policyDenialCount ?? 1) - index - 1) * 17000,
+                      ).toISOString(),
+                      ...(scenario.policyDenialCount
+                        ? {
+                            decision: {
+                              ...log.decision,
+                              host: `service-${Math.floor(index / 2) + 1}.example.org`,
+                            },
+                          }
+                        : {}),
+                    })),
                   ],
             cursor: "simulated-policy-cursor",
             withheld: 0,
@@ -1756,8 +1977,19 @@ export function installFixture(scenario, evidence) {
               deploy: allowed,
               operate: allowed,
               delete: allowed,
+              administer: allowed,
+              configurationUpdate: allowed,
+              configurationRead: true,
+              configurationSecretsOperate: allowed,
+              configurationSecretsOperateDeniedBindings: [],
+              agentSourcesOperate: allowed,
+              sandboxPolicyRead: allowed,
+              readLogs: allowed,
             },
           );
+        }
+        if (suffix === "/permissions/secrets" && method === "GET") {
+          return response({ operateDenied: scenario.secretOperateDenied ?? [] });
         }
         if (suffix === "/stop" && method === "POST") {
           saved.desiredRuntimeState = "stopped";
@@ -1850,6 +2082,9 @@ export function installFixture(scenario, evidence) {
               configurationGeneration: item.configurationGeneration,
               harness: item.harness,
               createdAt: item.createdAt,
+              // The API lists each version's deployment outcome and error code (finding 2422).
+              deploymentStatus: deployments.get(item.id)?.status ?? null,
+              deploymentErrorCode: deployments.get(item.id)?.error?.code ?? null,
             })),
             200,
             undefined,
@@ -2045,6 +2280,19 @@ export function installFixture(scenario, evidence) {
                   available: true,
                   retention: "Kubernetes keeps the current and the previous instance.",
                 })),
+              // Dedicated sources remain listed even when their current Pod is absent.
+              ...(scenario.runtimePod === "missingAgent"
+                ? [
+                    {
+                      id: "agent",
+                      kind: "container",
+                      pods: [],
+                      available: false,
+                      unavailableCode: "NO_POD",
+                      retention: "Kubernetes keeps the current and the previous instance.",
+                    },
+                  ]
+                : []),
             ],
           });
         }
@@ -2179,6 +2427,24 @@ export function installFixture(scenario, evidence) {
           const revisionId = suffix.split("/")[2];
           if (!revisions.has(revisionId)) {
             return error(404);
+          }
+          if (scenario.diagnosticsState === "noSlack") {
+            // The gateway's answer for a version with no Slack channel.
+            return response({
+              revisionId,
+              observedAt: "2026-09-27T12:00:00.000Z",
+              checks: [
+                ["configuration", "failed", "NOT_CONFIGURED"],
+                ["authentication", "unknown"],
+                ["connectivity", "unknown"],
+              ].map(([check, state, code]) => ({
+                component: "gateway",
+                check,
+                state,
+                checkedAt: "2026-09-27T11:59:59.000Z",
+                ...(code ? { code } : {}),
+              })),
+            });
           }
           return response({
             revisionId,
@@ -2336,6 +2602,7 @@ export function installFixture(scenario, evidence) {
                 truncated: false,
               },
             ),
+            callerPermissions: { update: true, delete: true, ...scenario.secretCallerPermissions },
           });
         }
         if (method === "PATCH") {

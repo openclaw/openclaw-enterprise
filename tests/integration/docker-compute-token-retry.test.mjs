@@ -1,9 +1,10 @@
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -174,6 +175,13 @@ async function buildFixtureImage(tag) {
     const wsDirectory = dirname(kubernetesRequire.resolve("ws/package.json"));
     await cp(fixtureDirectory, context, { recursive: true });
     await cp(wsDirectory, join(context, "ws"), { recursive: true });
+    await writeFile(
+      join(context, "provenance.json"),
+      JSON.stringify({
+        source: "https://github.com/openclaw/openclaw",
+        commit: GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+      }),
+    );
     await docker(
       [
         "build",

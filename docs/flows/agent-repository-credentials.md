@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-25"
-last_updated_session: authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4
+updated: "2026-10-29"
+last_updated_session: authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf
 ---
 
 # Agent repository credential flow
@@ -137,6 +137,8 @@ preserves them and an empty array clears them.
 `packages/occ/src/index.ts:OpenClawController.admitRepositoryCredentials`
 re-resolves the draft, validates Compute topology and freezes Driver identity,
 grants and an absolute deadline unaffected by renewal or recovery.
+`validateRepositoryBrokerNetworkProxy` then refuses a Codex proxy setting that
+blocks the broker, as Agent save does.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
 constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
@@ -286,15 +288,25 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-`apps/controller/src/composition/repository-credentials/transport.ts:bindRepositoryGitTransport`
-calls `RepositoryGitBinding.reconcile` serially with 25-second abort signals and
-one-second delays. Close aborts and joins. Independent readback settles the original
-OCC delivery without reinstalling or restoring withdrawn access. OpenShell is unchanged.
+The [worker](../../apps/controller/src/worker.mjs) passes only the selected `ProtectedRepositoryGitAuthority`
+to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
+The worker retains maintenance and shutdown. Missing authority or mismatched Drivers stop
+binding before route-store or sender calls.
+Bundled OpenShell connects its route store before binding; a bare Sandbox runs without Git.
 
-The worker commits activation and next maintenance together, preserving the actor.
-Maintenance uses 30 seconds, the selected native sender interval or a shorter Compute
-interval. A missing known session is invalidated, never reminted after restart.
-Users may deploy another version during cleanup.
+If an external binding provides `reconcile`, the worker calls it serially with a 25-second abort
+signal and a one-second delay between calls.
+Close aborts and joins. Independent readback settles the original OCC delivery without
+reinstalling or restoring withdrawn access.
+
+The worker commits activation and next maintenance together, preserving the actor. Maintenance uses
+30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing known sessions without reminting. Users can deploy during cleanup.
+
+[Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
+permission and current scope for standing approval. The
+[worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
+[eligibility](../../packages/occ/src/repository-approval.ts) under Namespace then Agent locks.
+Withdrawal or a changed scope fingerprint raises `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 
 Prepared native Git issues a version's first token only after activation publishes it.
 The deployment's own Work then runs
@@ -378,7 +390,9 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
-- 2026-10-25 07:00: Hold a native deployment until its first GitHub token commits and fail one whose preparation is quarantined. (finding 2415)
+- 2026-10-29 18:00: Hold a native deployment until its first GitHub token commits; on a quarantined token fail a first deployment and keep an existing Agent's new version running. (finding 2415, finding 2425)
+
+- 2026-10-29 14:26: Narrow sender binding and remove fresh legacy Git composition. (authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf - ea84f8a9595fc57e2b35bab4f9ad45f9174c8319)
 
 - 2026-10-25 00:30: Answer repository options without a repository Driver with no options and `meta.notConfigured`. (finding 2387)
 
@@ -395,3 +409,9 @@ denied before reaching the provider, and chat continues.
 - 2026-10-22 04:11: Trace selected registered delivery reconciliation. (authoring-run/13ded5bb-8707-46f5-8aa3-7a334529d124 - f4a2ca6139625059f1f8c58855f6343864ee7528)
 
 - 2026-10-22 02:32: Require prepared authority at native OPEN, durable receipt and release; reject legacy controller selection. (authoring-run/b8149a96-d1dc-4681-8930-7d5434fbf1e3 - 2fca4e18d905f7bf760d0da70cb916f20186169e)
+
+- 2026-10-21 22:49: Separate repository policy, protected composition and explicit native session ownership. (authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f - 41137910011b9c4fc1a713b234a92c87a6717e3f)
+
+- 2026-10-21 22:10: Document standing Git supervision with the accompanying uncommitted worker change. (authoring-run/5f4d0dab-1a03-4fa9-a469-a8778c8ad3d4 - 390a3627b97535f4d21107001efda8af6152355d)
+
+[Agent repository credential documentation history](agent-repository-credentials/history.md) preserves the older dated entries.

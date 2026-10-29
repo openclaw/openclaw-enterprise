@@ -151,6 +151,54 @@
     },
     {
       "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/environment-references.ts",
+      "specifier": "file:packages/occ/src/environment-references.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console reads Slack channel tokens with OCC's dependency-free environment reference grammar, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/deployment-failure-steps.ts",
+      "specifier": "file:packages/occ/src/deployment-failure-steps.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console chooses a failed deployment's recovery actions from OCC's dependency-free next-step table, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/retired-openclaw-settings.ts",
+      "specifier": "file:packages/occ/src/retired-openclaw-settings.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console shows the refusal OCC's deploy admission gives a draft that keeps a retired OpenClaw setting, from OCC's dependency-free table, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/gateway-security-defaults.ts",
+      "specifier": "file:packages/occ/src/gateway-security-defaults.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console shows the effective Gateway collaboration and safety settings from the dependency-free values OCC's deployment admission fills, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
       "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
       "to": "packages/contracts/src/runtime-failure.mjs",
       "specifier": "../../../../../../packages/contracts/src/runtime-failure.mjs",
@@ -240,7 +288,7 @@
       "owner": "API route compilers",
       "reason": "Precompiled validator and serializer code requires only the runtime helpers of ajv, ajv-formats and fast-json-stringify, resolved from the compiler package that uses them on the run-time path; any other specifier throws.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or they are generated as statically resolvable modules.",
-      "loaderIdentity": "loader:sha256:7bbee35ac5fe8e0852cfd2efe7740a7f100420d8e51eec01bccf9e4493b61609"
+      "loaderIdentity": "loader:sha256:01a4418d07bf1b49352d6daaa36f0870e11b95909b4a7bdf63bd095337a3aaa3"
     },
     {
       "rule": "unresolved-dynamic-import",
@@ -253,7 +301,7 @@
       "owner": "API route compilers",
       "reason": "The precompiled route compilers file is loaded only from the fixed build-output path, and only when its fingerprint matches this Node version, lockfile, compiler packages and route-compilers.ts.",
       "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or build-output resolution is represented in the analyzer.",
-      "loaderIdentity": "loader:sha256:3b37218639476b2b553131814292a2c6077b8e0a55ac024ffb991a7e11474671"
+      "loaderIdentity": "loader:sha256:94107cd2981116074fd1fb7d04cad03adbee3ae72b12c1307cf48b00ac0ca5a6"
     },
     {
       "rule": "domain-to-implementation",
@@ -303,6 +351,7 @@
         "value:controllerWorkDeploymentStatus",
         "value:deploymentErrorForWork",
         "value:deploymentProgressForWork",
+        "value:deploymentStatusForWork",
         "value:deploymentWarningsForWork"
       ],
       "owner": "Work status projection",

@@ -19,6 +19,7 @@ import {
   createTestAuthPrincipal,
 } from "../helpers/auth-session.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import {
   cleanEnvironment,
@@ -55,10 +56,7 @@ async function startBroker(
     if (socket.destroyed) {
       return;
     }
-    const upstream = connect(Number(new URL(origin.origin).port), "127.0.0.1");
-    socket.once("close", () => upstream.destroy());
-    upstream.once("error", () => socket.destroy());
-    socket.pipe(upstream).pipe(socket);
+    relaySockets(socket, connect(Number(new URL(origin.origin).port), "127.0.0.1"));
   });
   const gitOrigin = await listen(t, tcp);
   const clock = createSystemClock();
@@ -178,6 +176,24 @@ async function startBroker(
 
 // Exercise the normal authenticated HTTP withdrawal against the exact same State as
 // the worker. This component test does not start Compute or a model/chat session.
+// Finding 2411: each refused authenticated request logs exactly one record with the code
+// the Agent received (an error envelope's code, or a receipt's error), where it was refused,
+// the operation once known, and the session.
+function refusedOnceBy(b, response, reason, operation) {
+  assert.ok(response.status >= 400, response.text);
+  const { error } = JSON.parse(response.text);
+  assert.deepEqual(b.logs.splice(0), [
+    {
+      event: "repository-credentials.denied",
+      status: response.status,
+      reasonCode: typeof error === "string" ? error : error.code,
+      reason,
+      ...(operation === undefined ? {} : { operation }),
+      ...b.identity,
+    },
+  ]);
+}
+
 async function withdrawRepositoryBinding(t, { state, agent }) {
   const installation = await state.read((unit) => unit.installations.getInstallation());
   const auth = await createTestAuthPrincipal({ installationId: installation.id });
@@ -232,21 +248,8 @@ test(
         )
       ).rows[0].n;
 
-    // Finding 2411: each refused authenticated request logs exactly one record with the code
-    // the Agent received, where it was refused, the operation once known, and the session.
-    const refusedOnce = (response, reason, operation) => {
-      assert.ok(response.status >= 400, response.text);
-      assert.deepEqual(b.logs.splice(0), [
-        {
-          event: "repository-credentials.denied",
-          status: response.status,
-          reasonCode: JSON.parse(response.text).error.code,
-          reason,
-          ...(operation === undefined ? {} : { operation }),
-          ...b.identity,
-        },
-      ]);
-    };
+    const refusedOnce = (response, reason, operation) =>
+      refusedOnceBy(b, response, reason, operation);
     const logged = [];
     const keep = () => logged.push(...b.logs);
 
@@ -282,6 +285,13 @@ test(
       keep();
       refusedOnce(response, "credential_refused");
     }
+    // Finding 2429: a head refused before authentication (here a wrong Host that the
+    // certificate still names) is logged when its credential names the open session; the
+    // route is not known yet, so the record has no operation.
+    const wrongHost = await b.http(discovery, { headers: { host: "localhost" } });
+    assert.equal(wrongHost.status, 400);
+    keep();
+    refusedOnce(wrongHost, "request_refused");
     // With an API credential, the Git-only route refuses the REST request itself.
     const rest = await b.http("/repos/" + b.repository, {
       headers: { authorization: "Bearer " + b.opened.bearer },
@@ -391,6 +401,7 @@ test(
 
 for (const mode of [
   "Git only",
+  "connection failed before any write",
   "created",
   "created in GitHub's spelling",
   "lost provider reply",
@@ -453,6 +464,25 @@ for (const mode of [
     assert.equal(observed().length, 0);
     assert.equal(f.gh.issuesOfTokens.length, 1);
 
+    if (mode === "connection failed before any write") {
+      // Finding 2429: the GitHub connection fails before TLS, so the broker settles the create
+      // as not sent. The Agent gets a recorded 409 and the operator one not_dispatched line;
+      // a same-operation replay returns that receipt and is logged the same way.
+      b.logs.splice(0);
+      f.gh.refuseNextConnection();
+      for (let i = 0; i < 2; i++) {
+        const response = await send();
+        assert.equal(response.status, 409);
+        const value = JSON.parse(response.text);
+        assert.equal(value.operationId, operationId);
+        assert.equal(value.error, "not-submitted");
+        refusedOnceBy(b, response, "not_dispatched", "api");
+      }
+      assert.equal(observed().length, 0);
+      assert.equal(f.gh.pulls.size, 0);
+      return;
+    }
+
     if (settles) {
       // Exercise the shipping client and real computed manifest through an obligatory CONNECT.
       // The TLS broker listens on a random port unreachable at the client's selected port 443.
@@ -467,11 +497,10 @@ for (const mode of [
         tunnels.push(req.url);
         const upstream = connect(Number(new URL(b.address).port), "127.0.0.1", () => {
           socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-          upstream.write(early);
-          socket.pipe(upstream).pipe(socket);
         });
-        upstream.on("error", () => socket.destroy());
-        socket.on("error", () => upstream.destroy());
+        // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+        upstream.write(early);
+        relaySockets(socket, upstream);
       });
       const proxyAddress = (await listen(t, proxy)).replace(/^https:/, "http:");
       const client = new URL(
@@ -555,6 +584,7 @@ for (const mode of [
       if (mode === "lost provider reply") {
         f.gh.disconnectAfterMutation("POST", path);
       }
+      b.logs.splice(0);
       for (let i = 0; i < 2; i++) {
         const response = await send();
         assert.equal(response.status, 409);
@@ -562,12 +592,19 @@ for (const mode of [
         assert.equal(value.operationId, operationId);
         assert.equal(value.error, "outcome_unknown");
       }
+      // GitHub may have created this draft, so the operator log records no refusal.
+      assert.deepEqual(b.logs, []);
     }
+    // Finding 2429: another operation or a changed request gets the spent allowance's receipt.
+    // GitHub received nothing for it, so each is one operation_conflict line.
+    b.logs.splice(0);
     const other = await send({ headers: { ...headers, "x-oce-operation-id": randomUUID() } });
     assert.equal(other.status, 409);
     assert.equal(JSON.parse(other.text).error, "operation_conflict");
+    refusedOnceBy(b, other, "operation_conflict", "api");
     const changed = await send({ body: JSON.stringify({ ...packet, title: "different" }) });
     assert.equal(JSON.parse(changed.text).error, "operation_conflict");
+    refusedOnceBy(b, changed, "operation_conflict", "api");
     // An independently authenticated observer reconciles by reading, never by trying another create.
     // Its observation cannot be presented as a delivered result to the Agent which lost the reply.
     const observer = randomUUID();
@@ -614,7 +651,7 @@ for (const mode of [
       assert.equal(withdrawn.code, 1, withdrawn.stderr);
       assert.equal(
         withdrawn.stderr.trim().split("\n").at(-1),
-        "Draft not created: the repository broker refused it (unavailable); GitHub did not receive it. Retry once; if it is refused again, ask an operator to check the worker log.",
+        "Draft not created: the repository broker refused it (unavailable); GitHub did not receive it. Retry once; if it is refused again, ask an operator to check the repository-credentials container log in the worker Pod.",
       );
     }
     assert.equal(observed().length, 1);

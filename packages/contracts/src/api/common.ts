@@ -169,7 +169,7 @@ export const ServiceAccountDeleteQuery = Type.Object(
     force: Type.Optional(
       Type.Union([Type.Literal("true"), Type.Literal("false")], {
         description:
-          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for a ChatGPT workspace administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
       }),
     ),
   },
@@ -714,6 +714,11 @@ export const RepositoryBindingSelectionsSchema = Type.Array(RepositoryBindingSel
   maxItems: 16,
 });
 
+export const GatewayManagedModeSchema = Type.Boolean({
+  description:
+    "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
+});
+
 export const CreateAgentBody = Type.Object(
   {
     initialWorkspaceFiles: Type.Optional(
@@ -734,6 +739,7 @@ export const CreateAgentBody = Type.Object(
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -766,6 +772,7 @@ export const ProvisionAgentBody = Type.Object(
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -776,15 +783,30 @@ export const ProvisionAgentBody = Type.Object(
 
 export const ValidateAgentCreateBody = Type.Object(
   {
+    name: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: NAME_MAX_CHARACTERS,
+        pattern: PLAIN_TEXT_PATTERN,
+        description:
+          "The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`.",
+      }),
+    ),
     initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
     configuration: Type.Object(
-      { kind: ConfigurationKindSchema, values: ConfigurationValues },
+      {
+        kind: ConfigurationKindSchema,
+        values: ConfigurationValues,
+        secretBindings: Type.Optional(SecretBindings),
+      },
       {
         additionalProperties: false,
-        description: "The Agent Configuration the caller will save, not yet saved.",
+        description:
+          "The Agent Configuration the caller will save, not yet saved. With `secretBindings`, a channel credential reference without a binding is refused where Configuration create refuses it (the bundled Kubernetes Compute); the bound Secrets are not read. Without them, that check is skipped.",
       },
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     harnessAuth: Type.Optional(
@@ -832,17 +854,21 @@ export const UpdateAgentBody = Type.Object(
         ),
       ]),
     ),
-    configurationId: ConfigurationId,
+    configurationId: Type.Optional(ConfigurationId),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    anyOf: [{ required: ["configurationId"] }, { required: ["gatewayManagedMode"] }],
+  },
 );
 
 const ChannelDirectoryLookupFields = {
@@ -1076,6 +1102,23 @@ export const ErrorResponse = Type.Object(
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
+        remainingResources: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                kind: Type.String({ minLength: 1, maxLength: 64 }),
+                count: Type.Integer({ minimum: 0 }),
+                ids: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 }),
+              },
+              { additionalProperties: false },
+            ),
+            {
+              maxItems: 7,
+              description:
+                "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
+            },
+          ),
+        ),
       },
       { additionalProperties: false },
     ),

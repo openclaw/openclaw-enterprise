@@ -183,7 +183,32 @@ test("export reads every tenant resource the import needs, without Secret values
 test("import re-creates tenants under new IDs, waits for readiness, and resumes", async () => {
   const fixture = await createFixture();
   const seeded = await seedTenant(fixture);
+  const account = await created(fixture, `/namespaces/${seeded.namespace.id}/service-accounts`, {
+    name: "managed-harness",
+  });
+  const preset = await created(fixture, `/namespaces/${seeded.namespace.id}/presets`, {
+    name: "managed-harness-preset",
+    template: {
+      agent: {
+        harnessAuth: {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: seeded.namespace.id, id: account.id },
+        },
+      },
+    },
+  });
+  const legacyPreset = await created(fixture, `/namespaces/${seeded.namespace.id}/presets`, {
+    name: "released-managed-harness-preset",
+    template: preset.template,
+  });
   const bundle = await exportTenants(fixture.api);
+  // The released bundle used this retired spelling; the importer upgrades it to codex_pat.
+  bundle.namespaces
+    .find(({ id }) => id === seeded.namespace.id)
+    .presets.find(({ id }) => id === legacyPreset.id).template.agent.harnessAuth = {
+    method: "chatgpt_service_account",
+    serviceAccountId: account.id,
+  };
   const others = bundle.namespaces.map(({ name }) => name).filter((name) => name !== "team-a");
   assert.ok(others.length > 0, "bootstrap's default Namespace is in the bundle too");
   // A deleted Namespace's name stays reserved, so the copy is renamed; the rest are skipped.
@@ -248,12 +273,38 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
     ),
   );
 
+  for (const original of [preset, legacyPreset]) {
+    const restored = (await request(fixture.app, `${base}/presets/${saved.ids[original.id]}`))
+      .payload.data;
+    assert.deepEqual(restored.template.agent.harnessAuth, {
+      method: "codex_pat",
+      source: { kind: "service_account", namespaceId, id: saved.ids[account.id] },
+    });
+  }
+  assert.notEqual(saved.ids[account.id], account.id);
+  assert.equal(
+    (await request(fixture.app, `${base}/service-accounts/${saved.ids[account.id]}`)).response
+      .status,
+    200,
+  );
+  assert.equal(
+    (await request(fixture.app, `${base}/service-accounts/${account.id}`)).response.status,
+    404,
+  );
+
   // A third run creates nothing new.
   const before = JSON.stringify(saved.ids);
   const third = await importTenants(fixture.api, bundle, values, { ...options, state: saved });
   assert.equal(third.complete, true);
   assert.equal(JSON.stringify(saved.ids), before);
   assert.equal((await request(fixture.app, `${base}/agents`)).payload.data.length, 1);
+
+  assert.equal((await request(fixture.app, `${base}/service-accounts`)).payload.data.length, 1);
+  for (const original of [preset, legacyPreset]) {
+    const restored = (await request(fixture.app, `${base}/presets/${saved.ids[original.id]}`))
+      .payload.data;
+    assert.equal(restored.template.agent.harnessAuth.source.id, saved.ids[account.id]);
+  }
 
   // A run that stopped after creating the Agent, before saving its principal or binding.
   const bindingCount = bindings.length;
@@ -278,6 +329,224 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
     }),
     /Namespace team-a restored already exists and holds Agents or Secrets; add --rename/u,
   );
+});
+
+test("import refuses overlapping tenant destinations before changing the map or target", async () => {
+  const fixture = await createFixture();
+  const sources = [];
+  for (const name of ["source-a", "source-b"]) {
+    const namespace = await created(fixture, "/namespaces", { name });
+    await markReady(fixture, namespace.id);
+    await created(fixture, `/namespaces/${namespace.id}/iam/roles`, {
+      name: `${name} readers`,
+      permissions: [{ action: "read", resourceKind: "configuration" }],
+    });
+    sources.push(namespace);
+  }
+  const target = await created(fixture, "/namespaces", { name: "restored" });
+  await markReady(fixture, target.id);
+  const bundle = await exportTenants(fixture.api);
+  bundle.namespaces = bundle.namespaces.filter(({ id }) =>
+    sources.some((source) => source.id === id),
+  );
+  const state = { ids: {}, deployed: [] };
+  let saves = 0;
+  const options = {
+    state,
+    save: () => saves++,
+    names: { "source-a": "restored", "source-b": "restored" },
+    deploy: false,
+  };
+  await assert.rejects(
+    importTenants(fixture.api, bundle, {}, options),
+    /Namespaces source-a and source-b both target restored/u,
+  );
+  assert.deepEqual(state, { ids: {}, deployed: [] });
+  assert.equal(saves, 0);
+  assert.deepEqual(
+    (await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data,
+    [],
+  );
+
+  // A not-yet-existing target must not be partly created before the second source conflicts.
+  await assert.rejects(
+    importTenants(
+      fixture.api,
+      bundle,
+      {},
+      {
+        ...options,
+        names: { "source-a": "not-created", "source-b": "not-created" },
+      },
+    ),
+    /Namespaces source-a and source-b both target not-created/u,
+  );
+  assert.equal(
+    (await fixture.api.expect("GET", "/namespaces")).data.some(
+      ({ name }) => name === "not-created",
+    ),
+    false,
+  );
+  assert.deepEqual(state, { ids: {}, deployed: [] });
+  assert.equal(saves, 0);
+
+  // A map saved by an older import can carry the same conflict even after renames change.
+  const overlapping = {
+    ids: Object.fromEntries(sources.map(({ id }) => [id, target.id])),
+    deployed: [],
+  };
+  const before = structuredClone(overlapping);
+  await assert.rejects(
+    importTenants(fixture.api, bundle, {}, { ...options, state: overlapping, names: {} }),
+    /Namespaces source-a and source-b both resolve to Namespace/u,
+  );
+  assert.deepEqual(overlapping, before);
+  assert.equal(saves, 0);
+  assert.deepEqual(
+    (await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data,
+    [],
+  );
+
+  // A skipped source without a saved destination does not prevent a normal one-tenant import.
+  const imported = await importTenants(fixture.api, bundle, {}, { ...options, skip: ["source-b"] });
+  assert.equal(imported.complete, true);
+  assert.equal(state.ids[sources[0].id], target.id);
+  assert.equal(state.ids[sources[1].id], undefined);
+  assert.deepEqual(
+    (await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data.map(
+      ({ name }) => name,
+    ),
+    ["source-a readers"],
+  );
+
+  // A partial resume must compare saved IDs with targets resolved by live names, too.
+  const partial = structuredClone(state);
+  const savesBeforeResume = saves;
+  await assert.rejects(
+    importTenants(
+      fixture.api,
+      bundle,
+      {},
+      {
+        ...options,
+        names: { "source-b": "restored" },
+      },
+    ),
+    /Namespaces source-a and source-b both resolve to Namespace/u,
+  );
+  assert.deepEqual(state, partial);
+  assert.equal(saves, savesBeforeResume);
+  assert.deepEqual(
+    (await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data.map(
+      ({ name }) => name,
+    ),
+    ["source-a readers"],
+  );
+
+  // A previously imported source retains its destination when the skip selection changes.
+  const swappedTarget = await created(fixture, "/namespaces", { name: "swapped" });
+  await markReady(fixture, swappedTarget.id);
+  const swappedState = { ids: {}, deployed: [] };
+  const firstPass = await importTenants(
+    fixture.api,
+    bundle,
+    {},
+    {
+      ...options,
+      state: swappedState,
+      names: { "source-b": "swapped" },
+      skip: ["source-a"],
+    },
+  );
+  assert.equal(firstPass.complete, true);
+  const swappedBefore = structuredClone(swappedState);
+  const savedBeforeSwap = saves;
+  await assert.rejects(
+    importTenants(
+      fixture.api,
+      bundle,
+      {},
+      {
+        ...options,
+        state: swappedState,
+        names: { "source-a": "swapped" },
+        skip: ["source-b"],
+      },
+    ),
+    /both resolve to Namespace.*swapped/u,
+  );
+  assert.deepEqual(swappedState, swappedBefore);
+  assert.equal(saves, savedBeforeSwap);
+  assert.deepEqual(
+    (await fixture.api.expect("GET", `/namespaces/${swappedTarget.id}/iam/roles`)).data.map(
+      ({ name }) => name,
+    ),
+    ["source-b readers"],
+  );
+});
+
+test("import requires own object mappings and restores literal names or explicit renames", async () => {
+  const source = await createFixture();
+  const namespace = await created(source, "/namespaces", { name: "__proto__" });
+  await markReady(source, namespace.id);
+  for (const name of ["constructor", "0"]) {
+    await created(source, `/namespaces/${namespace.id}/secrets`, { name, value: "source" });
+  }
+  const bundle = await exportTenants(source.api);
+  bundle.namespaces = bundle.namespaces.filter(({ id }) => id === namespace.id);
+  const values = JSON.parse('{"__proto__":{"constructor":"restored","0":"indexed"}}');
+  const destination = await createFixture();
+  const state = { ids: {}, deployed: [] };
+  let saves = 0;
+  const options = { state, save: () => saves++, deploy: false };
+  const before = (await destination.api.expect("GET", "/namespaces")).data;
+  // An inherited tenant map and an inherited string inside an own tenant map are distinct gaps.
+  for (const [invalid, missing] of [
+    [Object.create(values), ["constructor", "0"]],
+    [{ ["__proto__"]: Object.create(values.__proto__) }, ["constructor", "0"]],
+    [{ ["__proto__"]: "abc" }, ["constructor", "0"]],
+    [{ ["__proto__"]: ["indexed"] }, ["constructor", "0"]],
+    [{ ["__proto__"]: { constructor: "restored" } }, ["0"]],
+  ]) {
+    await assert.rejects(importTenants(destination.api, bundle, invalid, options), {
+      message: bundle.namespaces[0].secrets
+        .filter(({ name }) => missing.includes(name))
+        .map(({ name }) => `no value for Secret __proto__/${name}`)
+        .join("\n"),
+    });
+    assert.deepEqual(state, { ids: {}, deployed: [] });
+    assert.equal(saves, 0);
+    assert.deepEqual((await destination.api.expect("GET", "/namespaces")).data, before);
+  }
+  assert.deepEqual(
+    checkImport(bundle, JSON.parse('{"__proto__":{"constructor":"restored","0":""}}')),
+    [],
+  );
+
+  // Ignore inherited renames; an explicit own __proto__ rename must still work.
+  for (const [name, names] of [
+    ["__proto__", Object.create(JSON.parse('{"__proto__":"wrong destination"}'))],
+    ["constructor", JSON.parse('{"__proto__":"constructor"}')],
+  ]) {
+    const target = await created(destination, "/namespaces", { name });
+    await markReady(destination, target.id);
+    const restored = { ids: {}, deployed: [] };
+    const result = await importTenants(destination.api, bundle, values, {
+      ...options,
+      state: restored,
+      names,
+    });
+    assert.equal(result.complete, true);
+    assert.equal(restored.ids[namespace.id], target.id);
+    const secrets = (await destination.api.expect("GET", `/namespaces/${target.id}/secrets`)).data;
+    assert.deepEqual(
+      secrets.map(({ id, name }) => ({ id, name })),
+      bundle.namespaces[0].secrets.map((secret) => ({
+        id: restored.ids[secret.id],
+        name: secret.name,
+      })),
+    );
+  }
 });
 
 test("discard refuses a stale bundle or one missing workspace files, before deleting", async () => {

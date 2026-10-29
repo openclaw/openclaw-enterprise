@@ -15,7 +15,9 @@ import {
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
+import { denialsDuring } from "../helpers/console-app.mjs";
 import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
+import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   createRuntimeLogComputeDriver,
   createRuntimeLogFixture,
@@ -865,6 +867,24 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
   const denied = await fixture.request("GET", statusPath, { session: outsider.session });
   assert.equal(denied.status, 403, denied.text);
   assert.equal(gateway.requests.length, reads);
+  // The reader's grant names this Agent: a second Agent of the Namespace is refused to it,
+  // audited once for that Agent, before any Sandbox read.
+  const sibling = await fixture.deployAgent("harness-sibling", { namespace: target.namespace });
+  const siblingReads = gateway.requests.length;
+  const { response: siblingDenied, denials } = await denialsDuring(fixture.auditSink, () =>
+    fixture.request(
+      "GET",
+      `/namespaces/${target.namespace.id}/agents/${sibling.agent.id}/harness-status`,
+      { session: reader.session },
+    ),
+  );
+  assertApiError(siblingDenied, 403, "FORBIDDEN");
+  assert.equal(
+    siblingDenied.body.error.message,
+    callerDenied("Agent read", `Agent ${sibling.agent.id}`),
+  );
+  assert.deepEqual(denials, [{ action: "read", kind: "agent", id: sibling.agent.id }]);
+  assert.equal(gateway.requests.length, siblingReads);
 
   // A stopped Agent's Sandbox is removed by design, so it is not read or reported.
   const stop = await fixture.request(

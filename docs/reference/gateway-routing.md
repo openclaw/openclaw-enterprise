@@ -56,7 +56,8 @@ Helm/Compute and resolve to Envoy. The chart requests DNS SANs, not IP SANs;
 use a certificate-covered DNS name.
 
 `getGatewayEndpoint(revision)` computes the URL without a Kubernetes lookup;
-it does not check whether the gateway is ready. When preparing and activating a
+it does not check whether the gateway is ready, reads no per-Agent endpoint
+file, and persists no URL in Agent Configuration. When preparing and activating a
 version, Compute creates or updates an HTTPRoute attached to the shared
 Gateway's `https` listener. The route matches the exact hostname and forwards
 to the Agent Service in the same namespace. The exact Agent path rewrites to
@@ -67,8 +68,8 @@ gateway is restricted by NetworkPolicy.
 
 The route and Service stay stable when a version is activated or a gateway Pod
 is replaced. Retiring an older version preserves the newer gateway's route;
-final gateway cleanup removes it. Compute repairs the route while reconciling
-a version. There is no separate periodic repair.
+final gateway cleanup removes it. Compute repairs the route only while
+reconciling a version.
 
 ### Native node endpoint
 
@@ -121,10 +122,9 @@ The Compute enrollment path also admits Harness egress to this installation's
 Envoy Pods on the configured HTTPS target port. File, Memory and Skills access
 use the enrolled node. Dedicated Gateway does not mount the Harness workspace
 or generated-image directories; sessions stay in Gateway private storage.
-Native runtime and Envoy integration verification remain incomplete. See the
-[enrollment trace](../flows/workspace-files.md#6-compute-resolves-a-route-and-occ-loads-the-current-key).
-Real Envoy node-authentication verification is described in
-[routing tests](../testing/kubernetes.md#private-gateway-routing).
+Native runtime and Envoy integration verification remain incomplete; see the
+[enrollment trace](../flows/workspace-files.md#6-compute-resolves-a-route-and-occ-loads-the-current-key)
+and [routing tests](../testing/kubernetes.md#private-gateway-routing).
 
 ## Service key and native identity
 
@@ -160,8 +160,8 @@ This password is separate from the Envoy service key. See the complete
 
 This key grants native administrative access across the Installation's routed
 gateways. OCC separately checks the caller's exact Agent permission. Keep the
-key separate from Better Auth, provider, and native Agent credentials. The trusted
-OCC API and worker receive it; Agent Gateway and Harness Pods do not.
+key separate from Better Auth, provider, and native Agent credentials. Agent
+Gateway and Harness Pods never receive it.
 
 ## TLS and certificate lifecycle
 
@@ -174,8 +174,8 @@ cert-manager generates and stores the key material.
 | Root CA     | 87,600 hours       | 720 hours           | ECDSA P-256; `isCA: true`; key rotation policy `Never`. |
 | Listener    | 2,160 hours        | 720 hours           | DNS name equals the routing hostname.                   |
 
-The API Pod receives only the root Secret's public `tls.crt`, mounted as
-`ca.crt`, and loads it through `NODE_EXTRA_CA_CERTS`. It waits for the Secret
+The API and worker Pods receive only the root Secret's public `tls.crt`, mounted
+as `ca.crt`, and load it through `NODE_EXTRA_CA_CERTS`. Each waits for the Secret
 before starting. The CA signing key is never mounted into OCC. Normal CA and
 hostname verification remain enabled; OCC does not pin the listener leaf.
 
@@ -284,10 +284,8 @@ wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>
 
 OCC converts that endpoint to `https:` for native UI HTTP traffic while keeping
 the same private authority and exact Agent base path. Workspace-file traffic
-continues to use the original WSS endpoint. Native-host requests are
-intercepted before the normal API not-found path, resolved to the exact Agent
-represented by the host, and checked against the selected version before
-the API proxies HTTP or WebSocket traffic through the private route.
+continues to use the original WSS endpoint. Native-host requests are intercepted before the
+normal API not-found path and resolve to the host's exact Agent and its selected version before the API proxies HTTP or WebSocket traffic through the private route.
 
 ## Public preview routing
 
@@ -296,8 +294,8 @@ HTTPS origin for dedicated execution under the operator's preview domain.
 Sandbox DNS suffixes refuse numeric or `0x` final labels, including canonical IPv4.
 Embedded OpenClaw retains its native preview configuration. Compute owns the native
 `sandboxOrigin` and `sandboxPort` values and rejects conflicting Agent settings.
-The sandbox backend port is `network.gatewayPort + 1`, so the main port must be
-below 65535. Neither port may be TCP/18791. The selected runtime must support
+The sandbox backend port is `network.gatewayPort + 1` (see the
+[port rules](#routing-configuration)). The selected runtime must support
 the dedicated sandbox listener.
 
 The Agent's `-sandbox` HTTPRoute attaches only to the shared Gateway's separate

@@ -33,7 +33,7 @@ const uploadOnly = [{ method: "POST", path: upload }];
 const completed = (bytes = 4) => ({ kind: "completed", status: 200, bytes, complete: true });
 // The peer controls only application bytes and when it reads or writes them.
 // The listener, route policy, credential ownership and TLS sender are production code.
-async function startTransport(t, onRequest, limits = {}) {
+async function startTransport(t, onRequest, limits = {}, { log } = {}) {
   const resources = createTestResourceScope(t);
   const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
   const clock = createSystemClock();
@@ -78,7 +78,7 @@ async function startTransport(t, onRequest, limits = {}) {
     tls,
     // Pass the caller's original set so production owns the security-relevant copy.
     trustedUpstreamOrigins: trustedOrigins,
-    log: (record) => logs.push(record),
+    log: log ?? ((record) => logs.push(record)),
   });
   const opened = service.open({ durationSeconds: 300, profile: "git-write" });
   return {
@@ -365,6 +365,58 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     assert.deepEqual(await readDiscovery(fixture), completed());
     assert.deepEqual(fixture.received, discoveryOnly);
     await released(fixture);
+  });
+
+  // Finding 2411: the operator log cannot change what the Agent receives, even if it throws.
+  bounded("a throwing operator log leaves the refusal and later requests unchanged", async (t) => {
+    const fixture = await startTransport(
+      t,
+      (incoming, outgoing) => {
+        incoming.resume();
+        outgoing.writeHead(200, replyHeaders).end("0000");
+      },
+      {},
+      {
+        log: () => {
+          throw new Error("operator log unavailable");
+        },
+      },
+    );
+    const unknown = { ...fixture.opened, bearer: "u".repeat(43) };
+    const refused = await readDiscovery(fixture, { opened: unknown });
+    assert.equal(refused.status, 401);
+    assert.deepEqual(await readDiscovery(fixture), completed());
+    await released(fixture);
+  });
+
+  // Finding 2429: a head refused after its fields are checked (here a wrong Host) is logged
+  // when its one Authorization field, in any scheme Git or gh sends, names an open session.
+  // A repeated field carries no single credential, so that refusal writes no line.
+  bounded("head refusals are logged only for one attributable credential", async (t) => {
+    const fixture = await startTransport(t, (incoming, outgoing) => {
+      incoming.resume();
+      outgoing.writeHead(200, replyHeaders).end("0000");
+    });
+    const { bearer, client, session } = fixture.opened;
+    const basic = `Basic ${Buffer.from(`${client.gitUsername}:${bearer}`).toString("base64")}`;
+    const refused = {
+      event: "repository-credentials.denied",
+      status: 400,
+      reasonCode: "unsupported-request",
+      reason: "request_refused",
+      sessionId: session.sessionId,
+    };
+    for (const authorization of [basic, `Bearer ${bearer}`, `token ${bearer}`]) {
+      const result = await readDiscovery(fixture, {
+        headers: { host: "localhost", authorization },
+      });
+      assert.equal(result.status, 400, authorization.split(" ")[0]);
+      assert.deepEqual(fixture.logs.splice(0), [refused], authorization.split(" ")[0]);
+    }
+    const repeated = await readDiscovery(fixture, { headers: { authorization: [basic, basic] } });
+    assert.equal(repeated.status, 400);
+    assert.deepEqual(fixture.logs, []);
+    assert.equal(fixture.received.length, 0);
   });
 
   bounded(

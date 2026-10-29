@@ -8,6 +8,20 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-27 13:55: Document Deployment snapshot-read recovery; uncommitted changes. (authoring-run/99997d03-9533-4cff-b942-8fe773c472db - b1e6d83d1cde4741d6f0b857e30e473ec1f97a18)
+- 2026-10-27 09:30: Document the Agent detail version picker, Deployment tab, and direct Agent UI access. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
+- 2026-10-25: Move step 6 (workspace files) to [its own trace](../agent-workspace-files.md); move older entries to history. (finding 2488)
+- 2026-10-26: Deploy holds for a bound Secret the caller may neither read nor operate; Secret links open the Secrets page; a deployed version the list leaves out is not read. (findings D756-D758)
+- 2026-10-25: Agent-side tabs follow the reread after a channel save; Disable waits for a rebind. (findings 2470, 2471)
+- 2026-10-25: The sources note names a Harness ServiceAccount's `read`. (finding 2459)
+- 2026-10-25: Channel saves may replace unoperable Secrets. (finding 2444)
+- 2026-10-25: Secret pickers refuse readable Secrets the caller may not `operate`. (finding 2453)
+- 2026-10-25: Draft labels, recovery and inline Secret creation follow permissions. (findings 2441, 2442)
+- 2026-10-25: Agent-side editors follow bound source `operate`. (finding 2441)
+- 2026-10-25: Readers see the draft read-only. (finding 2421)
+- 2026-10-25: Mark failed versions from the revision list. (finding 2422)
+- 2026-10-24: Restoring parked Workspace files applies the latest observed Agent operate answer. (pr-3474)
+- 2026-10-24 17:30: Stop and Run diagnostics follow the latest observed operate answer. (fix-2328)
 - 2026-10-24 23:40: Apply a newer Agent operate answer when parked Workspace files return, and keep unsaved text if operate is removed. (workspace-operate-restore)
 - 2026-10-24 22:05: Say in the Secret value help that line breaks are saved as LF, as browsers normalize textarea CRLF. (fix-backlog-1024b)
 - 2026-10-24 19:00: Check inline Create Secret names and values with the API's rules, keeping multiline values exact. (fix-2339-2341)

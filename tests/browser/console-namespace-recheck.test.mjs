@@ -12,6 +12,8 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
@@ -29,7 +31,7 @@ const NOT_READY = /This Namespace is not ready yet\. Check its status on the Nam
 const READY_NOTE = "Namespace status: Ready. Agents created here can be deployed now.";
 const REFUSES = "This Namespace cannot hold new Agents, so Create Agent is unavailable.";
 const ADOPTED_WAITS = "Create Agent is unavailable until this Namespace is ready.";
-const MISSING = "This Namespace is missing or you no longer have access. Choose another Namespace.";
+const MISSING = `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`;
 const MISSING_LINE = "Create Agent is unavailable until you choose another Namespace.";
 
 const browser = fileBrowser();
@@ -63,10 +65,7 @@ async function routeNamespace(page, namespaceId) {
       await state.held;
       if (state.fail > 0) {
         state.fail -= 1;
-        await route.fulfill({
-          status: 503,
-          json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Try again." } },
-        });
+        await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
         return;
       }
       const response = await route.fetch();
