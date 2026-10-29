@@ -85,7 +85,14 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
 }
 
 test("provider Harness endpoint bootstraps Gateway before provisioning and requests node setup", async () => {
-  const fixture = providerEndpointFixture();
+  const fixture = providerEndpointFixture({
+    revisionOverrides: {
+      plugins: {
+        driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+        plugins: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+      },
+    },
+  });
   const {
     driver,
     revision,
@@ -108,6 +115,17 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.equal(endpoints.length, 0);
   const bootstrapGateway = read("Deployment", gatewayName, gatewayNamespace);
   assert.ok(bootstrapGateway);
+  // This Gateway must issue the setup needed to create the Harness. Waiting for
+  // the Harness's ordinary peer status here would deadlock first deployment.
+  const gatewayEnvironment = bootstrapGateway.spec.template.spec.containers[0].env;
+  assert.equal(
+    gatewayEnvironment.find(({ name }) => name === "OPENCLAW_CODEX_PLUGINS_PREPARED")?.value,
+    "true",
+  );
+  assert.equal(
+    gatewayEnvironment.some(({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT"),
+    false,
+  );
   assert.notEqual(
     bootstrapGateway.spec.template.spec.containers[0].env.find(
       ({ name }) => name === "APP_SERVER_URL",
@@ -132,6 +150,12 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   ]);
   assert.equal(provisions.length, 1);
   assert.equal(endpoints.length, 1);
+  assert.equal(
+    provisions[0].requirements.environment.some(
+      ({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT",
+    ),
+    false,
+  );
 });
 
 test("provider Harness endpoint preparation re-observes the same revision across Pod transitions", async (t) => {

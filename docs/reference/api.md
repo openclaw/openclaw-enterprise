@@ -22,6 +22,13 @@ operations through the selected Drivers and settings described in
 
 See [authentication](authentication.md) for supported credentials and their scope.
 
+## Table of contents
+
+- [Error responses](#error-responses)
+- [Resources](#resources)
+- [Operations](#operations)
+- [Shared schemas](#shared-schemas)
+
 ## Error responses
 
 Non-success JSON responses use the following envelope.

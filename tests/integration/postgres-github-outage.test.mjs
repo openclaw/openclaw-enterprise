@@ -6,30 +6,19 @@ import {
   assertProviderAttached,
   assertSessionUser,
   authRowCounts,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   githubSignIn,
   githubUpgradeSettings,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 import { signInRateLimited } from "../helpers/refusal-text.mjs";
 
-const adminEmail = "outage-recovery@example.test";
-const password = "outage-member-password";
-const authSecret = "outage-auth-test-secret-at-least-32-bytes";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "outage-client-id",
-  "occ-github-login/client-secret": "outage-client-secret",
-};
 const memberSubject = 7_000_001;
 // The production slow lane with shorter floors: 250 ms doubling to a 500 ms cap instead of
 // 1 s doubling to 8 s. Each paced attempt waits its floor in real time, and spending one
@@ -46,21 +35,26 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    // In "hang" mode the provider never answers; the controller's shared provider deadline
-    // must end the wait.
-    const provider = await startFakeGitHub(t);
+    // In "hang" mode the GitHub provider never answers; the controller's shared provider
+    // deadline must end the wait.
+    const {
+      pool,
+      github: provider,
+      onboard,
+      composeApp,
+    } = await preparePostgresSignInInstallation(t, () => [app], {
+      email: "outage-recovery@example.test",
+      password: "outage-member-password",
+      secrets: {
+        "occ-auth/secret": "outage-auth-test-secret-at-least-32-bytes",
+        "occ-github-login/client-id": "outage-client-id",
+        "occ-github-login/client-secret": "outage-client-secret",
+      },
+    });
 
     // Password onboarding on the default install, then the GitHub upgrade. Members read the
     // Installation but do not administer it, so a spent email refuses them.
-    const { admin, accounts } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    const { admin, accounts } = await onboard({
       accounts: {
         member: { email: "outage-member@example.test" },
         other: { email: "outage-other@example.test" },
@@ -69,12 +63,7 @@ test(
       },
     });
     const { member, other, resetMember, disabledMember } = accounts;
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(admin.id),
-      secrets,
-      passwordSlowLaneFloors: slowLane,
-    });
+    app = await composeApp(githubUpgradeSettings(admin.id), { passwordSlowLaneFloors: slowLane });
     const adminHeaders = await signedInHeaders(app, origin, admin);
     await assertProviderAttached(app, adminHeaders, member.id, "github", String(memberSubject));
 

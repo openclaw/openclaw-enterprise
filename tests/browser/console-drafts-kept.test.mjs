@@ -35,8 +35,10 @@ import {
   createAgentThroughForm,
   routeProvisioningJob,
   provisioningJob,
+  waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 import {
+  AGENT_CREATE_RESTRICTED,
   AGENT_NAME_CONFLICT,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   REPOSITORY_EDITS_PENDING,
@@ -228,6 +230,39 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
     access.data.some(
       (binding) => binding.subjectId === data.servicePrincipalId && binding.resourceId === secretId,
     ),
+  );
+});
+
+test("an administrator's kept draft that a Restriction now refuses says why Create Agent waits", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Restricted later", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  const name = page.getByLabel("Agent name", { exact: true });
+  await name.fill("Kept administrator draft");
+  await waitForCreateFormReads(page);
+  await sidebarLink(page, "Agents").click();
+  await settled(page);
+
+  // A deny Restriction now refuses Agent create, administration included. The kept draft comes
+  // back with that answer and a readable Installation: no block above the form explains the
+  // disabled Create Agent, so the repository section names the Restriction instead of waiting
+  // for a check that already answered (finding 2909).
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
+  await page.goBack();
+  await name.waitFor();
+  assert.equal(await name.inputValue(), "Kept administrator draft");
+  await page
+    .getByText(`Repository choices are not shown. ${AGENT_CREATE_RESTRICTED}`, { exact: true })
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  // The Installation read itself succeeded: nothing offers to retry it.
+  assert.equal(await page.getByRole("button", { name: "Retry capability check" }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
   );
 });
 

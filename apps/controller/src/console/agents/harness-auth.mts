@@ -6,7 +6,7 @@ import type {
   ServiceAccount,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { element } from "../dom.mjs";
+import { element, setUnavailable } from "../dom.mjs";
 import { message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
@@ -317,9 +317,10 @@ export function createHarnessAuthFields(
       account: account.value,
       oauthLogin: oauthLogin.capture(),
     }),
-    setDisabled(value: boolean) {
+    // A disabled method select with a shown `reason` stays in the Tab order (finding 2899).
+    setDisabled(value: boolean, reason: HTMLElement | null = null) {
       disabled = value;
-      method.disabled = value;
+      setUnavailable(method, value, reason);
       secretPicker.setDisabled(value || !["api_key", "codex_pat"].includes(method.value));
       account.disabled = value || !accountsLoaded;
       oauthLogin.setDisabled(value);

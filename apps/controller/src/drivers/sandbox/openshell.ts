@@ -757,14 +757,14 @@ function harnessRuntimeFiles(
         "Protected Harness startup must match the admitted egress plan.",
       );
     }
-    const selections = configurationObject(manifest.selections, "Codex plugin-runtime selections");
+    configurationObject(manifest.selections, "Codex plugin-runtime selections");
     if (manifest.repositoryBrokerNetworkPolicy !== undefined) {
       throw new SandboxRepositoryRecipientUnverifiedError();
     }
-    if (manifest.kind !== "codex" || Object.keys(selections).length !== 0) {
+    if (manifest.kind !== "codex") {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "OpenShell dedicated Codex does not yet support selected plugins.",
+        "OpenShell dedicated Codex requires a Codex plugin-runtime manifest.",
       );
     }
   }

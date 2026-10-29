@@ -237,7 +237,9 @@ by the installation or route checks reserves no ID. From exchange capture on, it
 stays reserved for the whole window, even if the request is refused.
 Past any bound, `resolve` refuses with `unavailable`/`resolver`. The bundled
 OpenShell authority also admits at most 1024 pending exchange openings (256 for
-one Sandbox) and 1024 accepted exchanges.
+one Sandbox) and 1024 accepted exchanges. Its online request authorization holds
+at most 1024 decisions in flight (256 for one Sandbox) and denies the rest with
+`online_authorization_denied`.
 
 ## Troubleshooting
 

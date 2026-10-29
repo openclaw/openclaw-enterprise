@@ -67,6 +67,12 @@
       "expectedTests": [
         "native workspace files follow a sole roster through OCC and preserve explicit targets and grants"
       ]
+    },
+    {
+      "path": "tests/integration/codex-plugin-stdio-real.test.ts",
+      "expectedTests": [
+        "native stdio plugin preparation survives WebSocket replacement and drains failed installation"
+      ]
     }
   ]
 }

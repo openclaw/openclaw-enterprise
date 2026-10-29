@@ -2651,7 +2651,8 @@ function referenceSetting(value: unknown, setting: string): string | undefined {
 // set) the probe gets the primary model's entry as nativeRuntimeConfiguration renders it for the
 // native worker: no other entry can supply its endpoint (findings 2882, 2883), and the probe
 // resolves the same model ID and checked endpoint as the worker (finding 2903). The checked
-// endpoint is the provider default, not a row setting (finding 2904).
+// endpoint is the provider default, not a row setting (finding 2904). No other authored provider
+// setting reaches that probe, as none reaches the worker (finding 2905).
 function harnessProbeConfiguration(
   configuration: OpenClawConfigurationDocument,
   embedded = false,
@@ -2661,7 +2662,8 @@ function harnessProbeConfiguration(
   const model = harnessPrimaryModel(configuration);
   const { providerId, environmentName } = harnessModelAuthentication(configuration, embedded);
   const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
-  const fragment = provider === undefined ? undefined : { ...provider };
+  let fragment: Record<string, unknown> | undefined =
+    provider === undefined ? undefined : { ...provider };
   if (fragment !== undefined) {
     delete fragment.apiKey;
   }
@@ -2690,13 +2692,12 @@ function harnessProbeConfiguration(
     const { id } = splitModelRef(model);
     // The rendering holds one row for each selected model, the primary included.
     const primary = rendered.models.providers.openai.models.find((row) => row.id === id)!;
-    if (fragment !== undefined) {
-      // The row inherits its endpoint from the provider, so the runtime's upfront credential
-      // check, which skips rows with their own baseUrl, still applies (finding 2904).
-      const { baseUrl, ...row } = primary;
-      fragment.baseUrl = baseUrl;
-      fragment.models = [row];
-    }
+    // The row inherits its endpoint from the provider and the provider API is the row's, so the
+    // runtime's upfront credential check, which skips rows with their own baseUrl or another
+    // API, still applies (finding 2904). The worker gets provider-level model metadata on the
+    // row; on the provider it fails the probe's validation, and any other key skips that check.
+    const { baseUrl, ...row } = primary;
+    fragment = { baseUrl, api: row.api, models: [row] };
   }
   return {
     agents: {
@@ -15913,7 +15914,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const hasEnabledPlugins =
       pluginRuntime !== undefined &&
       Object.values(pluginRuntime.runtime.selections).some((selection) => selection.enabled);
-    const needsPluginStatus = needsPluginRuntime && hasEnabledPlugins;
+    const providerPreparesCodexPlugins =
+      dedicated &&
+      pluginRuntime?.runtime.kind === "codex" &&
+      (role === "agent"
+        ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
+        : // The initial Gateway must issue node setup before the provider has an
+          // endpoint. OpenShell already selects verifier delivery in prepareRevision.
+          this.sandboxDriver?.implementation === "openshell");
+    if (providerPreparesCodexPlugins && role === "gateway") {
+      variables.push({ name: "OPENCLAW_CODEX_PLUGINS_PREPARED", value: "true" });
+    }
+    const needsPluginStatus =
+      needsPluginRuntime && hasEnabledPlugins && !providerPreparesCodexPlugins;
     const statusRevisionId = configuration?.revisionId ?? ownership.revisionId;
     const needsRuntimeStatus =
       runtime !== undefined &&

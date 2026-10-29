@@ -300,6 +300,9 @@ must authenticate through a [credential source](../../reference/credential-sourc
 to register a key and bind it to an Agent, follow
 [Use a credential source on the local OpenShell profile](openshell-credential-sources.md).
 
+The profile also selects the curated Codex Plugin Driver for managed Codex
+plugin selections. See [Agent plugins](../../reference/agent-plugins.md).
+
 The OpenShell Gateway permits unauthenticated users, a development setting safe
 only inside this disposable, loopback-owned cluster. Tenant egress selects only
 OpenShell supervisor Pods for Gateway callbacks. Do not use this profile, or

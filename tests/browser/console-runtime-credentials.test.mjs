@@ -871,12 +871,15 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
   const readsReleased = new Promise((resolve) => {
     releaseReads = resolve;
   });
-  let heldReads = 0;
+  let readHeld;
+  const readStarted = new Promise((resolve) => {
+    readHeld = resolve;
+  });
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
     async (route, request) => {
       if (request.method() === "GET") {
-        heldReads += 1;
+        readHeld();
         await readsReleased;
       }
       await route.fallback();
@@ -897,7 +900,8 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
     .locator("section.agent-draft-actions p.muted[role=status]")
     .filter({ hasText: /\S/ })
     .waitFor();
-  assert.ok(heldReads > 0, "the grant read is in flight");
+  // The grant read asks for the bindings once the roles have answered (finding 2919).
+  await readStarted;
   assert.equal(await deploy.isDisabled(), true);
   await page.getByText("Checking this Agent's credential access before deploying.").waitFor();
   // The checking text sits in the 250 ms delayed-status span, in the deploy status and the
@@ -954,11 +958,16 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     releaseRead = resolve;
   });
   let heldRead = null;
+  let readHeld;
+  const readStarted = new Promise((resolve) => {
+    readHeld = resolve;
+  });
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
     async (route, request) => {
       if (request.method() === "GET" && heldRead === null) {
         heldRead = request;
+        readHeld();
         await readReleased;
       }
       await route.fallback();
@@ -994,7 +1003,8 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   const deployStatus = page.locator("section.agent-draft-actions p.muted[role=status]");
   await deployStatus.filter({ hasText: /\S/ }).waitFor();
-  assert.ok(heldRead, "the grant read is in flight");
+  // The grant read asks for the bindings once the roles have answered (finding 2919).
+  await readStarted;
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await selectSecret(page, "Slack bot token", replacement);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();

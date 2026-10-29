@@ -7,6 +7,7 @@ import {
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
 import { readFileSync } from "node:fs";
+import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
@@ -1625,19 +1626,22 @@ function codexAppServerRequestSequence(requests, timeoutMs) {
   });
 }
 
+function codexPluginInitializeParams() {
+  return {
+    clientInfo: {
+      name: "openclaw-enterprise-plugin-runtime",
+      title: "OpenClaw Enterprise Plugin Runtime",
+      version: "1.0.0",
+    },
+    capabilities: { experimentalApi: true },
+  };
+}
 async function codexAppServerRequest(method, params) {
   const responses = await codexAppServerRequestSequence(
     [
       {
         method: "initialize",
-        params: {
-          clientInfo: {
-            name: "openclaw-enterprise-plugin-runtime",
-            title: "OpenClaw Enterprise Plugin Runtime",
-            version: "1.0.0",
-          },
-          capabilities: { experimentalApi: true },
-        },
+        params: codexPluginInitializeParams(),
       },
       { method, params },
     ],
@@ -1901,11 +1905,33 @@ async function readCodexPluginDetails(readParamsList, read = (params) => codexAp
   return details;
 }
 
-async function installCodexSelectionSet(selections, failures, request) {
+async function searchCodexSelectionParams(selections, request, deadline) {
+  const resolved = [];
+  for (const selection of pluginRuntimeTranslator.codexSearchPlan(selections)) {
+    let cursor;
+    const seen = new Set();
+    for (;;) {
+      const response = await request("plugin/search", {
+        ...selection.params, ...(cursor === undefined ? {} : { cursor }),
+      });
+      const params = pluginRuntimeTranslator.codexReadParamsFromSearch(selection.pluginId, response);
+      if (params !== undefined) { resolved.push(params); break; }
+      if (typeof response.nextCursor !== "string" || response.nextCursor.length === 0) {
+        throw new Error("Codex plugin catalog did not contain the selected plugin.");
+      }
+      if (Date.now() >= deadline) throw new Error("Codex plugin search deadline expired.");
+      if (seen.has(response.nextCursor)) throw new Error("Codex plugin search repeated its cursor.");
+      cursor = response.nextCursor;
+      seen.add(cursor);
+    }
+  }
+  return resolved;
+}
+
+async function installCodexSelectionSet(selections, failures, request, deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS) {
   if (Object.keys(selections).length === 0) return { successfulPluginIds: [], failures: [] };
   const enabledPluginIds = enabledCodexSelectionIds(selections);
-  const listed = await request("plugin/list", {});
-  const readParamsList = pluginRuntimeTranslator.codexReadParamsForSelections(selections, listed);
+  const readParamsList = await searchCodexSelectionParams(selections, request, deadline);
   const resolvedDetails = await readCodexPluginDetails(readParamsList, (params) => request("plugin/read", params));
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
@@ -2096,7 +2122,7 @@ async function installCodexPlugins(runtime, failures = [], request) {
   let result = { successfulPluginIds: [], failures };
   while (Date.now() < deadline) {
     try {
-      result = await installCodexSelectionSet(selections, failures, request);
+      result = await installCodexSelectionSet(selections, failures, request, deadline);
       lastError = undefined;
       break;
     } catch (error) {
@@ -2898,7 +2924,8 @@ if (process.env.OPENCLAW_WORKSPACE_DIR !== undefined) {
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
 const followsPeerStatus =
-  pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime);
+  pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime) &&
+  process.env.OPENCLAW_CODEX_PLUGINS_PREPARED !== "true";
 // A respawn configures from the file a container restart would start from.
 const initialConfigPath = process.env.OPENCLAW_CONFIG_PATH;
 const appliesGatewayToolPolicy = Boolean(process.env.APP_SERVER_URL || process.env.OPENCLAW_NATIVE_WORKER_PROFILE);
@@ -3656,6 +3683,7 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
+${CODEX_PLUGIN_STDIO_HELPER}
 ${HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
 
@@ -4190,15 +4218,15 @@ if (configuredTokenSha !== undefined && !/^[a-f0-9]{64}$/.test(configuredTokenSh
 if (configuredTokenSha !== undefined && process.env.APP_SERVER_TOKEN !== undefined) {
   throw new Error("Codex app-server token inputs are mutually exclusive.");
 }
+if (configuredTokenSha !== undefined && loginMode === "api_key" && hasEnabledPluginSelections(pluginRuntime)) {
+  throw new Error("Codex plugins require a ChatGPT login; API-key authentication cannot install them.");
+}
 if (pluginRuntimeStatusPort() !== undefined) {
   if (configuredTokenSha !== undefined) {
     throw new Error("Codex plugins require the app-server base token.");
   }
   process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(pluginStatusReport.startupId);
 }
-publishRuntimeReady();
-// Everything before this line delays the Codex app-server.
-logStartupPhase("native-spawn", startupPhaseOrigin);
 let digest = configuredTokenSha;
 if (digest === undefined) {
   if (typeof process.env.APP_SERVER_TOKEN !== "string" || process.env.APP_SERVER_TOKEN.length === 0) {
@@ -4206,9 +4234,7 @@ if (digest === undefined) {
   }
   digest = createHash("sha256").update(process.env.APP_SERVER_TOKEN).digest("hex");
 }
-const child = spawn(
-  "codex",
-  [
+const nativeArguments = [
     // Preserve the admitted model selection for native policy readback.
     "-c",
     "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
@@ -4227,35 +4253,53 @@ const child = spawn(
     ...shellNodeCaArguments(),
     ...(loginMode === "chatgptAuthTokens" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
 ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_retries",\n' : ""}    "app-server",
-    "--listen",
-    "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
-    "--ws-auth",
-    "capability-token",
-    "--ws-token-sha256",
-    digest,
-  ],
-  // stdout is the protocol stream; stderr passes through the span-noise filter.
-  { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
-);
-forwardTermination(child);
-const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
-child.on("exit", (code, signal) => {
-  const status = code ?? (signal === "SIGTERM" ? 0 : 1);
-  // Forward Codex's last lines; a descendant holding the pipe cannot delay exit
-  // by more than 2 s. The unref'd timer never keeps an otherwise idle wrapper alive.
-  setTimeout(() => process.exit(status), 2000).unref();
-  codexStderrDone.then(() => process.exit(status));
-});
+];
 (async () => {
+  if (configuredTokenSha !== undefined && hasEnabledPluginSelections(pluginRuntime)) {
+    const preparationStartedAt = Date.now();
+    try {
+      await withCodexPluginStdio(codexExecutable(), nativeArguments,
+        { cwd: workspaceDirectory, env: codexChildEnvironment() }, (request) =>
+          installCodexSelectionSet(pluginRuntime.manifest.selections, [], request));
+      logStartupPhase("plugin-install", preparationStartedAt);
+    } catch (error) {
+      logStartupPhase("plugin-install", preparationStartedAt, "failed", codexPluginStartupFailureCode(error));
+      console.error(JSON.stringify({ event: "codex.plugin_preparation_failed", ...error.preparation }));
+      console.error("Codex plugin preparation failed before native WebSocket startup.");
+      process.exit(1);
+      return;
+    }
+  }
+  publishRuntimeReady();
+  // Preparation, when required, has exited before the serving process starts.
+  logStartupPhase("native-spawn", startupPhaseOrigin);
+  const child = spawn(
+    "codex",
+    [...nativeArguments, "--listen", "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
+      "--ws-auth", "capability-token", "--ws-token-sha256", digest],
+    { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
+  );
+  forwardTermination(child);
+  const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
+  child.on("exit", (code, signal) => {
+    const status = code ?? (signal === "SIGTERM" ? 0 : 1);
+    // Forward Codex's last lines; a descendant holding the pipe cannot delay exit
+    // by more than 2 s. The unref'd timer never keeps an otherwise idle wrapper alive.
+    setTimeout(() => process.exit(status), 2000).unref();
+    codexStderrDone.then(() => process.exit(status));
+  });
   const pluginInstallStartedAt = Date.now();
   let pluginInstallLogged = false;
   try {
-    if (pluginRuntime !== undefined) {
+    if (pluginRuntime !== undefined && configuredTokenSha === undefined) {
       const result = await installCodexPlugins(pluginRuntime, [], codexAppServerRequest);
       logStartupPhase("plugin-install", pluginInstallStartedAt);
       pluginInstallLogged = true;
       publishPluginRuntimeStatus({ phase: "ready", ...result });
     } else {
+      if (pluginRuntime !== undefined && !hasEnabledPluginSelections(pluginRuntime)) {
+        logStartupPhase("plugin-install", pluginInstallStartedAt);
+      }
       publishPluginRuntimeStatus({ phase: "ready", successfulPluginIds: [], failures: [] });
     }
     pluginRuntimeReady();

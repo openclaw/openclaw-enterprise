@@ -3,27 +3,16 @@ import test from "node:test";
 import {
   assertConsoleSignIn,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   githubSignIn,
   githubUpgradeSettings,
-  onboardPasswordAccounts,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "scope-recovery@example.test";
-const password = "scope-limited-password";
-const authSecret = "scope-admin-auth-test-secret-at-least-32-bytes";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "scope-client-id",
-  "occ-github-login/client-secret": "scope-client-secret",
-};
 const limitedSubject = "9200001";
 const takeoverSubject = "9200002";
 
@@ -35,20 +24,24 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    await startFakeGitHub(t);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "scope-recovery@example.test",
+        password: "scope-limited-password",
+        secrets: {
+          "occ-auth/secret": "scope-admin-auth-test-secret-at-least-32-bytes",
+          "occ-github-login/client-id": "scope-client-id",
+          "occ-github-login/client-secret": "scope-client-secret",
+        },
+      },
+    );
     const address = clientAddresses("198.19");
     const {
       admin,
       accounts: { limited },
-    } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    } = await onboard({
       remoteAddress: address(),
       accounts: { limited: { email: "scope-limited@example.test", role: "admin" } },
     });
@@ -63,11 +56,7 @@ test(
     );
     assert.deepEqual(bindings, [{ resource_kind: "installation", resource_id: installation.id }]);
 
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(admin.id),
-      secrets,
-    });
+    app = await composeApp(githubUpgradeSettings(admin.id));
     const adminHeaders = await signedInHeaders(app, origin, admin, address());
     const limitedHeaders = await signedInHeaders(app, origin, limited, address());
     const post = (headers, url, payload) => app.inject({ method: "POST", url, headers, payload });

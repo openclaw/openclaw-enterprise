@@ -10,7 +10,10 @@ This record preserves the dated changes to the platform console request flow. Se
 
 - 2026-10-29 20:40: Refocus does not read again a version the page proved unreadable. (fix-console-r53)
 - 2026-10-29 18:30: A Tab lap past the page end starts no refocus check. (fix-keyboard-sweep)
+- 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
+- 2026-10-27 14:42: Trace Namespace deletion and recovery. (authoring-run/20fc7b4c-0501-4d3e-9f0c-16a3fd016866 - 0402f1cf1)
 - 2026-10-25 20:40: Activate a shell control whose mouse press a load render replaced before release. (fix-2505)
+- 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
 - 2026-10-20 15:53: Add Namespace Secret management and uncertain-write recovery in the accompanying console change. (authoring-run/9b10a6df-a6ce-4d38-859d-480a59d95cf0 - e8185dac8)
 - 2026-10-20 14:55: Add startup-loaded console themes and public asset confinement with accompanying source changes. (authoring-run/485ab8a9-4293-44df-a85f-f8f051b74bf8 - e8185dac805b737363c7178d3068b310a53a7c24)
 - 2026-10-20 05:00: Move the Create Agent form trace to [Agent creation](platform-console/agent-creation.md). (docs-split-1020)

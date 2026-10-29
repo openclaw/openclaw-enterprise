@@ -21,6 +21,13 @@ import {
 
 type Wire = Record<string, unknown>;
 const deny = { decision: 2, reason_code: "online_authorization_denied" };
+/** Decisions in flight on one authority. */
+const pendingDecisionCapacity = 1024;
+/**
+ * Decisions in flight for one Sandbox: a quarter of the pool, like the Credential Proxy's
+ * per-Sandbox shares, so one busy Sandbox cannot deny every other Sandbox.
+ */
+const pendingDecisionSandboxShare = pendingDecisionCapacity / 4;
 
 /** A denial whose stable reason code the supervisor shows the workload instead of the generic
  * one. OpenShell accepts `[a-z][a-z0-9_]{0,63}`; anything else denies with the generic code. */
@@ -335,6 +342,7 @@ function createAuthority<T>(
     );
   };
   let pending = 0;
+  const sandboxPending = new Map<string, number>();
   server.addService(service.SupervisorMiddleware!.service, {
     Describe(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
       const description =
@@ -388,16 +396,21 @@ function createAuthority<T>(
           new Date(Date.now() + Math.max(0, expiresAt - performance.now())).toISOString(),
         );
       if (
+        !sandboxId ||
         !request ||
         call.request.middleware_name !== options.registrationName ||
         (options.httpPolicySet !== undefined && !acceptedBinding(call.request.config)) ||
-        pending >= 1024 ||
+        pending >= pendingDecisionCapacity ||
+        (sandboxPending.get(sandboxId) ?? 0) >= pendingDecisionSandboxShare ||
         expired()
       ) {
         callback(null, deny);
         return;
       }
+      // The share is keyed by the Sandbox ID in the gateway-signed token, never by a value
+      // the caller chooses per request. Both slots return once, when authorization settles.
       pending += 1;
+      sandboxPending.set(sandboxId, (sandboxPending.get(sandboxId) ?? 0) + 1);
       const controller = new AbortController();
       const cancelled = () => controller.abort();
       call.once("cancelled", cancelled);
@@ -416,6 +429,12 @@ function createAuthority<T>(
         )
         .finally(() => {
           pending -= 1;
+          const held = sandboxPending.get(sandboxId)! - 1;
+          if (held === 0) {
+            sandboxPending.delete(sandboxId);
+          } else {
+            sandboxPending.set(sandboxId, held);
+          }
         });
       void Promise.race([authorization, aborted])
         .then((result) =>
