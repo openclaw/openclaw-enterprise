@@ -3659,7 +3659,10 @@ for (const viewport of [
         tabsTop: box(doc.querySelector(".agent-tabs")).top,
         tabsWidth: box(doc.querySelector(".agent-tabs")).width,
         layoutWidth: box(doc.querySelector(".agent-version-layout")).width,
-        primaries: doc.querySelectorAll(".content .button--primary:not(:disabled)").length,
+        // An unavailable control (aria-disabled, such as Open Agent UI) is not a live primary.
+        primaries: doc.querySelectorAll(
+          '.content .button--primary:not(:disabled, [aria-disabled="true"])',
+        ).length,
         activityShown: [...doc.querySelectorAll(".deployment-status")].some((node) =>
           node.checkVisibility(),
         ),
