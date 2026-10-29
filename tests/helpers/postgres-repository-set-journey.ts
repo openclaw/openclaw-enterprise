@@ -1,3 +1,4 @@
+import { waitFor } from "./wait-for.mjs";
 import { buffer } from "node:stream/consumers";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
@@ -189,6 +190,8 @@ export async function repositorySetJourney(t: TestContext) {
     },
   ]);
   let admitted: AgentRevision | undefined;
+  let issuanceStarted = false;
+  const issuanceRelease = Promise.withResolvers<void>();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
@@ -209,6 +212,8 @@ export async function repositorySetJourney(t: TestContext) {
         "issuance follows committed activation",
       );
       order.push("issue-after-activation");
+      issuanceStarted = true;
+      await issuanceRelease.promise;
     },
   });
   runtime["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
@@ -321,9 +326,25 @@ export async function repositorySetJourney(t: TestContext) {
   let lastCustody: ComputeRevisionContext | undefined;
   const reconcile = async () => {
     const entry = runtime["states"].get(revision.id)!.entry!;
+    const previous = runtime["running"];
     entry.nextRefreshAt = 0;
-    await runtime["reconcile"](entry);
-    return entry;
+    // The runtime loop owns reconciliation. Calling its private method here can
+    // race that loop's observation/write reservation and invalidate its fence.
+    return waitFor(
+      "the runtime's next repository reconciliation",
+      async () => {
+        assert.equal(entry.blocked, undefined, "a terminal route cannot become ready");
+        const running = runtime["running"];
+        if (running === previous) {
+          return undefined;
+        }
+        await running;
+        assert.equal(entry.blocked, undefined, "a terminal route cannot become ready");
+        assert.equal(entry.unobserved, undefined, "failed observation is not pending issuance");
+        return entry;
+      },
+      { timeoutMs: 10_000, intervalMs: 20 },
+    );
   };
   let preparationError: unknown;
   const compute = {
@@ -407,16 +428,57 @@ export async function repositorySetJourney(t: TestContext) {
     }
     assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
     order.push("active");
-    await peer.prepared.maintain();
-    const entry = await reconcile();
-    assert.ok(
-      entry.installed,
-      JSON.stringify({
-        blocked: entry.blocked,
-        pending: entry.pending,
-        unobserved: entry.unobserved,
-      }),
+    // Hold the real provider request until the runtime has observed absent material.
+    // This makes the pending state deterministic without a sleep or a fabricated token.
+    let issuanceError: unknown;
+    const issuing = peer.prepared.maintain().catch((error: unknown) => {
+      issuanceError = error;
+    });
+    try {
+      await waitFor(
+        "the admitted issuer request",
+        () => {
+          if (issuanceError) {
+            throw issuanceError;
+          }
+          return issuanceStarted ? true : undefined;
+        },
+        { timeoutMs: 10_000 },
+      );
+      const pending = await reconcile();
+      assert.equal(pending.installed, undefined);
+      assert.equal(pending.pending, "material_unavailable");
+      assert.equal(pending.absent, "unprepared");
+      assert.equal(peer.gh.issuesOfTokens.length, 0, "held issuance returns no token");
+      assert.equal(acked, false);
+      assert.equal(runtime.previewReleased(revision.id), false);
+      assert.equal((await evaluate(probe)).decision, 2, "pending issuance cannot authorize Git");
+    } finally {
+      issuanceRelease.resolve();
+      await issuing;
+    }
+    if (issuanceError) {
+      throw issuanceError;
+    }
+    const entry = await waitFor(
+      "maintained repository material to be installed",
+      async () => {
+        await peer.prepared.maintain();
+        const current = await reconcile();
+        assert.notEqual(current.absent, "withdrawn", "withdrawn authority is terminal");
+        if (current.installed) {
+          return current;
+        }
+        assert.ok(
+          current.pending === "material_unavailable" || current.pending === "unverified",
+          "only an explicitly pending installation may be awaited",
+        );
+        return undefined;
+      },
+      { timeoutMs: 10_000, intervalMs: 20 },
     );
+    assert.ok(entry.installed);
+    assert.equal(peer.gh.issuesOfTokens.length, 1, "readiness retains one issuance");
     order.push("material-installed");
     assert.equal(acked, false);
     assert.equal(runtime.previewReleased(revision.id), false);

@@ -984,13 +984,15 @@ for (const removal of [
           custody: saved.rows,
         }),
       );
-      assert.deepEqual(saved.rows, [{
-        enabled: false,
-        custody: "revoked",
-        erased: true,
-        original_source: true,
-        original_attempt: true,
-      }]);
+      assert.deepEqual(saved.rows, [
+        {
+          enabled: false,
+          custody: "revoked",
+          erased: true,
+          original_source: true,
+          original_attempt: true,
+        },
+      ]);
       assert.equal(afterRestart.kind, "denied");
       assert.equal(await useCount(), 1, "no post-end dispatch receipt");
       assert.equal(peer.gh.issuesOfTokens.length, 1, "no renewal after a member ends");
