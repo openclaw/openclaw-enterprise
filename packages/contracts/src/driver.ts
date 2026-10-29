@@ -82,4 +82,6 @@ export interface SelectedDriverRegistration {
 
 export interface DriverImplementation<T = unknown> extends ConfigurationDefinition<T> {
   readonly configurationContributions?: readonly ConfigurationContribution[];
+  /** Pure administrator view of accepted startup values; omit secrets and redact opaque data. */
+  projectStartupConfiguration?(input: Readonly<T>): Readonly<Record<string, unknown>>;
 }

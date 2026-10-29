@@ -17,7 +17,10 @@ import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.mjs";
-import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import {
+  createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
+  createInstallationDriverConfiguration as installation,
+} from "../helpers/installation-driver-configuration.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -203,13 +206,20 @@ async function authenticatedApplication(t, drivers) {
       controller = new OpenClawController(value, {
         state: new InMemoryPlatformState({ auditSink }),
         driverConfigurations: installationDriverConfigurations(drivers.installation),
+        backends: drivers.installation.backend,
         recordOperations: false,
       });
+      if (drivers.credentialGatewayDriver !== undefined) {
+        controller.registerDriver(drivers.credentialGatewayDriver);
+        controller.selectDriver("credential_gateway", drivers.credentialGatewayDriver.id);
+      }
       return controller;
     },
     iamDriver,
     computeDriver: drivers.computeDriver,
     configurationDriver: drivers.configurationDriver,
+    secretDriver: drivers.secretDriver,
+    sandboxDriver: drivers.sandboxDriver,
     resolveHarness: resolveApprovedProductionHarness,
     auditSink,
     development: {
@@ -241,6 +251,19 @@ async function authenticatedApplication(t, drivers) {
     restrictNamespaceDelete() {
       policy = { ...policy, restrictions: [deleteRestriction] };
     },
+    restrictInstallationAdministration() {
+      policy = {
+        ...policy,
+        restrictions: [
+          {
+            id: "restriction-driver-inspection",
+            action: "administer",
+            resourceKind: "installation",
+            effect: "deny",
+          },
+        ],
+      };
+    },
     get controller() {
       return controller;
     },
@@ -258,6 +281,157 @@ async function request(fixture, method, url, body) {
   });
   return { status: response.statusCode, ...response.json() };
 }
+
+test("Installation inspection returns accepted Driver values, redacts opaque resources, and rechecks administration", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-driver-inspection-");
+  const configuration = credentialProxyInstallation();
+  const privateAnnotation = `private-resource-metadata-${randomUUID()}`;
+  configuration.drivers.compute.configuration.network.gatewayPort = 18080;
+  configuration.drivers.compute.configuration.runtime.gatewayStorageClassName = "operator-storage";
+  configuration.drivers.credential_gateway.configuration = {
+    binaries: ["/usr/bin/configured-model-client"],
+    toolBinaries: ["/usr/bin/configured-tool-client"],
+  };
+  configuration.drivers.sandbox.configuration.gateway.operatorWorkspaceResources = [
+    {
+      apiVersion: "v1",
+      kind: "ServiceAccount",
+      metadata: { name: "workspace", annotations: { private: privateAnnotation } },
+    },
+  ];
+  configuration.drivers.sandbox.configuration.gateway.networkPolicyResources = [
+    {
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: { name: "workspace", annotations: { private: privateAnnotation } },
+      spec: { podSelector: {}, policyTypes: ["Egress"], egress: [] },
+    },
+  ];
+  const path = join(directory, "installation.yaml");
+  await writeFile(path, JSON.stringify(configuration));
+  // Load and construct the real bundled Drivers. Inspection must not connect to their services.
+  const drivers = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  const fixture = await authenticatedApplication(t, drivers);
+  const bootstrap = await request(fixture, "POST", "/installation/bootstrap", {
+    name: "Driver inspection integration",
+  });
+  assert.equal(bootstrap.status, 201, JSON.stringify(bootstrap));
+
+  // Editing the operator's file cannot replace values accepted by this running process.
+  configuration.drivers.credential_gateway.configuration.binaries = ["/usr/bin/next-startup"];
+  await writeFile(path, JSON.stringify(configuration));
+  const inspected = await request(fixture, "GET", "/installation/driver-configurations");
+  assert.equal(inspected.status, 200, JSON.stringify(inspected));
+  const descriptors = new Map(
+    inspected.data.configurations.map((descriptor) => [descriptor.capability, descriptor]),
+  );
+  const credentials = descriptors.get("credential_gateway");
+  assert.equal(credentials.driverId, "openshell-credentials");
+  assert.equal(credentials.implementation, "openshell");
+  assert.equal(credentials.scope, "installation");
+  assert.equal(credentials.key, "startup");
+  assert.deepEqual(credentials.startupConfiguration, {
+    binaries: ["/usr/bin/configured-model-client"],
+    toolBinaries: ["/usr/bin/configured-tool-client"],
+  });
+  assert.equal(credentials.configurationSchema.properties.binaries.type, "array");
+  assert.deepEqual(descriptors.get("configuration").startupConfiguration, {
+    authentication: { mode: "inCluster" },
+  });
+  assert.deepEqual(descriptors.get("secret").startupConfiguration, {
+    authentication: { mode: "inCluster" },
+  });
+  assert.deepEqual(descriptors.get("iam").startupConfiguration, {});
+  const compute = descriptors.get("compute").startupConfiguration;
+  assert.equal(compute.network.gatewayPort, 18080);
+  assert.equal(compute.runtime.gatewayStorageClassName, "operator-storage");
+  const sandbox = descriptors.get("sandbox").startupConfiguration;
+  assert.equal(sandbox.gateway.workspaceMode, "operator");
+  assert.equal(sandbox.gateway.operatorWorkspaceResources, "[redacted]");
+  assert.equal(sandbox.gateway.networkPolicyResources, "[redacted]");
+  assert.deepEqual(sandbox.policy.networkPolicies[0].binaries, [{ path: "/usr/bin/model-client" }]);
+  assert.equal(
+    Object.hasOwn(sandbox, "logLevel"),
+    false,
+    "omitted defaults are not configured values",
+  );
+  assert.ok(!JSON.stringify(inspected).includes(privateAnnotation));
+  assert.ok(!JSON.stringify(inspected).includes("/usr/bin/next-startup"));
+
+  fixture.restrictInstallationAdministration();
+  const denied = await request(fixture, "GET", "/installation/driver-configurations");
+  assert.equal(denied.status, 403, JSON.stringify(denied));
+  assert.equal(denied.data, undefined);
+  assert.ok(!JSON.stringify(denied).includes("/usr/bin/configured-model-client"));
+  const denial = fixture.auditSink.events.find(
+    (event) =>
+      event.kind === "authorization_denial" &&
+      event.resource.id === fixture.config.installationId &&
+      event.authorization.action === "administer",
+  );
+  assert.equal(denial.iamDriverId, "native-iam");
+  assert.ok(denial.details.iamEvidence.restrictionIds.includes("restriction-driver-inspection"));
+});
+
+test("startup inspection isolates faulty package projections from accepted configuration", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-driver-inspection-failure-");
+  const drivers = await load(directory, installation(), "development");
+  const selected = drivers.installation.drivers.configuration;
+  const accepted = structuredClone(selected.configuration);
+  const privateFailure = `private-projection-failure-${randomUUID()}`;
+  for (const [description, projectStartupConfiguration] of [
+    [
+      "exception",
+      () => {
+        throw new Error(privateFailure);
+      },
+    ],
+    [
+      "mutation",
+      (input) => {
+        input.authentication.mode = privateFailure;
+        return input;
+      },
+    ],
+    [
+      "cycle",
+      () => {
+        const cycle = {};
+        cycle.self = cycle;
+        return cycle;
+      },
+    ],
+    ["non-JSON number", () => ({ timeout: Number.POSITIVE_INFINITY })],
+  ]) {
+    await t.test(description, () => {
+      // A package callback is an extension boundary; the host must contain a faulty implementation.
+      const registrations = installationDriverConfigurations({
+        ...drivers.installation,
+        drivers: {
+          ...drivers.installation.drivers,
+          configuration: {
+            ...selected,
+            definition: {
+              configurationSchema: selected.definition.configurationSchema,
+              validateConfiguration: (input) => selected.definition.validateConfiguration(input),
+              projectStartupConfiguration,
+            },
+          },
+        },
+      });
+      assert.equal(
+        registrations.find((registration) => registration.capability === "configuration")
+          .startupConfiguration,
+        undefined,
+      );
+      assert.deepEqual(selected.configuration, accepted);
+      assert.ok(!JSON.stringify(registrations).includes(privateFailure));
+    });
+  }
+});
 
 test("reviewed scoped Driver packages install, activate, and fail closed", async (t) => {
   const owner = await installedPackages(t);
@@ -306,6 +480,15 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
         name: "Installed Driver integration",
       });
       assert.equal(bootstrap.status, 201, JSON.stringify(bootstrap));
+      const inspection = await request(fixture, "GET", "/installation/driver-configurations");
+      assert.equal(inspection.status, 200, JSON.stringify(inspection));
+      const installedConfiguration = inspection.data.configurations.find(
+        (descriptor) => descriptor.capability === "configuration",
+      );
+      assert.equal(installedConfiguration.driverId, "configuration-installed-fixture");
+      // This real installed package has no inspection contract; neither raw values nor defaults leak.
+      assert.equal(Object.hasOwn(installedConfiguration, "startupConfiguration"), false);
+      assert.ok(!JSON.stringify(inspection).includes("memory:driver-plugin-test"));
       const namespace = await request(fixture, "POST", "/namespaces", {
         name: `installed-compute-${randomUUID()}`,
       });

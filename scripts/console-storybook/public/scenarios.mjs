@@ -1783,13 +1783,55 @@ export const scenarios = {
     name: "Account",
     path: "/console/settings",
     description:
-      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect read-only Installation Driver schemas. There are no editable settings in this release.",
+      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup values, including redacted sections and an empty configuration. There are no editable settings in this release.",
     steps: [
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
-      "Inspect Installation Driver schemas below the cards; no startup values or mutation controls are shown.",
+      "Expand each Installation Driver below the cards. Credential Gateway shows configured binary paths, Sandbox shows a redaction marker, and IAM shows an empty object. There are no mutation controls.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
       "At a phone width, Sign out spans the Session card.",
     ],
+  },
+  settingsDriverValuesUnavailable: {
+    group: "Pages/Settings",
+    name: "Driver values unavailable",
+    path: "/console/settings",
+    installationValuesUnavailable: true,
+    description:
+      "The selected Drivers do not provide accepted startup values. Each expanded group explains that values are unavailable; schemas are not substituted.",
+    steps: ["Expand a Driver and check the unavailable message. No JSON Schema is shown."],
+  },
+  settingsDriverConfigurationsEmpty: {
+    group: "Pages/Settings",
+    name: "No Driver configurations",
+    path: "/console/settings",
+    rules: [{ path: "/installation/driver-configurations", data: { configurations: [] } }],
+    description: "Installation discovery succeeds without any selected Driver configurations.",
+    steps: ["Check the empty message beneath the Installation Driver configuration heading."],
+  },
+  settingsDriverConfigurationsLoading: {
+    group: "Pages/Settings",
+    name: "Driver configuration loading",
+    path: "/console/settings",
+    rules: [{ path: "/installation/driver-configurations", hold: true }],
+    description:
+      "Installation discovery is pending. The section shows a loading message until the normal client timeout reports the failed read.",
+  },
+  settingsDriverConfigurationsFailure: {
+    group: "Pages/Settings",
+    name: "Driver configuration unavailable",
+    path: "/console/settings",
+    rules: [{ path: "/installation/driver-configurations", status: 503 }],
+    description:
+      "Installation discovery fails. The section reports the read failure without exposing values or showing a schema fallback.",
+  },
+  settingsDriverConfigurationsDenied: {
+    group: "Pages/Settings",
+    name: "Driver configuration denied",
+    path: "/console/settings",
+    readOnlyPermissionSummary: true,
+    rules: [{ path: "/installation/driver-configurations", status: 403, code: "FORBIDDEN" }],
+    description:
+      "An account without Installation administration can still use Settings. The protected Driver section is absent after the refusal.",
   },
   settingsNameIsEmail: {
     group: "Pages/Settings",

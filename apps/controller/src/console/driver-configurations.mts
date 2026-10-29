@@ -4,14 +4,14 @@ import { renderAgentSandboxPolicy } from "./agents/sandbox-policy.mjs";
 import { readFailure } from "./agents/list.mjs";
 import { INSTALLATION_ADMINISTRATION, refusedAsNonAdministrator } from "./api-client.mjs";
 
-// The Agent's contributions authorize Agent read on it; the Installation's schemas, Installation
+// The Agent's contributions authorize Agent read on it; the Installation's values, Installation
 // administer. A failed read says which, or how long to wait (finding 2538).
 const AGENT_CONFIGURATIONS_NEED = {
   task: "reading this Agent's Driver configurations",
   grant: "Agent read on it",
 };
-const INSTALLATION_SCHEMAS_NEED = {
-  task: "reading the Installation's Driver schemas",
+const INSTALLATION_CONFIGURATIONS_NEED = {
+  task: "reading the Installation's Driver configuration",
   grant: "Installation administer",
 };
 
@@ -91,7 +91,7 @@ export function renderInstallationConfigurations(context: ConfigurationContext) 
     "section",
     {},
     element("h2", {}, "Installation Driver configuration"),
-    element("p", { role: "status" }, "Loading schemas…"),
+    element("p", { role: "status" }, "Loading Driver configuration…"),
   );
   void discover(context, "/installation/driver-configurations", INSTALLATION_ADMINISTRATION)
     .then((configurations) => {
@@ -103,25 +103,27 @@ export function renderInstallationConfigurations(context: ConfigurationContext) 
         element(
           "p",
           {},
-          "Inspect startup settings accepted by the selected Drivers. Change values in the operator-managed startup configuration and restart the control plane.",
+          "Inspect startup values accepted by the selected Drivers. Confidential values are redacted. Change values in the operator-managed startup configuration and restart the control plane.",
         ),
       );
       for (const descriptor of configurations) {
         section.append(
           element(
             "details",
-            {},
+            { className: "native-document" },
             element(
               "summary",
               {},
               `${descriptor.capability} · ${descriptor.driverId} · ${descriptor.key}`,
             ),
-            element("pre", {}, JSON.stringify(descriptor.configurationSchema, null, 2)),
+            descriptor.startupConfiguration === undefined
+              ? element("p", {}, "Accepted startup values are unavailable for this Driver.")
+              : element("pre", {}, JSON.stringify(descriptor.startupConfiguration, null, 2)),
           ),
         );
       }
       if (!configurations.length) {
-        section.append(element("p", {}, "No Driver configuration schemas are available."));
+        section.append(element("p", {}, "No Driver configurations are available."));
       }
     })
     .catch((cause: unknown) => {
@@ -135,7 +137,11 @@ export function renderInstallationConfigurations(context: ConfigurationContext) 
           element(
             "p",
             { role: "alert" },
-            readFailure("Installation Driver schemas", cause, INSTALLATION_SCHEMAS_NEED),
+            readFailure(
+              "Installation Driver configuration",
+              cause,
+              INSTALLATION_CONFIGURATIONS_NEED,
+            ),
           ),
         );
       }

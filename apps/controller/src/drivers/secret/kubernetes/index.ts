@@ -33,6 +33,7 @@ import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts"
 import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
+  projectKubernetesAuthentication,
   validateKubernetesAuthentication,
   type KubernetesAuthentication,
 } from "../../kubernetes/authentication.ts";
@@ -167,6 +168,12 @@ function timeoutFailure(action: string): Error {
 }
 
 export class KubernetesSecretDriver implements SecretDriver {
+  static projectStartupConfiguration(
+    configuration: Readonly<KubernetesSecretDriverOptions>,
+  ): Readonly<Record<string, unknown>> {
+    return { authentication: projectKubernetesAuthentication(configuration.authentication) };
+  }
+
   static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
   static validateConfiguration(

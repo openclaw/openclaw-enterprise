@@ -1,4 +1,6 @@
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
+import { pickConfiguredFields } from "../../startup-configuration.ts";
+import { projectKubernetesAuthentication } from "../../kubernetes/authentication.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
@@ -3348,6 +3350,139 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Agent setting gatewayManagedMode requires a supported Gateway runtime on Kubernetes Compute.",
       );
     }
+  }
+
+  static projectStartupConfiguration(
+    configuration: Readonly<KubernetesComputeDriverOptions>,
+  ): Readonly<Record<string, unknown>> {
+    const peer = (value: KubernetesWorkloadPeer) => ({
+      namespace: value.namespace,
+      podLabels: "[redacted]",
+    });
+    const resources = (value: V1ResourceRequirements) => ({
+      requests: pickConfiguredFields(value.requests!, ["cpu", "memory"]),
+      limits: pickConfiguredFields(value.limits!, ["cpu", "memory"]),
+    });
+    const routing = (value: KubernetesGatewayRoutingOptions) => ({
+      ...pickConfiguredFields(value, [
+        "hostname",
+        "endpointPort",
+        "gatewayName",
+        "gatewayNamespace",
+        "envoyNamespace",
+        "envoyHttpsTargetPort",
+      ]),
+      ...(value.sandbox === undefined
+        ? {}
+        : { sandbox: pickConfiguredFields(value.sandbox, ["domain", "publicPort"]) }),
+    });
+    const network: Record<string, unknown> = {
+      ...pickConfiguredFields(configuration.network, [
+        "gatewayPort",
+        "gatewayTrustedProxyCidrs",
+        "pluginStatusProxySourceCidrs",
+      ]),
+      dns: peer(configuration.network.dns),
+    };
+    if (configuration.network.gatewayClients !== undefined) {
+      network.gatewayClients = configuration.network.gatewayClients.map(peer);
+    }
+    if (configuration.network.repositoryCredentials !== undefined) {
+      network.repositoryCredentials = {
+        ...peer(configuration.network.repositoryCredentials),
+        port: configuration.network.repositoryCredentials.port,
+      };
+    }
+    if (configuration.network.publicGithubRead !== undefined) {
+      network.publicGithubRead = {
+        ...peer(configuration.network.publicGithubRead),
+        address: configuration.network.publicGithubRead.address,
+      };
+    }
+    if (configuration.network.providerHarness !== undefined) {
+      network.providerHarness = {
+        ...peer(configuration.network.providerHarness),
+        ...pickConfiguredFields(configuration.network.providerHarness, ["address", "port"]),
+      };
+    }
+    const projected: Record<string, unknown> = {
+      authentication: projectKubernetesAuthentication(configuration.authentication),
+      images: pickConfiguredFields(configuration.images, [
+        "gateway",
+        "agent",
+        "requireImmutableDigest",
+      ]),
+      resources: {
+        gateway: resources(configuration.resources.gateway),
+        agent: resources(configuration.resources.agent),
+        namespace: {
+          // Quotas are validated Kubernetes resource quantities, not arbitrary text settings.
+          quota: configuration.resources.namespace.quota,
+          containerDefaults: resources(configuration.resources.namespace.containerDefaults),
+        },
+      },
+      network,
+      servicePrincipalCredentials:
+        configuration.servicePrincipalCredentials.mode === "disabled"
+          ? { mode: configuration.servicePrincipalCredentials.mode }
+          : pickConfiguredFields(configuration.servicePrincipalCredentials, [
+              "mode",
+              "audience",
+              "expirationSeconds",
+            ]),
+    };
+    const execution = configuration.executionCluster;
+    if (execution !== undefined) {
+      projected.executionCluster = {
+        authentication: projectKubernetesAuthentication(execution.authentication),
+        harnessRouting: routing(execution.harnessRouting),
+        network: {
+          dns: peer(execution.network.dns),
+          ...pickConfiguredFields(execution.network, [
+            "harnessEndpointCidrs",
+            "gatewayEndpointCidrs",
+            "pluginStatusProxySourceCidrs",
+          ]),
+        },
+        ...(execution.caBundle === undefined ? {} : { caBundle: "[redacted]" }),
+      };
+    }
+    const runtime = configuration.runtime;
+    if (runtime !== undefined) {
+      projected.runtime = {
+        ...pickConfiguredFields(runtime, [
+          "transportSecretPrefix",
+          "gatewayStorageClassName",
+          "nativeOpenClawSessionCapacity",
+          "codexSeccompProfile",
+          "codexModelBaseUrl",
+        ]),
+        ...(runtime.nodeSelector === undefined ? {} : { nodeSelector: "[redacted]" }),
+        ...(runtime.gatewayNodeSelector === undefined ? {} : { gatewayNodeSelector: "[redacted]" }),
+        ...(runtime.channels === undefined
+          ? {}
+          : {
+              channels: {
+                proxyUrl: runtime.channels.proxyUrl,
+                ...(runtime.channels.managedProxy === undefined
+                  ? {}
+                  : {
+                      managedProxy: {
+                        ...peer(runtime.channels.managedProxy),
+                        ...pickConfiguredFields(runtime.channels.managedProxy, [
+                          "hostname",
+                          "port",
+                        ]),
+                      },
+                    }),
+              },
+            }),
+      };
+    }
+    if (configuration.gatewayRouting !== undefined) {
+      projected.gatewayRouting = routing(configuration.gatewayRouting);
+    }
+    return projected;
   }
 
   static readonly configurationSchema = Object.freeze({

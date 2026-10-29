@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -8,6 +8,7 @@ author: kevinlin-openai
 
 - **ID:** RFC-0024
 - **Created:** 2026-10-29
+- **RFC PR:** [#4092](https://github.com/openclaw/openclaw-enterprise/pull/4092)
 - **Related:** [RFC-0022](0022-driver-configuration-contributions.md)
 
 ## Summary
@@ -89,6 +90,11 @@ secret values do not appear, and unauthorized callers cannot inspect values.
 Change matching Storybook scenarios and browser coverage; inspect rebuilt previews
 and record screenshots and an interaction video. Storybook is simulated UI proof.
 Update the owning Driver reference, operator guidance, and execution flow.
+
+The accompanying implementation provides this path through the existing startup
+loader, registry, API, and Console. Startup/API integration passes with in-memory
+persistence; it does not establish live Kubernetes, gateway, or model execution.
+The decision remains Proposed pending human review.
 
 ## Manual Notes
 

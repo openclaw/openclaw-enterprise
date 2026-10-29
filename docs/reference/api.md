@@ -1265,7 +1265,7 @@ List configured Backends (experimental)
 | [`GET /installation`](#get-installation) | Get the singleton Installation |
 | [`POST /installation/bootstrap`](#post-installationbootstrap) | Bootstrap the singleton Installation |
 | [`GET /installation/deployment-inventory`](#get-installationdeploymentinventory) | Get the complete authorized Agent deployment inventory |
-| [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver startup configuration schemas |
+| [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver accepted startup values and configuration schemas |
 | [`GET /observability`](#get-observability) | Get the configured external observability destination |
 
 #### `GET /installation`
@@ -1501,7 +1501,7 @@ Get the complete authorized Agent deployment inventory
 
 <span id="get-installationdriverconfigurations"></span>
 
-Inspect selected Driver startup configuration schemas
+Inspect selected Driver accepted startup values and configuration schemas
 
 **Operation ID:** `discoverInstallationConfigurations`
 
@@ -1553,6 +1553,7 @@ Inspect selected Driver startup configuration schemas
 | `data.configurations[].implementation` | `string` | Yes | — |
 | `data.configurations[].key` | `string` | Yes | — |
 | `data.configurations[].scope` | `"installation" or "agent"` | Yes | — |
+| `data.configurations[].startupConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -3453,6 +3454,7 @@ Discover authorized Agent Driver configuration contributions
 | `data.configurations[].implementation` | `string` | Yes | — |
 | `data.configurations[].key` | `string` | Yes | — |
 | `data.configurations[].scope` | `"installation" or "agent"` | Yes | — |
+| `data.configurations[].startupConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -4344,6 +4346,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.configuration.implementation` | `string` | Yes | — |
 | `data.configuration.key` | `string` | Yes | — |
 | `data.configuration.scope` | `"installation" or "agent"` | Yes | — |
+| `data.configuration.startupConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `data.defaults` | `null or object<string, any>` | Yes | — |
 | `data.defaultsRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.deployedPolicyVersion` | `integer` | No | minimum: 1; maximum: 2147483647; The saved policy version the active revision (defaultsRevisionId) was deployed with. Its Sandbox enforces that version without a live application. |

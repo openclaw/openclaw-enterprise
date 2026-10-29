@@ -27,8 +27,11 @@ permission; saving and deploying have separate access checks.
 
 The **Namespace** selector at the top of the page changes your scope; from Agent
 detail it returns to the new Namespace's Agents list. The account menu contains
-**Settings** and **Sign out**. Settings displays your account; it does not offer
-configurable settings. Sign out ends your console session.
+**Settings** and **Sign out**. Settings displays your account. Installation
+administrators can expand **Installation Driver configuration** to inspect
+[accepted startup values](../../reference/drivers/selection.md#configuration-definitions-and-discovery).
+Changes require operator-managed startup configuration and a control-plane restart.
+Sign out ends your console session.
 
 ## Follow deployment activity
 

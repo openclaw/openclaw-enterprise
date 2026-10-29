@@ -1,4 +1,5 @@
 import { wirePolicy } from "./openshell-wire-policy.ts";
+import { pickConfiguredFields } from "../startup-configuration.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
 import { openShellGitMiddleware, type OpenShellGitRuntime } from "./openshell-git-runtime.ts";
@@ -256,6 +257,17 @@ export function openShellEgressConfiguration(
 }
 
 export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
+  static projectStartupConfiguration(
+    configuration: Readonly<OpenShellProxyOptions>,
+  ): Readonly<Record<string, unknown>> {
+    return pickConfiguredFields(configuration, [
+      "middlewareName",
+      "repositoryMiddlewareName",
+      "observedHookPreviewWorkspace",
+      "authorityScope",
+    ]);
+  }
+
   readonly capability = "credential_proxy" as const;
   readonly implementation = "openshell";
   readonly id: string;

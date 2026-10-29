@@ -49,6 +49,7 @@ import { validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 import { SystemSshCommandExecutor, type SshCommandExecutor } from "./executor.ts";
+import { pickConfiguredFields } from "../../startup-configuration.ts";
 
 export interface SshComputeHost {
   readonly address: string;
@@ -287,6 +288,37 @@ function sshGatewayConfigurationDocument(
 }
 
 export class SshComputeDriver implements ComputeDriver {
+  static projectStartupConfiguration(
+    configuration: Readonly<SshComputeDriverOptions>,
+  ): Readonly<Record<string, unknown>> {
+    return {
+      ssh: pickConfiguredFields(configuration.ssh, [
+        "identityFile",
+        "knownHostsFile",
+        "connectTimeoutSeconds",
+      ]),
+      hosts: Object.fromEntries(
+        Object.entries(configuration.hosts).map(([name, host]) => [
+          name,
+          pickConfiguredFields(host, ["address", "port", "user", "nodePath", "openclawPath"]),
+        ]),
+      ),
+      runtime: pickConfiguredFields(configuration.runtime, [
+        "nodePath",
+        "openclawPath",
+        "user",
+        "root",
+        "systemdUnitDirectory",
+      ]),
+      network: {
+        gatewayPortRange: pickConfiguredFields(configuration.network.gatewayPortRange, [
+          "start",
+          "end",
+        ]),
+      },
+    };
+  }
+
   static readonly configurationSchema = immutableCopy({
     type: "object",
     additionalProperties: false,

@@ -1,10 +1,19 @@
 import { isAbsolute } from "node:path";
 import type { JSONSchema } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { pickConfiguredFields } from "../startup-configuration.ts";
 
 export type KubernetesAuthentication =
   | { readonly mode: "inCluster" }
   | { readonly mode: "kubeconfig"; readonly kubeconfigPath: string; readonly context: string };
+
+export function projectKubernetesAuthentication(
+  authentication: KubernetesAuthentication,
+): Readonly<Record<string, unknown>> {
+  return authentication.mode === "inCluster"
+    ? { mode: authentication.mode }
+    : pickConfiguredFields(authentication, ["mode", "kubeconfigPath", "context"]);
+}
 
 /** Each Driver keeps its own schema graph; only its root is frozen. */
 export function createKubernetesAuthenticationOptionsSchema(): JSONSchema {

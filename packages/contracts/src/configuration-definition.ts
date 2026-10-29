@@ -47,6 +47,8 @@ export interface DriverConfigurationDescriptor {
   readonly key: string;
   readonly configurationSchema: JSONSchema;
   readonly binding: "installation-startup" | "sandbox-policy";
+  /** Absent when the selected implementation cannot safely expose its startup values. */
+  readonly startupConfiguration?: Readonly<Record<string, unknown>>;
   readonly actions: Partial<
     Record<
       "read" | "validate" | "save" | "apply",

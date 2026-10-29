@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -1162,20 +1165,87 @@ test("A Backends refusal after administration is revoked is read and audited onc
   );
 });
 
-// Settings shows the Installation Driver configuration heading while its schemas read is still in
-// flight. An administrator's Settings page has settled once the schemas are listed; a revoke
+test("Settings displays accepted Driver values instead of schemas and distinguishes unavailable values", async (t) => {
+  // Seed the public projections at the existing controller boundary. Startup integration tests
+  // verify how Drivers produce them; this case exercises the real API and browser rendering.
+  const accepted = {
+    authentication: {
+      mode: "kubeconfig",
+      kubeconfigPath: "/etc/occ/cluster.yaml",
+      context: "control",
+    },
+  };
+  const fixture = await createConsoleAppFixture(t, {
+    driverConfigurations: [
+      {
+        capability: "configuration",
+        driverId: "console-configuration",
+        implementation: "kubernetes",
+        definition: KubernetesConfigurationDriver,
+        startupConfiguration: accepted,
+      },
+      {
+        capability: "iam",
+        driverId: "console-native-iam",
+        implementation: "native",
+        definition: NativeIAMDriver,
+        startupConfiguration: {},
+      },
+      {
+        capability: "secret",
+        driverId: "console-secret",
+        implementation: "kubernetes",
+        definition: KubernetesSecretDriver,
+      },
+    ],
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Driver inspection", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/settings?namespace=${namespace.id}`);
+
+  const configuration = page.locator("details").filter({
+    has: page.locator("summary", { hasText: "configuration · console-configuration · startup" }),
+  });
+  await configuration.locator("summary").click();
+  assert.deepEqual(JSON.parse(await configuration.locator("pre").textContent()), accepted);
+  const iam = page.locator("details").filter({
+    has: page.locator("summary", { hasText: "iam · console-native-iam · startup" }),
+  });
+  await iam.locator("summary").click();
+  assert.equal(await iam.locator("pre").textContent(), "{}");
+
+  // A missing projection must not silently become schema output or an empty object.
+  const secret = page.locator("details").filter({
+    has: page.locator("summary", { hasText: "secret · console-secret · startup" }),
+  });
+  await secret.locator("summary").click();
+  await secret
+    .getByText("Accepted startup values are unavailable for this Driver.", { exact: true })
+    .waitFor();
+  assert.equal(await secret.locator("pre").count(), 0);
+  assert.deepEqual(
+    nonAuthWriteRequests(requests),
+    [],
+    "inspection does not change startup configuration",
+  );
+});
+
+// Settings shows the Installation Driver configuration heading while its configuration read is still in
+// flight. An administrator's Settings page has settled once the values are listed; a revoke
 // before then reaches that read and the API refuses and audits it (finding 2654).
-async function waitForDriverSchemas(page) {
-  await page.getByText(/^Inspect startup settings accepted by the selected Drivers\./).waitFor();
+async function waitForDriverConfigurations(page) {
+  await page.getByText(/^Inspect startup values accepted by the selected Drivers\./).waitFor();
 }
 
 // Finding D760. An administrator revoked while signed in keeps the tab's settled answer, so the
 // first page she opens afterwards sends reads only Installation administration may make: sharing
-// policy, a bound Secret by ID, the Installation's Driver schemas. The API audits each refusal.
+// policy, a bound Secret by ID, the Installation's Driver configuration. The API audits each refusal.
 // The first one is read and audited once and settles "not an administrator" for the tab; the
 // reads still waiting are refused unsent. The page takes the member path: the Access tab gives way
 // to Configuration and says why, the bound Secret's name is unavailable, Settings leaves out the
-// Driver schemas, and the Observability link goes away. The other pages read none of them again.
+// Driver configuration, and the Observability link goes away. The other pages read none of them again.
 // Each round starts on another page, opened right after the revoke, so it recalls the stale
 // answer. Then she may read the bound Secret herself. Last, a Restriction on Secret read refuses
 // one such read to an administrator: the permission answer, which audits nothing, still says she
@@ -1243,7 +1313,7 @@ test("Installation-administration reads after a revoke are refused and audited o
       revoke = grantInstallationAdministration(fixture, account.principal);
       await page.goto(settingsUrl);
     }
-    await waitForDriverSchemas(page);
+    await waitForDriverConfigurations(page);
     assert.equal(await observability.getAttribute("href"), url, first);
     revoke();
     await pages[first]();
@@ -1262,7 +1332,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   const named = page.getByRole("link", { name: "Revoked model key", exact: true });
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(settingsUrl);
-  await waitForDriverSchemas(page);
+  await waitForDriverConfigurations(page);
   revoke();
   await page.goto(agentUrl);
   await named.waitFor();
@@ -1278,7 +1348,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   // the Secret, so she still sees its name.
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(settingsUrl);
-  await waitForDriverSchemas(page);
+  await waitForDriverConfigurations(page);
   revoke();
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
@@ -1363,7 +1433,7 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
   // Administration again: a page load asks the permission answer, then the probe.
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(`${fixture.origin}${settingsUrl}`);
-  await waitForDriverSchemas(page);
+  await waitForDriverConfigurations(page);
   revoke();
   await page.goto(accessUrl);
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();

@@ -33,6 +33,7 @@ import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts"
 import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
+  projectKubernetesAuthentication,
   validateKubernetesAuthentication,
   type KubernetesAuthentication,
 } from "../../kubernetes/authentication.ts";
@@ -143,6 +144,12 @@ export function kubernetesConfigurationName(configurationId: string): string {
 }
 
 export class KubernetesConfigurationDriver implements ConfigurationDriver {
+  static projectStartupConfiguration(
+    configuration: Readonly<KubernetesConfigurationDriverOptions>,
+  ): Readonly<Record<string, unknown>> {
+    return { authentication: projectKubernetesAuthentication(configuration.authentication) };
+  }
+
   static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
   static validateConfiguration(

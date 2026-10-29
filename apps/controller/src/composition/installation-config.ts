@@ -24,10 +24,10 @@ import {
   type InstallationFieldDetail,
   requireChartListener,
 } from "./installation-fields.ts";
-import { requireConfiguration } from "@openclaw-enterprise/contracts";
+import { requireConfiguration, validateConfiguration } from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
-import { asRecord } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
 import { isAbsolute } from "node:path";
@@ -157,7 +157,26 @@ export interface InstallationStartupConfiguration {
   };
 }
 
-/** Definitions stay with their selected identities across API and worker composition. */
+function projectStartupConfiguration(
+  selection: SelectedDriverConfiguration,
+): Readonly<Record<string, unknown>> | undefined {
+  try {
+    if (selection.definition.projectStartupConfiguration === undefined) {
+      return undefined;
+    }
+    // Inspection cannot mutate the configuration retained by a running Driver.
+    const projected = selection.definition.projectStartupConfiguration(
+      immutableCopy(selection.configuration),
+    );
+    const result = validateConfiguration<Record<string, unknown>>({ type: "object" }, projected);
+    return result.success ? immutableCopy(result.data) : undefined;
+  } catch {
+    // Optional inspection must neither stop startup nor reveal Driver exception text or input.
+    return undefined;
+  }
+}
+
+/** Definitions and safe startup projections stay with their selected process identities. */
 export function installationDriverConfigurations(
   installation: InstallationStartupConfiguration | undefined,
 ): readonly import("@openclaw-enterprise/occ").DriverConfigurationRegistration[] {
@@ -165,18 +184,21 @@ export function installationDriverConfigurations(
     ...installation?.drivers,
     ...(installation?.repository === undefined ? {} : { repo: installation.repository }),
   };
-  return Object.entries(selections).flatMap(([capability, selection]) =>
-    "definition" in selection
-      ? [
-          {
-            capability: capability as import("@openclaw-enterprise/contracts").DriverCapability,
-            driverId: selection.id,
-            implementation: selection.implementation,
-            definition: selection.definition,
-          },
-        ]
-      : [],
-  );
+  return Object.entries(selections).flatMap(([capability, selection]) => {
+    if (!("definition" in selection)) {
+      return [];
+    }
+    const startupConfiguration = projectStartupConfiguration(selection);
+    return [
+      {
+        capability: capability as import("@openclaw-enterprise/contracts").DriverCapability,
+        driverId: selection.id,
+        implementation: selection.implementation,
+        definition: selection.definition,
+        ...(startupConfiguration === undefined ? {} : { startupConfiguration }),
+      },
+    ];
+  });
 }
 
 /**
@@ -1005,12 +1027,18 @@ export async function loadInstallationConfiguration(options: {
   if (sandbox?.package !== undefined && packageProxyId !== undefined) {
     // The package owns one startup configuration. Its Sandbox-only agent
     // contributions must not be registered a second time as Credential Proxy.
+    const projectConfiguration = sandbox.definition.projectStartupConfiguration?.bind(
+      sandbox.definition,
+    );
     proxySelection = {
       ...sandbox,
       id: packageProxyId,
       definition: {
         configurationSchema: sandbox.definition.configurationSchema,
         validateConfiguration: (input) => sandbox.definition.validateConfiguration(input),
+        ...(projectConfiguration === undefined
+          ? {}
+          : { projectStartupConfiguration: projectConfiguration }),
       },
     };
   }

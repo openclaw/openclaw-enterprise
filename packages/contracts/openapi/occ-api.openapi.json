@@ -12328,6 +12328,10 @@
                                   { "const": "installation", "type": "string" },
                                   { "const": "agent", "type": "string" }
                                 ]
+                              },
+                              "startupConfiguration": {
+                                "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                "type": "object"
                               }
                             },
                             "required": [
@@ -12404,7 +12408,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Inspect selected Driver startup configuration schemas",
+        "summary": "Inspect selected Driver accepted startup values and configuration schemas",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -21352,6 +21356,10 @@
                                   { "const": "installation", "type": "string" },
                                   { "const": "agent", "type": "string" }
                                 ]
+                              },
+                              "startupConfiguration": {
+                                "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                "type": "object"
                               }
                             },
                             "required": [
@@ -24605,6 +24613,10 @@
                                 { "const": "installation", "type": "string" },
                                 { "const": "agent", "type": "string" }
                               ]
+                            },
+                            "startupConfiguration": {
+                              "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                              "type": "object"
                             }
                           },
                           "required": [

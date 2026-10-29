@@ -1077,6 +1077,10 @@ export function evaluateAuthorization(
 }
 
 export class NativeIAMDriver implements IAMDriver {
+  static projectStartupConfiguration(): Readonly<Record<string, unknown>> {
+    return {};
+  }
+
   static readonly configurationSchema: JSONSchema = Object.freeze({
     type: "object",
     properties: Object.freeze({}),

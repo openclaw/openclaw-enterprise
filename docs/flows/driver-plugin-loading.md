@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-20
-last_updated_session: authoring-run/5095b5aa-1826-472c-a40d-c34550457c0e
+updated: 2026-10-29
+last_updated_session: 01a1891d-5b6b-7071-b482-793a9dd01044
 ---
 
 # Installation Driver Package Loading Flow
@@ -46,7 +46,9 @@ graph TD
     P -->|no| G["Construct IAM with platform state"]
     Q --> G
     G --> H["Select exact Drivers and attach lifecycle owners"]
-    H --> I["Authorize requests and reconcile Namespace lifecycle"]
+    H --> V["Freeze Driver-projected<br/>startup values"]
+    V --> I["Authorize requests and reconcile Namespace lifecycle"]
+    I -->|Installation administer| R["Return projected values<br/>or values unavailable"]
   end
 ```
 
@@ -163,8 +165,21 @@ also registers its selected ServiceAccount Driver after composition. Worker
 startup checks persisted identities, including Secret and optional Sandbox,
 and attaches selected lifecycle owners once. Both processes pass the retained
 definitions into OCC; the worker also resolves the current policy contribution
-before live application. `discoverConfigurations` exposes only authorized schemas
-and resource-owned action URLs, never startup values or executable validators.
+before live application.
+
+`apps/controller/src/composition/installation-config.ts:installationDriverConfigurations`
+projects accepted process configuration through each implementation's optional
+`projectStartupConfiguration` method. It supplies an isolated immutable copy,
+validates the result as plain JSON, and retains an immutable projection with the
+selected identity. A missing or failed projection leaves values unavailable;
+exceptions and raw input are never fallback output. Later startup-file edits do
+not change the retained values.
+
+`packages/occ/src/index.ts:OpenClawController.discoverConfigurations` checks
+Installation `administer` before returning these projections as
+`startupConfiguration`. The Console renders them in expandable Driver sections.
+Agent discovery retains its resource-owned actions and does not return startup
+values. Neither path exposes executable validators.
 The bundled IAM Driver loads current policy for identity lookup and
 authorization; installed IAM Drivers must honor the same contract. Neither is
 rebuilt or replaced after account or policy changes.
@@ -197,6 +212,8 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 12:37: Trace accepted startup projections and authorized Console inspection. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
 
 - 2026-10-22: Driver factories in `installation-check` can see `OCC_CONSOLE_THEME_DIR` and the theme mount. (fix-1022d)
 
