@@ -48,6 +48,10 @@ async function wire(t) {
     "  string path_template = 9;",
     "  string path_template = 9;\n  bool stable_placeholder = 12;",
   );
+  proto = proto.replace(
+    "  PROVIDER_MUTATION_KIND_UPDATE = 3;",
+    "  PROVIDER_MUTATION_KIND_UPDATE = 3;\n  PROVIDER_MUTATION_KIND_OBSERVE = 4;",
+  );
   // The shared wire fixture omits the installed-identity fields exercised here.
   proto = proto.replace(
     "message ProviderMutationReceipt {",
@@ -56,6 +60,7 @@ async function wire(t) {
   proto = proto.replace(
     "message ProviderReadinessStatus {",
     `message ProviderReadinessStatus {
+  ConfigUpdateOperation operation = 8;
   ProviderReadinessObservation observed = 4;
   google.protobuf.Timestamp observed_time = 106;
   google.protobuf.Timestamp evaluated_time = 107;`,
@@ -76,6 +81,12 @@ async function wire(t) {
 `,
   );
   proto += `
+    message ConfigUpdateOperation {
+      string operation_id = 1;
+      int32 state = 5;
+      int32 outcome = 6;
+      google.protobuf.Timestamp completed_time = 110;
+    }
     message GetProviderRequest { string name = 1; WorkspaceSelector workspace_scope = 2; }
     message GetProviderProfileRequest { string id = 1; WorkspaceSelector workspace_scope = 2; }
     message ProviderProfileResponse { ProviderProfile profile = 1; }
@@ -844,7 +855,10 @@ test("completed Git receipt can observe a new aggregate environment without repl
   const reads = [];
   const targets = new Map([["original", "101"]]);
   const applied = new Set(["original"]);
+  const superseded = new Set();
   let loseResponse = false;
+  let terminalProof = true;
+  let stale = false;
   client.getSandboxProviderStatus = async (_workspace, _sandbox, _provider, _signal, id) => {
     reads.push(id);
     const receiptId = id ?? (environment === "101" ? "original" : `refreshed-${environment}`);
@@ -852,7 +866,10 @@ test("completed Git receipt can observe a new aggregate environment without repl
       targets.set(receiptId, environment);
     }
     const target = targets.get(receiptId);
-    if (completed && target === environment) {
+    if (target !== environment && !applied.has(receiptId)) {
+      superseded.add(receiptId);
+    }
+    if (completed && target === environment && !superseded.has(receiptId)) {
       applied.add(receiptId);
     }
     if (!id && loseResponse) {
@@ -881,6 +898,8 @@ test("completed Git receipt can observe a new aggregate environment without repl
       },
       observed: { ...initial.observed, providerEnvRevision: environment, ...drift },
       completedOperationId: applied.has(receiptId) ? receiptId : undefined,
+      supersededObservationId: terminalProof && superseded.has(receiptId) ? receiptId : undefined,
+      observedTime: stale ? new Date(Date.now() - 60_000).toISOString() : initial.observedTime,
     };
   };
   assert.equal(await provider.settlePreviewReceipt(active, signal()), true);
@@ -936,10 +955,79 @@ test("completed Git receipt can observe a new aggregate environment without repl
   assert.equal(await provider.settlePreviewReceipt(active, signal()), true);
   assert.equal((await provider.observe(active, "sandbox-id", signal())).providerEnvRevision, "104");
   assert.equal(reads.at(-1), "refreshed-104");
+  const countBeforeReturn = targets.size;
+  environment = "103";
+  assert.equal(await provider.observe(active, "sandbox-id", signal()), undefined);
+  assert.equal(await provider.settlePreviewReceipt(active, signal()), true);
+  assert.equal((await provider.observe(active, "sandbox-id", signal())).providerEnvRevision, "103");
+  assert.equal(applied.has("refreshed-103"), false, "ignored-stale history never becomes APPLIED");
+  assert.equal(superseded.has("refreshed-103"), true);
+  assert.equal(targets.size, countBeforeReturn, "recurrence creates no additional operation");
+  terminalProof = false;
+  assert.equal(
+    await provider.observe(active, "sandbox-id", signal()),
+    undefined,
+    "READY alone cannot settle an auxiliary receipt",
+  );
+  terminalProof = true;
+  stale = true;
+  assert.equal(
+    await provider.observe(active, "sandbox-id", signal()),
+    undefined,
+    "terminal history cannot revive stale evidence",
+  );
+  stale = false;
+  drift = { credentialsInstalled: false };
+  assert.equal(
+    await provider.observe(active, "sandbox-id", signal()),
+    undefined,
+    "terminal history is not live proof",
+  );
+  drift = {};
+  delete provider.receipt.complete;
+  assert.equal(
+    await provider.observe(active, "sandbox-id", signal()),
+    undefined,
+    "original completed UPDATE remains required",
+  );
+  provider.receipt.complete = true;
   assert.equal(targets.get("original"), "101", "original UPDATE target remains immutable");
   assert.equal(
     state.requests.filter((r) => r.provider).length,
     writes,
     "no provider write replayed",
   );
+});
+
+test("stock terminal OBSERVE projection is distinct from APPLIED and bound to receipt kind and ID", async (t) => {
+  const { state, binding, client } = await wire(t);
+  const bootstrap = await binding.bootstrap(signal());
+  state.status = installedStatus(bootstrap);
+  state.status.receipt.receipt_id = "observation";
+  state.status.receipt.kind = "PROVIDER_MUTATION_KIND_OBSERVE";
+  const operation = {
+    operation_id: "observation",
+    state: 5,
+    outcome: 3,
+    completed_time: { seconds: "1" },
+  };
+  state.status.operation = operation;
+  const read = () =>
+    client.getSandboxProviderStatus(scope.workspace, scope.sandbox, bootstrap.provider, signal());
+  const projected = await read();
+  assert.equal(projected.state, "PROVIDER_READINESS_STATE_READY");
+  assert.equal(projected.supersededObservationId, "observation");
+  assert.equal(projected.completedOperationId, undefined);
+  for (const invalid of [
+    { operation_id: "other" },
+    { state: 1 },
+    { outcome: 7 },
+    { completed_time: undefined },
+  ]) {
+    state.status.operation = { ...operation, ...invalid };
+    assert.equal((await read()).supersededObservationId, undefined);
+  }
+  state.status.operation = operation;
+  state.status.receipt.kind = "PROVIDER_MUTATION_KIND_UPDATE";
+  assert.equal((await read()).supersededObservationId, undefined);
 });

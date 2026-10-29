@@ -13,6 +13,7 @@ import {
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
+  type OpenShellSandboxProviderStatus,
 } from "../sandbox/openshell-gateway-client.ts";
 
 /** Operator-owned scope; never populate this from a workload request. */
@@ -510,6 +511,26 @@ export class OpenShellPreparedGitProvider {
     );
   }
 
+  // Terminal OBSERVE history is read-only even when an old target becomes current
+  // again. Its outcome never replaces original UPDATE custody or fresh READY evidence.
+  private terminalReceipt(
+    receipt: NonNullable<OpenShellPreparedGitProvider["receipt"]>,
+    status: OpenShellSandboxProviderStatus,
+  ): boolean {
+    if (!receipt.id || status.receipt?.receiptId !== receipt.id) {
+      return false;
+    }
+    return (
+      status.completedOperationId === receipt.id ||
+      (receipt === this.refreshReceipt &&
+        this.receipt?.complete === true &&
+        this.receipt.version === receipt.version &&
+        this.receipt.id !== receipt.id &&
+        status.receipt.kind === "PROVIDER_MUTATION_KIND_OBSERVE" &&
+        status.supersededObservationId === receipt.id)
+    );
+  }
+
   /** The 0.1.5 gateway may create or complete an operation here. Only the route reconciler
    * calls this; its response is not verification. observe() subsequently reads a receipt that
    * is already terminal, which stock does not update, and requires the live supervisor report. */
@@ -550,7 +571,7 @@ export class OpenShellPreparedGitProvider {
         // of the original UPDATE or accept this response as installation evidence.
         if (
           (receipt.complete
-            ? current.completedOperationId !== receipt.id
+            ? !this.terminalReceipt(receipt, current)
             : current.receipt?.kind !== "PROVIDER_MUTATION_KIND_OBSERVE" ||
               current.reason !== "PROVIDER_READINESS_REASON_DESIRED_STATE_CHANGED") ||
           current.receipt?.receiptId !== receipt.id ||
@@ -591,7 +612,7 @@ export class OpenShellPreparedGitProvider {
       return false;
     }
     receipt.id = id;
-    if (status.completedOperationId !== id) {
+    if (!this.terminalReceipt(receipt, status)) {
       return false;
     }
     receipt.complete = true;
@@ -701,7 +722,7 @@ export class OpenShellPreparedGitProvider {
           (evaluatedAt - observedAt >= 15_000 ||
             evaluatedAt < requestedAt - 5_000 ||
             evaluatedAt > Date.now() + 5_000 ||
-            receipt!.id !== status.completedOperationId ||
+            !this.terminalReceipt(receipt!, status) ||
             status.receipt?.receiptId !== receipt!.id ||
             observed.providerEnvRevision !== desired.providerEnvRevision)) ||
         (binding.credentialState === "active" && !(Date.parse(binding.expiresAt) > Date.now()))
