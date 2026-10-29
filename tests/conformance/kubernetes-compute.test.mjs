@@ -1707,6 +1707,12 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   // OpenClaw also names a catalog entry by the full reference; the worker and the startup probe
   // get the split model ID (finding 2903).
   selectedEntry.id = "openai/team/model";
+  // Model metadata may sit on the provider, with provider request options the worker never gets.
+  for (const setting of ["contextWindow", "maxTokens", "cost"]) {
+    nativeConfiguration.models.providers.openai[setting] = selectedEntry[setting];
+    delete selectedEntry[setting];
+  }
+  nativeConfiguration.models.providers.openai.request = { allowPrivateNetwork: true };
   // The worker gets every selected model; the startup probe checks only the primary.
   nativeConfiguration.agents.defaults.model = {
     primary: "openai/team/model",
@@ -1864,8 +1870,20 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   const { baseUrl: workerEndpoint, ...workerPrimary } =
     nativeConfig.models.providers.openai.models[0];
   assert.equal(workerEndpoint, "https://models.example.test/inference/v1");
-  assert.deepEqual(probeConfig.models.providers.openai.models, [workerPrimary]);
-  assert.equal(probeConfig.models.providers.openai.baseUrl, workerEndpoint);
+  assert.deepEqual(
+    [workerPrimary.contextWindow, workerPrimary.maxTokens],
+    [128000, 8192],
+    "the worker gets the provider's model metadata on the row",
+  );
+  // No other authored provider setting reaches the probe: OpenClaw refuses provider-level model
+  // metadata there (finding 2905), and any provider key besides baseUrl, api, models and request
+  // turns off the runtime's upfront credential check (finding 2907). The provider API is the
+  // row's, which that check also compares.
+  assert.deepEqual(probeConfig.models, {
+    providers: {
+      openai: { baseUrl: workerEndpoint, api: workerPrimary.api, models: [workerPrimary] },
+    },
+  });
   // The provider's observed Pod readiness and enrolled node are independent of provisioning.
   // Until the provider's Pod is Ready, the wait has no named reason.
   const podPending = await prepare();
