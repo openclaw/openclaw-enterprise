@@ -231,7 +231,9 @@ export function createDeviceLogin({
       }
     } finally {
       busy = false;
-      update();
+      if (context.isCurrent()) {
+        update();
+      }
     }
   }
 

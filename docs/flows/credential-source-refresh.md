@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-29
-last_updated_session: authoring-run/f0c1d1b2-80e6-4a5b-9dce-e888c5e30bb2
+last_updated_session: authoring-run/91cf4dad-e612-4f33-8307-7989dfcd611e
 ---
 
 # Credential source refresh Flow
@@ -129,21 +129,21 @@ marks the source `ready` with its audit event.
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
 For a type declaring `deviceAuthorization.harnessId`, OCC registers the empty
-source before asking the paired Refresh Driver to start device login. It then
-stores the opaque handle, actor, source, and Driver IDs in the session Secret.
+source, asks the paired Refresh Driver to start login, then stores the opaque
+handle, actor, source, and Driver IDs in the session Secret.
 The HTTP handler in `apps/controller/src/index.ts` records the successful start
 before sending the session reference. The audit event identifies the Agent or
 Namespace, not the session Secret.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
 `start_unconfirmed` before sending a start. Both authentication forms retain it
-across navigation. A usable current response supplies the challenge; a confirmed
-refusal permits retry. Lost or unusable successful responses block another start,
-poll, and cancellation. See
+across navigation. A usable current response supplies the challenge; a refusal
+received while the form is shown permits retry. Unconfirmed attempts cannot
+start again, poll, or cancel. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
-For a known session, compare-and-swap permits one poll at a time. OCC rechecks scope and
-both Driver selections before accepting completion. An uncertain exchange closes
-the handle without removing the source or repeating the exchange.
+Compare-and-swap serializes known-session polls. OCC rechecks scope and both
+Driver selections before completion. Uncertain exchanges close the handle
+without removing the source or replaying the exchange.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
 starts the issuer request from the API Pods. The start, poll, and token-exchange
@@ -338,6 +338,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 16:08: Qualify retry visibility. (authoring-run/91cf4dad-e612-4f33-8307-7989dfcd611e - 0dae5b3d5a3d4be177e8edad6d1baa07aa0747ed)
 
 - 2026-10-29 14:58: Retain unconfirmed Console starts across navigation. (authoring-run/f0c1d1b2-80e6-4a5b-9dce-e888c5e30bb2 - 2de02b7f995d5401c9a300b1e350b9f80be1073d)
 
