@@ -172,6 +172,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       if (error.status === 404) {
         removed = true;
+        // A confirmation opened while a background poll read has nothing left to delete.
+        confirmation?.close();
         context.onRemoved(namespace);
         return;
       }

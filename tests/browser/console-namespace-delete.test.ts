@@ -257,3 +257,40 @@ test("a background Namespace deletion poll keeps keyboard focus and the shown st
   await waitForSettledFetches(page, permissions, answered);
   assert.equal(await focused(), refreshLabel);
 });
+
+test("a Namespace deletion confirmation opened during a background poll closes when that poll finds the Namespace removed", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Finishing cleanup", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Delete Finishing cleanup", exact: true }).click();
+  await page.getByRole("button", { name: "Delete Namespace", exact: true }).click();
+  const retry = page.getByRole("button", { name: "Request deletion again", exact: true });
+  await retry.waitFor();
+  // Hold the next background status read; it reaches the server only on release, after
+  // cleanup has finished.
+  const poll = await holdRequests(t, page, `${fixture.origin}/namespaces/${namespace.id}`, {
+    method: "GET",
+    once: true,
+  });
+  const event = fixture.auditSink
+    .list()
+    .find((entry: AuditEvent) => entry.action === "openclaw.namespaces.delete");
+  assert.ok(event);
+  await fixture.controller!.handleNamespaceLifecycle(event.actorId, namespace.id, "deleted");
+  await poll.requested;
+  // A background read leaves the retry usable, so the confirmation can open during it.
+  await retry.click();
+  const dialog = page.getByRole("dialog", {
+    name: "Retry deletion of Finishing cleanup?",
+    exact: true,
+  });
+  await dialog.waitFor();
+  poll.release();
+  await page
+    .getByText("Finishing cleanup was deleted. Its name remains reserved.", { exact: true })
+    .waitFor();
+  // Nothing is left to delete, so the confirmation closes instead of offering a dead action.
+  await dialog.waitFor({ state: "detached" });
+});
