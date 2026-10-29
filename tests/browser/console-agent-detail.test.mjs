@@ -874,7 +874,6 @@ test("A draft that keeps a retired OpenClaw setting shows deployment's refusal b
   const refusedDeploy = await fixture.request(
     "POST",
     `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-    { body: {} },
   );
   assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
   assert.equal(refusedDeploy.body.error.message, reason);
