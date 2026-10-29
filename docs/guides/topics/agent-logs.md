@@ -104,13 +104,13 @@ log text in the [native admin UI](../../reference/agent-native-admin.md). To
 delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
 the exact Agent; it covers every version. Opening the Agent in the console also
 needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
-status needs `read` bound to each Agent revision by ID. A `read_logs`
-Restriction blocks log text even for administrators. Without `operate`, the Logs
-tab has no runtime strip or Pod picker; it reads each source's current Pod and
-says when one is missing. Without `read` on the version, the strip says that its
-status is not shown and the console does not ask for it. When the console knows
-which status grant is missing, the refusal names only that grant. Service principals use the same grants. Every
-request and poll is authorized again, so revoking a grant stops the next poll.
+status needs `read` bound to each Agent revision by ID; without it, the console
+does not read status. A `read_logs` Restriction blocks log text even for
+administrators. Without `operate`, the Logs tab has no runtime strip or Pod
+picker; it reads each source's current Pod and says when one is missing. A status
+refusal names only the grant the console knows is missing. Service principals use
+the same grants. Every request and poll is authorized again, so revoking a grant
+stops the next poll.
 See [authorization](../../reference/authorization.md).
 
 ## What the output contains

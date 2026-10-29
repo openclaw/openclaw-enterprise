@@ -196,7 +196,7 @@ take `-previous.log` from the request.
 
 `console/agents/logs.mts` clears output when status selects another source, Pod or instance.
 Only a readable replacement starts a fresh tail. Status denial preserves log access; cached `403` avoids repeat denials.
-A version whose read the Agent page was refused gets no status read: status also checks AgentRevision read.
+A version the page could not read gets no status read.
 Follow leaves loaded rows and unchanged statuses alone; its first line replaces an empty-tail status.
 Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
@@ -228,7 +228,7 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 ## Changelog
 
-- 2026-10-29 18:00: The console sends no status read for a version the Agent page could not read. (D794)
+- 2026-10-29 18:00: Skip status reads of unreadable versions. (D794)
 - 2026-10-29: Report frontier lines that de-duplication withheld once time advances.
 
 - 2026-10-26: Follow polls no longer rewrite loaded rows or unchanged statuses (port of #2502).
