@@ -55,14 +55,29 @@ export async function controlledTlsOriginScenario(t: TestContext) {
   };
 }
 
-/** Send a framed request and drain its complete fixture reply without closing the socket. */
-export async function writeAndDrain(socket: TLSSocket, request: string): Promise<void> {
+/** Send a framed request and drain its fixed two-byte fixture reply without closing the socket. */
+export async function writeAndDrain(socket: TLSSocket, request: string): Promise<string> {
   socket.write(request);
   let received = "";
   for await (const chunk of socket.iterator({ destroyOnReturn: false })) {
     received += chunk.toString();
-    if (received.endsWith("\r\n\r\nok")) {
-      return;
+    const boundary = received.indexOf("\r\n\r\n");
+    if (boundary < 0) {
+      continue;
+    }
+    const headers = received.slice(0, boundary).split("\r\n");
+    assert.match(headers[0] ?? "", /^HTTP\/1\.1 200(?: |$)/, "fixture reply status");
+    assert.deepEqual(
+      headers
+        .filter((line) => /^content-length:/i.test(line))
+        .map((line) => line.slice(line.indexOf(":") + 1).trim()),
+      ["2"],
+      "fixture reply Content-Length",
+    );
+    const body = received.slice(boundary + 4);
+    if (body.length >= 2) {
+      assert.equal(body, "ok", "fixture reply body");
+      return body;
     }
   }
   throw new Error("Origin reply ended before completion.");

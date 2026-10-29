@@ -207,6 +207,26 @@ test("TLS observer closes idle keep-alive through HTTP timeout", { timeout: 1000
   assert.equal(peer.origin.snapshot().completeRequests, 1);
 });
 
+test(
+  "TLS fixture acknowledgement rejects wrong status and incomplete reply",
+  { timeout: 5000 },
+  async (t) => {
+    for (const [status, length, expected] of [
+      [503, 2, /fixture reply status/],
+      [200, 3, /fixture reply Content-Length/],
+    ] as const) {
+      const peer = await tlsOriginPeer(t, (tls) =>
+        createServer(tls, (incoming, response) => {
+          incoming.resume();
+          response.writeHead(status, { "Content-Length": length, Connection: "close" });
+          response.end("ok");
+        }),
+      );
+      await assert.rejects(writeAndDrain(await peer.connect(), request), expected);
+    }
+  },
+);
+
 for (const [priorSend, phase] of [
   [false, "before request"],
   [true, "awaiting grant"],
@@ -239,9 +259,9 @@ for (const [priorSend, phase] of [
           requested.resolve();
           await grant.promise;
         },
-        async () => {
+        () => {
           sends++;
-          await writeAndDrain(client, request);
+          return writeAndDrain(client, request);
         },
       );
       await requested.promise;
@@ -250,7 +270,7 @@ for (const [priorSend, phase] of [
       }
       const result =
         phase === "after grant"
-          ? pending
+          ? pending.then((acknowledgement) => assert.equal(acknowledgement, "ok"))
           : assert.rejects(pending, /origin bytes changed before granted send/);
       grant.resolve();
       await result;
