@@ -1708,6 +1708,8 @@ if ((target_count > 0)); then
     measured_low=0
     admitted=0
     free=unknown
+    # The last successful read, for the timeout message when later reads fail.
+    measured=unknown
     # gateway_free_memory checks the deadline before each read.
     while :; do
       read_status=0
@@ -1717,6 +1719,7 @@ if ((target_count > 0)); then
       ((read_status != 2)) || break
       if ((read_status == 0)); then
         free=$read_free
+        measured=$free
       else
         if ((measured_low == 0)); then
           warn "cannot read the cgroup v2 memory use of Agent $agent_id's gateway; running OpenClaw Doctor without checking its free memory."
@@ -1746,7 +1749,11 @@ if ((target_count > 0)); then
     # A read that admitted Doctor can still end at the deadline; that is a plain
     # timeout below, not a memory shortage.
     if ((admitted == 0 && measured_low == 1)); then
-      doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout (last read: $free MiB free), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
+      last_read="last read: $free MiB free"
+      # A read that failed after a low one, such as one cut off at the deadline, measured
+      # nothing; name the last read that did.
+      [[ "$free" != unknown ]] || last_read="last measured: $measured MiB free; later reads failed"
+      doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout ($last_read), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
     fi
     # On a timeout, start no further Doctor. No Doctor is running then: each one
     # ends before the next starts, so the evidence lock outlasts all of them.

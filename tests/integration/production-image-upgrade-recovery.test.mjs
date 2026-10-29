@@ -1877,7 +1877,11 @@ test(
           const f = await fixture(t, { agent: true });
           // Do not exhaust the script: the fixture defaults to ample memory afterward.
           await scriptGatewayMemory(f, [300, ...Array(100).fill(unavailable)]);
-          await assert.rejects(f.run("--timeout-seconds", "8"), /before the upgrade timeout/);
+          // The reads after the low one measure nothing; the timeout names the low one.
+          await assert.rejects(
+            f.run("--timeout-seconds", "8"),
+            /before the upgrade timeout \(last measured: 300 MiB free; later reads failed\), so OpenClaw Doctor did not run/,
+          );
           const events = await doctorEvents(f);
           assert.equal(events[0], "gateway-memory 300");
           assert.ok(events.includes(`gateway-memory ${unavailable}`));
