@@ -178,13 +178,17 @@ test(
   async (t) => {
     // Hold every decision until the test settles it. Like a conforming authorizer, honor abort:
     // reject, as fetch does, so a release that runs only on a settled decision leaks.
+    // This Sandbox's authority work ignores abort, as a stuck lookup would.
+    const ignoresAbort = "sandbox-f";
     const decisions = new Map();
     const { server, keys } = await openShellOnlineWire(t, registrationName, {
       budgetMs: 30_000,
       authorize: (request, signal) =>
         new Promise((resolve, reject) => {
           decisions.set(request.requestId, { resolve, reject });
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          if (request.sandboxId !== ignoresAbort) {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          }
         }),
     });
     // The real registered handler, without opening 1,024 network calls.
@@ -238,6 +242,11 @@ test(
     const admitted = (call) => call.result === undefined;
     const assertRefused = (call, message) => assert.deepEqual(call.result, denied, message);
     const settled = () => new Promise((resolve) => setImmediate(resolve));
+    const resolveAll = (calls, decision) => {
+      for (const call of calls) {
+        decisions.get(call.id).resolve(decision);
+      }
+    };
     const pool = 1024;
     // A quarter of the pool, like the Credential Proxy's per-Sandbox shares.
     const share = pool / 4;
@@ -322,9 +331,26 @@ test(
     assert.ok(admitted(afterTimeout.at(-1)));
     assertRefused(evaluate("sandbox-a"), "duplicate terminal events");
     await settled();
-    for (const call of [...afterTimeout, other]) {
-      decisions.get(call.id).resolve("deny");
+    resolveAll([...afterTimeout, other], "deny");
+    await settled();
+
+    // The budget answers calls whose authority work ignores abort, but that work keeps its slots
+    // until it settles: the caps bound authority work in flight, not only unanswered calls.
+    const stuck = Array.from({ length: share }, () => evaluate(ignoresAbort));
+    assert.ok(stuck.every(admitted));
+    await settled();
+    t.mock.timers.tick(30_000);
+    await settled();
+    for (const call of stuck) {
+      assert.deepEqual(call.result, denied);
     }
+    assertRefused(evaluate(ignoresAbort), "unsettled authority work keeps its Sandbox slots");
+    resolveAll(stuck, "allow");
+    await settled();
+    const freed = evaluate(ignoresAbort);
+    assert.ok(admitted(freed), "settled authority work returns its Sandbox slots");
+    await settled();
+    resolveAll([freed], "deny");
     await settled();
     t.mock.timers.reset();
   },
