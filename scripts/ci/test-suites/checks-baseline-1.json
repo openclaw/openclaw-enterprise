@@ -281,6 +281,9 @@
       "path": "tests/conformance/workspace-node-supervisor.test.mjs"
     },
     {
+      "path": "tests/conformance/strands-box-build.test.ts"
+    },
+    {
       "path": "tests/conformance/strands-box-transport.test.mjs"
     },
     {

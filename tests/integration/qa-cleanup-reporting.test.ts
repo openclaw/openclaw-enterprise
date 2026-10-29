@@ -102,6 +102,38 @@ test("Strands preflight refuses mismatched or nonexclusive model Secrets before 
   const operatorKey = join(directory, "operator-key");
   const modelKey = join(directory, "model-key");
   const fixturePath = join(directory, "fixture.json");
+  const runtimeBuildRecordFile = join(directory, "build-record.json");
+  const sha256: Record<string, string> = {};
+  // Complete preflight input, not an installed-image receipt. These cases stop
+  // before deployment; no fixture binary is claimed to be a native Box build.
+  for (const name of ["strands-box", "strands-box-sock-alias", "strands-box-contain-trampoline"]) {
+    sha256[name] = createHash("sha256").update(`preflight fixture bytes: ${name}`).digest("hex");
+  }
+  for (const name of ["inner", "outer", "proxy-preload", "readiness", "supervisor", "transport"]) {
+    const bytes = await readFile(
+      new URL(`../../deploy/runtime/strands-box/${name}.mjs`, import.meta.url),
+    );
+    sha256[`bridge/${name}.mjs`] = createHash("sha256").update(bytes).digest("hex");
+  }
+  await writeFile(
+    runtimeBuildRecordFile,
+    JSON.stringify({
+      inputs: {
+        upstream: "1ad7e987af6db807d66d896600c76a7d8d100b32",
+        container: "05efc455d65dfea67734f5cb71ca27b0ff5e9582",
+        stdin: "aa1b8e419cf0deaad25113ab68d45451fef05450",
+        mergeBase: "069c39cfd29f830aaadd2a1af362753a57c7b202",
+      },
+      variant: "candidate",
+      tree: "57c4375a447f16f7b281cf0f4c590c351965af3a",
+      openclaw: "f8386bc7df0a6c9eda7a28ae81943c5c06a414ff",
+      oceRevision: "c7d00d7486a91de8e40d47573ec7d78fbec8690d",
+      rustc: "rustc 1.98.1 (preflight fixture; no compiler invoked)",
+      target: "aarch64-unknown-linux-gnu",
+      runtimeImage: `runtime@sha256:${"a".repeat(64)}`,
+      sha256,
+    }),
+  );
   await writeFile(operatorKey, "synthetic-operator-key", { mode: 0o600 });
   await writeFile(modelKey, "synthetic-model-key", { mode: 0o600 });
   const kubectl = join(directory, "kubectl");
@@ -181,9 +213,36 @@ test("Strands preflight refuses mismatched or nonexclusive model Secrets before 
       agentId,
       modelSecretId,
       model: "test-model",
+      runtimeBuildRecordFile,
       runtimeImage: `runtime@sha256:${"a".repeat(64)}`,
     }),
   );
+
+  const validFixture = await readFile(fixturePath, "utf8");
+  const malformedRecord = join(directory, "malformed-build-record.json");
+  await writeFile(malformedRecord, JSON.stringify({ sha256: {} }));
+  for (const [name, recordFile, expected] of [
+    ["missing build record", undefined, /runtimeBuildRecordFile is required/u],
+    ["malformed build record", malformedRecord, /unexpected build-record inventory/u],
+  ] as const) {
+    await t.test(name, async () => {
+      requests.length = 0;
+      await writeFile(
+        fixturePath,
+        JSON.stringify({ ...JSON.parse(validFixture), runtimeBuildRecordFile: recordFile }),
+      );
+      try {
+        await assert.rejects(verifyQaStrandsSandbox(directory), expected);
+        assert.deepEqual(
+          requests,
+          [],
+          "invalid build input must fail before API access or mutation",
+        );
+      } finally {
+        await writeFile(fixturePath, validFixture);
+      }
+    });
+  }
   const variants: Array<{
     name: string;
     change: (value: ReturnType<typeof fixtureState>) => void;

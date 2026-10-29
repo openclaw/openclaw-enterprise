@@ -10,6 +10,10 @@
     "erasableSyntaxOnly": true,
     "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo"
   },
-  "include": ["**/*.test.ts", "../scripts/console-storybook/*.stories.ts"],
+  "include": [
+    "**/*.test.ts",
+    "../deploy/runtime/strands-box/build.ts",
+    "../scripts/console-storybook/*.stories.ts"
+  ],
   "references": [{ "path": "../apps/controller" }]
 }
