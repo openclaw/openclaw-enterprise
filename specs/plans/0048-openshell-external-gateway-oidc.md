@@ -117,7 +117,7 @@ on top of the conformance proof and is not part of CI.
 | Token cached, refreshed on expiry, both auth styles | Same conformance test                                                   | Pass                      |
 | Invalid configuration rejected at Installation startup | `sandbox-driver-startup` integration test                           | Pass                      |
 | Launcher renders external-gateway Installation     | `internal/occdev` Go unit tests                                          | Pass (4 tests)            |
-| External gateway reachable through profile policies | Manual `occ dev up` against an operator-supplied gateway; recorded here | Not run                   |
+| External gateway reachable through profile policies | Manual `occ dev up` against an operator-supplied gateway; recorded here | Pass with a finding (2026-10-29): platform startup, workspace, and credential registration through the real gateway and a real Keycloak issuer; agent deployment blocked by the provider-Harness route gap below |
 
 ## Open decisions
 
@@ -194,6 +194,31 @@ None.
     and CA (they are not created); the Console stays on the API origin and
     `OCC_DEVELOPMENT_BROWSER_PORT` must be unset, because native administration
     requires the in-cluster gateway relay.
+
+- 2026-10-29 (real-gateway proof, continued):
+  - The real-gateway proof found the token request had no private-CA path in
+    practice: the development chart's `NODE_EXTRA_CA_CERTS` serves the private
+    routing CA when routing is enabled, as the OpenShell harness requires. The
+    token source now honors the Backend's `rootCertificatePath` bundle beside
+    the system roots for its own request (finding 12 resolved), with wire
+    coverage for a trusted https issuer, an untrusted one, 5xx, refused
+    connections, and redirects.
+  - `docker image save --platform` can refuse a locally pulled multi-platform
+    index on current Docker; the launcher now resolves the selected platform's
+    child image from the manifest list and saves that reference directly.
+
+- 2026-10-29 (real-gateway proof results, disposable oc4024 environment):
+  a real Keycloak 26.7.5 issuer and the real v0.1.5 gateway (approved digests,
+  gateway outside the launcher cluster operating it through a kubeconfig)
+  against `occ dev up`. Startup, the bootstrap Namespace, workspace creation,
+  and model-credential registration completed over the OIDC-authenticated
+  connection; the profile's NetworkPolicies admitted exactly the gateway and
+  issuer and refused unadmitted ports; a wrong client secret and a
+  role-less token were both refused. Agent deployment is blocked because the
+  compute driver requires the in-cluster provider Harness route for
+  SandboxDriver harness endpoints, which the external topology does not
+  provide — a design decision (launcher bridge Service or direct routing in
+  the compute driver) is open. Evidence: `proof/pr-4024/` (not committed).
 
 ## Manual Notes
 

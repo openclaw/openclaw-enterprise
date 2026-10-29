@@ -1355,6 +1355,11 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         ...(options.auth.audience === undefined ? {} : { audience: options.auth.audience }),
         ...(options.auth.scope === undefined ? {} : { scope: options.auth.scope }),
         requestTimeoutMs: this.requestTimeoutMs,
+        // The gRPC root bundle also carries the issuer's CA for a private-CA
+        // gateway, so the token request verifies against the same trust.
+        ...(options.rootCertificatePath === undefined
+          ? {}
+          : { caPath: options.rootCertificatePath }),
       });
     }
     if (options.rootCertificatePath !== undefined && !isAbsolute(options.rootCertificatePath)) {

@@ -3,9 +3,10 @@ import { spawn } from "node:child_process";
 import { getEventListeners, once } from "node:events";
 import http from "node:http";
 import { createServer } from "node:http";
+import { caAndLeaf } from "../helpers/certificates.mjs";
 import { createRequire } from "node:module";
 import { connect, createServer as createNetServer } from "node:net";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -3362,6 +3363,111 @@ test("OpenShell client sends client_secret_basic and audience parameters when se
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
     await endpoint.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("OpenShell client classifies issuer failures: 5xx, refused connections, and redirects", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openshell-oidc-"));
+  const secretPath = join(directory, "client-secret");
+  await writeFile(secretPath, "wire-oidc-classified-secret", { mode: 0o600 });
+  const client = (tokenUrl) =>
+    new GrpcOpenShellGatewayClient({
+      endpoint: "http://127.0.0.1:1",
+      auth: {
+        mode: "oidcClientCredentials",
+        tokenUrl,
+        clientId: "wire-oidc-client",
+        clientSecretPath: secretPath,
+      },
+    });
+  try {
+    // A 503 answer is transient: the issuer clears without a configuration change.
+    const unavailable = await startTokenEndpoint((_request, response) => {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "service_unavailable" }));
+    });
+    const fiveHundred = client(`http://127.0.0.1:${unavailable.port}/token`);
+    await assert.rejects(
+      fiveHundred.health(AbortSignal.timeout(2_000)),
+      /OpenShell OIDC token endpoint returned 503/,
+    );
+    await unavailable.close();
+    // A refused connection carries the underlying cause code for operators.
+    const refused = client("http://127.0.0.1:1/token");
+    await assert.rejects(
+      refused.health(AbortSignal.timeout(2_000)),
+      /OpenShell OIDC token request failed \(ECONNREFUSED\)/,
+    );
+    // A redirecting token endpoint is a configuration error, never followed.
+    const redirecting = await startTokenEndpoint((_request, response) => {
+      response.writeHead(302, { location: "https://issuer.example.com/token" });
+      response.end();
+    });
+    const redirect = client(`http://127.0.0.1:${redirecting.port}/token`);
+    await assert.rejects(
+      redirect.health(AbortSignal.timeout(2_000)),
+      /OpenShell OIDC token endpoint redirected to https:\/\/issuer\.example\.com\/token; redirects are not followed/,
+    );
+    await redirecting.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("OpenShell client trusts the root bundle for an https token endpoint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openshell-oidc-"));
+  const secretPath = join(directory, "client-secret");
+  await writeFile(secretPath, "wire-oidc-tls-secret", { mode: 0o600 });
+  const { certPath, keyPath, caPath } = await caAndLeaf(directory, {
+    caName: "wire-oidc-issuer-ca",
+    commonName: "wire-oidc-issuer",
+    subjectAltName: "DNS:localhost,IP:127.0.0.1",
+  });
+  const cert = await readFile(certPath, "utf8");
+  const key = await readFile(keyPath, "utf8");
+  const requests = [];
+  const server = createHttpsServer({ cert, key }, (request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      requests.push(new URLSearchParams(Buffer.concat(chunks).toString("utf8")));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: "wire-oidc-https-token", expires_in: 3600 }));
+    });
+  });
+  const port = await listenHttp(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: "http://127.0.0.1:1",
+    auth: {
+      mode: "oidcClientCredentials",
+      tokenUrl: `https://127.0.0.1:${port}/token`,
+      clientId: "wire-oidc-client",
+      clientSecretPath: secretPath,
+    },
+    rootCertificatePath: caPath,
+  });
+  const untrusting = new GrpcOpenShellGatewayClient({
+    endpoint: "http://127.0.0.1:1",
+    auth: {
+      mode: "oidcClientCredentials",
+      tokenUrl: `https://127.0.0.1:${port}/token`,
+      clientId: "wire-oidc-client",
+      clientSecretPath: secretPath,
+    },
+  });
+  try {
+    // With the root bundle mounted as rootCertificatePath the exchange succeeds.
+    const token = await client.oidc.accessToken();
+    assert.equal(token, "wire-oidc-https-token");
+    assert.equal(requests.length, 1, "one exchange over trusted TLS");
+    // Without it the private-CA endpoint fails closed with a TLS verification error.
+    await assert.rejects(untrusting.oidc.accessToken(), /OpenShell OIDC token request failed/);
+  } finally {
+    client.close();
+    untrusting.close();
+    await new Promise((resolve) => server.close(resolve));
+    server.closeAllConnections?.();
     await rm(directory, { recursive: true, force: true });
   }
 });

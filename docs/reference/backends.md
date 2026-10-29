@@ -180,10 +180,10 @@ Its closed `configuration` accepts:
   `clientId`, `clientSecretPath` (absolute), optional `tokenAuth`
   (`client_secret_post` default or `client_secret_basic`), and optional
   `audience` and `scope` parameters. The client exchanges credentials at
-  `tokenUrl`, caches the token until a refresh margin before expiry, re-reads
-  the secret on every refresh, and presents it as the gRPC `authorization`
-  bearer. `audience` must match the gateway's expected audience, not the
-  client ID.
+  `tokenUrl`, caches it until a refresh margin before expiry, re-reads the
+  secret each refresh, and presents it as the gRPC `authorization`
+  bearer; `rootCertificatePath` verifies the token request too. `audience`
+  names the gateway's audience, not the client.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land. Sandbox
   deletion has its own 120-second bound: OpenShell answers only after the
