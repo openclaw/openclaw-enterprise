@@ -52,6 +52,7 @@ import {
   BOUND_SECRET_UNLISTED,
   DIAGNOSTICS_RUNTIME_UNAVAILABLE,
   diagnosticsRecordedFailure,
+  GENERIC_DENIAL,
   MALFORMED_REQUEST,
   NO_PERSISTED_STARTUP_FAILURE,
   RESOURCE_CONFLICT,
@@ -1704,7 +1705,12 @@ test("An older permission reread that answers after a newer one failed applies t
   await waitForIdleFetches(page);
 
   revoke();
-  const permissionsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const permissionsUrl = `${agentUrl}/permissions`;
+  // Runtime status is refused, as it is without Agent operate.
+  await page.route(`${agentUrl}/deployments/${revision.id}/runtime`, (route) =>
+    route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
+  );
   // The older reread: Logs compares the now refused runtime status read with a fresh answer.
   // The server answers it (Agent read only); the page receives that answer last.
   const older = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
