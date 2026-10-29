@@ -37,11 +37,8 @@ import {
   managedSlotAcceptsSource,
 } from "../plugin/managed-catalog.ts";
 
-import {
-  nativeOpenAiModelSelections,
-  normalizeOpenAiBaseUrl,
-  openAiBaseUrlSpellingMessage,
-} from "../openai-endpoint.ts";
+import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
+import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
 
 import {
   openShellProviderName,

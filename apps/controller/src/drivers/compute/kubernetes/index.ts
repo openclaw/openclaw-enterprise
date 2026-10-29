@@ -17,8 +17,8 @@ import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
+import { nativeOpenAiModelSelections } from "../../native-openai-catalog.ts";
 import {
-  nativeOpenAiModelSelections,
   normalizeOpenAiBaseUrl,
   openAiBaseUrlRewritesIpv4,
   openAiBaseUrlSpellingMessage,
