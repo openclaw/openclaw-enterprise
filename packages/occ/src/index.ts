@@ -12077,9 +12077,7 @@ export class OpenClawController {
         }
         snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
       } else {
-        if (!this.protectedSourceTypes().some((p) => p.type.type === source.type)) {
-          await this.credentialSourceType(owner.driver, source.type);
-        }
+        await this.credentialSourceType(owner.driver, source.type);
         snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
       }
     }
