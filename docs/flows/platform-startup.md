@@ -192,7 +192,9 @@ For an existing `preprovisionedNamespace` installation, the [Helm
 chart](../../deploy/helm/openclaw-enterprise/templates/_helpers.tpl) accepts
 GitHub Console sign-in on upgrade when only approved teams can sign in,
 passwords are restricted to the recovery administrator, and native
-administration is disabled. The database must already be initialized and
+administration is disabled. Before applying it, the operator [compares the
+latest deployed revision’s stored binding with the proposed ID, UID and named Kubernetes Namespace](../guides/deploy/kubernetes.md#enable-console-login-on-a-bound-namespace).
+The operator stops if a newer attempt is unresolved. The chart cannot verify prior release values. The database must already be initialized and
 compatible because this profile omits the initialization Job. The Kubernetes
 Drivers still verify the configured Namespace ID, derived Kubernetes name,
 UID and ownership using a named GET. Console sign-in grants no tenant roles.
@@ -288,7 +290,7 @@ execution begins in the adjacent
 
 ## Changelog
 
-- 2026-10-29 23:19: Document team-restricted GitHub Console sign-in on a bound Namespace upgrade. (authoring-run/f70f3437-5a3d-456e-b35d-2d7d1e4b3490 - 7e6be3eef0fb11a9f26b0f39a7762c0c18b350c0)
+- 2026-10-29 23:46: Document the prior binding check and team-restricted GitHub Console sign-in on a bound Namespace upgrade. (authoring-run/f70f3437-5a3d-456e-b35d-2d7d1e4b3490 - 8096b6b92a0e248af6e8fb79012c19cb9ac55903)
 
 - 2026-10-23: Pass the Installation's Credential Proxy request capacity from startup to the exchange registry.
 

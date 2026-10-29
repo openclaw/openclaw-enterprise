@@ -125,10 +125,35 @@ For an existing single-cluster OpenShell installation with
 `auth.passwordSignIn: recovery-only` and `agentNativeAdmin.enabled: false`.
 Set `auth.github.allowedTeams` to a nonempty list of approved teams and leave
 `auth.github.allowedOrgs` empty.
-Keep the existing `namespaceId` and independently verified Kubernetes `uid`.
 Follow the [external sign-in requirements](../../reference/authentication/external-sign-in.md)
 for the recovery administrator, attached identities, HTTPS origin, and dedicated
 API-only client Secret. A successful login does not grant tenant permissions.
+
+Before the upgrade, compare the release's stored binding with the **final**
+Namespace ID and UID you will pass to Helm. Obtain the expected ID from the
+existing OCE Installation and the Kubernetes name from the tenant's enrollment
+record. Use the same release, control namespace and Kubernetes context as the
+upgrade. Keep exclusive release ownership through application of those values.
+Helm's upgrade flag alone cannot establish the previous binding.
+
+```bash
+set -euo pipefail
+: "${namespace_id:?}" "${namespace_uid:?}" "${tenant_namespace:?}"
+deployed_revision=$(helm history "$release" -n "$control_namespace" --max 1 -o json |
+  jq -ser 'select(length == 1) | .[0] | select(type == "array" and length == 1) |
+    .[0] | select(.status == "deployed") | .revision | numbers | select(. > 0 and . == floor)')
+helm get values "$release" -n "$control_namespace" --revision "$deployed_revision" -o json |
+  jq -se --arg id "$namespace_id" --arg uid "$namespace_uid" '
+    length == 1 and .[0].preprovisionedNamespace == {namespaceId: $id, uid: $uid}' >/dev/null
+kubectl get namespace "$tenant_namespace" -o json |
+  jq -se --arg id "$namespace_id" --arg uid "$namespace_uid" '
+    length == 1 and .[0].metadata.uid == $uid and
+    .[0].metadata.annotations["openclaw.dev/namespace-id"] == $id' >/dev/null
+```
+
+Stop if a read fails, the latest release attempt is not deployed, the prior
+binding is absent, or either identity differs. Reconcile a failed or pending
+upgrade before using its values. A new Installation or a change of tenant needs its own enrollment.
 
 This mode retains named Namespace GET access and omits the initialization Job,
 including its database migration and bootstrap containers. The operator must
