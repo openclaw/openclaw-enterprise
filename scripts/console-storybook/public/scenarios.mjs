@@ -8561,7 +8561,11 @@ export const scenarios = {
     name: "Stopped",
     path: draft,
     nativeAdmin: "stopped",
-    description: "The native-admin panel reports that the Agent must be started.",
+    description:
+      "The native-admin panel reports that the Agent must be started. The header's Open Agent UI stays in the Tab order, unavailable, and its description names that reason.",
+    steps: [
+      "Tab to Open Agent UI in the header. It takes focus, looks unavailable, and pressing Enter opens nothing.",
+    ],
     gap: "Deploying a new revision resumes the Agent; Console does not expose live shutdown completion evidence.",
   },
   nativeUnsupported: {
