@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, memberRole } from "../helpers/console-app.mjs";
 import {
   AGENT_READ,
   apiRequests,
@@ -56,6 +56,7 @@ import {
   diagnosticsRecordedFailure,
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
+  NAMESPACE_UNAVAILABLE,
   NO_PERSISTED_STARTUP_FAILURE,
   RESOURCE_CONFLICT,
   requestedVersionUnavailable,
@@ -1676,6 +1677,97 @@ test("A revoke the Access tab settles takes away administrator controls without 
       .map(({ action }) => action),
     ["openclaw.iam.roles.list"],
   );
+});
+
+// Finding 2917. An administrator reads every Namespace, so the selector of a page loaded under
+// administration lists them all. Once the Access tab's recheck settled that a revoked
+// administrator no longer administers the Installation, the selector kept the Namespaces only
+// administration could read until Refresh. Administration ending now reads the list once more,
+// which a member may do without an audited refusal: her own Namespace stays selected, with its
+// page, and the others go. If her own Namespace is gone too, the page says so, as a refocus does.
+test("A revoke the Access tab settles drops the Namespaces only administration could read", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Member team", { ready: true });
+  await fixture.createNamespace("Administered team", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Member team Agent", nativeValues("x"));
+  const account = await fixture.createNamespaceMember("revoked-lister", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const listReads = (from) =>
+    requests.slice(from).filter(({ method, path }) => method === "GET" && path === "/namespaces");
+  let revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
+    account.credentials,
+  );
+  const selector = page.locator("#namespace-selector");
+  const choices = () => selector.locator("option").allTextContents();
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+  const configurationTab = page.getByRole("tab", { name: "Configuration", exact: true });
+  const heading = page.getByRole("heading", { name: "Member team Agent", exact: true });
+  // Opens the Access tab as an administrator, then leaves it, so the next visit rechecks it.
+  const confirmAdministration = async () => {
+    await accessTab.click();
+    await page.getByText("Current policy loaded.", { exact: true }).waitFor();
+    await configurationTab.click();
+    await waitForIdleFetches(page);
+    assert.ok((await choices()).includes("Administered team"));
+  };
+  await confirmAdministration();
+
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  let sent = requests.length;
+  await accessTab.click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(await choices(), ["Member team"]);
+  assert.equal(await selector.inputValue(), namespace.id);
+  assert.equal(await heading.isVisible(), true);
+  assert.equal(listReads(sent).length, 1);
+  // The Access tab's refused policy read is the only audited refusal; the list read adds none.
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+
+  // Administration returns at Refresh, and then ends together with her own Namespace read
+  // while the list read is in flight: the page gives way to the Namespace unavailable panel.
+  revoke = grantInstallationAdministration(fixture, account.principal);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await heading.waitFor();
+  await confirmAdministration();
+  revoke();
+  const agentPermissions = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+      `/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+  );
+  const list = await holdRequests(t, page, `${fixture.origin}/namespaces`, {
+    once: true,
+    method: "GET",
+  });
+  sent = requests.length;
+  await accessTab.click();
+  await list.requested;
+  await agentPermissions;
+  memberRole(fixture, "revoked-lister").permissions = [];
+  list.release();
+  await page.getByText("Namespace unavailable", { exact: true }).waitFor();
+  await page
+    .getByText(`${NAMESPACE_UNAVAILABLE}, and you cannot read any other Namespace.`, {
+      exact: false,
+    })
+    .waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await heading.count(), 0);
+  assert.equal(listReads(sent).length, 1);
 });
 
 // A namespace member who administers the Installation opens an Agent page on its Access tab

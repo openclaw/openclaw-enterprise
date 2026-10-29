@@ -460,7 +460,7 @@ function forgetInstallationAccess() {
 // The caller does not administer the Installation: true for this tab, not kept across reloads,
 // which ask the permission answer again at no audited cost. The Observability link goes away.
 // A page built while the answer was another one is told, so it takes the new answer in place, as
-// its Refresh would (finding D795).
+// its Refresh would (finding D795), and the Namespace list is read again (finding 2917).
 function settleNotAdministrator() {
   const ended = installationAdmin !== false;
   forgetInstallationAccess();
@@ -472,7 +472,45 @@ function settleNotAdministrator() {
     for (const handler of mountedViewState?.administrationEnded ?? []) {
       handler();
     }
+    void rereadNamespacesAfterAdministration();
   }
+}
+
+// An administrator reads every Namespace, so the selector of a page loaded under administration
+// kept the Namespaces only administration could read until Refresh (finding 2917). Administration
+// ending reads the list once more: a member may list Namespaces, so the read audits nothing. The
+// selector keeps a Namespace still readable; a Namespace-scoped page whose Namespace is gone
+// settles as a refocus finds it gone. A failed read keeps the list; Refresh reads it again.
+async function rereadNamespacesAfterAdministration() {
+  const owner = sessionOwnerKey(session);
+  const active = lifetime.capture();
+  let readable;
+  try {
+    readable = await request("/namespaces");
+  } catch {
+    return;
+  }
+  if (
+    !lifetime.isCurrent(active) ||
+    owner === null ||
+    owner !== sessionOwnerKey(session) ||
+    !Array.isArray(readable)
+  ) {
+    return;
+  }
+  clearRetainedViewsOutsideNamespaces(readable);
+  setNamespaces(readable);
+  const current = route();
+  if (
+    ["agents", "secrets"].includes(current.feature) &&
+    !namespaces.some((item) => item.id === namespaceId)
+  ) {
+    clearRetainedViewsForNamespace(namespaceId);
+    resetReads();
+    namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
+    return;
+  }
+  shellUI.updateNamespaces(namespaces);
 }
 
 // The refusal of a read only Installation administration may make, refused here without sending
