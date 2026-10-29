@@ -103,8 +103,10 @@ export async function exerciseNativeRepositorySet(
       assert.ok(installed, "allowed request needs material installed by the production owner");
       await new Promise<void>((resolve, reject) => {
         const upstream = request(
-          new URL(url.pathname + url.search, origin.origin),
+          origin.origin,
           {
+            // Fix the network destination to the test-owned origin; request input is only a path.
+            path: url.pathname + url.search,
             method: incoming.method,
             ca: origin.tls.ca,
             headers: {
