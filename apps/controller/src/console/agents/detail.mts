@@ -3865,7 +3865,13 @@ export async function renderAgentDetail(
           appliedReread = reread;
           callerPermissions = permissions;
           // Views built from now on take this answer; shown ones follow it below (finding 2470).
-          agentSaveDenied = Promise.resolve(agentSaveDenial(permissions, agent));
+          // While a newer reread is in flight, views built meanwhile wait for it instead, so
+          // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
+          // resolves to this answer.
+          agentSaveDenied =
+            reread === permissionsRereads
+              ? Promise.resolve(agentSaveDenial(permissions, agent))
+              : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
