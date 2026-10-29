@@ -2011,11 +2011,15 @@ test("OpenShell mTLS authenticates DNS and IP channels and refuses missing or fo
         makeClient(foreign),
         makeClient(auth, foreignCA.certPath),
       ]) {
-        // A refused identity is never a Sandbox gateway outage: waiting cannot fix it (owner rule:
-        // retry network failures and timeouts, never an authentication failure).
         await assert.rejects(rejected.health(AbortSignal.timeout(5_000)), (error) => {
           assert.ok(error instanceof DependencyUnavailableError, String(error));
-          assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+          // A refused identity is never a Sandbox gateway outage: waiting cannot fix it (owner
+          // rule: retry network failures and timeouts, never an authentication failure). The IP
+          // channel proves it. localhost can also resolve to ::1, where nothing listens here,
+          // and grpc-js reports only the last address's error, which can be that refused connect.
+          if (host === "127.0.0.1") {
+            assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+          }
           return true;
         });
       }
