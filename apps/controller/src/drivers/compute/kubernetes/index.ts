@@ -222,6 +222,7 @@ import {
   computeWorkWaiting,
   currentComputeAbortSignal,
   isYieldingComputeStop,
+  recordNamespaceEnsureHint,
   withComputeAbortSignal,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -5682,7 +5683,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       } else if (this.preprovisionedNamespace) {
         await this.verifyExistingNetworkPolicies(name, ownership);
       }
-      await this.prepareNamespaceInfrastructure(ownership, name);
+      try {
+        await this.prepareNamespaceInfrastructure(ownership, name);
+      } catch (error) {
+        // Only this call reconciles the tenant resources. The Gateway uses the same helper.
+        if (
+          numericErrorStatus(error) === 403 &&
+          error instanceof (await import("@kubernetes/client-node")).ApiException
+        ) {
+          recordNamespaceEnsureHint("KUBERNETES_TENANT_ACCESS_DENIED");
+        }
+        throw error;
+      }
       if (!(await this.ensureGatewayNamespace(ownership))) {
         return result;
       }

@@ -117,6 +117,8 @@ import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
+  captureNamespaceEnsureHint,
+  type NamespaceEnsureHintCode,
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
@@ -521,6 +523,7 @@ interface DispatchResult {
   readonly outcome: Outcome;
   readonly code: string;
   readonly observation?: Observation;
+  readonly hintCode?: NamespaceEnsureHintCode;
   readonly decision?: AuthorizationDecision;
   readonly authorization?: AuthorizationRequest;
 }
@@ -5681,10 +5684,11 @@ export class ControllerWorker {
           }
         }
       }
-      const observation =
+      const observed =
         claim.namespaceTarget === "ready"
-          ? await this.compute.ensureNamespace(namespace)
-          : await this.compute.deleteNamespace(namespace);
+          ? await captureNamespaceEnsureHint(() => this.compute.ensureNamespace(namespace))
+          : { observation: await this.compute.deleteNamespace(namespace) };
+      const { observation } = observed;
       if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
       }
@@ -5703,7 +5707,7 @@ export class ControllerWorker {
       return {
         outcome,
         code: complete ? "NAMESPACE_RECONCILED" : "NAMESPACE_INCOMPLETE",
-        observation,
+        ...observed,
       };
     });
   }
@@ -6925,6 +6929,7 @@ export class ControllerWorker {
       outcome: resolved.outcome,
       code: resolved.code,
       ...(reason === undefined ? {} : { reason }),
+      ...(resolved.hintCode === undefined ? {} : { hintCode: resolved.hintCode }),
     });
   }
 
