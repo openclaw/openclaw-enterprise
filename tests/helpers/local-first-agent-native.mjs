@@ -772,6 +772,108 @@ export function nativeWorkerPlacementObservation({
   };
 }
 
+// Classify only the selected turn. Error text and transcript bytes stay in the controller.
+export function nativeWorkerTurnObservation({ outcome, error, messages, runId, historyLookup }) {
+  const category = (value, values) =>
+    value == null ? "absent" : values.includes(value) ? value : "other";
+  const classify = (value) => {
+    if (value == null) {
+      return "absent";
+    }
+    if (typeof value !== "string") {
+      return "other";
+    }
+    const detail = value.slice(0, 4096);
+    const patterns = [
+      [
+        "model-authentication",
+        /invalid.api.key|incorrect.api.key|authentication_error|No API key/i,
+      ],
+      ["model-rate-or-quota", /rate.limit|insufficient_quota|quota.exceeded|too many requests/i],
+      [
+        "model-unavailable",
+        /model.not.found|unknown model|model.*does not exist|Worker model is not approved|missing from the Gateway model catalog/i,
+      ],
+      [
+        "tool-policy",
+        /approval required|exec denied|execution denied|not allowed by|host.*not allowed|security policy/i,
+      ],
+      [
+        "filesystem-permission",
+        /\bEACCES\b|\bEPERM\b|\bEROFS\b|permission denied|read.only file system/i,
+      ],
+      [
+        "file-or-command-missing",
+        /\bENOENT\b|command not found|Cannot find module|ERR_MODULE_NOT_FOUND/i,
+      ],
+      [
+        "tls-validation",
+        /certificate verify failed|unable to get local issuer|self.signed certificate|CERT_HAS_EXPIRED|ERR_TLS_CERT_ALTNAME_INVALID/i,
+      ],
+      [
+        "network-connection",
+        /\bENOTFOUND\b|\bECONNREFUSED\b|\bECONNRESET\b|fetch failed|connection refused|connection timed out/i,
+      ],
+      [
+        "worker-authority",
+        /Worker turn.*authority|Worker tool surface owner changed|worker credential handoff failed/i,
+      ],
+      [
+        "worker-transport",
+        /Worker tunnel does not support worker turns|worker transport limit|Worker node.*lost|worker.*disconnected/i,
+      ],
+      ["http-unauthorized", /(?:^|\bHTTP(?: status)? )401\b/i],
+      ["http-forbidden", /(?:^|\bHTTP(?: status)? )403\b/i],
+      ["http-rate-limit", /(?:^|\bHTTP(?: status)? )429\b/i],
+    ];
+    return patterns.find(([, pattern]) => pattern.test(detail))?.[0] ?? "other";
+  };
+  const selected =
+    typeof runId === "string" && runId.length > 0 && Array.isArray(messages)
+      ? messages.slice(-30).filter((message) => message?.__openclaw?.runId === runId)
+      : [];
+  const assistant = selected.filter((message) => message.role === "assistant").at(-1);
+  const results = selected.filter(
+    (message) => message.role === "toolResult" && message.toolName === "exec",
+  );
+  const failed = results.filter((message) => message.isError === true);
+  const failedText = failed.at(-1)?.content;
+  let execError;
+  if (typeof failedText === "string") {
+    execError = failedText;
+  } else if (Array.isArray(failedText)) {
+    execError = failedText.find(
+      (part) => part?.type === "text" && typeof part.text === "string",
+    )?.text;
+  }
+  return {
+    turnStatus: category(outcome?.status, ["ok", "error", "timeout", "pending"]),
+    turnError: classify(outcome?.error),
+    proofError: classify(error?.message),
+    turnStopReason: category(outcome?.stopReason, [
+      "stop",
+      "length",
+      "toolUse",
+      "error",
+      "aborted",
+    ]),
+    providerStarted:
+      typeof outcome?.providerStarted === "boolean" ? outcome.providerStarted : undefined,
+    historyLookup: category(historyLookup, ["found", "unavailable", "invalid", "absent"]),
+    assistantStopReason: category(assistant?.stopReason, [
+      "stop",
+      "length",
+      "toolUse",
+      "error",
+      "aborted",
+    ]),
+    assistantError: classify(assistant?.errorMessage),
+    execError: classify(execError),
+    execResultCount: results.length,
+    execFailureCount: failed.length,
+  };
+}
+
 // Keep reads within one budget and project the current session owner when a turn moved it.
 // Like the projector, this collector is serialized into the trusted controller.
 export async function collectNativeWorkerFailure({
@@ -780,6 +882,9 @@ export async function collectNativeWorkerFailure({
   lastPlacement,
   expectedNodeId,
   elapsedMs,
+  runId,
+  outcome,
+  error,
 }) {
   const signal = AbortSignal.timeout(5_000);
   const read = async (method, params) => {
@@ -794,6 +899,10 @@ export async function collectNativeWorkerFailure({
   };
   // Observe nodes concurrently without letting their latency delay the environment lookup.
   const nodeObservation = read("node.list", {});
+  const historyObservation =
+    typeof runId === "string" && runId.length > 0 && typeof session?.key === "string"
+      ? read("chat.history", { sessionKey: session.key, limit: 30 })
+      : undefined;
   let placement = lastPlacement;
   let placementLookup = placement === undefined ? "absent" : "fallback";
   if (
@@ -830,7 +939,7 @@ export async function collectNativeWorkerFailure({
   if (nodeResult.status === "fulfilled") {
     nodeLookup = Array.isArray(nodes) ? "found" : "invalid";
   }
-  return nativeWorkerPlacementObservation({
+  const worker = nativeWorkerPlacementObservation({
     placement,
     placementLookup,
     environment,
@@ -841,6 +950,24 @@ export async function collectNativeWorkerFailure({
     nodeLookup,
     elapsedMs,
   });
+  if (runId === undefined) {
+    return worker;
+  }
+  const history = await historyObservation;
+  let historyLookup = "unavailable";
+  if (history?.status === "fulfilled") {
+    historyLookup = Array.isArray(history.value?.messages) ? "found" : "invalid";
+  }
+  return {
+    ...worker,
+    ...nativeWorkerTurnObservation({
+      outcome,
+      error,
+      runId,
+      messages: history?.value?.messages,
+      historyLookup,
+    }),
+  };
 }
 
 // Run in the existing trusted controller: it already has the private route key,
@@ -871,6 +998,8 @@ async function nativeWorkerProof({
   let helloTimer;
   let collectFailure;
   let lastPlacement;
+  let runId;
+  let outcome;
   const proofStarted = performance.now();
   const emit = (data) =>
     process.stdout.write("OCE_NATIVE_FIRST_AGENT_PROOF " + JSON.stringify(data) + "\n");
@@ -917,13 +1046,16 @@ async function nativeWorkerProof({
     assert.equal(required.inference, "worker");
     assert.ok(required.executionModes.includes("worker-turn"));
     let session = existingSession;
-    collectFailure = () =>
+    collectFailure = (error) =>
       collectNativeWorkerFailure({
         request: (method, params, options) => client.request(method, params, options),
         session,
         lastPlacement,
         expectedNodeId,
         elapsedMs: Math.round(performance.now() - proofStarted),
+        runId,
+        outcome,
+        error,
       });
     if (session === undefined) {
       stage = "create";
@@ -1006,9 +1138,9 @@ async function nativeWorkerProof({
       message: `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`,
     });
     assert.ok(sent.runId);
+    runId = sent.runId;
     assert.ok(!["error", "timeout"].includes(sent.status));
     stage = "model-and-exec";
-    let outcome;
     while (!signal.aborted) {
       outcome = await call("agent.wait", { runId: sent.runId, timeoutMs: 3_000 });
       if (["ok", "error"].includes(outcome.status) || outcome.endedAt !== undefined) {
@@ -1016,6 +1148,7 @@ async function nativeWorkerProof({
       }
     }
     signal.throwIfAborted();
+    stage = "model-outcome";
     assert.equal(outcome.status, "ok");
     const text = (content) =>
       typeof content === "string"
@@ -1025,6 +1158,7 @@ async function nativeWorkerProof({
             .map((part) => part.text)
             .join("\n");
     while (!signal.aborted) {
+      stage = "model-history";
       const history = await call("chat.history", { sessionKey: key, limit: 30 });
       const messages = (history.messages ?? []).filter(
         (message) => message.__openclaw?.runId === sent.runId,
@@ -1047,6 +1181,7 @@ async function nativeWorkerProof({
           ),
       );
       if (tool && final) {
+        stage = "exec-proof";
         let output = text(tool.content);
         try {
           const result = JSON.parse(output);
@@ -1095,10 +1230,10 @@ async function nativeWorkerProof({
       await delay(500, undefined, { signal });
     }
     signal.throwIfAborted();
-  } catch {
+  } catch (error) {
     // Dependency/RPC errors can include private headers. Preserve the failing
     // stage, never raw exceptions, keys, transcripts or controller output.
-    const worker = await collectFailure?.().catch(() => undefined);
+    const worker = await collectFailure?.(error).catch(() => undefined);
     emit({ verified: false, stage, worker });
     process.exitCode = 1;
   } finally {
@@ -1132,7 +1267,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"

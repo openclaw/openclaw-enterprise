@@ -11,6 +11,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   collectNativeWorkerFailure,
   nativeWorkerPlacementObservation,
+  nativeWorkerTurnObservation,
 } from "../helpers/local-first-agent-native.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -1343,6 +1344,78 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   const freshNativeWorker = await collectRetained("fresh");
   const fallbackNativeWorker = await collectRetained("rejected");
   const mismatchedNativeWorker = await collectRetained("mismatched");
+  const diagnosticSignals = new Set();
+  const collectedTurn = await collectNativeWorkerFailure({
+    session: nativeSession,
+    runId: "selected-run",
+    outcome: { status: "error", error: `fetch failed: ${nativePrivate}` },
+    request: async (method, params, options) => {
+      diagnosticSignals.add(options.signal);
+      assert.equal(options.timeoutMs, 5000);
+      if (method === "node.list") {
+        return { nodes: [] };
+      }
+      if (method === "sessions.describe") {
+        return { session: { sessionId: nativeSession.sessionId } };
+      }
+      assert.equal(method, "chat.history");
+      assert.deepEqual(params, { sessionKey: nativeSession.key, limit: 30 });
+      return { messages: [] };
+    },
+  });
+  assert.equal(diagnosticSignals.size, 1, "Failure reads must share one deadline");
+  // Keep foreign turns and private error suffixes out of the real reporter artifact.
+  const turnCases = [
+    ["Incorrect API key provided", "model-authentication"],
+    ["insufficient_quota", "model-rate-or-quota"],
+    ["Worker model is not approved for this session", "model-unavailable"],
+    ["exec denied by security policy", "tool-policy"],
+    ["EACCES: permission denied", "filesystem-permission"],
+    ["Cannot find module", "file-or-command-missing"],
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "tls-validation"],
+    ["fetch failed", "network-connection"],
+    ["Worker turn authority changed while preparing its launch", "worker-authority"],
+    ["Worker tunnel does not support worker turns", "worker-transport"],
+    ["HTTP 401", "http-unauthorized"],
+    ["HTTP 403", "http-forbidden"],
+    ["HTTP 429", "http-rate-limit"],
+  ];
+  const turnDiagnostics = turnCases.map(([message, category]) => ({
+    name: `native turn ${category}`,
+    diagnostic: {
+      kind: "native-first-agent-proof",
+      failureStage: "model-outcome",
+      worker: nativeWorkerTurnObservation({
+        outcome: { status: "error", error: `${message}: ${nativePrivate}`, stopReason: "error" },
+        error: new Error(nativePrivate),
+        runId: "selected-run",
+        historyLookup: "found",
+        messages: [
+          { role: "assistant", errorMessage: nativePrivate, __openclaw: { runId: "foreign-run" } },
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: `${message}: ${nativePrivate}`,
+            __openclaw: { runId: "selected-run" },
+          },
+          {
+            role: "toolResult",
+            toolName: "exec",
+            isError: true,
+            content: [{ type: "text", text: `${message}: ${nativePrivate}` }],
+            __openclaw: { runId: "selected-run" },
+          },
+          {
+            role: "toolResult",
+            toolName: "exec",
+            isError: true,
+            content: nativePrivate,
+            __openclaw: { runId: "foreign-run" },
+          },
+        ],
+      }),
+    },
+  }));
   // Installer errors add one more fixed wrapper. Exercise distinct transfer,
   // extraction, storage and prewarm failures without retaining their private details.
   const nativeLeafCases = [
@@ -1865,6 +1938,11 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
               nodeCount: -1,
               elapsedMs: 3_600_001,
               session: nativePrivate,
+              turnStatus: nativePrivate,
+              turnError: { message: nativePrivate },
+              assistantError: nativePrivate,
+              execError: nativePrivate,
+              execResultCount: 4097,
             },
           },
         },
@@ -1885,6 +1963,15 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           diagnostic: { kind: "native-first-agent-proof", failureStage: "model-and-exec", worker },
         })),
         ...nativeLeafDiagnostics,
+        ...turnDiagnostics,
+        {
+          name: "collects native turn failure within the shared read budget",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: collectedTurn,
+          },
+        },
         {
           name: "rejects unknown native first-Agent proof stage",
           diagnostic: { kind: "native-first-agent-proof", failureStage: `${secret}-stage` },
@@ -2167,8 +2254,32 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     summary.files[0].tests.find(
       (entry) => entry.name === "rejects hostile native worker diagnostic fields",
     ).error.diagnostic.worker,
-    { placementState: "other", recoveryError: "other", environmentLookup: "other" },
+    {
+      placementState: "other",
+      recoveryError: "other",
+      environmentLookup: "other",
+      turnStatus: "other",
+      turnError: "other",
+      assistantError: "other",
+      execError: "other",
+    },
   );
+  for (const [, category] of turnCases) {
+    const turn = summary.files[0].tests.find((entry) => entry.name === `native turn ${category}`)
+      .error.diagnostic.worker;
+    assert.equal(turn.turnStatus, "error");
+    assert.equal(turn.turnError, category);
+    assert.equal(turn.assistantError, category);
+    assert.equal(turn.execError, category);
+    assert.equal(turn.proofError, "other");
+    assert.equal(turn.execResultCount, 1);
+    assert.equal(turn.execFailureCount, 1);
+  }
+  const collected = summary.files[0].tests.find(
+    (entry) => entry.name === "collects native turn failure within the shared read budget",
+  ).error.diagnostic.worker;
+  assert.equal(collected.turnError, "network-connection");
+  assert.equal(collected.historyLookup, "found");
   const wrapped = summary.files[0].tests.find(
     (entry) => entry.name === "retains wrapped native worker bootstrap causes through CI",
   ).error.diagnostic.worker;

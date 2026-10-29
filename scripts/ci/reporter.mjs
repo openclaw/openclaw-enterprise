@@ -428,6 +428,9 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "session-identity",
     "send",
     "model-and-exec",
+    "model-outcome",
+    "model-history",
+    "exec-proof",
     "current-placement",
   ];
   if (!stages.includes(failureStage)) {
@@ -497,7 +500,30 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "bundle-symlink-refused",
     "bundle-file-changed",
   ];
+  const turnErrors = [
+    "model-authentication",
+    "model-rate-or-quota",
+    "model-unavailable",
+    "tool-policy",
+    "filesystem-permission",
+    "file-or-command-missing",
+    "tls-validation",
+    "network-connection",
+    "worker-authority",
+    "worker-transport",
+    "http-unauthorized",
+    "http-forbidden",
+    "http-rate-limit",
+  ];
   const vocabularies = {
+    turnStatus: ["ok", "error", "timeout", "pending"],
+    turnError: turnErrors,
+    proofError: turnErrors,
+    assistantError: turnErrors,
+    execError: turnErrors,
+    turnStopReason: ["stop", "length", "toolUse", "error", "aborted"],
+    assistantStopReason: ["stop", "length", "toolUse", "error", "aborted"],
+    historyLookup: ["found", "unavailable", "invalid", "absent"],
     placementLookup: ["fresh", "fallback", "absent"],
     placementState: [
       "local",
@@ -547,6 +573,7 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "expectedNodeConnected",
     "expectedNodePaired",
     "expectedNodeSessionHost",
+    "providerStarted",
   ]) {
     if (typeof worker[field] === "boolean") {
       safe[field] = worker[field];
@@ -560,6 +587,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "expectedNodeCaps",
     "expectedNodeCommands",
     "elapsedMs",
+    "execResultCount",
+    "execFailureCount",
   ]) {
     const limit = field === "elapsedMs" ? 3_600_000 : 4096;
     if (Number.isSafeInteger(worker[field]) && worker[field] >= 0 && worker[field] <= limit) {
