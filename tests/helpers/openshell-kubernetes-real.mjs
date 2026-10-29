@@ -13,6 +13,7 @@ import {
   createKubernetesClient,
   createRealKubernetesFixture,
   diagnosticDeadlineMs,
+  productionGatewayMemoryLimit,
   withinDiagnosticDeadline,
 } from "./kubernetes-real.mjs";
 
@@ -92,10 +93,9 @@ export function registerOpenShellInstallationCleanups(context, operations) {
 // One poll of the gateway-outage proof: the revision's work back in `queued` after a pass, then
 // the deployment's status. A pass that waited on the gateway (`last_attempt_code`
 // SANDBOX_GATEWAY_UNAVAILABLE) gives its attempt back (finding 2040); any other failed pass keeps
-// it, so the proof can still see, and then reject, one. The worker can claim the work again
-// between the two reads, and a live lease reads as `running`, so that pair is read again; any
-// other status ends the wait for the proof to assert on, so a revision that failed or activated
-// during the outage still fails it (finding 1846).
+// it, so the proof can still see, and then reject, one. A started deployment reads as `running`
+// between passes as during one (finding 2456), so the status read ends the wait whatever it says:
+// a revision that failed or activated during the outage still fails the proof (finding 1846).
 export function outageAttemptRead({ readWork, readStatus }) {
   return async () => {
     const work = await readWork();
@@ -105,8 +105,7 @@ export function outageAttemptRead({ readWork, readStatus }) {
     ) {
       return undefined;
     }
-    const status = await readStatus();
-    return status === "running" ? undefined : { work, status };
+    return { work, status: await readStatus() };
   };
 }
 
@@ -412,7 +411,8 @@ export function createOpenShellInstallationConfiguration({
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
   // The real Gateway loads its plugins and installs the native worker bundle during the first turn.
-  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory =
+    productionGatewayMemoryLimit;
   configuration.drivers.compute.configuration.resources.namespace.quota = {
     pods: "14",
     "requests.cpu": "3",
@@ -973,14 +973,14 @@ export function createOpenShellKubernetesFixture({
     await applyOpenShellGatewayNetworkPolicies(namespace);
     await ensureOpenShellJwtSecret(namespace);
     const instance = openShellGatewayServiceName(namespace);
+    // Workspace preparation uses the chart-owned default account before an Agent's
+    // account is selected. Keep that account across later Gateway reconfiguration.
     const workspaceValues = [
       `--set-string=fullnameOverride=${instance}-workspace`,
       "--set=gateway.allowDriverConfig=true",
       `--set-string=gateway.serviceAccount.name=${instance}`,
       `--set-string=gateway.serviceAccount.namespace=${namespace}`,
       `--set-string=gateway.networkPolicy.podSelector.app\\.kubernetes\\.io/instance=${instance}`,
-      "--set=sandboxServiceAccount.create=false",
-      `--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName ?? "openshell-sandbox"}`,
     ];
     await execute(
       openShellHelmPath,
@@ -1321,7 +1321,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(claims.sub, `system:serviceaccount:${namespace}:${pod.spec.serviceAccountName}`);
   }
 
-  function assertApprovedOpenShellPrivileges(pod, { compatibilityBridge = false } = {}) {
+  function assertApprovedOpenShellPrivileges(pod) {
     assert.equal(
       pod.spec.runtimeClassName,
       openShellRuntimeClass,
@@ -1345,9 +1345,7 @@ export function createOpenShellKubernetesFixture({
       undefined,
       "OpenShell v0.1.5 must keep its network supervisor outside the workload Pod.",
     );
-    const container = compatibilityBridge
-      ? pod.spec.containers.find(({ name }) => name === "agent")
-      : harnessContainer(pod);
+    const container = pod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container, "the provider-owned Pod must contain its Agent container.");
     assert.equal(container.securityContext?.allowPrivilegeEscalation, false);
     assert.deepEqual(container.securityContext?.capabilities?.drop, ["ALL"]);
@@ -1388,7 +1386,7 @@ export function createOpenShellKubernetesFixture({
     }
   }
 
-  async function requestCodexTurnFromPod({
+  async function requestCodexFromPod({
     namespace,
     pod,
     container,
@@ -1396,6 +1394,7 @@ export function createOpenShellKubernetesFixture({
     prompt,
     appServerUrl,
     appServerTokenPath,
+    readThreadId,
     observeFailure = false,
     timeoutMs = 300_000,
   }) {
@@ -1546,6 +1545,15 @@ export function createOpenShellKubernetesFixture({
             capabilities: { experimentalApi: true },
           });
           socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
+          if (${JSON.stringify(readThreadId)} !== undefined) {
+            const result = await request("thread/read", {
+              threadId: ${JSON.stringify(readThreadId)}, includeTurns: true,
+            });
+            finished = true;
+            clearTimeout(timeout);
+            process.stdout.write(JSON.stringify(result.thread), () => process.exit(0));
+            return;
+          }
           // A Gateway serving an OpenShell Harness names the Sandbox workspace root; Codex
           // cannot start exec tools in a working directory that does not exist there.
           const workspace = process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace";
@@ -1575,6 +1583,7 @@ export function createOpenShellKubernetesFixture({
       socket.addEventListener("message", ({ data }) => {
         if (finished) return;
         const message = JSON.parse(String(data));
+        if (${JSON.stringify(readThreadId)} !== undefined && message.id === undefined) return;
         const { method, params } = message;
         const item = params?.item;
         // Any server request (an approval of any API version) counts as an action too.
@@ -1716,6 +1725,11 @@ export function createOpenShellKubernetesFixture({
     );
   }
 
+  async function readCodexThreadFromGatewayPod({ namespace, gatewayPod, threadId }) {
+    assert.ok(typeof threadId === "string" && threadId.length > 0);
+    return requestCodexFromPod({ namespace, pod: gatewayPod, readThreadId: threadId });
+  }
+
   async function requestCodexTurnFromGatewayPod({
     namespace,
     gatewayPod,
@@ -1724,7 +1738,7 @@ export function createOpenShellKubernetesFixture({
     observeFailure = false,
     timeoutMs = 300_000,
   }) {
-    return requestCodexTurnFromPod({
+    return requestCodexFromPod({
       namespace,
       pod: gatewayPod,
       providerModel,
@@ -1741,7 +1755,7 @@ export function createOpenShellKubernetesFixture({
     prompt,
     appServerTokenPath,
   }) {
-    return requestCodexTurnFromPod({
+    return requestCodexFromPod({
       namespace,
       pod: harnessPod,
       container: "agent",
@@ -1774,6 +1788,7 @@ export function createOpenShellKubernetesFixture({
     assertGatewayBootstrapPolicies,
     assertNoSecretBytes,
     requestCodexTurnFromGatewayPod,
+    readCodexThreadFromGatewayPod,
     requestCodexTurnFromOpenShellHarnessPod,
     startGatewayPortForward,
   };

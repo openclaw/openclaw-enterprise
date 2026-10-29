@@ -1,7 +1,27 @@
 import type { Namespace } from "@openclaw-enterprise/contracts";
 import { type createApiClient, requestFailure, responseFields } from "./api-client.mjs";
-import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
+import {
+  button,
+  dismissOnBackdrop,
+  element,
+  field,
+  statusBlock,
+  validateFields,
+  requestIdLine,
+} from "./dom.mjs";
 import type { createNavigation } from "./navigation.mjs";
+import { describeFailure, displayDate, explainedConflict } from "./agents/list.mjs";
+import { createNamespaceDeletion } from "./namespace-deletion.mjs";
+import {
+  ASK_INSTALLATION_ADMINISTRATOR,
+  askAdministratorTo,
+  askForGrant,
+  NAMESPACE_CREATE_DENIED,
+} from "./agents/access-reasons.mjs";
+
+// The heading wherever a caller reads no Namespace: the Namespaces page and the shell's panel
+// say it alike (finding D755).
+export const NO_READABLE_NAMESPACES = "No readable Namespaces";
 
 /** The part of the mounted page context used by Namespaces and Secrets. */
 export interface NamespacePageContext {
@@ -53,14 +73,18 @@ export function renderNamespaces(
     installationAdmin: boolean | null;
     fromRefresh: boolean;
     reload(): Promise<void>;
+    pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
+    sorted(items: readonly Namespace[]): Namespace[];
+    onRemoved(namespace: Namespace): void;
+    onResume?(handler: () => void): void;
   },
   items: readonly Namespace[],
-  renderRows: (view: HTMLElement, feature: "namespaces", items: readonly Namespace[]) => void,
 ) {
   if (context.fromRefresh) {
     createRefusedFor = null;
   }
   const collection = element("div");
+  const outcome = element("div", { className: "namespace-deletion-outcome", tabindex: "-1" });
   const refused = createRefusedFor !== null && createRefusedFor === context.operatorId;
   // A person who does not administer the Installation may still hold a Namespace create grant,
   // so Create Namespace stays available to them, but not as the page's filled primary action or
@@ -73,7 +97,7 @@ export function renderNamespaces(
   const refusal = element(
     "p",
     { className: "muted", id: "namespace-create-refused" },
-    "Your access does not include creating Namespaces in this Installation. After an administrator grants access, select Refresh to try again.",
+    `${NAMESPACE_CREATE_DENIED} Then select Refresh.`,
   );
   const emptyText = element("p");
   // The API refused this person's creation: the control says so instead of offering another
@@ -83,12 +107,18 @@ export function renderNamespaces(
     create.disabled = true;
     create.setAttribute("aria-describedby", refusal.id);
     collection.before(refusal);
-    emptyText.textContent =
-      "Ask an administrator to create a Namespace or grant access to an existing one.";
+    emptyText.textContent = askAdministratorTo(
+      "create a Namespace or to give you access to an existing one",
+    );
   }
-  emptyText.textContent = administrator
-    ? "Create a Namespace to get started, or ask an administrator for access to an existing one."
-    : "Ask an administrator for access to an existing Namespace, or create one if your role allows it.";
+  // Only a known administrator gets the short invitation: a caller whose answer is unknown may
+  // be a member, who gets access from an Installation administrator (finding 2583).
+  emptyText.textContent =
+    context.installationAdmin === true
+      ? "Create a Namespace to get started."
+      : context.installationAdmin === false
+        ? `No Namespaces are shared with you. ${askAdministratorTo("give you access to one")}`
+        : `Create a Namespace if your access allows it, or ${ASK_INSTALLATION_ADMINISTRATOR} to give you access to one.`;
   context.view.replaceChildren(
     element(
       "div",
@@ -100,16 +130,105 @@ export function renderNamespaces(
       ),
       create,
     ),
+    outcome,
     collection,
   );
   if (items.length) {
-    renderRows(collection, "namespaces", items);
+    const list = element("ul", { className: "collection", "aria-label": "Namespaces" });
+    for (const item of context.sorted(items)) {
+      const statuses = {
+        ready: { label: "Ready", tone: "success" },
+        provisioning: { label: "Provisioning", tone: "warning" },
+        deleting: { label: "Deleting…", tone: "warning" },
+        failed: { label: "Failed", tone: "danger" },
+      };
+      const badge = element("span", { className: "badge" });
+      const setStatus = (status: Namespace["status"]) => {
+        badge.textContent = statuses[status].label;
+        badge.dataset.tone = statuses[status].tone;
+      };
+      setStatus(item.status);
+      const name = element("a", { href: context.pageUrl("agents", item.id) }, item.name ?? item.id);
+      name.dataset.returnFocusHref = name.href;
+      name.addEventListener("click", (event) => {
+        if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+          return;
+        }
+        event.preventDefault();
+        context.navigate("agents", item.id);
+      });
+      const row = element("li", { className: "resource-linked namespace-row" });
+      const deletion = createNamespaceDeletion(
+        {
+          ...context,
+          statusChanged: setStatus,
+          onRemoved(namespace) {
+            const focused = row.contains(document.activeElement);
+            row.remove();
+            context.onRemoved(namespace);
+            outcome.replaceChildren(
+              statusBlock(
+                "success",
+                null,
+                `${namespace.name ?? namespace.id} was deleted. Its name remains reserved.`,
+              ),
+            );
+            if (!list.children.length) {
+              collection.replaceChildren(
+                element(
+                  "section",
+                  { className: "state-panel" },
+                  element("h2", {}, NO_READABLE_NAMESPACES),
+                  emptyText,
+                ),
+              );
+            }
+            if (focused) {
+              outcome.focus();
+            }
+          },
+        },
+        item,
+      );
+      row.append(
+        element(
+          "div",
+          { className: "namespace-cell-name" },
+          element("p", { className: "resource-name" }, name),
+          element("span", { className: "resource-id" }, item.id),
+        ),
+        element("span", { className: "namespace-cell-status" }, badge),
+        element(
+          "span",
+          { className: "namespace-cell-created" },
+          element("span", { className: "namespace-cell-label" }, "Created "),
+          item.createdAt ? displayDate(item.createdAt) : "Unknown",
+        ),
+        deletion.actions,
+        deletion.feedback,
+      );
+      list.append(row);
+    }
+    collection.append(
+      element(
+        "div",
+        { className: "resource-list namespace-table" },
+        element(
+          "div",
+          { className: "resource-list-header namespace-table-head", "aria-hidden": "true" },
+          ...["Namespace", "Status", "Created", "Actions"].map((label) =>
+            element("span", {}, label),
+          ),
+        ),
+        list,
+      ),
+    );
   } else {
     collection.append(
       element(
         "section",
         { className: "state-panel" },
-        element("h2", {}, "No accessible namespaces"),
+        element("h2", {}, NO_READABLE_NAMESPACES),
         emptyText,
       ),
     );
@@ -288,7 +407,7 @@ export function renderNamespaces(
             statusBlock(
               "info",
               null,
-              "Your access does not include viewing this Namespace. Ask an administrator for access to open its Agents.",
+              `Your access does not include viewing this Namespace. ${askForGrant("Namespace read on it to open its Agents")}`,
               [],
               { id: "create-namespace-access" },
             ),
@@ -323,13 +442,14 @@ export function renderNamespaces(
           message =
             "Outcome unknown. Namespace creation could not be confirmed. Check Namespaces for this name before trying again.";
         } else if (forbidden) {
-          message =
-            "You do not have permission to create Namespaces in this Installation. Ask an administrator for access.";
-        } else if (error.status === 409) {
+          message = NAMESPACE_CREATE_DENIED;
+        } else if (error.status === 409 && explainedConflict(cause) === undefined) {
           message =
             "This Namespace name is already in use or reserved by a deleted Namespace. Choose a different name.";
-        } else if (error.status === 429) {
-          message = "Too many requests. Wait before trying again.";
+        } else if (error.status === 409 || error.status === 429) {
+          // A typed conflict names the rule, such as adopting a namespace without the bundled
+          // Kubernetes Compute Driver.
+          message = describeFailure(cause, { mutation: true, form: true });
         } else {
           // A 400 carries the API's own sentence naming what it refused, which other console
           // writes show too (rejectionMessage in agents/list.mts).
@@ -341,9 +461,7 @@ export function renderNamespaces(
         // A refusal the reader can fix here, a taken name above all, does not need one (finding
         // 2102).
         const requestId =
-          (unknown || forbidden) && error.requestId
-            ? [element("p", { className: "request-id" }, `Request ID: ${error.requestId}`)]
-            : [];
+          (unknown || forbidden) && error.requestId ? [requestIdLine(error.requestId)] : [];
         if (error.status === 400) {
           // The name is the only field: mark it invalid with the refusal linked to it, until
           // it is edited (finding 2046).

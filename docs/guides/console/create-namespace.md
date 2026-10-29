@@ -16,7 +16,7 @@ the Installation. No model credentials are needed.
 3. **Namespace created** confirms that the request succeeded. Select **Open
    Agents** to use the new Namespace, or **Done** to return to its card. If
    your access does not include viewing the new Namespace, the confirmation
-   says so and offers only **Done**; ask an administrator for access.
+   says so and offers only **Done**; ask an Installation administrator for access.
 4. Select **Refresh** on Namespaces to check readiness. Provisioning continues
    asynchronously. You can save Agent drafts while it provisions, but deployment
    waits for readiness. See [Namespace lifecycle](../../reference/namespaces.md#lifecycle).

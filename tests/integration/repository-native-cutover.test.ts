@@ -56,6 +56,19 @@ async function fixture(t: TestContext) {
     maximumDurationSeconds: 600,
     repositories: [
       {
+        repositoryRef: "other-project",
+        repositoryId: "790",
+        repository: "example/other-project",
+        namespaces: [
+          {
+            namespaceId,
+            profiles: ["git-write"],
+            transport: "git-only",
+            pushRefAllowlist: ["refs/heads/other"],
+          },
+        ],
+      },
+      {
         repositoryRef: "project",
         repositoryId: "789",
         repository: "example/project",
@@ -106,13 +119,14 @@ async function fixture(t: TestContext) {
   });
   async function serve(factory: RepositoryServiceFactory) {
     const service = createCredentialService({ config, factory, clock });
-    let opens = 0;
+    let preparedOpens = 0;
     const admissions = createControlAdmission(
       {
-        open(input, standing) {
-          opens++;
-          return service.open(input, standing);
+        prepareOpen(input) {
+          preparedOpens++;
+          return service.prepareOpen(input);
         },
+        open: service.open,
         status: service.status,
         close: service.close,
       },
@@ -144,7 +158,7 @@ async function fixture(t: TestContext) {
       admissions.dispose();
     };
     t.after(close);
-    return { close, service, opens: () => opens };
+    return { close, service, preparedOpens: () => preparedOpens };
   }
   async function attempt(protocol: 1 | 3 = 3) {
     const admissionId = `${Date.now()}-${randomUUID()}`;
@@ -219,11 +233,12 @@ test("legacy native selection fails before worker composition in every mode", as
 
 test("prepared sender opens through the actual control handler and binds durable authority", async (t) => {
   const f = await fixture(t);
-  await f.serve(f.prepared);
+  const server = await f.serve(f.prepared);
   const { input, wire } = await f.attempt();
   await f.sender.checkAdmissionReady(AbortSignal.timeout(3000));
   const opened = await f.sender.open(input, AbortSignal.timeout(3000));
   assert.equal(opened.kind, "created");
+  assert.equal(server.preparedOpens(), 1);
   if (opened.kind !== "created") {
     return;
   }
@@ -254,6 +269,82 @@ test("prepared sender opens through the actual control handler and binds durable
   );
 });
 
+test("prepared OPEN constructs only the selected route after its original reservation", async (t) => {
+  const f = await fixture(t);
+  let constructions = 0;
+  let materialCalls = 0;
+  await f.serve({
+    ...f.prepared,
+    createPrepared(...args: Parameters<typeof f.prepared.createPrepared>) {
+      constructions++;
+      const backend = f.prepared.createPrepared(...args);
+      return {
+        ...backend,
+        authorize(...authorizeArgs: Parameters<typeof backend.authorize>) {
+          materialCalls++;
+          return backend.authorize(...authorizeArgs);
+        },
+      };
+    },
+  });
+  const { input, wire } = await f.attempt();
+  await assert.rejects(
+    f.client.open(
+      { ...wire, expectedBinding: { ...wire.expectedBinding, grantId: "wrong" } },
+      input.admissionId,
+      AbortSignal.timeout(3000),
+    ),
+    { name: "RepositoryCredentialControlError" },
+  );
+  assert.equal(constructions, 0);
+  assert.equal(materialCalls, 0);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const originalTransact = f.state.transact;
+  const transact = originalTransact.bind(f.state);
+  let transactions = 0;
+  // Hold the real receipt listener at its State transaction, before it can reserve.
+  f.state.transact = async function (work) {
+    if (transactions++ === 0) {
+      entered.resolve();
+      await release.promise;
+    }
+    return transact(work);
+  };
+  const pending = f.client.open(wire, input.admissionId, AbortSignal.timeout(3000));
+  t.after(async () => {
+    f.state.transact = originalTransact;
+    release.resolve();
+    await pending.catch(() => {});
+  });
+  await entered.promise;
+  assert.equal(constructions, 0);
+  assert.equal(materialCalls, 0);
+  release.resolve();
+  const opened = await pending;
+  assert.equal(opened.kind, "created");
+  if (opened.kind !== "created") {
+    return;
+  }
+  assert.equal(constructions, 1);
+  assert.equal(materialCalls, 0);
+  assert.equal(transactions, 2);
+  assert.deepEqual(opened.result.client.pushRefAllowlist, ["refs/heads/review"]);
+  assert.deepEqual(opened.result.session.binding, wire.expectedBinding);
+  const receipt = await f.state.read((view) =>
+    view.repositorySessions.findBrokerReceipt(input.admissionId),
+  );
+  assert.equal(receipt?.state, "active");
+  assert.equal(receipt?.sessionId, opened.result.session.sessionId);
+  await f.client.close(opened.result.session.sessionId, AbortSignal.timeout(3000));
+  // Matching public fields cannot replace the exact one-use selection issued by the factory.
+  const selection = f.prepared.resolveBound!(wire);
+  const authority = { ...wire.expectedBinding, sessionId: randomUUID() };
+  assert.throws(() => f.prepared.createPrepared(authority, { ...selection }), /INVALID_BINDING/);
+  assert.deepEqual(f.prepared.createPrepared(authority, selection).binding, wire.expectedBinding);
+  assert.throws(() => f.prepared.createPrepared(authority, selection), /INVALID_BINDING/);
+});
+
 test("a development-token peer swapped after readiness cannot serve prepared OPEN", async (t) => {
   const f = await fixture(t);
   const first = await f.serve(f.prepared);
@@ -271,6 +362,7 @@ test("a development-token peer swapped after readiness cannot serve prepared OPE
   const current = await f.serve(factory);
   const { input } = await f.attempt();
   await assert.rejects(f.sender.open(input, AbortSignal.timeout(3000)), /request was rejected/);
+  assert.equal(current.preparedOpens(), 0);
   assert.equal(
     await f.state.read((view) => view.repositorySessions.findBrokerReceipt(input.admissionId)),
     undefined,
@@ -459,7 +551,7 @@ test("v1 unknown reserved result remains unresolved without a second acquisition
       /unavailable/,
     );
   }
-  assert.equal(server.opens(), 0);
+  assert.equal(server.preparedOpens(), 0);
   const receipt = await f.state.read((view) =>
     view.repositorySessions.findBrokerReceipt(input.admissionId),
   );

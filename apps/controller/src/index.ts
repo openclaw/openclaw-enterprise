@@ -10,6 +10,8 @@ import {
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
+  isSecretHarnessAuth,
+  isServiceAccountHarnessAuth,
   JsonValue,
   occApiRoutes,
   PluginApproversSchema,
@@ -20,6 +22,7 @@ import {
   PluginToolPolicySchema,
   PRESET_JSON_MAX_BYTES,
   SecretResponse,
+  type Agent,
   type AgentRuntimeLogsQuery,
   type AuditEvent,
   type AuditEventKind,
@@ -56,6 +59,7 @@ import {
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
+  NoActiveAgentRevisionError,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
@@ -102,6 +106,7 @@ import {
 } from "./gateway/contracts.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
+import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
 import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
@@ -117,6 +122,7 @@ import {
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
+  workspaceWithoutRunningVersion,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
 import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
@@ -219,10 +225,13 @@ interface RequiredPermission {
     | "selected_secret"
     | "iam_binding_target"
     | "provisioning_work"
+    | "gateway_managed_mode_disabled"
+    | "gateway_managed_mode_changed"
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
-    | "bound_credential_source";
+    | "bound_credential_source"
+    | "saved_sandbox_policy_additions";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -274,6 +283,17 @@ const RESOURCE_ID = Object.fromEntries(
     new RegExp(`^${prefix}[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`),
   ]),
 ) as Readonly<Record<keyof typeof RESOURCE_ID_PREFIX, RegExp>>;
+
+// Runs only after the JSON parser refused a body, to tell text that is not JSON from JSON its
+// poisoning guard refused.
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function ipv4(value: string): number | undefined {
   const parts = value.split(".");
@@ -369,6 +389,30 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
     candidate.roleIds,
     candidate.restrictionIds,
   ].every((entries) => Array.isArray(entries) && entries.every(isNonEmptyString));
+}
+
+/**
+ * The grants each Agent update checks on the sources the Agent binds now, besides its
+ * Configuration's Secret bindings (`updateAgent`, finding 2441): operate on each listed
+ * credential source and on a Secret or credential source Harness authentication, read on a
+ * ServiceAccount one.
+ */
+function agentBoundSourceGrants(
+  namespaceId: string,
+  agent: Pick<Agent, "harnessAuth" | "credentialSources">,
+): [PermissionAction, ResourceRef][] {
+  const grants: [PermissionAction, ResourceRef][] = (agent.credentialSources ?? []).map(
+    ({ sourceId }) => ["operate", { kind: "credential_source", namespaceId, id: sourceId }],
+  );
+  const harnessAuth = agent.harnessAuth;
+  if (harnessAuth?.method === "credential_source") {
+    grants.push(["operate", { kind: "credential_source", namespaceId, id: harnessAuth.sourceId }]);
+  } else if (isSecretHarnessAuth(harnessAuth)) {
+    grants.push(["operate", { kind: "secret", namespaceId, id: harnessAuth.source.id }]);
+  } else if (isServiceAccountHarnessAuth(harnessAuth)) {
+    grants.push(["read", { kind: "service_account", namespaceId, id: harnessAuth.source.id }]);
+  }
+  return grants;
 }
 
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
@@ -515,6 +559,16 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         resourceKind: "sandbox_policy",
         scope: "requested",
       },
+      // Apply returns the saved policy and admits its additions, so it also needs read (finding 2874).
+      ...(operation.operationId === "applyAgentSandboxPolicy"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "sandbox_policy" as const,
+              scope: "requested" as const,
+            },
+          ]
+        : []),
     ];
   }
   if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {
@@ -712,20 +766,34 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
+  const creatingAgent =
+    operation.operationId === "createAgent" || operation.operationId === "validateAgentCreate";
   if (
     operation.operationId === "provisionAgent" ||
-    operation.operationId === "createAgent" ||
+    creatingAgent ||
     operation.operationId === "updateAgent" ||
     operation.operationId === "deployAgent"
   ) {
-    return [
+    const permissions: RequiredPermission[] = [
       {
         ...permission,
         scope:
-          operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
-            ? "namespace"
-            : "requested",
+          creatingAgent || operation.operationId === "provisionAgent" ? "namespace" : "requested",
       },
+    ];
+    if (creatingAgent || operation.operationId === "updateAgent") {
+      permissions.push({
+        action: "administer",
+        resourceKind: "installation",
+        scope: "installation",
+        condition: creatingAgent ? "gateway_managed_mode_disabled" : "gateway_managed_mode_changed",
+      });
+    }
+    if (operation.operationId === "validateAgentCreate") {
+      return permissions;
+    }
+    return [
+      ...permissions,
       ...(operation.operationId === "provisionAgent"
         ? [
             {
@@ -789,6 +857,18 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               condition: "bound_credential_source" as const,
             },
           ]),
+      // Mirrors OCC createRevision and refuseRepositoryNetworkOverlap: refusals that name saved
+      // network policy additions come after SandboxPolicy read (findings 2151, 2881).
+      ...(operation.operationId === "deployAgent" || operation.operationId === "updateAgent"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "sandbox_policy" as const,
+              scope: "requested" as const,
+              condition: "saved_sandbox_policy_additions" as const,
+            },
+          ]
+        : []),
     ];
   }
 
@@ -956,6 +1036,12 @@ function permissionDescription(
       if (condition === "existing_namespace") {
         return `Requires ${action} permission on the ${name} when selecting an existing Kubernetes namespace.`;
       }
+      if (condition === "gateway_managed_mode_disabled") {
+        return `Requires ${action} permission on the ${name} when gatewayManagedMode is set to false.`;
+      }
+      if (condition === "gateway_managed_mode_changed") {
+        return `Requires ${action} permission on the ${name} when the request changes the Agent's saved gatewayManagedMode setting.`;
+      }
       if (condition === "selected_secret") {
         return `Requires ${action} permission on the exact same-Namespace ${name} when a Secret reference is supplied.`;
       }
@@ -985,6 +1071,11 @@ function permissionDescription(
           return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
         }
         return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
+      }
+      if (condition === "saved_sandbox_policy_additions") {
+        return operation?.operationId === "updateAgent"
+          ? `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`
+          : `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions.`;
       }
       if (condition === "missing_runtime_credentials") {
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
@@ -1185,7 +1276,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       done(tooDeepFailure(tooDeep), undefined);
       return;
     }
-    parseJson(request, body as string, done);
+    parseJson(request, body as string, (error, parsed) => {
+      // Text that is not JSON at all gets its own message (finding D762). Valid JSON the
+      // poisoning guard refused, such as a __proto__ key, keeps the generic contract message.
+      if (
+        (error as { code?: unknown } | null)?.code === "FST_ERR_CTP_INVALID_JSON_BODY" &&
+        !isJson(body as string)
+      ) {
+        done(failure(400, "INVALID_REQUEST", "The request body is not valid JSON."), undefined);
+        return;
+      }
+      done(error, parsed);
+    });
   });
   app.addSchema(JsonValue);
   app.addSchema(PluginDriverIdentitySchema);
@@ -1232,7 +1334,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Create an administrator-controlled local auth account",
+    summary: "Create a local auth account as an Installation administrator",
     tags: ["Authentication"],
     schema: {
       body: {
@@ -1424,6 +1526,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
   }
 
+  function pluginDiscoveryRequestSignal(reply: FastifyReply): AbortSignal {
+    // The POST can finish parsing and its client disconnect while IAM resolves the caller.
+    if (reply.raw.destroyed) {
+      return AbortSignal.abort();
+    }
+    const disconnected = new AbortController();
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableEnded) {
+        disconnected.abort();
+      }
+    });
+    return disconnected.signal;
+  }
+
   function workspaceFileRequestSignal(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -1554,17 +1670,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
     if (!decision.allowed) {
       await denial(operation, request, "authorization_denial", context, decision.evidence);
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(
+        403,
+        "FORBIDDEN",
+        callerDenialMessage({ action: "administer", resource: target }),
+      );
     }
     return { selected, target, decision };
   }
 
   // Report the primary IAM decision without auditing a mutation the caller never attempted.
-  async function callerMay(
-    actorId: string,
-    action: PermissionAction,
-    resource: ResourceRef,
-  ): Promise<boolean> {
+  async function callerDecision(actorId: string, action: PermissionAction, resource: ResourceRef) {
     const selected = selectedIAMDriver();
     let decision;
     try {
@@ -1581,7 +1697,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       throw dependencyUnavailable();
     }
-    return decision.allowed;
+    return { allowed: decision.allowed, restricted: decision.evidence.restrictionIds.length > 0 };
+  }
+
+  async function callerMay(
+    actorId: string,
+    action: PermissionAction,
+    resource: ResourceRef,
+  ): Promise<boolean> {
+    return (await callerDecision(actorId, action, resource)).allowed;
   }
 
   async function denial(
@@ -1914,7 +2038,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           identity.subject !== admitted.externalIdentity.subject)
     ) {
       await denial(operation, request, "authorization_denial");
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
 
     const context: RequestContext = {
@@ -1931,7 +2055,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
     ) {
       await denial(operation, request, "authorization_denial", context);
-      throw failure(403, "FORBIDDEN", "The admitted Namespace does not match.");
+      // Names only the key's own Namespace, never the requested one (finding D763).
+      throw failure(
+        403,
+        "FORBIDDEN",
+        `This service key works only in Namespace ${admitted.admittedScope.namespaceId}; this request is outside it. Ask an Installation administrator to run it.`,
+      );
     }
   }
 
@@ -2149,13 +2278,46 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "getNamespaceCallerPermissions") {
       await controller.getNamespace(context.actorId, namespaceId);
-      // The Agent creation target matches operationTarget() for createAgent.
-      const create = await callerMay(context.actorId, "create", {
+      // Targets match Namespace deletion, operationTarget() for creation, and
+      // requireInstallationAdmin. The console reads this answer
+      // instead of an Installation-only read, which the API audits when it is refused.
+      const [namespaceDelete, agentCreate, secretCreate, installationAdminister] =
+        await Promise.all([
+          callerMay(context.actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
+          ...(["agent", "secret"] as const).map((kind) =>
+            callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
+          ),
+          callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
+        ]);
+      reply.send({
+        data: {
+          delete: namespaceDelete,
+          agents: { create: agentCreate },
+          secrets: { create: secretCreate },
+          installation: { administer: installationAdminister },
+        },
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "getNamespaceSecretPermissions") {
+      // Namespace read, checked and audited as the Namespace permission answer checks it
+      // (finding 2478), so listing the Secrets below is never a refused, audited read.
+      await controller.getNamespace(context.actorId, namespaceId);
+      // Agent create authorizes Secret operate on its Harness authentication source and on its
+      // Configuration's Secret bindings, and a directory search before it needs the same two
+      // grants (finding 2469). Only a caller who may create an Agent here gets an answer, so it
+      // reports nothing such a request would not, and only on the Secrets the caller may list.
+      // The target matches operationTarget() for createAgent.
+      const operateDenied = (await callerMay(context.actorId, "create", {
         kind: "agent",
         id: namespaceId,
         namespaceId,
-      });
-      reply.send({ data: { agents: { create } }, meta: { requestId: request.id } });
+      }))
+        ? await controller.listSecretsOperateDenied(context.actorId, namespaceId)
+        : [];
+      reply.send({ data: { operateDenied }, meta: { requestId: request.id } });
       return;
     }
 
@@ -2246,31 +2408,41 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (operation.operationId === "discoverAgentPlugins") {
-      const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
-        ...(body?.credentialSource === undefined
-          ? {}
-          : { credentialSource: body.credentialSource as CredentialSourceReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
-        ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
-        ...(body?.q === undefined ? {} : { q: body.q as string }),
-      });
+      const catalog = await controller.discoverAgentPlugins(
+        context.actorId,
+        namespaceId,
+        {
+          ...(body?.credentialSource === undefined
+            ? {}
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
+          ...(body?.secretRef === undefined
+            ? { accessToken: body?.accessToken as string }
+            : { secretRef: body.secretRef as SecretReference }),
+          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+          ...(body?.q === undefined ? {} : { q: body.q as string }),
+        },
+        pluginDiscoveryRequestSignal(reply),
+      );
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
       return;
     }
 
     if (operation.operationId === "discoverAgentPluginDetails") {
-      const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
-        ...(body?.credentialSource === undefined
-          ? {}
-          : { credentialSource: body.credentialSource as CredentialSourceReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
-        pluginId: body?.pluginId as string,
-      });
+      const plugin = await controller.discoverAgentPluginDetails(
+        context.actorId,
+        namespaceId,
+        {
+          ...(body?.credentialSource === undefined
+            ? {}
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
+          ...(body?.secretRef === undefined
+            ? { accessToken: body?.accessToken as string }
+            : { secretRef: body.secretRef as SecretReference }),
+          pluginId: body?.pluginId as string,
+        },
+        pluginDiscoveryRequestSignal(reply),
+      );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
       return;
@@ -2299,6 +2471,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
+        pluginDiscoveryRequestSignal(reply),
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
@@ -2316,6 +2489,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
         },
+        pluginDiscoveryRequestSignal(reply),
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
@@ -2349,6 +2523,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        callerMay: (action, resource) => callerMay(context.actorId, action, resource),
         transactIAM: async (work) => {
           const admitted = admissions.get(request);
           if (admitted === undefined) {
@@ -2397,15 +2572,192 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getAgentCallerPermissions") {
       // Route authorization already required Agent read; the read also proves the Agent
       // exists before the mutating actions are probed.
-      await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const agent = await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
       const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
-      const [update, deploy, operate, remove] = await Promise.all(
-        (["update", "deploy", "operate", "delete"] as const).map((action) =>
-          callerMay(context.actorId, action, target),
-        ),
-      );
+      // The Agent read names its Configuration, so its update bit discloses nothing new.
+      const configuration: ResourceRef = {
+        kind: "configuration",
+        id: agent.configurationId,
+        namespaceId,
+      };
+      // The Agent's network policy and its suggestions authorize read on the Agent's own
+      // sandbox_policy resource, which no other answer covers; the console skips both reads
+      // for a caller without it (finding 2454).
+      const sandboxPolicy: ResourceRef = {
+        kind: "sandbox_policy",
+        id: `sbp_${agentId.slice(4)}`,
+        namespaceId,
+      };
+      const [
+        [
+          update,
+          deploy,
+          operate,
+          remove,
+          // Native admin UI access authorizes Agent administer on the exact Agent, so the console
+          // skips its audited probe for a caller without it.
+          administer,
+          configurationUpdate,
+          configurationRead,
+          sandboxPolicyRead,
+        ],
+        readLogsDecision,
+      ] = await Promise.all([
+        Promise.all([
+          ...(["update", "deploy", "operate", "delete", "administer"] as const).map((action) =>
+            callerMay(context.actorId, action, target),
+          ),
+          callerMay(context.actorId, "update", configuration),
+          callerMay(context.actorId, "read", configuration),
+          callerMay(context.actorId, "read", sandboxPolicy),
+        ]),
+        callerDecision(context.actorId, "read_logs", target),
+      ]);
+      // Log text authorizes Agent read_logs or, without a Restriction on read_logs, Agent
+      // administer in its place, as the runtime log read decides it. The console skips that
+      // audited read for a caller without either (finding D758).
+      const readLogs = readLogsDecision.allowed || (!readLogsDecision.restricted && administer);
+      // One IAM call per distinct grant, shared by the answers below. A Secret bound to several
+      // names is one decision.
+      const decisions = new Map<string, Promise<boolean>>();
+      const decide = (action: PermissionAction, resource: ResourceRef) => {
+        const key = JSON.stringify([action, resource.kind, resource.namespaceId, resource.id]);
+        let decision = decisions.get(key);
+        if (decision === undefined) {
+          decision = callerMay(context.actorId, action, resource);
+          decisions.set(key, decision);
+        }
+        return decision;
+      };
+      const callerMayAll = async (grants: readonly [PermissionAction, ResourceRef][]) =>
+        (await Promise.all(grants.map(([action, resource]) => decide(action, resource)))).every(
+          Boolean,
+        );
+      // Each Configuration save authorizes Secret operate on every Secret it binds, so
+      // Configuration update alone does not say a save can succeed (finding 2437); each Agent
+      // update checks them too (finding 2441). Only a caller who may read the Configuration and
+      // update it or the Agent gets an answer: the bindings are visible to them, and a save
+      // would report the same decision.
+      const boundSecrets: [string, ResourceRef][] =
+        configurationRead && (configurationUpdate || update)
+          ? Object.entries(
+              await controller.getConfigurationSecretBindingSources(
+                context.actorId,
+                namespaceId,
+                agent.configurationId,
+              ),
+            )
+          : [];
+      const bindingGrants = boundSecrets.map(([, source]): [PermissionAction, ResourceRef] => [
+        "operate",
+        source,
+      ]);
+      // A save that submits bindings is checked only on those, so one that rebinds each name
+      // listed here to a Secret the caller may operate needs nothing on the Secrets they bind
+      // now (finding 2444). Names only: the caller reads them on the Configuration already.
+      const configurationSecretsOperateDeniedBindings =
+        configurationUpdate && configurationRead
+          ? (
+              await Promise.all(
+                boundSecrets.map(async ([name, source]) =>
+                  (await decide("operate", source)) ? [] : [name],
+                ),
+              )
+            )
+              .flat()
+              .sort()
+          : [];
+      const configurationSecretsOperate =
+        configurationUpdate &&
+        configurationRead &&
+        configurationSecretsOperateDeniedBindings.length === 0;
+      // An Agent update needs Configuration read and checks the sources the Agent binds now,
+      // which the Agent read shows. Unreadable saved settings leave it unanswered.
+      const agentSourcesOperate =
+        update &&
+        configurationRead &&
+        !("configurationReadError" in agent) &&
+        (await callerMayAll([...bindingGrants, ...agentBoundSourceGrants(namespaceId, agent)]));
       reply.send({
-        data: { update, deploy, operate, delete: remove },
+        data: {
+          update,
+          deploy,
+          operate,
+          delete: remove,
+          administer,
+          configurationUpdate,
+          configurationRead,
+          configurationSecretsOperate,
+          configurationSecretsOperateDeniedBindings,
+          agentSourcesOperate,
+          sandboxPolicyRead,
+          readLogs,
+        },
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "getAgentSecretPermissions") {
+      // Route authorization already required Agent read, and the read proves the Agent exists.
+      const agent = await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const configuration: ResourceRef = {
+        kind: "configuration",
+        id: agent.configurationId,
+        namespaceId,
+      };
+      const agentRef: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      const [update, deploy, configurationUpdate, configurationRead, namespaceRead] =
+        await Promise.all([
+          callerMay(context.actorId, "update", agentRef),
+          callerMay(context.actorId, "deploy", agentRef),
+          callerMay(context.actorId, "update", configuration),
+          callerMay(context.actorId, "read", configuration),
+          // Checked first, so listing the Secrets below is never a refused, audited read.
+          callerMay(context.actorId, "read", { kind: "namespace", id: namespaceId, namespaceId }),
+        ]);
+      // Binding a Secret to the Agent's Configuration, or as its Harness authentication source,
+      // authorizes Secret operate on it (finding 2453), and so does deploying a draft that binds
+      // it (finding 2546). Only a caller who may make such a save or deployment gets an answer,
+      // so it reports nothing that request would not, and only on the Secrets the caller may
+      // list.
+      const mayBind = configurationUpdate || update;
+      const reported = namespaceRead && configurationRead && (mayBind || deploy);
+      // A deployment checks only the Secrets the draft binds now: its Configuration's Secret
+      // bindings and a Secret Harness authentication source.
+      const bound = new Set<string>();
+      if (reported) {
+        for (const source of Object.values(
+          await controller.getConfigurationSecretBindingSources(
+            context.actorId,
+            namespaceId,
+            agent.configurationId,
+          ),
+        )) {
+          if (source.kind === "secret" && source.namespaceId === namespaceId) {
+            bound.add(source.id);
+          }
+        }
+        // Unreadable saved settings hide the Agent's sources, so the answer leaves them out.
+        if (
+          !("configurationReadError" in agent) &&
+          isSecretHarnessAuth(agent.harnessAuth) &&
+          agent.harnessAuth.source.namespaceId === namespaceId
+        ) {
+          bound.add(agent.harnessAuth.source.id);
+        }
+      }
+      // One Secret scan answers both: the listed Secrets the caller may read but not operate, and
+      // how many bound ones it may neither read nor operate, a count, never their IDs, so a
+      // console can hold Deploy without naming them (finding D756).
+      const { readable: listed, unreadableCount: unreadableOperateDenied } = reported
+        ? await controller.secretsOperateDenied(context.actorId, namespaceId, bound)
+        : { readable: [], unreadableCount: 0 };
+      // A caller who may deploy but bind nothing learns only those, which the Agent and
+      // Configuration reads already name (finding 2565).
+      const operateDenied = mayBind ? listed : listed.filter((id) => bound.has(id));
+      reply.send({
+        data: { operateDenied, unreadableOperateDenied },
         meta: { requestId: request.id },
       });
       return;
@@ -2421,9 +2773,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       const deadline = new Date(Date.now() + deadlineMs);
       try {
         requireWorkspaceFileCsrf(request, operation.operationId === "putAgentWorkspaceFile");
-        if (options.workspaceFilesAccess === undefined) {
-          throw dependencyUnavailable();
-        }
         const filename = params.name;
         if (filename === undefined || !isAllowedWorkspaceFileName(filename)) {
           throw failure(
@@ -2440,9 +2789,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operation.operationId === "getAgentWorkspaceFile"
             ? controller.getReadableActiveAgentRevision(context.actorId, namespaceId, agentId)
             : controller.getOperableActiveAgentRevision(context.actorId, namespaceId, agentId),
-        );
+        ).catch((error: unknown) => {
+          // Raised after the Agent read or operate authorization, so a caller without the grant
+          // still gets its 403; this names the Agent's state instead of a 503 (finding D768).
+          throw error instanceof NoActiveAgentRevisionError
+            ? workspaceWithoutRunningVersion(agentId, error.stopped)
+            : error;
+        });
         const target = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
-        if (signal.aborted) {
+        // After authorization, so a caller without the grant gets its 403, not this 503
+        // (finding 2584).
+        if (options.workspaceFilesAccess === undefined || signal.aborted) {
           throw dependencyUnavailable();
         }
 
@@ -3559,7 +3916,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       resourceKind: "installation",
       authorizationTarget: "installation",
       tags: ["Authentication"],
-      summary: "Move the recovery designation to another administrator",
+      summary: "Move the recovery designation to another Installation administrator",
       schema: {},
     } as unknown as OccApiRoute;
     routes.post(
@@ -4136,14 +4493,116 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       );
       return;
     }
+    // No route has this path's shape, so the answer says that rather than "resource not found"
+    // (finding D764). It reads only the path, never stored state, so it is the same for every ID.
+    const trimmed = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
     canonicalFailure(
       reply,
-      failure(404, "NOT_FOUND", "The requested platform resource was not found."),
+      failure(
+        404,
+        "NOT_FOUND",
+        trimmed !== pathname && methodRoutes.some(({ pattern }) => pattern.test(trimmed))
+          ? "No API route has this path: remove the trailing slash."
+          : "No API route has this path. Check it against the API reference.",
+      ),
     );
   });
 
+  /**
+   * Which IDs a caller's own denial may name: those the request carried and, for a resource read
+   * from stored state, such as a Secret an Agent or Configuration binds, that resource when the
+   * caller may already read it (finding 2594) and may read every record the route's path names,
+   * such as that Agent or Configuration: the binding is part of that record (finding 2614). Only the
+   * caller's own denial of an action other than read or create asks; an IAM failure while asking
+   * only hides the ID.
+   */
+  async function nameableIds(
+    error: unknown,
+    actorId: string | undefined,
+    sent: (value: string) => boolean,
+    owners: readonly ResourceRef[],
+  ): Promise<(value: string) => boolean> {
+    if (
+      actorId === undefined ||
+      !isAuthorizationDenied(error) ||
+      isDependencyUnavailable(error) ||
+      error instanceof AgentPrincipalAuthorizationError ||
+      error.authorization === undefined ||
+      error.checkedPrincipalId !== actorId
+    ) {
+      return sent;
+    }
+    const { action, resource } = error.authorization;
+    if (
+      action === "read" ||
+      action === "create" ||
+      resource.kind === "installation" ||
+      sent(resource.id)
+    ) {
+      return sent;
+    }
+    for (const reference of [...owners, resource]) {
+      if (!(await callerMay(actorId, "read", reference).catch(() => false))) {
+        return sent;
+      }
+    }
+    return (value) => value === resource.id || sent(value);
+  }
+
+  /**
+   * The records a route's path names that bind other resources, for `nameableIds`: an Agent, a
+   * Configuration (its Secret bindings) or a credential source (its Secrets).
+   */
+  function routeOwners(request: FastifyRequest): ResourceRef[] {
+    const params = request.params as Record<string, unknown> | undefined;
+    const namespaceId = params?.namespaceId;
+    if (typeof namespaceId !== "string") {
+      return [];
+    }
+    return (
+      [
+        ["agentId", "agent"],
+        ["configurationId", "configuration"],
+        ["credentialSourceId", "credential_source"],
+      ] as const
+    ).flatMap(([param, kind]) => {
+      const id = params?.[param];
+      return typeof id === "string" ? [{ kind, id, namespaceId }] : [];
+    });
+  }
+
+  /**
+   * Whether `error` is the caller's own create denial, by a Restriction, while the caller
+   * administers the Installation: only then does the text name the Restriction (finding D769).
+   * Administration is the non-auditing check the Namespace permission answer makes; a failed
+   * check keeps the plain text.
+   */
+  async function administratorRestricted(error: unknown, actorId: string | undefined) {
+    if (
+      actorId === undefined ||
+      !isAuthorizationDenied(error) ||
+      isDependencyUnavailable(error) ||
+      error.checkedPrincipalId !== actorId ||
+      error.authorization?.action !== "create" ||
+      error.authorization.resource.kind === "namespace" ||
+      (error.evidence?.restrictionIds.length ?? 0) === 0
+    ) {
+      return false;
+    }
+    return callerMay(actorId, "administer", { kind: "installation", id: installationId }).catch(
+      () => false,
+    );
+  }
+
   app.setErrorHandler(async (error, request, reply) => {
-    let mapped = requestFailure(error);
+    // A caller's own denial names a resource ID only when this request carried it or the caller
+    // may already read that resource.
+    const actorId = contexts.get(request)?.actorId;
+    let mapped = requestFailure(error, {
+      requested: await nameableIds(error, actorId, requestedValues(request), routeOwners(request)),
+      ...(actorId === undefined ? {} : { actorId }),
+      ...((await administratorRestricted(error, actorId)) ? { administratorRestricted: true } : {}),
+    });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
       reply.header("retry-after", String(error.retryAfterSeconds));
     }

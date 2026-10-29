@@ -489,6 +489,44 @@ const controlPlaneKubectlCases = `"-n oce-system get pod bootstrap-password-prep
 
 const controlPlaneNetworkCase = `"network inspect k3d-occ-dev-owned") echo '[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]' ;;`
 
+// The restart egress rule covers the k3d network's subnet, so the subnet must
+// contain the API endpoint, be a masked IPv4 prefix and be no broader than /16.
+// Docker and Podman report subnets in different shapes; the parser ignores
+// the engine name, so one fake engine answers with both.
+func TestDevelopmentNodeSubnet(t *testing.T) {
+	for name, tc := range map[string]struct {
+		endpoint, networks, want, wantErr string
+	}{
+		"docker shape":      {endpoint: "172.30.42.3", networks: `[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]`, want: "172.30.42.0/24"},
+		"podman shape":      {endpoint: "10.89.3.4", networks: `[{"subnets":[{"subnet":"fd00::/64"},{"subnet":"10.89.0.0/16"}]}]`, want: "10.89.0.0/16"},
+		"broader than /16":  {endpoint: "10.88.3.4", networks: `[{"subnets":[{"subnet":"10.88.0.0/15"}]}]`, wantErr: "broader than /16"},
+		"endpoint outside":  {endpoint: "172.30.43.3", networks: `[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]`, wantErr: "no IPv4 subnet containing"},
+		"unmasked prefix":   {endpoint: "172.30.42.3", networks: `[{"IPAM":{"Config":[{"Subnet":"172.30.42.7/24"}]}}]`, wantErr: "no IPv4 subnet containing"},
+		"two networks":      {endpoint: "172.30.42.3", networks: `[{},{}]`, wantErr: "invalid k3d network information"},
+		"IPv6 API endpoint": {endpoint: "fd00::3", wantErr: "must be an IPv4 address"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			commands := fakeProfileCommands(t, map[string]string{"docker": `"network inspect k3d-occ-dev-owned") echo '` + tc.networks + `' ;;`})
+			r := newRunner(Options{})
+			r.engine = "docker"
+			subnet, err := r.developmentNodeSubnet(context.Background(), &developmentState{Cluster: "occ-dev-owned"}, tc.endpoint)
+			if tc.wantErr == "" {
+				if err != nil || subnet != tc.want {
+					t.Fatalf("subnet = %q, %v; want %q", subnet, err, tc.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("subnet = %q, %v; want an error containing %q", subnet, err, tc.wantErr)
+			}
+			// A row without networks is refused before network inspect runs.
+			if tc.networks == "" && len(commands()) != 0 {
+				t.Fatalf("an invalid endpoint reached the engine: %v", commands())
+			}
+		})
+	}
+}
+
 func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testing.T) {
 	realHelm, helmErr := exec.LookPath("helm")
 	state := kubernetesOnlyOpenShellState(t)
@@ -569,6 +607,52 @@ func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testin
 		"deploy/helm/openclaw-enterprise", "helm-values.json"), 1)
 }
 
+func TestKubernetesOnlyControlPlaneStartsPostgreSQLWhileTheBootstrapVolumeIsPrepared(t *testing.T) {
+	for _, scenario := range []string{"prepared", "prepare failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			state := kubernetesOnlyOpenShellState(t)
+			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The prepare Pod finishes only after PostgreSQL was applied, so a
+			// launcher that waited for it first would wait until its deadline.
+			applied := filepath.Join(state.directory, "postgres-applied")
+			finished := "Succeeded"
+			if scenario == "prepare failure" {
+				finished = "Failed"
+			}
+			commands := fakeProfileCommands(t, map[string]string{
+				"kubectl": `"apply -f ` + filepath.Join(state.directory, "postgres.json") + `") : > ` + shellQuote(applied) + ` ;;
+"apply -f "*) ;;
+"-n oce-system get pod bootstrap-password-prepare -o jsonpath={.status.phase}") if [ -e ` + shellQuote(applied) + ` ]; then echo ` + finished + `; else echo Pending; fi ;;
+` + controlPlaneKubectlCases, // the prepare-phase case above wins: case takes the first match
+				"docker": controlPlaneNetworkCase,
+				"helm":   `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
+			})
+			r := newRunner(Options{Repository: state.Repository})
+			r.engine = "docker"
+
+			err := r.installKubernetesControlPlane(context.Background(), state, "controller@"+profileTestDigest, "postgres@"+profileTestDigest, false, 3*time.Second)
+			calls := commands()
+			helm := slices.ContainsFunc(calls, func(command string) bool { return strings.HasPrefix(command, "helm ") })
+			if scenario == "prepared" {
+				if err != nil {
+					t.Fatalf("%v\n%s", err, strings.Join(calls, "\n"))
+				}
+				if !helm {
+					t.Fatalf("the chart was not installed:\n%s", strings.Join(calls, "\n"))
+				}
+				return
+			}
+			// The chart's bootstrap uses the prepared volume, so a failed prepare
+			// Pod stops startup before the chart is installed.
+			if err == nil || !strings.Contains(err.Error(), "Pod bootstrap-password-prepare failed") || helm {
+				t.Fatalf("want the prepare failure before the chart install, got %v:\n%s", err, strings.Join(calls, "\n"))
+			}
+		})
+	}
+}
+
 func candidateOpenShellEnvironment() map[string]string {
 	return map[string]string{
 		"OCC_DEVELOPMENT_OPENSHELL_GATEWAY_IMAGE":    "registry.example:5000/openshell/gateway@sha256:" + strings.Repeat("1", 64),
@@ -639,7 +723,7 @@ func TestOpenShellCandidateStartupRejectsBeforeResourceEffects(t *testing.T) {
 				t.Run(mode+"/"+component+"/"+failure, func(t *testing.T) {
 					root := t.TempDir()
 					statePath := filepath.Join(root, "state")
-					for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_SIGN_IN", "OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE"} {
+					for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_SIGN_IN", "OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE", developmentImageRegistrySetting} {
 						t.Setenv(key, "")
 					}
 					for key, value := range map[string]string{

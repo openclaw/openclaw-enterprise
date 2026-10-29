@@ -1,19 +1,4 @@
 {
-  "apps/controller/src/drivers/compute/docker/index.ts": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "apps/controller/src/drivers/compute/kubernetes/index.ts": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "apps/controller/src/drivers/compute/ssh/index.ts": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
   "apps/controller/src/drivers/compute/ssh/remote-helper.cjs": {
     "no-control-regex": {
       "count": 1
@@ -118,11 +103,8 @@
     }
   },
   "tests/integration/docker-compute-real.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    },
     "preserve-caught-error": {
-      "count": 3
+      "count": 2
     }
   },
   "tests/integration/occ-api.test.mjs": {

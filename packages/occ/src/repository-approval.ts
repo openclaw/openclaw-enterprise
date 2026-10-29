@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
   RepositoryApprovalScope,
+  RepositoryPolicyDriver,
 } from "@openclaw-enterprise/contracts";
 
 // Sort object keys recursively; arrays retain their provider-defined semantics.
@@ -36,4 +37,15 @@ export function repositoryApprovalFingerprint(input: {
   scope: RepositoryApprovalScope;
 }): string {
   return createHash("sha256").update(canonical(input)).digest("hex");
+}
+
+/** A scope describes authority only when the current policy explicitly permits it. */
+export function eligibleRepositoryApprovalScope(
+  driver: RepositoryPolicyDriver,
+  input: { namespaceId: string; binding: AdmittedRepositoryBinding },
+): RepositoryApprovalScope | undefined {
+  if (driver.allowsStandingApproval?.(input) !== true) {
+    return undefined;
+  }
+  return driver.standingApprovalScope?.(input);
 }

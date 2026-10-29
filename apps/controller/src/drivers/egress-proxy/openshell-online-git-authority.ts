@@ -103,7 +103,7 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
  * `reasonCode`. Each one names what the Agent can do, never a token, installation or host:
  * - `request_not_allowed`: the binding does not admit this request (another branch, ref or
  *   repository, a non-draft or other-base pull request, an API call). Do not retry it.
- * - `draft_already_opened`: the grant's one draft was already created (finding 2147).
+ * - `draft_already_opened`: the grant's draft-create allowance was spent; this does not confirm creation.
  * - `access_withdrawn`: this Agent version's repository access ended (binding removed,
  *   version replaced or stopped). Do not retry; an operator rebinds and deploys.
  * - `credential_unavailable`: the route lost its credential (for example the App key was

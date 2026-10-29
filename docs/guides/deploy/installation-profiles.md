@@ -32,11 +32,9 @@ Both profiles enable:
 
 Both profiles give Gateway Pods (embedded or dedicated), Harness Pods, and the
 tenant namespace container default a `100m` CPU request and a four-core (`"4"`)
-CPU limit. The CPU limit only permits bursts: an embedded OpenClaw Gateway runs
-a full agent turn as its startup model probe, about 16 CPU-seconds of local
-work, and was ready 24 to 30 seconds after start at one core against 51 to 72
-seconds at `500m`. The probe uses about one core, so cores beyond the first
-serve later work, not startup. The CPU request sets the scheduling reservation,
+CPU limit. The CPU limit only permits bursts: an embedded OpenClaw Gateway's
+startup model probe is a full agent turn of about 16 CPU-seconds on about one
+core (ready in 24 to 30 seconds at one core, 51 to 72 at `500m`). The CPU request sets the scheduling reservation,
 so the higher limit reserves no node capacity. The trade-off is overcommit:
 several busy runtimes on one node can each take up to four cores from their
 neighbors, and a `limits.cpu` namespace quota counts the whole limit.
@@ -44,14 +42,14 @@ neighbors, and a `limits.cpu` namespace quota counts the whole limit.
 Memory requests cover the use measured between turns, so the scheduler reserves
 what each Agent actually holds; limits cover measured peaks:
 
-| Pod                             | Request  | Limit | Measured                                                                                                                                                             |
-| ------------------------------- | -------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gateway (embedded or dedicated) | `1792Mi` | `3Gi` | 1.2 to 1.6 GiB between turns, peaks of 1.8 to 2.2 GiB; a dedicated Codex Gateway serving native admin chat was OOM-killed at `2Gi`                                   |
-| Codex Harness                   | `768Mi`  | `6Gi` | 0.45 to 0.57 GiB between turns, 1 GiB running a test suite, 1.9 GiB running `tsc`; lint, `tsc` and tests together were OOM-killed at `2Gi` and reached a `4Gi` limit |
-| Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                     |
+| Pod                             | Request  | Limit | Measured                                                                                                                                                                                                                                                                    |
+| ------------------------------- | -------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gateway (embedded or dedicated) | `2560Mi` | `4Gi` | embedded: 1.4 GiB at ready, 2.1 to 2.2 GiB between turns, peaks of 2.2 to 2.4 GiB on the first turn (no swap); dedicated Codex: 1.75 to 1.8 GiB between turns, peaks of 1.95 to 2 GiB on a short first turn, but native admin chat was OOM-killed at `2Gi` on a coding turn |
+| Codex Harness                   | `768Mi`  | `6Gi` | 0.45 to 0.57 GiB between turns, 1 GiB running a test suite, 1.9 GiB running `tsc`; lint, `tsc` and tests together were OOM-killed at `2Gi` and reached a `4Gi` limit                                                                                                        |
+| Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                                                                                                                            |
 
-Plan node memory per Agent: an embedded OpenClaw Agent reserves `1792Mi`, and a
-dedicated Codex Agent reserves `2560Mi`: `1792Mi` for its Gateway on the
+Plan node memory per Agent: an embedded OpenClaw Agent reserves `2560Mi`, and a
+dedicated Codex Agent reserves `3328Mi`: `2560Mi` for its Gateway on the
 `runtime.gatewayNodeSelector` pool and `768Mi` for its Harness on the
 `runtime.nodeSelector` pool. A Harness runs
 the Agent's shell commands, so builds and test suites in large repositories can
@@ -62,8 +60,7 @@ using more than their requests first; size agents nodes for the turns
 you expect to run concurrently.
 
 Denying the 11 bundled plugins an OpenAI-only Agent does not use
-(`plugins.deny`) saved only about 50 MiB. Profile input cannot change these
-values; for others, write the Installation from the production example (see
+(`plugins.deny`) saved only about 50 MiB. Profile input cannot change these values; for others, write the Installation from the production example (see
 [Images and resources](../../reference/drivers/kubernetes-compute.md#images-and-resources)).
 An existing Installation keeps its values on upgrade; adopted values apply to
 each Agent at its next deployment. Before adopting them, check each agents node's
@@ -302,7 +299,7 @@ refuses.
 
 ## Render files
 
-Run the renderer from the repository root with Node.js 24 or newer. With native
+Run the renderer from the repository root with Node.js 24.22.1 or newer. With native
 admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
@@ -322,12 +319,13 @@ On success, the output directory contains:
 - `preflight.json`: rendered output paths, warnings, prerequisites, and next
   steps.
 
-After validating the CLI arguments, the renderer deletes these three files from
-the output directory before it reads the input. It keeps other files. If
-required input is missing or unsupported input is present, it writes
-`preflight.json` with `ok: false` and only the report path in `outputs`, leaves
-both YAML files absent, and exits nonzero. If the input JSON is unreadable or
-malformed, it exits without writing a preflight report.
+Use a separate input file. Symbolic or hard links to these outputs are also
+refused without changing existing files. An `input.json` can remain in the output directory.
+
+After these checks, the renderer clears the three outputs before reading input;
+other files stay. Invalid settings produce only `preflight.json` with `ok: false`
+and its path in `outputs`. Unreadable or malformed JSON produces no report.
+Both failures exit nonzero and leave no YAML outputs.
 
 ## Use rendered files
 
@@ -354,9 +352,9 @@ at most 63 characters, matching Helm, bootstrap-volume preparation and Pod
 admission.
 Preflight rejects invalid placement labels before writing deployment files.
 
-If rendering fails or either YAML file is absent, stop and fix the input. Do not
-copy manual examples into the same output directory. Rerender successfully so
-`values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum` stay
+If rendering fails or either YAML file is absent, fix the input and rerender;
+never copy manual examples into the output directory. Only a successful render
+keeps `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum`
 paired.
 
 `runtime.transportSecretPrefix` must form a DNS-safe Kubernetes Secret name after

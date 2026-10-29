@@ -28,9 +28,10 @@ routing, and the per-Agent Gateway. Sandbox owns:
   and identity checks; the Sandbox privately initializes the same mount.
 - In `operator` mode, `ensureNamespace` applies configured labels, workspace
   resources, and NetworkPolicies, then owns the exact active Workspace.
-- `provisionHarness` creates one Workspace Sandbox, with a loopback app-server
-  exposure for dedicated Codex; native OpenClaw requests no inbound service. The Driver adds each
-  [credential attachment](#credential-attachments) and that Agent revision's Harness runtime provider
+- `provisionHarness` creates one Workspace Sandbox. Dedicated Codex exposes its
+  app-server. A native OpenClaw worker connects outbound and can expose a
+  temporary status endpoint until its workspace node enrolls. The Driver adds each
+  [credential attachment](openshell-sandbox/harness-providers.md#credential-attachments) and that Agent revision's Harness runtime provider
   to the Sandbox's providers, validates any Codex route, and returns the stable Sandbox reference.
   Private [workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before execution.
 - OpenShell's controller creates and owns the Sandbox's Harness Pod.
@@ -115,6 +116,15 @@ runtime baseline: `/bin`, `/usr`, `/lib`, `/proc`, `/dev/urandom`, `/etc`,
 approved mounts, and `/sandbox/.openclaw-runtime` are writable. An explicit `filesystem` block replaces the baseline; the Driver still adds
 required mounts, runtime root, and `/tmp`.
 
+Startup refuses an unknown key in `kubernetes`, `kubernetes.serviceAccount`,
+`kubernetes.sandboxDataMount`, `kubernetes.agentResources`, `policy`,
+`policy.process` and `gateway.readiness`, so a misspelled key never falls back
+to its default. Each `kubernetes.agentResources.requests` and `limits` value is
+a quoted, non-negative Kubernetes quantity (`cpu: "500m"`), and a request may
+not exceed its limit. The Driver always sets the Agent container's
+`ephemeral-storage` to a `256Mi` request and `1Gi` limit, replacing configured
+values.
+
 The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
 OpenShell ignores them: every Sandbox process runs as the workload identity,
 default `10001:10001`.
@@ -126,23 +136,27 @@ that host conflicts.
 v0.1.5 requires unique network policy names and nonempty executable
 paths. `workspace-node-enrollment` is reserved. Options are `tls: skip|terminate`, `enforcement: enforce|audit`, and
 `access: read_only|read_write|full`; `skip` replaces the rejected `passthrough`
-spelling. `gatewayConfigured` is the only ServiceAccount mode; the
+spelling. An endpoint `protocol` is `tcp`, `rest`, `websocket`, `graphql` or
+`sql` in any case (OCE sends it lowercase), or omitted. `tcp` takes neither
+`access` nor `enforcement`; the other protocols need `access`, and `sql` allows
+only `enforcement: audit`. `json-rpc` and `mcp` need rules this setting cannot
+express, so startup refuses them. `gatewayConfigured` is the only ServiceAccount mode; the
 gateway's configured sandbox ServiceAccount applies to every Sandbox and does
 not satisfy the per-Agent production requirement below.
 
-Optional readiness observes a Service and Pods in the OCC namespace; a paired
-Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
-positive `timeoutMs`. Development retains the 30-second `startupDelayMs`.
+Optional readiness observes a Service and Pods in the OCC namespace (a paired
+Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;
+`pollIntervalMs` (default 1000) is at most `2147483647`. Development retains
+the 30-second `startupDelayMs`.
 
 Install OpenShell's gateway separately. Required `gateway.workspaceMode`
 accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
 mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
 namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
 listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
-`app.kubernetes.io/managed-by`; it rejects other labels. The
-OpenShell Workspace name must equal its pre-provisioned Kubernetes namespace, so
-OCC uses a stable `oce-` name with a 15-character digest within the 19-character
-Workspace limit.
+`app.kubernetes.io/managed-by`; it rejects other labels. An OpenShell Workspace
+name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
+15-character digest, within the 19-character limit.
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
 installs one Gateway with workspace resources disabled: in `oce-system` for the
@@ -175,7 +189,7 @@ before Sandbox creation. After supervisor readiness, Sandbox initializes
 through private stdin; the Harness verifies completion at its effective path.
 
 For dedicated Codex, OpenShell's `configureAgent` hook removes
-`appServer.networkProxy` and adds this before OCC validates and saves the immutable Agent revision:
+`appServer.networkProxy` and adds this before OCC validates and saves the Agent revision:
 
 ```json
 {
@@ -210,76 +224,9 @@ untrusted sessions within one Agent. Kubernetes defaults to eight native workers
 `runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. Stopping a
 hosted session releases its slot; idle workers are not retired automatically.
 
-## Credential attachments
-
-For an Agent revision that uses a [credential source](../credential-sources.md),
-Compute passes one attachment per source in `credentialAttachments`. The Driver
-appends each attachment's provider name to the static `providers` list in
-`SandboxSpec`, rejecting a name outside the OCC `oce-cs-` provider shape or one
-that repeats a static provider. Startup rejects
-static `providers` entries that use the OCC shape, so operator-configured
-providers cannot impersonate a credential source. After the Harness is ready,
-Compute requires every attachment to report `ready` before activation.
-
-<span id="dedicated-codex-runtime-provider"></span>
-
-For external ChatGPT authentication, the Sandbox stores account metadata but
-omits static `CODEX_ACCESS_TOKEN`. Only the attached OpenShell provider supplies
-its bound alias. Withdrawal therefore leaves no placeholder on restart, and the
-Harness holds its authentication failure without starting Codex or using cached state.
-
-## Dedicated runtime providers
-
-Each Agent revision's runtime providers use `oce-codex-runtime` or `oce-openclaw-runtime` profiles.
-Both expose node-enrollment and Gateway CA files after the Agent Gateway issues
-setup. Codex requires nonsecret `runtime.json` and
-`config.toml`, each at most 65,536 UTF-8 bytes, addressed through `OPENCLAW_PLUGIN_RUNTIME_MANIFEST` and
-`OPENCLAW_PLUGIN_CODEX_CONFIG_TOML`; native OpenClaw rejects them. Ordinary
-Secret-backed environment projections remain unsupported.
-
-The expiring setup token is visible inside the Sandbox, without a production
-credential guarantee. Policy limits node egress to the Gateway and executable.
-Codex waits for its provider route; native OpenClaw connects outbound. Renewal
-updates `node_setup_json` only if the provider's resource version still matches;
-endpoint, TLS fingerprint, runtime files, CA, and identity labels must also match.
-Native startup reads the envelope; the Codex
-supervisor rereads it before node retries and retains valid setup during projection
-gaps. The raw app-server token stays outside the provider. Plugins and repository
-broker configuration fail before creation.
-
-Agent revision cleanup deletes the Sandbox before its Git and runtime providers; Namespace
-cleanup removes leftover Git providers and unused profiles. Adoption requires matching
-Namespace, Agent, and Agent revision IDs and nonsecret configuration,
-except when renewing an expired setup envelope. Failed or timed-out Sandbox creation may complete remotely. The provider remains
-for normal Agent revision cleanup with the Sandbox.
-
-## Create-time app-server exposure
-
-For dedicated Codex, `CreateSandbox` includes one unnamed exposure for Compute's
-literal `APP_SERVER_PORT`. The UUID from the Agent revision ID is the first `request_id`.
-With no Sandbox,
-[create retries](../../flows/openshell-sandbox-provisioning.md#4-call-the-versioned-gateway-contract)
-after unresolved refusals use at most 16 request IDs. Adoption requires an
-exact Sandbox and, before enrollment, exposure. The client keeps a normalized control URL and the
-advertised workload URL, which `harnessEndpoint` returns
-as a WebSocket origin.
-
-Compute supplies only `APP_TOKEN_SHA`, never the raw token; bearer passthrough
-forwards the header Codex, or a native held failure, authenticates. Other
-exposures keep OpenShell's authorization-stripping default. A Sandbox without a
-replayable Create receipt must be removed, not mutated by `ExposeService`.
-
-Compute replaces the fail-closed Gateway target and omits its direct Agent
-Service and Harness route. Drivers without provider transport retain Kubernetes transport.
-
-A native worker's node opens its Gateway connection. Its exposure serves
-only Compute's held-failure read before enrollment; OpenShell routes it
-unauthenticated, so once the node enrolls the Driver deletes it
-(`DeleteService`, fail closed); adoption or recreation has none. A missing
-service, Sandbox or credential attachment is gone only if `GetWorkspace` answers
-and a second read still misses it (OpenShell hides unauthorized Sandboxes as
-missing); a refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's
-sweep covers Agent revisions without a current reconciliation pass and failed candidates.
+[Harness providers and exposure](openshell-sandbox/harness-providers.md)
+covers credential attachments, the dedicated runtime providers and the
+create-time app-server exposure.
 
 ## Kubernetes and admission requirements
 
@@ -311,8 +258,7 @@ and this scoping. See the
 
 ## Qualification contract
 
-OpenShell remains experimental. Local contracts are implemented; protected
-cluster proof remains.
+Local contracts are implemented; protected cluster proof remains.
 
 ### Workload identity
 
@@ -336,16 +282,21 @@ never the PVC root. Persistent categories use separate subpaths below
 avoid symlinks and permission changes on root-owned mounts. PVC quota limits
 runtime storage; Agent deletion removes it.
 
+Before opening node state, the Codex Harness and dedicated OpenClaw worker set
+their process-owned state root to `0700`, clearing inherited setgid bits. Shared
+workspace directories keep their permissions. OpenClaw prepares its private
+children, including a `control` directory retained after a failed setup.
+
 The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
 `tmp` child without changing supervisor directory permissions. Codex's container has
-a `1Gi` ephemeral-storage limit. Native provisioning preserves
-retained entries while privatizing writable PVC subpaths in a restricted
-Deployment for that Agent revision. Ownership/mode verification, foreground deletion,
-and writer termination precede Sandbox creation. Temporary preparation
-requires `kubernetes.userNamespaces: false` and the pinned Gateway's default
-identity selection, without UID/GID overrides.
-Ordinary Kubernetes Compute may use `/home/node` and `/tmp` `emptyDir`
-volumes limited to `1Gi` and `64Mi`, respectively.
+a `1Gi` ephemeral-storage limit. Native provisioning privatizes writable PVC
+subpaths, keeping retained entries, in a restricted per-revision Deployment;
+ownership/mode checks, foreground deletion and writer termination
+precede Sandbox creation. It needs `kubernetes.userNamespaces: false`,
+at most one `gateway.operatorWorkspaceResources` ServiceAccount and the pinned
+Gateway's default identity, without UID/GID overrides; Agent save refuses
+dedicated OpenClaw otherwise. Ordinary Kubernetes Compute may use `/home/node`
+and `/tmp` `emptyDir` volumes limited to `1Gi` and `64Mi`.
 
 ### Remaining qualification work
 
@@ -399,12 +350,37 @@ Errors include:
   below `/sandbox/.openclaw-runtime`; a Landlock write grant does not
   override Unix ownership on the image layer.
 
+### Gateway identity and removal
+
+If stop, deletion, or credential withdrawal reports `SANDBOX_GATEWAY_UNAUTHORIZED`,
+check the worker's `sandbox-gateway-identity` hint. A missing Workspace role
+fails immediately. Restore the role, or deploy again to recreate an externally
+removed Workspace. If authentication fails, check the controller's token file
+and the gateway's signing-key refresh. The worker retries transient failures
+within its attempt budget. Retry the original operation after restoring access.
+
+OpenShell can return `NOT_FOUND` for a resource hidden from the caller. To
+confirm absence, the Driver reads the Workspace with the controller's identity
+and reads the resource again. If a delete returns `NOT_FOUND` immediately after
+a read found the target, removal is unconfirmed (`SANDBOX_DELETION_UNCONFIRMED`).
+The worker logs `worker.harness-exposure-withdrawal-unconfirmed` during the
+exposure sweep and retries.
+
+For Namespace setup or cleanup, `PERMISSION_DENIED` or `UNAUTHENTICATED`
+raises `SandboxNamespaceRefusedError`. Compute marks the Namespace step as
+permanent. For setup, the worker records the refusal code as the reason. Check
+the gateway identity and Workspace access before retrying. Worker diagnostics
+report the method, gRPC status, and validation category without provider text or
+request values.
+
 ## Related documentation
 
 - [Development and production deployment](../../guides/deploy.md)
 
 - [OpenShell testing](../../testing/openshell.md)
 - [OpenShell Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md)
+- [OpenShell Harness providers and exposure](openshell-sandbox/harness-providers.md)
+- [OpenShell Harness observation and restart states](openshell-sandbox/harness-providers.md#harness-observation)
 - [SandboxDriver contract](sandbox.md) and [OpenShell Credential Gateway](openshell-credential-gateway.md)
 - [ComputeDriver contract](compute.md)
 - [Kubernetes ComputeDriver](kubernetes-compute.md)

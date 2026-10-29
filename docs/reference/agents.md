@@ -67,8 +67,8 @@ This requires exact AgentRevision `read`, not Agent `operate`.
 Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
 `error`, plugin `warnings`, nullable `progress`, and nullable `cleanup`.
 
-- `queued`: no live claim; PostgreSQL's clock judges lease expiry.
-- `running`: a live worker claim.
+- `queued`: not claimed yet.
+- `running`: claimed, no result yet, also between attempts.
 - `succeeded`: original work activated the version or found it already selected.
 - `failed`: terminal failure or completion without activation.
 
@@ -80,12 +80,18 @@ results are excluded. `progress.nextAttemptAt` is the earliest queued
 eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
-Nullable `cleanup` reports retirement’s `status` and queued `nextAttemptAt`.
+Nullable `cleanup` reports retirement’s `status` (same meanings) and queued
+`nextAttemptAt`.
 Deployment failure remains terminal. Terminal preparation errors retain
 `error.data.preparation` under schema limits (identities, reasons, scheduling, exits, timestamps),
 excluding raw output and credentials.
 
-Errors have fixed codes, messages, and allowlisted `error.data`.
+Errors have fixed codes, messages, and allowlisted `error.data`. Each message
+names the cause and the next step. The console offers **Deploy again** only for
+codes that a new deployment can clear, such as `DEPENDENCY_UNAVAILABLE` or
+`EXECUTION_ADMISSION_UNAVAILABLE`. A version stored inconsistently
+(`INVALID_TARGET`, `INVALID_REVISION_OWNER`, `INVALID_ADMITTED_REVISION`,
+`INVALID_ACTIVE_REVISION`) has no runtime logs; ask an Installation administrator.
 `CONVERGENCE_DEADLINE_EXCEEDED` data includes `timeoutMs` and optional
 `runtimeFailure` (`component`, `check`, `checkedAt`, `code`) from that version
 (unknown values read `UNRECOGNIZED`); missing evidence leaves the cause
@@ -210,90 +216,21 @@ and the selected-only runtime contract.
 
 ## Workspace files
 
+An Agent's workspace holds `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`.
+See [Agent workspace files](agents/workspace-files.md) for request shapes,
+limits, permissions, and errors.
+
 ### Initial contents at creation
 
-`POST /namespaces/:namespaceId/agents` accepts `initialWorkspaceFiles`, an optional
-partial map of the four filenames below to strings. Replace the example Configuration ID:
-
-```json
-{
-  "name": "Support assistant",
-  "configurationId": "cfg_12345678-1234-4123-8123-123456789abc",
-  "initialWorkspaceFiles": {
-    "AGENTS.md": "Answer support questions.\n",
-    "USER.md": ""
-  }
-}
-```
-
-Omission or `{}` uses native initialization; omitted filenames keep native
-behavior. Empty strings create empty files. Values must satisfy the live-file
-Unicode and 16 KiB limits below; other names and non-strings are rejected.
-The API preserves whitespace and newlines. Create requests default to 448 KiB,
-including JSON escaping; configured controller limits take precedence.
-
-Creation uses existing permissions and stages inputs privately
-outside Agent, Configuration, and AgentRevision. First deployment applies them
-before execution. Completion prevents replay over later edits. Staged bytes are
-removed after activation or Agent deletion. Pending inputs have no read/update
-API; correction requires deleting and recreating the Agent.
-
-The optional `workspaceDefaultsId` is a SHA-256 defaults identity. Console sends
-all four rendered `2026.9.9` defaults with this identity. A stale identity rejects
-creation with `409 RESOURCE_CONFLICT`; runtime mismatch blocks initial setup.
-See the [workspace guide](../guides/topics/workspace-files.md) and
-[setup flow](../flows/workspace-files.md) for recovery and runtime requirements.
+Creation accepts optional `initialWorkspaceFiles` and `workspaceDefaultsId`.
+First deployment applies them once; pending inputs have no read/update API. See
+[initial contents](agents/workspace-files.md#initial-contents-at-creation).
 
 ### Live file access
 
-Read, create, or replace `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`
-in an Agent's live workspace:
-
-```text
-/namespaces/:namespaceId/agents/:agentId/workspace/files/:name
-```
-
-| Method | Operation                  | Agent permission | Response `data`     |
-| ------ | -------------------------- | ---------------- | ------------------- |
-| `GET`  | Read the file              | `read`           | `{ name, content }` |
-| `PUT`  | Create or replace the file | `operate`        | `{ name, size }`    |
-
-Authenticate with a session or scoped service API key. Session-authenticated
-writes must pass the [CSRF checks](authentication.md). The Agent must have an
-selected version and a reachable gateway.
-
-Embedded OpenClaw sole rosters follow the Gateway-announced default ID.
-Other rosters retain the explicit main target; dedicated deployment requires it.
-
-`PUT` accepts one `content` field:
-
-```json
-{ "content": "You are a support assistant.\n" }
-```
-
-`content` must be well-formed Unicode without NUL characters and fit within
-16 KiB when encoded as UTF-8. The complete request body is limited to 97 KiB,
-enough for 16 KiB written entirely in six-byte JSON escapes.
-Success returns `200`. A successful `PUT` reports `size` in UTF-8 bytes and
-records the Agent, file name, and outcome in the audit log.
-
-| Error                        | Meaning                                              |
-| ---------------------------- | ---------------------------------------------------- |
-| `400 INVALID_REQUEST`        | Invalid file name or content.                        |
-| `404 NOT_FOUND`              | The requested Agent or file was not found.           |
-| `409 AGENT_DELETING`         | The Agent is being deleted.                          |
-| `409 RESOURCE_CONFLICT`      | The Agent is stopping.                               |
-| `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 97 KiB.                     |
-| `503 DEPENDENCY_UNAVAILABLE` | Workspace access is unavailable.                     |
-| `503 UNKNOWN_OUTCOME`        | OCC could not confirm the write or its audit record. |
-
-After `UNKNOWN_OUTCOME`, read the current file before deciding whether to submit
-another write.
-
-See [gateway routing](gateway-routing.md) for transport,
-[workspace-file setup](../guides/deploy/workspace-routing.md#agent-workspace-files) to enable
-access, the [HTTP API](api.md#get-namespacesnamespaceidagentsagentidworkspacefilesname)
-for schemas, and the [execution flow](../flows/workspace-files.md) for implementation.
+`GET` and `PUT` on `/namespaces/:namespaceId/agents/:agentId/workspace/files/:name`
+read (Agent `read`) or replace (Agent `operate`) one file in the live workspace.
+See [live file access](agents/workspace-files.md#live-file-access).
 
 ## Native admin UI
 
@@ -386,20 +323,28 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 
 - `400 INVALID_REQUEST`: The Backend ID is malformed or empty, the plugin map is
   structurally invalid, or a runtime `modelApiKey` selector is supplied (use
-  `harnessAuth`).
+  `harnessAuth`). Also when the Namespace does not approve the repository
+  selections, the request sends both `repositoryAccess` and
+  `repositoryBindings`, or `harnessAuth.source` names a ServiceAccount in another
+  Namespace; the message names the rule.
 - `404 NOT_FOUND`: The nonempty Backend ID does not name a configured Backend.
 - `401`: The session cookie is missing, invalid, expired, or revoked.
 - `403`: Your principal lacks the exact permission for the Agent or Namespace.
 - `404`: The Namespace or Agent does not exist under the requested parent, or
-  the selected Configuration or associated service account is not in the Agent's
-  Namespace.
+  the selected Configuration or associated service account does not exist in the
+  Agent's Namespace.
 - `409 RESOURCE_CONFLICT`: Harness authentication is missing, the selected
   account has no issued access token, or its Backend binding or topology is incompatible.
 - `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The account has no access token,
   and the Installation has no ChatGPT Backend to issue one.
 - `409 RESOURCE_CONFLICT`: Another Agent already uses that name in the same
   Namespace, the Namespace cannot accept new Agents, or a stopping Agent cannot
-  accept the requested mutation.
+  accept the requested mutation. Also for a standing repository approval that
+  blocks the change, and for repository bindings on a Compute Driver that cannot
+  deliver repository credentials; the message names the fix. Deploy and the
+  repository approval scope read answer it when the saved repository selections
+  are no longer approved, and deploy when the Credential Proxy cannot start the
+  Agent.
 - `409 AGENT_DELETING`: The Agent is [deleting](#deletion) and rejects the
   mutation.
 - `409 NAMESPACE_NOT_READY`: The backing Namespace infrastructure is not ready
@@ -437,8 +382,8 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 
 ## Changelog
 
+- 2026-10-25: Moved workspace file request details to [Agent workspace files](agents/workspace-files.md).
+
 - 2026-09-23: Removed top-level `Agent.serviceAccountId` checks; use `harnessAuth`. (NOT_IN_SPEC)
 
-- 2026-09-01 08:47: Document nullable providerId selection, immutable version association, and managed binding admission. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
-
-- [2026-08-28 17:55]: Recast as the current Agent and AgentRevision feature reference; separate procedures and correct Harness and SandboxDriver boundaries. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)
+[Agents reference documentation history](agents/history.md) preserves the older dated entries.

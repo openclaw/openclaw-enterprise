@@ -15,6 +15,34 @@ import { installationDriverConfigurations } from "../../apps/controller/src/comp
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
+// Keep the two worker roles distinct. Tests can still replace the boundary's methods
+// after a worker starts to simulate a lost response or a changed grant.
+function repositoryWorkerRoles(driver) {
+  if (driver === undefined) {
+    return {};
+  }
+  const { id, implementation } = driver;
+  return {
+    repositoryPolicy: {
+      id,
+      implementation,
+      capability: driver.capability,
+      listOptions: (input) => driver.listOptions(input),
+      resolve: (input) => driver.resolve(input),
+    },
+    nativeRepositorySender: {
+      id,
+      implementation,
+      maintenanceIntervalMs: driver.maintenanceIntervalMs,
+      durableBrokerReceipts: driver.durableBrokerReceipts,
+      checkAdmissionReady: (signal) => driver.checkAdmissionReady(signal),
+      open: (input, signal) => driver.open(input, signal),
+      status: (sessionId, signal) => driver.status(sessionId, signal),
+      close: (sessionId, signal) => driver.close(sessionId, signal),
+    },
+  };
+}
+
 // Admission locks a Namespace, then its Agent. Every worker transaction that locks a claim's
 // Agent must already hold the Namespace (#1742), or it deadlocks with a concurrent deploy,
 // stop, delete or withdrawal. Records each Agent row lock taken first, with its stack.
@@ -61,7 +89,7 @@ const disposeLimitsMs = {
   "worker stop": 30_000,
   "pool end": 15_000,
   // Waits for the CI state lock, which other files' test databases also take. The drop's lock
-  // wait shares this limit; its psql command has its own (scripts/ci/cleanup.mjs).
+  // wait shares this limit; the drop itself has its own (scripts/ci/cleanup.mjs).
   "drop database": 120_000,
 };
 
@@ -198,6 +226,11 @@ export function createWorkerRevisionFixtures(
           await run("worker stop", () => worker.stop());
         }
         for (const pool of pools) {
+          // pg-pool's end() resolves once its idle clients are removed, before their sessions
+          // close. The drop below can end a session still closing; the server's 57P01 then
+          // reaches the pool's idle listener, which re-emits it on the pool, and with no
+          // listener that throws in this test's teardown (finding 2379). The pool is done.
+          pool.on("error", () => {});
           // A pool already ending was ended by its worker's stop or by the test.
           if (!pool.ending) {
             await run("pool end", () => pool.end());
@@ -550,6 +583,7 @@ export function createWorkerRevisionFixtures(
         namespaceId: namespace.id,
         agentId: owner.id,
         revision: number,
+        gatewayManagedMode: owner.gatewayManagedMode,
         backendId: owner.backendId,
         configuration: { revision: String(number) },
         configurationId: owner.configurationId,
@@ -586,7 +620,7 @@ export function createWorkerRevisionFixtures(
             );
           await assert.rejects(
             plan({ ...auth, sourceId: "unselected" }),
-            /explicitly admitted source/,
+            /created or adopted under the Proxy/,
           );
           const egressPlan = await plan(auth);
           assert.deepEqual(egressPlan.harnessCredentialSource, auth);
@@ -705,9 +739,7 @@ export function createWorkerRevisionFixtures(
           drivers: { ...configuredDrivers.installation.drivers, ...driverSelections },
         },
         secretDriver,
-        ...(repoDriver === undefined
-          ? {}
-          : { repositoryPolicy: repoDriver, nativeRepositorySender: repoDriver }),
+        ...repositoryWorkerRoles(repoDriver),
       });
       worker = createControllerWorker({
         metrics,

@@ -40,6 +40,7 @@ export interface ProvisionAgentInput {
   readonly backendId?: string | null;
   readonly harnessAuth?: HarnessAuthBinding | null;
   readonly executionMode?: HarnessExecutionMode;
+  readonly gatewayManagedMode?: boolean;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];

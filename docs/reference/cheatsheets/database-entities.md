@@ -44,6 +44,7 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `configuration_id`
 - `backend_id`
 - `execution_mode`
+- `gateway_managed_mode`
 - `plugins`
 - `plugin_approvers`
 - `repository_bindings`
@@ -82,6 +83,7 @@ Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 - `agent_id`
 - `revision_number`
 - `backend_id`
+- `gateway_managed_mode`
 - `admitted_spec`
 - `admitted_at`
 

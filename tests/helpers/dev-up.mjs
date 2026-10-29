@@ -1,16 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import {
-  chmod,
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +9,8 @@ import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.mjs";
 import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
+import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const serviceKey = "sk-test-secret-value";
@@ -26,6 +19,9 @@ const mismatchedInstallationId = "ins_9ce0e58a-415d-485e-90c2-20c3c5572505";
 const defaultRuntimeImage = "openclaw-enterprise-runtime:quickstart";
 const bashExecutable = "/bin/bash";
 
+// Callers isolate scenario environments in fixture.env and leave the parent PATH,
+// cwd and provider executables unchanged. Reuse discovery, never scenario renders.
+let configurationProvider;
 let cliBuild;
 let cliDirectory;
 after(async () => {
@@ -806,12 +802,16 @@ async function writeFakeCommand(fake, path, command) {
 }
 
 async function createFixture(t, options = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-dev-up-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw-dev-up-");
 
   const fixtureRepository = join(directory, "repository");
   await mkdir(join(fixtureRepository, "scripts"), { recursive: true });
   await mkdir(join(fixtureRepository, "bin"), { recursive: true });
+  await mkdir(join(fixtureRepository, "deploy/runtime"), { recursive: true });
+  await copyFile(
+    join(repository, "deploy/runtime/openclaw-source.json"),
+    join(fixtureRepository, "deploy/runtime/openclaw-source.json"),
+  );
   for (const script of ["dev-up", "dev-down"]) {
     const destination = join(fixtureRepository, "scripts", script);
     await copyFile(join(repository, "scripts", script), destination);
@@ -826,7 +826,7 @@ async function createFixture(t, options = {}) {
   await mkdir(bin);
   const engine = options.engine ?? "docker";
   const engineLog = join(directory, `${engine}.log`);
-  const provider = composeConfigurationProvider();
+  const provider = (configurationProvider ??= composeConfigurationProvider());
   const cli = await developmentCli();
   const fake = { directory, engine, options, cli, lifecycle: false };
   fake.server = await startCommandServer({
@@ -1072,20 +1072,10 @@ function runDevDown(env) {
   });
 }
 
-async function readJsonLines(path) {
-  try {
-    const content = await readFile(path, "utf8");
-    return content
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
+// A dev-up log the fixture may not have written yet: a missing file is no records, and blank
+// lines are skipped.
+function readJsonLines(path) {
+  return readJsonLinesFile(path, { missingOk: true, skipBlank: true });
 }
 
 function composeInvocations(logs) {

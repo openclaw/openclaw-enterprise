@@ -89,7 +89,7 @@ ordered version history and at most one selected version, identified by
 readiness. See [Agent revisions](../../guides/topics/agent-revisions.md).
 
 The Agent revision records the source `configurationId`, `configurationKind`, and
-`configurationGeneration`, its complete saved native `configuration`
+`configurationGeneration`, [`gatewayManagedMode`](../agent-native-admin.md#gateway-managed-mode), its complete saved native `configuration`
 document, the approved Harness identity/version/mode, selected Compute identity,
 nullable `backendId`, and `harnessAuth` with its resolved internal source snapshot.
 The auth snapshot contains no credential bytes; public Agent revisions omit private
@@ -105,6 +105,11 @@ therefore records the source generation and the effective document after that
 transformation. Its SandboxDriver selection and the Agent's stable service
 principal remain internal; the current HTTP Agent revision schema omits them.
 See [SandboxDriver](../drivers/sandbox.md).
+
+After its checks pass, deployment saves the Agent `name` as the sole roster
+entry's `identity.name`, under `agents.entries.main` when the roster is omitted.
+The native admin UI shows it, up to 50 characters, instead of `Assistant`. OCC
+keeps a name the Configuration sets and does not name entries of a larger roster.
 
 The bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy` requires a
 `ready` Namespace, exact-Agent `deploy`, exact
@@ -125,13 +130,11 @@ predecessor; see [activation order](#the-selected-version-after-a-failed-deploym
 Each Agent owns its gateway across versions; sibling Agents never share one. Kubernetes Compute supports managed authentication; SSH Compute supports
 embedded OpenClaw with [operator-managed runtime credentials](../drivers/ssh-compute.md#credentials-and-supported-boundaries).
 Docker rejects authentication bindings. Each Driver rejects unsupported bindings
-and topologies before deployment. Kubernetes Compute starts either an Agent-owned gateway plus a dedicated
-Codex workload with its separate ServiceAccount, or one embedded combined
-gateway/Harness. Without a SandboxDriver, Compute owns the Codex Deployment;
+and topologies before deployment. On Kubernetes without a SandboxDriver, Compute owns the Codex Deployment;
 with one selected, that Driver provisions the dedicated Harness workload.
 Unless Compute requests
 [exclusive replacement](../drivers/compute.md#production-revision-stages), as
-Kubernetes does for dedicated Agents, a replacement must preserve its
+Kubernetes does for dedicated Agents and Docker for all Agents, a replacement must preserve its
 predecessor's Service selector until activation succeeds. Without an
 eligible worker, version work remains queued.
 
@@ -144,17 +147,16 @@ or Harness runs. After activation, OCC clears staged contents and retains setup
 identity and completion metadata. Later versions check completion without
 reapplying the original text, preserving edits made in the live workspace.
 
-Deployment admission checks what the Installation supports before it checks
-the Agent service principal's grants. An unsupported topology, such as
-dedicated native OpenClaw without
-[native worker support](../harness-execution.md#native-worker-support), is
-refused with its capability error even when the Agent principal also lacks a
-grant. When only the Agent principal's grant is missing, the `403` names that
-`servicePrincipalId`, the action, and the exact Secret or credential source,
-for example `The Agent service principal <id> is not authorized to operate
-secret <id>`. Its audit event records your own request with reason code
-`AGENT_PRINCIPAL_NOT_AUTHORIZED` and names that principal, action, resource and
-IAM evidence in its details. Denials of your own permissions stay generic.
+Admission checks what the Installation supports before the Agent service
+principal's grants: an unsupported topology, such as dedicated native OpenClaw
+without [native worker support](../harness-execution.md#native-worker-support),
+gets its capability error even when the Agent principal lacks a grant.
+When only the Agent principal's grant is missing, the `403` names the Agent's
+missing grant and asks an Installation administrator to give it. It names the
+Secret or credential source only when you sent its ID or can read both it and
+the Agent. Its audit
+event records your request with reason code `AGENT_PRINCIPAL_NOT_AUTHORIZED`
+and names that principal, its grant and IAM evidence.
 Admission then asks Compute to check the Configuration's gateway settings. On
 Kubernetes, a gateway setting it refuses answers `409 RESOURCE_CONFLICT` naming
 the setting and what is accepted, never its value, before any version is created
@@ -279,10 +281,8 @@ are defined by the [API reference](../api.md).
 
 ## Stop and resume
 
-In the console, open the Agent, select **Stop Agent**, and confirm. Use
-**Refresh stop status** to reread its desired state and selected version.
-Resume through **Create new version** → **Deploy new version**. See the
-[console controls](../console.md#stop-and-resume-an-agent) for request recovery.
+In the console, use **Stop Agent**, and resume with **Deploy new version**; see the
+[console controls](../console.md#stop-and-resume-an-agent).
 
 `POST /namespaces/:namespaceId/agents/:agentId/stop` is bodyless and requires
 exact-Agent `operate`. A `202` response means OCC committed `desiredRuntimeState:
@@ -291,8 +291,7 @@ finished. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the immutable
-Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
+Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
 Agent revision nor calls destructive version retirement. Repeated stop requests
 converge safely, and one Agent's stop does not affect siblings.
 

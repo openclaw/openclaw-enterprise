@@ -245,6 +245,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "prePreparedAttemptSettlement";
   }
   if (count === 63) {
+    return "preGatewayManagedMode";
+  }
+  if (count === 64) {
     return "preCredentialSourceRetainedSecrets";
   }
   refuse("an incomplete or unsupported development history is installed");

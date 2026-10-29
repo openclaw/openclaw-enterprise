@@ -1,10 +1,14 @@
+---
+kind: reference/driver
+---
+
 # PluginDriver contract
 
 ## Overview
 
 `PluginDriver` supplies a curated catalog, policy capabilities, and policy
 validation for an Agent Harness. OpenClaw Control Plane (OCC) owns Agent
-selections, authorization, and immutable Agent revisions.
+selections, authorization, and Agent revisions.
 Compute owns native installation, runtime connections, readiness, activation,
 and retirement. Bundled startup code also translates selected policy into native
 configuration; those helpers are not methods on the exported Driver interface.
@@ -18,13 +22,31 @@ are not selectable. See [Driver selection](selection.md) and the
 
 ### Selection and catalogs
 
-The [shared interface](../../../packages/contracts/src/index.ts) exposes:
+The [shared interface](../../../packages/contracts/src/plugin.ts) exposes:
 
 - `policyCapabilities`: supported default/tool enablement, approval modes, and
   reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.
   An empty reviewer array means explicit selection is unsupported at that scope.
+  For IDs marked `enablement_only` in `policyScopeByPlugin`, adding the plugin
+  sets `enabled: true`. The next deployment applies that selection.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
+- `validatePlacement(selections, harness, computeImplementation, credentialRuntime)`
+  (optional): check whether the selected packages can run on this Harness and
+  Compute Driver. `credentialRuntime` gives the implementations of the selected
+  Sandbox Driver and Credential Gateway as `{sandbox, gateway}`; either can be
+  undefined. A plugin that needs a bound credential can refuse an Installation
+  that cannot deliver it. OCC checks placement before saving selections and
+  again when it admits deployment.
+- `credentials` (optional): credential slots for plugins that use an Agent's
+  [credential sources](../credential-sources.md). The Driver receives only source
+  metadata that OCC authorized, never credential values.
+  `choices(sources)` returns each slot with the attached ready sources that
+  match it. OCC returns them as `credentialSlots` in a dedicated Agent's plugin
+  capabilities. `validate(selections, sources, modelSourceId)` refuses a
+  binding that names no matching attached source, or the source that
+  authenticates the model. OCC calls it at Agent create, update, provisioning,
+  and deployment.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a
@@ -73,23 +95,30 @@ cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
 and its `/details` child. The selected Driver reports `pluginDiscovery.credential`
 in Installation capabilities as `required` or `none`. When required, supply
-exactly one credential source: `accessToken`, or `secretRef` with the standard
-`{kind, namespaceId, id}` Secret reference. When none is required, omit both.
+exactly one of `accessToken`, `secretRef`, or `credentialSource`. Stored references
+use `{kind, namespaceId, id}` with kind `secret` or `credential_source`.
+For credential-free discovery, omit all three.
 For details also provide `pluginId`; for discovery you can provide `q` (up to
 1,024 characters) and `cursor`. The Driver searches the complete catalog; an
 empty query lists it. Keep the same query while paging and omit the cursor when
 changing the query.
-Both routes require Agent `create` in the Namespace. A Secret reference must
-belong to that Namespace and additionally requires caller `operate` on the exact
-Secret. OCC reads the current value through the selected SecretDriver and passes
-it to the PluginDriver in server memory. The bundled Codex Driver derives the
-account ID from that PAT; clients do not provide an account ID. A Secret reference
-to another Namespace returns `400 INVALID_REQUEST`. A deleted Secret or backend
-ownership mismatch returns `404`, a denied grant returns
+Both routes require Agent `create` in the Namespace. Stored references must
+belong to that Namespace and require caller `operate` on the exact source.
+OCC uses SecretDriver `withValue` for Secrets and Credential Gateway
+`withSourceToken` for CredentialSources, passing credentials to the PluginDriver
+in server memory. For PAT discovery, the bundled Codex Driver derives the
+account ID from the PAT. Clients do not provide an account ID. A Secret reference
+to another Namespace returns `400 INVALID_REQUEST`. After caller authorization,
+a missing Secret returns `404`. A missing or non-ready explicitly selected
+CredentialSource returns `409 RESOURCE_CONFLICT`. A Secret backend ownership
+mismatch returns `404`, a denied grant returns
 `403`, and an unavailable backend returns a safe dependency error. A rejected PAT returns
 `PLUGIN_DISCOVERY_CREDENTIALS_REJECTED`; rotate the Secret and retry.
 
-Discovery performs no platform writes and returns `Cache-Control: no-store`.
+Discovery does not store catalog results and returns `Cache-Control: no-store`.
+Authorization denials emit `authorization_denial` audit events.
+The controller signals the selected Plugin Driver when the HTTP client
+disconnects during a catalog or detail request for a new or saved Agent.
 Credential values do not appear in catalog responses or audit events; responses
 that echo a credential are rejected. A missing PluginDriver method reports
 unsupported discovery, and a SecretDriver without transient value use cannot
@@ -122,8 +151,11 @@ requested IDs and policies, not credential values or native release metadata.
 At runtime, Compute and the bundled preparation helpers resolve current native
 metadata, translate supported policy, and apply it to the specified Agent revision
 before declaring readiness. Nonempty selections cannot start with a missing,
-changed, or Harness-incompatible Driver. An unsupported policy or unsafe native
-configuration prevents startup or leaves the version unready. Retries reuse the
+changed, or Harness-incompatible Driver. Agent save, provisioning and deployment
+refuse a Harness the Driver cannot run (`400`): bundled OpenClaw plugins need an
+OpenClaw Harness, bundled Codex plugins dedicated Codex or embedded OpenClaw.
+An unsupported policy or unsafe native configuration prevents startup or leaves
+the version unready. Retries reuse the
 requested IDs and policy; they may resolve a newer curated release at that later
 startup. Saving a selection is not evidence that it can start.
 

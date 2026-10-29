@@ -10,7 +10,7 @@
   ],
   "prepare": {
     "defaultEnv": {
-      "NODE_BASE_IMAGE": "docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0"
+      "NODE_BASE_IMAGE": "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a"
     },
     "requiresPreparedStateForFile": true,
     "requireEnv": ["NODE_BASE_IMAGE"],
@@ -79,6 +79,7 @@
         "production Helm values example renders the backendless default chart",
         "database routing refuses invalid ports before emitting NetworkPolicies",
         "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
+        "the plugin request guard installs beside OpenShell without control-plane access",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
         "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",

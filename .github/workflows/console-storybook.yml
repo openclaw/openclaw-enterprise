@@ -5,16 +5,26 @@ on:
     paths:
       - "apps/controller/src/console/**"
       - "apps/controller/src/console-assets.ts"
+      - "deploy/examples/console-theme/**"
+      - "deploy/presets/*.json"
       - "packages/contracts/src/preset-variables.mjs"
       - "scripts/console-storybook/**"
+      - "!scripts/console-storybook/evidence/**/*.png"
+      - "!scripts/console-storybook/evidence/**/*.mp4"
+      - "!scripts/console-storybook/evidence/**/*.webm"
       - ".github/workflows/console-storybook.yml"
   push:
     branches: [main]
     paths:
       - "apps/controller/src/console/**"
       - "apps/controller/src/console-assets.ts"
+      - "deploy/examples/console-theme/**"
+      - "deploy/presets/*.json"
       - "packages/contracts/src/preset-variables.mjs"
       - "scripts/console-storybook/**"
+      - "!scripts/console-storybook/evidence/**/*.png"
+      - "!scripts/console-storybook/evidence/**/*.mp4"
+      - "!scripts/console-storybook/evidence/**/*.webm"
       - ".github/workflows/console-storybook.yml"
   workflow_dispatch:
 
@@ -37,7 +47,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       - name: Install pinned pnpm
         run: npm install --global pnpm@11.15.1
       - name: Install Storybook dependencies

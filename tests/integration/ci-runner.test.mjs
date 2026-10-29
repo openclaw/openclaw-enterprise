@@ -1,21 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  realpath,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  collectNativeWorkerFailure,
+  nativeWorkerPlacementObservation,
+  nativeWorkerTurnObservation,
+} from "../helpers/local-first-agent-native.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
@@ -26,8 +23,7 @@ const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-runner-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "ci-runner-");
   await mkdir(join(root, "scripts/ci"), { recursive: true });
   await mkdir(join(root, "tests/integration"), { recursive: true });
   await mkdir(join(root, "results"), { recursive: true });
@@ -302,6 +298,94 @@ test("run resolves lane documents relative to the manifest and preserves ordered
   assert.match(await readFile(statePath, "utf8"), /first\.test\.mjs/);
 });
 
+test("focused runs retain case enforcement and cleanup but cannot complete a full lane", async (t) => {
+  const root = await fixture(t);
+  await writePrepare(root);
+  const selectedPath = "tests/integration/first.test.mjs";
+  const selected = { path: selectedPath, expectedTests: ["required case"] };
+  await writeFile(
+    join(root, selectedPath),
+    'import test from "node:test"; test("required case", () => {});\n',
+  );
+  await writeFile(
+    join(root, "tests/integration/second.test.mjs"),
+    'throw new Error("unselected file executed");\n',
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      baseline: { files: [selected, { path: "tests/integration/second.test.mjs" }] },
+      single: { files: [selected] },
+    },
+    groups: { ci: ["baseline"] },
+  });
+  const args = (lane) => [
+    "run",
+    lane,
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    `state/${lane}.jsonl`,
+    "--results",
+    `results/${lane}.json`,
+    "--file",
+    selectedPath,
+  ];
+  for (const lane of ["baseline", "single"]) {
+    const result = run(root, args(lane));
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(await readFile(join(root, `results/${lane}.json`), "utf8"));
+    assert.equal(summary.scope, "focused");
+    assert.deepEqual(
+      summary.files.map((file) => file.path),
+      [selectedPath],
+    );
+    assert.equal(summary.files[0].cleanup.status, "passed");
+    assert.equal(await readFile(join(root, `state/${lane}.jsonl`), "utf8"), `${selectedPath}\n`);
+    // Even a one-file lane cannot turn explicitly focused proof into full qualification.
+    const aggregated = run(root, [
+      "aggregate",
+      lane,
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--results-dir",
+      "results",
+    ]);
+    assert.equal(aggregated.status, 1, aggregated.stderr);
+    const evidence = JSON.parse(aggregated.stdout);
+    assert.ok(evidence.issues.some(({ code }) => code === "focused-lane-evidence"));
+    if (lane === "baseline") {
+      assert.ok(evidence.issues.some(({ code }) => code === "missing-lane-evidence"));
+    }
+  }
+  // A green Node process is insufficient when the selected file omits its required case.
+  await writeFile(
+    join(root, selectedPath),
+    'import test from "node:test"; test("different case", () => {});\n',
+  );
+  const missing = run(root, args("baseline"));
+  assert.equal(missing.status, 1, missing.stderr);
+  const summary = JSON.parse(await readFile(join(root, "results/baseline.json"), "utf8"));
+  assert.ok(summary.issues.some(({ code }) => code === "missing-expected-test"));
+  assert.equal(summary.files[0].cleanup.status, "passed");
+  const stateBefore = await readFile(join(root, "state/baseline.jsonl"), "utf8");
+  for (const path of [
+    "tests/integration/unknown.test.mjs",
+    "tests/integration/../integration/first.test.mjs",
+  ]) {
+    const invalid = run(root, [...args("baseline").slice(0, -1), path]);
+    assert.equal(invalid.status, 1, invalid.stderr);
+    const rejected = JSON.parse(await readFile(join(root, "results/baseline.json"), "utf8"));
+    assert.deepEqual(rejected.files, []);
+    assert.ok(rejected.issues.some(({ code }) => code === "invalid-file-selection"));
+    assert.equal(await readFile(join(root, "state/baseline.jsonl"), "utf8"), stateBefore);
+  }
+});
+
 test("run preserves nonzero child Node exits and rejects zero-case files", async (t) => {
   const root = await fixture(t);
   await writeJson(join(root, "manifest.json"), {
@@ -356,6 +440,76 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
     ["selected-zero"],
   );
 });
+
+test(
+  "run annotates the first failed file before the lane finishes",
+  { timeout: 30_000 },
+  async (t) => {
+    const root = await fixture(t);
+    const first = "first.test.mjs";
+    const second = "second.test.mjs";
+    const files = [first, second].map((path) => ({ path }));
+    await writePrepare(root);
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: { sample: { files } },
+      groups: {},
+    });
+    await writeFile(
+      join(root, first),
+      'import test from "node:test";\ntest("private-case-canary", () => { throw new Error("::warning::private-message-canary"); });\n',
+    );
+    // Hold another failing file open to distinguish live reporting from a final summary.
+    const release = join(root, "release");
+    await writeFile(
+      join(root, second),
+      `import { existsSync } from "node:fs";
+     import { setTimeout } from "node:timers/promises";
+     import test from "node:test";
+     test("second failure", {timeout: 20000}, async () => {
+       while (!existsSync(${JSON.stringify(release)})) await setTimeout(50);
+       throw new Error("second failure");
+     });\n`,
+    );
+    const args = [
+      "run",
+      "sample",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/lane.jsonl",
+      "--results",
+      "results/sample.json",
+    ];
+    const child = spawn(process.execPath, [runnerPath, ...args], {
+      env: runnerEnv({ GITHUB_ACTIONS: "true" }),
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    const closed = new Promise((resolve, reject) =>
+      child.once("error", reject).once("close", resolve),
+    );
+    let code;
+    const commands = () => stderr.match(/^::.*$/gm) ?? [];
+    try {
+      // Match the entire workflow command: no child-controlled text or extra commands.
+      assert.ok(await waitFor(() => /^::.*\n/m.test(stderr), 10_000), "live workflow command");
+      assert.deepEqual(commands(), [
+        "::error title=Test lane failure::A test file reported failed tests and its cleanup passed. Final lane results will follow.",
+      ]);
+    } finally {
+      await writeFile(release, "");
+      code = await closed;
+    }
+    assert.equal(code, 1);
+    assert.equal(commands().length, 1);
+    assert.equal(await readFile(join(root, "state/lane.jsonl"), "utf8"), `${first}\n${second}\n`);
+    const result = JSON.parse(await readFile(join(root, "results/sample.json"), "utf8"));
+    assert.equal(result.counts.failed, 2);
+  },
+);
 
 test("run records a sanitized file failure after all reported cases pass", async (t) => {
   const root = await fixture(t);
@@ -414,11 +568,15 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     join(root, "tests/integration/skips.test.mjs"),
     [
       'import assert from "node:assert/strict";',
-      'import test from "node:test";',
+      'import test, { describe } from "node:test";',
       'test("ordinary pass", () => assert.equal(1, 1));',
       'test("expected but skipped", { skip: "not allowed for expected" }, () => {});',
       'test("unexpected skipped case", { skip: "missing prerequisite" }, () => {});',
       'test("todo case", { todo: "missing prerequisite" }, () => {});',
+      // A skipped suite reports no test event for the cases it never registered.
+      'describe("skipped suite", { skip: "missing prerequisite" }, () => {',
+      '  test("hidden case", () => assert.fail("must not run"));',
+      "});",
       "",
     ].join("\n"),
   );
@@ -482,12 +640,14 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
     "unexpected-skip",
+    "unexpected-skip",
   ]);
   // Every issue is named in the job log, which keeps every attempt.
   for (const line of [
     "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
     "run-tests: issue expected-test-not-passed tests/integration/skips.test.mjs: expected test did not pass: expected but skipped",
     "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected test did not run to completion: todo case",
+    "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected suite did not run its tests: skipped suite",
   ]) {
     assert.ok(selected.stderr.split("\n").includes(line), line);
   }
@@ -1098,6 +1258,226 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   const root = await fixture(t);
   const resultsPath = join(root, "results/redacted.json");
   const secret = "secretauthvalue";
+  // This marker is deliberately absent from the redactor's environment secrets.
+  // The native projector and reporter must remove it themselves.
+  const nativePrivate = "private-native-observation-marker";
+  const nativeWorker = nativeWorkerPlacementObservation({
+    placement: {
+      state: "failed",
+      recoveryError: `Worker tunnel did not connect within 3 minutes; ${nativePrivate}`,
+      terminalReason: { message: nativePrivate },
+      remoteWorkspaceDir: nativePrivate,
+      session: nativePrivate,
+    },
+    environment: {
+      id: nativePrivate,
+      worker: {
+        state: "failed",
+        tunnelStatus: "stopped",
+        error: nativePrivate,
+        attachedSessionIds: [nativePrivate],
+      },
+    },
+    nodes: [
+      { nodeId: "unrelated-node", connected: true, caps: [nativePrivate] },
+      {
+        nodeId: nativePrivate,
+        connected: false,
+        paired: true,
+        sessionHost: true,
+        caps: ["system", nativePrivate],
+        commands: [nativePrivate],
+        workerBundle: { status: "installed", version: nativePrivate },
+      },
+    ],
+    expectedNodeId: nativePrivate,
+    sessionId: nativePrivate,
+    environmentLookup: "found",
+    nodeLookup: "found",
+    elapsedMs: 180488,
+  });
+  const wrappedNativeWorker = nativeWorkerPlacementObservation({
+    placement: {
+      state: "failed",
+      recoveryError: `Worker node bootstrap failed: OpenClaw worker deploy artifact is missing; build the running package at ${nativePrivate}`,
+      terminalReason: `Worker node bootstrap failed: Device worker bundle installation failed: ${nativePrivate}`,
+    },
+    environment: {
+      worker: {
+        error:
+          "Worker provider preparation failed: Device worker node is not connected with the installer dialect",
+      },
+    },
+  });
+  // A retained session can acquire a new owner during send. Exercise the real
+  // collector with public RPC-shaped observations, then retain its result through CI.
+  const nativeSession = { key: "agent:main:retained-proof", sessionId: "retained-proof" };
+  const lastPlacement = { state: "active", environmentId: "previous-owner" };
+  const collectRetained = (refresh) =>
+    collectNativeWorkerFailure({
+      session: nativeSession,
+      lastPlacement,
+      elapsedMs: 3000,
+      request: async (method, params) => {
+        if (method === "node.list") {
+          return { nodes: [] };
+        }
+        if (method === "sessions.describe") {
+          if (refresh === "rejected") {
+            throw new Error(nativePrivate);
+          }
+          return {
+            session: {
+              sessionId: refresh === "mismatched" ? "different-session" : nativeSession.sessionId,
+              placement: { state: "failed", environmentId: "replacement-owner" },
+            },
+          };
+        }
+        if (method === "environments.status") {
+          return params.environmentId === "replacement-owner"
+            ? { id: "replacement-owner", worker: { state: "failed", tunnelStatus: "stopped" } }
+            : { id: "previous-owner", worker: { state: "attached", tunnelStatus: "connected" } };
+        }
+        throw new Error("Unexpected diagnostic RPC");
+      },
+    });
+  const freshNativeWorker = await collectRetained("fresh");
+  const fallbackNativeWorker = await collectRetained("rejected");
+  const mismatchedNativeWorker = await collectRetained("mismatched");
+  const diagnosticSignals = new Set();
+  const collectedTurn = await collectNativeWorkerFailure({
+    session: nativeSession,
+    runId: "selected-run",
+    outcome: { status: "error", error: `fetch failed: ${nativePrivate}` },
+    request: async (method, params, options) => {
+      diagnosticSignals.add(options.signal);
+      assert.equal(options.timeoutMs, 5000);
+      if (method === "node.list") {
+        return { nodes: [] };
+      }
+      if (method === "sessions.describe") {
+        return { session: { sessionId: nativeSession.sessionId } };
+      }
+      assert.equal(method, "chat.history");
+      assert.deepEqual(params, { sessionKey: nativeSession.key, limit: 30 });
+      return { messages: [] };
+    },
+  });
+  assert.equal(diagnosticSignals.size, 1, "Failure reads must share one deadline");
+  // Keep foreign turns and private error suffixes out of the real reporter artifact.
+  const turnCases = [
+    ["Incorrect API key provided", "model-authentication"],
+    ["insufficient_quota", "model-rate-or-quota"],
+    ["Worker model is not approved for this session", "model-unavailable"],
+    ["exec denied by security policy", "tool-policy"],
+    ["EACCES: permission denied", "filesystem-permission"],
+    ["Cannot find module", "file-or-command-missing"],
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "tls-validation"],
+    ["fetch failed", "network-connection"],
+    ["Worker turn authority changed while preparing its launch", "worker-authority"],
+    ["Worker tunnel does not support worker turns", "worker-transport"],
+    ["HTTP 401", "http-unauthorized"],
+    ["HTTP 403", "http-forbidden"],
+    ["HTTP 429", "http-rate-limit"],
+  ];
+  const turnDiagnostics = turnCases.map(([message, category]) => ({
+    name: `native turn ${category}`,
+    diagnostic: {
+      kind: "native-first-agent-proof",
+      failureStage: "model-outcome",
+      worker: nativeWorkerTurnObservation({
+        outcome: { status: "error", error: `${message}: ${nativePrivate}`, stopReason: "error" },
+        error: new Error(nativePrivate),
+        runId: "selected-run",
+        historyLookup: "found",
+        messages: [
+          { role: "assistant", errorMessage: nativePrivate, __openclaw: { runId: "foreign-run" } },
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: `${message}: ${nativePrivate}`,
+            __openclaw: { runId: "selected-run" },
+          },
+          {
+            role: "toolResult",
+            toolName: "exec",
+            isError: true,
+            content: [{ type: "text", text: `${message}: ${nativePrivate}` }],
+            __openclaw: { runId: "selected-run" },
+          },
+          {
+            role: "toolResult",
+            toolName: "exec",
+            isError: true,
+            content: nativePrivate,
+            __openclaw: { runId: "foreign-run" },
+          },
+        ],
+      }),
+    },
+  }));
+  // Installer errors add one more fixed wrapper. Exercise distinct transfer,
+  // extraction, storage and prewarm failures without retaining their private details.
+  const nativeLeafCases = [
+    ["gateway returned 401", "bundle-http-401"],
+    ["gateway returned 403", "bundle-http-403"],
+    ["gateway returned 404", "bundle-http-404"],
+    ["gateway returned 429", "bundle-http-client-error"],
+    ["gateway returned 503", "bundle-http-server-error"],
+    ["gateway returned 0", "bundle-http-unexpected-status"],
+    ["gateway returned an unexpected worker bundle range", "bundle-range-invalid"],
+    ["gateway returned an unexpected worker bundle length", "bundle-transfer-length-invalid"],
+    [
+      "worker bundle download stopped after 3 consecutive no-progress failures",
+      "bundle-download-no-progress",
+    ],
+    ["prepared worker bundle archive has an unexpected length", "bundle-archive-length-invalid"],
+    ["worker bundle archive exceeded its byte limit", "bundle-archive-too-large"],
+    ["worker bundle transfer response exceeded its byte limit", "bundle-response-too-large"],
+    ["worker bundle archive failed integrity validation", "bundle-archive-integrity-failed"],
+    ["published worker bundle failed validation", "bundle-published-invalid"],
+    ["gateway TLS fingerprint mismatch", "bundle-tls-mismatch"],
+    ["Cloudflare Access credentials require HTTPS", "bundle-https-required"],
+    ["gateway transfer is unavailable", "bundle-transfer-unavailable"],
+    [
+      "Worker bundle archive manifest does not match its expected hash",
+      "bundle-manifest-hash-mismatch",
+    ],
+    ["Extracted worker bundle does not match its expected hash", "bundle-extracted-hash-mismatch"],
+    ["Invalid worker bundle archive path:", "bundle-entry-invalid"],
+    ["Worker bundle archive exceeds its entry limit", "bundle-extraction-limit"],
+    ["Worker bundle contains a symbolic link:", "bundle-symlink-refused"],
+    ["Worker bundle file changed while hashing:", "bundle-file-changed"],
+    ["EACCES: permission denied", "bundle-storage-access-denied"],
+    ["EPERM: operation not permitted", "bundle-operation-denied"],
+    ["EROFS: read-only file system", "bundle-storage-readonly"],
+    ["ENOSPC: no space left on device", "bundle-storage-full"],
+    ["ENOENT: no such file or directory", "bundle-file-missing"],
+    ["Command failed:", "bundle-prewarm-failed"],
+    ["INVALID_REQUEST: invalid node worker bundle install request", "bundle-request-invalid"],
+  ];
+  const nativeLeafDiagnostics = nativeLeafCases.map(([message, category]) => ({
+    name: `native installer ${category}`,
+    diagnostic: {
+      kind: "native-first-agent-proof",
+      failureStage: "required-placement-terminal-failed",
+      worker: nativeWorkerPlacementObservation({
+        placement: {
+          state: "failed",
+          recoveryError: `Worker node bootstrap failed: Device worker bundle installation failed: ${category === "bundle-request-invalid" ? "" : "worker-bundle-install-failed: "}${message} ${nativePrivate}`,
+        },
+      }),
+    },
+  }));
+  // An unknown outer message is not permission to search arbitrary private text for a cause.
+  assert.equal(
+    nativeWorkerPlacementObservation({
+      placement: {
+        recoveryError: `${nativePrivate}: Worker node bootstrap failed: OpenClaw worker deploy artifact is missing; build the running package`,
+      },
+    }).recoveryError,
+    "other",
+  );
   const relayPodCases = [
     {
       name: "retains closed relay Pod status without payloads",
@@ -1520,6 +1900,83 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           diagnostic: { kind: "runtime-image-stock-broker", stage: `${secret}-stage` },
         },
         {
+          name: "retains native first-Agent proof failure stage",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement",
+            output: `${secret}-output`,
+          },
+        },
+        {
+          name: "retains a terminal native first-Agent placement stage",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement-terminal-reclaimed",
+          },
+        },
+        {
+          name: "retains native worker placement observations through CI",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement-terminal-failed",
+            worker: { ...nativeWorker, recoveryErrorDetail: nativePrivate, session: nativePrivate },
+            environmentId: nativePrivate,
+            workspace: nativePrivate,
+          },
+        },
+        {
+          name: "rejects hostile native worker diagnostic fields",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement",
+            worker: {
+              placementState: nativePrivate,
+              recoveryError: { message: nativePrivate },
+              environmentLookup: { value: nativePrivate },
+              expectedNodeConnected: nativePrivate,
+              expectedNodeMatches: 4097,
+              nodeCount: -1,
+              elapsedMs: 3_600_001,
+              session: nativePrivate,
+              turnStatus: nativePrivate,
+              turnError: { message: nativePrivate },
+              assistantError: nativePrivate,
+              execError: nativePrivate,
+              execResultCount: 4097,
+            },
+          },
+        },
+        {
+          name: "retains wrapped native worker bootstrap causes through CI",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement-terminal-failed",
+            worker: wrappedNativeWorker,
+          },
+        },
+        ...[
+          ["refreshes retained native placement", freshNativeWorker],
+          ["labels fallback after failed native placement refresh", fallbackNativeWorker],
+          ["rejects another session during native placement refresh", mismatchedNativeWorker],
+        ].map(([name, worker]) => ({
+          name,
+          diagnostic: { kind: "native-first-agent-proof", failureStage: "model-and-exec", worker },
+        })),
+        ...nativeLeafDiagnostics,
+        ...turnDiagnostics,
+        {
+          name: "collects native turn failure within the shared read budget",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: collectedTurn,
+          },
+        },
+        {
+          name: "rejects unknown native first-Agent proof stage",
+          diagnostic: { kind: "native-first-agent-proof", failureStage: `${secret}-stage` },
+        },
+        {
           name: "retains safe monitoring readiness evidence",
           diagnostic: {
             kind: "metrics-monitoring",
@@ -1635,6 +2092,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   const details = await readFile(join(root, "state/redacted.jsonl.diagnostics.json"), "utf8");
   const cliAndArtifact = `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}\n${details}`;
   assert.doesNotMatch(cliAndArtifact, /secretauthvalue|strippedjobvalue42/);
+  assert.ok(!cliAndArtifact.includes(nativePrivate));
   assert.ok(JSON.parse(details).failures[0].tests.length > 0);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].tests[0].name, "redacted failure locator");
@@ -1746,6 +2204,111 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     (entry) => entry.name === "rejects unsafe runtime stock broker stage",
   );
   assert.equal(unsafeStockBroker.error.diagnostic, undefined);
+  const nativeProof = summary.files[0].tests.find(
+    (entry) => entry.name === "retains native first-Agent proof failure stage",
+  );
+  assert.equal(nativeProof.status, "failed");
+  assert.deepEqual(nativeProof.error.diagnostic, {
+    kind: "native-first-agent-proof",
+    failureStage: "required-placement",
+  });
+  const terminalPlacement = summary.files[0].tests.find(
+    (entry) => entry.name === "retains a terminal native first-Agent placement stage",
+  );
+  assert.deepEqual(terminalPlacement.error.diagnostic, {
+    kind: "native-first-agent-proof",
+    failureStage: "required-placement-terminal-reclaimed",
+  });
+  const retainedNative = summary.files[0].tests.find(
+    (entry) => entry.name === "retains native worker placement observations through CI",
+  ).error.diagnostic;
+  assert.deepEqual(retainedNative, {
+    kind: "native-first-agent-proof",
+    failureStage: "required-placement-terminal-failed",
+    worker: {
+      placementState: "failed",
+      recoveryError: "tunnel-timeout",
+      terminalReason: "other",
+      workspaceReferencePresent: true,
+      environmentLookup: "found",
+      environmentState: "failed",
+      environmentError: "other",
+      tunnelStatus: "stopped",
+      attachedSessionCount: 1,
+      attachedSessionMatches: true,
+      nodeLookup: "found",
+      nodeCount: 2,
+      connectedNodeCount: 1,
+      expectedNodeIdPresent: true,
+      expectedNodeMatches: 1,
+      expectedNodeConnected: false,
+      expectedNodePaired: true,
+      expectedNodeSessionHost: true,
+      expectedNodeCaps: 2,
+      expectedNodeCommands: 1,
+      expectedNodeWorkerBundle: "installed",
+      elapsedMs: 180488,
+    },
+  });
+  assert.deepEqual(
+    summary.files[0].tests.find(
+      (entry) => entry.name === "rejects hostile native worker diagnostic fields",
+    ).error.diagnostic.worker,
+    {
+      placementState: "other",
+      recoveryError: "other",
+      environmentLookup: "other",
+      turnStatus: "other",
+      turnError: "other",
+      assistantError: "other",
+      execError: "other",
+    },
+  );
+  for (const [, category] of turnCases) {
+    const turn = summary.files[0].tests.find((entry) => entry.name === `native turn ${category}`)
+      .error.diagnostic.worker;
+    assert.equal(turn.turnStatus, "error");
+    assert.equal(turn.turnError, category);
+    assert.equal(turn.assistantError, category);
+    assert.equal(turn.execError, category);
+    assert.equal(turn.proofError, "other");
+    assert.equal(turn.execResultCount, 1);
+    assert.equal(turn.execFailureCount, 1);
+  }
+  const collected = summary.files[0].tests.find(
+    (entry) => entry.name === "collects native turn failure within the shared read budget",
+  ).error.diagnostic.worker;
+  assert.equal(collected.turnError, "network-connection");
+  assert.equal(collected.historyLookup, "found");
+  const wrapped = summary.files[0].tests.find(
+    (entry) => entry.name === "retains wrapped native worker bootstrap causes through CI",
+  ).error.diagnostic.worker;
+  assert.equal(wrapped.recoveryError, "worker-deploy-artifact-missing");
+  assert.equal(wrapped.terminalReason, "bundle-install-failed");
+  assert.equal(wrapped.environmentError, "node-installer-disconnected");
+  const fresh = summary.files[0].tests.find(
+    (entry) => entry.name === "refreshes retained native placement",
+  ).error.diagnostic.worker;
+  assert.equal(fresh.placementLookup, "fresh");
+  assert.equal(fresh.placementState, "failed");
+  assert.equal(fresh.environmentState, "failed");
+  assert.equal(fresh.tunnelStatus, "stopped");
+  for (const name of [
+    "labels fallback after failed native placement refresh",
+    "rejects another session during native placement refresh",
+  ]) {
+    const fallback = summary.files[0].tests.find((entry) => entry.name === name).error.diagnostic
+      .worker;
+    assert.equal(fallback.placementLookup, "fallback");
+    assert.equal(fallback.placementState, "active");
+    assert.equal(fallback.environmentState, "attached");
+  }
+  for (const [, category] of nativeLeafCases) {
+    const leaf = summary.files[0].tests.find(
+      (entry) => entry.name === `native installer ${category}`,
+    );
+    assert.equal(leaf.error.diagnostic.worker.recoveryError, category);
+  }
   const monitoringFailure = summary.files[0].tests.find(
     (entry) => entry.name === "retains safe monitoring readiness evidence",
   );
@@ -1797,6 +2360,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     assert.deepEqual(nodeFailure.error.diagnostic.relayNode, expected, name);
   }
   for (const name of [
+    "rejects unknown native first-Agent proof stage",
     "rejects unsafe repository platform setup stage",
     "rejects nonstring repository platform setup stage",
     "rejects unknown setup diagnostic kind",
@@ -1911,6 +2475,52 @@ test("failure text is bounded and redacts env values and credential shapes", asy
   assert.doesNotMatch(straddle.message, /jobonly/);
   assert.equal((await render("thrown string")).message, "thrown string");
   assert.equal((await render(undefined)).message, undefined);
+  assert.equal((await render(42)).message, "42");
+});
+
+// Finding 2785: a DOMException (a fetch timeout or abort) crosses node:test's process
+// boundary as a bare stack with an empty message, so its failure had no text at all.
+test("run names DOMException and empty-message failures", async (t) => {
+  const root = await fixture(t);
+  const file = "tests/integration/errors.test.mjs";
+  const resultsPath = join(root, "results/errors.json");
+  await writeFile(
+    join(root, file),
+    [
+      'import test from "node:test";',
+      'test("timeout", () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); });',
+      'test("abort", () => { const controller = new AbortController(); controller.abort(); throw controller.signal.reason; });',
+      'test("empty", () => { throw new Error(""); });',
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { errors: { files: [{ path: file }] } },
+    groups: { ci: ["errors"] },
+  });
+
+  const result = run(root, laneArgs(root, "errors", "state/errors.jsonl", resultsPath));
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const failure = (name) => summary.files[0].tests.find((entry) => entry.name === name).error;
+  // The stack header names the exception, and the frame skips Node's DOMException constructor.
+  for (const [name, message, line] of [
+    ["timeout", "TimeoutError: The operation was aborted due to timeout", 2],
+    ["abort", "AbortError: This operation was aborted", 3],
+    ["empty", "Error", 4],
+  ]) {
+    assert.equal(failure(name).message, message);
+    assert.match(
+      failure(name).frame,
+      new RegExp(`\\(${file.replaceAll(".", "\\.")}:${line}:\\d+\\)$`),
+    );
+  }
+  // The job log names the failure too.
+  assert.match(
+    result.stderr,
+    /run-tests: failed tests\/integration\/errors\.test\.mjs:2 "timeout": TimeoutError: The operation was aborted due to timeout \(at /,
+  );
 });
 
 test("the reporter forwards a failed file's output tail and whole stack only", async () => {
@@ -3477,7 +4087,21 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     second: "2026-09-29T00:00:10",
     laterCount: 196,
   });
+  const repeatedSeries = {
+    metadata: {
+      namespace: "occ-agent-a",
+      name: "repeated-series.event",
+      uid: "repeated-series",
+    },
+    involvedObject: { kind: "Pod", name: "harness-0", namespace: "occ-agent-a" },
+    type: "Warning",
+    reason: "RepeatedSeries",
+    message: "Repeated event",
+    eventTime: "2026-09-29T00:00:01Z",
+    series: { count: 7, lastObservedTime: "2026-09-29T00:20:00Z" },
+  };
   const events = [
+    { type: "ADDED", object: repeatedSeries },
     ...boundary.events.map((object) => ({ type: "ADDED", object })),
     event("occ-agent-a", "e1", "Pulled", "Successfully pulled image"),
     event("occ-agent-a", "e2", "Unhealthy", "Readiness probe failed"),
@@ -3599,20 +4223,26 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     ],
   );
   assert.equal(activity.events.length, 200);
-  assert.equal(activity.events[0].reason, boundary.newer.reason);
+  assert.equal(activity.events[0].reason, boundary.events[2].reason);
   assert.equal(
     activity.events.some(({ reason }) => reason === boundary.older.reason),
     false,
   );
-  assert.equal(activity.omitted.events, 1);
+  assert.equal(
+    activity.events.some(({ reason }) => reason === boundary.newer.reason),
+    false,
+  );
+  assert.equal(activity.omitted.events, 2);
   assert.deepEqual(
-    activity.events.slice(-3).map(({ reason, count }) => [reason, count]),
+    activity.events.slice(-4).map(({ reason, count }) => [reason, count]),
     [
       ["Pulled", 1],
       ["Failed", 1],
       ["Unhealthy", 3],
+      ["RepeatedSeries", 7],
     ],
   );
+  assert.equal(activity.events.at(-1).lastTimestamp, repeatedSeries.series.lastObservedTime);
   assert.doesNotMatch(text, /do-not-publish|unrelated system event/);
   // Raw watch streams hold full Pod specs; only the projection survives.
   assert.deepEqual(await readdir(clusterDirectory), []);
@@ -3763,12 +4393,47 @@ test("k3d diagnostics preserve equal-instant event order across precision varian
           newer,
         ],
       },
+      {
+        events: [
+          {
+            metadata: { namespace: "occ-agent-a", uid: "repeated-series" },
+            involvedObject: { kind: "Pod", name: "harness-0", namespace: "occ-agent-a" },
+            type: "Warning",
+            reason: "RepeatedSeries",
+            message: "Repeated event",
+            eventTime: "2026-10-21T00:00:01Z",
+            series: { count: 7, lastObservedTime: "2026-10-21T00:10:00Z" },
+          },
+          ...Array.from({ length: 200 }, (_, index) => ({
+            metadata: { namespace: "occ-agent-a", uid: `intervening-${index}` },
+            involvedObject: { kind: "Pod", name: "harness-0", namespace: "occ-agent-a" },
+            type: "Normal",
+            reason: `Intervening${index}`,
+            message: "Intervening event",
+            count: 1,
+            eventTime: new Date(
+              Date.parse("2026-10-21T00:00:01Z") + (index + 1) * 1_000,
+            ).toISOString(),
+          })),
+        ],
+      },
     ],
   });
   assert.deepEqual(
     projected.snapshots[0].events.map(({ reason }) => reason),
     [older.reason, "EqualFractional", newer.reason],
   );
+  assert.deepEqual(projected.snapshots[1].events.at(-1), {
+    namespace: "occ-agent-a",
+    kind: "Pod",
+    name: "harness-0",
+    type: "Warning",
+    reason: "RepeatedSeries",
+    message: "Repeated event",
+    count: 7,
+    firstTimestamp: "2026-10-21T00:00:01Z",
+    lastTimestamp: "2026-10-21T00:10:00Z",
+  });
 });
 
 test("audit fails when a referenced lane cannot be loaded", async (t) => {
@@ -4677,6 +5342,34 @@ for (const scenario of [
       code: "CI_PREPARATION_COMMAND_FAILED",
       stage: "database-schema",
       failure: "spawn",
+    },
+  },
+  // A refused statement or no session, from the direct connection to the lane's server
+  // (scripts/ci/postgres-admin.mjs), which has no process exit code or signal.
+  {
+    name: "query",
+    input: {
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-create",
+      failure: "query",
+      timedOut: false,
+    },
+    expected: {
+      name: "Error",
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-create",
+      failure: "query",
+      timedOut: false,
+    },
+  },
+  {
+    name: "connect",
+    input: { code: "CI_PREPARATION_COMMAND_FAILED", stage: "database-schema", failure: "connect" },
+    expected: {
+      name: "Error",
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-schema",
+      failure: "connect",
     },
   },
   {

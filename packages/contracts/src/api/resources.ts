@@ -16,6 +16,7 @@ import {
   CredentialSourceReference,
   CredentialSourceSecrets,
   CredentialSourceType,
+  GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
@@ -210,6 +211,7 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
+    policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
     approvers: Type.Optional(
       Type.Object(
         { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
@@ -248,6 +250,25 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
+        credentialSlots: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                pluginId: Type.String(),
+                releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+                id: Type.String(),
+                label: Type.String(),
+                sources: Type.Array(
+                  Type.Object(
+                    { id: CredentialSourceId, name: Type.String() },
+                    { additionalProperties: false },
+                  ),
+                ),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        ),
       },
       { additionalProperties: false },
     ),
@@ -327,8 +348,18 @@ const InstallationCapabilitiesSchema = Type.Object(
             maxItems: 2,
             uniqueItems: true,
             description:
-              "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save also refuses Embedded with a selected Sandbox Driver, but saves Dedicated without one that can provision it; deploy refuses that. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither.",
+              "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither.",
           }),
+          settingRefusals: Type.Optional(
+            Type.Object(
+              { dedicated: Type.Optional(Type.String({ minLength: 1 })) },
+              {
+                additionalProperties: false,
+                description:
+                  "Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing.",
+              },
+            ),
+          ),
           sandboxDriverUnavailable: Type.Optional(
             Type.Literal(true, {
               description:
@@ -381,6 +412,7 @@ export const AgentSchema = Type.Object(
     harnessAuth: Type.Union([HarnessAuthBindingSchema, Type.Null()]),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
+    gatewayManagedMode: GatewayManagedModeSchema,
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingSelectionsSchema),
@@ -560,10 +592,29 @@ export const SecretConsumersSchema = Type.Object(
   },
 );
 
+export const SecretCallerPermissionsSchema = Type.Object(
+  {
+    update: Type.Boolean({
+      description:
+        "Whether the selected IAM Driver allows you to replace this Secret's value now (Secret update). Advisory only: lifecycle state or a later authorization decision can still prevent the operation.",
+    }),
+    delete: Type.Boolean({
+      description:
+        "Whether the selected IAM Driver allows you to delete this Secret now (Secret delete). Advisory only: current references, lifecycle state or a later authorization decision can still prevent the operation.",
+    }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "What the selected IAM Driver allows you to do to this Secret now. Checking it records no authorization denial. Returned by the exact Secret read only.",
+  },
+);
+
 export const SecretDetailSchema = Type.Object(
   {
     ...SecretSchema.properties,
     consumers: SecretConsumersSchema,
+    callerPermissions: SecretCallerPermissionsSchema,
   },
   { additionalProperties: false },
 );
@@ -711,6 +762,80 @@ export const AgentCallerPermissionsResponse = Type.Object(
           description:
             "Whether the selected IAM Driver allows Agent delete now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
         }),
+        administer: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent administer now, which native admin UI access needs. Advisory only: other required permissions (native admin UI also needs a signed-in console session), lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        configurationUpdate: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows update of the Agent's Configuration now, which saving its draft Configuration needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        configurationRead: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows read of the Agent's Configuration now, which each Agent update needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        configurationSecretsOperate: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds: the Secrets in its `secretBindings`, or every bound Secret when it omits them. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        configurationSecretsOperateDeniedBindings: Type.Array(Type.String({ minLength: 1 }), {
+          maxItems: 64,
+          description:
+            "The names of the Agent's Configuration Secret bindings whose bound Secret the selected IAM Driver does not allow Secret operate on now, sorted. A Configuration save that submits `secretBindings` needs Secret operate only on the Secrets it submits, so a save that binds each listed name to another Secret does not need it on the Secrets they bind now. A save that omits `secretBindings` keeps every binding. Empty when `configurationSecretsOperate` is `true`, and when it is not reported: reported only to a caller with Configuration read and update. Advisory only: other required permissions, lifecycle state, the Secrets a save binds, or a later authorization decision can still prevent the operation.",
+        }),
+        agentSourcesOperate: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows, now, the source grants that each Agent update checks: Secret operate on every Secret that the Agent's Configuration binds and on a Secret Harness authentication source, credential source operate on every credential source the Agent lists or uses for Harness authentication, and ServiceAccount read on a ServiceAccount Harness authentication source. `true` when the Agent and its Configuration bind no source. Reported only to a caller with Agent update and Configuration read whose Agent settings are readable; otherwise `false`. Advisory only: other required permissions, lifecycle state, sources that an update adds, or a later authorization decision can still prevent the operation.",
+        }),
+        sandboxPolicyRead: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows read now on the Agent's sandbox policy, which reading its network policy and policy suggestions needs. Advisory only: other required permissions, Sandbox Driver support, or a later authorization decision can still prevent the read.",
+        }),
+        readLogs: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows reading the Agent's runtime log text now: Agent `read_logs`, or Agent `administer` when no Restriction denies `read_logs`. Advisory only: other required permissions, Compute Driver support, or a later authorization decision can still prevent the read.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+// Kept apart from the Agent answer, which list pages read for each row: this one reads every
+// readable Secret in the Namespace.
+export const AgentSecretPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        operateDenied: Type.Array(Type.String({ minLength: 1 }), {
+          description:
+            "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Binding a Secret to this Agent's Configuration or as its Harness authentication source needs Secret operate on it, and so does deploying a draft that binds it. Empty when it is not reported: reported only to a caller with read on the Namespace and on the Agent's Configuration, and update on the Agent or its Configuration or deploy on the Agent. A caller with deploy but neither update gets only the Secrets the draft binds: its Configuration's Secret bindings and a Secret Harness authentication source. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        unreadableOperateDenied: Type.Integer({
+          minimum: 0,
+          description:
+            "How many of the Secrets the draft binds the caller may neither read nor Secret operate now: its Configuration's Secret bindings and a Secret Harness authentication source. Deploying the draft needs Secret operate on each. A count only: the caller may not read them, so their IDs are never reported. 0 when it is not reported, under the same conditions as `operateDenied`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+// Kept apart from the Namespace answer, which every Namespace page reads: this one reads every
+// readable Secret in the Namespace.
+export const NamespaceSecretPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        operateDenied: Type.Array(Type.String({ minLength: 1 }), {
+          description:
+            "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Agent creation needs Secret operate on each Secret it binds or uses: its Harness authentication source, its Configuration's Secret bindings, and a directory search Secret. Empty when it is not reported: reported only to a caller who may create an Agent in this Namespace. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
       },
       { additionalProperties: false },
     ),
@@ -723,11 +848,33 @@ export const NamespaceCallerPermissionsResponse = Type.Object(
   {
     data: Type.Object(
       {
+        delete: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion.",
+        }),
         agents: Type.Object(
           {
             create: Type.Boolean({
               description:
                 "Whether the selected IAM Driver allows Agent creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+            }),
+          },
+          { additionalProperties: false },
+        ),
+        secrets: Type.Object(
+          {
+            create: Type.Boolean({
+              description:
+                "Whether the selected IAM Driver allows Secret creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+            }),
+          },
+          { additionalProperties: false },
+        ),
+        installation: Type.Object(
+          {
+            administer: Type.Boolean({
+              description:
+                "Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation.",
             }),
           },
           { additionalProperties: false },
@@ -1133,7 +1280,18 @@ export const BackendListResponse = Type.Object(
 export const RepositoryOptionListResponse = Type.Object(
   {
     data: Type.Array(RepositoryOptionSchema, { maxItems: 1000 }),
-    meta: Meta,
+    meta: Type.Object(
+      {
+        ...Meta.properties,
+        notConfigured: Type.Optional(
+          Type.Literal(true, {
+            description:
+              "Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
   },
   { additionalProperties: false },
 );
@@ -1176,6 +1334,10 @@ export const AgentRevisionSchema = Type.Object(
     configurationKind: ConfigurationKindSchema,
     configurationGeneration: ConfigurationGeneration,
     configuration: ConfigurationValues,
+    gatewayManagedMode: Type.Boolean({
+      description:
+        "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
+    }),
     harness: Type.Object(
       {
         id: Type.String({ minLength: 1 }),
@@ -1187,6 +1349,13 @@ export const AgentRevisionSchema = Type.Object(
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
       { additionalProperties: false },
+    ),
+    sandboxDriverId: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description:
+          "The Sandbox Driver that provisions this version. Absent when the version runs without a Sandbox, so it has no Sandbox log source and records no policy denials.",
+      }),
     ),
     secretDriverId: Type.Optional(Type.String({ minLength: 1 })),
     secretBindings: Type.Optional(SecretBindings),
@@ -1247,19 +1416,38 @@ export const AgentRevisionReadResponse = Type.Object(
 // A list item names a revision without its saved settings, so a page stays a few hundred bytes
 // per item whatever the admitted snapshots weigh (finding 1323). The fields beyond metadata are
 // the ones clients use to tell revisions apart; the database checks their shape on insert.
-export const AgentRevisionSummarySchema = Type.Pick(
-  AgentRevisionSchema,
-  [
-    "id",
-    "namespaceId",
-    "agentId",
-    "revision",
-    "backendId",
-    "configurationId",
-    "configurationGeneration",
-    "harness",
-    "createdAt",
-  ],
+export const AgentRevisionSummarySchema = Type.Object(
+  {
+    ...Type.Pick(AgentRevisionSchema, [
+      "id",
+      "namespaceId",
+      "agentId",
+      "revision",
+      "backendId",
+      "configurationId",
+      "configurationGeneration",
+      "harness",
+      "createdAt",
+    ]).properties,
+    // The outcome a Versions list marks beside each version (finding 2422).
+    deploymentStatus: Type.Union(
+      [
+        Type.Literal("queued"),
+        Type.Literal("running"),
+        Type.Literal("succeeded"),
+        Type.Literal("failed"),
+        Type.Null(),
+      ],
+      {
+        description:
+          "The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it.",
+      },
+    ),
+    deploymentErrorCode: Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
+      description:
+        "The `error.code` that reading this revision's deployment would report, or `null` when it reports no error. It tells a failure from a deployment that a newer version or a Stop ended.",
+    }),
+  },
   {
     description:
       "Agent revision summary without saved settings. Read this Agent revision for its configuration. If OCC cannot read the saved settings, the response contains `configurationReadError`.",

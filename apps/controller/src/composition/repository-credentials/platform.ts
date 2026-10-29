@@ -17,7 +17,10 @@ import {
   UnixRepositoryCredentialControlClient,
   type RepositoryCredentialControlClient,
 } from "../../backends/repository-credentials/control-client.ts";
-import type { GitHubRepositoryRegistry } from "../../drivers/repo/github/credentials/registry.ts";
+import {
+  createGitHubRepositoryDeliveryResolver,
+  type GitHubRepositoryRegistry,
+} from "../../drivers/repo/github/credentials/registry.ts";
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
 import type { SelectedDriverConfiguration } from "../installation-config.ts";
 
@@ -72,10 +75,10 @@ export async function composeRepositoryAccess(input: {
       controlSocket: configuration.controlSocket,
     });
   }
-  const backend: Backend<RepositoryCredentialControlClient | undefined> = Object.freeze({
+  // Copy only identity data: policy must not receive the native transport capability.
+  const backend: Pick<Backend, "id" | "drivers"> = Object.freeze({
     id: definition.id,
     drivers: Object.freeze({ repo: selection.id }),
-    client,
   });
   const repositoryPolicy = new GitHubRepositoryPolicy(backend, registry, {
     sessionDurationSeconds: configuration.sessionDurationSeconds,
@@ -88,7 +91,7 @@ export async function composeRepositoryAccess(input: {
       input.configuration,
     ),
     repositoryRegistry: registry,
-    resolveRepositoryDelivery: repositoryPolicy.resolveDelivery,
+    resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
     repositoryOwner: Object.freeze({
       ...(!input.protectedGit && { controlSocket: configuration.controlSocket }),
       driverId: selection.id,
@@ -97,9 +100,12 @@ export async function composeRepositoryAccess(input: {
     }),
     repositoryPolicy,
     ...(!input.protectedGit && {
-      nativeRepositorySender: new GitHubNativeRepositorySender(backend, {
-        ...(publicCa && { publicCa }),
-      }),
+      nativeRepositorySender: new GitHubNativeRepositorySender(
+        { ...backend, client },
+        {
+          ...(publicCa && { publicCa }),
+        },
+      ),
     }),
   });
 }

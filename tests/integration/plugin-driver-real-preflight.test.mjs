@@ -98,15 +98,13 @@ test("a Codex turn without its prompt mirror names the marker-bearing user messa
     const db = new DatabaseSync(path);
     try {
       db.exec(
-        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT)",
+        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, event_utf8_bytes INTEGER)",
       );
       db.prepare("INSERT INTO session_nodes VALUES (?, ?, ?)").run("proof", "session", "{}");
       for (const [seq, message] of messages.entries()) {
-        db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?)").run(
-          "session",
-          seq,
-          JSON.stringify({ type: "message", message }),
-        );
+        db.prepare(
+          "INSERT INTO transcript_events (session_id, seq, event_json) VALUES (?, ?, ?)",
+        ).run("session", seq, JSON.stringify({ type: "message", message }));
       }
     } finally {
       db.close();
@@ -163,7 +161,7 @@ test("a Codex turn without its prompt mirror names the marker-bearing user messa
     },
   ];
   await assert.rejects(late.assertSessionToolCallEvidence({}, options), (error) => {
-    assert.match(error.message, /^proof Codex native turn must include prompt, tool call/);
+    assert.match(error.message, /^proof Codex run must include a native prompt and tool call/);
     const details = JSON.parse(error.message.slice(error.message.indexOf("{")).split("\n")[0]);
     assert.equal(details.turn.promptSeen, false);
     assert.deepEqual(details.markerUserMessages, expected);
@@ -172,10 +170,7 @@ test("a Codex turn without its prompt mirror names the marker-bearing user messa
   // The disabled-tool phase's check lists them too.
   const quiet = transcript("quiet", [user(0, "turn-1:prompt"), user(1), answer]);
   await assert.rejects(quiet.assertNoSessionToolCallEvidence({}, options), (error) => {
-    assert.match(
-      error.message,
-      /^proof must include a completed marker-bearing native Codex turn: /,
-    );
+    assert.match(error.message, /^proof must include a completed marker-bearing Codex run: /);
     const details = JSON.parse(error.message.slice(error.message.indexOf("{")).split("\n")[0]);
     assert.deepEqual(details.markerUserMessages, expected);
     return true;
@@ -233,11 +228,13 @@ test("the session evidence tolerates malformed rows and lists the newest marker 
     const db = new DatabaseSync(path);
     try {
       db.exec(
-        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT)",
+        "CREATE TABLE session_nodes (session_key TEXT, current_session_id TEXT, entry_json TEXT); CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, event_utf8_bytes INTEGER)",
       );
       db.prepare("INSERT INTO session_nodes VALUES (?, ?, ?)").run("proof", "session", "{}");
       for (const [seq, row] of rows.entries()) {
-        db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?)").run(
+        db.prepare(
+          "INSERT INTO transcript_events (session_id, seq, event_json) VALUES (?, ?, ?)",
+        ).run(
           "session",
           seq,
           typeof row === "string" ? row : JSON.stringify({ type: "message", message: row }),
@@ -313,7 +310,7 @@ test("the session evidence tolerates malformed rows and lists the newest marker 
   await assert.rejects(denied.assertSessionToolDeniedEvidence({}, options), (error) => {
     assert.match(
       error.message,
-      /^proof denied Codex native turn must include prompt, tool call, tool result, and terminal assistant mirror identities: \{/,
+      /^proof denied Codex run must include a native prompt and tool call\/result plus an owned terminal reply: \{/,
     );
     const details = JSON.parse(error.message.slice(error.message.indexOf("{")).split("\n")[0]);
     assert.equal(details.turn.promptSeen, false);

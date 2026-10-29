@@ -6,7 +6,7 @@ repo_root="$(CDPATH="" cd "$script_dir/.." && pwd)"
 occ_cli="$repo_root/bin/occ"
 CDPATH="" cd "$repo_root"
 if [ ! -x "$occ_cli" ]; then
-  echo "dev-down: prerequisite failed: OCC CLI is required at $occ_cli; run pnpm cli:build" >&2
+  echo "dev-down: prerequisite failed: OCC CLI is required at $occ_cli; run go build -trimpath -o bin/occ ./cmd/occ" >&2
   exit 1
 fi
 exec "$occ_cli" dev down "$@"

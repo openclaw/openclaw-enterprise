@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { CredentialReadLifetime } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { MAX_TIMER_DELAY_MS } from "@openclaw-enterprise/utils";
 
 /**
  * Which optional wait asks whether other Work is waiting: an ordinary stop's Gateway drain, or any
@@ -49,7 +50,7 @@ export async function withComputeOperationDeadline<Result>(
   const signal = AbortSignal.any([
     lifetime.signal,
     ...(parent ? [parent.signal] : []),
-    AbortSignal.timeout(Math.min(Math.ceil(remaining), 2_147_483_647)),
+    AbortSignal.timeout(Math.min(Math.ceil(remaining), MAX_TIMER_DELAY_MS)),
   ]);
   signal.throwIfAborted();
   const effective = { signal, deadline };
@@ -61,16 +62,12 @@ export async function withComputeAbortSignal<Result>(
   operation: () => Promise<Result>,
 ): Promise<Result> {
   const parent = currentComputeOperationLifetime();
-  if (parent?.deadline !== undefined) {
-    const effective = {
-      signal: AbortSignal.any([signal, parent.signal]),
-      deadline: parent.deadline,
-    };
-    effective.signal.throwIfAborted();
-    return operationLifetimes.run(effective, operation);
-  }
-  signal.throwIfAborted();
-  return operationLifetimes.run({ signal }, operation);
+  const effective = {
+    signal: parent ? AbortSignal.any([signal, parent.signal]) : signal,
+    ...(parent?.deadline !== undefined ? { deadline: parent.deadline } : {}),
+  };
+  effective.signal.throwIfAborted();
+  return operationLifetimes.run(effective, operation);
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   egressAssociationInstallation,
 } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { createHash, generateKeyPairSync, randomUUID, randomBytes, sign } from "node:crypto";
 import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
 import { writeFile } from "node:fs/promises";
@@ -78,11 +79,15 @@ export function supervisorBearer(claims, privateKey) {
 }
 
 /** Real app/auth/IAM/controller/Drivers. Storage and installed runtime observations are wire fixtures,
- * not a Kubernetes API server or an OpenShell supervisor. No authorization/provider logic is mocked. */
+ * not a Kubernetes API server or an OpenShell supervisor. No authorization/provider logic is mocked.
+ * @template {import("node:net").Server} [Provider=never]
+ */
 export async function staticEgressFixture(
   t,
   {
-    appFactory = createConsoleAppFixture,
+    appFactory = /** @type {(t: import("node:test").TestContext, options?: Parameters<typeof createConsoleAppFixture>[1]) => Promise<Awaited<ReturnType<typeof createConsoleAppFixture>> | Awaited<ReturnType<typeof import("./postgres-egress-app.mjs").postgresApp>>>} */ (
+      createConsoleAppFixture
+    ),
     driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
     protectedSourceOnly = false,
@@ -99,7 +104,9 @@ export async function staticEgressFixture(
     configurePreparedTokens,
     secretValue,
     admitSource,
-    providerServer = createHttpsServer,
+    providerServer = /** @type {((tls: import("node:tls").TlsOptions, handle: import("node:http").RequestListener) => Provider) | undefined} */ (
+      undefined
+    ),
     credentialProxyCapacity,
   } = {},
 ) {
@@ -237,6 +244,8 @@ export async function staticEgressFixture(
     policy: undefined,
     deleted: [],
     workspaceVisible: true,
+    policyStatusRequests: 0,
+    policyStatusUnavailable: false,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
   const gatewayCapabilities = ["openshell.supervisor-middleware.contract", ...capabilities].sort();
@@ -335,6 +344,11 @@ export async function staticEgressFixture(
       callback(null, observed.service);
     },
     GetSandboxPolicyStatus(call, callback) {
+      observed.policyStatusRequests += 1;
+      if (observed.policyStatusUnavailable) {
+        callback({ code: grpc.status.UNAVAILABLE });
+        return;
+      }
       if (call.request.workspace_scope.workspace !== runtimeNamespace.name) {
         callback({ code: grpc.status.NOT_FOUND });
         return;
@@ -522,7 +536,8 @@ export async function staticEgressFixture(
   const path = `/namespaces/${namespace.id}/credential-sources`;
   const providerRequests = [];
   let providerResponse = { status: 200, body: { output: "fixture answer" } };
-  const provider = providerServer({ key, cert }, async (request, response) => {
+  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
+  const provider = createProvider({ key, cert }, async (request, response) => {
     const bytes = await buffer(request);
     providerRequests.push({
       method: request.method,
@@ -734,16 +749,16 @@ export async function staticEgressFixture(
     return entry.number;
   };
   const services = grpc.loadPackageDefinition(definition).openshell.middleware.v1;
+  function createAuthorityClient(name) {
+    return new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert));
+  }
   const clients = Object.fromEntries(
     [
       "HttpCredentialAccess",
       "HttpResponsePreReturn",
       "SupervisorMiddleware",
       "HttpInstallationExchange",
-    ].map((name) => [
-      name,
-      new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert)),
-    ]),
+    ].map((name) => [name, createAuthorityClient(name)]),
   );
   t.after(() => {
     for (const client of Object.values(clients)) {
@@ -1020,10 +1035,7 @@ export async function staticEgressFixture(
       await bindOpenShellEgressAuthority(authority, "127.0.0.1:" + authorityPort, cert, key);
       for (const [name, client] of Object.entries(clients)) {
         client.close();
-        clients[name] = new services[name](
-          "127.0.0.1:" + authorityPort,
-          grpc.credentials.createSsl(cert),
-        );
+        clients[name] = createAuthorityClient(name);
       }
     },
     providerRequests,
@@ -1215,6 +1227,21 @@ export async function syntheticDispatchFixture(t, receipts) {
     now: () => clock,
     installation: async () => installation,
     provider: () => openAiStaticProvider,
+    // Synthetic policy is immutable; real OCC uses its policy-and-receipt transaction.
+    async authorizeSend(use, selected, attempt, mintAuthorization) {
+      const decision = await this.check(use, attempt.material);
+      if (!("key" in decision)) {
+        return decision;
+      }
+      if (!isDeepStrictEqual(decision, selected)) {
+        return { kind: "denied", code: "stale_configuration" };
+      }
+      const authorization = mintAuthorization();
+      if ("kind" in authorization) {
+        return authorization;
+      }
+      return this.receipts.authorize(use.peer.sender, attempt, authorization);
+    },
     // Policy and Secret dependencies are synthetic; dispatch, persistence and sockets are real.
     check: async () => source,
     read: async () => {
