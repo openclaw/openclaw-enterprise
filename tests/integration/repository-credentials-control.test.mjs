@@ -41,8 +41,9 @@ import {
   createLoopbackServiceConfiguration,
 } from "../fixtures/repository-credentials/service.mjs";
 import {
-  createGitHubTokenServiceFactory,
+  createStaticTokenServiceFactory,
   startServiceListeners,
+  startStaticTokenService,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
@@ -308,21 +309,7 @@ test(
     const tls = await createTlsMaterial(resources);
     const config = await createLoopbackServiceConfiguration(resources);
     const github = await startGitHubFixture(resources, { clock, tls });
-    const token = `gho_${"t".repeat(36)}`;
-    github.acceptStatic(token);
-    const factory = await createGitHubTokenServiceFactory(resources, {
-      config,
-      clock,
-      token,
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: github.origin, ca: tls.ca },
-    });
-    const { listeners } = await startServiceListeners(resources, {
-      config,
-      tls,
-      factory,
-      clock,
-      upstreamOrigins: [github.origin],
-    });
+    const { listeners } = await startStaticTokenService(resources, { config, clock, tls, github });
     assert.equal((await lstat(config.gateway.controlSocket)).mode & 0o777, 0o600);
     // Standalone services do not implement registry-backed durable admission.
     assert.equal(
@@ -624,13 +611,12 @@ test(
       }
     });
     const origin = await listen(resources, upstream);
-    const token = `gho_${"t".repeat(36)}`;
-    github.acceptStatic(token);
-    const factory = await createGitHubTokenServiceFactory(resources, {
+    const { factory } = await createStaticTokenServiceFactory(resources, {
       config,
       clock,
-      token,
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: origin, ca: tls.ca },
+      tls,
+      github,
+      gitOrigin: origin,
     });
     const actual = createCredentialService({ config, factory, clock });
     const outcomes = [];

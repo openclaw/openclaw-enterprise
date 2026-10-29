@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   assertProviderAttached,
@@ -20,6 +19,7 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { providerInstanceId } from "../helpers/human-login-transport.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
@@ -36,11 +36,10 @@ const secrets = Object.freeze({
   "occ-oidc-login/client-id": oidcClientId,
   "occ-oidc-login/client-secret": oidcClientSecret,
 });
-const digest = (value) => createHash("sha256").update(value).digest("hex");
 const instances = {
-  github: `github:${digest(githubClientId)}`,
-  google: `google:${digest(googleClientId)}`,
-  oidc: `oidc:${digest(`${fixtureOidcIssuer.issuer}\0${oidcClientId}`)}`,
+  github: providerInstanceId("github", { clientId: githubClientId }),
+  google: providerInstanceId("google", { clientId: googleClientId }),
+  oidc: providerInstanceId("oidc", { issuer: fixtureOidcIssuer.issuer, clientId: oidcClientId }),
 };
 // The same host with another issuer path: a new OIDC provider instance.
 const movedIssuer = Object.freeze({
