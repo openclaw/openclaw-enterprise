@@ -1496,7 +1496,7 @@ test("Reads waiting behind a pending administration read end with their page", a
 // now refused. A return reads the policy again, one list at a time, so the refusal is audited once
 // and takes the member path a reload takes: the tab gives way to Configuration and says why.
 test("A return to the Access tab after a revoke shows the member notice, audited once", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["access-recipient"] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Revoked sharing", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Revoked sharing Agent", nativeValues("x"));
@@ -1544,6 +1544,25 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   await waitForIdleFetches(page);
   assert.equal(await loaded.isVisible(), true);
   assert.equal(policyReads(sent).length, 2);
+  // A share's outcome stays through the next return: the recheck rereads the policy but keeps
+  // what the panel said.
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const shared = panel.getByText("Agent access is shared.", { exact: false });
+  await panel
+    .getByLabel("Existing person’s Principal ID")
+    .fill(fixture.provisionedAccounts[0].principal.id);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await shared.waitFor();
+  await configurationTab.click();
+  await waitForIdleFetches(page);
+  sent = requests.length;
+  await accessTab.click();
+  await waitForEnabled(remove.first());
+  await waitForIdleFetches(page);
+  assert.equal(policyReads(sent).length, 2);
+  assert.equal(await shared.isVisible(), true);
+  assert.equal(await loaded.count(), 0);
   await configurationTab.click();
   await waitForIdleFetches(page);
   assert.deepEqual(iamDenials(), []);

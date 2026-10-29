@@ -1098,10 +1098,14 @@ export function installFixture(scenario, evidence) {
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
           return response({
-            delete: !scenario.namespaceDeleteDenied,
+            delete: !scenario.namespaceDeleteDenied && !scenario.namespaceDeleteRestricted,
             agents: { create: true },
             secrets: { create: true },
-            installation: { administer: !scenario.observabilityDenied },
+            // A member refused delete is no Installation administrator; an administrator is
+            // refused it only by a Restriction.
+            installation: {
+              administer: !scenario.observabilityDenied && !scenario.namespaceDeleteDenied,
+            },
           });
         }
         return response([]);
@@ -1371,14 +1375,18 @@ export function installFixture(scenario, evidence) {
       }
       if (resource === "permissions" && method === "GET") {
         return response({
-          delete: !scenario.namespaceDeleteDenied,
+          delete: !scenario.namespaceDeleteDenied && !scenario.namespaceDeleteRestricted,
           agents: {
             create: !scenario.readOnlyPermissionSummary && !scenario.agentCreateRestricted,
           },
           secrets: { create: !scenario.secretCreateNotPermitted },
-          // A read-only member is no Installation administrator either.
+          // A read-only member is no Installation administrator either, nor is a member refused
+          // Namespace delete.
           installation: {
-            administer: !scenario.readOnlyPermissionSummary && !scenario.observabilityDenied,
+            administer:
+              !scenario.readOnlyPermissionSummary &&
+              !scenario.observabilityDenied &&
+              !scenario.namespaceDeleteDenied,
           },
         });
       }

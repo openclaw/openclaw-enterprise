@@ -1534,7 +1534,16 @@ export const scenarios = {
     path: "/console/namespaces",
     namespaceDeleteDenied: true,
     description:
-      "The advisory permission answer disables deletion and explains the exact required grant.",
+      "A member's advisory permission answer refuses deletion. The trash icon looks disabled and its reason says only an Installation administrator can delete a Namespace.",
+  },
+  namespaceDeleteRestricted: {
+    group: "Pages/Namespaces",
+    name: "Delete blocked by a Restriction",
+    path: "/console/namespaces",
+    namespaceDeleteRestricted: true,
+    description:
+      "An Installation administrator whom a deny Restriction keeps from deleting the Namespace. The reason names the Restriction and who can lift it, not an administrator to ask.",
+    gap: "The permission answer is advisory. The controller still authorizes each delete.",
   },
   namespaceDeleteRefused: {
     group: "Pages/Namespaces",

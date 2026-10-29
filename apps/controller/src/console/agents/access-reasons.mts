@@ -63,6 +63,17 @@ export const NAMESPACE_CREATE_DENIED = onlyAdministratorCreates(
 // delete one: the reason names who can, not a grant to ask for (finding D788).
 export const NAMESPACE_DELETE_DENIED =
   "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
+// An Installation administrator refused Namespace delete is refused by a deny Restriction, which
+// administration cannot lift, as for Agent create (finding 2861).
+export const NAMESPACE_DELETE_RESTRICTED =
+  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
+/** Why the Namespace permission answer refuses delete: a Restriction, or missing access. */
+export const namespaceDeleteDenied = (
+  permissions?: { installation?: { administer?: boolean } } | null,
+) =>
+  permissions?.installation?.administer === true
+    ? NAMESPACE_DELETE_RESTRICTED
+    : NAMESPACE_DELETE_DENIED;
 
 // POST /agents/{id}/stop authorizes Agent operate; DELETE /agents/{id} authorizes Agent delete.
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");

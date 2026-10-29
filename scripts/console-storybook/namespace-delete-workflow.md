@@ -14,7 +14,9 @@ They do not prove backend authorization, persistence, or infrastructure cleanup.
    Closing the dialog does not delete resources.
 4. In **Delete permission denied**, the icon looks disabled, with a visible
    reason: only an Installation administrator can delete a Namespace. Press Tab
-   to focus the icon; its description reads the reason, and Enter opens nothing.
+   to focus the icon; its description reads the reason, its focus ring is not
+   faded, and Enter opens nothing. In **Delete blocked by a Restriction**, an
+   Installation administrator's reason names the Restriction instead.
    **Delete permission changed** shows a refusal after an advisory permission
    answer. **Delete request pending** holds dismissal until the write settles.
 5. **Delete outcome unknown** requires **Refresh status** before another

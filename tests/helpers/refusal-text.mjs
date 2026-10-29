@@ -718,3 +718,7 @@ export const workspaceVersionStarting = (agentId) =>
 // who can delete the Namespace instead of a grant to ask for.
 export const NAMESPACE_DELETE_DENIED =
   "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
+// The same icon for an Installation administrator whom a deny Restriction keeps from deleting the
+// Namespace (finding 2861): administration cannot lift it.
+export const NAMESPACE_DELETE_RESTRICTED =
+  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
