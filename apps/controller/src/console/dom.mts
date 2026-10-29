@@ -166,6 +166,17 @@ export function dismissOnBackdrop(dialog: HTMLDialogElement) {
 }
 
 /**
+ * A dialog's `close` event fires a task after the dialog closes, so the reader may already have
+ * moved focus on, for example to a field they are typing in (finding 2862). True only while focus
+ * is still in `dialog` or was dropped to the page, where a close handler may return it to the
+ * dialog's opener without taking it from anything else.
+ */
+export function mayReturnFocus(dialog: Element) {
+  const active = document.activeElement;
+  return active === null || active === document.body || dialog.contains(active);
+}
+
+/**
  * A phone's on-screen keyboard shrinks the visual viewport, not the layout viewport a modal
  * dialog sits in, so a bottom sheet's actions ended up under the keyboard (finding 1957). This
  * mirrors how far the visible area is inset from the layout viewport's top and bottom

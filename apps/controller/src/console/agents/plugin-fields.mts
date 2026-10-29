@@ -11,7 +11,7 @@ import type {
   PluginToolCatalogEntry,
   PluginToolPolicy,
 } from "@openclaw-enterprise/contracts";
-import { element, button, dismissOnBackdrop, setText } from "../dom.mjs";
+import { element, button, dismissOnBackdrop, mayReturnFocus, setText } from "../dom.mjs";
 
 export type CatalogDirection = "search" | "refresh" | "next" | "previous";
 export type CatalogEntry = PluginCatalogEntry & {
@@ -311,10 +311,7 @@ export function createPluginFields({
   dialog.addEventListener("close", () => {
     waitingForCatalog = false;
     onCancelDiscovery?.();
-    // The close event fires a task after the dialog closes. Return focus only if it did not
-    // move on in between, so a field the user is already typing in keeps it (finding 2862).
-    const active = document.activeElement;
-    if (active === null || active === document.body || dialog.contains(active)) {
+    if (mayReturnFocus(dialog)) {
       configure.focus();
     }
   });

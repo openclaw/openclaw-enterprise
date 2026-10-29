@@ -1,6 +1,14 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element, setHidden, setText, statusBlock, requestIdLine } from "../dom.mjs";
+import {
+  button,
+  element,
+  mayReturnFocus,
+  setHidden,
+  setText,
+  statusBlock,
+  requestIdLine,
+} from "../dom.mjs";
 import {
   type AgentLifecycleContext,
   type LifecycleError,
@@ -418,7 +426,7 @@ export function createAgentStop(
           restrictConfirmation = undefined;
         }
         dialog.remove();
-        if (context.isCurrent() && !state.pending && !submitted) {
+        if (context.isCurrent() && !state.pending && !submitted && mayReturnFocus(dialog)) {
           if (invoker instanceof HTMLButtonElement && invoker.isConnected && !invoker.disabled) {
             invoker.focus();
           } else {

@@ -42,6 +42,7 @@ import {
   apiRequests,
   consoleViewports,
   detailUrl,
+  focusKeptOverClose,
   holdRequests,
   inViewport,
   login,
@@ -3074,23 +3075,14 @@ test("codex_pat Secret recovery restores authenticated plugin discovery", async 
   // Done closes the dialog, and its close event fires a task later. Focus that moves to the
   // Secret field in between must stay there: taking it back closed the field's list while
   // selectSecret typed (finding 2862).
-  const secretField = await page
-    .getByLabel("Service account token Secret", { exact: true })
-    .elementHandle();
-  const focusKept = await dialog.getByRole("button", { name: "Done", exact: true }).evaluate(
-    (done, field) =>
-      new Promise<boolean>((resolve) => {
-        done
-          .closest("dialog")
-          ?.addEventListener("close", () => resolve(document.activeElement === field), {
-            once: true,
-          });
-        (done as HTMLButtonElement).click();
-        (field as HTMLInputElement).focus();
-      }),
-    secretField,
+  assert.equal(
+    await focusKeptOverClose(
+      dialog.getByRole("button", { name: "Done", exact: true }),
+      page.getByLabel("Service account token Secret", { exact: true }),
+    ),
+    true,
+    "closing the dialog keeps focus on the Secret field",
   );
-  assert.equal(focusKept, true, "closing the dialog keeps focus on the Secret field");
   await selectSecret(page, "Service account token Secret", existing);
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: existing.ref });

@@ -5,6 +5,7 @@ import {
   describeDisabled,
   dismissOnBackdrop,
   element,
+  mayReturnFocus,
   replaceChildrenIfChanged,
   requestIdLine,
   statusBlock,
@@ -384,7 +385,13 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       () => {
         confirmation = undefined;
         dialog.remove();
-        if (current() && !pending && opener instanceof HTMLElement && opener.isConnected) {
+        if (
+          current() &&
+          !pending &&
+          opener instanceof HTMLElement &&
+          opener.isConnected &&
+          mayReturnFocus(dialog)
+        ) {
           opener.focus();
         }
       },

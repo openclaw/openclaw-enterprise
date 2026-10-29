@@ -10,7 +10,7 @@ import type {
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { resourceActionIcon } from "../resource-actions.mjs";
-import { button, element, setText, statusBlock, requestIdLine } from "../dom.mjs";
+import { button, element, mayReturnFocus, setText, statusBlock, requestIdLine } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
 import { credentialRejectedAsk } from "./deployment-recovery.mjs";
@@ -691,7 +691,7 @@ export function renderAgentList(context: AgentListContext) {
           dismissOpenDialog = null;
         }
         dialog.remove();
-        if (!context.isCurrent()) {
+        if (!context.isCurrent() || !mayReturnFocus(dialog)) {
           return;
         }
         // A redraw while the dialog was open (a permission refusal, for example) replaces the
