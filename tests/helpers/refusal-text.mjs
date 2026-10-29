@@ -193,10 +193,6 @@ export const STOP_CANCELS_FIRST_DEPLOYMENT =
   "Cancels the deployment in progress. The Agent stays and can be deployed again.";
 export const STOP_RUNNING_VERSION =
   "Stops the running version. The Agent stays and can be deployed again.";
-// No version is selected and the latest readable deployment is not in progress: it failed, or
-// the page could not read it, and a newer one may still be queued.
-export const STOP_DEPLOYMENT_OR_VERSION =
-  "Cancels a deployment in progress or stops a version that started. The Agent stays and can be deployed again.";
 // Each version has its own AgentRevision read grant, so a reader who deploys still needs read on
 // each new version, granted after it exists.
 export const NEW_VERSIONS_READ =

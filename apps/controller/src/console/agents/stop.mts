@@ -12,7 +12,6 @@ import {
 import {
   type AgentLifecycleContext,
   type LifecycleError,
-  STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   cancelsFirstDeployment,
   stopConfirmation,
 } from "./lifecycle-confirmation.mjs";
@@ -88,18 +87,17 @@ export function createAgentStop(
 
   function render() {
     const requested = state.agent.desiredRuntimeState === "stopped";
-    // A running Agent with no selected version keeps Stop whatever the latest readable deployment
-    // says, as on the Agents list: a failed one can hide a newer queued deployment this viewer
-    // cannot read, and Agent operate is enough to stop it (findings 2764, 3707). The API answers
+    // A first deployment that failed leaves the Agent requested to run with no version selected:
+    // Stop would change nothing, so the row is hidden, as on the Agents list (findings 2385,
+    // D691). Only a failure this page read decides it. A succeeded deployment read against an
+    // older Agent read, an unreadable deployment, or a failed read keeps Stop, and the API answers
     // if nothing runs.
+    const idle = !requested && !state.agent.activeRevisionId && state.latestDeployment === "failed";
     setText(
       summary,
       cancelsFirstDeployment(state.agent, state.latestDeployment)
         ? "Cancels the deployment in progress. The Agent stays and can be deployed again."
-        : stopConfirmation(state.agent, state.latestDeployment) ===
-            STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION
-          ? "Cancels a deployment in progress or stops a version that started. The Agent stays and can be deployed again."
-          : "Stops the running version. The Agent stays and can be deployed again.",
+        : "Stops the running version. The Agent stays and can be deployed again.",
     );
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
@@ -133,6 +131,15 @@ export function createAgentStop(
             ),
           ]
         : []),
+      ...(idle && !state.forbidden
+        ? [
+            statusBlock(
+              "info",
+              null,
+              "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
+            ),
+          ]
+        : []),
       ...(state.forbidden ? [statusBlock("info", null, permissionNotice)] : []),
       ...(state.notice ? [statusBlock("info", null, state.notice)] : []),
       ...(state.error
@@ -146,7 +153,7 @@ export function createAgentStop(
           ]
         : []),
     );
-    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden;
+    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden || idle;
     repeat.disabled = state.pending || state.needsRefresh || state.forbidden;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
@@ -163,10 +170,10 @@ export function createAgentStop(
     // A viewer whose permission answer denies Agent operate has no row either (UX spec 3.9).
     // A missing answer keeps it, and the API still decides. An answer that lands while this
     // viewer has the confirmation open keeps the row, so the reason stays where they were.
-    setHidden(section, (neverStarted || state.forbidden) && !state.used);
+    setHidden(section, (neverStarted || idle || state.forbidden) && !state.used);
     // After a request, a disabled Stop beside Request Stop again only adds noise, and an
     // uncertain outcome offers only Refresh (finding 1899).
-    if (neverStarted) {
+    if (neverStarted || (idle && !state.used)) {
       actions.replaceChildren();
     } else if (state.needsRefresh) {
       actions.replaceChildren(refresh);
