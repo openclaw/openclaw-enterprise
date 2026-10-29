@@ -66,13 +66,26 @@ The sender checks projected identity locally; OCE authenticates the signature an
 live installation on the signed stream. No provider secret is an input file:
 OCE resolves it for each request and sends it only to the authenticated sender.
 
-The only accepted end-to-end request headers are `Host`, `Content-Type` and
+The only signed and forwarded request headers are `Host`, `Content-Type` and
 `Accept`. Box removes transport framing first; the sender rebuilds `Host` from
-the bound target. Every other header, including all workload-supplied credential
-headers, is refused before opening the OCE exchange. The body remains subject to
-OCE's Responses classifier. `response_approved_for_gateway` means OCE approved
-the bounded response for return to Box; Box's response policy and
-original client writer still decide actual delivery.
+the bound target. For OpenAI Node SDK 7.5.0 `responses.create`, configure the public,
+nonsecret `apiKey: "oce-placeholder"`, the admitted base URL, and `maxRetries: 0`.
+The sender accepts exactly one `Authorization: Bearer oce-placeholder` and
+discards it before opening the OCE exchange. It is not an authentication token.
+Every other Authorization value, duplicate header, cookie, provider credential
+header or unknown field is refused before resolution. Never configure a real
+provider key in the workload SDK.
+
+The sender also discards these explicit SDK/Fetch informational fields:
+`User-Agent`, `X-Stainless-Arch`, `X-Stainless-Lang`, `X-Stainless-OS`,
+`X-Stainless-Package-Version`, `X-Stainless-Retry-Count`, `X-Stainless-Runtime`,
+`X-Stainless-Runtime-Version`, `X-Stainless-Timeout`, `Accept-Encoding`,
+`Accept-Language` and `Sec-Fetch-Mode`. Their values are untrusted and are neither
+signed, forwarded nor persisted by the sender. This is not a wildcard allowance
+for SDK headers: organization, project, beta, idempotency and arbitrary additional
+fields still refuse. The body remains subject to OCE's Responses classifier.
+`response_approved_for_gateway` means OCE approved the bounded response for return
+to Box; Box's response policy and original writer still decide actual delivery.
 
 Only HTTPS Responses POST is supported, with no query, redirect, retry, origin
 connection reuse, or incremental response release. Request and response bodies

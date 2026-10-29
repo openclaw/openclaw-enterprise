@@ -61,11 +61,14 @@ The suite uses real Box policy, the Rust terminal sender, current OCE authority,
 IAM and Secret adapters, and a controlled TLS origin. The existing fixture
 supplies installation and Kubernetes observations. It checks one allowed request,
 withdrawal after material lookup, changed sender instance before response release,
-a dropped origin reply, Box denial, unavailable authority, and three untrusted
-credential-header cases. Unsupported fields never enter OCE resolution or its
-durable classification path; their values are absent from the audit sink.
-The origin counts
-decrypted application bytes across all accepted connections. Refusal after lookup
+a dropped origin reply, Box denial, unavailable authority, a captured OpenAI
+Node SDK 7.5.0 header profile, and rejected credential, duplicate-placeholder
+and unknown-header cases. The SDK wire control requires
+exactly one origin request with only the OCE-selected credential and canonical
+headers; the public placeholder and SDK metadata never reach that origin.
+Unsupported fields never enter OCE resolution or its durable classification
+path; their values are absent from the audit sink. The origin counts decrypted
+application bytes across all accepted connections. Refusal after lookup
 must produce zero bytes, and uncertain sends must not replay.
 
 The optional `oce-protected-box` executable joins the sender to Box's real

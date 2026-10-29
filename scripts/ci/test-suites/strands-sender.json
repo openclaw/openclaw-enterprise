@@ -14,7 +14,12 @@
         "Box terminal sender: authority unavailable",
         "Box terminal sender: x-goog-api-key",
         "Box terminal sender: x-amz-security-token",
-        "Box terminal sender: duplicate authorization"
+        "Box terminal sender: duplicate authorization",
+        "Box terminal sender: SDK wire",
+        "Box terminal sender: authorization",
+        "Box terminal sender: cookie",
+        "Box terminal sender: x-api-key",
+        "Box terminal sender: unknown header"
       ]
     }
   ]

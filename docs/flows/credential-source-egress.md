@@ -230,8 +230,9 @@ lost reply remains a possible effect and must not be retried.
 The [reference Box sender](../../runtimes/strands-credential-proxy/README.md)
 implements this phase in `src/exchange.rs:CredentialProxy::exchange` and
 `src/origin.rs:SocketGate::poll_write` under `runtimes/strands-credential-proxy`.
-It rejects unsupported headers before resolution and gates the same pinned TLS
-socket after authorization. Its guide owns the allowlist, deadline and no-retry
+It rejects unsupported headers before resolution, discards the documented SDK
+placeholder and informational fields, and gates the same pinned TLS socket after
+authorization. Its guide owns the allowlist, deadline and no-retry
 rules. The [optional native caller](../../runtimes/strands-credential-proxy/README.md#optional-native-launcher)
 initializes after Box hardening; installed enrollment and containment remain
 separate qualification requirements.

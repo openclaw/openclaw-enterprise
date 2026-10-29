@@ -137,15 +137,33 @@ pub fn capture(req: &DelegatedRequest<'_>) -> Result<Vec<HttpHeader>> {
     for (name, value) in req.headers.iter() {
         let name = name.to_ascii_lowercase();
         ensure!(seen.insert(name.clone()), "duplicate Responses header");
-        ensure!(
-            matches!(name.as_str(), "host" | "content-type" | "accept"),
-            "unsupported Responses header"
-        );
-        if name != "host" {
-            headers.push(HttpHeader {
+        match name.as_str() {
+            "host" => {} // Rebuilt from Box's bound target, never the SDK's authority.
+            "content-type" | "accept" => headers.push(HttpHeader {
                 name,
                 value: value.to_owned(),
-            });
+            }),
+            // Public nonsecret SDK configuration only. Never sign, forward or persist it.
+            "authorization" => ensure!(
+                value == "Bearer oce-placeholder",
+                "unsupported Responses authorization"
+            ),
+            // Explicit informational fields emitted by the Node SDK and its Fetch transport.
+            // None confers authority or changes the canonical operation. Do not broaden this
+            // to a prefix match: organization, project and unknown fields must still refuse.
+            "user-agent"
+            | "x-stainless-arch"
+            | "x-stainless-lang"
+            | "x-stainless-os"
+            | "x-stainless-package-version"
+            | "x-stainless-retry-count"
+            | "x-stainless-runtime"
+            | "x-stainless-runtime-version"
+            | "x-stainless-timeout"
+            | "accept-encoding"
+            | "accept-language"
+            | "sec-fetch-mode" => {}
+            _ => anyhow::bail!("unsupported Responses header"),
         }
     }
     Ok(headers)

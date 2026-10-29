@@ -13,6 +13,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 const binary = process.env.OCC_TEST_STRANDS_SENDER_BINARY;
 const scenarios = [
   "allow",
+  "SDK wire",
   "withdraw",
   "replace",
   "lost reply",
@@ -21,6 +22,10 @@ const scenarios = [
   "x-goog-api-key",
   "x-amz-security-token",
   "duplicate authorization",
+  "authorization",
+  "cookie",
+  "x-api-key",
+  "unknown header",
 ] as const;
 
 for (const scenario of scenarios) {
@@ -40,6 +45,10 @@ for (const scenario of scenarios) {
         "x-goog-api-key",
         "x-amz-security-token",
         "duplicate authorization",
+        "authorization",
+        "cookie",
+        "x-api-key",
+        "unknown header",
       ].includes(scenario);
       // The controlled origin counts decrypted bytes across every TLS connection.
       // Its lost-reply and replacement cases happen after a real request reaches it.
@@ -53,6 +62,20 @@ for (const scenario of scenarios) {
         providerServer: (options, handler) => {
           const server = createServer(options, (request, response) => {
             accepted++;
+            if (scenario === "SDK wire") {
+              assert.deepEqual(Object.keys(request.headers).sort(), [
+                "accept",
+                "authorization",
+                "content-length",
+                "content-type",
+                "host",
+              ]);
+              assert.equal(request.headers.authorization, "Bearer synthetic-key-initial");
+              assert.doesNotMatch(
+                JSON.stringify(request.headers),
+                /oce-placeholder|OpenAI\/JS|stainless/,
+              );
+            }
             if (scenario === "lost reply") {
               request.resume();
               request.on("end", () => request.socket.destroy());
@@ -157,12 +180,19 @@ for (const scenario of scenarios) {
       });
       const untrusted =
         scenario === "duplicate authorization"
-          ? `Authorization: ${sensitiveValue}\r\nAuthorization: ${sensitiveValue}\r\n`
+          ? "Authorization: Bearer oce-placeholder\r\nauthorization: Bearer oce-placeholder\r\n"
           : sensitive
-            ? `${scenario}: ${sensitiveValue}\r\n`
+            ? `${scenario === "unknown header" ? "x-unknown-client-field" : scenario}: ${scenario === "authorization" ? "Bearer " : ""}${sensitiveValue}\r\n`
             : "";
+      // OpenAI Node 7.5.0 responses.create header shape, including Undici transport metadata.
+      // Keep this wire control runnable without installing the SDK in the workspace.
+      const sdkHeaders =
+        scenario === "SDK wire" ||
+        (sensitive && scenario !== "authorization" && scenario !== "duplicate authorization")
+          ? "Authorization: Bearer oce-placeholder\r\nAccept: application/json\r\nUser-Agent: OpenAI/JS 7.5.0\r\nX-Stainless-Arch: x64\r\nX-Stainless-Lang: js\r\nX-Stainless-OS: Linux\r\nX-Stainless-Package-Version: 7.5.0\r\nX-Stainless-Retry-Count: 0\r\nX-Stainless-Runtime: node\r\nX-Stainless-Runtime-Version: v24.22.1\r\nAccept-Encoding: gzip, deflate, br\r\nAccept-Language: *\r\nSec-Fetch-Mode: cors\r\n"
+          : "";
       tls.write(
-        `POST /v1/responses HTTP/1.1\r\nHost: provider.example.test:${providerPort}\r\n${untrusted}Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+        `POST /v1/responses HTTP/1.1\r\nHost: provider.example.test:${providerPort}\r\n${sdkHeaders}${untrusted}Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
       );
       const received = await response;
       assert.doesNotMatch(received, /synthetic-key-initial|untrusted-placeholder/);
@@ -172,12 +202,29 @@ for (const scenario of scenarios) {
         assert.doesNotMatch(JSON.stringify(fixture.auditSink.events), new RegExp(sensitiveValue));
         assert.doesNotMatch(diagnostic, new RegExp(sensitiveValue));
       }
-      if (scenario === "allow") {
+      if (scenario === "allow" || scenario === "SDK wire") {
         assert.equal(accepted, 1, diagnostic);
         assert.ok(applicationBytes > 0);
         assert.match(received, /fixture answer/, diagnostic);
         assert.equal(fixture.secretReads, before + 1);
         assert.equal(fixture.providerRequests[0].authorization, "Bearer synthetic-key-initial");
+        if (scenario === "SDK wire") {
+          assert.equal(resolutions, 1);
+          assert.ok("auditSink" in fixture);
+          assert.doesNotMatch(
+            JSON.stringify(fixture.auditSink.events),
+            /oce-placeholder|OpenAI\/JS|stainless/,
+          );
+          assert.doesNotMatch(diagnostic, /oce-placeholder|OpenAI\/JS|stainless/);
+          const exited = once(child, "exit");
+          child.kill("SIGINT");
+          await exited;
+          assert.ok(
+            !(await readFile(join(directory, "history.redb"))).includes(
+              Buffer.from("oce-placeholder"),
+            ),
+          );
+        }
       } else if (scenario === "replace" || scenario === "lost reply") {
         assert.equal(accepted, 1, diagnostic);
         assert.ok(applicationBytes > 0);
