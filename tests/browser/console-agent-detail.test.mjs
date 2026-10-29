@@ -20,7 +20,7 @@ import {
   deploymentStatusResponse,
   detailUrl,
   expectNoText,
-  expireSessions,
+  expireSessionsWhenSettled,
   grantMember,
   grantSecretOperate,
   hasFocus,
@@ -2605,6 +2605,7 @@ test("session expiry clears the unsent value in the Secret picker dialog", async
     { executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   // Let the picker open before its list read discovers the session has expired.
   const path = `/namespaces/${namespace.id}/secrets`;
@@ -2616,7 +2617,9 @@ test("session expiry clears the unsent value in the Secret picker dialog", async
   const field = dialog.getByLabel("Value", { exact: true });
   await field.fill("synthetic-unsent-value");
   const input = await field.evaluateHandle((node) => node);
-  expireSessions(fixture);
+  // Only the held list read may find the expiry: another read that found it first would sign
+  // the page out and abort the held read, which then never answers.
+  await expireSessionsWhenSettled(page, fixture, { except: path });
   const refused = page.waitForResponse((response) => new URL(response.url()).pathname === path);
   list.release();
   assert.equal((await refused).status(), 401);

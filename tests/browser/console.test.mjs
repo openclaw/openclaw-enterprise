@@ -20,6 +20,7 @@ import {
   apiRequests,
   expectNoText,
   expireSessions,
+  expireSessionsWhenSettled,
   login,
   loginThroughForm,
   newPage,
@@ -1284,11 +1285,10 @@ test("console retained views clear after session expiry and exact Agent denial",
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
-  // Each row reads its Namespace delete permission after the list shows. If that read reached
-  // the API after the expiry below, its 401 would show the expired sign-in before the Agents
-  // click. Expire only once the page has no read in flight, so the held return finds it.
+  // Each row reads its Namespace delete permission after the list shows, so wait for the view
+  // to settle before expiring: the held return, not a row read, must find the expiry.
   await waitForSettledView(page);
-  expireSessions(fixture);
+  await expireSessionsWhenSettled(page, fixture);
   const sessionPattern = "**/api/auth/session";
   const expiredSession = await holdRoute(t, page, sessionPattern, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),
@@ -3006,12 +3006,10 @@ test("a naturally expired session returns to the requested page after sign-in", 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  // The button shows before the Namespace's Preset read returns. If that read reached the API
-  // after the expiry below, its 401 would show the expired sign-in on this page before the click,
-  // and the Namespaces link would be gone. Expire only once the page has no read in flight.
-  await waitForIdleFetches(page);
-  // Expire the actual session: the controller must reject it before returning to login.
-  expireSessions(fixture);
+  // The button shows before the Namespace's Preset read returns, and that read must not find
+  // the expiry. Expire the actual session: the controller must reject it before returning to
+  // login.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByLabel("Email", { exact: true }).waitFor();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
@@ -3026,6 +3024,7 @@ test("session expiry after a failed check returns to the requested page", async 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Interrupted expiry", { ready: true });
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   await page.route(
@@ -3040,7 +3039,8 @@ test("session expiry after a failed check returns to the requested page", async 
   );
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByText("Session unavailable", { exact: true }).waitFor();
-  expireSessions(fixture);
+  // The Preset read may still be out (see the test above); Retry must find the expiry.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("button", { name: "Retry" }).click();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
@@ -3063,7 +3063,7 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   const requests = apiRequests(page, fixture.origin);
 
   // A foreground recheck discovers real expiry without navigating away from this Agent.
-  expireSessions(fixture);
+  await expireSessionsWhenSettled(page, fixture);
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Expired page Agent/, () => waitForIdleFetches(page));
