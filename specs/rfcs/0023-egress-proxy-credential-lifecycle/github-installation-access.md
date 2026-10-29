@@ -27,6 +27,22 @@ A later independently selected **public-read-only** policy must not inherit inst
 - Verify GitHub refuses a private repository outside the installation. Report actual authenticated REST rate-limit accounting separately from Git traffic. Verify credentials never reach a different host, including redirects.
 - Retain stock middleware/transport qualification limits. Separately measure maximum viable Git/REST/GraphQL request sizes. No credential-free fallback or second egress route is introduced by this change.
 
+## Collaborator access to a selected repository
+
+An Agent assigned to repository A should be able to create a branch, push to it and work on a teammate’s pull request in A, even if the App is also installed on private repository B. Add an explicit `github-repository` grant for this case. A Credential Proxy Driver must reject this binding if it cannot deliver a repository-scoped token outside the Agent. Each binding selects **one stable repository ID** on its recorded GitHub provider instance and App installation. A repository name, a wildcard or an omitted ref cannot select this profile. Existing ref-limited, `git-full` and `github-installation` grants keep their meanings. Changing profiles requires fresh admission and separately scoped material.
+
+**Credential owner.** When issuing or renewing the installation token, OCE must send `repository_ids: [A]` and request the repository permissions granted to the App, without the fixed `git-full` subset. Exclude organization, account and installation-wide authority. Bind the material and its recovery record to the admitted grant, installation and repository ID. If the issuer cannot establish that scope, refuse the operation; never retry without the ID or substitute installation-wide material. The Agent receives neither the token nor an App signing credential. [GitHub installation token issuance](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app)
+
+**Sender.** The trusted sender authenticates ordinary Git smart HTTP and repository REST and GraphQL operations with that token. GitHub enforces the App’s repository permissions, branch protections and rulesets. OCE does not add a branch allowlist, restrict work to the Agent’s PRs or enumerate allowed PR edits. Keep the sender’s existing HTTPS, execution, grant and withdrawal checks. Agent input, redirects and API requests naming other repositories must never select another credential. Anonymous public reads remain a separate path, with no automatic fallback.
+
+**Installed acceptance.** Install the App on private A and B with the same permissions; grant the Agent only A. On the bundled OpenShell sender:
+
+1. From one Agent execution, create a branch and push commit 1, then push commit 2 to the same branch. Independently read the ref at GitHub after each push and compare its SHA. Edit another actor’s draft PR in A where GitHub permits it and read the edit back. A push prohibited by a GitHub repository rule must still fail.
+2. From that execution, attempt to fetch a known private object from B, push a ref to B, and read B through REST and GraphQL. Require no private B data and independently verify that B’s ref did not change. A GitHub denial caused by the scoped token is valid evidence; an absent local route alone does not establish token scope.
+3. Withdraw A’s grant while its token is still valid. Start a new operation on the same execution. For enforced authorization, observe refusal before any new upstream request, including on a reused connection. An earlier send with an uncertain outcome remains with its original receipt.
+
+A configured or observed request hook can qualify a preview only. Claim enforced authorization only after [the installed sender checks](online-authorization.md) establish mandatory mediation. A local Git push, an allow decision or a token-issuance test alone does not qualify this profile.
+
 ## Let a team keep Git access until it removes approval
 
 A team installs an Agent on Monday and fetches new commits in the same conversation on Tuesday.
