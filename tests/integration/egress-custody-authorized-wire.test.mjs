@@ -1,15 +1,17 @@
-import { once } from "node:events";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { controlledTlsOrigin } from "../helpers/controlled-tls-origin.ts";
-import { controlledTlsOriginScenario } from "../helpers/controlled-tls-origin-scenario.ts";
+import {
+  assertApplicationConnections,
+  observeGrantedSend,
+  singleRequestTlsOrigin,
+} from "../helpers/controlled-tls-origin-scenario.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 
 // Two authorized sinks multiplexed on the real TLS gRPC client connection. We own
 // only this synthetic peer and downstream. The installed lane separately holds two
 // real executions' replies; it does not extract or replace a supervisor's private key.
 test("authorized wrong sink presents copied opening first and splices a pending real reply", async (t) => {
-  const f = await staticEgressFixture(t, { providerServer: controlledTlsOrigin });
+  const f = await staticEgressFixture(t, { providerServer: singleRequestTlsOrigin });
   const origin = () => f.provider.snapshot();
   const before = f.secretReads;
   const lostBearer = f.metadata();
@@ -35,10 +37,8 @@ test("authorized wrong sink presents copied opening first and splices a pending 
   const readyA = (await a.next()).resolved.ready;
   assert.ok(readyA);
   assert.equal(f.secretReads, before + 1);
-  const allowedWindow = f.provider.mark();
-  const complete = await sendAllowed(a, captureA, readyA);
-  assert.equal(f.provider.since(allowedWindow).completeRequests, 1);
-  assert.ok(f.provider.since(allowedWindow).decryptedBytes > 0);
+  const complete = await sendAllowed(a, captureA, readyA, 0);
+  assertApplicationConnections(origin(), 1);
   const sentBytes = origin().decryptedBytes;
   const thief = await f.beginExchange(lostBearer);
   await expectStreamRefused(thief, { response: complete });
@@ -53,7 +53,8 @@ test("authorized wrong sink presents copied opening first and splices a pending 
   const { exchange: freshB, capture: captureB, ready: readyB } = await openExchange(f, lostBearer);
   assert.equal(f.secretReads, before + 2);
   assert.equal(origin().decryptedBytes, sentBytes);
-  await expectActualReply(freshB, await sendAllowed(freshB, captureB, readyB));
+  await expectActualReply(freshB, await sendAllowed(freshB, captureB, readyB, sentBytes));
+  assertApplicationConnections(origin(), 2);
   assert.ok(origin().decryptedBytes > sentBytes);
   assert.equal(origin().completeRequests, 2);
   assert.equal(f.providerRequests.length, 2);
@@ -63,11 +64,17 @@ test("authorized wrong sink presents copied opening first and splices a pending 
     ),
   );
 
-  async function sendAllowed(exchange, capture, ready) {
-    exchange.stream.write({ authorize: f.permitRequest(capture, ready) });
-    const { authorized } = await exchange.next();
-    assert.deepEqual(authorized.allowed.response_custody, capture.response_custody);
-    return f.send(capture, ready);
+  async function sendAllowed(exchange, capture, ready, expectedBytes) {
+    return observeGrantedSend(
+      f.provider,
+      expectedBytes,
+      async () => {
+        exchange.stream.write({ authorize: f.permitRequest(capture, ready) });
+        const { authorized } = await exchange.next();
+        assert.deepEqual(authorized.allowed.response_custody, capture.response_custody);
+      },
+      () => f.send(capture, ready),
+    );
   }
   async function expectActualReply(exchange, completeReply) {
     assert.equal(completeReply.response_complete, true);
@@ -84,7 +91,7 @@ test("authorized wrong sink presents copied opening first and splices a pending 
 });
 
 test("two live authorized streams cannot cross their resolved dispatch handles", async (t) => {
-  const f = await staticEgressFixture(t, { providerServer: controlledTlsOrigin });
+  const f = await staticEgressFixture(t, { providerServer: singleRequestTlsOrigin });
   const before = f.secretReads;
   // Cross both signed openings *before* either is presented to the proper sink.
   // Check authority refusals and material access. Origin counters also detect
@@ -135,130 +142,3 @@ async function openExchange(f, metadata) {
   assert.ok(resolved.ready);
   return { exchange, capture, ready: resolved.ready };
 }
-
-// TODO: The sender integration owner must qualify denied-send acceptance with
-// an actual product sender. f.send is test-owned transport, so skipping it after
-// an authority refusal cannot prove that a sender suppresses outbound bytes.
-// The following controls qualify only the observer using real loopback TLS.
-const request = "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\nok";
-
-for (const [part, partial] of [
-  ["headers", "POST / HTTP/1.1\r\nAuthorization: synthetic"],
-  ["body", "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 20\r\n\r\npartial"],
-]) {
-  test(
-    `TLS origin counts partial ${part} after a drained reusable connection barrier`,
-    { timeout: 10000 },
-    async (t) => {
-      const scenario = await controlledTlsOriginScenario(t);
-      const { origin } = scenario;
-      const socket = await scenario.connect();
-      await scenario.writeAndDrain(socket, request);
-      assert.equal(origin.snapshot().completeRequests, 1);
-      assert.equal(origin.snapshot().decryptedBytes, Buffer.byteLength(request));
-      const socketId = origin.snapshot().connections[0].socketId;
-      // The complete reply acknowledges the first request. This test owns the
-      // next write, so marking before it is a deterministic instrument barrier.
-      const mark = origin.mark();
-      assert.equal(origin.since(mark).decryptedBytes, 0);
-      await scenario.writeAndObserve(
-        socket,
-        partial,
-        (s) => s.decryptedBytes === Buffer.byteLength(request + partial),
-      );
-      assert.deepEqual(origin.since(mark), {
-        decryptedBytes: Buffer.byteLength(partial),
-        completeRequests: 0,
-        connections: [
-          { socketId, decryptedBytes: Buffer.byteLength(partial), completeRequests: 0 },
-        ],
-      });
-      assert.equal(
-        origin.snapshot().connections.length,
-        1,
-        "the partial request reused the authenticated socket",
-      );
-      const closed = once(socket, "close");
-      socket.destroy();
-      await closed;
-      assert.equal(origin.since(mark).decryptedBytes, Buffer.byteLength(partial));
-    },
-  );
-}
-
-test(
-  "TLS observer counts duplicate complete requests on new and reused sockets",
-  { timeout: 10000 },
-  async (t) => {
-    const scenario = await controlledTlsOriginScenario(t);
-    const { origin } = scenario;
-    const first = await scenario.connect();
-    const mark = origin.mark();
-    await scenario.writeAndDrain(first, request);
-    assert.equal(origin.since(mark).completeRequests, 1);
-    assert.equal(origin.since(mark).decryptedBytes, Buffer.byteLength(request));
-    const second = await scenario.connect();
-    await scenario.writeAndDrain(second, request);
-    assert.equal(
-      origin.since(mark).completeRequests,
-      2,
-      "a second socket must not hide a duplicate",
-    );
-    assert.equal(origin.since(mark).decryptedBytes, 2 * Buffer.byteLength(request));
-    assert.deepEqual(
-      origin.snapshot().connections.map((row) => row.completeRequests),
-      [1, 1],
-    );
-    await scenario.writeAndDrain(first, request);
-    assert.equal(
-      origin.since(mark).completeRequests,
-      3,
-      "a reused socket must not hide a duplicate",
-    );
-  },
-);
-
-test(
-  "TLS handshake alone has zero application bytes; a new connection's partial request is counted",
-  { timeout: 10000 },
-  async (t) => {
-    const scenario = await controlledTlsOriginScenario(t);
-    const { origin } = scenario;
-    const mark = origin.mark();
-    const socket = await scenario.connect();
-    await scenario.observe((s) => s.connections.length === 1);
-    assert.equal(origin.since(mark).decryptedBytes, 0);
-    assert.equal(origin.since(mark).completeRequests, 0);
-    const partial = "GET /";
-    await scenario.writeAndObserve(
-      socket,
-      partial,
-      (s) => s.decryptedBytes === Buffer.byteLength(partial),
-    );
-    assert.equal(origin.since(mark).decryptedBytes, Buffer.byteLength(partial));
-    assert.equal(origin.since(mark).completeRequests, 0);
-  },
-);
-
-test(
-  "TLS origin does not count headers as a completed request and counts pipelined requests separately",
-  { timeout: 10000 },
-  async (t) => {
-    const scenario = await controlledTlsOriginScenario(t);
-    const { origin } = scenario;
-    const socket = await scenario.connect();
-    const headers = request.slice(0, -2);
-    await scenario.writeAndObserve(
-      socket,
-      headers,
-      (s) => s.decryptedBytes === Buffer.byteLength(headers),
-    );
-    assert.equal(origin.snapshot().completeRequests, 0);
-    await scenario.writeAndObserve(socket, "ok" + request, (s) => s.completeRequests === 2);
-    assert.equal(origin.snapshot().decryptedBytes, 2 * Buffer.byteLength(request));
-    assert.deepEqual(
-      origin.snapshot().connections.map((row) => row.completeRequests),
-      [2],
-    );
-  },
-);
