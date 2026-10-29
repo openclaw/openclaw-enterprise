@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
@@ -20,6 +19,7 @@ import {
   assertGatewayPolicyRunSucceeded,
   observeSandboxProbe,
 } from "../helpers/k3d-failure-diagnostics.mjs";
+import { listen } from "../helpers/listen.mjs";
 import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -211,9 +211,7 @@ test("OpenShell host probes retain the exposed hostname while connecting to loop
     observedHost = incoming.headers.host;
     response.end("routed");
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await listen(t, server);
 
   const address = server.address();
   assert.ok(address && typeof address === "object");
@@ -246,9 +244,7 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   server.on("upgrade", (request, stream, head) => {
     peer.handleUpgrade(request, stream, head, (socket) => peer.emit("connection", socket, stream));
   });
-  server.listen(0, "127.0.0.1");
-  t.after(() => server.close());
-  await once(server, "listening");
+  await listen(t, server);
 
   const directory = await fixture(t);
   await writeFile(
@@ -472,9 +468,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
   const server = createServer();
   const peer = new WebSocketServer({ server });
-  server.listen(0, "127.0.0.1");
-  t.after(() => server.close());
-  await once(server, "listening");
+  await listen(t, server);
   const directory = await fixture(t);
   // Finding 1665: wakes the client's first command-deadline timer after 1 ms instead of its
   // delay, as an early libuv wake would, and records that it did.
@@ -646,9 +640,7 @@ test("a turn the model answered at capacity runs again only for its own final er
   const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
   const server = createServer();
   const peer = new WebSocketServer({ server });
-  server.listen(0, "127.0.0.1");
-  t.after(() => server.close());
-  await once(server, "listening");
+  await listen(t, server);
   const directory = await fixture(t);
   // A transport that can drop the last two bytes of the client's stdout or stderr ("mode").
   const mode = join(directory, "mode");
