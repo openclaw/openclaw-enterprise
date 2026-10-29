@@ -575,6 +575,13 @@ test("OpenShell custom and default credential profiles keep independent ownershi
   assert.deepEqual(await attachNative(() => {}), [
     { sourceId: custom.data.id, ref: provider.name },
   ]);
+  // The written endpoint is compared after normalization, as Compute renders it.
+  assert.deepEqual(
+    await attachNative((configuration) => {
+      configuration.models.providers.openai.baseUrl = "https://MODELS.example.test:8443/api/v1/";
+    }),
+    [{ sourceId: custom.data.id, ref: provider.name }],
+  );
   // Compute renders only the selected models into the native worker's catalog, so an
   // unselected entry for another endpoint gets no traffic and does not block the deployment
   // (finding 1686).
@@ -589,7 +596,7 @@ test("OpenShell custom and default credential profiles keep independent ownershi
   );
   // A selected model on another endpoint, its own or the provider's, is refused by setting
   // and both hosts, never the source ID or key. Fallbacks and roster entries are selected too.
-  const sourceHost = "source host models.example.test";
+  const sourceHost = "source host models.example.test:8443";
   for (const [change, refusal] of [
     [
       (configuration) => {
@@ -600,6 +607,13 @@ test("OpenShell custom and default credential profiles keep independent ownershi
     [
       (configuration) => {
         configuration.models.providers.openai.baseUrl = "https://models.example.test:8443/v1";
+      },
+      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host models.example.test:8443).`,
+    ],
+    // A port mismatch shows in the hosts.
+    [
+      (configuration) => {
+        configuration.models.providers.openai.baseUrl = "https://models.example.test/api/v1";
       },
       `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host models.example.test).`,
     ],
@@ -642,6 +656,14 @@ test("OpenShell custom and default credential profiles keep independent ownershi
     },
     (configuration) => {
       configuration.models.providers.openai.models = [{ id: "another" }];
+    },
+    // OpenClaw merges rows whose ids match after trimming, so this unselected row would give
+    // the selected model its endpoint.
+    (configuration) => {
+      configuration.models.providers.openai.models.push({
+        id: " model",
+        baseUrl: "https://other.example.test/v1",
+      });
     },
   ]) {
     await assert.rejects(attachNative(change), {

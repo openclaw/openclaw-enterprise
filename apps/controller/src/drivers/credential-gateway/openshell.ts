@@ -840,10 +840,12 @@ function sourceBaseUrl(config: Readonly<Record<string, string>>): string {
   return baseUrl;
 }
 
-/** A host for a refusal: never credentials, and short enough for the 256-character cap. */
+/**
+ * A host and any explicit port for a refusal: never credentials or a path, and short enough
+ * for the 256-character cap.
+ */
 function shownHost(value: unknown): string {
-  const host =
-    typeof value === "string" && URL.canParse(value) ? new URL(value).hostname : undefined;
+  const host = typeof value === "string" && URL.canParse(value) ? new URL(value).host : undefined;
   if (!host) {
     return "none";
   }

@@ -1700,6 +1700,12 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   nativeConfiguration.models.providers.openai.models[0].baseUrl =
     "https://models.example.test:443/inference/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-completions";
+  const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
+  // An unselected entry for another endpoint reaches neither the worker nor the startup probe.
+  nativeConfiguration.models.providers.openai.models.push({
+    id: "unselected",
+    baseUrl: "https://other.example.test/v1",
+  });
   const sourceType = {
     type: "openai",
     config: [],
@@ -1833,6 +1839,14 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     nativeConfig.models.providers.openai.models.map(({ id }) => id),
     ["team/model"],
   );
+  // OpenClaw merges catalog entries whose ids match after trimming, so the startup probe gets
+  // only the primary model's entry, as written (findings 2882, 2883).
+  const probeConfig = JSON.parse(
+    provisions[0].requirements.environment.find(
+      ({ name }) => name === "OPENCLAW_HARNESS_PROBE_CONFIG",
+    ).value,
+  );
+  assert.deepEqual(probeConfig.models.providers.openai.models, [selectedEntry]);
   // The provider's observed Pod readiness and enrolled node are independent of provisioning.
   // Until the provider's Pod is Ready, the wait has no named reason.
   const podPending = await prepare();
