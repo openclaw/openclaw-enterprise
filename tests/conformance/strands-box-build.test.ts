@@ -24,6 +24,8 @@ async function directory(t: TestContext) {
 
 test("Box packaging refuses changed, absent, symlinked and non-ARM64 artifacts before Docker", async (t) => {
   const path = await directory(t);
+  const uid = process.geteuid?.();
+  assert.ok(uid !== undefined, "file verification requires POSIX ownership information");
   await mkdir(join(path, "bridge"));
   // Synthetic ELF headers exercise package validation, not compilation or runtime proof.
   const elf = Buffer.alloc(64);
@@ -83,7 +85,7 @@ test("Box packaging refuses changed, absent, symlinked and non-ARM64 artifacts b
   assert.equal(syntax.status, 0, syntax.stderr);
   const payloadPath = join(path, "strands-box");
   await chmod(payloadPath, 0o555);
-  const installed = [{ path: payloadPath, sha256: hash(elf), mode: 0o555 }];
+  const installed = [{ path: payloadPath, sha256: hash(elf), mode: 0o555, uid: uid }];
   verifyPayloadFiles(installed);
   await chmod(payloadPath, 0o755);
   await writeFile(payloadPath, "later layer replaced the executable");
@@ -93,6 +95,23 @@ test("Box packaging refuses changed, absent, symlinked and non-ARM64 artifacts b
   await writeFile(payloadPath, elf);
   await chmod(payloadPath, 0o555);
   verifyPayloadFiles(installed);
+  assert.throws(
+    () => verifyPayloadFiles([{ ...installed[0]!, uid: uid + 1 }]),
+    /unexpected file owner/u,
+  );
+  assert.throws(
+    () => verifyPayloadFiles([{ ...installed[0]!, mode: 0o444 }]),
+    /installed mode mismatch/u,
+  );
+  const payloadLink = join(path, "payload-link");
+  await symlink(payloadPath, payloadLink);
+  assert.throws(() => verifyPayloadFiles([{ ...installed[0]!, path: payloadLink }]), {
+    code: "ELOOP",
+  });
+  assert.throws(
+    () => verifyPayloadFiles([{ ...installed[0]!, path: join(path, "bridge") }]),
+    /expected a regular file/u,
+  );
 
   await t.test("offline OCI receipts verify the manifest and build-record digest", async () => {
     const layout = await directory(t);
@@ -196,7 +215,7 @@ test("Box packaging refuses changed, absent, symlinked and non-ARM64 artifacts b
   await symlink(join(path, names[1]!), join(path, names[0]!));
   result = invoke("package");
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /not a regular file/u);
+  assert.match(result.stderr, /ELOOP/u);
 });
 
 test("Strands QA requires a running image and verifies index-to-ARM64 manifest mapping", async (t) => {

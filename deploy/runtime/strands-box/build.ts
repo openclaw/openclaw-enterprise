@@ -6,6 +6,8 @@ import {
   chmodSync,
   closeSync,
   copyFileSync,
+  constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -101,9 +103,25 @@ function immutable(image: string | undefined) {
     "use an immutable image reference with @sha256 digest",
   );
 }
-function regular(path: string) {
-  assert.ok(lstatSync(path).isFile(), `not a regular file: ${path}`);
-  return readFileSync(path);
+function currentUid(): number {
+  assert.ok(process.geteuid, "file verification requires POSIX ownership information");
+  return process.geteuid();
+}
+function regular(path: string, mode?: number, owner = currentUid()) {
+  // O_NOFOLLOW protects the leaf. Ancestors belong to the trusted build tree
+  // (or the root-owned image /opt tree); this is not an untrusted-path resolver.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    assert.ok(stat.isFile(), `not a regular file: ${path}`);
+    assert.equal(stat.uid, owner, `${path}: unexpected file owner`);
+    if (mode !== undefined) {
+      assert.equal(stat.mode & 0o777, mode, `${path}: installed mode mismatch`);
+    }
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 function executable(bytes: Buffer, name: string) {
   assert.ok(
@@ -194,8 +212,16 @@ function prepare(options: Options) {
   save(join(out, "source.json"), { inputs, variant, tree });
   console.log(`Prepared ${variant} ${tree} in ${source}`);
 }
-function verify(directory: string, installed = false) {
-  const record = json<BuildRecord>(join(directory, "build-record.json"));
+function verify(directory: string, installed = false, recordSha256?: string) {
+  const recordBytes = regular(
+    join(directory, "build-record.json"),
+    installed ? 0o444 : undefined,
+    installed ? 0 : currentUid(),
+  );
+  if (installed) {
+    assert.equal(sha(recordBytes), recordSha256, "build record digest mismatch");
+  }
+  const record = JSON.parse(recordBytes.toString()) as BuildRecord;
   if (!installed) {
     assert.deepEqual(
       readdirSync(join(directory, "bridge")).sort(),
@@ -221,17 +247,14 @@ function verify(directory: string, installed = false) {
       installed && name.startsWith("bridge/")
         ? join("/opt/oce/strands-box", name.slice(7))
         : join(directory, name);
-    const bytes = regular(path);
+    const bytes = regular(
+      path,
+      installed ? (binaries.includes(name) ? 0o555 : 0o444) : undefined,
+      installed ? 0 : currentUid(),
+    );
     assert.equal(sha(bytes), record.sha256[name], `${name}: SHA-256 mismatch`);
     if (binaries.includes(name)) {
       executable(bytes, name);
-    }
-    if (installed) {
-      assert.equal(
-        lstatSync(path).mode & 0o777,
-        binaries.includes(name) ? 0o555 : 0o444,
-        `${name}: installed mode mismatch`,
-      );
     }
   }
   return record;
@@ -470,12 +493,7 @@ try {
       break;
     case "verify-installed":
       assert.equal(
-        sha(regular(join(here, "build-record.json"))),
-        values["record-sha256"],
-        "build record digest mismatch",
-      );
-      assert.equal(
-        verify(here, true).runtimeImage,
+        verify(here, true, values["record-sha256"]).runtimeImage,
         values["runtime-image"],
         "runtime base differs from build record",
       );

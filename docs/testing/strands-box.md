@@ -262,7 +262,12 @@ container. It requires the normal `node` user (UID 1000), then checks the actual
 binaries, bridges and build record for hashes, file types, modes and access.
 This also runs after replacement and for the second Agent. A replaced bundled
 verifier or an in-image record cannot override the host expectations. Missing
-files, later-layer overwrites, wrong users and Pod identity changes fail QA.
+files, later-layer overwrites, wrong owners/users and Pod identity changes fail QA.
+File metadata and bytes are checked through one open descriptor, refusing leaf
+symlinks. Build inputs must be in operator-controlled directories; installed
+payload ancestors must remain the trusted image-owned `/opt` directories.
+This check does not prevent a privileged actor from replacing ancestor
+directories or modifying an open inode concurrently.
 
 QA requires a nonempty image ID for every observed running container and checks
 it against the selected image. No additional image-document fields are needed
