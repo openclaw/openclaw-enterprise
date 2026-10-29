@@ -79,7 +79,9 @@ export function supervisorBearer(claims, privateKey) {
 }
 
 /** Real app/auth/IAM/controller/Drivers. Storage and installed runtime observations are wire fixtures,
- * not a Kubernetes API server or an OpenShell supervisor. No authorization/provider logic is mocked. */
+ * not a Kubernetes API server or an OpenShell supervisor. No authorization/provider logic is mocked.
+ * @template {import("node:net").Server} [Provider=never]
+ */
 export async function staticEgressFixture(
   t,
   {
@@ -102,7 +104,9 @@ export async function staticEgressFixture(
     configurePreparedTokens,
     secretValue,
     admitSource,
-    providerServer = createHttpsServer,
+    providerServer = /** @type {((tls: import("node:tls").TlsOptions, handle: import("node:http").RequestListener) => Provider) | undefined} */ (
+      undefined
+    ),
     credentialProxyCapacity,
   } = {},
 ) {
@@ -516,7 +520,8 @@ export async function staticEgressFixture(
   const path = `/namespaces/${namespace.id}/credential-sources`;
   const providerRequests = [];
   let providerResponse = { status: 200, body: { output: "fixture answer" } };
-  const provider = providerServer({ key, cert }, async (request, response) => {
+  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
+  const provider = createProvider({ key, cert }, async (request, response) => {
     const bytes = await buffer(request);
     providerRequests.push({
       method: request.method,
