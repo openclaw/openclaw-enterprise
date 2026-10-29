@@ -14417,6 +14417,19 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       "models.providers.openai.models",
       "must hold exactly one entry for each selected openai model on Dedicated OpenClaw",
     ],
+    // OpenClaw merges entries whose ids match after trimming, so an unselected entry with a
+    // padded id and its own endpoint would still give the Secret-backed key that endpoint.
+    [
+      withOpenAI({
+        ...openaiRow,
+        models: [
+          openaiRow.models[0],
+          { id: ` ${openaiRow.models[0].id}`, baseUrl: "https://other.example.test/v1" },
+        ],
+      }),
+      "models.providers.openai.models",
+      "must hold exactly one entry for each selected openai model on Dedicated OpenClaw",
+    ],
     [
       withEntry({ headers: { "x-feature": "on" } }),
       "models.providers.openai.models.0.headers",
