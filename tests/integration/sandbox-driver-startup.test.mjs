@@ -1726,6 +1726,47 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   await unauthorized(true);
 });
 
+test("OpenShell withdrawal preserves cancellation before provider lookup", async (t) => {
+  const client = new GrpcOpenShellGatewayClient({ endpoint: "http://127.0.0.1:1" });
+  const initialize = t.mock.method(client, "createClient", async () => {
+    throw new Error("Cancelled withdrawal must not initialize the provider client.");
+  });
+  const sandbox = openShellDriver(client);
+  const { context, revision } = runtimeSandboxFixture(sandbox, { harnessId: "openclaw" });
+  const compute = new KubernetesComputeDriver(
+    conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
+    { sandboxDriver: sandbox },
+  );
+  revision.compute = { id: compute.id, implementation: compute.implementation };
+  const caller = new AbortController();
+  const reason = new Error("stop withdrawal during namespace lookup");
+  const objects = kubernetesObjectClient([]);
+  // Control only Kubernetes IO: retain the real context/signal composition, Sandbox
+  // withdrawal, identity wrapper, getService and unary cancellation checks.
+  Object.assign(compute, {
+    apiClients: Promise.resolve({ objects }),
+    executionApiClients: Promise.resolve({ objects }),
+    resolveNamespace: async () => ({
+      name: { name: context.namespace.name, plane: "execution" },
+      external: false,
+    }),
+    getNamespace: async () => {
+      assert.equal(caller.signal.aborted, false);
+      caller.abort(reason);
+      // A missing namespace still requires provider confirmation of withdrawal.
+      return undefined;
+    },
+  });
+  await assert.rejects(
+    compute.withdrawHarnessExposure(revision, caller.signal),
+    (error) => error === reason,
+  );
+  // Include the next event-loop turn: no late setup may dispatch a provider read
+  // or deletion after the withdrawal has rejected. Cold RPCs require initialization.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(initialize.mock.callCount(), 0);
+});
+
 // Finding 1642: a native worker that holds a failed model check never connects its node.
 // Compute asks for the Codex bearer-passthrough exposure (APP_SERVER_PORT with the
 // APP_TOKEN_SHA verifier) so it can read that held failure; the raw token never arrives.
