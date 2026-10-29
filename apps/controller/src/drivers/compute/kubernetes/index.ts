@@ -2649,7 +2649,8 @@ function referenceSetting(value: unknown, setting: string): string | undefined {
 // names the setting, never its value (finding 2828). On Dedicated OpenClaw (`nativeAuthMethod`
 // set) the probe gets the primary model's entry as nativeRuntimeConfiguration renders it for the
 // native worker: no other entry can supply its endpoint (findings 2882, 2883), and the probe
-// resolves the same model ID and checked endpoint as the worker (finding 2903).
+// resolves the same model ID and checked endpoint as the worker (finding 2903). The checked
+// endpoint is the provider default, not a row setting (finding 2904).
 function harnessProbeConfiguration(
   configuration: OpenClawConfigurationDocument,
   embedded = false,
@@ -2689,8 +2690,11 @@ function harnessProbeConfiguration(
     // The rendering holds one row for each selected model, the primary included.
     const primary = rendered.models.providers.openai.models.find((row) => row.id === id)!;
     if (fragment !== undefined) {
-      fragment.baseUrl = primary.baseUrl;
-      fragment.models = [primary];
+      // The row inherits its endpoint from the provider, so the runtime's upfront credential
+      // check, which skips rows with their own baseUrl, still applies (finding 2904).
+      const { baseUrl, ...row } = primary;
+      fragment.baseUrl = baseUrl;
+      fragment.models = [row];
     }
   }
   return {

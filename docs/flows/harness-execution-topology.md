@@ -155,7 +155,7 @@ the selection Compute renders) against the immutable source endpoint before
 attachment, and a refusal names the `baseUrl` setting and both hosts. Catalog
 ids match after trimming, as OpenClaw merges such entries, so a second match
 fails. The startup model probe gets only the primary model's entry as rendered
-for the worker, and its endpoint as the provider default.
+for the worker, with its endpoint moved to the provider default.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
 writes capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`;
 Compute and Sandbox supply private temporary directories.
