@@ -18,7 +18,7 @@ Replace `CredentialGatewayDriver` with the `credential_proxy` Installation capab
 
 [Diagram source](assets/overview.mmd)
 
-For ordinary Git and GitHub API work, select [collaborator access to one repository](github-installation-access.md#collaborator-access-to-a-selected-repository) or explicitly opt in to [installation-wide access](github-installation-access.md). Both use the online sender.
+For ordinary Git and GitHub API work, select [collaborator access to selected repositories](github-installation-access.md#collaborator-access-to-selected-repositories) or explicitly opt in to [installation-wide access](github-installation-access.md). Both use the online sender.
 A team can separately [approve Git access until it removes that approval](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval).
 OCE renews short-lived installation tokens so the team can keep working in the same Agent and conversation.
 
