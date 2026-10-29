@@ -12,9 +12,9 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 
 ## Enable during creation
 
-On **Create Agent**, select **Enable Native admin UI** before creating a supported
-Dedicated Agent. The option is off by default and unavailable until the
-Installation enables native admin access. The API accepts `nativeAdmin: true` on
+In **Create Agent**, select **Enable Native admin UI** for supported Dedicated
+provisioning. Unchecked by default, it requires Installation native admin
+enablement. API callers set `nativeAdmin: true` on
 `POST /namespaces/:namespaceId/agents/provision`.
 
 Provisioning saves `controlUi.enabled`, the exact derived HTTPS origin (including
@@ -22,8 +22,8 @@ its port), `gateway.publicOrigin`, and trusted-proxy admin device approval in th
 initial Configuration. It preserves existing allowed origins, Secret bindings,
 and unrelated settings. Conflicting authentication modes, unsupported auth fields,
 disabled device authentication, and host-header origin fallback are refused.
-Retries retain the same Agent identity and prepared Configuration. Enabling this
-option does not grant the creator Agent `administer` permission.
+Retries retain the Agent identity and prepared Configuration. This option grants
+no Agent `administer` permission.
 
 ## Requirements
 
