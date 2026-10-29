@@ -175,7 +175,9 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   assert.equal(await remove.getAttribute("aria-disabled"), "true");
   await remove.focus();
   assert.equal(await remove.evaluate((node) => node === document.activeElement), true);
+  // Each is checked on its own: a click on the modal's backdrop would close a dialog Enter opened.
   await page.keyboard.press("Enter");
+  assert.equal(await page.locator("dialog[open]").count(), 0);
   await remove.click({ force: true });
   assert.equal(await page.locator("dialog[open]").count(), 0);
   grantMember(fixture, label, [["delete", "namespace"]]);
