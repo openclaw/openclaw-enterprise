@@ -480,8 +480,13 @@ function settleNotAdministrator() {
 // kept the Namespaces only administration could read until Refresh (finding 2917). Administration
 // ending reads the list once more: a member may list Namespaces, so the read audits nothing. The
 // selector keeps a Namespace still readable; a Namespace-scoped page whose Namespace is gone
-// settles as a refocus finds it gone. A failed read keeps the list; Refresh reads it again.
+// settles as a refocus finds it gone. A failed read keeps the list; Refresh reads it again. A page
+// load in flight reads the list itself: the answer can settle after the page that asked was left,
+// and a Backends refusal settles it within its own load.
 async function rereadNamespacesAfterAdministration() {
+  if (mountedRouteKey === null) {
+    return;
+  }
   const owner = sessionOwnerKey(session);
   const active = lifetime.capture();
   let readable;
