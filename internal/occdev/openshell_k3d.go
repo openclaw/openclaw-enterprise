@@ -150,16 +150,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		}
 	}
 	if sandboxDriver == "openshell" {
-		external, err := readExternalOpenShell(r.env)
+		external, err := selectExternalOpenShell(r.env, state.ProtectedEgress)
 		if err != nil {
 			return err
 		}
-		if external != nil {
-			if err := external.resolve(); err != nil {
-				return err
-			}
-			state.openShellExternal = external
-		}
+		state.openShellExternal = external
 	}
 	if !namespaceName.MatchString(state.PlatformNamespace) || len(state.PlatformNamespace) > 63 {
 		return fmt.Errorf("invalid OCC_DEVELOPMENT_KUBERNETES_NAMESPACE %q: the name must match %s and be at most 63 characters", state.PlatformNamespace, namespaceName)
@@ -482,7 +477,10 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 			return err
 		}
 	}
-	if state.SandboxDriver == "openshell" {
+	// An external gateway brings its own deployment; installing the profile's
+	// in-cluster gateway beside it would fail on absent images and gate on a
+	// Service nothing uses.
+	if state.SandboxDriver == "openshell" && state.openShellExternal == nil {
 		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
 		if err := r.installOpenShellGateway(ctx, state, inputs.openShell, state.PlatformNamespace, timeout); err != nil {
 			return err
@@ -500,7 +498,7 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 		return err
 	}
 	openShellGatewayAddress := ""
-	if state.SandboxDriver == "openshell" {
+	if state.SandboxDriver == "openshell" && state.openShellExternal == nil {
 		openShellGatewayAddress, err = r.openShellGatewayAddress(ctx, state.PlatformNamespace)
 		if err != nil {
 			return err
@@ -1127,12 +1125,26 @@ func developmentOpenShellNetworkPolicies(state *developmentState, namespace stri
 	port := []any{map[string]any{"protocol": "TCP", "port": 8080}}
 	controlPlaneEgressTargets := []any{map[string]any{"podSelector": map[string]any{"matchLabels": gatewayLabels}}}
 	gatewayPort := port
+	controlPlaneEgress := []any{map[string]any{"to": controlPlaneEgressTargets, "ports": gatewayPort}}
 	if state.openShellExternal != nil {
 		controlPlaneEgressTargets = make([]any, 0, len(state.openShellExternal.addresses))
 		for _, cidr := range state.openShellExternal.addresses {
 			controlPlaneEgressTargets = append(controlPlaneEgressTargets, map[string]any{"ipBlock": map[string]any{"cidr": cidr}})
 		}
-		gatewayPort = []any{map[string]any{"protocol": "TCP", "port": state.openShellExternal.port}}
+		controlPlaneEgress = []any{map[string]any{
+			"to":    controlPlaneEgressTargets,
+			"ports": []any{map[string]any{"protocol": "TCP", "port": state.openShellExternal.port}},
+		}}
+		// The API and worker exchange client credentials with the issuer before any
+		// gateway RPC; a distinct IdP host or port needs its own translated allowance.
+		tokenTargets := make([]any, 0, len(state.openShellExternal.tokenAddresses))
+		for _, cidr := range state.openShellExternal.tokenAddresses {
+			tokenTargets = append(tokenTargets, map[string]any{"ipBlock": map[string]any{"cidr": cidr}})
+		}
+		controlPlaneEgress = append(controlPlaneEgress, map[string]any{
+			"to":    tokenTargets,
+			"ports": []any{map[string]any{"protocol": "TCP", "port": state.openShellExternal.tokenPort}},
+		})
 	}
 	items := []any{
 		map[string]any{
@@ -1140,7 +1152,7 @@ func developmentOpenShellNetworkPolicies(state *developmentState, namespace stri
 			"spec": map[string]any{
 				"podSelector": controlPlaneClients,
 				"policyTypes": []string{"Egress"},
-				"egress":      []any{map[string]any{"to": controlPlaneEgressTargets, "ports": gatewayPort}},
+				"egress":      controlPlaneEgress,
 			},
 		},
 	}

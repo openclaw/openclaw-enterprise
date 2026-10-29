@@ -108,16 +108,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 		r.env["OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"] = cookieDomain
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_CERT"] = filepath.Join(directory, "browser-tls.crt")
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_KEY"] = filepath.Join(directory, "browser-tls.key")
-		external, err := readExternalOpenShell(r.env)
+		external, err := selectExternalOpenShell(r.env, state.ProtectedEgress)
 		if err != nil {
 			return err
 		}
-		if external != nil {
-			if err := external.resolve(); err != nil {
-				return err
-			}
-			state.openShellExternal = external
-		}
+		state.openShellExternal = external
 	}
 
 	if err := validateClusterName(state.Cluster); err != nil {
@@ -244,7 +239,10 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err != nil {
 		return err
 	}
-	if err := exclusiveWrite(filepath.Join(directory, "openshell-client-secret"), secret, 0600); err != nil {
+	// The controller and worker containers run as a non-root user, so the mounted
+	// secret is readable like the kubeconfig and installation beside it; the state
+	// directory itself is private to this developer.
+	if err := exclusiveWrite(filepath.Join(directory, "openshell-client-secret"), secret, 0644); err != nil {
 		return err
 	}
 	started, clusterAttempted, clusterCreationFailed, keyWritten := false, false, false, false
