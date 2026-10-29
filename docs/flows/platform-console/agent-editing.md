@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-28
-last_updated_session: fix-3285
+updated: 2026-10-29
+last_updated_session: authoring-run/84c88245631c4882bd93c2140e0f313b
 ---
 
 # Console Agent editing and runtime requests
@@ -211,6 +211,8 @@ bindings and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
 Enter selects, Escape restores, Cancel discards; typing stages nothing, selection stages references.
 **Refresh Secret list** preserves query, focus, staged fields and highlighted IDs across reordering;
 vanished highlights require new intent. It retries metadata, never saves; pending reads disable refresh.
+When a selection waits for permission, a refused list clears readable metadata and prevents that
+selection from staging. The completed refresh clears its loading hint without replacing newer feedback.
 False Namespace `secrets.create` disables creation with reasons and existing-only drawer/Preset hints.
 **Save configuration** requires changed fields/bindings.
 `GET .../agents/:agentId/permissions/secrets` lists readable but inoperable Secrets, disabled with
@@ -341,6 +343,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 03:49: Clear a completed Secret refresh hint while selection permission is pending. Accompanying uncommitted changes. (authoring-run/84c88245631c4882bd93c2140e0f313b - b81139ddfe086aca0e4da4eb5b9feedc8ac39d67)
 
 - 2026-10-28 13:53: Keep the reader’s fold through routine polls and show failed record checks outside it. (fix-3285 - 14f6d94db)
 

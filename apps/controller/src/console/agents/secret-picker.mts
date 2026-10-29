@@ -1096,12 +1096,13 @@ export function createSecretReferenceField({
       return;
     }
     const startedSelection = selectionVersion;
+    const loadingHint = `${staged ? `${stagedHint} ` : ""}Loading available Secrets...`;
     const previousSecretIds = new Set(secrets.map((secret) => secret.id));
     loadingSecrets = true;
     if (explicit) {
       listedHint = false;
       setStatusTone(status, null);
-      status.textContent = `${staged ? `${stagedHint} ` : ""}Loading available Secrets...`;
+      status.textContent = loadingHint;
       renderListbox();
     }
     await context
@@ -1169,6 +1170,11 @@ export function createSecretReferenceField({
       })
       .finally(() => {
         loadingSecrets = false;
+        // Clear only this refresh's still-visible hint; a newer binding or failure owns its own status.
+        if (isCurrent() && explicit && status.textContent === loadingHint) {
+          listedHint = !staged;
+          status.textContent = staged ? stagedHint : listedStatus();
+        }
         if (isCurrent() && listboxOpen) {
           renderListbox();
         }
