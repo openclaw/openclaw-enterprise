@@ -1708,7 +1708,8 @@ if ((target_count > 0)); then
     measured_low=0
     admitted=0
     free=unknown
-    while ((SECONDS < deadline)); do
+    # gateway_free_memory checks the deadline before each read.
+    while :; do
       read_status=0
       read_free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory") ||
         read_status=$?
