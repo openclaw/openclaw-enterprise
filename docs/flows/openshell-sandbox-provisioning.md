@@ -13,14 +13,14 @@ OpenShell. [Credential sources](credential-source-lifecycle.md) supply model acc
 
 ## Entry Points
 
-- Trigger: a worker reconciles an Agent revision that selects the OpenShell
-  Sandbox Driver and Kubernetes Compute Driver.
+- Trigger: worker reconciliation of an Agent revision selecting OpenShell Sandbox
+  and Kubernetes Compute.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
-- Assumptions: the Installation selects Kubernetes Compute, OpenShell Sandbox
-  and Credential Gateway through one `openshell` Backend; Namespace isolation
-  exists; the Gateway is ready in operator mode.
+- Assumptions: Kubernetes Compute, OpenShell Sandbox and Credential Gateway share
+  one `openshell` Backend; Namespace isolation exists; the operator-mode Gateway
+  is ready.
 
 ## Flow
 
@@ -91,9 +91,8 @@ graph TD
 `openshell` profiles support Node and x64/ARM64 Codex on any launcher architecture
 and require Landlock.
 
-`writeInstallation` selects the curated Codex Plugin Driver for the local
-OpenShell profile. Agent provisioning can therefore admit plugin selections
-through the API; credentials still use the selected Credential Gateway.
+`writeInstallation` selects curated Codex plugins for API provisioning;
+credentials use the selected Credential Gateway.
 
 `scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
 Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
@@ -192,7 +191,8 @@ admit bootstrap/model traffic; failure keeps versions inactive.
 API-key profiles bind immutable `config.base_url` plus `/**` (default OpenAI `/v1`),
 preserving prefixes including `/api/v1`. [Registration validation](credential-source-lifecycle.md#1-admit-the-registration-request)
 rejects invalid endpoints.
-`attachForRevision` rejects custom endpoints for native OpenClaw. For Codex,
+`attachForRevision` requires native OpenClaw's selected model endpoints to match
+the source. For Codex,
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexConfigurationToml`
 selects a named provider and HTTPS Responses transport.
 
@@ -220,9 +220,9 @@ malformed files and other Secret-backed environment fail before Gateway mutation
 
 After login and egress enrollment, `agentRuntimeEntrypoint` calls
 `apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`
-to install selections through its request caller. Clean stdio exit precedes verifier-only WebSocket startup
-in the same home. Failure uses one TERM/KILL cleanup path and retires the wrapper's process group. The provider
-Gateway skips HMAC plugin status; readiness observes transport.
+to install selections. Clean stdio exit precedes verifier-only WebSocket startup
+in the same home. Failure terminates the process group through TERM/KILL cleanup.
+The provider Gateway skips HMAC plugin status; readiness observes transport.
 
 Providers use `oce-codex-runtime` or `oce-openclaw-runtime`. Both supply read-only setup and Gateway CA files; Codex requires `runtime.json` and `config.toml`, which native OpenClaw refuses. The validated setup Secret's complete expiring envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: OpenClaw signs the literal token in its device proof.
 Renewal requires the same endpoint, TLS fingerprint, runtime, and CA configuration.
@@ -366,10 +366,10 @@ separate action. The mandatory stock gate stays closed; observed-hook assurance 
 
 ## Debugging and verification
 
-The [testing guide](../testing/openshell.md) defines prerequisites and proof. Compose
-needs the provider ClusterIP, advertised `ws://*.openshell.localhost:8080/`
-route, and inactive direct Service. Native model execution requires real runtime
-proof on a Landlock-capable host; Console admission and initialized files are insufficient.
+See [test prerequisites and proof](../testing/openshell.md). Compose needs the
+provider ClusterIP, advertised `ws://*.openshell.localhost:8080/` route, and inactive
+direct Service. Native model proof requires Landlock; Console admission and
+initialized files are insufficient.
 
 `tests/integration/runtime-image-node-state-permissions.test.ts` checks packaged
 setup, retry and restart under setgid parents. It does not prove Kubernetes or

@@ -102,7 +102,7 @@ status. The Refresh Driver owns device exchange and refresh configuration.
 | `oauth2-client-credentials`  | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |
 | `oauth2-refresh-token`       | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |
 
-Codex PATs (personal or service-account) use `CODEX_ACCESS_TOKEN` at these HTTPS routes:
+Personal and service-account Codex PATs use `CODEX_ACCESS_TOKEN` over HTTPS:
 
 - `auth.openai.com/api/accounts/v1/user-auth-credential/whoami`.
 - `chatgpt.com/backend-api/codex/**`.
