@@ -2530,9 +2530,6 @@ export const scenarios = {
     pluginCapabilities,
     description:
       "The component explains that discovery requires an entered service account token with the Codex harness. The empty list points to Plugin selections JSON for adding a plugin by ID instead of the unavailable Load plugins.",
-    steps: [
-      "In the dialog, Tab to Load plugins, Previous page and Next page. Each takes focus and looks unavailable, its description is the status line, and Enter, Space or a click loads nothing.",
-    ],
   },
   pluginsCapabilitiesUnavailable: {
     group: "Components/Plugins",
