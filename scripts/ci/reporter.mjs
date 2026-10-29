@@ -414,7 +414,7 @@ function relayNodeDiagnostic(value) {
 
 // The proof runs in a separate controller process. Both its test and the CI
 // reporter use this closed vocabulary; neither publishes arbitrary stage text.
-export function nativeFirstAgentProofDiagnostic(failureStage) {
+export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
   const stages = [
     "startup",
     "connect",
@@ -430,9 +430,97 @@ export function nativeFirstAgentProofDiagnostic(failureStage) {
     "model-and-exec",
     "current-placement",
   ];
-  return stages.includes(failureStage)
-    ? { kind: "native-first-agent-proof", failureStage }
-    : undefined;
+  if (!stages.includes(failureStage)) {
+    return undefined;
+  }
+  const diagnostic = { kind: "native-first-agent-proof", failureStage };
+  if (!isRecord(worker)) {
+    return diagnostic;
+  }
+  const errors = [
+    "tunnel-timeout",
+    "workspace-command-timeout",
+    "workspace-command-failed",
+    "node-transport-unavailable",
+    "node-supervisor-disconnected",
+    "workspace-not-synced",
+    "workspace-device-mismatch",
+    "workspace-validation-failed",
+    "workspace-session-mismatch",
+    "owner-credential-stale",
+    "owner-epoch-stale",
+    "owner-binding-changed",
+    "tunnel-stopped",
+  ];
+  const vocabularies = {
+    placementState: [
+      "local",
+      "requested",
+      "provisioning",
+      "syncing",
+      "starting",
+      "active",
+      "draining",
+      "reconciling",
+      "reclaimed",
+      "failed",
+    ],
+    recoveryError: errors,
+    terminalReason: errors,
+    environmentError: errors,
+    environmentLookup: ["absent", "found", "unavailable", "mismatch"],
+    environmentState: [
+      "requested",
+      "provisioning",
+      "bootstrapping",
+      "ready",
+      "attached",
+      "idle",
+      "draining",
+      "destroying",
+      "destroyed",
+      "failed",
+      "orphaned",
+    ],
+    tunnelStatus: ["stopped", "connecting", "connected", "reconnecting"],
+    nodeLookup: ["found", "unavailable", "invalid"],
+    expectedNodeWorkerBundle: ["installed", "missing"],
+  };
+  const safe = {};
+  for (const [field, values] of Object.entries(vocabularies)) {
+    if (worker[field] !== undefined) {
+      safe[field] = [...values, "absent", "other"].includes(worker[field])
+        ? worker[field]
+        : "other";
+    }
+  }
+  for (const field of [
+    "workspaceReferencePresent",
+    "attachedSessionMatches",
+    "expectedNodeIdPresent",
+    "expectedNodeConnected",
+    "expectedNodePaired",
+    "expectedNodeSessionHost",
+  ]) {
+    if (typeof worker[field] === "boolean") {
+      safe[field] = worker[field];
+    }
+  }
+  for (const field of [
+    "attachedSessionCount",
+    "nodeCount",
+    "connectedNodeCount",
+    "expectedNodeMatches",
+    "expectedNodeCaps",
+    "expectedNodeCommands",
+    "elapsedMs",
+  ]) {
+    const limit = field === "elapsedMs" ? 3_600_000 : 4096;
+    if (Number.isSafeInteger(worker[field]) && worker[field] >= 0 && worker[field] <= limit) {
+      safe[field] = worker[field];
+    }
+  }
+  return { ...diagnostic, worker: safe };
 }
 
 function failureDiagnostic(error) {
@@ -441,7 +529,7 @@ function failureDiagnostic(error) {
     return undefined;
   }
   if (diagnostic.kind === "native-first-agent-proof") {
-    return nativeFirstAgentProofDiagnostic(diagnostic.failureStage);
+    return nativeFirstAgentProofDiagnostic(diagnostic.failureStage, diagnostic.worker);
   }
   if (diagnostic.kind === "runtime-model-probe") {
     if (

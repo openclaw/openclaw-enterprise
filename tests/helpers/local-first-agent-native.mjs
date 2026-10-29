@@ -541,6 +541,122 @@ export async function failNativeProvisioningDeadline({
   );
 }
 
+// Project public RPC observations before crossing the controller stdout boundary.
+// Keep this function self-contained: the trusted controller executes its source.
+export function nativeWorkerPlacementObservation({
+  placement,
+  environment,
+  nodes,
+  expectedNodeId,
+  sessionId,
+  environmentLookup,
+  nodeLookup,
+  elapsedMs,
+}) {
+  const category = (value, values) => {
+    if (value == null) {
+      return "absent";
+    }
+    return values.includes(value) ? value : "other";
+  };
+  const errorCategory = (value) => {
+    if (value == null) {
+      return "absent";
+    }
+    if (typeof value !== "string") {
+      return "other";
+    }
+    // These phrases come from the pinned OpenClaw worker environment and node tunnel owners.
+    const errors = [
+      ["Worker tunnel did not connect within 3 minutes", "tunnel-timeout"],
+      ["node worker workspace command timed out", "workspace-command-timeout"],
+      ["node workspace command failed (", "workspace-command-failed"],
+      ["device worker node transport is unavailable", "node-transport-unavailable"],
+      [
+        "device worker node is not connected with the supervisor dialect",
+        "node-supervisor-disconnected",
+      ],
+      ["node worker workspace is unavailable before sync", "workspace-not-synced"],
+      ["Device folder does not belong to this workspace runner", "workspace-device-mismatch"],
+      ["Device folder validation failed", "workspace-validation-failed"],
+      ["Node workspace sync does not match its bound session", "workspace-session-mismatch"],
+      ["Worker tunnel owner credential is not current", "owner-credential-stale"],
+      ["node worker tunnel owner epoch is stale", "owner-epoch-stale"],
+      ["node worker tunnel owner binding changed within one epoch", "owner-binding-changed"],
+      ["node worker tunnel stopped before connecting", "tunnel-stopped"],
+    ];
+    return errors.find(([phrase]) => value.startsWith(phrase))?.[1] ?? "other";
+  };
+  const present = (value) => typeof value === "string" && value.length > 0;
+  const count = (value) =>
+    Array.isArray(value) && value.length <= 4096 ? value.length : undefined;
+  const validNodes = count(nodes) !== undefined ? nodes : undefined;
+  const matches = validNodes?.filter(
+    (node) => present(expectedNodeId) && node?.nodeId === expectedNodeId,
+  );
+  const exact = matches?.length === 1 ? matches[0] : undefined;
+  const bool = (value) => (typeof value === "boolean" ? value : undefined);
+  const attached = environment?.worker?.attachedSessionIds;
+  return {
+    placementState: category(placement?.state, [
+      "local",
+      "requested",
+      "provisioning",
+      "syncing",
+      "starting",
+      "active",
+      "draining",
+      "reconciling",
+      "reclaimed",
+      "failed",
+    ]),
+    recoveryError: errorCategory(placement?.recoveryError),
+    terminalReason: errorCategory(placement?.terminalReason),
+    workspaceReferencePresent: present(placement?.remoteWorkspaceDir),
+    environmentLookup: category(environmentLookup, ["absent", "found", "unavailable", "mismatch"]),
+    environmentState: category(environment?.worker?.state, [
+      "requested",
+      "provisioning",
+      "bootstrapping",
+      "ready",
+      "attached",
+      "idle",
+      "draining",
+      "destroying",
+      "destroyed",
+      "failed",
+      "orphaned",
+    ]),
+    environmentError: errorCategory(environment?.worker?.error),
+    tunnelStatus: category(environment?.worker?.tunnelStatus, [
+      "stopped",
+      "connecting",
+      "connected",
+      "reconnecting",
+    ]),
+    attachedSessionCount: count(attached),
+    attachedSessionMatches:
+      count(attached) === undefined
+        ? undefined
+        : present(sessionId) && attached.includes(sessionId),
+    nodeLookup: category(nodeLookup, ["found", "unavailable", "invalid"]),
+    nodeCount: count(validNodes),
+    connectedNodeCount: validNodes?.filter((node) => node?.connected === true).length,
+    expectedNodeIdPresent: present(expectedNodeId),
+    expectedNodeMatches: matches?.length,
+    expectedNodeConnected: bool(exact?.connected),
+    expectedNodePaired: bool(exact?.paired),
+    expectedNodeSessionHost: bool(exact?.sessionHost),
+    expectedNodeCaps: count(exact?.caps),
+    expectedNodeCommands: count(exact?.commands),
+    expectedNodeWorkerBundle: category(exact?.workerBundle?.status, ["installed", "missing"]),
+    elapsedMs:
+      Number.isSafeInteger(elapsedMs) && elapsedMs >= 0 && elapsedMs <= 3_600_000
+        ? elapsedMs
+        : undefined,
+  };
+}
+
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
 async function nativeWorkerProof({
@@ -548,6 +664,7 @@ async function nativeWorkerProof({
   agentId,
   timeout,
   workspaceFile,
+  expectedNodeId,
   session: existingSession,
   sessionFile: retainedSessionFile,
 }) {
@@ -566,6 +683,9 @@ async function nativeWorkerProof({
   let stage = "startup";
   let client;
   let helloTimer;
+  let collectFailure;
+  let lastPlacement;
+  const proofStarted = performance.now();
   const emit = (data) =>
     process.stdout.write("OCE_NATIVE_FIRST_AGENT_PROOF " + JSON.stringify(data) + "\n");
   try {
@@ -611,6 +731,44 @@ async function nativeWorkerProof({
     assert.equal(required.inference, "worker");
     assert.ok(required.executionModes.includes("worker-turn"));
     let session = existingSession;
+    collectFailure = async () => {
+      const elapsedMs = Math.round(performance.now() - proofStarted);
+      // A separate five-second budget still permits diagnostics after the proof's signal expires.
+      const diagnosticSignal = AbortSignal.timeout(5_000);
+      const read = (method, params) =>
+        client.request(method, params, { signal: diagnosticSignal, timeoutMs: 5_000 });
+      const environmentId = lastPlacement?.environmentId;
+      const [environmentResult, nodeResult] = await Promise.allSettled([
+        typeof environmentId === "string" && environmentId.length > 0
+          ? read("environments.status", { environmentId })
+          : Promise.resolve(undefined),
+        read("node.list", {}),
+      ]);
+      const environment =
+        environmentResult.status === "fulfilled" ? environmentResult.value : undefined;
+      let environmentLookup = "absent";
+      if (environmentId) {
+        environmentLookup = "unavailable";
+        if (environmentResult.status === "fulfilled") {
+          environmentLookup = environment?.id === environmentId ? "found" : "mismatch";
+        }
+      }
+      const nodes = nodeResult.status === "fulfilled" ? nodeResult.value?.nodes : undefined;
+      let nodeLookup = "unavailable";
+      if (nodeResult.status === "fulfilled") {
+        nodeLookup = Array.isArray(nodes) ? "found" : "invalid";
+      }
+      return nativeWorkerPlacementObservation({
+        placement: lastPlacement,
+        environment: environmentLookup === "found" ? environment : undefined,
+        nodes,
+        expectedNodeId,
+        sessionId: session?.sessionId,
+        environmentLookup,
+        nodeLookup,
+        elapsedMs,
+      });
+    };
     if (session === undefined) {
       stage = "create";
       const key = `agent:main:first-agent-native-${randomUUID()}`;
@@ -633,7 +791,8 @@ async function nativeWorkerProof({
           stage = "required-placement-describe-rejected";
           assert.fail();
         });
-        const state = described.session?.placement?.state;
+        lastPlacement = described.session?.placement;
+        const state = lastPlacement?.state;
         if (state === "active") {
           break;
         }
@@ -649,6 +808,7 @@ async function nativeWorkerProof({
     const { key } = session;
     stage = "session-identity";
     const described = await call("sessions.describe", { key, agentId: "main" });
+    lastPlacement = described.session?.placement;
     assert.equal(described.session?.sessionId, session.sessionId);
     // A retained placement may recover when the next turn is sent. Check its
     // current directory after that turn, rather than trusting the old owner.
@@ -782,7 +942,8 @@ async function nativeWorkerProof({
   } catch {
     // Dependency/RPC errors can include private headers. Preserve the failing
     // stage, never raw exceptions, keys, transcripts or controller output.
-    emit({ verified: false, stage });
+    const worker = await collectFailure?.().catch(() => undefined);
+    emit({ verified: false, stage, worker });
     process.exitCode = 1;
   } finally {
     clearTimeout(helloTimer);
@@ -793,7 +954,17 @@ async function nativeWorkerProof({
 
 export async function assertNativeWorkerProofInController(
   context,
-  { stateDirectory, state, environment, namespaceId, agentId, workspaceFile, session, sessionFile },
+  {
+    stateDirectory,
+    state,
+    environment,
+    namespaceId,
+    agentId,
+    workspaceFile,
+    expectedNodeId,
+    session,
+    sessionFile,
+  },
 ) {
   context.signal.throwIfAborted();
   const safeEnvironment = {
@@ -805,7 +976,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `await (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, session, sessionFile })});`;
+  const input = `const nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
@@ -879,7 +1050,7 @@ export async function assertNativeWorkerProofInController(
     // A controller exit without that evidence leaves the stage unknown.
     const diagnostic =
       result.code === 1 && result.proof?.verified === false
-        ? nativeFirstAgentProofDiagnostic(result.proof.stage)
+        ? nativeFirstAgentProofDiagnostic(result.proof.stage, result.proof.worker)
         : undefined;
     const at = diagnostic
       ? `during ${diagnostic.failureStage}`
