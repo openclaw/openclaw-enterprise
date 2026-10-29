@@ -733,16 +733,16 @@ export async function staticEgressFixture(
     return entry.number;
   };
   const services = grpc.loadPackageDefinition(definition).openshell.middleware.v1;
+  function createAuthorityClient(name) {
+    return new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert));
+  }
   const clients = Object.fromEntries(
     [
       "HttpCredentialAccess",
       "HttpResponsePreReturn",
       "SupervisorMiddleware",
       "HttpInstallationExchange",
-    ].map((name) => [
-      name,
-      new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert)),
-    ]),
+    ].map((name) => [name, createAuthorityClient(name)]),
   );
   t.after(() => {
     for (const client of Object.values(clients)) {
@@ -1019,10 +1019,7 @@ export async function staticEgressFixture(
       await bindOpenShellEgressAuthority(authority, "127.0.0.1:" + authorityPort, cert, key);
       for (const [name, client] of Object.entries(clients)) {
         client.close();
-        clients[name] = new services[name](
-          "127.0.0.1:" + authorityPort,
-          grpc.credentials.createSsl(cert),
-        );
+        clients[name] = createAuthorityClient(name);
       }
     },
     providerRequests,
