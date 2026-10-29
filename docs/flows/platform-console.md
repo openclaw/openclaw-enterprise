@@ -153,7 +153,8 @@ interrupt loading. Other Agent routes preserve the page or show loading after
 visits and Refresh show loading after 250 ms.
 
 Return and refocus checks keep the page inert, its header visible, and Namespace selection disabled;
-after one second they show **Still checking…**. The Console retains up to 16 views by
+after one second they show **Still checking…**. A Tab lap that leaves the page and returns within
+10 s, with the page shown throughout, is not a refocus and starts no check. The Console retains up to 16 views by
 route, Namespace, and session owner. Matching user and GET dependencies restore
 DOM, handlers, drafts, and debug disclosures. Changed data, newly readable
 Namespaces, and Refresh rebuild. Discovery state is not retained. Pending/failed reads, passwords, and
