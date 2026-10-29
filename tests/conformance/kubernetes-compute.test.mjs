@@ -1701,11 +1701,16 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     "https://models.example.test:443/inference/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-completions";
   const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
+  // The worker gets every selected model; the startup probe checks only the primary.
+  nativeConfiguration.agents.defaults.model = {
+    primary: "openai/team/model",
+    fallbacks: ["openai/team/fallback"],
+  };
   // An unselected entry for another endpoint reaches neither the worker nor the startup probe.
-  nativeConfiguration.models.providers.openai.models.push({
-    id: "unselected",
-    baseUrl: "https://other.example.test/v1",
-  });
+  nativeConfiguration.models.providers.openai.models.push(
+    { ...selectedEntry, id: "team/fallback", name: "team/fallback" },
+    { id: "unselected", baseUrl: "https://other.example.test/v1" },
+  );
   const sourceType = {
     type: "openai",
     config: [],
@@ -1837,7 +1842,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   });
   assert.deepEqual(
     nativeConfig.models.providers.openai.models.map(({ id }) => id),
-    ["team/model"],
+    ["team/model", "team/fallback"],
   );
   // OpenClaw merges catalog entries whose ids match after trimming, so the startup probe gets
   // only the primary model's entry, as written (findings 2882, 2883).
