@@ -250,6 +250,25 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
+        credentialSlots: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                pluginId: Type.String(),
+                releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+                id: Type.String(),
+                label: Type.String(),
+                sources: Type.Array(
+                  Type.Object(
+                    { id: CredentialSourceId, name: Type.String() },
+                    { additionalProperties: false },
+                  ),
+                ),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        ),
       },
       { additionalProperties: false },
     ),

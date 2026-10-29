@@ -240,6 +240,8 @@ skill and adds it to native skill discovery. OpenClaw’s usual precedence appli
 the workspace contains another skill with the same name. Run `gog --version` in the
 worker to check the installation.
 
+For account selection and deployment, see [Configure Agent plugins](../../docs/guides/topics/plugins-configure.md#use-the-console).
+
 OCE grants its workspace node read access to the selected skill. If you supply a
 custom file-transfer policy for that node, allow reads of
 `/usr/local/lib/oce/plugins/google/skills`, its `oce-google` directory and

@@ -183,7 +183,7 @@ test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => 
   });
 });
 
-test("dedicated OpenClaw offers the pinned Google package and refuses credential attachment", async () => {
+test("dedicated OpenClaw offers the pinned Google package and refuses unsupported selection fields", async () => {
   const driver = new OCCPluginDriver();
   const dedicated = context("dedicated");
   const [google] = await driver.listCatalog({
@@ -201,7 +201,7 @@ test("dedicated OpenClaw offers the pinned Google package and refuses credential
       driver.validatePolicies({
         [google.id]: { enabled: true, credentialSourceId: "src_personal" },
       }),
-    /supports plugin enablement only/,
+    /optional credential slot/,
   );
 });
 

@@ -86,10 +86,16 @@ export function loadOpenShellMiddleware() {
   return { definition, service: loaded.openshell.middleware.v1 };
 }
 
+export interface OpenShellHttpPolicySet {
+  readonly implementation: string;
+  readonly version: string;
+}
+
 export function describeOpenShellMiddleware(
   gateway: unknown,
   audience: string,
   implementation: "static-egress" | "online-request-authorization",
+  httpPolicySet?: OpenShellHttpPolicySet,
 ): Wire | undefined {
   const execution = implementation === "static-egress";
   const profile = execution
@@ -116,14 +122,19 @@ export function describeOpenShellMiddleware(
         [4, 1],
         [3, 2],
       ]
-    : [[1, 1]];
+    : httpPolicySet
+      ? [
+          [1, 1],
+          [2, 1],
+        ]
+      : [[1, 1]];
   return {
     name: `oce-${implementation}`,
     expected_audience: audience,
     extension: {
       protocol_version: { major: 1, minor: 0 },
-      implementation_name: `oce/${implementation}`,
-      implementation_version: "1",
+      implementation_name: httpPolicySet?.implementation ?? `oce/${implementation}`,
+      implementation_version: httpPolicySet?.version ?? "1",
       supported_capabilities: profile,
       required_capabilities: profile,
     },

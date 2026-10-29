@@ -1,4 +1,5 @@
 import type {
+  AgentPluginCredentialSlot,
   InstallationCapabilities,
   PluginApprovalMode,
   PluginApprovers,
@@ -44,7 +45,11 @@ export interface ApproverFieldOptions {
 export interface PluginFieldsOptions {
   input: HTMLTextAreaElement;
   catalog?: PluginFieldCatalog | null;
-  capabilities?: NonNullable<InstallationCapabilities["pluginPolicies"]> | null;
+  capabilities?:
+    | (NonNullable<InstallationCapabilities["pluginPolicies"]> & {
+        credentialSlots?: readonly AgentPluginCredentialSlot[];
+      })
+    | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
   onCancelDiscovery?: (() => void) | null;
   onLoadTools?: ((id: string) => void) | null;
@@ -824,6 +829,12 @@ export function createPluginFields({
         enabled.addEventListener("change", () =>
           updateSelection(entry.id, (selection) => {
             selection.enabled = enabled.checked;
+            if (
+              !enabled.checked &&
+              capabilities?.credentialSlots?.some((slot) => slot.pluginId === entry.id)
+            ) {
+              delete selection.driverPolicy;
+            }
           }),
         );
         const actionsId = `${input.id}-plugin-actions`;
@@ -852,6 +863,52 @@ export function createPluginFields({
             ),
           ),
         );
+      }
+      if (selected?.enabled) {
+        for (const slot of capabilities?.credentialSlots ?? []) {
+          if (slot.pluginId !== entry.id) {
+            continue;
+          }
+          const bindings = selected.driverPolicy?.credentials;
+          const current = isObject(bindings) ? bindings[slot.id] : undefined;
+          const stale =
+            typeof current === "string" &&
+            selected.driverPolicy?.releaseSha256 !== slot.releaseSha256;
+          const options: Choice[] = [
+            ["", "Install without an account"],
+            ...slot.sources.map(({ id, name }) => [id, name] as const),
+          ];
+          if (stale) {
+            options.push(["stale", "Release changed — select an account again", true]);
+          }
+          details.append(
+            select(
+              slot.label,
+              stale ? "stale" : typeof current === "string" ? current : "",
+              options,
+              (sourceId) =>
+                updateSelection(entry.id, (selection) => {
+                  if (sourceId) {
+                    selection.driverPolicy = {
+                      releaseSha256: slot.releaseSha256,
+                      credentials: { [slot.id]: sourceId },
+                    };
+                  } else {
+                    delete selection.driverPolicy;
+                  }
+                }),
+            ),
+          );
+          if (!slot.sources.length) {
+            details.append(
+              element(
+                "p",
+                { className: "hint" },
+                "No compatible, ready credential is available to both you and this Agent.",
+              ),
+            );
+          }
+        }
       }
       const enablementOnly = capabilities?.policyScopeByPlugin?.[entry.id] === "enablement_only";
       if (selected) {
@@ -1272,7 +1329,7 @@ export function createPluginFields({
     // `unread` says the capabilities read failed, so nothing is known about Installation support;
     // the owner shows why (finding 2538).
     setCapabilities(
-      value: NonNullable<InstallationCapabilities["pluginPolicies"]> | null,
+      value: NonNullable<PluginFieldsOptions["capabilities"]> | null,
       unread = false,
     ) {
       capabilities = value;

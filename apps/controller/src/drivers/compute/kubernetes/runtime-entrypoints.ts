@@ -6,6 +6,7 @@ import {
   RUNTIME_FAILURE_CHECKS,
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
+import { readFileSync } from "node:fs";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
@@ -233,6 +234,18 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
   server.listen(port, "0.0.0.0");
 }
 `;
+
+// The bootstrap also needs the reserved alias when the Agent installs no Google release.
+// Read it in the controller so an unselected worker need not have the package on disk.
+const googleAccountEnv: string = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../plugins/oce-google-workspace/ai.openclaw.oce/release.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).credentials.account.delivery.env;
 
 const GOOGLE_INSTALL_HELPERS = String.raw`
 function verifiedGoogleFile(path, expected) {
@@ -4789,6 +4802,18 @@ const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
 let nodeStateCurrent = outdatedNodeDatabases.length === 0;
 
 const googleRelease = installedGoogleRelease();
+const googleAlias = ${JSON.stringify(googleAccountEnv)};
+const googleCredentialEnv = process.env.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV;
+const googleMarker = process.env[googleAlias];
+const scopedGoogleMarker = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(googleMarker ?? "")?.[1] === googleAlias;
+if (googleCredentialEnv !== undefined && (
+  googleCredentialEnv !== googleAlias ||
+  googleRelease?.credentials?.account?.delivery?.env !== googleCredentialEnv ||
+  (googleMarker !== undefined && !scopedGoogleMarker)
+)) throw new Error("The selected Google account requires its scoped OpenShell credential placeholder.");
+// OpenShell supplies a scoped marker for an attached provider, including an independent
+// Agent credential. A withdrawn provider stops supplying it when this container restarts.
+if (!scopedGoogleMarker) delete process.env[googleAlias];
 const googleBin = "/usr/local/lib/oce/plugins/google/bin";
 const enableGoogleCli = googleRelease?.capabilities.harness.includes("cli");
 if (enableGoogleCli) {
