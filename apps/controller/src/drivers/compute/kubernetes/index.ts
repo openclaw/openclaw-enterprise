@@ -5882,6 +5882,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
         }
         await this.lifecycle.beforeNamespaceDelete(namespace);
+        // Provider resources can outlive the execution Namespace or its released claim.
+        if (this.sandboxDriver !== undefined) {
+          await this.sandboxDriver.cleanup(await this.sandboxNamespaceContext(namespace, name));
+        }
         return { ...result, namespaceDeleted: await this.deleteGatewayNamespace(ownership) };
       }
       this.verifyNamespaceOwnership(existing, ownership, external);
@@ -8449,6 +8453,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
+      await this.cleanupRevisionSandbox(revision, namespace);
       return;
     }
     this.verifyNamespaceOwnership(
@@ -8510,6 +8515,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const existingNamespace = await this.getNamespace(namespace);
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
+      await this.cleanupRevisionSandbox(revision, namespace);
       await this.removeRetiredGateway(revision, namespace);
       return;
     }
@@ -8536,6 +8542,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       await this.removeRepositoryMaterial(revision, namespace);
     }
+  }
+
+  private async cleanupRevisionSandbox(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const sandboxDriver = this.sandboxDriverForRevision(revision);
+    if (sandboxDriver === undefined) {
+      return;
+    }
+    if (revision.harness.mode !== "dedicated") {
+      throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
+    }
+    // Namespace or Pod absence does not confirm removal of provider-owned resources.
+    await sandboxDriver.cleanup({
+      ...(await this.sandboxNamespaceContext(
+        this.sandboxNamespaceForRevision(revision, namespace),
+        namespace,
+      )),
+      revision,
+    });
   }
 
   private async shutdownRevisionRuntime(
@@ -8575,15 +8602,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
       }
     }
-    if (sandboxDriver !== undefined) {
-      await sandboxDriver.cleanup({
-        ...(await this.sandboxNamespaceContext(
-          this.sandboxNamespaceForRevision(revision, namespace),
-          namespace,
-        )),
-        revision,
-      });
-    }
+    await this.cleanupRevisionSandbox(revision, namespace);
     if (!admittedReader && !computeOwnsWorkload) {
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
     }

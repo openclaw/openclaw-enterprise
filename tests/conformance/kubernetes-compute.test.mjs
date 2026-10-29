@@ -55,6 +55,8 @@ import {
   ResourceConflictError,
   ResourceStateConflictError,
   SandboxGatewayUnavailableError,
+  SandboxGatewayUnauthorizedError,
+  SandboxNamespaceRefusedError,
   SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
@@ -5230,7 +5232,24 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
   for (const external of [false, true]) {
     for (const foreign of [false, true]) {
       const calls = [];
+      let cleanupFailure = new SandboxGatewayUnavailableError("Provider cleanup is unconfirmed.");
       const driver = new KubernetesComputeDriver(twoClusterOptions(), {
+        sandboxDriver: {
+          id: "sandbox-namespace-loss",
+          implementation: "test/provider-owned",
+          async cleanup(context) {
+            assert.equal(context.namespace.id, tenant.id);
+            assert.equal(
+              context.namespace.name,
+              external ? "customer-support" : kubernetesNamespaceName(tenant.id),
+            );
+            assert.equal(context.revision, undefined);
+            calls.push("sandbox-cleanup");
+            if (cleanupFailure !== undefined) {
+              throw cleanupFailure;
+            }
+          },
+        },
         lifecycleDrivers: [
           {
             id: "configuration-selected",
@@ -5275,17 +5294,35 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
         },
       });
       driver.executionApiClients = driver.apiClients;
-      const result = await driver.deleteNamespace({
+      const deleting = {
         ...tenant,
         status: "deleting",
         ...(external ? { existingNamespace: "customer-support" } : {}),
+      };
+      // Provider resources can survive data-plane loss. Do not delete their Gateway or
+      // report the Namespace removed while the provider cannot confirm cleanup.
+      assert.deepEqual(await driver.deleteNamespace(deleting), {
+        namespaceId: tenant.id,
+        namespaceDeleted: false,
+        failure: foreign ? "permanent" : "retryable",
       });
+      assert.deepEqual(calls, foreign ? [] : ["revoke", "sandbox-cleanup"]);
+      // A refused provider identity is permanent and also retains the Gateway.
+      cleanupFailure = new SandboxNamespaceRefusedError("SANDBOX_GATEWAY_UNAUTHORIZED");
+      assert.deepEqual(await driver.deleteNamespace(deleting), {
+        namespaceId: tenant.id,
+        namespaceDeleted: false,
+        failure: "permanent",
+      });
+      cleanupFailure = undefined;
+      calls.length = 0;
+      const result = await driver.deleteNamespace(deleting);
       assert.deepEqual(result, {
         namespaceId: tenant.id,
         namespaceDeleted: !foreign,
         ...(foreign ? { failure: "permanent" } : {}),
       });
-      assert.deepEqual(calls, foreign ? [] : ["revoke", "delete-gateway"]);
+      assert.deepEqual(calls, foreign ? [] : ["revoke", "sandbox-cleanup", "delete-gateway"]);
     }
   }
 });
@@ -16506,139 +16543,182 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
   assert.equal(cleanupComplete, false);
 });
 
-test("stop and retirement end credential-source access through Sandbox cleanup", async () => {
-  // Salvaged from #146: stop and retirement must still shut the workload down when credential
-  // cleanup is uncertain, and must not report completion until it is confirmed. On main the
-  // Credential Gateway attachment lives only in the paired Sandbox, so Sandbox cleanup is the
-  // withdrawal; OCC has no withdraw caller, and a failed cleanup must keep the work retryable.
-  const cleanupCalls = [];
-  let failCleanup = true;
-  let podObservations = 0;
-  const sandboxDriver = {
-    id: "sandbox-credential-stop",
-    implementation: "test/provider-owned",
-    capability: "sandbox",
-    facets: ["networking", "filesystem", "process"],
-    async provisionHarness() {
-      assert.fail("stop and retirement must not provision a Harness workload");
-    },
-    async cleanup(context) {
-      cleanupCalls.push(context.revision?.id);
-      if (failCleanup) {
-        failCleanup = false;
-        throw new Error("sandbox cleanup failed");
-      }
-    },
-  };
-  const unexpected = (method) => async () => {
-    assert.fail(`stop and retirement must not call Credential Gateway ${method}`);
-  };
-  const credentialGatewayDriver = {
-    id: "credential-gateway-stop",
-    implementation: "test/credential-gateway",
-    capability: "credential_gateway",
-    attachForRevision: unexpected("attachForRevision"),
-    attachmentStatus: unexpected("attachmentStatus"),
-    withdraw: unexpected("withdraw"),
-    removeSource: unexpected("removeSource"),
-  };
-  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
-  const harnessAuth = {
-    method: "credential_source",
-    sourceId: "cs_00000000-0000-4000-8000-000000000146",
-    credentialGatewayId: credentialGatewayDriver.id,
-    sourceType: "openai",
-    loginMode: "api_key",
-  };
-  const revision = routedRevision(driver, {
-    id: "revision-credential-stop",
-    sandboxDriverId: sandboxDriver.id,
-    harnessAuth,
-  });
-  const namespace = kubernetesNamespaceName(revision.namespaceId);
-  const namespaceResource = {
-    apiVersion: "v1",
-    kind: "Namespace",
-    metadata: {
-      name: namespace,
-      labels: {
-        "app.kubernetes.io/managed-by": "openclaw-enterprise",
-        "openclaw.dev/namespace": revision.namespaceId,
+for (const namespaceAbsent of [false, true]) {
+  test(`stop and retirement end credential-source access through Sandbox cleanup${namespaceAbsent ? " after Namespace loss" : ""}`, async () => {
+    // Salvaged from #146: stop and retirement must still shut the workload down when credential
+    // cleanup is uncertain, and must not report completion until it is confirmed. On main the
+    // Credential Gateway attachment lives only in the paired Sandbox, so Sandbox cleanup is the
+    // withdrawal; OCC has no withdraw caller, and a failed cleanup must keep the work retryable.
+    const cleanupCalls = [];
+    let cleanupFailure = new SandboxGatewayUnavailableError("Provider cleanup is unconfirmed.");
+    let podObservations = 0;
+    const sandboxDriver = {
+      id: "sandbox-credential-stop",
+      implementation: "test/provider-owned",
+      capability: "sandbox",
+      facets: ["networking", "filesystem", "process"],
+      async provisionHarness() {
+        assert.fail("stop and retirement must not provision a Harness workload");
       },
-      annotations: { "openclaw.dev/namespace-id": revision.namespaceId },
-    },
-  };
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
-  driver.apiClients = Promise.resolve({
-    core: {
-      async readNamespacedSecret() {
-        throw notFound();
+      async cleanup(context) {
+        assert.equal(context.namespace.id, revision.namespaceId);
+        assert.equal(context.namespace.name, namespace);
+        assert.equal(context.revision, revision);
+        cleanupCalls.push(context.revision?.id);
+        if (cleanupFailure !== undefined) {
+          throw cleanupFailure;
+        }
       },
-      async readNamespacedService() {
-        throw notFound();
+    };
+    const unexpected = (method) => async () => {
+      assert.fail(`stop and retirement must not call Credential Gateway ${method}`);
+    };
+    const credentialGatewayDriver = {
+      id: "credential-gateway-stop",
+      implementation: "test/credential-gateway",
+      capability: "credential_gateway",
+      attachForRevision: unexpected("attachForRevision"),
+      attachmentStatus: unexpected("attachmentStatus"),
+      withdraw: unexpected("withdraw"),
+      removeSource: unexpected("removeSource"),
+    };
+    const driver = new KubernetesComputeDriver(options(), {
+      sandboxDriver,
+      credentialGatewayDriver,
+    });
+    const harnessAuth = {
+      method: "credential_source",
+      sourceId: "cs_00000000-0000-4000-8000-000000000146",
+      credentialGatewayId: credentialGatewayDriver.id,
+      sourceType: "openai",
+      loginMode: "api_key",
+    };
+    const revision = routedRevision(driver, {
+      id: "revision-credential-stop",
+      sandboxDriverId: sandboxDriver.id,
+      harnessAuth,
+    });
+    const namespace = kubernetesNamespaceName(revision.namespaceId);
+    const namespaceResource = {
+      apiVersion: "v1",
+      kind: "Namespace",
+      metadata: {
+        name: namespace,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace": revision.namespaceId,
+        },
+        annotations: { "openclaw.dev/namespace-id": revision.namespaceId },
       },
-      async readNamespacedServiceAccount() {
-        throw notFound();
-      },
-      async readNamespacedPersistentVolumeClaim() {
-        throw notFound();
-      },
-      async readNamespacedConfigMap() {
-        throw notFound();
-      },
-      async listNamespace() {
-        return { apiVersion: "v1", kind: "NamespaceList", items: [namespaceResource] };
-      },
-      async readNamespace({ name }) {
-        if (name === kubernetesNamespaceName(tenant.id)) {
+    };
+    const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
+    driver.apiClients = Promise.resolve({
+      core: {
+        async readNamespacedSecret() {
+          throw notFound();
+        },
+        async readNamespacedService() {
+          throw notFound();
+        },
+        async readNamespacedServiceAccount() {
+          throw notFound();
+        },
+        async readNamespacedPersistentVolumeClaim() {
+          throw notFound();
+        },
+        async readNamespacedConfigMap() {
+          throw notFound();
+        },
+        async listNamespace() {
           return {
-            ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
-            status: { phase: "Active" },
+            apiVersion: "v1",
+            kind: "NamespaceList",
+            items: namespaceAbsent ? [] : [namespaceResource],
           };
-        }
-        return structuredClone(namespaceResource);
+        },
+        async readNamespace({ name }) {
+          if (namespaceAbsent) {
+            throw notFound();
+          }
+          if (name === kubernetesNamespaceName(tenant.id)) {
+            return {
+              ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
+              status: { phase: "Active" },
+            };
+          }
+          return structuredClone(namespaceResource);
+        },
+        async listNamespacedPod(request) {
+          const selected = labelSelectorLabels(request.labelSelector);
+          if (selected["openclaw.dev/workload-role"] === "agent") {
+            // The Harness is only observed as gone after its Sandbox cleanup succeeded.
+            assert.equal(cleanupFailure, undefined);
+            podObservations += 1;
+          }
+          return { apiVersion: "v1", kind: "PodList", items: [] };
+        },
       },
-      async listNamespacedPod(request) {
-        const selected = labelSelectorLabels(request.labelSelector);
-        if (selected["openclaw.dev/workload-role"] === "agent") {
-          // The Harness is only observed as gone after its Sandbox cleanup succeeded.
-          assert.equal(failCleanup, false);
-          podObservations += 1;
-        }
-        return { apiVersion: "v1", kind: "PodList", items: [] };
+      apps: {
+        async readNamespacedDeployment() {
+          throw notFound();
+        },
       },
-    },
-    apps: {
-      async readNamespacedDeployment() {
-        throw notFound();
+      networking: {
+        async readNamespacedNetworkPolicy() {
+          throw notFound();
+        },
       },
-    },
-    networking: {
-      async readNamespacedNetworkPolicy() {
-        throw notFound();
+      objects: {
+        async read() {
+          throw notFound();
+        },
       },
-    },
-    objects: {
-      async read() {
-        throw notFound();
-      },
-    },
+    });
+
+    // An uncertain cleanup fails the stop, so the worker keeps the stop pending and retries.
+    await assert.rejects(driver.stopRevision(revision), (error) => error === cleanupFailure);
+    assert.deepEqual(cleanupCalls, [revision.id]);
+    assert.equal(podObservations, 0);
+
+    cleanupFailure = undefined;
+    await driver.stopRevision(revision);
+    assert.deepEqual(cleanupCalls, [revision.id, revision.id]);
+    assert.equal(podObservations, namespaceAbsent ? 0 : 1);
+
+    // Retirement must also remain retryable until provider cleanup is confirmed.
+    cleanupFailure = new SandboxGatewayUnauthorizedError(
+      "Provider identity lacks its cleanup role.",
+    );
+    await assert.rejects(driver.retireRevision(revision), (error) => error === cleanupFailure);
+    cleanupFailure = undefined;
+    await driver.retireRevision(revision);
+    assert.deepEqual(cleanupCalls, [revision.id, revision.id, revision.id, revision.id]);
+    assert.equal(podObservations, namespaceAbsent ? 0 : 2);
+
+    if (namespaceAbsent) {
+      // Missing placement does not authorize a different Sandbox Driver. A Namespace
+      // recreated for another tenant must also fail before any provider cleanup.
+      for (const operation of ["stopRevision", "retireRevision"]) {
+        await assert.rejects(
+          driver[operation]({ ...revision, sandboxDriverId: "another-sandbox" }),
+          /pinned to another SandboxDriver/,
+        );
+      }
+      const clients = await driver.apiClients;
+      clients.core.readNamespace = async () =>
+        driver.manifest("v1", "Namespace", namespace, {
+          namespaceId: "ns_00000000-0000-4000-8000-000000000009",
+        });
+      for (const operation of ["stopRevision", "retireRevision"]) {
+        await assert.rejects(
+          driver[operation](revision),
+          /Refusing an unowned Kubernetes namespace/,
+        );
+      }
+      assert.equal(cleanupCalls.length, 4);
+    }
   });
-
-  // An uncertain cleanup fails the stop, so the worker keeps the stop pending and retries.
-  await assert.rejects(driver.stopRevision(revision), /sandbox cleanup failed/);
-  assert.deepEqual(cleanupCalls, [revision.id]);
-  assert.equal(podObservations, 0);
-
-  await driver.stopRevision(revision);
-  assert.deepEqual(cleanupCalls, [revision.id, revision.id]);
-  assert.equal(podObservations, 1);
-
-  // Retirement of the same revision repeats the idempotent cleanup instead of skipping it.
-  await driver.retireRevision(revision);
-  assert.deepEqual(cleanupCalls, [revision.id, revision.id, revision.id]);
-  assert.equal(podObservations, 2);
-});
+}
 
 test("retiring a running embedded revision waits for gateway Pods and removes owned artifacts", async () => {
   const driver = createKubernetesComputeDriver(

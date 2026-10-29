@@ -251,8 +251,10 @@ sequenceDiagram
 The revision stores the selected `sandboxDriverId`. Before routing traffic,
 Compute checks that the workload's revision ID matches the requested revision.
 Namespace setup, provisioning, and cleanup must be safe to repeat.
-Run revision cleanup even when the Pod is already absent. The Sandbox removes
-any workload it owns. Namespace cleanup follows revision cleanup.
+Run revision cleanup even when the Pod or Kubernetes Namespace is already absent.
+The selected Sandbox Driver must confirm removal of its provider resources.
+Namespace cleanup follows revision cleanup and must also run when the Kubernetes
+Namespace is absent. The Sandbox removes any workload it owns.
 
 - If the Driver cannot run this revision, throw
   [`SandboxRevisionUnsupportedError`](../../../packages/occ/src/errors.ts).
@@ -274,12 +276,12 @@ any workload it owns. Namespace cleanup follows revision cleanup.
 
 ## Troubleshooting
 
-| Symptom                                                 | Check and next action                                                                                                                                                                                              |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Startup rejects the Sandbox                             | Confirm that the Installation selects bundled Kubernetes Compute. Check that `facets` contains at least one supported value and no duplicates.                                                                     |
-| Dedicated native OpenClaw deployment is refused         | Check for `provisionHarness` and all three containment facets. The Driver must also support the supplied workload identity, mounts, and credential references.                                                     |
-| Cleanup retries after the Pod disappears                | Look up the provider resource using the revision's [Sandbox resource identity](#sandbox-resource-identity). Confirm removal with a read authorized for that resource. Pod absence alone does not complete cleanup. |
-| The temporary Harness status endpoint cannot be removed | Check whether the controller can still read the resource. Restore access before retrying. See [OpenShell gateway recovery](openshell-sandbox.md#gateway-identity-and-removal).                                     |
+| Symptom                                                 | Check and next action                                                                                                                                                                                                                      |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Startup rejects the Sandbox                             | Confirm that the Installation selects bundled Kubernetes Compute. Check that `facets` contains at least one supported value and no duplicates.                                                                                             |
+| Dedicated native OpenClaw deployment is refused         | Check for `provisionHarness` and all three containment facets. The Driver must also support the supplied workload identity, mounts, and credential references.                                                                             |
+| Cleanup retries after the Pod disappears                | Look up the provider resource using the revision's [Sandbox resource identity](#sandbox-resource-identity). Confirm removal with a read authorized for that resource. Pod or Kubernetes Namespace absence alone does not complete cleanup. |
+| The temporary Harness status endpoint cannot be removed | Check whether the controller can still read the resource. Restore access before retrying. See [OpenShell gateway recovery](openshell-sandbox.md#gateway-identity-and-removal).                                                             |
 
 ## Implementations
 

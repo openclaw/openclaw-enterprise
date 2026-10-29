@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-28
-last_updated_session: authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88
+updated: 2026-10-29
+last_updated_session: authoring-run/d72e8e1c-56b3-4bba-b7b2-83d6212f5e58
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -322,6 +322,13 @@ owned runtime/Git providers and profiles, sends idempotent `DeleteWorkspace`, th
 resources/NetworkPolicies in reverse order. Terminating Workspaces retry after
 lost responses. Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
+`apps/controller/src/drivers/compute/kubernetes/index.ts:cleanupRevisionSandbox`
+also runs after Namespace loss: stop removes its serving path first; retirement
+cleans the provider first. `deleteNamespace` runs cleanup after lifecycle hooks,
+before Gateway Namespace deletion. Present resources retain ownership checks;
+missing placement uses the derived name. Unconfirmed provider removal prevents
+completion.
+
 ### 6. Withdraw Git without retiring the execution
 
 `apps/controller/src/drivers/egress-proxy/openshell-registration.ts:createOpenShellCapabilities`
@@ -358,6 +365,10 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 setup, retry and restart under setgid parents. It does not prove Kubernetes or
 model execution.
 
+`tests/conformance/kubernetes-compute.test.mjs` checks cleanup after Namespace loss,
+including refusal and retry, with controlled Driver fixtures. It does not prove
+live cluster or OpenShell removal.
+
 ## Related docs
 
 - [Agent Sandbox policy admission and live application](agent-sandbox-policy.md)
@@ -373,6 +384,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 15:03: Require provider cleanup after Namespace loss. (authoring-run/d72e8e1c-56b3-4bba-b7b2-83d6212f5e58 - 72dfce5bfdbde5a79f714dc62777425c26619581)
 
 - 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
 
