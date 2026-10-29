@@ -1,8 +1,70 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { PlatformStateStore, PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
+import type {
+  OpenClawController,
+  PlatformStateStore,
+  PlatformUnitOfWork,
+} from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+
+test("deployment validates Harness authentication with the source descriptor that supplied its login mode", async (t) => {
+  const f = await staticEgressFixture(t, { admitRevision: false });
+  const controller: OpenClawController = f.controller;
+  const gateway = controller.selectedDriver("credential_gateway");
+  const compute = createTestKubernetesComputeDriver("admission-compute", {
+    gatewayRuntime: true,
+    sandboxDriver: controller.selectedDriver("sandbox"),
+    credentialGatewayDriver: gateway,
+  });
+  // Use real Compute auth validation; the fixture keeps runtime placement and effects simulated.
+  controller.selectedDriver("compute").validateHarnessAuth =
+    compute.validateHarnessAuth.bind(compute);
+  assert.equal(f.source.ownerCapability, "credential_gateway");
+  const offered = await gateway.listSourceTypes({ signal: AbortSignal.timeout(5_000) });
+  const original = offered.find((entry) => entry.type === f.source.type);
+  const harnessAuth = original?.harnessAuth;
+  assert.ok(harnessAuth);
+  assert.equal(harnessAuth.loginMode, "api_key");
+  const changed = offered.map((entry) =>
+    entry === original
+      ? { ...entry, harnessAuth: { ...harnessAuth, loginMode: "codex_pat" as const } }
+      : entry,
+  );
+  // The catalog changes after Harness admission; the independent listed-source check still runs.
+  let calls = 0;
+  const catalog = t.mock.method(gateway, "listSourceTypes", async () =>
+    ++calls === 1 ? offered : changed,
+  );
+  const deploy = () =>
+    f.request("POST", `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`);
+  const admitted = await deploy();
+  assert.equal(admitted.status, 202, JSON.stringify({ response: admitted.body, calls }));
+  assert.equal(calls, 2);
+  const revisions = () =>
+    controller.transact((state) => state.revisions.listRevisions(f.namespace.id, f.agent.id));
+  const saved = await revisions();
+  assert.deepEqual(saved[0]?.harnessAuth, {
+    method: "credential_source",
+    sourceId: f.source.id,
+    credentialGatewayId: gateway.id,
+    sourceType: f.source.type,
+    loginMode: "api_key",
+  });
+
+  // Another admission must resolve its own descriptor and still let Compute reject its provider.
+  catalog.mock.mockImplementation(async () =>
+    offered.map((entry) =>
+      entry === original
+        ? { ...entry, harnessAuth: { ...harnessAuth, modelProvider: "anthropic" } }
+        : entry,
+    ),
+  );
+  assert.equal((await deploy()).status, 409);
+  assert.equal(catalog.mock.callCount(), 4);
+  assert.deepEqual(await revisions(), saved);
+});
 
 test("credential exchange consults revision history only for inactive executions", async (t) => {
   let revisionListings = 0;

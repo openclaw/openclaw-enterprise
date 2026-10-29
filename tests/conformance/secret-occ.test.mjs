@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -478,6 +479,7 @@ test("deployment admission stamps immutable native logging after sandbox policy"
     id: "secret-occ-sandbox",
     capability: "sandbox",
     implementation: "test-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["filesystem"],
     configureAgent(values) {
       return { ...values, sandboxed: true, logging: { ...values.logging, level: "error" } };

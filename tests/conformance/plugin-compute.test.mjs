@@ -40,6 +40,7 @@ import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { listen as listenServer } from "../helpers/listen.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { waitForResult } from "../helpers/wait-for.mjs";
@@ -3653,12 +3654,7 @@ async function startCodexGatewaySupervisor(
       JSON.stringify({ revisionId, deviceId: bindingDeviceId }),
     );
   }
-  const listen = async (handler) => {
-    const server = peerHttp.createServer(handler);
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    return server.address().port;
-  };
+  const listen = (handler) => listenServer(t, peerHttp.createServer(handler));
   const peerPort = await listen(async (request, response) => {
     assert.equal(request.url, "/openclaw/plugin-runtime/status");
     fixture.peerRequests++;

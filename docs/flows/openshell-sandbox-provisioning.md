@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-29
-last_updated_session: authoring-run/652cb088-e8de-4ee4-9970-513a3502d08d
+last_updated_session: authoring-run/8c9c6805-6fea-483a-9626-bce15cd10ab0
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -126,6 +126,15 @@ ownership for private routing files; Installation files remain `0644` in private
 
 Cleanup validates ownership, deletes cluster/project/volumes, and retains partial-failure recovery state.
 
+### 0.1. Check Harness mode support
+
+`apps/controller/src/drivers/sandbox/openshell.ts:constructor` sets
+`supportsHarnessExecutionMode`.
+`packages/occ/src/index.ts:admitsOpenClawExecutionMode` checks this value,
+native-worker support, and provisioning requirements.
+Agent writes check support before transforming Configuration; deployment stores
+the result in the Agent revision. Provisioning status reads return stored work.
+
 ### 1. Prepare the Namespace and OpenShell Workspace
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:ensureNamespace`
@@ -228,9 +237,8 @@ writable PVC subpaths, preserving retained entries. Mode and process ownership c
 UID-fenced foreground deletion and writer Pod termination.
 Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
 and the pinned Gateway's default identity, without model credentials, ServiceAccount
-tokens, capabilities, or direct Pod creation. `configureAgent` refuses dedicated OpenClaw
-at save and deploy without the first two, and the Installation then offers no dedicated
-OpenClaw mode.
+tokens, capabilities, or direct Pod creation. Mode support and admission report
+these setting requirements before deployment.
 
 Document delivery is separate from native subpath preparation.
 After Sandbox readiness, `initializeWorkspace` checks the private setup Secret's
@@ -383,11 +391,17 @@ fixtures; live provider removal remains unverified.
 
 ## Changelog
 
+- 2026-10-29 17:09: Preserve mode support and cleanup during merge. (authoring-run/8c9c6805-6fea-483a-9626-bce15cd10ab0 - 62cae82f7227a5a2ac0b3a8000e5e96326438b69)
+
 - 2026-10-29 16:13: Reject reassigned Sandboxes. (authoring-run/652cb088-e8de-4ee4-9970-513a3502d08d - 5ad9e16de6a249b096d851afe422a00e90eb3473)
 
 - 2026-10-29 15:03: Require provider cleanup after Namespace loss. (authoring-run/d72e8e1c-56b3-4bba-b7b2-83d6212f5e58 - 72dfce5bfdbde5a79f714dc62777425c26619581)
 
 - 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
+
+- 2026-10-28 15:09: Clarify mode support and Configuration transformation wording. (01a183dc-eb11-7f33-9992-dec02cd989e3 - a06c28fe0e)
+
+- 2026-10-28 12:05: Separate static Harness mode reporting from real Configuration transformation. (01a183dc-eb11-7f33-9992-dec02cd989e3 - 07418d1980)
 
 - 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
 
@@ -398,15 +412,5 @@ fixtures; live provider removal remains unverified.
 - 2026-10-23 14:21: Confirm released preview readiness with the acknowledged release and authenticated WebSocket in the accompanying Driver change. (authoring-run/5f5f89f5-e1c7-4af8-9b15-abd7a29db02e - 725e2371e5984fbe72d679e0fb7a55833225d70d)
 
 - 2026-10-21 23:23: Record per-source retirement refusal in the accompanying worker change. (authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
-
-- 2026-10-21 23:06: Trace OCC delivery ownership and explicit withdrawal outcomes in the accompanying change. (authoring-run/785bc245-2a9c-4ebe-ad96-da5cdd3c4851 - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
-
-- 2026-10-20 21:45: Pin OpenShell v0.1.5 and admit Harness template labels at the Gateway. (authoring-run/016ma8eD5SYoBTV5kswEV3Dn - bca5b199b)
-
-- 2026-10-19 09:48: Preserve main and policy traces; condense prose. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
-
-- 2026-10-16 22:08: Keep the OpenShell OAuth, protected startup and repository-session boundaries explicit. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
-
-- 2026-10-16 01:36: Integrate credential-independent Codex permissions while preserving external OAuth and private relay delivery. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

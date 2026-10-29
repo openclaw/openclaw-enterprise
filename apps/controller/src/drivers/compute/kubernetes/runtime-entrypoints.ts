@@ -2323,9 +2323,12 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     let output;
     try { output = JSON.parse(result.stdout); } catch { return probeFailure("INVALID_OUTPUT", "json"); }
     const results = output?.auth?.probes?.results;
+    // Configured custom-provider env references are reported by native OpenClaw as
+    // models.json; built-in ambient credentials retain the env source requirement.
+    const source = credentialEnvironment === "OCE_MODEL_API_KEY" ? "models.json" : "env";
     if (!Array.isArray(results) || results.length !== 1 ||
       results[0]?.provider !== provider || results[0].model !== model ||
-      results[0].source !== "env") return probeFailure("INVALID_OUTPUT", "shape");
+      results[0].source !== source) return probeFailure("INVALID_OUTPUT", "shape");
     const status = results[0].status;
     if (status === "ok") return undefined;
     if (status === "auth") return "AUTHENTICATION_FAILED";

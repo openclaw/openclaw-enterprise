@@ -2335,7 +2335,7 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   await page.getByRole("heading", { name: "Namespaces" }).waitFor();
   // The heading shows before the Namespaces page has checked access. Advancing the clock past
   // the console's 15 s request timeout while a session or Namespace read is pending fails it
-  // ("Session unavailable" or "Namespace access unavailable") and drops every cached view, so
+  // ("Could not reach OpenClaw Enterprise") and drops every cached view, so
   // let the page finish its reads first.
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await waitForIdleFetches(page);

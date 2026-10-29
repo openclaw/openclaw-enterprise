@@ -186,7 +186,11 @@ not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
 The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
-and checks its branding through sign-in and the Agent workflow. Other scenarios
+and checks its branding through sign-in and the Agent workflow. Its OpenClaw
+cell also redeploys the same Agent with an explicitly configured provider alias,
+the existing OCC Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
+This stage runs wherever the OpenClaw `model-ui` cell is selected; the Codex-only
+advisory selection does not cover it. Other scenarios
 do not require the theme or an extra API rollout.
 
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the

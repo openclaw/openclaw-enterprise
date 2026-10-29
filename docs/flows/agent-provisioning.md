@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
 updated: 2026-10-29
-last_updated_session: provisioning-status-repository-policy
+last_updated_session: authoring-run/c2280447-76aa-4fbf-8243-bc452c961d6d
 ---
 
 # Agent provisioning flow
@@ -73,6 +73,10 @@ For a draft, Console creates the Configuration and Agent, then grants access to 
 `packages/occ/src/index.ts:OpenClawController.provisionAgent`
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
+
+For Harness authentication from a credential source, OCC reads the catalog entry
+from the recorded Gateway. Compute validates that same entry and its login mode
+for this admission. A later provisioning request reads the catalog again.
 
 OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority, then refuses a taken Agent name with Agent create's `409`. Reserved Secret destinations, cross-Namespace Secret references, and missing or `runtime` Harness authentication give `400 INVALID_REQUEST` naming the rule; a Secret absent from the Namespace stays `404`. Before the Compute plan check, a Secret binding gets Agent save's Harness authentication check and its named `400`.
 
@@ -168,6 +172,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 19:27: Use the resolved credential source type for Harness admission. (authoring-run/c2280447-76aa-4fbf-8243-bc452c961d6d - d19e41caf)
 
 - 2026-10-29: Keep saved provisioning status readable after repository policy changes. Retry still checks current policy.
 

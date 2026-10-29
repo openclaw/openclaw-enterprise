@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-10-29
-last_updated_session: authoring-run/0f4f447d-cd98-4f49-9d16-217bf7500d1d
+last_updated_session: authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741
 ---
 
 # Credential source lifecycle Flow
@@ -175,7 +175,9 @@ requires dedicated Codex or native OpenClaw, paired Drivers, and
 model Secret and passes the resolved source to Sandbox provisioning.
 
 `admitCredentialSources` requires a Sandbox (`409`), rechecks caller grants and
-requires the Agent principal's `operate` on each listed source of an offered type.
+requires the Agent principal's `operate` on each listed source. The source's
+recorded owner must still offer its type. A matching Proxy type cannot admit a
+source whose Gateway no longer offers it.
 The revision records `sourceId`, `sourceType` and the owner's `credentialGatewayId`
 or `credentialProxyId`. Older sources keep their Gateway owner, even when a Proxy
 with the same Driver ID enforces the revision's egress plan.
@@ -327,6 +329,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 19:11: Use the recorded owner’s catalog for fresh source admission. (authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741 - 3a4244461)
 
 - 2026-10-29 15:48: Preserve DELETE ownership when live registration loses readiness without an external write. (authoring-run/0f4f447d-cd98-4f49-9d16-217bf7500d1d - 6ead449d5)
 

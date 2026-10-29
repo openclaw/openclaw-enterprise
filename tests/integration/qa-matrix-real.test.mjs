@@ -231,6 +231,64 @@ test(
                           }
                         },
                       );
+                      if (preset === "OpenClaw") {
+                        await step(
+                          "embedded configured-provider Secret and real model turn",
+                          async () => {
+                            // Keep the admitted model and Secret, changing only the logical provider.
+                            const values = structuredClone(agent.configuration.values);
+                            const selected = values.agents.defaults.model;
+                            const primary =
+                              typeof selected === "string" ? selected : selected.primary;
+                            const id = primary.slice(primary.indexOf("/") + 1);
+                            const custom = `configured/${id}`;
+                            values.models.providers = {
+                              configured: {
+                                ...values.models.providers.openai,
+                                apiKey: {
+                                  source: "env",
+                                  provider: "default",
+                                  id: "OCE_MODEL_API_KEY",
+                                },
+                              },
+                            };
+                            values.agents.defaults.model = custom;
+                            values.agents.defaults.models = {
+                              [custom]: {
+                                ...values.agents.defaults.models[primary],
+                                agentRuntime: { id: "openclaw" },
+                              },
+                            };
+                            await f.api(
+                              "PATCH",
+                              `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
+                              { values },
+                            );
+                            await f.deployAndWait(agent);
+                            const gateway = await f.gatewayUrl(agent);
+                            try {
+                              await assertGatewayModelTurn({
+                                gatewayUrl: gateway.url,
+                                gatewayPassword: gateway.gatewayPassword,
+                                nonce: `QA_CUSTOM_${randomUUID()}`,
+                                secrets: [
+                                  await protectedText(
+                                    process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
+                                    "model credential",
+                                  ),
+                                ],
+                              });
+                            } finally {
+                              await gateway.close();
+                            }
+                            await f.record("embedded-configured-provider", {
+                              agentId: agent.id,
+                              revisionId: agent.revision.id,
+                              model: custom,
+                            });
+                          },
+                        );
+                      }
                       await step(
                         "trusted native UI and live WebSocket model response",
                         async () => {

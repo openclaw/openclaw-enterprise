@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -6,6 +7,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
+import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { PROVISIONING_NOT_COMPLETED } from "../helpers/refusal-text.mjs";
 import {
@@ -116,6 +118,41 @@ export async function openAdvancedSettings(page) {
   if (await summary.count()) {
     await summary.click();
   }
+}
+
+// Create Agent's access slot above the form. A refused Installation read's answer is one status
+// block there, never the grey hint under the fields (finding 2092): its text appears once on the
+// page. `retry` says whether the block offers Retry permission check as its action.
+export async function expectCreateAccess(page, { tone, body, retry = false }) {
+  const access = page.locator("#create-agent-access");
+  await access.locator(".status-body").getByText(body, { exact: true }).waitFor();
+  assert.deepEqual(
+    await access.evaluate((node) => ({
+      role: node.getAttribute("role"),
+      tone: node.getAttribute("data-tone"),
+      label: node.querySelector(".status-label")?.textContent,
+      body: [...node.querySelectorAll(".status-body")].map((line) => line.textContent),
+      next: node.nextElementSibling?.id,
+    })),
+    {
+      role: tone === "info" ? "status" : "alert",
+      tone,
+      label: "Your access",
+      body: [body],
+      next: "create-agent-form",
+    },
+  );
+  assert.equal(await page.getByText(body, { exact: true }).count(), 1);
+  assert.equal(
+    await access.getByRole("button", { name: "Retry permission check", exact: true }).isVisible(),
+    retry,
+  );
+  // The capability retry under the fields never stands in for the permission retry.
+  assert.equal(
+    await page.getByRole("button", { name: "Retry capability check", exact: true }).count(),
+    0,
+  );
+  return access;
 }
 
 // Create Agent stays disabled while the form reads Installation capabilities and repository
@@ -335,6 +372,7 @@ export function nativeSandboxDriver(facets = ["networking", "filesystem", "proce
     id: "console-native-sandbox",
     capability: "sandbox",
     implementation: "console-native",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets,
     async provisionHarness() {
       assert.fail("provisioning admission must leave effects to the worker");
@@ -551,6 +589,10 @@ function repositoryPolicyDriver(
   );
 }
 
+// A button the reader can press: an unavailable one is natively disabled, or aria-disabled
+// while a visible reason says why (finding 2878).
+export const LIVE_BUTTON = 'button:not([disabled], [aria-disabled="true"])';
+
 // Back, in-app navigation and reloads can first restore an inert copy of the old view with its
 // controls disabled, until revalidation re-enables it or replaces it with a rebuilt view. Only a
 // live control shows the current view, including any draft it restored.
@@ -559,36 +601,19 @@ export async function waitForLiveControls(page, ids) {
     (controlIds) =>
       controlIds.every((id) => {
         const control = globalThis.document.getElementById(id);
-        return control && !control.disabled && !control.closest("[inert]");
+        return (
+          control &&
+          !control.disabled &&
+          control.getAttribute("aria-disabled") !== "true" &&
+          !control.closest("[inert]")
+        );
       }),
     ids,
   );
 }
 
 export function nativeAdminValues(marker, origin) {
-  const values = nativeValues(marker);
-  return {
-    ...values,
-    gateway: {
-      ...(values.gateway ?? {}),
-      controlUi: {
-        ...(values.gateway?.controlUi ?? {}),
-        enabled: true,
-        allowedOrigins: [origin],
-      },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: {
-          "occ-workspace-files": ["operator.admin"],
-        },
-      },
-    },
-  };
+  return withNativeAdminGateway(nativeValues(marker), origin);
 }
 
 // Without a caller-permission summary the console keeps controls enabled, so the API's own

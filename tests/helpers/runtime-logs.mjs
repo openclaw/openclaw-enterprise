@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "./sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
@@ -258,6 +259,7 @@ export function createProviderSandboxDriver({ id = "console-sandbox" } = {}) {
     id,
     capability: "sandbox",
     implementation: "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness(context) {
       return {

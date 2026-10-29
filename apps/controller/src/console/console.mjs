@@ -2565,10 +2565,11 @@ async function loadPage({
     if (!accessResolved) {
       // Uncertain shared admission invalidates every preview, not just this route. Drafts stay:
       // a later read clears them only if it proves their Namespace or account gone (finding 1935).
+      const account = session;
       resetReads();
       clearPrivate();
       shell = null;
-      showAdmissionUnavailable(sessionResolved, error.status);
+      showAdmissionUnavailable(sessionResolved, error, account);
       return;
     }
     mountedRouteKey = null;
@@ -2916,8 +2917,9 @@ async function revalidateMountedAgent(current) {
     if (checking !== "detail") {
       resetReads();
       // Drafts survive an unavailable check, as in loadPage (finding 1935).
+      const account = session;
       clearPrivate();
-      showAdmissionUnavailable(checking !== "session", error.status);
+      showAdmissionUnavailable(checking !== "session", error, account);
       return;
     }
     showAgentReadFailure(current, selectedNamespace, error);
@@ -3026,10 +3028,44 @@ function settingsView() {
   );
 }
 
+const UNREACHABLE_TITLE = "Could not reach OpenClaw Enterprise";
+const UNREACHABLE_TEXT = "Check your connection, then try again.";
+
+// A read that never reached the API: the browser is offline, or the API did not answer in time.
+function unreachable(error) {
+  return (
+    error.status === undefined && (error.name === "TypeError" || error.name === "TimeoutError")
+  );
+}
+
 // The shared session or Namespace read failed, so no private page can show. Once the session
 // is confirmed, a refusal can be lasting (an account whose access was removed), and this panel
 // has no account menu, so it offers Sign out beside Retry (finding 1894).
-function showAdmissionUnavailable(sessionChecked, status) {
+// A read that never reached the API says nothing about the session (finding 1896). A tab that
+// was signed in as `account` keeps its shell, without Namespace or page data, names the
+// connection and puts focus on Retry. Any answer from the API (401, 403, 503) is shown below.
+function showAdmissionUnavailable(sessionChecked, error, account) {
+  const current = route();
+  if (unreachable(error) && account && Object.hasOwn(pages, current.feature)) {
+    // The account alone stays known, so Retry, Refresh and a refocus hold this shell while they
+    // check again, and a 401 then still signs the tab out.
+    session = account;
+    const shell = renderShell(current.feature, true, { recovery: false });
+    panel(shell.view, UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    shell.refresh.disabled = false;
+    shell.view.setAttribute("aria-busy", "false");
+    const reason = shell.view.querySelector(".state-panel > p");
+    reason.id = "unreachable-reason";
+    const retry = shell.view.querySelector(".state-panel > button");
+    retry.setAttribute("aria-describedby", reason.id);
+    retry.focus();
+    return;
+  }
+  if (unreachable(error)) {
+    publicPanel(UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    return;
+  }
+  const { status } = error;
   if (!sessionChecked) {
     publicPanel(
       "Session unavailable",
@@ -3098,8 +3134,41 @@ window.addEventListener("popstate", () => {
     navigation.traverse({ fromNavigation: !resumePending, mountedUrl: mountedRouteKey });
   }
 });
-window.addEventListener("focus", resumePage);
+// Tab past the page's last control moves focus to the browser's own controls, and the next Tab
+// brings it back. That lap is not the reader returning to the page: the refocus recheck it would
+// start holds the page inert, so the lap's next Tabs skipped the page (finding 2879). A return
+// within TAB_LAP_MS of tabbing out, with the page shown throughout, is not rechecked; a later
+// return, or one after the page was hidden, is.
+const TAB_LAP_MS = 10_000;
+let lastTabKey = -Infinity;
+let tabbedOutAt = null;
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key === "Tab") {
+      lastTabKey = event.timeStamp;
+    }
+  },
+  { capture: true },
+);
+window.addEventListener("blur", (event) => {
+  if (event.target === window) {
+    // Focus leaves the page in the Tab key's own default action, right after its keydown.
+    tabbedOutAt = !document.hidden && event.timeStamp - lastTabKey < 1000 ? event.timeStamp : null;
+  }
+});
+window.addEventListener("focus", (event) => {
+  if (event.target !== window) {
+    return;
+  }
+  const lap = tabbedOutAt !== null && event.timeStamp - tabbedOutAt < TAB_LAP_MS;
+  tabbedOutAt = null;
+  if (!lap) {
+    resumePage();
+  }
+});
 document.addEventListener("visibilitychange", () => {
+  tabbedOutAt = null;
   resumePage();
 });
 // Drafts live only in this document, so a reload or tab close would lose unsaved editor work

@@ -20,6 +20,10 @@ containment facets; see
 [Kubernetes Compute](kubernetes-compute.md) retains baseline isolation, storage,
 routing, and the per-Agent Gateway. Sandbox owns:
 
+- `supportsHarnessExecutionMode` declares OpenClaw support at construction. Embedded
+  is unsupported; Dedicated needs `kubernetes.userNamespaces: false` and at most
+  one ServiceAccount in `gateway.operatorWorkspaceResources`. See the
+  [mode support contract](sandbox.md#harness-mode-support).
 - `configureAgent` pins the main Agent workspace to the configured Sandbox data
   mount for both dedicated Harnesses before OCC saves the Agent revision. Codex retains
   app-server containment policy.

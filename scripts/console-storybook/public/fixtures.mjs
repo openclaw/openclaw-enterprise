@@ -891,6 +891,10 @@ export function installFixture(scenario, evidence) {
           }
         });
       }
+      if (rule.networkError) {
+        // The browser's own failure for a request that never reaches the API (offline).
+        throw new TypeError("Failed to fetch");
+      }
       if (rule.bodyError) {
         // A simulated after-headers failure exercises the production body reader.
         // Real socket interruption is proved separately by the transport tests.

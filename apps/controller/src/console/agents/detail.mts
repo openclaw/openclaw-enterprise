@@ -22,11 +22,13 @@ import {
   element,
   fieldError,
   focusSaveOutcome,
+  isUnavailable,
   jsonObjectProblem,
   revealStatus,
   setHidden,
   setStatusTone,
   setText,
+  setUnavailable,
   statusBlock,
   validateFields,
   requestIdLine,
@@ -631,10 +633,9 @@ export async function renderAgentDetail(
   let agentSaveDenied = callerPermissionsRead.then((permissions) =>
     agentSaveDenial(permissions, agent),
   );
-  // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
-  // The newest reread whose operate answer the page's controls show.
-  let appliedOperateReread = 0;
+  // The newest reread whose answer the page shows: the summary and every control that follows it.
+  let appliedReread = 0;
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
@@ -1685,7 +1686,7 @@ export async function renderAgentDetail(
       );
     }
     const deployButton = actions?.querySelector<HTMLButtonElement>("button.primary");
-    if (deployButton && !deployButton.disabled) {
+    if (deployButton && !isUnavailable(deployButton)) {
       deployButton.focus({ preventScroll: true });
     } else {
       tabControls.get(selectedTab)?.focus({ preventScroll: true });
@@ -3183,7 +3184,7 @@ export async function renderAgentDetail(
           Boolean(draftEditorNavigationBlock) ||
           Boolean(credentials?.mutationPending());
       }
-      deploy.disabled = deployIsDisabled();
+      const deployUnavailable = deployIsDisabled();
       const rejectedAccess =
         !runtimeAuth && credentialRejected()
           ? credentialFixAccess(agent.harnessAuth, callerPermissions)
@@ -3292,9 +3293,14 @@ export async function renderAgentDetail(
           }
         }
       }
-      // A disabled Deploy is described by the line that says why, or by a refused deployment's
-      // alert when that line defers to it (finding D749).
-      describeDisabled(deploy, deployStatus.textContent ? deployStatus : deployFeedback);
+      // An unavailable Deploy is described by the line that says why, or by a refused
+      // deployment's alert when that line defers to it (finding D749), and stays in the Tab order
+      // while one of them shows (finding 2878).
+      setUnavailable(
+        deploy,
+        deployUnavailable,
+        deployStatus.textContent ? deployStatus : deployFeedback,
+      );
       updateChecklist();
     }
     // The last deployment's model credential was rejected and the draft still uses it.
@@ -3851,21 +3857,27 @@ export async function renderAgentDetail(
     const reread = ++permissionsRereads;
     const read = readPermissions().then(
       (permissions) => {
-        if (context.isCurrent() && reread === permissionsRereads) {
+        // An older reread still applies when no newer one has answered: a newer read that
+        // fails resolves to this answer. The summary and the controls take it together, so
+        // the failed-version recovery and Delete never keep an answer that Stop has left
+        // (finding 2329).
+        if (context.isCurrent() && reread > appliedReread) {
+          appliedReread = reread;
           callerPermissions = permissions;
           // Views built from now on take this answer; shown ones follow it below (finding 2470).
-          agentSaveDenied = Promise.resolve(agentSaveDenial(permissions, agent));
+          // While a newer reread is in flight, views built meanwhile wait for it instead, so
+          // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
+          // resolves to this answer.
+          agentSaveDenied =
+            reread === permissionsRereads
+              ? Promise.resolve(agentSaveDenial(permissions, agent))
+              : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
           // A grant or revocation since the last answer relabels the draft (finding 2421).
           applyDraftAccess();
           deletion.applyDelete(permissions?.delete);
-        }
-        // An older reread still applies when no newer one has answered: a newer read that
-        // fails resolves to this answer, which the controls would otherwise never see.
-        if (context.isCurrent() && reread > appliedOperateReread) {
-          appliedOperateReread = reread;
           applyOperateAnswer(permissions?.operate);
         }
         return permissions;
@@ -3891,6 +3903,13 @@ export async function renderAgentDetail(
       agentSaveDenial(permissions, agent),
     );
     const next = loadDetails();
+    // Other tabs draw from the last answer and follow the reread (finding 2421), but Repositories
+    // draws its editor only once the reread lands. Rebuilt before that, the tab was empty at the
+    // focus step below: Cancel was not found, the tab strip took focus, the shortened page lost
+    // the reader's place, and the editor drawn later showed no saved status (finding 2892).
+    if (selectedTab === "repositories") {
+      await agentSaveDenied;
+    }
     const data = await next;
     if (!context.isCurrent() || deleting || !data) {
       return;
@@ -3935,7 +3954,7 @@ export async function renderAgentDetail(
     const named = [...content.querySelectorAll("button")].find(
       (candidate) =>
         [focus].flat().includes(candidate.textContent) &&
-        !candidate.disabled &&
+        !isUnavailable(candidate) &&
         !candidate.closest("[hidden]"),
     );
     const status = saved
