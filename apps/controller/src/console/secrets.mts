@@ -488,13 +488,11 @@ export function renderSecrets(
             }
             const name = detail.agentNames?.get(id);
             if (detail.agentNames && name === undefined) {
-              // The Secret read lists only Agents the caller may read; one the list leaves out
-              // was deleted or changed access since.
+              // These reads are separate; omission does not establish why the Agent is absent.
               return element(
                 "li",
                 {},
-                "An Agent you cannot read ",
-                element("span", { className: "resource-id" }, id),
+                "An Agent from the earlier usage check is no longer listed. Reopen this Secret to check again.",
               );
             }
             const link = element(

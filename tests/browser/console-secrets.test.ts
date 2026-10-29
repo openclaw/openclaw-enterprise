@@ -10,6 +10,7 @@ import type {
   UpdateAgentBody,
 } from "../../packages/contracts/src/api/common.ts";
 import type {
+  AgentListResponse,
   IAMAccessBindingResponse,
   IAMRoleResponse,
   NamespaceListResponse,
@@ -359,6 +360,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await grant("read", "secret", privateSecret.id);
   await grant("read", "secret", secret.id);
   await grant("read", "agent", sharedAgent.id);
+  const privateAgentRead = await grant("read", "agent", privateAgent.id);
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, secretsUrl(namespace), member.credentials);
   // Without Secret create the page never offers creation that the API would refuse after the
@@ -371,7 +373,68 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     await createSecret.getAttribute("aria-describedby"),
     await createReason.getAttribute("id"),
   );
+  // Hold the name lookup before it reaches IAM, after the Secret read has listed both
+  // consumers. Revoking one exact grant must not turn that older ID into a current identity.
+  const requests = apiRequests(page, fixture.origin);
+  const detailUrl = `${fixture.origin}${secretPath(namespace)}/${privateSecret.id}`;
+  const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  const heldNames = await holdRequests(t, page, agentsUrl, {
+    method: "GET",
+    once: true,
+  });
+  const initialRead = page.waitForResponse(
+    (response) => response.url() === detailUrl && response.request().method() === "GET",
+  );
   await page.getByRole("button", { name: privateSecret.name, exact: true }).click();
+  const initialResponse = await initialRead;
+  assert.equal(initialResponse.status(), 200, "the first Secret read must succeed");
+  const { data: initial }: SecretDetailResponse = await initialResponse.json();
+  assert.deepEqual(
+    initial.consumers.agents.toSorted(),
+    [privateAgent.id, sharedAgent.id].toSorted(),
+  );
+  assert.equal(initial.consumers.unreadable, 0);
+  await heldNames.requested;
+  // fixture.request uses the separate administrator session, not the scoped browser member.
+  assert.equal((await fixture.request("DELETE", privateAgentRead)).status, 204);
+  const nameRead = page.waitForResponse(
+    (response) => response.url() === agentsUrl && response.request().method() === "GET",
+  );
+  heldNames.release();
+  const nameResponse = await nameRead;
+  assert.equal(nameResponse.status(), 200, "the subsequent genuine Agent list must succeed");
+  const { data: namedAgents }: AgentListResponse = await nameResponse.json();
+  assert.deepEqual(
+    namedAgents.map((agent) => agent.id),
+    [sharedAgent.id],
+  );
+  const raceDetail = dialog(page, privateSecret.name);
+  const readableLink = raceDetail.getByRole("link", { name: sharedAgent.name, exact: true });
+  await readableLink.waitFor();
+  assert.equal(
+    new URL((await readableLink.getAttribute("href"))!, fixture.origin).pathname,
+    `/console/agents/${sharedAgent.id}`,
+  );
+  const missingRow = raceDetail.locator(".secret-consumers").first().locator("li").filter({
+    hasNotText: sharedAgent.id,
+  });
+  const missingText = await missingRow.innerText();
+  const missingOutput = `${missingText}\n${await missingRow.ariaSnapshot()}\n${await missingRow.innerHTML()}`;
+  for (const name of ["Replace value", "Delete Secret"]) {
+    assert.equal(await raceDetail.getByRole("button", { name, exact: true }).isDisabled(), true);
+  }
+  await raceDetail.getByRole("button", { name: "Close" }).click();
+
+  // A fresh read is the control: IAM now counts the hidden consumer without returning its ID.
+  const freshRead = page.waitForResponse(
+    (response) => response.url() === detailUrl && response.request().method() === "GET",
+  );
+  await page.getByRole("button", { name: privateSecret.name, exact: true }).click();
+  const freshResponse = await freshRead;
+  assert.equal(freshResponse.status(), 200);
+  const { data: fresh }: SecretDetailResponse = await freshResponse.json();
+  assert.deepEqual(fresh.consumers.agents, [sharedAgent.id]);
+  assert.equal(fresh.consumers.unreadable, 1);
   const privateDetail = dialog(page, privateSecret.name);
   await privateDetail.getByText(/1 additional consumer/).waitFor();
   assert.equal(await privateDetail.getByText(privateAgent.id, { exact: true }).count(), 0);
@@ -383,6 +446,25 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     true,
   );
   await privateDetail.getByRole("button", { name: "Close" }).click();
+  assert.ok(
+    requests.every((request) => request.method === "GET"),
+    "inspection must be read-only",
+  );
+  // Assert the captured race row after the fresh-read control, so a red identifies the
+  // stale renderer output rather than a failed grant, interception, or server response.
+  for (const identity of [privateAgent.id, privateAgent.name]) {
+    assert.equal(
+      missingOutput.includes(identity),
+      false,
+      "the unresolved Agent row exposes stale identity in text, accessibility or markup",
+    );
+  }
+  assert.doesNotMatch(missingText, /cannot read|denied|no access|permission|delet/i);
+  assert.match(
+    missingText,
+    /reopen|recheck/i,
+    "the unresolved Agent row must explain how to check usage again",
+  );
 
   // The Secret read's answer disables what the member may not do, and each button names why,
   // before any value is typed (finding D761).
