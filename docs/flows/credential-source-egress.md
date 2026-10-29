@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-27"
-last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
+last_updated_session: authoring-run/7ecad263-f8b0-46d5-9e93-50bba4fa0edb
 ---
 
 # Protected credential request flow
@@ -145,20 +145,18 @@ the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
 `openshell-exchange-v1`, a zero byte, the challenge and the binary opening request.
 Request JSON cannot supply a key; bearer-only RPCs refuse.
 
-Before awaiting work, the adapter copies the request and binds a private capability to the stream.
+Before awaiting work, the adapter copies the request and binds its stream capability.
 Credential Proxy bounds body size, reserves an authentication slot and snapshots headers and body.
-The stream owns the response. OCC copies each authenticated peer descriptor before
-awaiting more work. Send and response require the captured sender, Sandbox,
-instance, exchange, installation and optional peer key. Adding, changing or removing the key
-refuses; peer expiry must be valid and future at resolution, send and response lookup. A bearer
-or handle cannot transfer custody. Closing the stream cancels it. Cancellation or expiry
-releases material; pending policy or receipt work keeps its slot. No pipelining.
+OCC copies the authenticated peer. Send and response require its original sender, Sandbox,
+instance, exchange, installation and optional key. Adding, changing or removing the key refuses.
+Peer expiry must be valid and future at resolution, send and response lookup. A handle or bearer
+cannot transfer custody. Stream closure cancels the request. Cancellation or expiry releases
+material; pending policy or receipt work keeps its slot. No pipelining.
 
-`packages/occ/src/credential-proxy.ts:resolve` moves the slot to the verified Sandbox's share,
-maps the peer to persisted installation state and pins eligible providers and methods before
-classification. Ambiguity blocks classification. OCC rechecks pins before and after provider
-use and at material access, send authorization and response release. Changes restored between checks
-escape detection. Secret Driver network access and supervisor response writes remain downstream.
+`packages/occ/src/credential-proxy.ts:resolve` charges the verified Sandbox, finds the persisted
+installation and pins providers and methods before classification. Ambiguity refuses. OCC rechecks
+pins around provider use, material access, send authorization and response release. Changes restored
+between checks escape detection. Supervisor response writes remain downstream.
 After one exact route matches, OCC reserves a UUIDv7 request ID before capture or policy I/O.
 Creation fixes the 30-second replay horizon. [Slots and IDs are bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
 unsupported or ambiguous operations refuse before reservation.
@@ -181,12 +179,13 @@ without material.
 
 ### 3. Resolve versioned material and authorize its sole send
 
-The selected Secret Driver verifies ownership and reads UID/resourceVersion from the authoritative
-API. Static and prepared GitHub read ports share one `{ signal, deadlineAt }` lifetime.
-The Kubernetes Secret reader carries it through namespace verification, GET and retries;
-child scopes inherit cancellation and the earliest deadline. Each HTTP dispatch checks
-expiry independently of timers. Invalid deadlines fail closed; per-attempt timeouts cannot
-extend the lifetime.
+For request-time static reads, OCC pins the selected Secret Driver and read method. The bundled Kubernetes Driver
+checks them and the provider before each Secret GET, including retries, and discards material
+if the selection changed in flight. Older Drivers may still read; OCC rechecks on return.
+The Driver verifies the backend UID and returns its resourceVersion.
+Static and prepared GitHub reads share `{ signal, deadlineAt }`. Kubernetes propagates cancellation
+and the earliest deadline through namespace verification and retries. Each HTTP dispatch checks
+expiry independently of timers. Invalid deadlines refuse.
 GitHub acquisition validation, transport and metadata injection share a wire check:
 1–16,384 bytes of nonspace printable ASCII, not authentication.
 
@@ -334,7 +333,7 @@ None.
 
 ## Changelog
 
-- 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
+- 2026-10-27 16:46: Describe selection checks at the Kubernetes Secret GET. (authoring-run/7ecad263-f8b0-46d5-9e93-50bba4fa0edb - 7514893cced39e8307d71c59e2fd1b209a67314f)
 
 - 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
 

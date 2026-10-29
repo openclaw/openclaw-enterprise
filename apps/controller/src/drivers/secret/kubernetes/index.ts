@@ -29,7 +29,10 @@ import {
   resolveKubernetesControlNamespace,
 } from "../../compute/kubernetes/index.ts";
 import { withComputeOperationDeadline } from "../../compute/operation-context.ts";
-import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
+import {
+  createKubernetesClientConfiguration,
+  withKubernetesRequestGuard,
+} from "../../kubernetes/client.ts";
 import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
@@ -450,10 +453,19 @@ export class KubernetesSecretDriver implements SecretDriver {
     if (input.retention !== "none") {
       throw new SecretOwnershipError("Credential read retention must be none.");
     }
+    const { selectionCurrent } = input;
+    const requireSelection =
+      selectionCurrent &&
+      (() => {
+        if (selectionCurrent() !== true) {
+          throw new SecretOwnershipError("The credential read selection changed.");
+        }
+      });
     // Namespace verification, Secret GET and retries share the effective enclosing lifetime.
     return withComputeOperationDeadline(input.lifetime, async (lifetime) => {
-      const { observed } = await this.readOwnedSecret(input.secret);
+      const { observed } = await this.readOwnedSecret(input.secret, requireSelection);
       lifetime.signal.throwIfAborted();
+      requireSelection?.();
       const version = observed.metadata?.resourceVersion;
       if (!isNonEmptyString(version) || lifetime.deadline <= Date.now()) {
         throw new SecretOwnershipError("Versioned credential material is unavailable.");
@@ -473,6 +485,7 @@ export class KubernetesSecretDriver implements SecretDriver {
 
   private async readOwnedSecret(
     secret: Secret,
+    beforeGet?: () => void,
   ): Promise<{ observed: V1Secret; reference: SecretBackendRef }> {
     validateIdentity(secret);
     validateBackendRef(secret.backendRef);
@@ -484,9 +497,11 @@ export class KubernetesSecretDriver implements SecretDriver {
     if (secret.backendRef.namespaceName !== namespace) {
       throw new SecretOwnershipError("Secret backend namespace no longer matches placement.");
     }
-    const observed = await this.request(
-      () => client.readNamespacedSecret({ namespace, name: secret.backendRef.name }),
-      "read",
+    const observed = await withKubernetesRequestGuard(beforeGet, () =>
+      this.request(
+        () => client.readNamespacedSecret({ namespace, name: secret.backendRef.name }),
+        "read",
+      ),
     );
     const reference = this.checkedBackendRef(observed, secret, namespace, secret.backendRef);
     return { observed, reference };

@@ -8,6 +8,8 @@ This record preserves the dated changes to the protected credential request page
 
 ## Changelog
 
+- 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
+
 - 2026-10-27 15:34: Document the accompanying provider conflict refusal and callback pinning. (authoring-run/9e204161-489f-4c88-9848-c811faa3e6d9 - 0b8d61ffd7b7014274eb92b03a6e646d40e7c4f7)
 
 - 2026-10-27 15:01: Document the accompanying exchange-local provider selection. (authoring-run/99c08399-c9b0-4cb5-85c2-7275416e51ea - 5e73f33bfff6f361aebcf9f744ffbec363eeb362)

@@ -83,6 +83,10 @@ export interface CredentialInputRead {
   readonly secret: Readonly<Secret>;
   readonly lifetime: CredentialReadLifetime;
   readonly retention: "none";
+  /** Trusted request caller's synchronous check of the selected provider and Secret reader.
+   * The bundled Kubernetes Driver checks it before each material GET and before returning.
+   */
+  readonly selectionCurrent?: () => boolean;
 }
 
 export interface EgressExecution {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type {
+  CredentialInputRead,
   CredentialProviderDefinition,
   EgressInstallation,
   EgressRequest,
@@ -197,6 +198,106 @@ test("credential exchange refuses duplicate and substituted providers before mat
   assert.equal(f.providerRequests.length, 0);
 });
 
+test("credential exchange checks the selected provider before the first Kubernetes Secret GET", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const index = providers.findIndex((provider) => provider.sourceType.type === "openai");
+  const original = providers[index]!;
+  t.after(() => {
+    providers[index] = original;
+  });
+  const reads = f.secretReads;
+  const gate = f.pauseNamespaceVerification();
+  t.after(gate.release);
+  const resolution = f.resolve(f.capture());
+  await gate.reached;
+  providers[index] = { ...original };
+  gate.release();
+  const result = await resolution;
+  assert.ok(result.refused);
+  assert.equal(f.secretReads, reads, "namespace verification must not open a stale material read");
+
+  // The next exchange may select and use the replacement registration.
+  assert.ok((await f.resolve(f.capture())).ready);
+  assert.equal(f.secretReads, reads + 1);
+});
+
+test("credential exchange checks the registered Secret reader before retrying a Kubernetes GET", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  const driver = f.controller.selectedDriver("secret");
+  const reads = f.secretReads;
+  const failed = f.failOneSecretGet();
+  const resolution = f.resolve(f.capture());
+  await failed;
+  // The endpoint has already answered the first GET with 503. Even a replacement
+  // that delegates to the same implementation cannot take over the original read.
+  const replacement = t.mock.method(driver, "readCredentialInput");
+  const result = await resolution;
+  assert.equal(f.secretReads, reads + 1, "the rejected attempt must be the only GET");
+  assert.ok(result.refused);
+  assert.equal(replacement.mock.callCount(), 0);
+  assert.equal(f.providerRequests.length, 0);
+});
+
+test("OCC withholds a changed reader's result when the driver ignores the selection check", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  const driver = f.controller.selectedDriver("secret");
+  const read = driver.readCredentialInput!;
+  // Model the prior contract with the real storage adapter. The old reader can complete
+  // a GET after replacement, so OCC must independently check its identity on return.
+  let completed = 0;
+  let shadowCalls = 0;
+  async function legacy(this: typeof driver, input: CredentialInputRead) {
+    assert.equal(this, driver);
+    const material = await Reflect.apply(read, this, [
+      {
+        secret: input.secret,
+        lifetime: input.lifetime,
+        retention: "none",
+      },
+    ]);
+    completed += 1;
+    return material;
+  }
+  Object.defineProperty(legacy, "call", {
+    value() {
+      shadowCalls += 1;
+      throw new Error("Unexpected reader lookup");
+    },
+  });
+  const descriptor = Object.getOwnPropertyDescriptor(driver, "readCredentialInput");
+  Object.defineProperty(driver, "readCredentialInput", { configurable: true, value: legacy });
+  const restore = () =>
+    descriptor
+      ? Object.defineProperty(driver, "readCredentialInput", descriptor)
+      : Reflect.deleteProperty(driver, "readCredentialInput");
+  t.after(restore);
+  const allowed = await f.resolve(f.capture());
+  assert.deepEqual(
+    { ready: Boolean(allowed.ready), completed, shadowCalls },
+    {
+      ready: true,
+      completed: 1,
+      shadowCalls: 0,
+    },
+  );
+  const reads = f.secretReads;
+  const gate = f.pauseNamespaceVerification();
+  t.after(gate.release);
+  const resolution = f.resolve(f.capture());
+  await gate.reached;
+  restore();
+  gate.release();
+  const result = await resolution;
+  assert.equal(completed, 2);
+  assert.equal(f.secretReads, reads + 1);
+  assert.ok(result.refused);
+  assert.equal(result.ready, undefined);
+});
+
 test("credential exchange refuses provider replacement during a pending Secret read", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
@@ -218,6 +319,14 @@ test("credential exchange refuses provider replacement during a pending Secret r
   t.after(() => {
     providers[index] = original;
   });
+  const driver = f.controller.selectedDriver("secret");
+  const read = driver.readCredentialInput!;
+  let returnedMaterial = false;
+  t.mock.method(driver, "readCredentialInput", async (input: CredentialInputRead) => {
+    const result = await read.call(driver, input);
+    returnedMaterial = true;
+    return result;
+  });
   const reads = f.secretReads;
   const release = f.pauseSecretReads();
   t.after(release);
@@ -236,6 +345,7 @@ test("credential exchange refuses provider replacement during a pending Secret r
   const result = await pending;
   assert.ok(result.refused);
   assert.equal(result.ready, undefined);
+  assert.equal(returnedMaterial, false, "the bundled driver must discard the held GET result");
   assert.equal(substituteCalls, 0);
   assert.equal(f.providerRequests.length, 0);
 });
