@@ -423,7 +423,12 @@ Preparation needs a local repository containing all pinned commits; it never fet
 Build requires a clean OCE checkout, native Linux ARM64, Rust 1.98.1 and a locally available matching runtime image.
 Package writes a local OCI archive and external digest record; it never publishes.`;
 try {
+  const args = process.argv.slice(2);
+  if (args.length === 1 && ["--help", "-h"].includes(args[0] ?? "")) {
+    args[0] = "help";
+  }
   const { positionals, values } = parseArgs({
+    args,
     allowPositionals: true,
     options: Object.fromEntries(
       [
