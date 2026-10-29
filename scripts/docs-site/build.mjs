@@ -304,7 +304,7 @@ for (const page of pages.values()) {
 for (const page of pages.values()) {
   if (page.source === "reference/api-explorer.md") {
     page.html +=
-      '<p><a href="/assets/occ-api.openapi.json" download="occ-api.openapi.json">Download OpenAPI JSON</a></p><div id="api-reference"></div>';
+      '<p><a href="/assets/occ-api.openapi.json" download="occ-api.openapi.json">Download OpenAPI JSON</a></p><div id="occ-api-explorer"></div>';
   }
 }
 if (checkOnly) {

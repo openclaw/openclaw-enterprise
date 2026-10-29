@@ -846,22 +846,22 @@ dialog::backdrop {
 }
 
 /* The OpenAPI explorer owns its endpoint navigation within the article. */
-.layout:has(#api-reference) {
+.layout:has(#occ-api-explorer) {
   grid-template-columns: 230px minmax(0, 1fr);
 }
-.layout:has(#api-reference) > .toc {
+.layout:has(#occ-api-explorer) > .toc {
   display: none;
 }
-.doc:has(#api-reference) {
+.doc:has(#occ-api-explorer) {
   max-width: none;
   min-width: 0;
 }
-#api-reference {
+#occ-api-explorer {
   margin: 2rem -1rem 0;
   min-height: 70vh;
 }
 @media (max-width: 900px) {
-  .layout:has(#api-reference) {
+  .layout:has(#occ-api-explorer) {
     grid-template-columns: minmax(0, 1fr);
   }
 }

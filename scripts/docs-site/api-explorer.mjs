@@ -1,5 +1,6 @@
 /* global Scalar */
-const root = document.getElementById("api-reference");
+// Scalar reserves "api-reference" for automatic initialization.
+const root = document.getElementById("occ-api-explorer");
 if (root) {
   const header = document.querySelector("body > header");
   const updateHeaderOffset = () => {
