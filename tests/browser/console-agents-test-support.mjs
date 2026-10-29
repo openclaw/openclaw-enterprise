@@ -551,6 +551,10 @@ function repositoryPolicyDriver(
   );
 }
 
+// A button the reader can press: an unavailable one is natively disabled, or aria-disabled
+// while a visible reason says why (finding 2878).
+export const LIVE_BUTTON = 'button:not([disabled], [aria-disabled="true"])';
+
 // Back, in-app navigation and reloads can first restore an inert copy of the old view with its
 // controls disabled, until revalidation re-enables it or replaces it with a rebuilt view. Only a
 // live control shows the current view, including any draft it restored.
@@ -559,7 +563,12 @@ export async function waitForLiveControls(page, ids) {
     (controlIds) =>
       controlIds.every((id) => {
         const control = globalThis.document.getElementById(id);
-        return control && !control.disabled && !control.closest("[inert]");
+        return (
+          control &&
+          !control.disabled &&
+          control.getAttribute("aria-disabled") !== "true" &&
+          !control.closest("[inert]")
+        );
       }),
     ids,
   );

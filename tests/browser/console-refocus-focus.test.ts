@@ -257,6 +257,79 @@ test("refocusing at phone width with the navigation drawer open focuses the draw
 
 // Initial admission allows Agent metadata without Configuration read. Refocus must preserve
 // that same partial view instead of replacing the accessible Agent with a page-wide denial.
+// Tab past a page's last control moves focus to the browser's own controls, and the next Tab
+// brings it back to the page's first. That lap is not the reader coming back: the refocus recheck
+// it started held the page inert, so the next lap went from the header straight back to the
+// sidebar (finding 2879). Each recheck's session read is held here, so a held page stays held
+// while the lap runs. A refocus from elsewhere still rechecks.
+for (const view of ["Agent page", "Create Agent"] as const) {
+  test(`a Tab lap past the end of ${view} reaches its content again, and a refocus still rechecks`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Tab lap ${view}`);
+    const agent = await fixture.createAgent(namespace.id, "Tab lap Agent", nativeValues("v1"));
+    const { page } = await newPage(t, fixture, { browser });
+    await login(
+      page,
+      fixture,
+      view === "Agent page"
+        ? detailUrl(fixture, namespace.id, agent.id)
+        : `/console/agents/new?namespace=${namespace.id}`,
+    );
+    await page.locator(settledView).waitFor();
+    await page
+      .getByRole("heading", { name: view === "Agent page" ? "Tab lap Agent" : view })
+      .waitFor();
+    let releaseSession = () => {};
+    const sessionHeld = new Promise<void>((resolve) => {
+      releaseSession = resolve;
+    });
+    t.after(() => releaseSession());
+    let sessionReads = 0;
+    await page.route("**/api/auth/session", async (route) => {
+      sessionReads += 1;
+      await sessionHeld;
+      await route.fallback();
+    });
+    const focusIn = () =>
+      page.evaluate(() => {
+        const active = globalThis.document.activeElement;
+        if (!active || active === globalThis.document.body) {
+          return "outside";
+        }
+        return globalThis.document.querySelector('.content [aria-live="polite"]')?.contains(active)
+          ? "content"
+          : "shell";
+      });
+    // Two laps: Tab until focus leaves the page, then on until it reaches the page's content.
+    // Each lap stops at a bound, so a page whose content Tab skips fails here.
+    for (const lap of [1, 2]) {
+      let reached = false;
+      for (let presses = 0; presses < 150 && !reached; presses += 1) {
+        await page.keyboard.press("Tab");
+        reached = (await focusIn()) === "content";
+      }
+      assert.equal(reached, true, `lap ${lap} reaches the page content`);
+      let left = false;
+      for (let presses = 0; presses < 150 && !left; presses += 1) {
+        await page.keyboard.press("Tab");
+        left = (await focusIn()) === "outside";
+      }
+      assert.equal(left, true, `lap ${lap} leaves the page`);
+    }
+    // One more Tab brings focus back, which ends the lap.
+    await page.keyboard.press("Tab");
+    assert.equal(await focusIn(), "shell");
+    assert.equal(sessionReads, 0, "a Tab lap starts no recheck");
+    assert.equal(await page.locator(heldView).count(), 0);
+
+    // A refocus that no Tab started is the reader coming back: it rechecks and holds the page.
+    await refocus(page);
+    await page.locator(heldView).waitFor();
+    assert.equal(sessionReads, 1);
+    releaseSession();
+    await page.locator(settledView).waitFor();
+  });
+}
+
 test("mounted Agent refocus preserves a stable Configuration denial", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Partial Agent refocus");
   const agent = await fixture.createAgent(

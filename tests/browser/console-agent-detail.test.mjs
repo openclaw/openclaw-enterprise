@@ -64,6 +64,7 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
 import {
+  LIVE_BUTTON,
   openAdvancedSettings,
   withholdPermissionSummary,
   assertRevisionUrl,
@@ -3294,7 +3295,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   requests.length = 0;
 
   const nextValues = nativeValues("after-unknown");
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nextValues, null, 2));
