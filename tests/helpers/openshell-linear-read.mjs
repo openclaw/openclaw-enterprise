@@ -69,7 +69,7 @@ socket.on("message", (data) => {
 // Use the shipped controller's existing route key, cluster DNS and CA. This
 // client sends a normal Agent request through OCE routing without extracting a
 // Gateway password or changing any running workload.
-async function sendLinearRead({ namespaceId, agentId, sessionKey, prompt, toolName }) {
+async function sendLinearRead({ namespaceId, agentId, sessionKey, prompt }) {
   const assert = (await import("node:assert/strict")).default;
   const { readFile } = await import("node:fs/promises");
   const { createRequire } = await import("node:module");
@@ -133,13 +133,8 @@ async function sendLinearRead({ namespaceId, agentId, sessionKey, prompt, toolNa
     );
     signal.throwIfAborted();
     assert.equal(result.status, "ok");
-    stage = "history";
-    const history = await call("chat.history", { sessionKey, limit: 30 });
-    const results = (history.messages ?? [])
-      .filter((message) => message.role === "toolResult" && message.toolName === toolName)
-      .map(({ toolCallId, isError, content }) => ({ toolCallId, isError, content }));
     process.stdout.write(
-      "OCE_LINEAR_READ " + JSON.stringify({ ok: true, runId: sent.runId, results }) + "\n",
+      "OCE_LINEAR_READ " + JSON.stringify({ ok: true, runId: sent.runId }) + "\n",
     );
   } catch {
     process.stdout.write("OCE_LINEAR_READ " + JSON.stringify({ ok: false, stage }) + "\n");
@@ -331,7 +326,6 @@ export async function verifyOpenShellLinearRead(context, artifacts) {
           namespaceId: agent.namespaceId,
           agentId: agent.id,
           sessionKey,
-          toolName,
           prompt: `${prompt}\nUse only the installed Linear plugin for a fresh read. Do not make changes, run shell commands, or use unrelated tools. If Linear is unavailable, report that directly. Include this marker in your final response: ${turnMarker}`,
         })});`,
         timeout: 660_000,
@@ -343,9 +337,6 @@ export async function verifyOpenShellLinearRead(context, artifacts) {
     assert.ok(receipt, "OCE Gateway route must return a turn receipt");
     const turn = JSON.parse(receipt.slice("OCE_LINEAR_READ ".length));
     assert.equal(turn.ok, true, `OCE Gateway turn failed at ${turn.stage}`);
-    await writeFile(join(f.directory, "linear-turn-results.json"), JSON.stringify(turn.results), {
-      mode: 0o600,
-    });
     // A model claim is insufficient: require the exact native call linked to a
     // successful result matching known Linear data in this marked Agent turn.
     const toolEvidence = await native.assertSessionToolCallEvidence(agent, {

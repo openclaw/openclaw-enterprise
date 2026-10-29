@@ -228,7 +228,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 | `git-push-denied`       | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                                              |
 | `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
 | `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                    |
-| `openshell-linear-read` | Yes         | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read; live qualification pending.                               |
+| `openshell-linear-read` | No          | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                           |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
@@ -240,7 +240,7 @@ All combinations check startup and authenticated console login. Git alone starts
 the broker. Linear reads use the explicit `openshell-linear-read` scenario,
 which boots a separate shipped OpenShell stack and requires a connected Codex
 identity plus the read fixture described in [OpenShell testing](openshell.md#linear-tool-use-qualification).
-Live qualification of that new scenario is pending. `OCC_TEST_QA_CONCURRENCY=1..4` selects workers
+`OCC_TEST_QA_CONCURRENCY=1..4` selects workers
 (default `2`); installations and Slack run sequentially. Each gateway can use
 4 GiB beyond shared services.
 

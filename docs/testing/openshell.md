@@ -90,7 +90,7 @@ Select `OCC_TEST_QA_SCENARIOS=openshell-linear-read` in the QA matrix, or set
 `tests/integration/openshell-linear-read-real.test.ts`. The default matrix `all`
 selection excludes this dedicated OpenShell scenario. The standalone file belongs
 to the manual `openshell-linear` lane, which selects it explicitly. Selected cases fail when
-inputs are missing. Live qualification is pending; installation-only evidence
+inputs are missing. Installation-only evidence
 does not establish a successful Linear tool call.
 
 ## Test setup and cleanup

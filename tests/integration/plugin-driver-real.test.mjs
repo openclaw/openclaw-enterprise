@@ -388,7 +388,9 @@ test(
     assert.ok(Object.hasOwn(deployed.revision.plugins?.plugins ?? {}, linear.id));
     assert.deepEqual(deployed.status.warnings, []);
     // Read the selected native plugin to verify its installed identity and app mapping.
-    const native = await fixture.codexNativePluginDetail(agent, linear.remoteId);
+    const native = await fixture.codexNativePluginDetail(agent, {
+      remotePluginId: linear.remoteId,
+    });
     assert.equal(native.summaryId, "linear@openai-curated-remote");
     assert.equal(native.installed, true);
     assert.equal(native.enabled, true);
