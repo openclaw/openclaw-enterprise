@@ -1,6 +1,5 @@
 import type { LookupAddress } from "node:dns";
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import { aborted } from "node:util";
 import {
   checkResourceAllowed,
@@ -10,7 +9,12 @@ import {
   resourceUrlFromServerUrl,
   type FetchLike,
 } from "@modelcontextprotocol/client";
-import { BrowserAuthorizationError, DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import {
+  BrowserAuthorizationError,
+  DependencyUnavailableError,
+  mcpCredentialEndpoint,
+  mcpHttpsEndpoint,
+} from "@openclaw-enterprise/occ";
 import ipaddr from "ipaddr.js";
 import { Agent, fetch as undiciFetch } from "undici";
 
@@ -18,25 +22,6 @@ type ResolveHost = (host: string) => Promise<LookupAddress[]>;
 
 const discoveryUnavailable = () =>
   new DependencyUnavailableError("OCC could not reach the MCP OAuth discovery endpoint.");
-
-function httpsEndpoint(value: string | URL): URL {
-  const url = new URL(value);
-  // The management path supports DNS names. A literal IP would bypass the socket lookup hook.
-  if (
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.href.includes("#") ||
-    url.port === "0" ||
-    url.hostname.includes("*") ||
-    !url.hostname.includes(".") ||
-    isIP(url.hostname) ||
-    url.hostname.startsWith("[")
-  ) {
-    throw new BrowserAuthorizationError("invalid_mcp_endpoint", "fix_configuration");
-  }
-  return url;
-}
 
 export async function discoverMcpAuthorization(
   serverUrl: string,
@@ -55,7 +40,7 @@ export async function discoverMcpAuthorization(
 
   const approved = new Map<string, LookupAddress[]>();
   async function pinEndpoint(value: string | URL) {
-    const url = httpsEndpoint(value);
+    const url = mcpHttpsEndpoint(value);
     if (!approved.has(url.hostname)) {
       const addresses = await resolveHost(url.hostname).catch(() => {
         throw discoveryUnavailable();
@@ -130,12 +115,8 @@ export async function discoverMcpAuthorization(
   };
 
   async function discover() {
-    const server = httpsEndpoint(serverUrl);
-    // OpenShell stores the egress path as a glob without a query. Accept only paths
-    // that can be represented as an exact rule, including after URL canonicalization.
-    if (server.href.includes("?") || !/^\/[A-Za-z0-9/._~-]{0,255}$/u.test(server.pathname)) {
-      throw new BrowserAuthorizationError("invalid_mcp_server_path", "fix_configuration");
-    }
+    const server = new URL(serverUrl);
+    mcpCredentialEndpoint(server);
     const initial = await readMetadata(
       server,
       { headers: { Accept: "application/json, text/event-stream" } },
@@ -151,7 +132,7 @@ export async function discoverMcpAuthorization(
     if (
       !checkResourceAllowed({
         requestedResource: resourceUrlFromServerUrl(server),
-        configuredResource: httpsEndpoint(resource.resource),
+        configuredResource: mcpHttpsEndpoint(resource.resource),
       })
     ) {
       throw new BrowserAuthorizationError("mcp_resource_mismatch", "fix_configuration");

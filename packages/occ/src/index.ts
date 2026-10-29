@@ -28,6 +28,7 @@ import {
   removedPolicyDetails,
   type RemovedAccessBinding,
 } from "./iam-policy-cleanup.ts";
+import { mcpCredentialEndpoint } from "./mcp-credential-endpoint.ts";
 import { deploymentDiagnostics } from "./deployment-diagnostics.ts";
 import {
   deviceAuthorizationSession,
@@ -443,6 +444,7 @@ export {
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
+export { mcpCredentialEndpoint, mcpHttpsEndpoint } from "./mcp-credential-endpoint.ts";
 export { imageReferenceProblem } from "./image-reference.ts";
 export type { ImageReferenceProblem } from "./image-reference.ts";
 export {
@@ -6195,16 +6197,16 @@ export class OpenClawController {
     if (values.mcp) {
       // Recheck at save before registering a secret. The preview is supplied by the browser.
       const metadata = await this.discoverMcpAuthorization(values.mcp.serverUrl);
-      const server = new URL(metadata.serverUrl);
+      const endpoint = mcpCredentialEndpoint(metadata.serverUrl);
       if (
         values.mcp.serverUrl !== metadata.serverUrl ||
         values.mcp.resource !== metadata.resource ||
         values.issuer !== metadata.issuer ||
         values.authorizationUrl !== metadata.authorizationUrl ||
         values.tokenUrl !== metadata.tokenUrl ||
-        values.endpoint.host !== server.hostname ||
-        values.endpoint.port !== Number(server.port || 443) ||
-        values.endpoint.path !== server.pathname ||
+        values.endpoint.host !== endpoint.host ||
+        values.endpoint.port !== endpoint.port ||
+        values.endpoint.path !== endpoint.path ||
         values.scopes.length === 0 ||
         !values.scopes.every((scope) => metadata.scopes.includes(scope)) ||
         Object.keys(values.authorizationParameters).length > 0

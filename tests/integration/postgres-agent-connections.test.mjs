@@ -844,7 +844,7 @@ test(
     const { namespace, agent } = await fixture.deployAgent("MCP Settings");
     const { refreshDriver, providers } = selectConnectionDrivers(fixture);
     const metadata = {
-      serverUrl: "https://tools.example.test:8443/mcp",
+      serverUrl: "https://tools.example.test:8443/tenant/mcp",
       resource: "https://tools.example.test:8443",
       issuer: "https://login.example.test",
       authorizationUrl: "https://login.example.test/authorize",
@@ -887,13 +887,18 @@ test(
 
     await editor.waitFor({ state: "detached" });
     const row = page.getByRole("listitem").filter({ hasText: name });
-    await row.getByText("tools.example.test:8443/mcp", { exact: true }).waitFor();
+    await row.getByText("tools.example.test:8443/tenant/mcp", { exact: true }).waitFor();
     const saved = (await fixture.inject("GET", "/connection-templates"))
       .json()
       .data.find((item) => item.displayName === name);
     assert.deepEqual(saved.current.mcp, {
       serverUrl: metadata.serverUrl,
       resource: metadata.resource,
+    });
+    assert.deepEqual(saved.current.endpoint, {
+      host: "tools.example.test",
+      port: 8443,
+      path: "/tenant/mcp",
     });
     assert.deepEqual(saved.current.scopes, ["documents:read"]);
     assert.equal(saved.current.tokenUrl, metadata.tokenUrl);
@@ -905,6 +910,10 @@ test(
       clientSecret: "controlled-other-secret",
     });
     assert.equal(tampered.statusCode, 409);
+    const broadened = await fixture.inject("PATCH", `/connection-templates/${saved.id}`, {
+      endpoint: { ...saved.current.endpoint, path: "/" },
+    });
+    assert.equal(broadened.statusCode, 409);
     assert.equal(providers.size, registrations);
     await page.goto(`${consoleOrigin}/console/agents/${agent.id}?namespace=${namespace.id}`);
     await page.getByRole("button", { name: `Connect ${name}` }).click();

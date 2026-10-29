@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   BrowserAuthorizationError,
   DependencyUnavailableError,
+  mcpCredentialEndpoint,
 } from "../../packages/occ/src/index.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/drivers/credential-refresh/mcp-discovery.ts";
 
@@ -66,6 +67,19 @@ test("discovery follows the protected resource challenge, binds the issuer, and 
       issuer + "/.well-known/oauth-authorization-server",
     ]);
   }
+});
+
+test("each MCP credential endpoint keeps the server's exact host, port, and path", () => {
+  assert.deepEqual(mcpCredentialEndpoint("https://MCP.example.test:443/mcp"), {
+    host: "mcp.example.test",
+    port: 443,
+    path: "/mcp",
+  });
+  assert.deepEqual(mcpCredentialEndpoint("https://tools.other.test:8443/tenant/toolset-v2"), {
+    host: "tools.other.test",
+    port: 8443,
+    path: "/tenant/toolset-v2",
+  });
 });
 
 test("discovery refuses ambiguous issuers before contacting either one", async () => {
