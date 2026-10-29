@@ -520,7 +520,7 @@
         "an unbound source update keeps its admitted provider when same-type providers reorder",
         "a source update withholds resolved material after its provider or injector changes",
         "live static registration does not require Gateway placement",
-        "live static registration resolves physical placement for late cleanup"
+        "live static registration losing to DELETE preserves its deleting row without Gateway cleanup"
       ]
     },
     {
