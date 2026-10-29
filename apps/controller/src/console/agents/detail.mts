@@ -3898,7 +3898,11 @@ export async function renderAgentDetail(
       agentSaveDenial(permissions, agent),
     );
     const next = loadDetails();
-    const data = await next;
+    // Repositories draws its editor once this answer lands, and Plugins applies an answer already
+    // settled before it paints. Rebuilding before it left Repositories empty at the focus step
+    // below: Cancel was not found, the tab strip took focus, the shortened page lost the reader's
+    // place, and the editor drawn later showed no saved status (finding 2892).
+    const [data] = await Promise.all([next, agentSaveDenied]);
     if (!context.isCurrent() || deleting || !data) {
       return;
     }
