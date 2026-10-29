@@ -45,7 +45,8 @@ superuser, create roles or databases, replicate, or bypass row security. The
 migrator needs database `CREATE` and owns the `occ` and `drizzle` schemas. The
 application role must not inherit the migrator or have database/schema `CREATE`.
 
-Classify a database without applying migrations:
+Classify a database without applying migrations. In a fresh checkout, run
+`pnpm install --frozen-lockfile` first:
 
 ```sh
 pnpm db:migrate --check

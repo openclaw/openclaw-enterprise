@@ -16,9 +16,11 @@ For local, independent clients, use the explicit
 Both `developmentOnly: true` and `--development-authority` are required. This
 profile is not available through production Kubernetes projections.
 
-Build and validate a prepared configuration from the repository root:
+Install the dependencies, then build and validate a prepared configuration from
+the repository root:
 
 ```sh
+pnpm install --frozen-lockfile
 pnpm credentials:build
 pnpm credentials:check-config /absolute/path/service.json
 ```
