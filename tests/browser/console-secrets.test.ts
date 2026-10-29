@@ -389,10 +389,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   const initialResponse = await initialRead;
   assert.equal(initialResponse.status(), 200, "the first Secret read must succeed");
   const { data: initial }: SecretDetailResponse = await initialResponse.json();
-  assert.deepEqual(
-    initial.consumers.agents.toSorted(),
-    [privateAgent.id, sharedAgent.id].toSorted(),
-  );
+  assert.deepEqual([...initial.consumers.agents].sort(), [privateAgent.id, sharedAgent.id].sort());
   assert.equal(initial.consumers.unreadable, 0);
   await heldNames.requested;
   // fixture.request uses the separate administrator session, not the scoped browser member.
