@@ -40,6 +40,9 @@ export const RUNTIME_FAILURE_CHECKS = Object.freeze([
   "repository-git-route",
   // A dedicated Harness's native workspace setup (`openclaw setup --baseline`) failed (finding 2686).
   "workspace-baseline",
+  // A dedicated Gateway cannot verify that an earlier process holding its state lock stopped
+  // (finding 2864).
+  "gateway-state-lock",
 ]);
 
 /**
