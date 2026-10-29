@@ -122,6 +122,12 @@ export function createDriver({
         id,
         implementation,
         capability: "sandbox",
+        supportsHarnessExecutionMode: Object.freeze({
+          openclaw: Object.freeze({
+            embedded: Object.freeze({ supported: false }),
+            dedicated: Object.freeze({ supported: true }),
+          }),
+        }),
         facets: ["networking"],
         cleanup: outsideProfile,
         provisionHarness: outsideProfile,

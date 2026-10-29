@@ -146,6 +146,9 @@ export const SECRET_CREATE_DENIED =
 // Create Agent for a member whose Installation read and Agent create are both refused (create.mts).
 export const AGENT_CREATE_INSTALLATION_DENIED =
   "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
+// The same refused Installation read when the Namespace permission read failed (finding 2110).
+export const AGENT_CREATE_PERMISSIONS_UNREAD =
+  "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
 export const CONSOLE_NAMESPACE_CREATE_DENIED =
   "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one.";
 

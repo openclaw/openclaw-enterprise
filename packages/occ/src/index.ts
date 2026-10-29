@@ -1554,6 +1554,22 @@ function requireSandboxExecutionMode(
   }
 }
 
+function requireSandboxOpenClawMode(
+  sandbox: SandboxDriver | undefined,
+  executionMode: HarnessExecutionMode,
+): void {
+  if (sandbox === undefined) {
+    return;
+  }
+  const support = sandbox.supportsHarnessExecutionMode.openclaw[executionMode];
+  if (!support.supported) {
+    throw new ConfigurationHarnessError(
+      support.reason ??
+        `The selected Sandbox Driver does not support ${executionMode} OpenClaw execution. Select a supported Harness or ask an operator to change the Sandbox Driver.`,
+    );
+  }
+}
+
 /**
  * The Installation's approved Harness for the Configuration's runtime and the Agent's execution
  * mode, or undefined when none is approved. A Harness approved only for the other mode is a
@@ -1679,7 +1695,7 @@ function validateComputeAgentProvisioning(
 }
 
 function requireDedicatedNativeSupport(
-  harness: Readonly<RevisionHarnessDescriptor>,
+  harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
   sandbox: SandboxDriver | undefined,
   nativeWorkers: NativeWorkerSupportSource | undefined,
   {
@@ -1715,11 +1731,8 @@ function admitsOpenClawExecutionMode(
 ): true | Error {
   try {
     requireSandboxExecutionMode(sandbox, executionMode);
-    const harness = Object.freeze({ id: "openclaw", version: "capability", mode: executionMode });
-    requireDedicatedNativeSupport(harness, sandbox, nativeWorkers);
-    // Admission's Sandbox view can refuse on Driver settings alone (OpenShell's userNamespaces
-    // or ServiceAccounts).
-    sandbox?.configureAgent?.(Object.freeze({}), harness);
+    requireDedicatedNativeSupport({ id: "openclaw", mode: executionMode }, sandbox, nativeWorkers);
+    requireSandboxOpenClawMode(sandbox, executionMode);
     return true;
   } catch (error) {
     if (
@@ -2212,7 +2225,11 @@ export class OpenClawController {
       const admission = admitsOpenClawExecutionMode(sandbox, mode, this.nativeWorkers);
       if (admission === true) {
         executionModes.push(mode);
-      } else if (mode === "dedicated" && admission instanceof ConfigurationHarnessError) {
+      } else if (
+        mode === "dedicated" &&
+        admission instanceof ConfigurationHarnessError &&
+        sandbox?.supportsHarnessExecutionMode.openclaw[mode].reason !== undefined
+      ) {
         // A Sandbox Driver that provisions dedicated OpenClaw but whose settings refuse it: say
         // which setting, in admission's own words (finding 2373).
         settingRefusals[mode] = admission.message;
@@ -12228,8 +12245,14 @@ export class OpenClawController {
       runtimeImage: !statusRead,
       stored: !admission,
     });
-    // The Sandbox view is admission for writes too: its refusals can depend on Driver settings
-    // (OpenShell's userNamespaces), and a status read still reports the stored work.
+    // Static support and real Configuration transformation are write admission; status reads
+    // must still report stored work after Installation settings change.
+    if (!statusRead) {
+      requireSandboxExecutionMode(sandbox, harness.mode);
+      if (harness.id === "openclaw") {
+        requireSandboxOpenClawMode(sandbox, harness.mode);
+      }
+    }
     const configuration = statusRead
       ? plan.configuration.values
       : (sandbox?.configureAgent?.(plan.configuration.values, harness) ??
@@ -14623,6 +14646,9 @@ export class OpenClawController {
     compute: ComputeDriver,
     sandbox: SandboxDriver | undefined,
   ): OpenClawConfigurationDocument {
+    if (harness.id === "openclaw") {
+      requireSandboxOpenClawMode(sandbox, harness.mode);
+    }
     const sandboxConfiguration =
       sandbox?.configureAgent !== undefined
         ? frozenValues(sandbox.configureAgent(frozenValues(values), harness))

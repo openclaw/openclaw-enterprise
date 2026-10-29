@@ -873,6 +873,16 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
     const options = sandboxInstallation().drivers.sandbox.configuration;
     settings(options);
     const driver = openShellDriver(workspaceGatewayClient(), options);
+    assert.deepEqual(driver.supportsHarnessExecutionMode.openclaw, {
+      embedded: { supported: false },
+      dedicated:
+        message === undefined ? { supported: true } : { supported: false, reason: message },
+    });
+    assert.throws(() => {
+      driver.supportsHarnessExecutionMode.openclaw.dedicated.supported = false;
+    }, TypeError);
+    // A caller's later mutation cannot change the constructed Driver's support decision.
+    options.kubernetes.userNamespaces = !options.kubernetes.userNamespaces;
     if (message === undefined) {
       assert.ok(driver.configureAgent(configuration, harness("openclaw")));
     } else {

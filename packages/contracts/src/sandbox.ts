@@ -5,6 +5,7 @@ import type {
   AgentRevision,
   CredentialSourceLoginMode,
   HarnessAuthBinding,
+  HarnessExecutionMode,
   Namespace,
   OpenClawConfigurationDocument,
   RevisionHarnessDescriptor,
@@ -178,7 +179,19 @@ export interface SandboxRepositoryAccess {
   isRouteBlockedError(error: unknown): boolean;
 }
 
+/** OpenClaw mode support and an optional refusal caused by Installation settings. */
+export type HarnessExecutionModeSupport =
+  | { readonly supported: true; readonly reason?: never }
+  | { readonly supported: false; readonly reason?: string };
+
 export interface SandboxDriver extends Driver {
+  /**
+   * OpenClaw mode support, set in the constructor from Driver identity and Installation settings.
+   * Refusal reasons contain only the setting name and a corrective action.
+   */
+  readonly supportsHarnessExecutionMode: {
+    readonly openclaw: Readonly<Record<HarnessExecutionMode, HarnessExecutionModeSupport>>;
+  };
   readonly repositoryAccess?: SandboxRepositoryAccess;
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {
@@ -233,9 +246,8 @@ export interface SandboxDriver extends Driver {
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void;
   /**
-   * The Agent Configuration this Driver admits for a dedicated Harness. Refusals that Driver
-   * settings alone decide throw ConfigurationHarnessError, also for an empty Configuration:
-   * the Installation's OpenClaw execution modes probe it that way.
+   * Transform Agent Configuration values for the resolved Harness.
+   * OCC validates the result and stores it in the Agent revision.
    */
   configureAgent?(
     configuration: Readonly<OpenClawConfigurationDocument>,

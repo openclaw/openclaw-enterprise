@@ -3868,10 +3868,10 @@ export const scenarios = {
       { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
     ],
     description:
-      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, the page says the permission check failed, and Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal.",
+      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, a warning above the form says the permission check failed, and its Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal in the same block.",
     steps: [
-      'Under the form fields, read "Your permissions in this Namespace could not be checked".',
-      "Retry permission check is offered; the fixture keeps failing the read, so the text stays.",
+      'Above the form, the "Your access" warning reads "Your permissions in this Namespace could not be checked"; the hint under the form fields is empty.',
+      "Retry permission check is the warning's action; the fixture keeps failing the read, so the text stays.",
     ],
     gap: "The member creation browser test also covers a successful retry.",
   },
