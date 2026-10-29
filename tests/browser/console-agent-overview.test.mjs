@@ -2115,17 +2115,14 @@ test("a late first deployment read moves nothing above the version tabs", async 
     return sizes;
   };
   // Control: a pending record read before the page shows opens its details as before, and the
-  // summary's note, empty by then, gives its line back.
+  // summary keeps a status note for both successful and delayed updates.
   answer = Promise.resolve(deploymentStatusResponse(revision, { status: "running" }));
   await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
   await page.locator(".agent-detail-pending").waitFor({ state: "detached" });
   await expectDeploymentOutcome(page, "In progress", { folded: false });
-  assert.equal(
-    await summary
-      .locator(":scope > div:nth-child(2) > p")
-      .evaluate((node) => node.checkVisibility()),
-    false,
-  );
+  const freshnessNote = summary.locator(":scope > div:nth-child(2) > p");
+  assert.equal(await freshnessNote.textContent(), "Latest update received.");
+  assert.equal(await freshnessNote.evaluate((node) => node.checkVisibility()), true);
 
   const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.");
   for (const c of [

@@ -15,6 +15,7 @@ import type {
 } from "../../packages/contracts/src/api/common.ts";
 import type {
   AgentWire,
+  AgentDeploymentStatusWire,
   IAMAccessBindingWire,
   IAMRoleWire,
   SecretWire,
@@ -1306,7 +1307,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   const revisionId = "rev_00000000-0000-4000-8000-00000000feed";
   let allowProvisioningSuccess = false;
   let provisioningReads = 0;
-  let deploymentStatus = "queued";
+  let deploymentStatus: AgentDeploymentStatusWire["status"] = "queued";
   let provisionBody: ProvisionAgentBody | undefined;
   const savedSecrets = new Map<string, SecretWire>();
   await routeInstallationProvisioning(page, fixture);
@@ -1451,14 +1452,21 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     async (route) => {
       await route.fulfill(
         json({
-          deploymentId: `dep_${revisionId}`,
-          revisionId,
+          deploymentId: revisionId,
+          namespaceId: namespace.id,
+          agentId,
           status: deploymentStatus,
+          cleanup: null,
+          progress:
+            deploymentStatus === "queued"
+              ? { lastAttempt: null, nextAttemptAt: revision.createdAt }
+              : null,
+          warnings: [],
           error:
             deploymentStatus === "failed"
               ? { code: "DEPENDENCY_UNAVAILABLE", message: "Deployment reconciliation failed." }
               : null,
-        }),
+        } satisfies AgentDeploymentStatusWire),
       );
     },
   );
@@ -2018,7 +2026,16 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
     async (route) => {
       await route.fulfill(
-        json({ deploymentId: `dep_${revisionId}`, revisionId, status: "succeeded" }),
+        json({
+          deploymentId: revisionId,
+          namespaceId: namespace.id,
+          agentId,
+          status: "succeeded",
+          cleanup: null,
+          progress: null,
+          warnings: [],
+          error: null,
+        } satisfies AgentDeploymentStatusWire),
       );
     },
   );

@@ -2199,17 +2199,25 @@ test("Agent detail reads the selected version's deployment record once on load",
   const { page } = await newPage(t, fixture);
   let recordReads = 0;
   let failFirst = false;
-  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) => {
-    recordReads += 1;
-    if (failFirst && recordReads === 1) {
-      return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
-    }
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
-    });
-  });
+  const recovery = Promise.withResolvers();
+  t.after(() => recovery.resolve());
+  await page.route(
+    deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id),
+    async (route) => {
+      recordReads += 1;
+      if (failFirst && recordReads === 1) {
+        return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
+      }
+      if (failFirst) {
+        await recovery.promise;
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+      });
+    },
+  );
   await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
@@ -2219,12 +2227,14 @@ test("Agent detail reads the selected version's deployment record once on load",
   // Deployment activity and the version's record panel show the same record.
   assert.equal(recordReads, 1);
 
-  // When the shared read fails, the version's record panel reads the record itself.
+  // When the shared read fails, the selected panel recovers the same record for both panels.
   recordReads = 0;
   failFirst = true;
   await page.reload();
   await expectDeploymentOutcome(page, "Unavailable");
+  recovery.resolve();
   await expectVersionRecord(page, "Completed");
+  await expectDeploymentOutcome(page, "Completed");
   await waitForIdleFetches(page);
   assert.equal(recordReads, 2);
 });

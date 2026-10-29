@@ -645,7 +645,8 @@ test("One failed status read keeps a deploying version Deploying and polling", a
   await watchNotice(page);
   record.fail = 503;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await summary.getByText("v2 · Unavailable", { exact: true }).waitFor();
+  await summary.getByText("Update delayed.", { exact: true }).waitFor();
+  assert.equal(await summary.getByText("v2 · In progress", { exact: true }).isVisible(), true);
   assert.equal(await page.getByText(/^Deploying version · /).count(), 1);
   // The next poll still comes, and it finds the deployment completed.
   record.fail = false;
@@ -666,10 +667,12 @@ test("A rate-limited status read keeps a deploying version polling", async (t) =
   const { page, record, summary } = await deployingVersion(t, "Status rate limit");
   record.fail = 429;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await summary.getByText("v2 · Unavailable", { exact: true }).waitFor();
+  await summary.getByText("Update delayed.", { exact: true }).waitFor();
+  assert.equal(await summary.getByText("v2 · In progress", { exact: true }).isVisible(), true);
   assert.equal(await page.getByText(/^Deploying version · /).count(), 1);
   record.fail = false;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await summary.getByText("Latest update received.", { exact: true }).waitFor();
   await summary.getByText("v2 · In progress", { exact: true }).waitFor();
 });
 
@@ -782,6 +785,8 @@ test("A refused status read ends the wait and the Deploying label", async (t) =>
   record.fail = 403;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await summary.getByText("v2 · Unavailable", { exact: true }).waitFor();
+  assert.equal(await summary.getByText("Update delayed.", { exact: true }).count(), 0);
+  assert.equal(await summary.getByText("v2 · In progress", { exact: true }).count(), 0);
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   const refused = record.recordReads;
   record.fail = false;
