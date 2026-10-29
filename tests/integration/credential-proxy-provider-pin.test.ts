@@ -664,8 +664,11 @@ test("live static registration does not require Gateway placement", async (t) =>
   assert.equal(registration.mock.callCount(), 0);
 });
 
-test("live static registration resolves physical placement for late cleanup", async (t) => {
-  let deleting = false;
+test("live static registration losing to DELETE preserves its deleting row without Gateway cleanup", async (t) => {
+  const committed = Promise.withResolvers<Readonly<CredentialSource>>();
+  const resume = Promise.withResolvers<void>();
+  t.after(() => resume.resolve());
+  let pauseRegistration = false;
   const f = await staticEgressFixture(t, {
     physicalPlacement: true,
     appFactory: (context, options) =>
@@ -673,25 +676,30 @@ test("live static registration resolves physical placement for late cleanup", as
         ...options,
         wrapState: (state: PlatformStateStore): PlatformStateStore => ({
           read: (work) => state.read(work),
-          transact: (work) =>
-            state.transact((unit) =>
+          async transact(work) {
+            let created: Readonly<CredentialSource> | undefined;
+            const result = await state.transact((unit) =>
               work({
                 ...unit,
                 credentialSources: {
                   ...unit.credentialSources,
-                  async markCredentialSourceReady(namespaceId, sourceId) {
-                    // Model DELETE winning before the source can become ready.
-                    if (deleting) {
-                      await unit.credentialSources.markCredentialSourceDeleting(
-                        namespaceId,
-                        sourceId,
-                      );
+                  async createCredentialSource(input) {
+                    const source = await unit.credentialSources.createCredentialSource(input);
+                    if (pauseRegistration) {
+                      created = source;
                     }
-                    return unit.credentialSources.markCredentialSourceReady(namespaceId, sourceId);
+                    return source;
                   },
                 },
               }),
-            ),
+            );
+            // Pause after commit, outside the transaction: DELETE uses its own request and locks.
+            if (created) {
+              committed.resolve(created);
+              await resume.promise;
+            }
+            return result;
+          },
         }),
       }),
   });
@@ -700,37 +708,47 @@ test("live static registration resolves physical placement for late cleanup", as
     f.controller.selectedDriver("compute");
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const placement = t.mock.method(compute, "resolveSandboxNamespace");
-  // Model terminal Gateway removal; the controller still owns placement and record cleanup.
+  const registration = t.mock.method(gateway, "registerSource");
+  // Only the external removal is simulated; DELETE authorization, state and fence are real.
   const terminalRemoval: CredentialGatewayDriver["removeSource"] = async () => {};
   const removal = t.mock.method(gateway, "removeSource", terminalRemoval);
-  deleting = true;
-  const body = { name: "late-delete", type: "openai", secrets: { api_key: f.secret.ref } };
-  assert.equal((await f.request("POST", f.path, { body })).status, 409);
+  pauseRegistration = true;
+  const post = f.request("POST", f.path, {
+    body: { name: "late-delete", type: "openai", secrets: { api_key: f.secret.ref } },
+  });
+  const source = await Promise.race([
+    committed.promise,
+    post.then(() => {
+      throw new Error("POST ended before the source registration committed");
+    }),
+  ]);
+  assert.equal(source.state, "registering");
+  assert.equal(source.egress?.adoption, "live");
+  assert.equal(source.ownerCapability, "credential_gateway");
+  assert.equal(source.driverId, gateway.id);
+
+  // The independent DELETE calls removal, but the registration fence retains the row.
+  assert.equal((await f.request("DELETE", `${f.path}/${source.id}`)).status, 503);
   assert.equal(placement.mock.callCount(), 1);
   assert.equal(removal.mock.callCount(), 1);
-  const removed = removal.mock.calls[0]!;
-  assert.equal(removed.this, gateway);
-  assert.deepEqual(removed.arguments[0].namespace, f.runtimeNamespace);
-  assert.equal(removed.arguments[0].source.name, body.name);
+  assert.equal(removal.mock.calls[0]!.this, gateway);
+  assert.deepEqual(removal.mock.calls[0]!.arguments[0].namespace, f.runtimeNamespace);
+  assert.equal(removal.mock.calls[0]!.arguments[0].source.id, source.id);
   assert.notEqual(f.runtimeNamespace.name, f.namespace.name);
-  const sources = (): Promise<readonly CredentialSource[]> =>
-    f.controller.transact((unit: PlatformUnitOfWork) =>
-      unit.credentialSources.listCredentialSources(f.namespace.id),
-    );
-  assert.equal(
-    (await sources()).some((source) => source.id === removed.arguments[0].source.id),
-    false,
-  );
 
-  placement.mock.mockImplementationOnce(async () => {
+  // A placement outage must not turn the losing no-write POST into a cleanup attempt or a 503.
+  placement.mock.mockImplementation(async () => {
     throw new Error("placement unavailable");
   });
-  const unavailable = { ...body, name: "late-delete-unavailable" };
-  assert.equal((await f.request("POST", f.path, { body: unavailable })).status, 503);
-  const retained = (await sources()).find((source) => source.name === unavailable.name);
+  resume.resolve();
+  assert.equal((await post).status, 409);
+  assert.equal(placement.mock.callCount(), 1);
+  assert.equal(registration.mock.callCount(), 0);
+  assert.equal(removal.mock.callCount(), 1);
+  const retained = await f.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.credentialSources.findCredentialSource(f.namespace.id, source.id),
+  );
   assert.equal(retained?.state, "deleting");
-  assert.equal(retained?.ownerCapability, "credential_gateway");
-  assert.equal(retained?.driverId, gateway.id);
-  assert.equal(placement.mock.callCount(), 2);
-  assert.equal(removal.mock.callCount(), 1, "unplaced cleanup must not reach the Gateway");
+  assert.equal(retained?.ownerCapability, source.ownerCapability);
+  assert.equal(retained?.driverId, source.driverId);
 });
