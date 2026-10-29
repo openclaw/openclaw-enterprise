@@ -477,6 +477,7 @@ export function createChannelSecretsPanel({
   bindingsToReplace = () => null,
   bindingRefusal = async () => undefined,
   isCurrent = () => true,
+  onReadDenied,
   onOutstandingGrants,
   onConfigurationChange,
   onChange,
@@ -492,6 +493,7 @@ export function createChannelSecretsPanel({
   // Grants an earlier save on this page left outstanding, and where to keep the current ones.
   outstandingGrants?: OutstandingSecretGrants | null;
   onOutstandingGrants?(grants: OutstandingSecretGrants | null): void;
+  onReadDenied(error: unknown, receipt: HTMLElement): void;
   // Whether to read the Namespace's IAM policy for bound Secrets the Agent has no grant for.
   checkGrants?: boolean;
   // False when this session is known not to administer the Installation, so it cannot grant.
@@ -691,6 +693,7 @@ export function createChannelSecretsPanel({
   } = {};
   // Saves started, so a grant check that a save overtook drops its answer.
   let saveCount = 0;
+  let readDenied = false;
 
   function renderChannelForm(error: HTMLElement) {
     shown.save = null;
@@ -986,6 +989,21 @@ export function createChannelSecretsPanel({
           return;
         }
         state.saveError = { ...failure, step, refusal };
+        if (step === "preflight" && failure.status === 403) {
+          // This read authorizes the binding editor. Retire it before finally or a pending
+          // grant check can recreate protected controls, but retain this attempt's receipt.
+          readDenied = true;
+          section.replaceChildren(
+            element("h2", {}, "Channel Secrets"),
+            element(
+              "p",
+              { role: "alert", className: "status", "data-tone": "danger" },
+              saveErrorText(),
+            ),
+          );
+          onReadDenied(cause, section);
+          return;
+        }
         state.saveMessage = "";
         state.outcomeUnknown =
           step === "configuration" &&
@@ -995,7 +1013,7 @@ export function createChannelSecretsPanel({
         setStatusTone(error, saveErrorTone());
         error.textContent = saveErrorText();
       } finally {
-        if (context.isCurrent()) {
+        if (context.isCurrent() && !readDenied) {
           state.saving = false;
           updateControls();
           render();
@@ -1121,7 +1139,13 @@ export function createChannelSecretsPanel({
     }
     // A save since the read began may have granted or replaced these Secrets, and a rebuilt
     // panel no longer speaks for the page.
-    if (!context.isCurrent() || state.saving || saveCount !== started || !isCurrent()) {
+    if (
+      !context.isCurrent() ||
+      readDenied ||
+      state.saving ||
+      saveCount !== started ||
+      !isCurrent()
+    ) {
       return;
     }
     let changed = false;

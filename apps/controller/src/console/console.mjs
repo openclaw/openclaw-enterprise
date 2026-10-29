@@ -2137,20 +2137,6 @@ async function loadPage({
           if (options.revalidate !== false) {
             recordRead(refusedRead(error.status));
           }
-          // A denied preflight must retire the readable Agent view before its caller can
-          // rebuild controls from cached Configuration data in a catch or finally block.
-          if (
-            options.revalidate !== false &&
-            lifetime.isCurrent(viewState.active) &&
-            firstAgent &&
-            viewState.readablePaths.has(path) &&
-            (path ===
-              `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(firstAgent.id)}` ||
-              path ===
-                `/namespaces/${encodeURIComponent(namespaceId)}/configurations/${encodeURIComponent(firstAgent.configurationId)}`)
-          ) {
-            showAgentReadFailure(current, namespaceId, error);
-          }
         } else if (counted) {
           // A reread on resume replaces what an unfinished or failed one showed, including a
           // read the next view's reset aborts.
@@ -2444,7 +2430,15 @@ async function loadPage({
         `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
       );
       const agent = await renderAgentDetail(
-        { ...agentContext, agentId: current.agentId },
+        {
+          ...agentContext,
+          agentId: current.agentId,
+          onBindingReadDenied(error, receipt) {
+            if (lifetime.isCurrent(viewState.active)) {
+              showAgentReadFailure(current, namespaceId, error).append(receipt);
+            }
+          },
+        },
         { agent: firstAgent },
       );
       // The load settles with the Agent's page shown, not its placeholder.
@@ -2754,6 +2748,7 @@ function showAgentReadFailure(current, selectedNamespace, error) {
   if (error.status === 403) {
     shell.refresh.disabled = false;
   }
+  return shell.view;
 }
 
 async function revalidateMountedAgent(current) {

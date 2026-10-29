@@ -77,6 +77,7 @@ export const CredentialsSlackGrantMissing = {
   ...story("credentialsSlackGrantMissing"),
   name: "Slack Secret bound without an Agent grant",
 };
+export const CredentialsBindingReadDenied = story("credentialsBindingReadDenied");
 export const CredentialsSavePending = {
   ...story("credentialsSavePending"),
   name: "Channel Secret save pending",

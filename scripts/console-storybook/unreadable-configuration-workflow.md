@@ -20,3 +20,12 @@ do not prove PostgreSQL decoding, runtime health, or configuration repair.
 
 Capture screenshots and a short walkthrough outside the checkout. Saved-state
 decoding and strict deployment behavior are covered by the PostgreSQL/API tests.
+
+## Binding preflight refusal
+
+Open **Components / Credentials / Channel binding read denied**. Select **Save
+channel Secrets**. The one-shot simulated Configuration read denial must remove
+saved binding summaries and token pickers while keeping the failed preflight
+receipt. Select **Refresh** to recover from fresh reads. The original saved
+bindings must return; the staged replacement must not have been saved. This
+scenario proves UI recovery only. Native IAM browser tests prove authorization.

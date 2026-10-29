@@ -129,7 +129,11 @@ import {
   secretSourceForBinding,
 } from "./secret-picker.mjs";
 
-type DetailContext = ConsolePageContext & { namespaceId: string; agentId: string };
+type DetailContext = ConsolePageContext & {
+  namespaceId: string;
+  agentId: string;
+  onBindingReadDenied(error: unknown, receipt: HTMLElement): void;
+};
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
 type Revision = RevisionPage["revisions"][number];
@@ -2880,6 +2884,7 @@ export async function renderAgentDetail(
                 ),
           bindingsToReplace: channelBindingsReplace,
           bindingRefusal: (secrets) => refusedSecretBinding("configuration", secrets),
+          onReadDenied: context.onBindingReadDenied,
           isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();

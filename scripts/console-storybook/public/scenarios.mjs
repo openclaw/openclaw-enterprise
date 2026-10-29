@@ -7710,6 +7710,28 @@ export const scenarios = {
       "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
     ],
   },
+  credentialsBindingReadDenied: {
+    group: "Components/Credentials",
+    name: "Channel binding read denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        status: 403,
+        once: true,
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "The binding preflight is refused once. Its receipt remains visible, but the saved bindings and staged choice are removed. Refresh reads the saved state without repeating a write.",
+    steps: [
+      "Select Save channel Secrets. Check Access denied and the failed preflight receipt; no token picker or saved binding remains.",
+      "Select Refresh. The simulated read succeeds again and restores the saved bindings, without applying the staged choice.",
+    ],
+  },
   credentialsSavePending: {
     group: "Components/Credentials",
     name: "Channel Secret save pending",
