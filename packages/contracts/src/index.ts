@@ -794,6 +794,15 @@ export interface PluginPolicyCapabilities {
   readonly driverPolicySchema: JSONSchema;
 }
 
+/** Ready choices for a slot in the saved Agent's plugin picker. */
+export interface AgentPluginCredentialSlot {
+  readonly pluginId: string;
+  readonly releaseSha256: string;
+  readonly id: string;
+  readonly label: string;
+  readonly sources: readonly { readonly id: string; readonly name: string }[];
+}
+
 export interface PluginCatalogLink {
   readonly label: string;
   readonly url: string;
@@ -1821,6 +1830,13 @@ export interface ExternalChatgptAuth {
 export interface CredentialSourceAttachment {
   readonly sourceId: string;
   readonly ref: string;
+  /** Non-secret limits of the attached OAuth provider for a Sandbox request guard. */
+  readonly requestScope?: {
+    readonly host: string;
+    readonly port: number;
+    readonly path: string;
+    readonly scopes: readonly string[];
+  };
   /** External Codex authentication carries no refresh token into the workload. */
   readonly externalChatgptAuth?: ExternalChatgptAuth;
 }
@@ -2102,6 +2118,15 @@ export interface PluginDiscoveryAuthentication {
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   readonly policyCapabilities: PluginPolicyCapabilities;
+  /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
+  readonly credentials?: {
+    choices(sources: readonly CredentialSource[]): readonly AgentPluginCredentialSlot[];
+    validate(
+      selections: PluginDesiredState,
+      sources: readonly CredentialSource[],
+      modelSourceId?: string,
+    ): void;
+  };
   /** Checks policy support without installing plugins or performing authenticated discovery. */
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;
   /**
@@ -2118,6 +2143,10 @@ export interface PluginDriver extends Driver {
     selections: PluginDesiredState,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
     computeImplementation: string,
+    credentialRuntime?: {
+      readonly sandbox: string | undefined;
+      readonly gateway: string | undefined;
+    },
   ): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
   /** Pre-Agent discovery defaults to requiring a transient credential. Results are not persisted. */

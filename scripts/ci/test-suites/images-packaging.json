@@ -79,6 +79,7 @@
         "production Helm values example renders the backendless default chart",
         "database routing refuses invalid ports before emitting NetworkPolicies",
         "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
+        "the plugin request guard installs beside OpenShell without control-plane access",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
         "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",

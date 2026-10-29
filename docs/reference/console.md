@@ -54,6 +54,8 @@ hidden. Namespace rows open their Agents.
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
 [Create a Namespace](../guides/console/create-namespace.md) explains creation and recovery.
+[Delete a Namespace](../guides/console/delete-namespace.md) explains the trash
+control, cleanup blockers, and deletion recovery.
 
 The Console uses light appearance and OCC-served fonts. Navigation focuses the
 destination heading; **Open navigation** opens the mobile drawer.

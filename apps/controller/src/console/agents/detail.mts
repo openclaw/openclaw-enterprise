@@ -15,6 +15,7 @@ import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import type { ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
+import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
 import {
   button,
   describeDisabled,
@@ -3044,8 +3045,14 @@ export async function renderAgentDetail(
         pluginEditorState.reloadRequired ||
         !agent.harnessAuth ||
         revisionResult.status !== "fulfilled" ||
+        retiredSetting() !== null ||
         (!runtimeAuth && !credentials?.canDeploy())
       );
+    }
+    // OCC refuses to deploy a saved Configuration that keeps a setting the pinned OpenClaw
+    // retired, with this message, so the draft says it before Deploy (finding 2810).
+    function retiredSetting() {
+      return retiredOpenClawSettingMessage(values);
     }
     function updateDeployControls() {
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
@@ -3128,6 +3135,8 @@ export async function renderAgentDetail(
           deployStatus.textContent = "Save or discard plugin changes before deploying.";
         } else if (deployFeedback?.textContent) {
           deployStatus.textContent = "";
+        } else if (retiredSetting() !== null) {
+          deployStatus.textContent = retiredSetting();
         } else if (revisionResult.status !== "fulfilled") {
           deployStatus.textContent =
             "Version history is required before deploying this new version.";
@@ -3230,10 +3239,11 @@ export async function renderAgentDetail(
         Boolean(deployReloadMessage);
       const unsaved =
         draftEditorState.dirty || pluginEditorState.dirty || retainedConfiguration.dirty;
+      const retired = retiredSetting() !== null;
       setStep(
         checklistSteps[0],
-        !saving && !reload && !unsaved,
-        `${saving ? "Saving…" : reload ? "Reload this draft" : unsaved ? "Unsaved changes" : "Saved"} · Configuration ${snapshot.id} · generation ${snapshot.generation}`,
+        !saving && !reload && !unsaved && !retired,
+        `${saving ? "Saving…" : reload ? "Reload this draft" : unsaved ? "Unsaved changes" : retired ? "Remove the retired setting" : "Saved"} · Configuration ${snapshot.id} · generation ${snapshot.generation}`,
       );
       const rejected = credentialRejected();
       const authenticationReady =

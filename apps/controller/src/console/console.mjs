@@ -2451,9 +2451,27 @@ async function loadPage({
       showChatLinkFailure(shell.view, chatLinkFailure);
     } else if (current.feature === "namespaces") {
       renderNamespaces(
-        { ...agentContext, reload: () => loadPage(), fromRefresh },
+        {
+          ...agentContext,
+          reload: () => loadPage(),
+          fromRefresh,
+          sorted,
+          onRemoved(namespace) {
+            clearRetainedViewsForNamespace(namespace.id);
+            setNamespaces(namespaces.filter((item) => item.id !== namespace.id));
+            if (namespaceId === namespace.id) {
+              namespaceId =
+                (
+                  namespaces.find((item) => item.status === "ready") ??
+                  namespaces.find((item) => item.status !== "deleting") ??
+                  namespaces[0]
+                )?.id ?? null;
+              replaceUrl(pageUrl("namespaces"));
+            }
+            shellUI.updateNamespaces(namespaces);
+          },
+        },
         items,
-        renderRows,
       );
     } else if (current.feature === "secrets") {
       renderSecrets({

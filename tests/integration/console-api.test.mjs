@@ -190,6 +190,7 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
     fixture.request("POST", secretsPath, { session, body: { name, value: "synthetic-value" } });
 
   assert.deepEqual(await answer(), {
+    delete: false,
     agents: { create: true },
     secrets: { create: false },
     installation: { administer: false },
@@ -399,6 +400,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
   assert.deepEqual(adminNamespace.data, {
+    delete: true,
     agents: { create: true },
     secrets: { create: true },
     installation: { administer: true },
@@ -474,6 +476,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const namespaceSummary = await fixture.request("GET", namespacePath, { session });
   assert.equal(namespaceSummary.status, 200);
   assert.deepEqual(namespaceSummary.data, {
+    delete: false,
     agents: { create: false },
     secrets: { create: false },
     installation: { administer: false },
@@ -1894,6 +1897,7 @@ test("an IAM failure on any caller permission decision fails the whole answer in
     assertApiError(await outage(agentPermissions, failing), 503, "DEPENDENCY_UNAVAILABLE", label);
   }
   for (const [label, failing] of [
+    ["namespace.delete", decision("delete", "namespace", namespace.id)],
     ["agents.create", decision("create", "agent", namespace.id)],
     ["secrets.create", decision("create", "secret", namespace.id)],
   ]) {

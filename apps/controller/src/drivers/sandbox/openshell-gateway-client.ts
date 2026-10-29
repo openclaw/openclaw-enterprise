@@ -1791,6 +1791,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         signal,
       );
     } catch (error) {
+      signal.throwIfAborted();
       const { grpc } = await this.ensureClient();
       if (statusCode(error) === grpc.status.NOT_FOUND) {
         return undefined;

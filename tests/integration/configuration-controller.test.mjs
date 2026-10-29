@@ -1226,7 +1226,9 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
   });
   const flushes = "memory flushes use the session model and its fallbacks";
   const retries = "cyber-policy retries use the active model";
+  const explicitControls = "configure the individual security controls explicitly";
   for (const [path, replacement, value] of [
+    ["security.preset", explicitControls, "personal"],
     ["agents.defaults.compaction.memoryFlush.model", flushes, "openai/gpt-4.1"],
     ["agents.defaults.embeddedAgent.cyberFailover.model", retries, "openai/gpt-4.1"],
     ["plugins.entries.codex.config.appServer.cyberFailover.model", retries, null],
@@ -1261,8 +1263,37 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
     ),
     { label: "Agent save" },
   );
+  // A saved corporate draft remains editable. A deploy must fail before enqueuing a replacement.
+  const corrected = {
+    ...runtimeSelected,
+    security: { audit: { suppressions: [{ checkId: "example.check" }] } },
+    messages: { queue: { allowCollaborativeSteering: false } },
+  };
+  const legacy = { ...corrected, security: { ...corrected.security, preset: "corporate" } };
+  await writePastOcc(configurationDriver, agent.configurationId, legacy);
+  const operations = context.controller.pendingOperations();
+  assertRefused(
+    await request(context.app, "POST", `${agent.agentPath}/deploy`),
+    setting(
+      "security.preset",
+      `must be removed: the OpenClaw runtime retired it (${explicitControls})`,
+    ),
+  );
+  assert.deepEqual(context.controller.pendingOperations(), operations);
+  const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
+  assert.deepEqual(revisions.body.data, []);
+  const read = await request(context.app, "GET", agent.item);
+  assert.deepEqual(read.body.data.values, legacy);
+  const saved = await request(context.app, "PATCH", agent.item, {
+    body: { values: corrected, expectedGeneration: read.body.data.generation },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  assert.deepEqual(deployed.body.data.configuration.security, corrected.security);
+  assert.deepEqual(deployed.body.data.configuration.messages, corrected.messages);
+
   // The settings beside them still save.
-  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
   await acceptedOnSave(context, {
     ...runtimeSelected,
     agents: {

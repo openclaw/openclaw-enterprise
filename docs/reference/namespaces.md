@@ -124,6 +124,9 @@ exact dedicated existing namespace selected by `existingNamespace`; see the
 
 `DELETE /namespaces/:namespaceId` starts deletion of an empty Namespace.
 
+The Console exposes this operation through each Namespace row's trash icon.
+See [Delete a Namespace in the console](../guides/console/delete-namespace.md).
+
 A successful request returns `202` and the Namespace with `status: "deleting"`.
 Repeating the request while teardown is in progress changes nothing.
 After teardown completes, the controller retains a durable internal tombstone;
@@ -141,8 +144,10 @@ A Namespace containing any Agent, Configuration, Preset, service account, Secret
 or [credential source](credential-sources.md) cannot be deleted and returns
 `409 NAMESPACE_NOT_EMPTY`. The error message lists the kinds that remain and
 the IDs of their resources, as far as the 256-character message
-allows; a kind with more says how many are left. Configurations have no list
-route, so this message is where their IDs appear. Delete
+allows; a kind with more says how many are left. The error also includes
+`remainingResources`: up to seven entries with `kind`, `count`, and up to 20
+`ids` each. Pending Agent provisioning has no resource IDs. Configurations have
+no list route, so the deletion conflict provides their IDs. Delete
 unreferenced Agents, Configurations, [Presets](presets.md), service accounts,
 Secrets, and credential sources before deleting their Namespace. A credential
 source in `deleting` still counts; retry its deletion until it disappears.

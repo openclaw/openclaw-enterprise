@@ -162,10 +162,11 @@ test(
                     "console-secrets",
                     async (agent, step) => {
                       await step(
-                        "console Secret lifecycle and Agent Configuration references",
+                        "console Secret lifecycle, Agent references and Namespace deletion blockers",
                         async () => {
                           assert.ok(browser, "blocked by browser setup failure");
                           await browser.verifySecrets(agent);
+                          await browser.verifyNamespaceDeletionBlockers(agent);
                         },
                       );
                     },

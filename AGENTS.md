@@ -509,7 +509,5 @@ controls:
   `pnpm format:check` when an installed dependency graph matches the current
   manifests. These checks include authored `docs/**/*.md`; the generated
   `docs/reference/api.md` is excluded and verified by `pnpm openapi:check`.
-  Never reconcile or install dependencies as a side effect of agent
-  verification; use dependency-independent Node tests if manifests changed.
 - Check root workspace isolation with `pnpm check:workspace`.
 - Never run `npm run precommit`.

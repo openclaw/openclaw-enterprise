@@ -57,6 +57,10 @@ the paths.
 | `error.details[].message` | `string` | No | max length: 512 |
 | `error.details[].path` | `string` | Yes | max length: 512; pattern: `^(?:/(?:[^~/]\|~0\|~1)*)*$` |
 | `error.message` | `string` | Yes | min length: 1; max length: 256 |
+| `error.remainingResources` | `array<object>` | No | max items: 7; Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others. |
+| `error.remainingResources[].count` | `integer` | Yes | minimum: 0 |
+| `error.remainingResources[].ids` | `array<string>` | Yes | max items: 20 |
+| `error.remainingResources[].kind` | `string` | Yes | min length: 1; max length: 64 |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -1823,6 +1827,7 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | `data` | `object` | Yes | — |
 | `data.agents` | `object` | Yes | — |
 | `data.agents.create` | `boolean` | Yes | Whether the selected IAM Driver allows Agent creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
+| `data.delete` | `boolean` | Yes | Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion. |
 | `data.installation` | `object` | Yes | — |
 | `data.installation.administer` | `boolean` | Yes | Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation. |
 | `data.secrets` | `object` | Yes | — |
@@ -3767,6 +3772,14 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.approvers.agent` | `boolean` | Yes | — |
 | `data.approvers.plugin` | `boolean` | Yes | — |
 | `data.approvers.tools` | `boolean` | Yes | — |
+| `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].id` | `string` | Yes | — |
+| `data.credentialSlots[].label` | `string` | Yes | — |
+| `data.credentialSlots[].pluginId` | `string` | Yes | — |
+| `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.credentialSlots[].sources` | `array<object>` | Yes | — |
+| `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].sources[].name` | `string` | Yes | — |
 | `data.discoveryCredential` | `"required" or "none"` | Yes | — |
 | `data.driver` | `PluginDriverIdentity` | Yes | — |
 | `data.driver.id` | `string` | Yes | min length: 1 |

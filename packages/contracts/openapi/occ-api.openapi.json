@@ -872,7 +872,26 @@
                 "maxItems": 32,
                 "type": "array"
               },
-              "message": { "maxLength": 256, "minLength": 1, "type": "string" }
+              "message": { "maxLength": 256, "minLength": 1, "type": "string" },
+              "remainingResources": {
+                "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": { "minimum": 0, "type": "integer" },
+                    "ids": {
+                      "items": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "maxItems": 20,
+                      "type": "array"
+                    },
+                    "kind": { "maxLength": 64, "minLength": 1, "type": "string" }
+                  },
+                  "required": ["kind", "count", "ids"],
+                  "type": "object"
+                },
+                "maxItems": 7,
+                "type": "array"
+              }
             },
             "required": ["code", "message"],
             "type": "object"
@@ -22212,6 +22231,35 @@
                           "required": ["agent", "plugin", "tools"],
                           "type": "object"
                         },
+                        "credentialSlots": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": { "type": "string" },
+                              "label": { "type": "string" },
+                              "pluginId": { "type": "string" },
+                              "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                              "sources": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "name": { "type": "string" }
+                                  },
+                                  "required": ["id", "name"],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": ["pluginId", "releaseSha256", "id", "label", "sources"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "discoveryCredential": {
                           "anyOf": [
                             { "const": "required", "type": "string" },
@@ -30084,6 +30132,10 @@
                           "required": ["create"],
                           "type": "object"
                         },
+                        "delete": {
+                          "description": "Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion.",
+                          "type": "boolean"
+                        },
                         "installation": {
                           "additionalProperties": false,
                           "properties": {
@@ -30107,7 +30159,7 @@
                           "type": "object"
                         }
                       },
-                      "required": ["agents", "secrets", "installation"],
+                      "required": ["delete", "agents", "secrets", "installation"],
                       "type": "object"
                     },
                     "meta": {

@@ -1638,7 +1638,7 @@ for (const launcher of dedicatedGatewayLaunchers) {
       allow: ["read", "sessions"],
       alsoAllow: ["gateway", "diffs"],
       deny: ["sessions_send"],
-      // Deployment admission's value for a setting OpenClaw's security preset would fill.
+      // Deployment admission restricts apply_patch to the workspace by default.
       exec: { applyPatch: { workspaceOnly: true } },
     };
     // A strict Configuration's explicit steering value reaches the Gateway unchanged.

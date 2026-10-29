@@ -20,7 +20,7 @@ import {
   detailUrl,
   deploymentStatusResponse,
   expectNoText,
-  expireSessions,
+  expireSessionsWhenSettled,
   holdRequests,
   login,
   setSlackSelection,
@@ -1878,7 +1878,8 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
-  expireSessions(fixture);
+  // The refocus check, not a late read of the view, must find the expiry.
+  await expireSessionsWhenSettled(page, fixture);
 
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
@@ -1915,7 +1916,8 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     } else {
       await page.locator(".content form:not(.agent-access-form)").first().waitFor();
     }
-    expireSessions(fixture);
+    // The refocus check, not a late read of the view, must find the expiry.
+    await expireSessionsWhenSettled(page, fixture);
 
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     await page.getByText("Your session has expired").waitFor();
@@ -1931,6 +1933,7 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   const namespace = await fixture.createNamespace("Revision history refocus", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "History refocus Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
@@ -1961,7 +1964,9 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   });
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await held;
-  expireSessions(fixture);
+  // The held session check and the history navigation, not a late read of the view, must find
+  // the expiry.
+  await expireSessionsWhenSettled(page, fixture, { except: "/api/auth/session" });
   await page.goBack();
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Configuration draft|Open draft|History refocus Agent/);
@@ -2531,6 +2536,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   const agent = await fixture.createAgent(namespace.id, "Recovery Agent", nativeValues("recovery"));
   const person = fixture.provisionedAccounts[0];
   const { page, artifacts } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
@@ -2566,8 +2572,9 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   const policyPath = `/namespaces/${namespace.id}/iam`;
   assert.equal((await fixture.request("GET", `${policyPath}/roles`)).data.length, 2);
   assert.equal((await fixture.request("GET", `${policyPath}/access-bindings`)).data.length, 2);
-  // A sharing read must preserve global expiry handling, including private panel removal.
-  expireSessions(fixture);
+  // A sharing read must preserve global expiry handling, including private panel removal. A late
+  // read that found the expiry first would remove the panel before the Refresh click.
+  await expireSessionsWhenSettled(page, fixture);
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
@@ -2644,8 +2651,9 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   assert.equal(denials("openclaw.configurations.read"), 2);
 
   // The tab keeps denials for one session owner. Signing in again after the session expired
-  // starts another session, even for the same person, so its first view asks again.
-  expireSessions(fixture);
+  // starts another session, even for the same person, so its first view asks again. A late read
+  // that found the expiry first would move to /console/login, and the reload would reload that.
+  await expireSessionsWhenSettled(page, fixture);
   await page.reload();
   await page.getByText("Your session has expired").waitFor();
   await login(page, fixture, detail, viewer.credentials);

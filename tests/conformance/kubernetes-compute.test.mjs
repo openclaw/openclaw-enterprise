@@ -9260,6 +9260,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
   const first = source("cs_00000000-0000-4000-8000-000000000851");
   const second = source("cs_00000000-0000-4000-8000-000000000852");
   const revision = {
+    harness: { id: "codex", mode: "dedicated" },
     namespaceId: tenant.id,
     credentialSources: [first, second].map(({ id }) => ({
       sourceId: id,
@@ -9286,6 +9287,49 @@ test("non-model credential sources resolved at dispatch must match the revision'
       why,
     );
   }
+
+  // Plugin selection references an Agent credential. Compute always passes every
+  // active source to its owner, including when a selected source has been withdrawn.
+  const accounts = [first, second].map((tool) => ({
+    ...tool,
+    type: "oauth2-refresh-token",
+    config: {
+      env_var: "GOG_ACCESS_TOKEN",
+      host: "gmail.googleapis.com",
+      path: "/gmail/v1/users/me/messages",
+      token_url: "https://oauth2.googleapis.com/token",
+      scope: "https://www.googleapis.com/auth/gmail.readonly",
+    },
+  }));
+  const native = {
+    ...revision,
+    harness: { id: "openclaw", mode: "dedicated" },
+    harnessAuth: { method: "api_key" },
+    credentialSources: revision.credentialSources.map((ref) => ({
+      ...ref,
+      sourceType: "oauth2-refresh-token",
+    })),
+  };
+  const context = { credentialSources: accounts };
+  const { id, releaseSha256 } = managedGoogleInstall;
+  const bound = {
+    ...native,
+    plugins: {
+      driver: { implementation: "occ/openclaw-plugin" },
+      plugins: {
+        [id]: {
+          enabled: true,
+          driverPolicy: { releaseSha256, credentials: { account: second.id } },
+        },
+      },
+    },
+  };
+  assert.deepEqual(driver.credentialSourcesForRevision(bound, context), accounts);
+  assert.deepEqual(driver.credentialSourcesForRevision(native, context), accounts);
+  assert.deepEqual(
+    driver.credentialSourcesForRevision(bound, { credentialSources: [accounts[0]] }),
+    [accounts[0]],
+  );
 });
 
 test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin selections", () => {

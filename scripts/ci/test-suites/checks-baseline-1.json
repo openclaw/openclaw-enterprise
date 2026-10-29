@@ -112,6 +112,7 @@
     "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
+    "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
@@ -125,7 +126,8 @@
     "tests/integration/egress-installation-exchange.test.mjs",
     "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.mjs",
-    "tests/integration/refusal-answers.test.mjs"
+    "tests/integration/refusal-answers.test.mjs",
+    "tests/integration/namespace-deletion-console-api.test.ts"
   ],
   "files": [
     {
@@ -544,6 +546,9 @@
       "path": "tests/integration/egress-stock-online-authority.test.mjs"
     },
     {
+      "path": "tests/integration/managed-plugin-request-authority.test.ts"
+    },
+    {
       "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
       "expectedTests": [
         "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
@@ -630,6 +635,9 @@
     },
     {
       "path": "tests/integration/refusal-answers.test.mjs"
+    },
+    {
+      "path": "tests/integration/namespace-deletion-console-api.test.ts"
     }
   ]
 }

@@ -2250,17 +2250,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "getNamespaceCallerPermissions") {
       await controller.getNamespace(context.actorId, namespaceId);
-      // Each creation target matches operationTarget() for createAgent and createSecret, and
-      // the Installation target matches requireInstallationAdmin. The console reads this answer
+      // Targets match Namespace deletion, operationTarget() for creation, and
+      // requireInstallationAdmin. The console reads this answer
       // instead of an Installation-only read, which the API audits when it is refused.
-      const [agentCreate, secretCreate, installationAdminister] = await Promise.all([
-        ...(["agent", "secret"] as const).map((kind) =>
-          callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
-        ),
-        callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
-      ]);
+      const [namespaceDelete, agentCreate, secretCreate, installationAdminister] =
+        await Promise.all([
+          callerMay(context.actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
+          ...(["agent", "secret"] as const).map((kind) =>
+            callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
+          ),
+          callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
+        ]);
       reply.send({
         data: {
+          delete: namespaceDelete,
           agents: { create: agentCreate },
           secrets: { create: secretCreate },
           installation: { administer: installationAdminister },

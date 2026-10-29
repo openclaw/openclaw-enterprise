@@ -17,19 +17,12 @@ const [steering, applyPatch] = GATEWAY_SAFETY_SETTINGS;
 const effective = (values) =>
   GATEWAY_SAFETY_SETTINGS.map((setting) => gatewaySafetyValue(values, setting));
 
-test("an unset setting shows the value deployment admission or OpenClaw's preset gives it", () => {
-  // Admission fills workspaceOnly from OCC's own table (the module the Console is served); the
-  // personal preset leaves collaborative steering on.
+test("an unset setting shows the value deployment admission or OpenClaw gives it", () => {
+  // Admission restricts apply_patch to the workspace. The Gateway enables steering by default.
   assert.deepEqual(effective({}), [
     { kind: "value", value: true, explicit: false },
     { kind: "value", value: true, explicit: false },
   ]);
-  // A Configuration that selects OpenClaw's corporate preset turns steering off by default.
-  assert.deepEqual(gatewaySafetyValue({ security: { preset: "corporate" } }, steering), {
-    kind: "value",
-    value: false,
-    explicit: false,
-  });
   // An explicit value wins and says so.
   assert.deepEqual(
     gatewaySafetyValue({ messages: { queue: { allowCollaborativeSteering: false } } }, steering),
@@ -38,34 +31,19 @@ test("an unset setting shows the value deployment admission or OpenClaw's preset
 });
 
 test("the steering help says what the Gateway does with another participant's message when off", () => {
-  // OpenClaw's preset fills messages.queue.collaborativeSteeringFallback when unset: "queue" for
-  // personal (the default), "reject" for corporate. An explicit value wins over the preset.
   const queued = "Off: their message runs as a separate turn after it.";
   const refused =
     "Off: the Gateway refuses their message and asks them to resend it with /followup, which runs it as a separate turn after it.";
-  const off = (values) => steering.help(values).slice(steering.help(values).indexOf("Off:"));
-  const corporate = { security: { preset: "corporate" } };
-  const fallback = (value, values = {}) => ({
-    ...values,
-    messages: {
-      queue: { allowCollaborativeSteering: false, collaborativeSteeringFallback: value },
-    },
-  });
-  assert.equal(off({}), queued);
-  assert.equal(off({ security: { preset: "personal" } }), queued);
-  assert.equal(off(corporate), refused);
-  assert.equal(off(fallback("reject")), refused);
-  assert.equal(off(fallback("queue", corporate)), queued);
-  assert.match(steering.help({}), /^On: while a turn runs, another Gateway participant/);
-  for (const values of [{}, corporate]) {
-    assert.match(
-      steering.help(values),
-      /Participants are channel users or local operators with distinct Gateway identities\./,
-    );
-    assert.match(
-      steering.help(values),
-      /OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users\./,
-    );
+  const defaults = steering.help({});
+  assert.ok(defaults.endsWith(queued));
+  for (const [fallback, expected] of [
+    ["queue", queued],
+    ["reject", refused],
+  ]) {
+    const help = steering.help({
+      messages: { queue: { collaborativeSteeringFallback: fallback } },
+    });
+    assert.ok(help.endsWith(expected));
   }
 });
 

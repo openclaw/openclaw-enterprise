@@ -1,29 +1,27 @@
 {
+  "operationsSha256": "2e4880fc8849ec65217da4591fb7345cb7f7089986a0e8fc950101f25aef177f",
   "release": "google-install-v1",
   "placement": {
     "harnessId": "openclaw",
     "mode": "dedicated",
     "computeImplementations": ["occ/kubernetes", "kubernetes-local"]
   },
-  "capabilities": { "gateway": ["skill"], "harness": ["cli"] },
+  "capabilities": {
+    "gateway": ["skill"],
+    "harness": ["cli"]
+  },
   "credentials": {
     "account": {
       "label": "Google account",
       "issuer": "https://accounts.google.com",
-      "requiredScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
-      "delivery": { "role": "harness", "env": "GOG_ACCESS_TOKEN", "presentation": "bearer" },
-      "requests": [
-        {
-          "method": "GET",
-          "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-          "query": { "maxResults": "1" }
-        }
-      ]
+      "tokenEndpoint": "https://oauth2.googleapis.com/token",
+      "delivery": {
+        "role": "harness",
+        "env": "GOG_ACCESS_TOKEN",
+        "presentation": "bearer"
+      }
     }
   },
-  "publicRequests": [
-    { "method": "GET", "url": "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest" }
-  ],
   "clawhub": {
     "skill": "@steipete/gog",
     "version": "1.0.0",
@@ -31,7 +29,7 @@
     "sourceUrl": "https://raw.githubusercontent.com/openclaw/openclaw/246adaa1191438b9e9e178384a026b4c123782f1/skills/gog/SKILL.md"
   },
   "skill": "oce-google",
-  "skillSha256": "4d2c6ee467cfee42ae7829aec2e0d9765e5daf75c36683bb4d4bea03ca082096",
+  "skillSha256": "521d1151e0ded46e599368af023ab93a031cbb47862541f38b7d69f908085bfc",
   "executable": "gog",
   "version": "0.46.0",
   "artifacts": {
