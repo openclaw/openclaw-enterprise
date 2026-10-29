@@ -15173,9 +15173,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                     revision.configuration,
                     embedded,
                     preparationSettingError,
-                    revision.harness.mode === "dedicated"
-                      ? revision.harnessAuth.method
-                      : undefined,
+                    revision.harness.mode === "dedicated" ? revision.harnessAuth.method : undefined,
                   ),
                 ),
               },
