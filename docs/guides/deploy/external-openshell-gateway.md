@@ -21,14 +21,21 @@ export OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_SECRET_FILE=/secure/openshell-clien
 The endpoint must be an `https` origin without a path; the token URL must be
 `https` (or `http` to a numeric loopback address), and the client-secret file
 must exist and be nonempty. The four variables select the external gateway
-together or not at all. The [protected profile](local-openshell-images.md#select-the-protected-profile)
+together or not at all. When the gateway or the issuer uses a private
+certificate authority, also export `OCC_DEVELOPMENT_OPENSHELL_CA_FILE` with an
+absolute path to its PEM bundle; the launcher mounts it into the API and worker
+so both the gateway connection and the token request trust it. Without it the
+controllers' system trust store applies. The [protected profile](local-openshell-images.md#select-the-protected-profile)
 cannot select an external gateway; the launcher refuses that combination.
 
 ## What the launcher changes
 
 The launcher still installs the Agent Sandbox controller, RuntimeClass, and
-workspace chart in its k3d cluster, but skips the in-cluster gateway, its
-images, and its JWT assets. The Installation's `openshell` Backend
+workspace chart in its k3d cluster, and still imports the supervisor and static
+sandbox launcher images its workspaces need, but skips the in-cluster gateway,
+its image, and its JWT assets. The Compose control plane serves the Console on
+the API origin; the native-administration browser domain requires the
+in-cluster gateway, so `OCC_DEVELOPMENT_BROWSER_PORT` must be unset. The Installation's `openshell` Backend
 authenticates with an OIDC client-credentials grant (see the
 [OpenShell Backend](../../reference/backends.md#openshell-gateway) reference),
 and the profile's NetworkPolicies admit the API, worker, and supervisor
@@ -52,8 +59,8 @@ gateway; run them on a profile without this selection.
 
 ## Limits
 
-The token request uses the API and worker's system trust store;
-`rootCertificatePath` applies to the gRPC channel only, so an issuer with a
-private CA is out of scope for this profile. A production Installation using
+`OCC_DEVELOPMENT_OPENSHELL_CA_FILE` is the only trust input: it must carry
+every CA the gateway's and the issuer's certificates need, and the controllers'
+system trust store applies otherwise. A production Installation using
 `oidcClientCredentials` must admit the issuer in its own egress configuration
 (`auth.oidc.egressCidrs` covers console sign-in only).
