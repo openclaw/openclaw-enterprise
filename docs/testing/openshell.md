@@ -38,6 +38,36 @@ This deletes the owned cluster and its database. It does not delete unrelated
 clusters. For the Compose control-plane variant, set
 `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
 
+## Codex plugin installation
+
+The `plugin-install` QA scenario deploys a dedicated Codex Agent with the selected
+curated plugin, reads installed state from its final WebSocket process, restarts
+that native process, and removes the selection through the Agent API. It uses the
+same real OpenShell and Credential Proxy fixture as the Sandbox suite. The
+selected account must have plugin access and the required app connection.
+`OCC_TEST_CODEX_INSTALL_PLUGIN_ID` defaults to
+`codex-plugin:linear@openai-curated-remote`; GitHub plugin login is not required.
+
+Prepare the OpenShell lane, then prepare
+`tests/integration/openshell-plugin-install-real.test.ts` with the same state file.
+Run that file through the lane runner, or select `OCC_TEST_QA_SCENARIOS=plugin-install`
+with `OCC_TEST_QA_SANDBOX_ENV` and `OCC_TEST_QA_CODEX_TOKEN_FILE` as described in
+[QA setup](openshell-coverage.md#qa-matrix-selector). The OpenShell advisory lane
+registers this case separately from model-tool qualification.
+
+This scenario uses ordinary Sandbox policy configuration to admit six observed
+regional package hosts on port 443, with TLS inspection, read-only REST access,
+and the pinned native Codex binary paths. The test reads the emitted policy and
+checks that artifact hosts are absent from the PAT profile. The explicit list
+is in the scenario's Installation configuration; it is not an exhaustive CDN
+inventory. New destinations remain denied until reviewed. These defaults do not
+extend a protected egress plan.
+
+`codex-plugin-stdio-real.test.ts` also runs the production stdio helper against
+the pinned native image with networking disabled. It checks local installation,
+process replacement, and cleanup after an actual install error. That narrower
+proof does not establish remote account access or OpenShell enforcement.
+
 ## Test setup and cleanup
 
 Stop the reusable environment before running these tests. Each creates and

@@ -2,142 +2,141 @@
 rfc: ../rfcs/0014-plugin-policy-enforcement.md
 ---
 
-# Implementation plan: Prepare dedicated Codex plugins over stdio
+# Implementation plan: Install dedicated Codex plugins over stdio
 
 - **ID:** TASK-0049
-- **Delivery status:** Planned
+- **Delivery status:** Completed
 - **Owner:** kevinlin-openai
 - **Source baseline:** `7257c814cdcba4daa53f3d1766f72f3696c7b4c6`
 
-## Problem and decision
+## Outcome and scope
 
-Prepare selected plugins with a temporary native Codex app-server over stdio
-inside the dedicated Harness. Stop that process, then start the final native
-WebSocket app-server against the same `CODEX_HOME`. Verify the final process
-before forwarding user requests or reporting the Agent ready.
+Install selected plugins with a temporary native Codex app-server over stdio
+inside the dedicated OpenShell Harness. Stop that process, then start the final
+native WebSocket app-server against the same `CODEX_HOME`. Verify installation
+and discovery across the process replacement with the real runtime.
 
-This document proposes an amendment to the active transport RFC in
+The user narrowed this task to installation. Final effective-policy attestation,
+a new readiness gate, native API changes, and a bootstrap protocol are outside
+scope. Keep existing managed selections and approval configuration, Credential
+Proxy custody, failure handling, and basic platform readiness. Embedded execution
+and ordinary Compute keep their current paths. No external installation Job,
+production deployment, image publication, or merge is authorized.
+
+This is the proposed amendment to the active transport RFC in
 [PR #3985](https://github.com/openclaw/openclaw-enterprise/pull/3985), inspected at
-`8315cc1deb9e7063c7a4e7937b7683926c71989c`. That revision prepares plugins on the
-final WebSocket process with a transient bearer. This amendment moves mutation
-to temporary stdio preparation and keeps final-process verification read-only.
-It does not change that PR's branch. Reconcile the owning RFC and primary plan
-before merge. The frontmatter links the existing plugin-policy authority;
-add the transport RFC link when its entry exists on the base branch.
+`8315cc1deb9e7063c7a4e7937b7683926c71989c`, submitted through
+[PR #3998](https://github.com/openclaw/openclaw-enterprise/pull/3998).
+Reconcile the RFC and primary plan before merge; this lease does not edit the
+other branch. Frontmatter links existing plugin-policy authority until the
+transport RFC exists on the base branch.
 
-## Scope
+## Contract and source touchpoints
 
-The regular Agent workflow gains selected plugins for dedicated Codex through
-OpenShell. Embedded execution and ordinary Compute retain their current paths.
-No external installation Job, new platform resource, production deployment, or
-image publication is part of this delivery. GitHub access uses the existing
-Credential Proxy and GitHub App path; it does not require a GitHub plugin login.
+The trusted Harness launcher owns temporary preparation and clean shutdown.
+The Sandbox Driver owns admission, exposure, and lifecycle observation. Dedicated
+Kubernetes Compute stops predecessors before preparation. The Plugin Driver
+continues to own selection translation and managed app/tool configuration.
+The Credential Gateway owns the source-wide native Plugin Service route
+allowance submitted in the
+[RFC amendment](https://github.com/openclaw/openclaw-enterprise/pull/3985#issuecomment-6484394125).
+The supported operations on `chatgpt.com:443` are:
 
-## Contract and ownership
+| Operation            | HTTP paths                                                              |
+| -------------------- | ----------------------------------------------------------------------- |
+| Discover plugins     | GET `/backend-api/ps/plugins/search` and `/backend-api/ps/plugins/list` |
+| Read installed state | GET `/backend-api/ps/plugins/installed`                                 |
+| Read plugin detail   | GET `/backend-api/ps/plugins/{id}`                                      |
+| Install a plugin     | POST `/backend-api/ps/plugins/{id}/install`                             |
 
-The trusted Harness launcher owns both native generations, the shared private
-home, cancellation, and the request gate. The Sandbox Driver owns admission,
-exposure, and lifecycle observation. Dedicated Kubernetes Compute requires stopped
-predecessors before preparation and activates only after native verification. The Plugin
-Driver continues to own selection translation and app/tool policy. OCC consumes
-Driver contracts without provider-specific branches.
+The enforced rules are GET `/backend-api/ps/plugins/*` and POST
+`/backend-api/ps/plugins/*/install`. GET also permits HEAD. This is an account/source
+capability shared across Agents, not a per-Agent selection ACL. Do not derive
+the shared profile from the last reconciled Agent. Bundle downloads require
+separate credential-free egress scoped to observed hosts and redirects.
+The real scenario uses existing ordinary Sandbox operator configuration for
+six observed regional artifact hosts, with read-only REST, TLS inspection and
+native binary restrictions. It adds no artifact host to a credential profile
+or production default. Protected egress plans retain their own authority.
 
-The Sandbox Driver advertises this startup behavior explicitly. Compute uses
-that capability to avoid the ordinary token-derived plugin-status protocol.
-Existing `starting`, `serving`, and `failed` Harness states remain sufficient;
-`serving` requires a verified native initialization, not a WebSocket upgrade.
-Submit this amendment for human review before changing the Driver contract.
+1. Restore managed configuration and complete existing login, model checks, and
+   protected-egress enrollment before preparation. Preserve the same home,
+   proxy path, filesystem policy, and native launch settings for both processes.
+2. Start one temporary native stdio process. Search the native global catalog for
+   each selected plugin and require exact identity and marketplace matches. The
+   pinned native `plugin/search` avoids scanning the entire paginated catalog,
+   which timed out in the real Harness. Keep search pagination inside the
+   preparation deadline. Use native read, install,
+   and configuration RPCs through the existing installer. Require all enabled
+   selections to install successfully; preserve existing removal and default-off
+   configuration. Do not retry an uncertain mutation within that process.
+3. Close stdin and wait for the temporary process to exit before launching the
+   final native WebSocket process. Bound preparation to 60 seconds and graceful
+   shutdown to eight seconds. Cancellation or failure stops startup; cleanup
+   must complete before a replacement starts. The existing supervisor owns the
+   process group and removes descendants on wrapper exit.
+4. Start the final process with only the transport verifier. Never provision the
+   raw Gateway transport token through Harness environment, arguments, files,
+   mounts, or logs. Upstream credentials remain at the Credential Proxy.
+5. Use existing basic Harness readiness. The Gateway uses the admitted plugin
+   configuration without waiting for ordinary Compute's HMAC plugin-status
+   exchange. Do not claim that successful installation establishes effective
+   policy enforcement or authenticated app-tool success.
 
-1. Restore the immutable managed configuration and admit enforced protected
-   egress before either native process starts. Retain enrollment through both
-   generations. Both use the same proxy, login, filesystem, and permission
-   settings; upstream API credentials stay at the Credential Proxy.
-2. Start one stdio process and initialize it. Use native catalog, read, install,
-   and configuration RPCs to resolve and prepare every selected plugin. Require
-   every selection to succeed on this provider path. Disable removed selections
-   and reject unexpected enabled apps, tools, or plugins before continuing.
-3. Close stdio and reap the preparation process and its descendants before
-   starting the final process. Cancellation or uncertain mutation terminates
-   the entire generation; no late installer may write into the shared home.
-   A later attempt revalidates retained state instead of trusting a marker.
-4. Start the final native WebSocket process with `APP_TOKEN_SHA` only. Do not
-   provision the raw Gateway token in environment, arguments, files, mounts,
-   logs, or diagnostics. Keep application requests behind the trusted gate.
-5. Authenticate a connection through the existing provider exposure. Reuse its
-   transient bearer only for native read-only verification of the owned final
-   child, then release the reference. This bearer crosses the authenticator;
-   this design makes no claim that it never exists transiently in memory.
-   Verify selected installed releases, app/tool ownership, effective policy,
-   and native initialization. Do not reinstall through this connection.
-6. Forward the caller's own initialization only after verification. Child exit
-   clears readiness and closes forwarded sockets. Every process/container
-   restart repeats preparation and verification before serving requests.
-
-Keep one preparation owner and one final verification owner per generation.
-Use the existing 60-second preparation budget, with each RPC consuming its
-remaining time; allow at most eight seconds for graceful process-group shutdown
-before forced termination and reaping. Bound final verification to 60 seconds.
-The gate admits at most sixteen authenticated connections and buffers at most
-four messages and 64 KiB per connection. A disconnected verification owner,
-overflow, timeout, or native exit fails that generation closed. Do not retry
-mutating RPCs in place. Unchanged reconciliation observes the existing generation
-without reinstalling. Revision, plugin selection, or image changes prepare a
-replacement candidate through the existing lifecycle.
+Process/container restart repeats preparation. Revision, selection, and image
+changes use the existing replacement lifecycle. Unchanged reconciliation
+observes the existing workload. Retained package state is revalidated through
+the installer; removed selections must not remain enabled.
 
 ## Implementation
 
-1. Complete the pinned-native feasibility checks below. Extend an existing native
-   readback response only where current observations cannot establish effective
-   policy. Reuse native policy resolvers; submit the narrow dependency for
-   independent review and a separate PR. Native edits and builds stay in an
-   isolated development checkout. Do not introduce a bootstrap RPC.
-2. In [runtime entrypoints](../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts),
-   separate the existing installer RPC transport from installation policy. Add
-   temporary stdio preparation, process-group cleanup, and final read-only
-   verification. Reuse existing native configuration translators and failure
-   documents. Keep the ordinary WebSocket installer unchanged.
-3. In [OpenShell Sandbox](../../apps/controller/src/drivers/sandbox/openshell.ts),
-   replace the nonempty-selection rejection only after the complete startup
-   path exists. Extend the existing provider client to observe real native
-   initialization through the gate. In
+1. In [runtime entrypoints](../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts),
+   supply a bounded stdio RPC session to the existing installer, then close it
+   before final native launch. Reuse configuration translators. Keep ordinary
+   WebSocket installation and embedded execution unchanged.
+2. In [OpenShell Sandbox](../../apps/controller/src/drivers/sandbox/openshell.ts),
+   admit selected Codex plugins only with the complete preparation path. In
    [Kubernetes Compute](../../apps/controller/src/drivers/compute/kubernetes/index.ts),
-   consume the declared capability for runtime files, status, candidate
-   readiness, and activation. Preserve protected-egress attribution and cleanup.
-4. Extend the real Agent QA workflow and CI selection. Update the owning
+   omit the provider Harness's ordinary plugin-status exchange and configure
+   its Gateway accordingly. Preserve egress enrollment and credential custody.
+3. Extend the real Agent QA workflow and CI selection. Update the owning
    [Sandbox reference](../../docs/reference/drivers/openshell-sandbox.md),
    [runtime flow](../../docs/flows/openshell-sandbox-provisioning.md), and
-   [OpenShell tests](../../docs/testing/openshell.md) with verified behavior.
+   [OpenShell tests](../../docs/testing/openshell.md).
 
 ## Verification
 
-| Required outcome                             | Proof and current result                                                                                                                                                                                                             |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Stdio catalog/read/install and durable state | Native `0.163.0-alpha.2` installed a local plugin; the temporary process exited with code 0; a new authenticated WebSocket process listed/read it as installed and enabled without reinstalling. Network-disabled Docker proof only. |
-| Exact configured policy survives replacement | Both native generations returned configured app defaults, reviewer, and tool fields. This is configuration readback, not effective enforcement.                                                                                      |
-| Effective managed policy is observable       | Unresolved: a mounted managed requirement disabled an app and overrode tool approval, but `config/read` returned the user values and `configRequirements/read` omitted app requirements.                                             |
-| Remote admitted plugin and proxy custody     | Run the real selected identity through an isolated enforcing OpenShell environment; prove remote catalog/install, replacement, final tool inventory, and allowed/denied app calls. Not run.                                          |
-| Removal, partial install, and stale state    | Through Agent revision changes, remove a selection and inject a genuine unavailable artifact; require exact final enablement or failure with no serving endpoint. Not run.                                                           |
-| Restart, cancellation, and bounded cleanup   | Stop during installation and verification, then restart; prove no surviving child or late write, and no stale connection reaches an unverified replacement. Not run.                                                                 |
-| Platform readiness and policy enforcement    | Exercise the regular Agent deployment, proxy path, filesystem denials, protected egress, and model/tool calls. Fixture checks do not replace these cases. Not run.                                                                   |
-
-## Open decisions
-
-The pinned native `app/installed` exposes effective app enablement and
-callability, but no per-tool approval or reviewer. Its threadless path also omits
-workspace configuration. `app/read` provides tool summaries; `mcpServerStatus/list`
-provides tool schemas. Neither establishes the complete final-policy gate.
-Review an extension to `app/installed` that takes explicit workspace context and
-returns tool policy from native resolvers, including account-dependent decisions.
-Do not collapse unresolved account policy into a single approval value. Neither
-installation success nor an operator reading source satisfies this gate.
+| Outcome                             | Proof and result                                                                                                                                                                                                                                                  |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native installation and replacement | `codex-plugin-stdio-real.test.ts`: passed against unmodified Codex `0.163.0-alpha.2`; local package installation survives clean stdio-to-WebSocket replacement without reinstalling.                                                                              |
+| Real selected remote installation   | `openshell-plugin-install-real.test.ts`: passed through the real Agent API/worker, Credential Gateway, and enforcing OpenShell cluster. The final native process reports the selected plugin installed and enabled.                                               |
+| Restart and removal                 | The same real scenario restarts the serving native process, verifies installed state, then removes the selection through the Agent API and verifies disablement after deployment.                                                                                 |
+| Failure and cancellation cleanup    | The native test drains an actual failed install and a pending request interrupted by a launcher termination event. It verifies no surviving native process; it does not simulate loss of a controller lease.                                                      |
+| Credential and execution boundaries | The real scenario checks ownership, mounts, model-secret exposure, verifier-authenticated transport, active artifact policy and absence of artifact hosts from the PAT profile. This is ordinary OpenShell policy proof, not protected-egress-plan qualification. |
 
 ## Delivery record
 
-Feasibility used the unmodified `rust-v0.163.0-alpha.2` source and an existing
-runtime image built from OCE `bb05475fe39c0987ff84deecb62c208cc619d118`, with
-OpenClaw `762a2fe60cc37cf6b8c9d05e61c329866e0d3f6f`. It establishes native
-transport and local package persistence only. Product implementation, remote
-plugin proof, OpenShell proof, and live user end-to-end proof remain incomplete.
+Implementation is delivered through [PR #3998](https://github.com/openclaw/openclaw-enterprise/pull/3998).
+Both real-runtime tests passed with zero skips. The native executable is
+`0.163.0-alpha.2`, source `a6274249d5877030676db098914db686bab7c921`.
+The local runtime image configuration digest is
+`sha256:8462c295b2b21e875c0ff502eff917e6c20ad3e73cd6bee07a8e28e57a6b975e`;
+the tested k3s platform image digest is
+`sha256:d55bdc7e7d9b879ff85fc8550262b4bb107252992dc68d1cecb4a9bfd4e3cd8b`.
+
+Real execution identified the required API routes, the full-catalog timeout,
+and package-host denials. The final implementation uses selected-plugin search
+and the reviewed operator artifact policy. OpenShell 0.1.5 requires omitted
+`tls` for automatic inspection; explicit `terminate` is rejected. The final
+scenario also verifies initial workspace-file delivery after its existing setup
+retry. No native API extension or stronger readiness guarantee is included.
+
+Focused startup/translation checks, type checking, lint, formatting, workspace
+isolation, CI registration and independent review accompany the runtime proof.
+Official local documentation checks remain blocked by the missing docs-site
+`@sindresorhus/slugify` dependency; no dependencies were installed for validation.
+Scoped links and length review remain separate evidence. Reconcile the owning
+RFC before merge and run the official documentation checks in CI.
 
 ## Manual Notes
 
@@ -145,4 +144,6 @@ plugin proof, OpenShell proof, and live user end-to-end proof remain incomplete.
 
 ## Changelog
 
-- 2026-10-28 16:22 PDT: Proposed stdio preparation and recorded native feasibility limits (source `7257c814`; session `01a184cd-7ec2-7fa2-8547-9629c51ad0ba`).
+- 2026-10-28 16:22 PDT: Submitted the initial proposal (source `7257c814`; session `01a184cd-7ec2-7fa2-8547-9629c51ad0ba`).
+- 2026-10-28: Narrowed delivery to plugin installation on the user's instruction; removed native API and strong readiness work.
+- 2026-10-28 18:49 PDT: Completed installation-only implementation and real native/OpenShell proof (source `000e1381e7` plus tested working tree; session `01a184cd-7ec2-7fa2-8547-9629c51ad0ba`).

@@ -15858,7 +15858,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const hasEnabledPlugins =
       pluginRuntime !== undefined &&
       Object.values(pluginRuntime.runtime.selections).some((selection) => selection.enabled);
-    const needsPluginStatus = needsPluginRuntime && hasEnabledPlugins;
+    const providerPreparesCodexPlugins =
+      dedicated &&
+      pluginRuntime?.runtime.kind === "codex" &&
+      (role === "agent"
+        ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
+        : // The initial Gateway must issue node setup before the provider has an
+          // endpoint. OpenShell already selects verifier delivery in prepareRevision.
+          this.sandboxDriver?.implementation === "openshell");
+    if (providerPreparesCodexPlugins && role === "gateway") {
+      variables.push({ name: "OPENCLAW_CODEX_PLUGINS_PREPARED", value: "true" });
+    }
+    const needsPluginStatus =
+      needsPluginRuntime && hasEnabledPlugins && !providerPreparesCodexPlugins;
     const statusRevisionId = configuration?.revisionId ?? ownership.revisionId;
     const needsRuntimeStatus =
       runtime !== undefined &&

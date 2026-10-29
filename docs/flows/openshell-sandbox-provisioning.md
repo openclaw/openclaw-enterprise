@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-28
-last_updated_session: authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88
+last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -149,12 +149,12 @@ managed-by labels, and active phase; conflicts fail preparation.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-Compute derives `provisionHarness` requirements from its ordinary Deployment.
-First deployment keeps the Agent Service inactive and Gateway transport fail-closed.
-Attachment and provider/Sandbox creation await Gateway readiness and its Agent-owned
-setup Secret, passed by reference. The local profile disables projected identity;
-when enabled, OpenShell rejects before Gateway mutation because its pinned API
-cannot preserve the exact Agent ServiceAccount/token.
+Compute derives `provisionHarness` from its ordinary Deployment. First deployment
+keeps the Agent Service inactive and Gateway transport fail-closed. Attachment
+and provider/Sandbox creation await Gateway readiness and its Agent-owned setup
+Secret reference. The local profile disables projected identity. Enabling it
+fails before Gateway mutation: the pinned API cannot preserve the exact Agent
+ServiceAccount/token.
 
 For `credential_source`, Compute renders the catalog login mode without a model
 Secret and passes version and `attachForRevision` provider names through
@@ -188,22 +188,28 @@ selects a named provider and HTTPS Responses transport.
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
 Only dedicated Codex or OpenClaw versions pinned to this Driver qualify.
-Kubernetes, filesystem, process and binary-scoped network policy use the
-`v0.1.5` wire contract. `environment` preserves opaque
-`OCE_CODEX_CHATGPT_ACCOUNT` JSON during path relocation. Landlock is required; unsupported enums, inherited
-keys, old `passthrough` TLS spelling and missing executable paths fail before
-launch. Readiness `timeoutMs` requires a positive safe integer. Configuration errors
-prevent Kubernetes calls. Duplicate names and
-`workspace-node-enrollment` prevent Driver construction.
-The template includes the Harness Pod labels. The Gateway rejects the request if
-any label key is missing from `allowed_pod_labels`.
+Kubernetes, filesystem, process and binary-scoped network policy use `v0.1.5`.
+Path relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
+Landlock is required. Unsupported enums, inherited keys, `passthrough` TLS,
+missing executable paths and invalid readiness `timeoutMs` prevent Kubernetes
+calls; the timeout must be a positive safe integer. Duplicate names and
+`workspace-node-enrollment` prevent construction. The Gateway rejects template
+Pod labels absent from `allowed_pod_labels`.
 
-`provisionHarness` creates or adopts the provider with final setup. Renewal checks the provider version and updates only `node_setup_json` through `UpdateProvider`. For Codex, a configured post-create delay of at most 120 seconds precedes route exposure. Compute rolls the Gateway before checking enrollment.
+`provisionHarness` creates or adopts the provider. Renewal checks its version
+and updates only `node_setup_json` through `UpdateProvider`. Codex route exposure
+follows the configured delay, at most 120 seconds. Compute rolls the Gateway
+before checking enrollment.
 
-Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files
-without plugins, each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. Selected plugins,
-a second model proxy, malformed files and other Secret-backed environment fail before
-Gateway mutation.
+Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
+each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
+malformed files and other Secret-backed environment fail before Gateway mutation.
+
+After login and egress enrollment, `agentRuntimeEntrypoint` calls
+`apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`
+to install selections. Clean stdio exit precedes verifier-only WebSocket startup
+in the same home. Failure retires the wrapper's process group. The provider
+Gateway skips HMAC plugin status; readiness observes transport.
 
 Providers use `oce-codex-runtime` or `oce-openclaw-runtime`. Both supply read-only setup and Gateway CA files; Codex requires `runtime.json` and `config.toml`, which native OpenClaw refuses. The validated setup Secret's complete expiring envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: OpenClaw signs the literal token in its device proof.
 Renewal requires the same endpoint, TLS fingerprint, runtime, and CA configuration.
@@ -291,24 +297,22 @@ that destination. On process-group `EPERM`, the supervisor signals the process d
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-Compute checks the deployment's Namespace, Agent, ServicePrincipal, and Agent revision IDs. For Codex, `harnessEndpoint` replaces
-fail-closed transport with `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT` and
-`OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider host
-alias. `gatewayConfigurationDocument` keeps Gateway workspace `/home/node/workspace`;
-the bridge maps it to the Sandbox root without mounting Harness storage.
-`gatewayNativeHookRelayConfiguration` derives private storage from `harnessHome`;
-Compute owns relay URL/auth. Egress admits only the provider peer/port; the direct
-Agent Service stays inactive and Compute omits its Harness route. Preparation
-preserves a serving predecessor; activation resolves the candidate again. Without
-`harnessEndpoint`, Codex retains Kubernetes transport and `/home/node/workspace`.
-Native OpenClaw enrolls outbound into its admitted workspace.
+Compute verifies Namespace, Agent, ServicePrincipal and Agent revision IDs.
+Codex `harnessEndpoint` sets `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT`
+and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider host.
+`gatewayConfigurationDocument` keeps `/home/node/workspace`, mapped to the Sandbox
+root without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
+`harnessHome`; Compute owns relay URL/auth. Egress permits only the provider
+peer/port. Compute keeps the direct Agent Service inactive and omits its Harness
+route. Preparation preserves a serving predecessor; activation rechecks the
+candidate. Without `harnessEndpoint`, Codex uses Kubernetes transport and
+`/home/node/workspace`. Native OpenClaw enrolls outbound into its admitted workspace.
 
-Compute awaits the Harness Pod and the Secret's enrolled node.
-Missing enrollment prevents activation. The Codex supervisor
-rereads the provider setup before every node retry, keeping the latest valid
-value while the projection is unavailable. It relaunches the workspace-node
-process one second after every exit, uncapped, so Gateway rollout does not
-strand the Sandbox. Shutdown stops retries.
+Activation requires the Harness Pod and the Secret's enrolled node. Before each
+node retry, the Codex supervisor rereads provider setup, retaining the latest
+valid value during projection outages. It relaunches the workspace node one
+second after each exit, without a retry limit, including after Gateway rollout.
+Shutdown stops retries.
 
 Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
@@ -317,10 +321,10 @@ fails preparation. Shutdown calls `cleanup` for the version: `GetSandbox`, then
 deletes the runtime provider, then the Git provider and profile. `cleanupNativeWorkspace` retires
 interrupted preparers without a Sandbox, refusing foreign/replaced resources.
 
-Namespace `cleanup` then verifies Workspace ownership, removes
-owned runtime/Git providers and profiles, sends idempotent `DeleteWorkspace`, then removes chart
-resources/NetworkPolicies in reverse order. Terminating Workspaces retry after
-lost responses. Compute deletes the Kubernetes namespace only after cleanup succeeds.
+Namespace `cleanup` verifies Workspace ownership, removes owned runtime/Git
+providers and profiles, sends idempotent `DeleteWorkspace`, then removes chart
+resources/NetworkPolicies in reverse order. Lost responses retry terminating
+Workspaces. Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
 ### 6. Withdraw Git without retiring the execution
 
@@ -373,6 +377,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 16:50: Trace stdio plugin installation before verifier-only native startup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 000e1381e7)
 
 - 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
 

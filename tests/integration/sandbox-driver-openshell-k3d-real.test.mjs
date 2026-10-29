@@ -77,8 +77,22 @@ import {
 
 const executeFile = promisify(execFile);
 const selectedScenario = process.env.OCC_TEST_OPENSHELL_SCENARIO ?? "full";
-assert.ok(["full", "network-policy"].includes(selectedScenario), "Unknown OpenShell scenario.");
+assert.ok(
+  ["full", "network-policy", "plugin-install"].includes(selectedScenario),
+  "Unknown OpenShell scenario.",
+);
 const networkPolicyOnly = selectedScenario === "network-policy";
+const pluginInstallOnly = selectedScenario === "plugin-install";
+const installationPluginId =
+  process.env.OCC_TEST_CODEX_INSTALL_PLUGIN_ID ?? "codex-plugin:linear@openai-curated-remote";
+const pluginArtifactHosts = Object.freeze([
+  "sdmntprsouthcentralus.oaiusercontent.com",
+  "sdmntprwestcentralus.oaiusercontent.com",
+  "sdmntprcentralus.oaiusercontent.com",
+  "sdmntprwestus.oaiusercontent.com",
+  "sdmntprbrazilsouth.oaiusercontent.com",
+  "sdmntprwestus2.oaiusercontent.com",
+]);
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -2303,6 +2317,28 @@ async function prepareProductionInstallation(
     openShellRuntimeClass,
     cluster: "k3d-openshell-sandboxdriver",
   });
+  if (pluginInstallOnly) {
+    configuration.drivers.plugin = {
+      id: "codex-plugin",
+      configuration: { catalogSource: "openai-curated" },
+    };
+    // These are observed native package origins, admitted through ordinary operator
+    // configuration. Keep artifact access credential-free; new origins need review.
+    configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
+      name: "codex-plugin-artifacts",
+      binaries: configuration.drivers.credential_gateway.configuration.binaries.map((path) => ({
+        path,
+      })),
+      endpoints: pluginArtifactHosts.map((host) => ({
+        host,
+        ports: [443],
+        protocol: "rest",
+        // OpenShell 0.1.5 inspects TLS automatically; explicit "terminate" is rejected.
+        enforcement: "enforce",
+        access: "read_only",
+      })),
+    });
+  }
   // The Codex scenario runs a second Agent beside the first. Each Agent holds about 7 GiB of
   // limits: its 4 GiB Gateway, its Harness and the 1 GiB OpenShell supervisor. A rolling
   // replacement of a Gateway briefly holds another 4 GiB.
@@ -2703,6 +2739,7 @@ async function prepareProductionInstallation(
     name: `openshell-${randomUUID()}`,
     configurationId: agentConfiguration.data.id,
     executionMode: "dedicated",
+    ...(pluginInstallOnly ? { plugins: { [installationPluginId]: { enabled: true } } } : {}),
     ...(gatewayManagedMode === undefined ? {} : { gatewayManagedMode }),
     harnessAuth: { method: "credential_source", sourceId: modelSource.data.id },
     // Console creation includes initial files. Keep this normal setup path in the
@@ -3064,6 +3101,8 @@ async function prepareProductionInstallation(
     gatewayPlacement,
     gatewayPod: gatewayPods[0],
     harnessServiceUrl: createSandboxDriver.harnessServiceUrls.get(deployed.data.id),
+    harnessServiceUrlForRevision: (revisionId) =>
+      createSandboxDriver.harnessServiceUrls.get(revisionId),
     appServerToken: transport.appServerToken,
     modelSecretId: modelSecret.data.id,
     sourceRoleId: sourceRole.data.id,
@@ -7323,6 +7362,135 @@ async function observeExposedCodexAuthenticationBoundary(serviceUrl, appServerTo
   });
 }
 
+async function assertInstalledCodexPlugin(topology) {
+  const gateway = topology.gatewayClient();
+  const status = await gateway.getPolicyStatus(
+    { workspace: topology.placement, sandbox: topology.sandbox.metadata.name },
+    AbortSignal.timeout(10_000),
+  );
+  const artifacts = status.policy.network_policies["codex-plugin-artifacts"];
+  assert.equal(
+    status.activeVersion,
+    status.version,
+    "the inspected artifact policy must be active",
+  );
+  assert.deepEqual(
+    artifacts.endpoints.map((endpoint) => endpoint.host).sort(),
+    [...pluginArtifactHosts].sort(),
+  );
+  for (const endpoint of artifacts.endpoints) {
+    assert.equal(endpoint.access, "NETWORK_ACCESS_PRESET_READ_ONLY");
+    assert.equal(endpoint.tls ?? "NETWORK_TLS_MODE_UNSPECIFIED", "NETWORK_TLS_MODE_UNSPECIFIED");
+    assert.equal(endpoint.enforcement, "NETWORK_ENFORCEMENT_MODE_ENFORCE");
+    assert.equal(endpoint.protocol, "rest");
+    assert.deepEqual(endpoint.ports, [443]);
+  }
+  const sourceProfile = await gateway.getProviderProfile(
+    topology.placement,
+    openShellProviderName(topology.agent.harnessAuth.sourceId),
+    AbortSignal.timeout(10_000),
+  );
+  assert.ok(Array.isArray(sourceProfile?.definition?.endpoints));
+  assert.ok(artifacts.binaries.length > 0);
+  assert.deepEqual(artifacts.binaries, sourceProfile.definition.binaries);
+  // Successful download must not come from extending the PAT-bearing profile.
+  assert.equal(
+    sourceProfile.definition.endpoints.some((endpoint) =>
+      endpoint.host.endsWith(".oaiusercontent.com"),
+    ),
+    false,
+  );
+  const nativeId = installationPluginId.replace(/^codex-plugin:/, "");
+  const observe = async (enabled) => {
+    const [installed, configuration] = await assertExposedCodexInitializes(
+      topology.harnessServiceUrl,
+      topology.appServerToken,
+      [
+        { method: "plugin/installed", params: {} },
+        { method: "config/read", params: { cwd: "/home/node/workspace" } },
+      ],
+    );
+    const selected = installed.marketplaces
+      .flatMap((market) => market.plugins)
+      .find((plugin) => plugin.id === nativeId);
+    if (enabled) {
+      assert.equal(
+        selected?.installed,
+        true,
+        "final native process must discover the installed selection",
+      );
+      assert.equal(selected.enabled, true);
+    } else {
+      assert.notEqual(selected?.enabled, true, "removed selection must not remain enabled");
+      assert.notEqual(configuration.config.plugins?.[nativeId]?.enabled, true);
+    }
+  };
+  await observe(true);
+  // Signal only this Agent's serving native child. Its existing supervisor must
+  // repeat preparation, and the replacement must discover the installed package.
+  const inspectNative = async (stop = false) =>
+    JSON.parse(
+      await kubectl(
+        "exec",
+        "-n",
+        topology.placement,
+        topology.harnessPod.metadata.name,
+        "-c",
+        "agent",
+        "--",
+        "node",
+        "-e",
+        `const fs=require("node:fs");const entries=[];for(const entry of fs.readdirSync("/proc")){if(!/^\\d+$/.test(entry))continue;try{if(fs.readlinkSync("/proc/"+entry+"/exe").split("/").at(-1)!=="codex")continue;const args=fs.readFileSync("/proc/"+entry+"/cmdline","utf8").split("\\0");if(args.includes("app-server"))entries.push({pid:Number(entry),serving:args.includes("--ws-token-sha256")});}catch{}}if(${stop})for(const entry of entries.filter(entry=>entry.serving))process.kill(entry.pid,"SIGTERM");console.log(JSON.stringify(entries));`,
+      ),
+    );
+  const before = await inspectNative(true);
+  assert.equal(before.length, 1, "the temporary stdio process must already have exited");
+  assert.equal(before[0].serving, true);
+  await waitFor("replacement native process after plugin preparation", async () => {
+    const current = await inspectNative();
+    return current.length === 1 && current[0].serving && current[0].pid !== before[0].pid
+      ? current
+      : undefined;
+  });
+  // A PID with WebSocket arguments can exist before bind completes. Retry only
+  // transport availability; preserve the first native discovery result below.
+  await waitFor("replacement native WebSocket listener", async () => {
+    try {
+      return (await observeExposedCodexAuthenticationBoundary(
+        topology.harnessServiceUrl,
+        topology.appServerToken,
+      )) === 101
+        ? true
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  await observe(true);
+  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+  const current = await topology.request("GET", agentPath);
+  assert.equal(current.status, 200, JSON.stringify(current.error));
+  const removed = await topology.request("PATCH", agentPath, {
+    configurationId: current.data.configurationId,
+    executionMode: current.data.executionMode,
+    ...(current.data.backendId === undefined ? {} : { backendId: current.data.backendId }),
+    plugins: {},
+  });
+  assert.equal(removed.status, 200, JSON.stringify(removed.error));
+  const deployed = await topology.request("POST", agentPath + "/deploy");
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  await waitFor("plugin removal revision activation", async () => {
+    const current = await topology.request("GET", agentPath);
+    return current.data.activeRevisionId === deployed.data.id ? true : undefined;
+  });
+  topology.harnessPod = await waitForProviderHarnessPod(topology.placement, deployed.data);
+  topology.harnessServiceUrl = topology.harnessServiceUrlForRevision(deployed.data.id);
+  await observe(false);
+  process.stderr.write(
+    "OpenShell integration: selected plugin installed through stdio, discovered after native restart, and disabled after removal.\n",
+  );
+}
+
 const selectedHarness = process.env.OCC_TEST_OPENSHELL_HARNESS ?? "codex";
 if (networkPolicyOnly) {
   assert.equal(selectedHarness, "codex", "The network-policy scenario requires Codex.");
@@ -8244,9 +8412,11 @@ test(
 );
 
 test(
-  networkPolicyOnly
-    ? "OpenShell Agent network policy lifecycle"
-    : "OpenShell enforces provider delivery and authenticated Codex exposure",
+  {
+    "plugin-install": "OpenShell installs selected Codex plugins before WebSocket startup",
+    "network-policy": "OpenShell Agent network policy lifecycle",
+    full: "OpenShell enforces provider delivery and authenticated Codex exposure",
+  }[selectedScenario],
   {
     ...requiresOpenShellK3d,
     ...(demoStatePath === undefined ? { timeout: 2_400_000 } : {}),
@@ -8266,6 +8436,7 @@ test(
       process.stderr.write(`OpenShell integration: selected real ${selectedScenario} workflow.\n`);
       const topology = await prepareProductionInstallation(context, {
         harnessId: selectedHarness,
+        ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
         ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
       });
       assert.equal(
@@ -8362,6 +8533,10 @@ test(
       }
       // Retry only endpoint availability above. Preserve the first protocol failure on this route.
       await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
+      if (pluginInstallOnly) {
+        await assertInstalledCodexPlugin(topology);
+        return;
+      }
       process.stderr.write(
         "OpenShell integration: exposed Codex initialized; starting real shell turns through the Agent Gateway.\n",
       );

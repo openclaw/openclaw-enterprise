@@ -178,7 +178,10 @@ explains these jobs; the PR-controlled workflow is not independent trusted enfor
 The explicit `sandbox-policy` selector exercises shared configuration discovery,
 preview, and the real OpenShell network-policy lifecycle. It requires a prepared
 OpenShell file environment; see [policy proof setup](openshell-coverage.md#qa-matrix-selector).
-The OpenShell advisory job covers the same workflow automatically.
+The OpenShell advisory job covers the same workflow automatically. The separate
+`plugin-install` selector verifies dedicated Codex installation, native-process
+restart discovery, and selection removal through the Agent workflow; see
+[plugin installation proof](openshell.md#codex-plugin-installation).
 
 The matrix creates disposable Compose and Kubernetes control planes, both with
 Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does

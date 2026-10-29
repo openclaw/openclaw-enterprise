@@ -63,6 +63,15 @@ test(
         () => verifyQaSandboxPolicy(artifacts),
       );
     }
+    if (selection.pluginInstall) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "selected native plugin installation",
+        () => verifyQaSandboxPolicy(artifacts, "plugin-install"),
+      );
+    }
     for (const installation of selection.installations.filter((value) =>
       selection.cells.some((cell) => cell.installation === value && cell.scenarios.length > 0),
     )) {
