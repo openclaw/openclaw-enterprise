@@ -1169,6 +1169,7 @@ function renderAgentForm(
       "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.";
     operateAnswer.reset();
     apiKey.value = "";
+    resetPluginDiscovery();
     clearSecretRecovery();
     feedback.textContent =
       "Choose an existing model credential Secret, then select Create Agent. Your other draft fields are unchanged.";
