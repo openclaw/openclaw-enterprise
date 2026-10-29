@@ -2974,11 +2974,7 @@ for (const viewport of [
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Secret name conflict", { ready: true });
     // Deleting an Agent keeps its model Secret, which is named after the Agent.
-    const existing = await fixture.createSecret(
-      namespace.id,
-      "Recreated Agent",
-      "earlier-model-key",
-    );
+    await fixture.createSecret(namespace.id, "Recreated Agent", "earlier-model-key");
     const artifact = structuredClone(standardCodexPreset);
     const preset: FixtureResponse<Preset> = await fixture.request(
       "POST",

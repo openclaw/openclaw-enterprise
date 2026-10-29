@@ -3510,10 +3510,9 @@ function renderAgentForm(
                 ? AGENT_NAME_CONFLICT
                 : followableRefusal(rejectionMessage(error));
           refusedInConfiguration = showChannelBindingRefusal(error);
-          feedback.textContent =
-            refusedInConfiguration || confirmedSecretConflict
-              ? ""
-              : withRequestId(detail, failure.requestId);
+          feedback.textContent = refusedInConfiguration
+            ? ""
+            : withRequestId(detail, failure.requestId);
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
           if (nameTaken) {
