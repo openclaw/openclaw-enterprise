@@ -1023,6 +1023,7 @@ test("stock terminal OBSERVE projection is distinct from APPLIED and bound to re
     { state: 1 },
     { outcome: 7 },
     { completed_time: undefined },
+    { completed_time: { seconds: "1", nanos: -1 } },
   ]) {
     state.status.operation = { ...operation, ...invalid };
     assert.equal((await read()).supersededObservationId, undefined);
@@ -1030,4 +1031,55 @@ test("stock terminal OBSERVE projection is distinct from APPLIED and bound to re
   state.status.operation = operation;
   state.status.receipt.kind = "PROVIDER_MUTATION_KIND_UPDATE";
   assert.equal((await read()).supersededObservationId, undefined);
+});
+
+test("bootstrap-only OBSERVE cannot complete an ignored historical refresh", async (t) => {
+  const { state, client } = await wire(t);
+  const provider = new OpenShellPreparedGitProvider(client, {
+    ...scope,
+    observedHookPreview: true,
+  });
+  const bootstrap = await provider.bootstrap(signal());
+  state.status = installedStatus(bootstrap);
+  const initial = await client.getSandboxProviderStatus(
+    scope.workspace,
+    scope.sandbox,
+    bootstrap.provider,
+    signal(),
+  );
+  let environment = "101";
+  client.getSandboxProviderStatus = async (_workspace, _sandbox, _provider, _signal, id) => {
+    const receiptId = id ?? `bootstrap-${environment}`;
+    const target = receiptId === "bootstrap-101" ? "101" : "102";
+    return {
+      ...initial,
+      state:
+        target === environment
+          ? "PROVIDER_READINESS_STATE_READY"
+          : "PROVIDER_READINESS_STATE_SUPERSEDED",
+      reason:
+        target === environment
+          ? "PROVIDER_READINESS_REASON_UNSPECIFIED"
+          : "PROVIDER_READINESS_REASON_DESIRED_STATE_CHANGED",
+      receipt: {
+        ...initial.receipt,
+        receiptId,
+        kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+        desired: { ...initial.receipt.desired, providerEnvRevision: target },
+      },
+      observed: { ...initial.observed, providerEnvRevision: environment },
+      completedOperationId: target === "101" ? receiptId : undefined,
+      supersededObservationId: target === "102" ? receiptId : undefined,
+    };
+  };
+  assert.equal(await provider.settlePreviewReceipt(bootstrap, signal()), true);
+  assert.equal(
+    (await provider.observe(bootstrap, "sandbox-id", signal())).credentialState,
+    "bootstrap",
+  );
+  const writes = state.requests.filter((r) => r.provider).length;
+  environment = "102";
+  assert.equal(await provider.settlePreviewReceipt(bootstrap, signal()), false);
+  assert.equal(await provider.observe(bootstrap, "sandbox-id", signal()), undefined);
+  assert.equal(state.requests.filter((r) => r.provider).length, writes);
 });

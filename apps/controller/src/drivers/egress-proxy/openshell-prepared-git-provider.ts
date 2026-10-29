@@ -514,6 +514,7 @@ export class OpenShellPreparedGitProvider {
   // Terminal OBSERVE history is read-only even when an old target becomes current
   // again. Its outcome never replaces original UPDATE custody or fresh READY evidence.
   private terminalReceipt(
+    binding: OpenShellPreparedGitBinding,
     receipt: NonNullable<OpenShellPreparedGitProvider["receipt"]>,
     status: OpenShellSandboxProviderStatus,
   ): boolean {
@@ -522,7 +523,8 @@ export class OpenShellPreparedGitProvider {
     }
     return (
       status.completedOperationId === receipt.id ||
-      (receipt === this.refreshReceipt &&
+      (binding.credentialState === "active" &&
+        receipt === this.refreshReceipt &&
         this.receipt?.complete === true &&
         this.receipt.version === receipt.version &&
         this.receipt.id !== receipt.id &&
@@ -571,7 +573,7 @@ export class OpenShellPreparedGitProvider {
         // of the original UPDATE or accept this response as installation evidence.
         if (
           (receipt.complete
-            ? !this.terminalReceipt(receipt, current)
+            ? !this.terminalReceipt(binding, receipt, current)
             : current.receipt?.kind !== "PROVIDER_MUTATION_KIND_OBSERVE" ||
               current.reason !== "PROVIDER_READINESS_REASON_DESIRED_STATE_CHANGED") ||
           current.receipt?.receiptId !== receipt.id ||
@@ -612,7 +614,7 @@ export class OpenShellPreparedGitProvider {
       return false;
     }
     receipt.id = id;
-    if (!this.terminalReceipt(receipt, status)) {
+    if (!this.terminalReceipt(binding, receipt, status)) {
       return false;
     }
     receipt.complete = true;
@@ -722,7 +724,7 @@ export class OpenShellPreparedGitProvider {
           (evaluatedAt - observedAt >= 15_000 ||
             evaluatedAt < requestedAt - 5_000 ||
             evaluatedAt > Date.now() + 5_000 ||
-            !this.terminalReceipt(receipt!, status) ||
+            !this.terminalReceipt(binding, receipt!, status) ||
             status.receipt?.receiptId !== receipt!.id ||
             observed.providerEnvRevision !== desired.providerEnvRevision)) ||
         (binding.credentialState === "active" && !(Date.parse(binding.expiresAt) > Date.now()))

@@ -2432,7 +2432,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         : {}),
       ...(operation?.state === 5 &&
       operation.outcome === 3 &&
-      operation.completed_time &&
+      timestampText(operation.completed_time) !== null &&
       receipt?.kind === "PROVIDER_MUTATION_KIND_OBSERVE" &&
       typeof operation.operation_id === "string" &&
       operation.operation_id === receipt.receipt_id
