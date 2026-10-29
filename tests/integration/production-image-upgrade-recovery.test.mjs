@@ -1113,7 +1113,6 @@ async function fixture(
   t,
   {
     agent = false,
-    fastPolls = true,
     candidates = false,
     controllerOnly = false,
     repositoryCredentials = false,
@@ -1156,13 +1155,11 @@ async function fixture(
   // The script waits "sleep 2" between polls. The fixture answers every poll at once, so
   // it waits 0.25 s instead: each case sees the same reads, in the same order, sooner.
   // Deadline cases script more reads than 0.25 s polls can use before their timeout.
-  if (fastPolls) {
-    await writeFile(
-      join(bin, "sleep"),
-      `#!${shimTools.bash}\n[[ "$*" != 2 ]] || set -- 0.25\nexec ${bashString(shimTools.sleep)} "$@"\n`,
-      { mode: 0o700 },
-    );
-  }
+  await writeFile(
+    join(bin, "sleep"),
+    `#!${shimTools.bash}\n[[ "$*" != 2 ]] || set -- 0.25\nexec ${bashString(shimTools.sleep)} "$@"\n`,
+    { mode: 0o700 },
+  );
   const collectorSecretName = "occ-demo-collector-config";
   let values = JSON.stringify({
     images: { controller },
@@ -1792,11 +1789,9 @@ test("a Doctor memory timeout keeps the evidence lock until every started Doctor
     activeRevisionId: "rev_old",
     deploymentInProgress: false,
   });
-  // The helper checks its deadline and then reads; a read that starts after the deadline
-  // passed reads nothing, and the timeout names the last read as unknown. The cases that
-  // assert the last read keep the helper's 2 s polls, which leave that window rare.
+  // A poll that finds the deadline passed reads nothing; the timeout still names B's last
+  // read (0 MiB), not "unknown".
   const f = await fixture(t, {
-    fastPolls: false,
     inventoryNamespaces: [
       { id: "ns_test", status: "ready", agents: [agent("agt_a"), agent("agt_b")] },
     ],
@@ -1839,8 +1834,9 @@ test("a Doctor memory timeout keeps the evidence lock until every started Doctor
 });
 
 test("OpenClaw Doctor does not run while the gateway lacks free memory", async (t) => {
-  // Asserts the last read, so it keeps the helper's 2 s polls (see the memory timeout case).
-  const f = await fixture(t, { agent: true, fastPolls: false });
+  const f = await fixture(t, { agent: true });
+  // Every read is 1 MiB short; the timeout names the last one, even when the final poll
+  // finds the deadline passed and reads nothing.
   await scriptGatewayMemory(f, Array(20).fill(639));
   await assert.rejects(
     f.run("--timeout-seconds", "3"),
