@@ -1,6 +1,6 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-28
+updated: 2026-10-29
 last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
 ---
 
@@ -90,6 +90,10 @@ graph TD
 
 `openshell` profiles support Node and x64/ARM64 Codex on any launcher architecture
 and require Landlock.
+
+`writeInstallation` selects the curated Codex Plugin Driver for the local
+OpenShell profile. Agent provisioning can therefore admit plugin selections
+through the API; credentials still use the selected Credential Gateway.
 
 `scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
 Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.

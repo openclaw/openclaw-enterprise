@@ -630,6 +630,15 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
             { allow: { method: "POST", path: "/backend-api/ps/plugins/*/install" } },
           ],
         },
+        // Native app metadata and hosted tools use separate POST endpoints.
+        // The shared source profile does not replace managed app/tool policy.
+        ...["/backend-api/ps/apps/batch", "/backend-api/ps/mcp"].map((path) => ({
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path,
+          rules: [{ allow: { method: "POST", path } }],
+        })),
       ],
       binaries: options.binaries,
       inferenceCapable: true,

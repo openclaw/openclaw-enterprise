@@ -220,14 +220,15 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Scenario          | In advisory | Presets         | Checks                                                                                                                                  |
-| ----------------- | ----------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `model-ui`        | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                                            |
-| `console-secrets` | Yes (Codex) | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation. |
-| `git-write`       | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                             |
-| `git-push-denied` | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                                              |
-| `calendar`        | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
-| `slack`           | No          | Codex           | Threaded reply and new root message.                                                                                                    |
+| Scenario                | In advisory | Presets         | Checks                                                                                                                                  |
+| ----------------------- | ----------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `model-ui`              | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                                            |
+| `console-secrets`       | Yes (Codex) | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation. |
+| `git-write`             | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                             |
+| `git-push-denied`       | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                                              |
+| `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
+| `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                    |
+| `openshell-linear-read` | Yes         | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read; live qualification pending.                               |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
@@ -236,7 +237,10 @@ Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
 
 All combinations check startup and authenticated console login. Git alone starts
-the broker; Linear is excluded. `OCC_TEST_QA_CONCURRENCY=1..4` selects workers
+the broker. Linear reads use the explicit `openshell-linear-read` scenario,
+which boots a separate shipped OpenShell stack and requires a connected Codex
+identity plus the read fixture described in [OpenShell testing](openshell.md#linear-tool-use-qualification).
+Live qualification of that new scenario is pending. `OCC_TEST_QA_CONCURRENCY=1..4` selects workers
 (default `2`); installations and Slack run sequentially. Each gateway can use
 4 GiB beyond shared services.
 
@@ -333,7 +337,8 @@ These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
 - `repository-credentials-installed`: temporarily refused pending safe remote cleanup. See [installed Agent qualification](repository-credentials.md#qualify-an-installed-agent-against-github).
 - `postgres-azure-workload-identity`: see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
 - `ssh-host`: requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
-- `plugin-model`: requires a disposable cluster, an authorized Codex account, an immutable Agent image and three distinct scenario databases. See [plugin tests](plugins.md#native-runtime-prerequisites).
+- `plugin-model`: requires a disposable cluster with Envoy Gateway and cert-manager, its Gateway CA certificate and key, an authorized Codex account, an immutable Agent image and three distinct scenario databases. See [plugin tests](plugins.md#native-runtime-prerequisites).
+- `openshell-linear`: starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).
 - `k3d-two-cluster`: requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).
 - `openshell-oauth`: requires a prepared OpenShell OAuth gateway, trust files, tokens and a Kubernetes context. See [OpenShell OAuth tests](openshell-oauth.md).
 - `image-pair-qualification`: requires staged old and new controller and broker images. See [image-pair qualification](docker.md#repository-image-pair-qualification).

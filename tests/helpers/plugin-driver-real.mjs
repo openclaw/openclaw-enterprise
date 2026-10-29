@@ -14,6 +14,10 @@ import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
+  createEnvoyWorkspaceGatewayPlan,
+  ensureEnvoyGatewayControllers,
+} from "./envoy-workspace-gateway.mjs";
+import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -155,11 +159,15 @@ function installationAdministratorServicePrincipal(iamState) {
   return principal;
 }
 
-function createAgentPluginApi({ request, namespaceId }) {
+function createAgentPluginApi({ request, namespaceId, gatewayAuth }) {
   async function createAgent({ harnessId, executionMode, name, harnessAuth, backendId }) {
+    const values = nativeConfiguration(harnessId);
+    if (gatewayAuth !== undefined) {
+      values.gateway = { ...values.gateway, ...gatewayAuth };
+    }
     const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
       kind: "agent",
-      values: nativeConfiguration(harnessId),
+      values,
     });
     assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
     const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
@@ -240,6 +248,7 @@ function installationConfiguration({
   pluginDriverId,
   pluginDriverConfiguration,
   codexServiceAccountImport,
+  workspaceGateway,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
     authentication,
@@ -258,6 +267,12 @@ function installationConfiguration({
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
   configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
+  if (workspaceGateway !== undefined) {
+    configuration.drivers.compute.configuration.gatewayRouting = workspaceGateway.routing;
+    configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
+      workspaceGateway.nativeOptions.gatewayAuth.trustedProxies;
+    delete configuration.drivers.compute.configuration.network.gatewayClients;
+  }
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     pluginProofPluginStatusProxyCidrs();
   if (codexServiceAccountImport !== undefined) {
@@ -438,6 +453,15 @@ function sanitizedPluginProofWorkerEvents(events, revisionId) {
       revisionId: event.revisionId,
       outcome: event.outcome,
       code: event.code,
+      step: event.step,
+      status: event.status,
+      errorClass: event.errorClass,
+      dependency: event.dependency,
+      cause: event.cause,
+      reason: event.reason,
+      method: event.method,
+      grpcStatus: event.grpcStatus,
+      validationCategory: event.validationCategory,
     }));
 }
 
@@ -2236,6 +2260,8 @@ export async function createPluginDriverRealFixture(
     validatePrerequisites,
     provisionAgentTransportSecret,
     startPortForward,
+    startPortForwardTarget,
+    applyManifest,
   } = createRealKubernetesFixture({
     kubeconfigPath,
     kubernetesContext,
@@ -2342,6 +2368,25 @@ export async function createPluginDriverRealFixture(
   });
 
   await kubectl("create", "namespace", platformNamespace);
+  // Dedicated Agents use the production routed endpoint. The fixture owns the
+  // real Envoy resources; Compute creates each Agent's route during deployment.
+  let workspaceGateway;
+  if (pluginDriverId === "codex-plugin") {
+    const helpers = {
+      kubectl,
+      resource,
+      resources,
+      waitFor,
+      startPortForwardTarget,
+      applyManifest,
+    };
+    await ensureEnvoyGatewayControllers(helpers);
+    workspaceGateway = await createEnvoyWorkspaceGatewayPlan(
+      context,
+      { platformNamespace },
+      helpers,
+    );
+  }
   await kubectl(
     "create",
     "clusterrole",
@@ -2354,7 +2399,7 @@ export async function createPluginDriverRealFixture(
     "clusterrole",
     `${proofPrefix}-tenant-${suffix}`,
     "--verb=create,get,list,patch,update,delete",
-    "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges,persistentvolumeclaims",
+    "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges,persistentvolumeclaims,httproutes.gateway.networking.k8s.io,securitypolicies.gateway.envoyproxy.io",
   );
   await kubectl(
     "create",
@@ -2413,6 +2458,7 @@ export async function createPluginDriverRealFixture(
           pluginDriverId,
           pluginDriverConfiguration,
           codexServiceAccountImport,
+          workspaceGateway,
         }),
       ),
       { mode: 0o600 },
@@ -2428,6 +2474,7 @@ export async function createPluginDriverRealFixture(
           pluginDriverId,
           pluginDriverConfiguration,
           codexServiceAccountImport,
+          workspaceGateway,
         }),
       ),
       { mode: 0o600 },
@@ -2604,7 +2651,11 @@ export async function createPluginDriverRealFixture(
     return observed.data.status === "ready" ? observed.data : undefined;
   });
 
-  const agentApi = createAgentPluginApi({ request, namespaceId: createdNamespace.data.id });
+  const agentApi = createAgentPluginApi({
+    request,
+    namespaceId: createdNamespace.data.id,
+    gatewayAuth: workspaceGateway?.nativeOptions.gatewayAuth,
+  });
 
   async function createCodexServiceAccountFromToken({ accessToken, name }) {
     assert.ok(

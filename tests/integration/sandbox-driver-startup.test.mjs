@@ -4603,7 +4603,7 @@ async function ready(operation) {
   assert.deepEqual(await operation, { state: "ready" });
 }
 
-test("Codex PAT profiles admit native startup and plugin installation without granting the whole backend", async () => {
+test("Codex PAT profiles restrict native startup and plugin routes", async () => {
   const { context, driver, profiles } = credentialGatewayOverProviders();
   const source = context("cs_00000000-0000-4000-8000-0000000000c1");
   await driver.registerSource(
@@ -4611,8 +4611,8 @@ test("Codex PAT profiles admit native startup and plugin installation without gr
     { type: "codex-pat", config: {}, secrets: { access_token: "synthetic-codex-pat" } },
   );
   const [profile] = profiles.values();
-  // The pinned native client needs catalog/detail reads and installation writes. Restrict plugin
-  // mutations to installation; backend or WHAM wildcards would admit unrelated account APIs.
+  // The native client needs plugin installation, app metadata and MCP transport.
+  // Backend or WHAM wildcards would also admit unrelated account APIs.
   assert.deepEqual(profile.endpoints, [
     {
       host: "auth.openai.com",
@@ -4634,6 +4634,20 @@ test("Codex PAT profiles admit native startup and plugin installation without gr
         { allow: { method: "GET", path: "/backend-api/ps/plugins/*" } },
         { allow: { method: "POST", path: "/backend-api/ps/plugins/*/install" } },
       ],
+    },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/apps/batch",
+      rules: [{ allow: { method: "POST", path: "/backend-api/ps/apps/batch" } }],
+    },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/mcp",
+      rules: [{ allow: { method: "POST", path: "/backend-api/ps/mcp" } }],
     },
   ]);
   assert.deepEqual(profile.binaries, ["/usr/local/bin/codex"]);

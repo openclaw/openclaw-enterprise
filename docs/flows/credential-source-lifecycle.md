@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-23
-last_updated_session: fix-2242
+updated: 2026-10-29
+last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
 ---
 
 # Credential source lifecycle Flow
@@ -107,6 +107,10 @@ namespace, and calls `registerSource` with a 30-second deadline. OpenShell check
 provider ownership before changing the source-owned profile, creates the labeled
 provider, and rechecks creation collisions. These calls are not atomic. Only the
 Refresh Driver receives refresh material.
+
+Codex PAT profiles include native app metadata and MCP transport; the
+[Driver reference](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+owns the exact source-wide routes.
 
 A definitive failed/absent result triggers cleanup and record deletion; failed
 cleanup retains `deleting`. Thrown calls may still take effect, so cleanup retains

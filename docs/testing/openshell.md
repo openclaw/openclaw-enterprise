@@ -68,6 +68,31 @@ the pinned native image with networking disabled. It checks local installation,
 process replacement, and cleanup after an actual install error. That narrower
 proof does not establish remote account access or OpenShell enforcement.
 
+## Linear tool-use qualification
+
+The opt-in `openshell-linear-read` QA scenario boots the shipped Kubernetes and
+OpenShell stack. It creates the credential source and provisions a dedicated
+Agent with Linear through the OCE APIs. A normal Agent turn must produce a native
+Linear tool call and a successful result matching known Linear data. It submits
+the shipped Codex configuration through the provisioning API and sends the turn
+through the configured OCE Gateway route. Kubernetes access runs that API client
+in the existing controller and reads evidence; the test does not replace Drivers,
+read Gateway passwords from Kubernetes Secrets, or patch running workloads.
+
+Provide an existing connected account through `OCC_TEST_QA_CODEX_TOKEN_FILE`, an
+authorized model ID through `OCC_TEST_QA_CODEX_MODEL`, and the harmless read fixture:
+`OCC_TEST_CODEX_LINEAR_PROMPT`, `OCC_TEST_CODEX_LINEAR_TOOL_NAME`, and
+`OCC_TEST_CODEX_LINEAR_RESULT_EXPECT`. The account must already have its Linear
+connection authorized; the test does not automate an OAuth consent decision.
+
+Select `OCC_TEST_QA_SCENARIOS=openshell-linear-read` in the QA matrix, or set
+`OCC_TEST_OPENSHELL_LINEAR_REAL=1` and run
+`tests/integration/openshell-linear-read-real.test.ts`. The default matrix `all`
+selection excludes this dedicated OpenShell scenario. The standalone file belongs
+to the manual `openshell-linear` lane, which selects it explicitly. Selected cases fail when
+inputs are missing. Live qualification is pending; installation-only evidence
+does not establish a successful Linear tool call.
+
 ## Test setup and cleanup
 
 Stop the reusable environment before running these tests. Each creates and
