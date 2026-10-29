@@ -3137,9 +3137,10 @@ test("OpenShell client presents an OIDC client-credentials token and refreshes i
     },
   });
   const tokens = [
-    // The first token expires within the client's refresh margin, so the third
-    // call must fetch a fresh token rather than replay the stale one.
-    { access_token: "wire-oidc-token-1", expires_in: 1, token_type: "Bearer" },
+    // The first token reaches its refresh margin one second after issue, so the
+    // first two calls must finish well inside that window and the third call
+    // must fetch a fresh token rather than replay the stale one.
+    { access_token: "wire-oidc-token-1", expires_in: 2, token_type: "Bearer" },
     { access_token: "wire-oidc-token-2", expires_in: 3600, token_type: "Bearer" },
   ];
   let issued = 0;
@@ -3185,10 +3186,122 @@ test("OpenShell client presents an OIDC client-credentials token and refreshes i
     assert.equal(exchange.body.get("client_secret"), "wire-oidc-secret");
     assert.equal(exchange.body.get("audience"), null);
     // Wait past the short token's refresh margin, then require a fresh exchange.
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    await new Promise((resolve) => setTimeout(resolve, 1200));
     await client.health(AbortSignal.timeout(2_000));
     assert.equal(endpoint.requests.length, 2);
     assert.deepEqual(authorizations[2], ["Bearer wire-oidc-token-2"]);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+    await endpoint.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("OpenShell client re-reads the client secret on every token refresh", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    Health(_call, callback) {
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
+  });
+  let issued = 0;
+  const endpoint = await startTokenEndpoint((request, response) => {
+    issued += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    // A short lifetime forces one refresh per call pair, so each exchange
+    // observes the secret file as it is rotated between them.
+    response.end(JSON.stringify({ access_token: `wire-oidc-rotated-${issued}`, expires_in: 2 }));
+  });
+  const directory = await mkdtemp(join(tmpdir(), "openshell-oidc-"));
+  const secretPath = join(directory, "client-secret");
+  await writeFile(secretPath, "wire-oidc-secret-one\n", { mode: 0o600 });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    auth: {
+      mode: "oidcClientCredentials",
+      tokenUrl: `http://127.0.0.1:${endpoint.port}/token`,
+      clientId: "wire-oidc-client",
+      clientSecretPath: secretPath,
+    },
+  });
+  try {
+    await client.health(AbortSignal.timeout(2_000));
+    // Rotate the secret on disk, then wait past the cached token's refresh margin.
+    await writeFile(secretPath, "wire-oidc-secret-two\n", { mode: 0o600 });
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await client.health(AbortSignal.timeout(2_000));
+    assert.equal(endpoint.requests.length, 2, "the refresh must exchange again");
+    // Rotation applies without a restart: the second exchange carries the new secret.
+    assert.equal(endpoint.requests[0].body.get("client_secret"), "wire-oidc-secret-one");
+    assert.equal(endpoint.requests[1].body.get("client_secret"), "wire-oidc-secret-two");
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+    await endpoint.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("OpenShell client shares one in-flight token refresh across concurrent calls", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    Health(_call, callback) {
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
+  });
+  let started = 0;
+  let released = false;
+  const release = new Promise((resolve) => {
+    // Hold the single exchange until every caller is waiting on it.
+    const wait = setInterval(() => {
+      if (started > 0 && !released) {
+        released = true;
+        clearInterval(wait);
+        resolve();
+      }
+    }, 10);
+  });
+  const endpoint = await startTokenEndpoint((request, response) => {
+    started += 1;
+    release.then(() => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: "wire-oidc-shared-token", expires_in: 3600 }));
+    });
+  });
+  const directory = await mkdtemp(join(tmpdir(), "openshell-oidc-"));
+  const secretPath = join(directory, "client-secret");
+  await writeFile(secretPath, "wire-oidc-shared-secret", { mode: 0o600 });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    auth: {
+      mode: "oidcClientCredentials",
+      tokenUrl: `http://127.0.0.1:${endpoint.port}/token`,
+      clientId: "wire-oidc-client",
+      clientSecretPath: secretPath,
+    },
+  });
+  try {
+    const calls = Array.from({ length: 5 }, () => client.health(AbortSignal.timeout(5_000)));
+    const statuses = await Promise.all(calls);
+    assert.deepEqual(
+      statuses.map(() => "SERVICE_STATUS_HEALTHY"),
+      Array.from({ length: 5 }, () => "SERVICE_STATUS_HEALTHY"),
+    );
+    // Five concurrent callers with no cached token share exactly one exchange.
+    assert.equal(endpoint.requests.length, 1, "concurrent callers must share one exchange");
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
@@ -3285,7 +3398,7 @@ test("OpenShell client fails the gateway call when the OIDC token endpoint rejec
   try {
     await assert.rejects(
       client.health(AbortSignal.timeout(2_000)),
-      /OpenShell OIDC token endpoint returned 401 \(invalid_client\)/,
+      /OpenShell OIDC token endpoint rejected the client credentials \(HTTP 401 \(invalid_client\)\)/,
     );
   } finally {
     client.close();

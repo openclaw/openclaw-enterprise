@@ -2703,6 +2703,11 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
                   grpc.status.RESOURCE_EXHAUSTED,
                 ].includes(code ?? -1)
               ) {
+                // A refused bearer token is retried within the attempt budget; drop the
+                // cached OIDC token so the next attempt presents a freshly minted one.
+                if (code === grpc.status.UNAUTHENTICATED) {
+                  this.oidc?.invalidate();
+                }
                 reject(error);
               } else {
                 reject(gatewayRequestFailure(method, error));

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import { TransientDependencyError } from "@openclaw-enterprise/occ";
 import { OpenShellGatewayFailure } from "./openshell-gateway-errors.ts";
 
 /**
@@ -22,11 +23,15 @@ interface CachedToken {
   readonly accessToken: string;
   /** Unix epoch milliseconds after which the token must be refreshed. */
   readonly refreshAfterMs: number;
+  /** Unix epoch milliseconds after which the token is no longer valid. */
+  readonly expiresAtMs: number;
 }
 
 const DEFAULT_TOKEN_REQUEST_TIMEOUT_MS = 10_000;
 // Refresh this long before expiry, never more than half the token's lifetime.
 const REFRESH_MARGIN_MS = 30_000;
+// A token endpoint response larger than this is not a token response.
+const MAX_TOKEN_RESPONSE_BYTES = 1_048_576;
 
 export class OpenShellOidcTokenSource {
   private readonly options: OpenShellOidcClientCredentialsOptions;
@@ -72,7 +77,21 @@ export class OpenShellOidcTokenSource {
       .finally(() => {
         this.refreshing = undefined;
       });
-    return this.refreshing;
+    try {
+      return await this.refreshing;
+    } catch (error) {
+      // A failed refresh keeps a token that is still valid until its real expiry,
+      // so a briefly unreachable issuer does not fail calls that could succeed.
+      if (this.cached !== undefined && Date.now() < this.cached.expiresAtMs) {
+        return this.cached.accessToken;
+      }
+      throw error;
+    }
+  }
+
+  /** Drops the cached token after the gateway refused it, so the next call re-fetches. */
+  invalidate(): void {
+    this.cached = undefined;
   }
 
   private async fetchToken(): Promise<CachedToken> {
@@ -87,7 +106,7 @@ export class OpenShellOidcTokenSource {
     };
     if (this.options.tokenAuth === "client_secret_basic") {
       // RFC 6749 2.3.1: form-urlencode both credentials before the base64 pair.
-      const encoded = `${encodeURIComponent(this.options.clientId)}:${encodeURIComponent(secret)}`;
+      const encoded = `${formUrlEncode(this.options.clientId)}:${formUrlEncode(secret)}`;
       headers.authorization = `Basic ${Buffer.from(encoded, "utf8").toString("base64")}`;
       body.set("client_id", this.options.clientId);
     } else {
@@ -110,17 +129,53 @@ export class OpenShellOidcTokenSource {
         signal: AbortSignal.timeout(this.requestTimeoutMs),
       });
     } catch (error) {
-      throw new OpenShellGatewayFailure(
-        `OpenShell OIDC token request failed: ${error instanceof Error ? error.message : String(error)}`,
+      // A network error or timeout clears without a configuration change; the
+      // underlying code (for example ECONNREFUSED or a certificate failure) is
+      // the part an operator can act on, because fetch reports only "fetch failed".
+      const timedOut = error instanceof Error && error.name === "TimeoutError";
+      const cause =
+        typeof error === "object" && error !== null && "cause" in error
+          ? (error as { readonly cause?: { readonly code?: unknown } }).cause?.code
+          : undefined;
+      const detail =
+        typeof cause === "string"
+          ? ` (${cause})`
+          : error instanceof Error
+            ? ` (${error.name})`
+            : "";
+      throw new TransientDependencyError(
+        "sandbox_gateway",
+        timedOut ? "timeout" : "unreachable",
+        `OpenShell OIDC token request failed${detail}.`,
+        { cause: error },
       );
     }
     if (!response.ok) {
       const detail = await errorDetail(response);
+      // 5xx clears without a change; a rejected client is a configuration error.
+      if (response.status >= 500) {
+        throw new TransientDependencyError(
+          "sandbox_gateway",
+          "unavailable",
+          `OpenShell OIDC token endpoint returned ${response.status}${detail}.`,
+        );
+      }
+      if (response.status === 401 || response.status === 400) {
+        throw new OpenShellGatewayFailure(
+          `OpenShell OIDC token endpoint rejected the client credentials (HTTP ${response.status}${detail}); check the client ID, secret, and issuer configuration.`,
+        );
+      }
       throw new OpenShellGatewayFailure(
         `OpenShell OIDC token endpoint returned ${response.status}${detail}.`,
       );
     }
-    const payload: unknown = await response.json().catch(() => undefined);
+    const bodyText = await readBounded(response);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(bodyText) as unknown;
+    } catch {
+      payload = undefined;
+    }
     const record =
       typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
     const accessToken = record.access_token;
@@ -150,12 +205,43 @@ export class OpenShellOidcTokenSource {
     }
     const lifetimeMs = (expiresIn as number) * 1000;
     const margin = Math.min(REFRESH_MARGIN_MS, lifetimeMs / 2);
-    return { accessToken, refreshAfterMs: Date.now() + lifetimeMs - margin };
+    const now = Date.now();
+    return {
+      accessToken,
+      refreshAfterMs: now + lifetimeMs - margin,
+      expiresAtMs: now + lifetimeMs,
+    };
   }
 }
 
+// Strict application/x-www-form-urlencoded encoding: encodeURIComponent leaves
+// !'()* unescaped, while the form ruleset a token endpoint applies escapes them.
+function formUrlEncode(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+async function readBounded(response: Response): Promise<string> {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && Number(declared) > MAX_TOKEN_RESPONSE_BYTES) {
+    throw new OpenShellGatewayFailure("OpenShell OIDC token endpoint response is too large.");
+  }
+  const text = await response.text();
+  if (text.length > MAX_TOKEN_RESPONSE_BYTES) {
+    throw new OpenShellGatewayFailure("OpenShell OIDC token endpoint response is too large.");
+  }
+  return text;
+}
+
 async function errorDetail(response: Response): Promise<string> {
-  const payload: unknown = await response.json().catch(() => undefined);
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await readBounded(response));
+  } catch {
+    return "";
+  }
   if (typeof payload === "object" && payload !== null) {
     const error = (payload as Record<string, unknown>).error;
     if (typeof error === "string" && error.length > 0) {
