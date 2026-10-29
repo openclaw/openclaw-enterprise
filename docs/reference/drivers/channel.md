@@ -15,7 +15,7 @@ implementation for directory lookup; see [Driver selection](selection.md).
 
 ## Interface
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires a
+The [shared interface](../../../packages/contracts/src/channel.ts) requires a
 Driver identity and `lookupDirectory({ token, kind, query?, cursor?, ids? })`. `kind`
 selects users or channels. `ids` resolves saved IDs directly and cannot be
 combined with a search query or cursor. The method returns workspace identity, candidates,
