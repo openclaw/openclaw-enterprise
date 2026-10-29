@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { openAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
@@ -734,15 +735,14 @@ test("provider Harness verified endpoint trust is projected before rollout and i
       client.terminate();
     }
     sockets.close();
-    return new Promise((resolve) => server.close(resolve));
   });
   sockets.on("connection", (socket, request) => {
     assert.equal(request.headers.authorization, "Bearer test-transport");
     socket.send("trust-ok");
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const providerPort = server.address().port;
+  // listen() registers the server close after the WebSocket teardown above, so the
+  // clients and the WebSocket server still close first.
+  const providerPort = await listen(t, server);
   let providerCaBundle = tls.caBundle;
 
   const providerUrl = `wss://localhost:${providerPort}/`;
