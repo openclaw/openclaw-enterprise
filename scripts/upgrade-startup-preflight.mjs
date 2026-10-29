@@ -25,8 +25,9 @@ const draftsVariable = "OCC_UPGRADE_PREFLIGHT_AGENT_DRAFTS";
 // Printed before each Agent whose draft the image's deploy admission would refuse, with the
 // Agent and OCC's message as one JSON object.
 const draftRefusal = "Agent draft refused:";
-// A Kubernetes Secret holds at most 1 MiB; leave room for the candidate Installation.
-const draftsLimitBytes = 640 * 1024;
+// Kubernetes refuses a Secret whose values exceed 1 MiB in total. The preflight Secret holds the
+// candidate Installation and the drafts, so the drafts get what the Installation leaves.
+const secretLimitBytes = 1024 * 1024;
 
 // Runs inside the controller image. It reads OCC_CONFIG_PATH and the chart's
 // environment, loads Drivers and Preset files, and never opens the database.
@@ -105,9 +106,9 @@ if (typeof contracts.isName === "function" && !contracts.isName(storedName)) {
   process.exit(1);
 }
 // Each Agent the upgrade deploys, with its saved Configuration. Deploy admission runs these
-// rules on the stored Configuration (refuseStoredConfigurationSettings), so a draft saved before
-// one of this image's rules would stop the fleet deploy after the controller moved. Every
-// refused Agent is printed. An image without the shared rules skips the check.
+// values-only rules on the stored Configuration (refuseUndeployableConfigurationValues), so a
+// draft saved before one of this image's rules would stop the fleet deploy after the controller
+// moved. Every refused Agent is printed. An image without the shared rules skips the check.
 if (process.env.${draftsVariable} !== undefined) {
   let drafts;
   let settings;
@@ -124,13 +125,15 @@ if (process.env.${draftsVariable} !== undefined) {
   } catch {
     settings = {};
   }
-  if (typeof settings.refuseStoredConfigurationSettings !== "function") {
+  if (typeof settings.refuseUndeployableConfigurationValues !== "function") {
     process.stdout.write("agent-draft-check-unavailable\\n");
   } else {
     let refused = false;
     for (const agent of drafts.agents) {
       try {
-        settings.refuseStoredConfigurationSettings(drafts.configurations[agent.configurationId]);
+        settings.refuseUndeployableConfigurationValues(
+          drafts.configurations[agent.configurationId],
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         process.stdout.write(
@@ -170,8 +173,8 @@ function documents(path) {
 
 // Gathers the helper's per-Agent drafts (one JSON line each: the Agent, its name and its saved
 // Configuration) into one gzipped document, each Configuration once. Exits 3 when it would not
-// fit in the preflight Secret.
-function drafts([draftsPath, outputPath]) {
+// fit in the preflight Secret beside the candidate Installation.
+function drafts([draftsPath, installationPath, outputPath]) {
   const agents = [];
   const configurations = {};
   for (const line of readFileSync(draftsPath, "utf8").split("\n")) {
@@ -183,9 +186,10 @@ function drafts([draftsPath, outputPath]) {
     configurations[configurationId] = values;
   }
   const document = gzipSync(JSON.stringify({ agents, configurations }));
-  if (document.length > draftsLimitBytes) {
+  const installationBytes = readFileSync(installationPath).length;
+  if (document.length + installationBytes > secretLimitBytes) {
     process.stderr.write(
-      `upgrade-startup-preflight: ${agents.length} Agent drafts take ${document.length} bytes gzipped, over the ${draftsLimitBytes}-byte preflight limit.\n`,
+      `upgrade-startup-preflight: ${agents.length} Agent drafts take ${document.length} bytes gzipped; with the ${installationBytes}-byte candidate Installation that is over the ${secretLimitBytes}-byte Secret limit.\n`,
     );
     process.exit(3);
   }
@@ -422,7 +426,7 @@ function phase([statusPath]) {
 
 const [action, ...input] = process.argv.slice(2);
 const actions = {
-  drafts: [2, drafts],
+  drafts: [3, drafts],
   secret: [6, (values) => JSON.stringify(secret(values))],
   pod: [11, (values) => JSON.stringify(pod(values))],
   refusals: [1, refusals],

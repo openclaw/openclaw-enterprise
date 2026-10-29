@@ -64,6 +64,7 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.mjs";
 import {
+  LIVE_BUTTON,
   openAdvancedSettings,
   withholdPermissionSummary,
   assertRevisionUrl,
@@ -78,7 +79,6 @@ import {
   AGENT_SAVE_DENIED,
   AGENT_SOURCES_DENIED,
   askForGrant,
-  callerDenied,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_UPDATE_DENIED,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -2092,8 +2092,15 @@ test("Agent draft plugin picker warns that API-key Codex Agents cannot use plugi
     .waitFor();
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  const unavailable = "Plugin browsing is unavailable with API-key authentication.";
+  await dialog.getByText(unavailable).waitFor();
+  // Load plugins and the pager are disabled for the reason that line gives, and each is
+  // described by it (finding D796).
+  for (const name of ["Load plugins", "Previous page", "Next page"]) {
+    const control = dialog.getByRole("button", { name, exact: true });
+    assert.equal(await control.isDisabled(), true, name);
+    assert.equal(await accessibleDescription(control), unavailable, name);
+  }
   // The empty list must not tell the user to load a catalog they cannot load.
   await dialog
     .getByText("To add a plugin by ID, choose Done and edit Plugin selections JSON.")
@@ -2488,6 +2495,7 @@ test("Tab leaves a scrolling Secret list for the next control, and the list keep
   assert.deepEqual(await listbox.getByRole("option").allTextContents(), [
     secrets[8].name,
     "Create new Secret...",
+    "Refresh Secret list",
   ]);
   await page.keyboard.press("Escape");
   await listbox.waitFor({ state: "hidden" });
@@ -2533,7 +2541,14 @@ for (const listOutcome of ["arrives", "fails"]) {
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
     const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
     await apiKeySecret.fill("no matching create target");
-    await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+    const create = page.getByRole("option", { name: "Create new Secret...", exact: true });
+    await apiKeySecret.press("ArrowDown");
+    assert.equal(
+      await apiKeySecret.getAttribute("aria-activedescendant"),
+      await create.getAttribute("id"),
+    );
+    assert.equal(await hasFocus(apiKeySecret), true);
+    await apiKeySecret.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
     await dialog.getByLabel("Name", { exact: true }).fill("Created while loading");
     await dialog.getByLabel("Value", { exact: true }).fill("created-while-loading");
@@ -2541,11 +2556,15 @@ for (const listOutcome of ["arrives", "fails"]) {
     await dialog.waitFor({ state: "detached" });
     const staged = page.getByText("Secret binding staged. Save changes to apply it.");
     await staged.waitFor();
+    assert.equal(await hasFocus(apiKeySecret), true);
+    assert.equal(await apiKeySecret.getAttribute("aria-expanded"), "false");
     assert.ok(listReads > 0);
     releaseList();
     // Every held list read and the create have now reached the page's own code.
     await waitForSettledFetches(page, secretsPath, listReads + 1);
     assert.equal(await staged.count(), 1);
+    assert.equal(await hasFocus(apiKeySecret), true);
+    assert.equal(await apiKeySecret.getAttribute("aria-expanded"), "false");
     assert.deepEqual(await statusTone(staged), { className: "hint", tone: null, role: "status" });
     const created = (await fixture.request("GET", secretsPath)).data.find(
       (secret) => secret.name === "Created while loading",
@@ -2948,25 +2967,40 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     [[agent.servicePrincipalId, replacementSecret.id]],
   );
 
-  // Retry rereads the Agent before any grant request. Native IAM now refuses that read: the
-  // warning is about the read, not a grant refusal, and Retry stays for when the read works.
+  // A denied retry read must retain the prior saved fact, but retire revoked metadata.
   const deniedRead = restrict(fixture.policy, "read", "agent", { resourceId: agent.id });
   requests.length = 0;
+  const refusedRead = page.waitForResponse(
+    (response) => response.url().endsWith(`/agents/${agent.id}`) && response.status() === 403,
+  );
   await page.getByRole("button", { name: "Retry credential access" }).click();
-  // The read's own refusal, named by the API (finding 2534), not grant advice such as "this
-  // write may have succeeded".
+  const requestId = (await (await refusedRead).json()).meta.requestId;
   await page
     .getByText(
-      new RegExp(
-        `^${RegExp.escape(`Authentication source saved, but this Agent could not be read before retrying its credential access. ${callerDenied("Agent read", `Agent ${agent.id}`)}`)} Request ID: req_[0-9a-f-]{36} Select Retry credential access once the Agent can be read\\.$`,
-      ),
+      "Authentication source saved. Could not read the Agent before retrying credential access. No access grant was sent.",
+      { exact: true },
     )
     .waitFor();
-  assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
-  await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
+  await page.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+  assert.equal((await page.locator("body").innerText()).split(requestId).length - 1, 1);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  const html = await page.content();
+  for (const value of [
+    agent.name,
+    originalSecret.name,
+    originalSecret.id,
+    replacementSecret.name,
+    replacementSecret.id,
+  ]) {
+    assert.equal(html.includes(value), false);
+  }
+  assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
   liftRestriction(fixture.policy, deniedRead);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await waitForEnabled(page.getByRole("button", { name: "Save authentication source" }));
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 
-  // A retry after this denial must not grant the Secret to a different service principal.
+  // Freshly read saved authentication must still refuse a changed service principal.
   const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
   assert.notEqual(other.servicePrincipalId, agent.servicePrincipalId);
   const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -2982,7 +3016,7 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   });
   requests.length = 0;
   const reread = page.waitForResponse(agentUrl);
-  const retry = page.getByRole("button", { name: "Retry credential access" });
+  const retry = page.getByRole("button", { name: "Save authentication source" });
   await retry.click();
   assert.equal((await reread).status(), 200);
   await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
@@ -3268,7 +3302,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   requests.length = 0;
 
   const nextValues = nativeValues("after-unknown");
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nextValues, null, 2));
@@ -3348,6 +3382,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   });
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
 
   await login(
@@ -3357,6 +3392,14 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  // A slow permission answer reveals the page at FIRST_ACTIVITY_WAIT_MS, before the native admin
+  // status read it gates is sent. Clear the log only after that first read, so the reread below
+  // is the only one after the stop.
+  await waitForSettledFetches(
+    page,
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+    1,
+  );
   requests.length = 0;
 
   await page.getByRole("button", { name: "Stop Agent" }).click();

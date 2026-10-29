@@ -1228,6 +1228,31 @@ export function hasFocus(locator) {
   return locator.evaluate((node) => node === globalThis.document.activeElement);
 }
 
+// Clicks `close`, a control that closes its dialog, and focuses `elsewhere` in the same task. The
+// dialog's close event fires a task later, so this is the reader who has already moved on, for
+// example to a field they type in (finding 2862). Resolves after the dialog's own close handlers
+// ran, with whether `elsewhere` still holds focus.
+export async function focusKeptOverClose(close, elsewhere) {
+  const target = await elsewhere.elementHandle();
+  try {
+    return await close.evaluate(
+      (control, node) =>
+        new Promise((resolve) => {
+          control
+            .closest("dialog")
+            .addEventListener("close", () => resolve(globalThis.document.activeElement === node), {
+              once: true,
+            });
+          control.click();
+          node.focus();
+        }),
+      target,
+    );
+  } finally {
+    await target.dispose();
+  }
+}
+
 // Counts the browser's `invalid` events. Its own validation fires one per refused control
 // whenever it would show its bubble (a submit without novalidate, or reportValidity); the
 // console's check reads `validity` and fires none. Install it before the page loads; the

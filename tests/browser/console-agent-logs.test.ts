@@ -17,13 +17,17 @@ import type {
   SandboxLogLine,
 } from "../../packages/contracts/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
+import {
+  authorizationDenials,
+  createConsoleAppFixture,
+  fileConsoleApp,
+} from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import {
   LOG_TEXT_DENIED,
   RUNTIME_STATUS_DENIED,
   RUNTIME_STATUS_OPERATE_DENIED,
-  RUNTIME_STATUS_VERSION_DENIED,
+  RUNTIME_STATUS_VERSION_UNREADABLE,
 } from "../helpers/refusal-text.mjs";
 import {
   createProviderSandboxDriver,
@@ -2205,54 +2209,57 @@ test("a reader without operate learns what log text needs and is not asked for s
   assert.equal(logRequests(requests, revisionId).length, 0);
 });
 
-// The strip names only the status grant the caller's answers show missing (finding D753): the
-// permission answer says whether she holds Agent operate, and the version read whether she holds
-// AgentRevision read. A caller whose version read was refused and who lacks operate gets both.
-test("the runtime status refusal names AgentRevision read only when the version read is refused", async (t) => {
+// The strip says what keeps runtime status from a caller whose version read was refused. An
+// operator holds Agent operate, so only the version is missing: her status read was sent, refused
+// and audited on every Logs visit, and the strip showed the refusal with a Request ID. Now the
+// page's refused version read stands for it, and the strip says in words that status is not
+// shown (finding D794). A reader's answer also denies operate, so her strip names both grants
+// (finding D753) and her status read is not sent either (finding 2454). Log text needs no
+// version read: both still read it.
+test("the runtime strip reads no status for a version the caller cannot read", async (t) => {
   const { fixture, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "unreadable version output")];
   const statusPath = `/deployments/${revisionId}/runtime`;
   const cases = [
     {
       name: "runtime-operator-no-version",
-      permissions: ["read", "operate"] satisfies PermissionAction[],
-      text: RUNTIME_STATUS_VERSION_DENIED,
-      statusRead: true,
+      permissions: ["read", "operate", "read_logs"] satisfies PermissionAction[],
+      text: RUNTIME_STATUS_VERSION_UNREADABLE,
     },
     {
       name: "runtime-reader-no-version",
-      permissions: ["read"] satisfies PermissionAction[],
+      permissions: ["read", "read_logs"] satisfies PermissionAction[],
       text: RUNTIME_STATUS_DENIED,
-      statusRead: false,
     },
   ];
-  for (const { name, permissions, text, statusRead } of cases) {
+  const statusDenials = () =>
+    authorizationDenials(fixture.auditSink, "openclaw.agent_deployments.runtime.read").length;
+  for (const { name, permissions, text } of cases) {
     const { account } = await logsMember(fixture, namespace, name, permissions, {
       versionRead: false,
     });
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
+    const denied = statusDenials();
     await login(
       page,
       fixture,
       detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"),
       account.credentials,
     );
-    // A refused read adds its Request ID after the sentence.
-    await page.getByText(text).waitFor();
+    // No read was refused, so no Request ID follows the sentence.
+    await page.getByText(text, { exact: true }).waitFor();
+    await page
+      .getByRole("log", { name: "Runtime log output" })
+      .getByText("unreadable version output")
+      .waitFor();
     await settlePageRequests(page);
-    // The operator holds operate, so the strip does not ask for it.
-    assert.equal(
-      await page.getByText(/Runtime status requires Agent operate/).count(),
-      statusRead ? 0 : 1,
-      name,
-    );
-    // An operator's status read is sent and refused for the version; a reader's answer already
-    // denies operate, so hers is not sent (finding 2454).
     assert.equal(
       requests.some(({ path }) => path.endsWith(statusPath)),
-      statusRead,
+      false,
       name,
     );
+    assert.equal(statusDenials(), denied, name);
     await page.close();
   }
 });
@@ -2328,7 +2335,7 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   await page.getByRole("heading", { name: "Namespaces" }).waitFor();
   // The heading shows before the Namespaces page has checked access. Advancing the clock past
   // the console's 15 s request timeout while a session or Namespace read is pending fails it
-  // ("Session unavailable" or "Namespace access unavailable") and drops every cached view, so
+  // ("Could not reach OpenClaw Enterprise") and drops every cached view, so
   // let the page finish its reads first.
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await waitForIdleFetches(page);
@@ -2629,7 +2636,11 @@ test("Back rebuilds an Agent view whose runtime status or version read was refus
   await leave();
   revoke("agent_revision", "read");
   await page.goBack();
-  await page.getByText(/you cannot read this version/).waitFor();
+  // The page names the current version in words once its read is refused (finding D791).
+  await page
+    .locator(".agent-current-summary")
+    .getByText("A version you cannot read", { exact: true })
+    .waitFor();
   assert.equal(await viewKept(page), false);
 });
 

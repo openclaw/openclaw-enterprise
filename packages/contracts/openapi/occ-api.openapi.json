@@ -874,7 +874,7 @@
               },
               "message": { "maxLength": 256, "minLength": 1, "type": "string" },
               "remainingResources": {
-                "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
+                "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
                 "items": {
                   "additionalProperties": false,
                   "properties": {
@@ -17473,7 +17473,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update.",
+        "description": "Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.",
         "operationId": "updateAgent",
         "parameters": [
           {
@@ -18150,6 +18150,12 @@
             "condition": "bound_credential_source",
             "resourceKind": "credential_source",
             "scope": "requested"
+          },
+          {
+            "action": "read",
+            "condition": "saved_sandbox_policy_additions",
+            "resourceKind": "sandbox_policy",
+            "scope": "requested"
           }
         ]
       }
@@ -18484,7 +18490,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgent",
         "parameters": [
           {
@@ -18910,6 +18916,12 @@
             "action": "operate",
             "condition": "bound_credential_source",
             "resourceKind": "credential_source",
+            "scope": "requested"
+          },
+          {
+            "action": "read",
+            "condition": "saved_sandbox_policy_additions",
+            "resourceKind": "sandbox_policy",
             "scope": "requested"
           }
         ]
@@ -25177,7 +25189,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/apply": {
       "post": {
-        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy. Requires read permission on the requested SandboxPolicy.",
         "operationId": "applyAgentSandboxPolicy",
         "parameters": [
           {
@@ -25448,7 +25460,8 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
-          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" },
+          { "action": "read", "resourceKind": "sandbox_policy", "scope": "requested" }
         ]
       }
     },

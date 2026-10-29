@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-10-29"
-last_updated_session: "fix-2809"
+last_updated_session: "authoring-run/35ed2337-614f-4587-a16d-7c1973bb4819"
 ---
 
 # Production image upgrade flow
@@ -62,27 +62,27 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Before protected-file reads, evidence writes, or cluster access, every upgrade
-attempt requires the repository root's Git `HEAD` to match `--source-revision`.
-This does not verify uncommitted changes or image provenance.
+Before protected-file reads, evidence writes or cluster access, repository
+`HEAD` must match `--source-revision`.
+Local edits and image provenance remain unverified.
 
-The script verifies protected files, cluster, deployed Helm release, and matching
-OCC and Secret Installation IDs. It compares protected and live configuration,
-including image fields, and captures separate reviewed candidates. Only the Slack
-directory proxy and curated Codex PluginDriver selection may change; all other
-settings remain protected. The broker guard compares references, not ConfigMap or
-Secret contents. Image flags apply after comparison. Runtime releases record each running Agent's
-baseline version from complete authorized inventory. Nonterminal deployments,
-missing selected versions, or unready Namespaces stop preparation. Stopped and
-deleting Agents are excluded; pending repository cleanup does not block preparation.
+It verifies protected files, cluster, deployed Helm release and matching OCC/Secret
+Installation IDs. It records reviewed candidates and compares the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration),
+including image fields, as ordered YAML mappings. A non-mapping document stops
+preparation before rendering. Only the Slack directory proxy and curated Codex
+PluginDriver selection may change; image flags apply afterward. Broker checks compare references, not ConfigMap or Secret contents.
+
+Complete authorized inventory supplies each running Agent's baseline version for
+runtime upgrades. Nonterminal deployments, missing selected versions or unready
+Namespaces stop preparation. Stopped and deleting Agents are excluded; pending
+repository cleanup does not block preparation.
 
 Repository-enabled releases require explicit immutable controller and broker
 images. The helper inventories all nodes matching the control plane selector,
 including unready and cordoned nodes; they must have one native architecture.
-`scripts/upgrade-image-identity.py:read_platform` reads Docker's native OCI export,
-resolves the selected manifest's configuration, retains JSON objects within
-2 MiB per-blob and 32 MiB total metadata limits, checks their hashes, and verifies
-the configuration's platform. Compressed filesystem layers are outside that budget.
+`scripts/upgrade-image-identity.py:read_platform` reads Docker's native OCI export
+and verifies the selected configuration's platform, with hash checks and 2 MiB
+per-blob and 32 MiB total metadata limits.
 `scripts/upgrade-repository-image-probe.mjs` runs both images with synthetic
 inputs and a private receipt listener. It checks recovery and refused reservation
 through the actual Driver and broker, recording the selected digest, platform
@@ -114,10 +114,12 @@ Each Pod checks the stored Installation name from `occ installation get` with
 the image's `isName`, as the controller does after reading the database
 (`INSTALLATION_NAME_INVALID`); an image without the rule skips it.
 
-Runtime upgrades also put each recorded Agent's Configuration, read through OCC, in the
-Secret. The API Pod alone runs the image's `refuseStoredConfigurationSettings` on them, as
-deploy admission does; a refusal stops preparation. Older images and oversized drafts skip
-it with a warning.
+Runtime upgrades also put each recorded Agent's Configuration in the Secret when it fits beside the Installation within 1 MiB. The API Pod alone runs the
+image's `refuseUndeployableConfigurationValues` on them: deploy admission's values-only
+rules (model providers, workspace bootstrap, retired settings, OpenClaw sandbox). A refusal
+stops preparation. Deploy alone runs rules that read live state, such as Driver, Harness,
+credential, plugin and repository checks. Older images and drafts that do not fit skip the
+check with a warning.
 
 Experimental two-cluster Pods also run
 `KubernetesComputeDriver.verifyExecutionTenantGrants` for their component; startup
@@ -140,9 +142,8 @@ the unique ID (UID) returned on create, leaving same-name replacements alone;
 `preflight-cleanup.err` records refusals. The operator checks whether an
 ambiguous create left an object behind.
 
-`--preflight-only` leaves writers running and retains private, nonresumable
-evidence without marking preparation complete. Deployment repeats checks with
-reviewed inputs in a fresh directory.
+`--preflight-only` leaves writers running and keeps private evidence that cannot
+be resumed.
 
 An upgrade saves candidate inputs, inventory, target identity, and parameter
 hashes before marking preparation complete. A directory lock prevents concurrent
@@ -202,8 +203,7 @@ The script waits for both OCC Deployments and checks controller images,
 replica counts, and changed Installation checksums. Each component needs
 exactly one named container. A broker-enabled worker may instead be a restartable
 init container; non-restartable or ambiguous placement fails. Authenticated OCC
-access is retried and must return the same Installation ID. Controller-only
-releases request no Agent deployments.
+access is retried and must return the same Installation ID.
 An existing version keeps the Pod specification of the controller that
 deployed it only until the worker prepares it again. Agents with repository
 credentials get a maintenance pass every 30 seconds until their repository
@@ -267,7 +267,6 @@ starts no further Doctor. Then, also after a failed Doctor, `revision_pod_change
 fails the upgrade for any revision Pod the wait required (gateway or dedicated agent)
 missing, replaced, restarted, or unready; the readiness wait ignores ended Pods, so
 resume checks the replacement.
-Failures retain dispatch, status, Pod, and Doctor evidence.
 
 ### 6. Hand off application verification
 
@@ -312,7 +311,6 @@ Agents or Secrets.
   changes. After a controller-only release, expect one same-image Pod template
   rollout per affected Agent. Separately check
   repository-bound versions affected by broker restart.
-  Runtime proof should show intended replacements.
 - Use credentialed production Kubernetes integration with distinct baseline
   and candidate images for end-to-end proof. Mocked commands prove only script
   control flow.
@@ -333,7 +331,10 @@ Agents or Secrets.
 
 ## Changelog
 
+- 2026-10-29 12:28: Validate baseline mapping streams. (authoring-run/b9a98c72-bd73-45d4-b50d-f12d185f39b5 - 389a51336cd5)
+- 2026-10-29 11:04: Document protected baseline comparison. (authoring-run/35ed2337-614f-4587-a16d-7c1973bb4819 - 51de7c164aab)
 - 2026-10-29: Check Agent drafts before writers stop. (fix-2809)
+- 2026-10-29: Check model providers; budget drafts by Installation. (fix-2815-2816)
 - 2026-10-28 18:11: Check Helm status before reconciliation reads. (authoring-run/44ebe5a4-904f-4a6b-8796-e86c3ab7a26a - 541cc3f43bdfb09615ecee0cfb79c533e6a0b56c)
 - 2026-10-28 21:01: Check API themes before writer quiescence. (authoring-run/bf262f39-fa9d-4e70-94e1-e2fc516234e9 - 304fcfb169bc8403794e8562a08b1e3ee4cc23ac)
 

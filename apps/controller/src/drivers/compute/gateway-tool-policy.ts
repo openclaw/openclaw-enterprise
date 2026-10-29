@@ -393,7 +393,32 @@ function requireGatewayToolPolicyRuntime() {
     throw new GatewayToolPolicyError();
   }
 }
+// OpenClaw refuses to read its configuration while an earlier Gateway process may still own
+// the state: after an unclean exit, a restarted container runs in a new PID namespace and
+// cannot prove that the recorded holder stopped (finding 2864). validate --json reports the
+// refusal as its root read issue, which names OpenClaw's GatewayLockNamespaceError.
+class GatewayStateLockError extends Error {
+  constructor(refusal) {
+    super("The dedicated Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds the Gateway state lock, and this container cannot verify that it stopped. It remains unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes for an unverifiable state owner. OpenClaw reported: " + refusal);
+  }
+}
+function gatewayStateLockRefusal(stdout) {
+  let report;
+  try {
+    report = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  if (report?.valid !== false || !Array.isArray(report.issues)) return undefined;
+  for (const issue of report.issues) {
+    if (issue?.path !== "<root>" || typeof issue.message !== "string") continue;
+    const refusal = /^read failed at [^\n]*?: GatewayLockNamespaceError: ([^\n]+)/u.exec(issue.message);
+    if (refusal !== null) return refusal[1].slice(0, 1000);
+  }
+  return undefined;
+}
 function configureManagedGatewayTools(admitted) {
+  let lockRefusal;
   try {
     const config = managedGatewayConfiguration(readOpenClawConfig(), admitted, Boolean(process.env.APP_SERVER_URL));
     writeOpenClawConfig(config);
@@ -401,16 +426,26 @@ function configureManagedGatewayTools(admitted) {
       env: { ...process.env, OPENCLAW_CONFIG_READONLY: "1" },
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
     });
+    if (validation.error === undefined && validation.status !== 0) {
+      lockRefusal = gatewayStateLockRefusal(validation.stdout);
+    }
     if (validation.error !== undefined || validation.status !== 0 || JSON.parse(validation.stdout)?.valid !== true) {
       throw new GatewayToolPolicyError();
     }
   } catch {
-    throw new GatewayToolPolicyError();
+    throw lockRefusal === undefined ? new GatewayToolPolicyError() : new GatewayStateLockError(lockRefusal);
   }
 }
+// Holds either refusal of the tool policy step: the policy itself, or the Gateway state lock
+// that kept OpenClaw from reading the configuration it validates.
 function holdGatewayToolPolicyFailure(error) {
-  if (!(error instanceof GatewayToolPolicyError)) return false;
-  publishRuntimeFailure("gateway-tool-policy", "INCOMPATIBLE_RESPONSE");
+  if (error instanceof GatewayStateLockError) {
+    publishRuntimeFailure("gateway-state-lock", "UNAVAILABLE");
+  } else if (error instanceof GatewayToolPolicyError) {
+    publishRuntimeFailure("gateway-tool-policy", "INCOMPATIBLE_RESPONSE");
+  } else {
+    return false;
+  }
   console.error(error.message);
   setInterval(() => {}, 3600000);
   return true;

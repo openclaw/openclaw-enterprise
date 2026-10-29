@@ -1120,6 +1120,19 @@ export const scenarios = {
       "Sign in again and confirm the requested collection returns without replaying a write.",
     ],
   },
+  navigationOffline: {
+    group: "Pages/Navigation",
+    name: "Refresh while offline",
+    rules: [{ path: "/api/auth/session", skip: 1, networkError: true }],
+    actions: [click("Refresh")],
+    description:
+      "Refresh rereads the session, and the read never reaches the API. The signed-in shell stays, the page says it could not reach OpenClaw Enterprise, and focus is on Retry. The fixture fails every later session read as the browser does offline.",
+    steps: [
+      "Confirm the account and navigation stay, and no Agent or Namespace name shows.",
+      "Choose Retry: the same message returns and focus is on Retry again.",
+      "Repeat at phone width.",
+    ],
+  },
   observabilityLink: {
     group: "Components/Navigation",
     name: "Admin Observability link",
@@ -1350,7 +1363,62 @@ export const scenarios = {
       "The Namespace list the Agents page rereads while its Namespace provisions no longer holds it: it was deleted, or the reader lost access. The wait ends, the note asks for another Namespace, as Create Agent's does, and Create Agent is disabled.",
     steps: [
       'Within about 10 s the note "Namespace status: Provisioning." becomes "This Namespace is missing or you no longer have access. Choose another Namespace."',
-      'Confirm Create Agent is disabled and described by that note, the empty state reads "Agents cannot be created in this Namespace.", and no further Namespace reads happen.',
+      "Confirm Create Agent is disabled and described by that note, no empty-list message appears, and no further Namespace reads happen.",
+    ],
+  },
+  agentsNamespaceMissingStopDialog: {
+    group: "Pages/Agents",
+    name: "Namespace loss with Stop dialog",
+    deployed: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
+    description:
+      "The last Namespace response still says provisioning. Its idle recheck removes access while the row confirmation is open.",
+    steps: [
+      "Wait for the recheck. The dialog, rows and previous feedback disappear. Search Agents receives focus, with no empty-list message.",
+    ],
+  },
+  agentsNamespaceMissingLateStop: {
+    group: "Pages/Agents",
+    name: "Namespace loss before Stop response",
+    deployed: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    rules: [{ suffix: "/stop", method: "POST", delayMs: 12000 }],
+    actions: [
+      { selector: '[aria-label="Stop Research assistant"]', click: true },
+      { selector: ".agent-stop-dialog .danger", click: true },
+    ],
+    description: "The Namespace becomes unavailable while a Stop response is pending.",
+    steps: [
+      "Wait for the result. Only generic acceptance and the unavailable warning remain, with no Agent name, ID or empty-list message.",
+    ],
+  },
+  agentsNamespaceMissingDeleteDialog: {
+    group: "Pages/Agents",
+    name: "Namespace loss with Delete dialog",
+    deployed: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [{ selector: '[aria-label="Delete Research assistant"]', click: true }],
+    description:
+      "The last Namespace response still says provisioning. Its idle recheck removes access while the row confirmation is open.",
+    steps: [
+      "Wait for the recheck. The dialog, rows and previous feedback disappear. Search Agents receives focus, with no empty-list message.",
+    ],
+  },
+  agentsNamespaceMissingPopulated: {
+    group: "Pages/Agents",
+    name: "Populated Namespace leaves the list",
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [{ selector: 'input[type="search"]', value: "Research", focus: true }],
+    description:
+      "A provisioning Namespace becomes unreadable while its Agents are displayed. The idle check removes the rows and disables Create Agent without moving search focus.",
+    steps: [
+      "Wait for the missing-Namespace warning. Research assistant and its actions disappear.",
+      "Clear Search Agents. The old rows must not return. Repeat at phone width.",
     ],
   },
   agentsDenied: {
@@ -1471,7 +1539,7 @@ export const scenarios = {
       { click: "Delete Namespace" },
     ],
     description:
-      "A simulated NAMESPACE_NOT_EMPTY response names remaining resources. Open Agents or Secrets, or inspect Configuration cleanup commands.",
+      "A simulated NAMESPACE_NOT_EMPTY response names remaining resources the caller can read and counts the rest. Open Agents or Secrets, or inspect Configuration cleanup commands.",
   },
   namespaceDeleteDenied: {
     group: "Pages/Namespaces",
@@ -1479,7 +1547,16 @@ export const scenarios = {
     path: "/console/namespaces",
     namespaceDeleteDenied: true,
     description:
-      "The advisory permission answer disables deletion and explains the exact required grant.",
+      "A member's advisory permission answer refuses deletion. The trash icon looks disabled and its reason says only an Installation administrator can delete a Namespace.",
+  },
+  namespaceDeleteRestricted: {
+    group: "Pages/Namespaces",
+    name: "Delete blocked by a Restriction",
+    path: "/console/namespaces",
+    namespaceDeleteRestricted: true,
+    description:
+      "An Installation administrator whom a deny Restriction keeps from deleting the Namespace. The reason names the Restriction and who can lift it, not an administrator to ask.",
+    gap: "The permission answer is advisory. The controller still authorizes each delete.",
   },
   namespaceDeleteRefused: {
     group: "Pages/Namespaces",
@@ -1831,6 +1908,9 @@ export const scenarios = {
     name: "Choose a starting point",
     path: create,
     description: "Choose a Preset or start with standard defaults.",
+    steps: [
+      "Tab to Use Preset. It takes focus and looks unavailable; its description is the status line under the chooser, and Enter or Space does nothing until a Preset is chosen.",
+    ],
   },
   createForm: {
     group: "Pages/Create Agent",
@@ -3652,6 +3732,93 @@ export const scenarios = {
     ],
     gap: "Simulated UI proof only; this walkthrough does not save or deploy an Agent.",
   },
+  createPasswordSecretConflict: {
+    group: "Pages/Create Agent",
+    name: "Password Secret conflict recovery",
+    path: create,
+    standardCodexPreset: true,
+    actions: [...passwordPresetForm, click("Create Agent")],
+    rules: [
+      {
+        suffix: "/secrets",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "A Secret with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    description:
+      "A confirmed duplicate model Secret keeps the draft and offers deliberate existing Secret selection or a separate new Secret name.",
+    steps: [
+      "Change Agent name after the conflict: the old collision notice clears without a write. Reset to exercise the recovery choices.",
+      "Choose existing Secret and select a readable model credential. Confirm the Agent name, model and other draft fields remain.",
+      "Reset the story. Use another Secret name, submit spaces, then a name longer than 255 characters. Both stop at field validation. Correct the name and create the Agent.",
+      "Reset the story. Tab from the collision notice through both choices. Use another Secret name focuses its input. Switch Authentication method to ChatGPT OAuth: recovery and its required input disappear. Switch back: no stale choice returns.",
+    ],
+    gap: "Simulated UI proof; native controller browser tests exercise duplicate rejection and recovery.",
+  },
+  createPasswordSecretConflictPat: {
+    group: "Pages/Create Agent",
+    name: "Secret conflict restores plugin discovery",
+    path: create,
+    standardCodexPreset: true,
+    pluginDiscovery,
+    pluginCapabilities,
+    actions: [
+      ...passwordPresetForm,
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      { selector: "#provider-api-key", value: "at-storybook-pat" },
+      { selector: "#agent-model", value: "gpt-5.1" },
+      click("Create Agent"),
+      click("Choose existing Secret"),
+      { selector: "#plugin-discovery-token summary", click: true },
+    ],
+    rules: [
+      {
+        suffix: "/secrets",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "A Secret with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    description:
+      "Choosing an existing Secret restores the normal optional service account token for plugin discovery.",
+    steps: [
+      "Enter a dummy token, then open Configure plugins. Select a Secret deliberately before creating the Agent.",
+    ],
+    gap: pluginDiscoveryGap,
+  },
+  createPasswordSecretConflictOAuth: {
+    group: "Pages/Create Agent",
+    name: "Secret conflict cleared for OAuth",
+    path: create,
+    standardCodexPreset: true,
+    actions: [
+      ...passwordPresetForm,
+      click("Create Agent"),
+      click("Use another Secret name"),
+      { selector: "#agent-auth-method", value: "credential_source" },
+    ],
+    rules: [
+      {
+        suffix: "/secrets",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "A Secret with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    description:
+      "Switching the refused password draft to OAuth clears the Secret collision choices and required alternate name. Returning to API key requires fresh credentials without restoring the collision.",
+    gap: "Simulated UI proof; native fixtures cover the actual duplicate refusal and keyboard recovery.",
+  },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
     name: "Password Secret creation denied",
@@ -3701,10 +3868,10 @@ export const scenarios = {
       { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
     ],
     description:
-      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, the page says the permission check failed, and Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal.",
+      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, a warning above the form says the permission check failed, and its Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal in the same block.",
     steps: [
-      'Under the form fields, read "Your permissions in this Namespace could not be checked".',
-      "Retry permission check is offered; the fixture keeps failing the read, so the text stays.",
+      'Above the form, the "Your access" warning reads "Your permissions in this Namespace could not be checked"; the hint under the form fields is empty.',
+      "Retry permission check is the warning's action; the fixture keeps failing the read, so the text stays.",
     ],
     gap: "The member creation browser test also covers a successful retry.",
   },
@@ -3902,6 +4069,9 @@ export const scenarios = {
     pluginDiscovery,
     description:
       "Plugin browsing uses the Agent's saved credential source without another login. Saving plugin selections never replaces authentication.",
+    steps: [
+      "Tab to Save plugin selections and Discard changes. Each takes focus, looks unavailable and is described by No plugin changes to save.; Enter or Space does nothing. Edit the JSON: both become live.",
+    ],
   },
   authOAuthReconnect: {
     group: "Components/Credentials",
@@ -4440,6 +4610,21 @@ export const scenarios = {
     description:
       "An Agent's other controls retain their own permissions when sharing administration is unavailable.",
   },
+  agentSharingRefusedOnReturn: {
+    group: "Pages/Agent detail",
+    name: "Sharing refused on return",
+    path: `${draft}&tab=access`,
+    // The first policy read succeeds; the reread on the return to the tab is refused.
+    rules: [{ suffix: "/iam/roles", status: 403, skip: 1 }],
+    actions: [{ text: "Current policy loaded." }, click("Configuration"), click("Access")],
+    description:
+      "The story loads the Access tab, opens Configuration, then returns to Access, whose policy reread is refused as after a revoke. The tab gives way to Configuration and says why; the earlier grants and Remove binding are gone.",
+    steps: [
+      "Configuration is selected and the note reads “The Access tab needs Installation administration, which your access does not include. Showing Configuration.” The Access tab is gone.",
+      "The request log shows one refused /iam/roles read on the return and no /iam/access-bindings read after it.",
+    ],
+    gap: "Simulated UI proof: the refused reread stands in for administration revoked while the page is open.",
+  },
   agentSharingUnknown: {
     group: "Pages/Agent detail",
     name: "Sharing outcome uncertain",
@@ -4635,6 +4820,9 @@ export const scenarios = {
     messageQueue: { allowCollaborativeSteering: false },
     description:
       "A viewer sees the saved strict settings, with every toggle unavailable and the reason linked to each. The note above them names the grant to ask for.",
+    steps: [
+      "Tab to Strict mode and on through each toggle. Each takes focus, its label draws the focus ring, its description ends with These settings are read-only with your access., and Space leaves it unchanged.",
+    ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   pluginsUpdateDenied: {
@@ -4666,7 +4854,7 @@ export const scenarios = {
     steps: [
       "Read the notice: Version draft · read-only with your access.",
       "Find no Edit Configuration button; View native Configuration opens the saved JSON.",
-      "The draft card reads Version draft, with Deploy disabled and its reason, and no Prepare this version steps.",
+      "The draft card reads Version draft, with Deploy unavailable and its reason, and no Prepare this version steps. Tab reaches Deploy new version: it looks unavailable, its description is the reason, and Enter or Space does nothing.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
@@ -4723,6 +4911,24 @@ export const scenarios = {
     description:
       "The Configuration denies every tool of the selected plugin, so the API refuses the save. The refusal shows as an error and takes focus; editing the selections clears it.",
     gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.mjs.",
+  },
+  pluginsPrefetchReturn: {
+    group: "Pages/Agent detail",
+    name: "Return before plugin prefetch starts",
+    path: draft,
+    deployed: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    pluginCapabilities,
+    pluginDiscovery,
+    actions: [click("Plugins"), click("Configuration")],
+    description:
+      "The fixture leaves Plugins while catalog prefetch is deferred. Returning can load the catalog without losing saved selections.",
+    steps: [
+      "After the initial Configuration view settles, select Plugins and open Configure plugins. Calendar should load and Load plugins should be enabled; Loading plugins must not persist.",
+      "Close and reopen the picker. Calendar's saved policy is unchanged. Repeat from Reset story to inspect the skipped prefetch again.",
+    ],
+    gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
   },
   pluginsDraft: {
     group: "Pages/Agent detail",
@@ -4938,6 +5144,22 @@ export const scenarios = {
     steps: [
       "Read the error under the editor: Invalid JSON at line 1, column 18.",
       "Count the visible characters on the line: the x is the 18th.",
+    ],
+  },
+  invalidConfigurationCurlyQuotes: {
+    group: "Pages/Agent detail",
+    name: "Invalid Configuration JSON with curly quotes",
+    path: draft,
+    actions: [
+      click("Edit Configuration"),
+      // Quotes a word processor or chat app curled, as pasted from a document.
+      { selector: "#configuration-json", value: '{\n  "agents": {\u201Cdefaults\u201D: {}}\n}' },
+      click("Save Configuration"),
+    ],
+    description:
+      "A key wrapped in curly quotes looks like JSON but is not. The error names the curly quote and the straight quote to use instead.",
+    steps: [
+      'Read the error under the editor: Invalid JSON at line 2, column 14: replace the curly quote \u201C there with a straight quote (").',
     ],
   },
   configurationChangedElsewhereMerged: {
@@ -5202,9 +5424,10 @@ export const scenarios = {
     description:
       "One deployment status read fails while v7 is deploying. The notice keeps Deploying version rather than turning Historical, polling continues, and the next read records success and makes v7 current. The deployment, failure and activation are simulated.",
     steps: [
-      "Open Deployment before the first poll, choose folded or expanded details, and Tab to Run diagnostics for this version. The transient failure preserves that choice and the visible focused control; the selected record clears its old outcome and shows the error outside the fold. Reset to repeat the other choice. The later completion is a terminal result, not routine pending recovery.",
-      'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment reads "v7 · Unavailable" and the notice still begins "Deploying version".',
+      "Open Deployment before the first poll, choose folded or expanded details, and Tab to Run diagnostics for this version. The transient failure preserves that choice and the visible focused control; the selected record retains its outcome with an update-delayed label. Expanded activity keeps the last readable progress and labels the delayed update without an alert. Repeat without focusing a control: the summary must stay in place. Reset to repeat the other choice. The later completion is a terminal result, not routine pending recovery.",
+      'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment keeps "v7 · In progress" with "Update delayed" in its existing status line and the notice still begins "Deploying version".',
       'Within about 10 s the notice begins "Current version" and Selected for service reads v7, with no "Historical version" in between.',
+      "After completion, hover and focus Refresh deployment, then press Enter. The hovered fill and focus stay while the busy control blocks another Enter; the selected version and tab stay unchanged.",
     ],
   },
   deploymentDeferred: {
@@ -5433,9 +5656,31 @@ export const scenarios = {
       },
     ],
     description:
-      "The current v6 is off the first page and its own read is refused, so Current version keeps its short ID. The console remembers the refusal for the session, as the Agent page does, and does not ask again.",
+      "The current v6 is off the first page and its own read is refused, so Current version says the reader cannot read it. The console remembers the refusal for the session, as the Agent page does, and does not ask again.",
     steps: [
-      'Current version shows the short ID as a link, in code type, and Latest deployment reads "v7 · Failed".',
+      'Current version reads "A version you cannot read" in muted text, with no link and no ID, and Latest deployment reads "v7 · Failed". Beside a failed deployment, the current version may be older or newer.',
+    ],
+  },
+  agentsCurrentVersionHidden: {
+    group: "Pages/Agents",
+    name: "Current version newer and unreadable",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    // A newer v8 the viewer cannot read is current; the list shows v6 and v7 only.
+    candidateSuperseded: true,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "Every version the reader can read is on the first page, and the current one is not among them, so the list says so without reading it. v7's deployment succeeded, so the current version is newer.",
+    steps: [
+      'Current version reads "A newer version you cannot read", with no link and no ID, and Latest deployment reads "v7 · Completed".',
+      "The request log shows no read of the current version.",
     ],
   },
   agentsReturnWhileDeploymentsLoad: {
@@ -5723,6 +5968,7 @@ export const scenarios = {
       "Watch v7 change from running to failed. The recovery card then leads the page, as it does on a reload, and Deployment details fold under it. The deployment and failure are simulated.",
     steps: [
       'On arrival v7\'s Configuration tab notice begins "Deploying version". Once v7 reads Failed, it begins "Failed version" and Selected for service still reads v6.',
+      "Repeat after reloading: focus Refresh record and press Enter before the next poll. Completion must also refresh the overview while preserving focus.",
       'Once v7 fails, "Deployment failed · v7" is the first card and Deployment details are folded. Open them: they show the failure\'s record and stay open.',
     ],
   },
@@ -5956,6 +6202,51 @@ export const scenarios = {
       "A newer version the viewer cannot read superseded v7 before it became current. Latest visible deployment reads v7 · Superseded with neutral stages and no failure banner, and nothing names the newer version.",
     gap: "The superseded record is simulated UI evidence; it does not verify a live deployment.",
   },
+  agentCurrentVersionHidden: {
+    group: "Pages/Agent detail",
+    name: "Current version newer and unreadable",
+    // No version in the link: the page opens the current one, v8, which the viewer cannot read.
+    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    candidateSuperseded: true,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "Every version the reader can read is on the first page of versions, and the current one is not among them, so the page names it as the Agents list does and does not read it. v7's deployment succeeded, so the current version is newer.",
+    steps: [
+      'Selected for service reads "A newer version you cannot read"; the line under the version chooser reads "A newer version you cannot read remains selected for service." and the status line "The current version is one you cannot read; v7 is an older version." No raw version ID shows.',
+      "The request log shows no read of the current version.",
+    ],
+  },
+  agentCurrentVersionHiddenLogs: {
+    group: "Pages/Agent detail",
+    name: "Logs of a current version the viewer cannot read",
+    // The current version, v8, which the viewer cannot read, opened on its Logs tab.
+    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    candidateSuperseded: true,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "An operator opens Logs on a current version she cannot read. Runtime status also needs AgentRevision read on it, so the page does not read it and says why in words; log text, which needs no version read, still shows.",
+    steps: [
+      'The runtime strip reads "You cannot read this version, so its runtime status is not shown. Ask an Installation administrator for AgentRevision read on it." with no Request ID.',
+      "The request log shows no /runtime status read and no read of the current version; log output still loads.",
+    ],
+    gap: "Simulated UI proof: it does not verify the API's refusal of the status read.",
+  },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
     name: "New version activated",
@@ -5976,6 +6267,31 @@ export const scenarios = {
       "Focus Refresh record and press Enter. While Refreshing… is shown, the button keeps focus and repeated Enter or Space does not start another read. Completion leaves focus on Refresh record.",
       "Refresh again and press Tab before the response arrives. Completion leaves focus on the control you moved to.",
     ],
+  },
+  deploymentRecordRefused: {
+    group: "Pages/Agent detail",
+    name: "Selected record refusal clears shared evidence",
+    path: `${candidateVersion}&tab=deployment`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        method: "GET",
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "A selected-record refresh loses access to the same version shown in Deployment activity. Both panels clear their previous evidence.",
+    steps: [
+      "Read the completed record, focus Refresh record, and press Enter. Both panels must show the refusal, with no completed outcome remaining.",
+      "Focus remains on Refresh record. Fold and unfold Deployment details: only the visible leading refusal owns the alert role.",
+      "Refresh record again after the one-time refusal. Both panels recover to Completed and the overview refreshes once. Repeat on the settled record: its overview does not reread.",
+    ],
+    gap: "Simulated UI proof only. The deployment browser suite verifies native IAM denial, missing records, stale deliveries, recovery, and version isolation with the real controller.",
   },
   deploymentActivityLoading: {
     group: "Pages/Agent detail",
@@ -6418,6 +6734,28 @@ export const scenarios = {
       },
     ],
     description: "The Configuration read fails independently of the Agent header.",
+  },
+  configurationReadDeniedReloadRefocus: {
+    group: "Pages/Agent detail",
+    name: "Configuration read denied across reload and refocus",
+    path: draft,
+    rules: [
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        status: 403,
+      },
+    ],
+    description:
+      "The draft Configuration is never readable. Its repeated permission denial preserves the permitted Agent after reload and a fresh refocus check.",
+    steps: [
+      "Confirm the Agent heading and Configuration unavailable are visible together. This is a persistent 403, not a 503 or unreadable saved data.",
+      "Reload the Storybook preview page in the browser. The same tab remembers the exact denied path and still shows the partial Agent.",
+      "Focus another browser tab, then return to the Console preview. Refocus sends a fresh Configuration GET returning 403; the Agent remains visible without draft editors.",
+      "Choose Retry to perform another denied read. Repeat at phone width. No Save action is available for the unreadable draft.",
+      "For Save recovery, follow Channel binding read denied and the binding preflight workflow: Save, inspect the scrubbed refusal, Refresh, then explicitly save again.",
+    ],
+    gap: "Simulated permission responses through the production Console; Native IAM browser regressions cover real authorization. See unreadable-configuration-workflow.md for reload, refocus, and Save recovery instructions.",
   },
   unreadableAgentConfiguration: {
     group: "Pages/Agent detail",
@@ -7466,6 +7804,30 @@ export const scenarios = {
     description:
       "Both Slack token bindings are empty and required before a Slack-enabled draft can deploy.",
   },
+  credentialsSlackOtherKeys: {
+    group: "Components/Credentials",
+    name: "Slack tokens on other keys",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackTokens: {
+      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      botToken: "${ACME_SLACK_BOT}",
+    },
+    slackBindings: ["SLACK_APP_TOKEN"],
+    description:
+      "The bot token reads ACME_SLACK_BOT, which the token pickers do not bind, so the tab lists each key the tokens read without pickers. Deploy waits until ACME_SLACK_BOT is bound through the Configuration API.",
+  },
+  credentialsSlackHttp: {
+    group: "Components/Credentials",
+    name: "Slack HTTP mode, bot token only",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackMode: "http",
+    slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
+    slackBindings: ["SLACK_BOT_TOKEN"],
+    description:
+      "HTTP mode reads no app token, so the tab offers only the Slack bot token picker, and Deploy is available while it is bound.",
+  },
   credentialsSlackReader: {
     group: "Components/Credentials",
     name: "Slack tokens, viewer can only read",
@@ -7547,6 +7909,9 @@ export const scenarios = {
     slack: true,
     description:
       "Readable Secret names show existing bindings. The console does not retrieve stored token values.",
+    steps: [
+      "Tab to Save channel Secrets. It takes focus, looks unavailable and is described by No channel Secret changes to save.; Enter submits nothing.",
+    ],
   },
   credentialsSlackReplacement: {
     group: "Components/Credentials",
@@ -7586,6 +7951,52 @@ export const scenarios = {
     steps: [
       "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
       "The unsaved choice stays selected and Deploy stays disabled. Choose the saved Slack app token again to make Deploy available; no retry or reload is needed.",
+    ],
+  },
+  credentialsSaveChannelRefused: {
+    group: "Components/Credentials",
+    name: "Channel Secret save refused for a channel setting",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings.",
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "The stored Configuration holds a Slack token form that save now refuses, so saving channel Secrets, which resends the stored values, is refused for that setting.",
+    gap: "The refusal is simulated; the API refuses the stored form on the bundled Kubernetes Compute.",
+    steps: [
+      "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says to fix it in the Configuration JSON on the Configuration tab.",
+    ],
+  },
+  credentialsSaveChannelBindingRefused: {
+    group: "Components/Credentials",
+    name: "Channel Secret save refused for a missing binding",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting channels.slack.signingSecret references SLACK_SIGNING_SECRET without a Configuration Secret binding: bind SLACK_SIGNING_SECRET in secretBindings to an environment-backed Secret, or remove the reference.",
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "The stored Configuration references a name that has no Secret binding, so saving channel Secrets, which resends the stored values, is refused for that setting.",
+    gap: "The refusal is simulated; the API refuses the unbound reference on the bundled Kubernetes Compute.",
+    steps: [
+      "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says where the console binds a Secret: this tab for SLACK_APP_TOKEN and SLACK_BOT_TOKEN, the Configuration API for other names.",
     ],
   },
   credentialsSaveConflict: {
@@ -7635,6 +8046,47 @@ export const scenarios = {
     ],
     description:
       "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
+  },
+  credentialsSecretListRefresh: {
+    group: "Components/Credentials",
+    name: "Refresh Secret list without saving",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    // Setup makes three exact collection reads; the permission endpoint is separate.
+    rules: [{ path: presetSecretsPath, method: "GET", skip: 3, once: true, delayMs: 3000 }],
+    description:
+      "The first explicit refresh waits three seconds, preserving query, focus and the staged app token. Save channel Secrets applies the choices.",
+    steps: [
+      "Type a nonmatching name in Slack bot token. ArrowDown highlights Create; a second ArrowDown highlights Refresh Secret list. Press Enter.",
+      "Loading Secrets is disabled during the three-second read. Check that query, focus and staged app token remain. Afterward, choose a Secret; only Save channel Secrets saves bindings. Existing access restrictions still apply.",
+    ],
+    gap: "The delay is simulated. Real two-tab persistence, races and grants require the browser test; no provider readiness is established.",
+  },
+  credentialsSecretListRetry: {
+    group: "Components/Credentials",
+    name: "Retry Secret list without losing a choice",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    // Fail the first explicit collection read, after the three successful setup reads.
+    rules: [
+      {
+        path: presetSecretsPath,
+        method: "GET",
+        skip: 3,
+        once: true,
+        status: 503,
+        code: "UNAVAILABLE",
+      },
+    ],
+    description:
+      "The first explicit refresh fails; retry succeeds without clearing the query or staged app token, or saving bindings.",
+    steps: [
+      "Type a nonmatching name in Slack bot token. Press ArrowDown twice to pass Create and highlight Refresh Secret list, then Enter. Check Secrets unavailable, retained query/focus and the staged app token.",
+      "Choose Refresh Secret list again. The read succeeds with query, focus and staged app token intact. Clear the query to choose a Secret; Save channel Secrets alone persists the choices.",
+    ],
+    gap: "The one-shot failure is simulated. Real staged-choice preservation, late responses and grants require the browser test; no provider readiness is established.",
   },
   credentialsSecretListScrolling: {
     group: "Components/Credentials",
@@ -7709,6 +8161,140 @@ export const scenarios = {
       "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying would be refused.",
       "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
     ],
+  },
+  authenticationReadDenied: {
+    group: "Pages/Agent detail",
+    name: "Authentication Save read denied",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      {
+        method: "GET",
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        status: 403,
+        once: true,
+      },
+    ],
+    description:
+      "The Agent becomes unreadable before authentication Save. The contextual receipt remains while the Agent name, authentication binding and editors are removed.",
+    steps: [
+      "Select Save authentication source. Read the Save refusal and request ID; no editor or binding remains.",
+      "Select Refresh after the one-shot refusal. Saved state returns without replaying Save.",
+    ],
+  },
+  configurationSaveReadDenied: {
+    group: "Pages/Agent detail",
+    name: "Configuration Save read denied",
+    path: draft,
+    rules: [
+      {
+        method: "GET",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        status: 403,
+        once: true,
+      },
+    ],
+    actions: [click("Enable gateway password access")],
+    description:
+      "A staged Configuration edit loses read access before Save. The entire protected editor is retired with its causal receipt, and no PATCH starts.",
+    steps: [
+      "Select Save Configuration. Confirm the staged document disappears and the read-access reason remains.",
+      "Refocus to see the partial Agent with Configuration unavailable. Select Retry after access recovers; the unsaved edit must not return.",
+    ],
+  },
+  credentialsSavedRetryReadDenied: {
+    group: "Components/Credentials",
+    name: "Saved channel bindings, retry read denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      { method: "POST", suffix: "/iam/access-bindings", status: 403, once: true },
+      {
+        method: "GET",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        skip: 2,
+        status: 403,
+        once: true,
+      },
+    ],
+    actions: [
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save channel Secrets"),
+    ],
+    description:
+      "Bindings saved, but their grant failed. Retry then loses Configuration read access. A sanitized receipt preserves the successful save while removing binding metadata.",
+    steps: [
+      "Select Retry Secret access. The receipt says bindings are saved and the Configuration could not be read. No additional PATCH or grant starts.",
+      "Select Refresh, then Retry Secret access after reads recover. The saved replacement remains and only its missing grant is retried.",
+    ],
+  },
+  credentialsBindingReadDenied: {
+    group: "Components/Credentials",
+    name: "Channel binding read denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        status: 403,
+        once: true,
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "The binding preflight is refused once. Its receipt remains visible, but the saved bindings and staged choice are removed. Refresh reads the saved state without repeating a write.",
+    steps: [
+      "Select Save channel Secrets. Check Access denied and the failed preflight receipt; no token picker or saved binding remains.",
+      "Select Refresh. The simulated read succeeds again and restores the saved bindings, without applying the staged choice.",
+      "Select Slack backup token (simulated) again, then Save channel Secrets once. A fresh preflight and one PATCH save that replacement. See unreadable-configuration-workflow.md for the complete walkthrough.",
+    ],
+  },
+  credentialsSlackLeftoverGrantMissing: {
+    group: "Components/Credentials",
+    name: "Slack key left bound without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackMode: "http",
+    slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    description:
+      "HTTP mode reads no app token, but SLACK_APP_TOKEN is still bound from Socket Mode and its Secret has no Agent grant. Deploy checks every bound Secret, so the tab lists the key as read by no Slack setting, marks it, blocks Deploy, and offers Retry Secret access.",
+    steps: [
+      "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; the warning says deploying would be refused.",
+      "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
+    ],
+  },
+  credentialsSlackGrantReadPending: {
+    group: "Components/Credentials",
+    name: "Slack grant read in progress",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "GET", delayMs: 4000 }],
+    description:
+      "An Installation administrator opens an Agent while the console still reads the Namespace IAM policy for the bound Slack Secrets' grants. Deploy waits for that read, then stays blocked because the app token Secret has no Agent grant.",
+    gap: "The slow policy read is simulated.",
+    steps: [
+      "While the read is held, Prepare says Checking this Agent's credential access before deploying. and Deploy new version is disabled.",
+      "After the read lands, the Slack app token reads Bound · Agent access not confirmed and Deploy stays disabled until Retry Secret access grants it.",
+    ],
+  },
+  credentialsSlackSigningSecretMissing: {
+    group: "Components/Credentials",
+    name: "Slack signing secret without a binding",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackTokens: {
+      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      signingSecret: "${SLACK_SIGNING_SECRET}",
+    },
+    description:
+      "Both token pickers are bound, but the signing secret reads SLACK_SIGNING_SECRET, which has no binding. Save and deployment refuse that, so the tab lists the key as Missing below the pickers and Deploy waits until it is bound through the Configuration API.",
   },
   credentialsSavePending: {
     group: "Components/Credentials",
@@ -8000,7 +8586,11 @@ export const scenarios = {
     name: "Stopped",
     path: draft,
     nativeAdmin: "stopped",
-    description: "The native-admin panel reports that the Agent must be started.",
+    description:
+      "The native-admin panel reports that the Agent must be started. The header's Open Agent UI stays in the Tab order, unavailable, and its description names that reason.",
+    steps: [
+      "Tab to Open Agent UI in the header. It takes focus, looks unavailable, and pressing Enter opens nothing.",
+    ],
     gap: "Deploying a new revision resumes the Agent; Console does not expose live shutdown completion evidence.",
   },
   nativeUnsupported: {
@@ -8030,6 +8620,25 @@ export const scenarios = {
     steps: [
       "Tab to Refresh access and press Enter. While Checking access… shows, focus stays on the button and Enter again sends nothing.",
     ],
+  },
+  nativeAvailableAfterDeploy: {
+    group: "Components/Native admin",
+    name: "Available once a deployment completes",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    nativeAdmin: "available",
+    // The first access check finds no version serving; the reread after the deployment completes
+    // finds the new version available.
+    rules: [{ suffix: "/native-admin", once: true, data: { status: "unavailable" } }],
+    description:
+      "v7 is deploying, so Open Agent UI is unavailable. When the next status poll records success, the page rereads access and the live Open Agent UI link replaces the button in the same place. Keyboard focus moves with it.",
+    steps: [
+      "Before the status poll lands, Tab to Open Agent UI in the header. It is unavailable and its description says no version is serving.",
+      "Wait for the poll. The live Open Agent UI link replaces the button and keeps focus: press Tab once and focus moves to the next header control, not to the start of the page.",
+    ],
+    gap: "The deployment, its activation and native admin access are simulated.",
   },
   agentDetailLayout: {
     group: "Pages/Agent detail",
@@ -9018,6 +9627,7 @@ for (const [id, state, name] of [
     "Policy application refused by a changed ceiling",
   ],
   ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
+  ["policyDenialsApplyDenied", "applyDenied", "Policy saved but live application refused access"],
   ["policyIncompletePreview", "incompletePreview", "Policy preview omits the validated rules"],
   ["policyUnconfirmedSave", "unconfirmedSave", "Policy save returns different rules than reviewed"],
   ["policyDenialsEditDenied", "editDenied", "Independent policy permission denied"],
@@ -9124,6 +9734,22 @@ for (const [id, state, name] of [
           steps: [
             "Review a suggestion, then choose Review changes and Save and apply to current revision.",
             "Confirm the alert states the policy was saved but application was not confirmed. The saved version increases and the rule remains saved; do not infer live enforcement.",
+          ],
+        }
+      : {}),
+    ...(state === "applyDenied"
+      ? {
+          rules: [
+            {
+              method: "POST",
+              suffix: "/sandbox-policy/networking/apply",
+              status: 403,
+              code: "FORBIDDEN",
+            },
+          ],
+          steps: [
+            "Review a suggestion, then choose Review changes and Save and apply to current revision.",
+            "The simulated apply answers 403, as when SandboxPolicy read is revoked while the page is open. Confirm the alert says the policy was saved but not applied, and names Agent manage_policy and SandboxPolicy update and read.",
           ],
         }
       : {}),

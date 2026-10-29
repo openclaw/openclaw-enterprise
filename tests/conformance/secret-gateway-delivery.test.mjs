@@ -242,3 +242,123 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
     /Secret bindings are invalid/i,
   );
 });
+
+// A configured provider must consume the admitted model Secret, never an ambient
+// vendor credential or an independently bound gateway Secret.
+test("embedded custom providers retain model identity and exact Secret ownership", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const environmentName = "OCE_MODEL_API_KEY";
+  const providerId = "router";
+  const model = "vendor/model";
+  const modelRef = `${providerId}/${model}`;
+  const apiKey = { source: "env", provider: "default", id: environmentName };
+  const configuration = {
+    agents: {
+      defaults: {
+        model: modelRef,
+        models: { [modelRef]: { agentRuntime: { id: "openclaw" } } },
+      },
+    },
+    models: {
+      providers: {
+        [providerId]: {
+          baseUrl: "https://router.example.test/v1",
+          api: "openai-responses",
+          apiKey,
+          models: [{ id: model, name: "Routed model" }],
+        },
+      },
+    },
+  };
+  const candidate = revision(driver, { configuration });
+  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const context = {
+    harnessAuth: {
+      ...candidate.harnessAuth,
+      backendRef: { ...projection().backendRef, name: "stored-model-key" },
+    },
+  };
+  driver.validateHarnessAuth(candidate.harness, candidate.harnessAuth, configuration, {});
+  const prepared = driver.harnessAuthForRevision(candidate, context, namespace);
+  const environment = Object.fromEntries(prepared.environment.map((entry) => [entry.name, entry]));
+  assert.deepEqual(environment[environmentName].valueFrom.secretKeyRef, {
+    name: "stored-model-key",
+    key: "value",
+  });
+  assert.equal(environment.OPENAI_API_KEY, undefined);
+  assert.equal(environment.ANTHROPIC_API_KEY, undefined);
+  assert.equal(environment.OPENCLAW_HARNESS_MODEL.value, modelRef);
+  assert.equal(environment.OPENCLAW_HARNESS_PROVIDER.value, providerId);
+  assert.equal(environment.OPENCLAW_HARNESS_CREDENTIAL_ENV.value, environmentName);
+  const probe = JSON.parse(environment.OPENCLAW_HARNESS_PROBE_CONFIG.value);
+  assert.deepEqual(probe.models.providers[providerId].apiKey, apiKey);
+  assert.equal(probe.models.providers[providerId].models[0].id, model);
+  assert.equal(probe.agents.defaults.model, modelRef);
+  assert.deepEqual(configuration.models.providers[providerId].apiKey, apiKey);
+
+  // Both native adapters use the same source contract without rewriting model IDs.
+  const messages = structuredClone(configuration);
+  messages.models.providers.router.api = "anthropic-messages";
+  driver.validateHarnessAuth(candidate.harness, candidate.harnessAuth, messages, {});
+  for (const invalidKey of [undefined, "${OPENAI_API_KEY}", { ...apiKey, id: "OTHER_KEY" }]) {
+    const invalid = structuredClone(configuration);
+    invalid.models.providers.router.apiKey = invalidKey;
+    assert.throws(
+      () => driver.validateHarnessAuth(candidate.harness, candidate.harnessAuth, invalid, {}),
+      /models.providers.router.apiKey.*OCE_MODEL_API_KEY/,
+    );
+  }
+  for (const env of [
+    { [environmentName]: "fixture" },
+    { vars: { [environmentName]: "fixture" } },
+  ]) {
+    assert.throws(
+      () => driver.validateConfiguration({ ...configuration, env }),
+      /Harness authentication binding owns model provider environment/,
+    );
+  }
+  assert.throws(
+    () =>
+      driver.secretEnvironmentForRevision(
+        {
+          ...candidate,
+          secretBindings: { [environmentName]: candidate.secretBindings.EXTERNAL_SERVICE_TOKEN },
+        },
+        { secretEnvironment: [projection({ name: environmentName })] },
+        namespace,
+      ),
+    /Secret bindings are invalid/,
+  );
+  assert.throws(
+    () =>
+      driver.harnessAuthForRevision(
+        candidate,
+        {
+          harnessAuth: {
+            ...context.harnessAuth,
+            source: { ...candidate.harnessAuth.source, id: "other" },
+          },
+        },
+        namespace,
+      ),
+    /does not match the admitted source/,
+  );
+  assert.throws(
+    () =>
+      driver.harnessAuthForRevision(
+        {
+          ...candidate,
+          harness: { ...candidate.harness, mode: "dedicated" },
+        },
+        context,
+        namespace,
+      ),
+    /compatible model provider/,
+  );
+  const missing = structuredClone(configuration);
+  delete missing.models.providers.router;
+  assert.throws(
+    () => driver.validateHarnessAuth(candidate.harness, candidate.harnessAuth, missing, {}),
+    /compatible model provider/,
+  );
+});

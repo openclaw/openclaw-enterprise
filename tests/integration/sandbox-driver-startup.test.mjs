@@ -74,6 +74,7 @@ import {
   reservePort,
 } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const controllerRequire = createRequire(
@@ -873,6 +874,16 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
     const options = sandboxInstallation().drivers.sandbox.configuration;
     settings(options);
     const driver = openShellDriver(workspaceGatewayClient(), options);
+    assert.deepEqual(driver.supportsHarnessExecutionMode.openclaw, {
+      embedded: { supported: false },
+      dedicated:
+        message === undefined ? { supported: true } : { supported: false, reason: message },
+    });
+    assert.throws(() => {
+      driver.supportsHarnessExecutionMode.openclaw.dedicated.supported = false;
+    }, TypeError);
+    // A caller's later mutation cannot change the constructed Driver's support decision.
+    options.kubernetes.userNamespaces = !options.kubernetes.userNamespaces;
     if (message === undefined) {
       assert.ok(driver.configureAgent(configuration, harness("openclaw")));
     } else {
@@ -2724,8 +2735,8 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   // when an operator chooses a path other than the development default.
   options.kubernetes.sandboxDataMount.mountPath = "/sandbox/custom-workspace";
   const driver = openShellDriver(gatewayClient, options);
-  // Same-cluster Compute with the in-cluster Envoy route hostname the k3d OpenShell
-  // profile uses; the node's setup URL is the one Compute derives for that route.
+  // Exercise Sandbox delivery with a supported scoped node URL on the in-cluster
+  // Envoy hostname used by the k3d profile. Live first-Agent proof covers enrollment.
   const routeHost = "occ-gateway-0123456789ab.envoy-gateway-system.svc.cluster.local";
   const computeOptions = conformanceKubernetesOptions({
     gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
@@ -2747,12 +2758,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   );
   const { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup } =
     runtimeSandboxFixture(driver, {
-      nodeSetupUrl: (target, { namespace }) =>
-        compute.workspaceNodeConnectionUrl(
-          target,
-          { name: namespace.name, plane: "execution" },
-          compute.getGatewayEndpoint(target),
-        ),
+      nodeSetupUrl: (target) => `${compute.getGatewayEndpoint(target)}/node`,
     });
   // Account fields are opaque claims, even when their text resembles a Harness path.
   const account = {
@@ -5862,12 +5868,9 @@ test("observed-hook preview recognizes a released Codex through its authenticate
     response.writeHead(status);
     response.end("WebSocket upgrade required");
   });
-  const sockets = new Set();
   server.on("upgrade", (request, socket) => {
     upgrades++;
-    sockets.add(socket);
     socket.on("error", () => {});
-    socket.once("close", () => sockets.delete(socket));
     if (!serving || request.headers.authorization !== `Bearer ${token}`) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
       return;
@@ -5880,17 +5883,10 @@ test("observed-hook preview recognizes a released Codex through its authenticate
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    for (const peer of sockets) {
-      peer.destroy();
-    }
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  const transport = new GrpcOpenShellGatewayClient({
-    endpoint: `http://127.0.0.1:${server.address().port}`,
-  });
+  // listen() closes the server when the test ends, after destroying every connection,
+  // including the upgraded sockets the HTTP server no longer tracks.
+  const port = await listen(t, server);
+  const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
   t.after(() => transport.close());
   const gateway = workspaceGatewayClient();
   gateway.getServiceDocument = (...args) => transport.getServiceDocument(...args);
@@ -6717,8 +6713,8 @@ test(
       ...fragment.repository.openShell.authority,
       host: "127.0.0.1",
       port,
-      certificatePath: join(tls.directory, "server.pem"),
-      privateKeyPath: join(tls.directory, "server.key"),
+      certificatePath: tls.certPath,
+      privateKeyPath: tls.keyPath,
       issuerPublicKeyPath: publicKeyPath,
       issuer: "https://gateway.example.test",
       audience: "online-authorizer",

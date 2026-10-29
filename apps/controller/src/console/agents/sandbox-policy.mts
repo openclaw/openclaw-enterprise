@@ -15,7 +15,7 @@ import {
   configurationErrors,
   configurationAction,
 } from "../configuration-fields.mjs";
-import { button, dismissOnBackdrop, element } from "../dom.mjs";
+import { button, dismissOnBackdrop, element, mayReturnFocus } from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import {
   askForGrant,
@@ -33,10 +33,12 @@ const POLICY_READ_DENIED = SANDBOX_POLICY_READ_DENIED;
 // What each refused request checks: Sandbox log text needs Agent read_logs (or administer) plus
 // Agent read, which admit every version of the Agent; the policy and suggestions need
 // SandboxPolicy read; validation, preview and save need Agent manage_policy and SandboxPolicy
-// update.
+// update. Live application also needs SandboxPolicy read: it admits and returns the saved
+// rules (finding 2874), so a read revoked while the page is open refuses it.
 const LOG_GRANT = `${LOG_TEXT_GRANT} on it`;
 const POLICY_READ_GRANT = "SandboxPolicy read on it";
 const POLICY_CHANGE_GRANT = "Agent manage_policy and SandboxPolicy update on it";
+const POLICY_APPLY_GRANT = "Agent manage_policy and SandboxPolicy update and read on it";
 // A draft of an Agent with no current version: never deployed, stopped, or first deployment
 // still running. The copy fits each, and a reader who cannot deploy is not told to.
 const NO_CURRENT_VERSION_DENIALS =
@@ -79,6 +81,9 @@ function errorText(cause: unknown, task: string, grant: string) {
   }
   return rejectionMessage(cause);
 }
+
+const applyErrorText = (cause: unknown) =>
+  errorText(cause, "applying this Agent’s policy", POLICY_APPLY_GRANT);
 
 function grantText(grant: SandboxNetworkGrant) {
   const ports = grant.ports
@@ -360,7 +365,10 @@ export function renderAgentSandboxPolicy(
   dialog.addEventListener("close", () => {
     if (current()) {
       renderPolicy();
-      (dialogInvoker?.isConnected ? dialogInvoker : manageButton).focus();
+      // After the redraw: a summary control that held focus is replaced, which drops it.
+      if (mayReturnFocus(dialog)) {
+        (dialogInvoker?.isConnected ? dialogInvoker : manageButton).focus();
+      }
     }
   });
   let editorIndex: number | undefined;
@@ -414,7 +422,7 @@ export function renderAgentSandboxPolicy(
   );
   dismissOnBackdrop(limitsDialog);
   limitsDialog.addEventListener("close", () => {
-    if (current()) {
+    if (current() && mayReturnFocus(limitsDialog)) {
       const target = limitsInvoker?.isConnected
         ? limitsInvoker
         : policySummary.querySelector(".sandbox-network-limits-link");
@@ -1433,7 +1441,7 @@ export function renderAgentSandboxPolicy(
         dialogActions.append(
           button(
             failed ? "Retry application" : "Apply saved rules",
-            () => void mutate(applySavedPolicy),
+            () => void mutate(applySavedPolicy, true, applyErrorText),
             {
               tone: "primary",
               disabled: mutation,
@@ -1640,10 +1648,10 @@ export function renderAgentSandboxPolicy(
             if (error === unconfirmedSave) {
               return unconfirmedSave.message;
             }
-            const reason = errorText(error, "changing this Agent’s policy", POLICY_CHANGE_GRANT);
+            // Once the save succeeded, the refusal came from application, which also needs read.
             return savedVersion === undefined
-              ? reason
-              : `Policy v${savedVersion} was saved, but application to the current revision was not confirmed. ${reason}`;
+              ? errorText(error, "changing this Agent’s policy", POLICY_CHANGE_GRANT)
+              : `Policy v${savedVersion} was saved, but application to the current revision was not confirmed. ${applyErrorText(error)}`;
           },
         );
       }
@@ -2197,7 +2205,7 @@ export function renderAgentSandboxPolicy(
       const actions = element("div", { className: "sandbox-outcome-actions" });
       if (outcome.title === "Saved for later" && !hasProposedChanges() && canApplySavedPolicy()) {
         actions.append(
-          button("Apply saved rules", () => void mutate(applySavedPolicy), {
+          button("Apply saved rules", () => void mutate(applySavedPolicy, true, applyErrorText), {
             size: "sm",
             disabled: mutation,
           }),
@@ -2219,7 +2227,7 @@ export function renderAgentSandboxPolicy(
         canApplySavedPolicy()
       ) {
         actions.append(
-          button("Retry application", () => void mutate(applySavedPolicy), {
+          button("Retry application", () => void mutate(applySavedPolicy, true, applyErrorText), {
             size: "sm",
             disabled: mutation,
           }),

@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { slack } from "../../apps/controller/src/console/channels/slack.mts";
 import { missingChannelCredentialGroups } from "../../apps/controller/src/console/agents/credentials.mjs";
+import {
+  enabledChannelEntries,
+  requireChannelSecretBindings,
+} from "../../packages/occ/src/channel-secret-bindings.ts";
 
 // These are form inputs, not a replacement for configuration or threading logic.
 const fields = {
@@ -139,4 +143,153 @@ test("the deploy gate requires a named Slack account's own keys, not the default
     missingChannelCredentialGroups(standard, bound("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN")),
     [],
   );
+});
+
+// With no named accounts, the gate lists the keys the default account's tokens name, as
+// Configuration save and the Slack Channel Driver read them, and no app token in HTTP mode. It
+// asked for SLACK_APP_TOKEN and SLACK_BOT_TOKEN instead and held Deploy for a Configuration OCC
+// deploys (finding 2526).
+test("the deploy gate requires the keys the default Slack account's tokens name", () => {
+  const bound = (...keys) => ({
+    secretBindings: Object.fromEntries(
+      keys.map((key) => [
+        key,
+        { source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } },
+      ]),
+    ),
+  });
+  const slackWith = (slack) => ({ channels: { slack: { enabled: true, ...slack } } });
+  const acme = slackWith({ appToken: "${ACME_SLACK_APP}", botToken: "${ACME_SLACK_BOT}" });
+  assert.deepEqual(
+    missingChannelCredentialGroups(acme, bound("ACME_SLACK_APP", "ACME_SLACK_BOT")),
+    [],
+  );
+  // The standard names do not stand in for the keys the tokens name.
+  assert.deepEqual(
+    missingChannelCredentialGroups(
+      acme,
+      bound("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "ACME_SLACK_APP"),
+    ),
+    ["Slack Secret bindings (ACME_SLACK_BOT)"],
+  );
+  // An env SecretRef names its key too; a token with no key keeps the standard name.
+  const mixed = slackWith({
+    botToken: { source: "env", provider: "default", id: "ACME_SLACK_BOT" },
+  });
+  assert.deepEqual(missingChannelCredentialGroups(mixed, bound("ACME_SLACK_BOT")), [
+    "Slack Secret bindings (SLACK_APP_TOKEN)",
+  ]);
+  // HTTP mode reads no app token.
+  const http = slackWith({
+    mode: "http",
+    botToken: "${SLACK_BOT_TOKEN}",
+    signingSecret: "${SLACK_SIGNING_SECRET}",
+  });
+  assert.deepEqual(
+    missingChannelCredentialGroups(http, bound("SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET")),
+    [],
+  );
+  assert.deepEqual(missingChannelCredentialGroups(http, bound("SLACK_SIGNING_SECRET")), [
+    "Slack Secret bindings (SLACK_BOT_TOKEN)",
+  ]);
+  // Save still requires a binding for each name an app token HTTP mode keeps references, written
+  // whole or not, so the gate lists it (finding 2541).
+  for (const [appToken, key] of [
+    ["${ACME_SLACK_APP}", "ACME_SLACK_APP"],
+    ["${ACME_SLACK_APP:-x}", "ACME_SLACK_APP"],
+    ["xapp-${ACME_SLACK_APP}", "ACME_SLACK_APP"],
+    ["$ACME_SLACK_APP", "ACME_SLACK_APP"],
+    ["$SLACK_APP_TOKEN", "SLACK_APP_TOKEN"],
+  ]) {
+    const httpWithApp = slackWith({ mode: "http", appToken, botToken: "${SLACK_BOT_TOKEN}" });
+    assert.notDeepEqual(missingChannelCredentialGroups(httpWithApp, bound("SLACK_BOT_TOKEN")), []);
+    assert.deepEqual(
+      missingChannelCredentialGroups(httpWithApp, bound("SLACK_BOT_TOKEN", key)),
+      [],
+    );
+  }
+  // Every name in the app token, not just the first.
+  const twoNames = slackWith({
+    mode: "http",
+    appToken: "${ACME_SLACK_A}${ACME_SLACK_B}",
+    botToken: "${SLACK_BOT_TOKEN}",
+  });
+  assert.deepEqual(
+    missingChannelCredentialGroups(twoNames, bound("SLACK_BOT_TOKEN", "ACME_SLACK_A")),
+    ["Slack Secret bindings (ACME_SLACK_B)"],
+  );
+});
+
+// Deploy delivers what Configuration save and deployment admission accept, so the gate must never
+// wait for fewer bindings than they require: every name the Slack settings reference, the signing
+// secret, user token and relay token included (finding 2554). For each shape this collects the
+// names save requires from its own refusals, then leaves each one unbound, with the standard pair
+// bound, and expects the gate to hold Deploy.
+test("the deploy gate holds every Slack binding Configuration save requires", () => {
+  const env = (id) => ({ source: "env", provider: "default", id });
+  const shapes = [
+    { appToken: "${SLACK_APP_TOKEN}", botToken: "${SLACK_BOT_TOKEN}" },
+    {
+      appToken: "${SLACK_APP_TOKEN}",
+      botToken: "${SLACK_BOT_TOKEN}",
+      signingSecret: "${SLACK_SIGNING_SECRET}",
+      userToken: "$SLACK_USER_TOKEN",
+      relay: { authToken: "${SLACK_RELAY_TOKEN:-}" },
+    },
+    { mode: "http", botToken: "${SLACK_BOT_TOKEN}", signingSecret: env("SLACK_SIGNING_SECRET") },
+    { mode: "http", appToken: "xapp-${ACME_APP}", botToken: env("ACME_BOT") },
+    { appToken: "${ACME_APP}", botToken: "${ACME_BOT}", userToken: "${ACME_USER:-x}" },
+    // Outside a secret-input field, a fallback needs no binding; an env SecretRef always does.
+    { botToken: "${SLACK_BOT_TOKEN}", replyToMode: "${REPLY_MODE:-all}", extra: env("ACME_EXTRA") },
+    {
+      accounts: {
+        work: {
+          appToken: "${WORK_APP}",
+          botToken: env("WORK_BOT"),
+          signingSecret: "$WORK_SIGNING",
+          relay: { authToken: "${WORK_RELAY}" },
+        },
+        off: { enabled: false, appToken: "${OFF_APP}", botToken: "${OFF_BOT}" },
+      },
+    },
+  ];
+  const binding = (key) => ({ source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } });
+  for (const shape of shapes) {
+    const values = { channels: { slack: { enabled: true, ...shape } } };
+    const required = new Set();
+    for (;;) {
+      let missing;
+      try {
+        requireChannelSecretBindings(
+          values,
+          enabledChannelEntries(values),
+          (name) => required.has(name),
+          (_setting, requirement) => new Error(requirement),
+        );
+      } catch (error) {
+        missing = /^references (\S+) without a Configuration Secret binding/.exec(
+          error.message,
+        )?.[1];
+        assert.ok(missing, error.message);
+      }
+      if (missing === undefined) {
+        break;
+      }
+      required.add(missing);
+    }
+    assert.ok(required.size > 0, JSON.stringify(shape));
+    for (const name of required) {
+      const keys = [...required, "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"].filter(
+        (key) => key !== name,
+      );
+      const configuration = {
+        secretBindings: Object.fromEntries(keys.map((key) => [key, binding(key)])),
+      };
+      assert.notDeepEqual(
+        missingChannelCredentialGroups(values, configuration),
+        [],
+        `${name} unbound: ${JSON.stringify(shape)}`,
+      );
+    }
+  }
 });

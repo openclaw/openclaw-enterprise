@@ -7,10 +7,11 @@ you are changing.
 
 ## 1. Choose the contract
 
-The shared [TypeScript contracts](../../packages/contracts/src/index.ts) define
-the methods and data each Driver exchanges with OCC. The references explain who
-calls those methods, what each implementation must enforce, and which failures
-must stop the operation:
+The shared TypeScript contracts define the methods and data each Driver exchanges
+with OCC. The [base Driver types](../../packages/contracts/src/driver.ts) are
+separate from each capability's interface file. Each reference links its
+interface file, explains who calls those methods, what each implementation must
+enforce, and which failures must stop the operation:
 
 - [Compute](../reference/drivers/compute.md), [Configuration](../reference/drivers/configuration.md), and [IAM](../reference/drivers/iam.md)
 - [Sandbox](../reference/drivers/sandbox.md), [Credential Proxy](../reference/drivers/credential-proxy.md), and [Secret](../reference/drivers/secret.md)

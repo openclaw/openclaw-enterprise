@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Locator } from "playwright";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
+import { NAMESPACE_DELETE_DENIED, NAMESPACE_DELETE_RESTRICTED } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -20,6 +23,36 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 
 const browser = fileBrowser();
+
+// How a refused, still focusable delete control looks once a keyboard user reaches it (findings
+// D788, 2863): its icon or label fades as a disabled button's does, but nothing fades the control
+// itself or an ancestor, so its focus ring keeps the full focus colour. `faded` is the icon's
+// opacity, or the alpha of the label's colour.
+function refusedFocusLook(control: Locator) {
+  return control.evaluate((node) => {
+    let opacity = 1;
+    for (let at: Element | null = node; at; at = at.parentElement) {
+      opacity *= Number(getComputedStyle(at).opacity);
+    }
+    const focus = document.createElement("span");
+    focus.style.color = "var(--color-focus)";
+    document.body.append(focus);
+    const focusColor = getComputedStyle(focus).color;
+    focus.remove();
+    const style = getComputedStyle(node);
+    const icon = node.querySelector("svg");
+    // An opaque colour serializes as rgb(r, g, b), a faded one as rgba(...) or color(... / a).
+    const alpha = (/\/\s*([\d.]+)\)$/.exec(style.color) ??
+      /^rgba\(.*,\s*([\d.]+)\)$/.exec(style.color))?.[1];
+    return {
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      focusVisible: node.matches(":focus-visible"),
+      opacity,
+      ring: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor === focusColor}`,
+      faded: icon ? Number(getComputedStyle(icon).opacity) : Number(alpha ?? 1),
+    };
+  });
+}
 
 test("Namespace trash action confirms, keeps pending cleanup visible, and repairs the selected Namespace after removal", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -160,12 +193,25 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, member.credentials);
   const remove = page.getByRole("button", { name: "Delete Restricted cleanup", exact: true });
-  await page.waitForFunction(
-    () =>
-      document.querySelector<HTMLButtonElement>('[aria-label="Delete Restricted cleanup"]')
-        ?.disabled === true,
-  );
+  // No Namespace Role grants delete, so the reason names who can delete, not a grant to ask for.
+  // The icon stays in the Tab order, so a keyboard user reaches the reason, and it opens nothing
+  // (finding D788).
+  await page
+    .getByRole("button", {
+      name: "Delete Restricted cleanup",
+      exact: true,
+      description: NAMESPACE_DELETE_DENIED,
+    })
+    .waitFor();
   assert.equal(await remove.isDisabled(), true);
+  assert.equal(await remove.getAttribute("aria-disabled"), "true");
+  await remove.focus();
+  assert.equal(await remove.evaluate((node) => node === document.activeElement), true);
+  // Each is checked on its own: a click on the modal's backdrop would close a dialog Enter opened.
+  await page.keyboard.press("Enter");
+  assert.equal(await page.locator("dialog[open]").count(), 0);
+  await remove.click({ force: true });
+  assert.equal(await page.locator("dialog[open]").count(), 0);
   grantMember(fixture, label, [["delete", "namespace"]]);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await remove.click();
@@ -175,6 +221,38 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   await page.waitForFunction(() => !document.querySelector("dialog[open]"));
   assert.equal((await fixture.request("GET", `/namespaces/${namespace.id}`)).data.status, "ready");
   assert.equal(await remove.isDisabled(), true);
+});
+
+// Finding 2861. A deny Restriction refuses Namespace delete even to an Installation administrator,
+// and administration cannot lift it. Her permission answer shows administration without delete,
+// so the reason names the Restriction and who lifts it, not an administrator to ask: she is one.
+test("a Restriction on Namespace delete names the Restriction to an Installation administrator", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Held cleanup", { ready: true });
+  restrict(fixture.policy, "delete", "namespace", { namespaceId: namespace.id });
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
+  const remove = page.getByRole("button", {
+    name: "Delete Held cleanup",
+    exact: true,
+    description: NAMESPACE_DELETE_RESTRICTED,
+  });
+  await remove.waitFor();
+  assert.equal(await page.getByText(NAMESPACE_DELETE_DENIED, { exact: true }).count(), 0);
+  // A keyboard user reaches the refused icon, and its focus ring is not faded with it.
+  await remove.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  assert.deepEqual(await refusedFocusLook(remove), {
+    ariaDisabled: "true",
+    focusVisible: true,
+    opacity: 1,
+    ring: "solid 2px true",
+    faded: 0.6,
+  });
+  await page.keyboard.press("Enter");
+  assert.equal(await page.locator("dialog[open]").count(), 0);
 });
 
 test("losing Namespace read permission during cleanup does not report deletion", async (t) => {
@@ -386,4 +464,16 @@ test("a refused Namespace deletion retry keeps its reason through a background p
   // would invite the same 403 (finding 2725).
   assert.equal(await reason.isVisible(), true);
   assert.equal(await retry.isDisabled(), true);
+  // The refused retry stays focusable (aria-disabled), still looks unavailable, and keeps a
+  // full-strength focus ring (findings D788, 2863).
+  await retry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  assert.deepEqual(await refusedFocusLook(retry), {
+    ariaDisabled: "true",
+    focusVisible: true,
+    opacity: 1,
+    ring: "solid 2px true",
+    faded: 0.6,
+  });
 });

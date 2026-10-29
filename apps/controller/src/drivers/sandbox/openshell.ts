@@ -2900,6 +2900,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   readonly capability = "sandbox" as const;
   readonly implementation: string;
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
+  readonly supportsHarnessExecutionMode;
   // environment() sets HOME to this for every Sandbox it creates.
   readonly harnessHome = OPENSHELL_HOME;
   static readonly configurationContributions = configurationContributions;
@@ -2934,6 +2935,24 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     this.options = options;
+    let reason: string | undefined;
+    if (options.kubernetes.userNamespaces !== false) {
+      reason =
+        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
+    } else if (sandboxServiceAccounts(options).length > 1) {
+      reason =
+        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.";
+    }
+    this.supportsHarnessExecutionMode = Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({ supported: false }),
+        dedicated: Object.freeze(
+          reason === undefined
+            ? { supported: true as const }
+            : { supported: false as const, reason },
+        ),
+      }),
+    });
     const git = selection.openShellGit;
     this.openShellGit = git;
     if (git) {
@@ -2971,16 +2990,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell SandboxDriver does not support the selected Harness runtime.",
       );
     }
-    // prepareNativeWorkspace refuses these only after a deploy has stopped its predecessors.
-    if (harness.id === "openclaw" && this.options.kubernetes.userNamespaces !== false) {
-      throw new ConfigurationHarnessError(
-        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
-      );
-    }
-    if (harness.id === "openclaw" && sandboxServiceAccounts(this.options).length > 1) {
-      throw new ConfigurationHarnessError(
-        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.",
-      );
+    const support = this.supportsHarnessExecutionMode.openclaw.dedicated;
+    if (harness.id === "openclaw" && !support.supported) {
+      throw new ConfigurationHarnessError(support.reason);
     }
     const agents = optionalAgentConfiguration(
       configuration.agents,

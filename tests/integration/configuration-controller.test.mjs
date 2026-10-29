@@ -5152,3 +5152,65 @@ test("A stored Configuration with a literal Gateway password an older release ac
     assert.deepEqual(revisions.body.data, [], label);
   }
 });
+
+// Exercise regular Configuration/Agent/deployment routes with real Kubernetes
+// admission and OCC Secret authorization; runtime execution is a separate proof.
+test("embedded custom provider deploys through the existing Secret binding workflow", async () => {
+  const { namespace, ...context } = await fixture({
+    computeDriver: kubernetesRules("compute-configured-provider", ...configurationRules),
+  });
+  const model = "router/vendor/model";
+  const values = {
+    agents: { defaults: { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } } },
+    models: {
+      providers: {
+        router: {
+          baseUrl: "https://models.example.test/v1",
+          api: "openai-responses",
+          apiKey: { source: "env", provider: "default", id: "OCE_MODEL_API_KEY" },
+          models: [{ id: "vendor/model", name: "Configured model" }],
+        },
+      },
+    },
+  };
+  const { item, agentPath } = await deployableAgent(context, namespace, {
+    values,
+    name: "Configured provider consumer",
+    secretName: "configured-provider-key",
+  });
+  const saved = await request(context.app, "GET", item);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.body.data.values.models, values.models);
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+  assert.equal(revisions.status, 200);
+  assert.equal(revisions.body.data.length, 1);
+  assert.equal(revisions.body.data[0].harness.mode, "embedded");
+  const bound = await request(context.app, "GET", agentPath);
+  assert.equal(bound.body.data.harnessAuth.method, "api_key");
+  for (const apiKey of [
+    "${OPENAI_API_KEY}",
+    { source: "env", provider: "default", id: "OTHER_KEY" },
+  ]) {
+    const invalid = structuredClone(values);
+    invalid.models.providers.router.apiKey = apiKey;
+    const edited = await request(context.app, "PATCH", item, { body: { values: invalid } });
+    assert.equal(edited.status, 400, JSON.stringify(edited.body));
+    assert.match(JSON.stringify(edited.body), /OCE_MODEL_API_KEY/);
+  }
+  const competing = await request(context.app, "PATCH", agentPath, {
+    body: {
+      secretBindings: {
+        OCE_MODEL_API_KEY: {
+          source: {
+            kind: "secret",
+            namespaceId: namespace.id,
+            id: "sec_00000000-0000-4000-8000-000000000001",
+          },
+        },
+      },
+    },
+  });
+  assert.equal(competing.status, 400, JSON.stringify(competing.body));
+});

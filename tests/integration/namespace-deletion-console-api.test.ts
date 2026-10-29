@@ -9,6 +9,8 @@ import {
   grantMember,
 } from "../helpers/console-app.mjs";
 
+type RemainingResource = { kind: string; count: number; ids: string[] };
+
 test("Namespace deletion reports authorized blockers through the Agent workflow without bypassing IAM", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -36,10 +38,29 @@ test("Namespace deletion reports authorized blockers through the Agent workflow 
   for (let index = 0; index < 21; index += 1) {
     configurationIds.add((await fixture.createConfiguration(namespace.id)).id);
   }
+  // Finding 2724: Namespace delete does not grant reads of its contents. The conflict counts
+  // the remaining resources (the Agent's Secret too) but names none of them, in the list or
+  // in the message.
+  const unreadable = await fixture.request("DELETE", path, { session });
+  assertApiError(unreadable, 409, "NAMESPACE_NOT_EMPTY");
+  assert.deepEqual(unreadable.body.error.remainingResources, [
+    { kind: "Agents", count: 1, ids: [] },
+    { kind: "Configurations", count: 22, ids: [] },
+    { kind: "Secrets", count: 1, ids: [] },
+  ]);
+  assert.equal(
+    unreadable.body.error.message,
+    "The requested Namespace is not empty. It still contains: Agents (1), Configurations (22), Secrets (1).",
+  );
+
+  // With read grants the same conflict names the IDs, up to 20 per kind.
+  grantMember(fixture, "namespace-deleter", [
+    ["read", "agent"],
+    ["read", "configuration"],
+  ]);
   const blocked = await fixture.request("DELETE", path, { session });
   assertApiError(blocked, 409, "NAMESPACE_NOT_EMPTY");
-  const resources: { kind: string; count: number; ids: string[] }[] =
-    blocked.body.error.remainingResources;
+  const resources: RemainingResource[] = blocked.body.error.remainingResources;
   assert.deepEqual(
     resources.find(({ kind }) => kind === "Agents"),
     { kind: "Agents", count: 1, ids: [agent.id] },
@@ -49,6 +70,19 @@ test("Namespace deletion reports authorized blockers through the Agent workflow 
   assert.equal(configurations.count, 22);
   assert.equal(configurations.ids.length, 20);
   assert.ok(configurations.ids.every((id) => configurationIds.has(id)));
+  // Each kind needs its own read: a read on Agents and Configurations does not name the Secret.
+  assert.deepEqual(
+    resources.find(({ kind }) => kind === "Secrets"),
+    { kind: "Secrets", count: 1, ids: [] },
+  );
+  // An IAM outage on those reads hides the IDs (fails closed) but not the conflict or counts.
+  const outage = await fixture.withIamOutage(
+    (request: { action: string; resource: { kind: string } }) =>
+      request.action === "read" && request.resource.kind !== "namespace",
+    () => fixture.request("DELETE", path, { session }),
+  );
+  assertApiError(outage, 409, "NAMESPACE_NOT_EMPTY");
+  assert.deepEqual(outage.body.error.remainingResources, unreadable.body.error.remainingResources);
 
   // Deleting the Agent does not empty its Namespace until teardown actually removes the Agent.
   assert.equal((await fixture.request("DELETE", `${path}/agents/${agent.id}`)).status, 202);

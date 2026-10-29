@@ -322,6 +322,9 @@ export interface PreparedRepositoryGitSource {
 }
 type Policy = (session: PreparedRepositorySession) => PreparedRepositoryGitSource | undefined;
 
+/** A native revision's token state; `quarantined` is terminal for that revision. */
+export type PreparedRepositoryGitMaterialState = "ready" | "pending" | "quarantined";
+
 /** An ended admission is withdrawn. Incomplete recipient or material evidence is unprepared. */
 export interface RepositoryGitMaterialAbsence {
   readonly absent: "withdrawn" | "unprepared";
@@ -472,6 +475,41 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       );
       return (rows[0] as { admission: GitHubPreparationAdmission } | undefined)?.admission;
     });
+  }
+
+  /**
+   * Native broker only: whether every open repository session of a revision holds a committed
+   * GitHub token. Background maintenance issues the first token only after the revision's active
+   * pointer is published, and a family with a quarantined attempt is never prepared again, so a
+   * deployment reads this before it reports success (finding 2415). Reads no material.
+   * An unfinished (`issuing`) attempt stays `pending` even after the dispatch window: its run
+   * measures its budget on the monotonic clock, so after a suspended worker host it can still
+   * commit, and a false quarantine would fail a version about to get its token.
+   */
+  async revisionMaterial(revisionId: string): Promise<PreparedRepositoryGitMaterialState> {
+    if (this.proxy) {
+      throw new Error("Protected delivery observes its own material install.");
+    }
+    const { rows } = await this.transaction((c) =>
+      c.query(
+        `SELECT s.repository_ref AS ref,
+        coalesce(bool_or(a.state='quarantined'), false) AS quarantined,
+        coalesce(bool_or(f.enabled AND a.state='committed' AND a.custody='current'
+          AND a.admission=f.admission AND a.usable_until > clock_timestamp()), false) AS ready
+      FROM occ.repository_session_attempts s
+      LEFT JOIN ${families} f ON f.source_id='repository-git:' || s.admission_id
+        AND f.source->>'adoption'=$2
+      LEFT JOIN ${attempts} a ON a.source_id=f.source_id
+      WHERE s.revision_id=$1 AND s.live_revision_id=$1 AND s.phase='open' AND s.broker_protocol=3
+      GROUP BY s.repository_ref`,
+        [revisionId, legacyAdoption],
+      ),
+    );
+    const sessions = rows as { ref: string; quarantined: boolean; ready: boolean }[];
+    if (sessions.some(({ quarantined }) => quarantined)) {
+      return "quarantined";
+    }
+    return sessions.length > 0 && sessions.every(({ ready }) => ready) ? "ready" : "pending";
   }
 
   /** This port exists only on a selected Driver. It carries no issuer, connection or maintenance authority. */

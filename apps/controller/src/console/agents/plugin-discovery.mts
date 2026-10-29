@@ -172,8 +172,9 @@ export function createPluginDiscovery({
     if (context.isCurrent() && canDiscover() && !isPending()) {
       catalog.status = "loading";
       searchTimer = setTimeout(() => {
-        // Submitting the form can pause discovery before this delayed read starts.
-        if (isPending()) {
+        // A form submission or tab change can prevent this deferred read from starting.
+        // Release the loading state so reopening a retained tab can load its catalog.
+        if (!context.isCurrent() || isPending()) {
           prefetched = false;
           cancel();
           return;

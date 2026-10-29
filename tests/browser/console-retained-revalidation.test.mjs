@@ -1718,10 +1718,10 @@ test("A double press on Back to Agents goes back once and stays in the console",
   read.release();
 });
 
-test("A chat link that cannot be resolved says so on the Agents list, once", async (t) => {
+test("A Gateway link that cannot be resolved says so on the Agents list, once", async (t) => {
   const { page } = await openList(t, "Chat link", "Listed Agent", { running: true });
   const notice = page.getByText(
-    "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
+    "This Gateway link could not be opened. It may be out of date, or you may not have access to the Gateway.",
     { exact: true },
   );
   assert.equal(await notice.count(), 0);
@@ -1749,7 +1749,7 @@ test("A chat link that cannot be resolved says so on the Agents list, once", asy
     route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Unavailable.")),
   );
   await openChatLink(page, key);
-  await page.getByText("This Agent chat link could not be opened. Try the link again.").waitFor();
+  await page.getByText("This Gateway link could not be opened. Try the link again.").waitFor();
   assert.equal(await notice.count(), 0);
 });
 

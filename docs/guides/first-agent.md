@@ -252,6 +252,11 @@ new name for the next run.
 
 ## Troubleshoot
 
+- **`EACCES` opening an old helper record:** inspect the exact file named in
+  the error and confirm it is your regular helper record. Restore mode `0600`
+  and retry the same Agent name. Do not print the record. New record writes
+  retain owner read/write permissions even with a restrictive umask.
+
 - **`No Namespace named default exists`:** the command creates its Agent only in
   the `default` Namespace from Local setup. After that Namespace is deleted, its
   name [cannot be reused](../reference/namespaces.md#deletion-and-tombstones), so

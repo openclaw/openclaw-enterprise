@@ -92,6 +92,7 @@ identity, searches `q`, and pages GLOBAL entries with opaque cursors.
 [Console discovery](../../apps/controller/src/console/agents/plugin-discovery.mjs)
 prefetches catalogs on create or edit. Closing the picker or changing views cancels reads.
 Changing credentials clears results and preserves selections.
+A hidden tab cancels deferred prefetch before sending; reopening its picker can load again.
 See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
 for search, paging and tool loading.
 
@@ -369,8 +370,6 @@ establish starvation.
 
 ## Changelog
 
-- 2026-10-28 22:10: Move Google request checks to the shared execution-cluster guard. (authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106 - ce4688a9)
-
-- 2026-10-28 20:30: Trace independent credential attachment, Google request authorization and recovery after withdrawal. (authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded - dbe0d78a)
+- 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

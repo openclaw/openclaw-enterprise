@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
@@ -18,6 +17,7 @@ import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sa
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
 // verifier and no Compute status port. When it holds a startup failure it serves
@@ -597,35 +597,8 @@ test("an OpenShell service that never answers times out as a dependency failure"
   }
 });
 
-function selfSignedCertificate(directory, name, subjectAltName) {
-  const keyPath = join(directory, `${name}.key`);
-  const certPath = join(directory, `${name}.crt`);
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:prime256v1",
-      "-nodes",
-      "-days",
-      "1",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-subj",
-      "/CN=openshell-gateway",
-      "-addext",
-      `subjectAltName=${subjectAltName}`,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
-  return { keyPath, certPath };
-}
+const selfSignedCertificate = (directory, name, subjectAltName) =>
+  selfSigned(directory, { name, commonName: "openshell-gateway", subjectAltName });
 
 // A TLS gateway listener that records the SNI and Host of every request it receives.
 function tlsGateway(keyPath, certPath, seen) {
@@ -653,7 +626,7 @@ test("the OpenShell client verifies a TLS gateway listener against its root cert
   const directory = mkdtempSync(join(tmpdir(), "openshell-service-tls-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   // The certificate names only the control endpoint, never the service host.
-  const { keyPath, certPath } = selfSignedCertificate(directory, "tls", "DNS:localhost");
+  const { keyPath, certPath } = await selfSignedCertificate(directory, "tls", "DNS:localhost");
   const seen = [];
   const gateway = tlsGateway(keyPath, certPath, seen);
   const port = await listen(gateway);
@@ -731,7 +704,7 @@ test("the OpenShell client verifies an IP-literal TLS gateway listener against t
       name,
       { skip: needsIpv6 && !ipv6 && "IPv6 loopback ::1 is unavailable" },
       async (t) => {
-        const { keyPath, certPath } = selfSignedCertificate(directory, name, san);
+        const { keyPath, certPath } = await selfSignedCertificate(directory, name, san);
         const seen = [];
         const gateway = tlsGateway(keyPath, certPath, seen);
         const port = await listen(gateway, bind);

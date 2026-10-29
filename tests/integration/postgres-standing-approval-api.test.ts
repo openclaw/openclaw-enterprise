@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type {
   ComputeDriver,
   ConfigurationDriver,
@@ -97,7 +96,10 @@ test(
     });
     let app!: ReturnType<typeof createFastifyApp>;
     let controllerTime: number | undefined;
-    async function selectRepo(input: unknown) {
+    async function selectRepo(
+      input: unknown,
+      eligibility: boolean | "absent" | "registry" = "registry",
+    ) {
       if (app) {
         await app.close();
       }
@@ -117,13 +119,16 @@ test(
         {
           id: backendId,
           drivers: { repo: "standing-repo-driver" },
-          client: new UnixRepositoryCredentialControlClient({
-            controlSocket: "/unused/standing/control.sock",
-          }),
         },
         validateGitHubRepositoryRegistry(input),
         { sessionDurationSeconds: 3600 },
       );
+      // Keep scope resolution unchanged while varying the independent policy permission.
+      if (eligibility !== "registry") {
+        Object.defineProperty(driver, "allowsStandingApproval", {
+          value: eligibility === "absent" ? undefined : () => eligibility,
+        });
+      }
       const computeDriver = {
         ...compute,
         capability: "compute" as const,
@@ -264,6 +269,22 @@ test(
       (await request("PATCH", path, unreviewed)).statusCode,
       400,
       "scope review is required",
+    );
+    for (const eligibility of [false, "absent"] as const) {
+      await selectRepo(registry, eligibility);
+      const preview = await request("GET", path + "/repository-approval-scopes");
+      assert.equal(preview.statusCode, 200, preview.body);
+      assert.deepEqual(preview.json().data, [], "a scope alone cannot offer standing approval");
+      const denied = await request("PATCH", path, grant);
+      assert.equal(denied.statusCode, 409, denied.body);
+      assert.equal(denied.json().error.message, STANDING_APPROVAL_NOT_PERMITTED);
+      assert.deepEqual(await read(), [], "ineligible save cannot persist approval");
+    }
+    await selectRepo(registry, true);
+    assert.deepEqual(
+      (await request("GET", path + "/repository-approval-scopes")).json().data,
+      [reviewed],
+      "explicit permission restores the identical review scope",
     );
     const widenedBeforeApproval = structuredClone(registry);
     widenedBeforeApproval.repositories[0]!.namespaces[0]!.pushRefAllowlist = ["refs/heads/*"];
@@ -435,6 +456,19 @@ test(
       [],
       "unsupported multibinding cannot acquire active standing approval",
     );
+    for (const eligibility of [false, "absent"] as const) {
+      await selectRepo(registry, eligibility);
+      const denied = await request("POST", path + "/deploy");
+      assert.equal(denied.statusCode, 409, denied.body);
+      assert.equal(denied.json().error.message, STANDING_APPROVAL_POLICY_CHANGED);
+      assert.deepEqual(await read(), [first], "deploy refusal does not rewrite approval");
+      assert.deepEqual(
+        await state.read((v) => v.revisions.listRevisions(namespaceId, agent.id)),
+        [],
+        "ineligible deploy cannot admit a revision",
+      );
+    }
+    await selectRepo(registry, true);
     const deployment = await request("POST", path + "/deploy");
     assert.equal(deployment.statusCode, 202, deployment.body);
     const revision = await state.read((v) =>

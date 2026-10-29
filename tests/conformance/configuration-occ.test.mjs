@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
@@ -2317,6 +2318,7 @@ function conformanceSandbox(id, facets, provisions = true) {
     id: `configuration-occ-sandbox-${id}`,
     capability: "sandbox",
     implementation: "configuration-conformance-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets,
     ...(provisions
       ? {
@@ -2417,22 +2419,27 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
       modes: [],
     })),
     { name: "full", sandbox: conformanceSandbox("full", facets), modes: ["dedicated"] },
-    // Admission's Sandbox view can refuse OpenClaw on Driver settings alone (finding 2347). The
-    // capability carries that refusal, so a reader learns which setting to change (finding 2373).
-    {
-      name: "full but its Agent view refuses OpenClaw",
+    // Installation settings are declared separately from real Configuration transformation.
+    ...[undefined, "Ask an operator to enable OpenClaw in the Sandbox settings."].map((reason) => ({
+      name: reason === undefined ? "unsupported OpenClaw" : "settings refuse OpenClaw",
       sandbox: {
         ...conformanceSandbox("refuses-openclaw", facets),
-        configureAgent(values, harness) {
-          if (harness.id === "openclaw") {
-            throw new ConfigurationHarnessError("This Sandbox Driver refuses OpenClaw.");
-          }
-          return values;
+        supportsHarnessExecutionMode: Object.freeze({
+          openclaw: Object.freeze({
+            embedded: Object.freeze({ supported: false }),
+            dedicated: Object.freeze({
+              supported: false,
+              ...(reason === undefined ? {} : { reason }),
+            }),
+          }),
+        }),
+        configureAgent() {
+          assert.fail("static refusal must precede Configuration transformation");
         },
       },
       modes: [],
-      settingRefusals: { dedicated: "This Sandbox Driver refuses OpenClaw." },
-    },
+      ...(reason === undefined ? {} : { settingRefusals: { dedicated: reason } }),
+    })),
     {
       name: "full but unavailable",
       sandbox: conformanceSandbox("unavailable", facets),

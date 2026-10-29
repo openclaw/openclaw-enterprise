@@ -4,7 +4,7 @@ A Harness calls models and runs Agent tools. Bundled deployments run OpenClaw
 inside the gateway or OpenClaw or Codex in a separate runtime. Select the Agent's
 execution mode and a compatible model and Harness in its Configuration.
 
-For an overview of the Gateway/Harness boundary and file flows, see
+See
 [Remote Harness execution and split storage](../guides/topics/remote-harness.md).
 
 ## Supported topology
@@ -101,20 +101,23 @@ revoked authority, or a missing required Driver fail closed; see
 The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
 model-auth selector. Kubernetes supports these combinations:
 
-| Binding                                     | Topology           | Credential consumer                                                                                               |
-| ------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `api_key` with an OCC Secret                | Embedded OpenClaw  | Combined gateway/Harness receives `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, selected by its native model provider. |
-| `api_key` with an OCC Secret                | Dedicated OpenClaw | Only the native Harness receives `OPENAI_API_KEY`.                                                                |
-| `api_key` with an OCC Secret                | Dedicated Codex    | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
-| `codex_pat` with a Secret or ServiceAccount | Dedicated Codex    | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                            |
-| `credential_source`                         | Dedicated Harness  | The Harness receives only a placeholder; the Sandbox egress proxy inserts the key from the Credential Gateway.    |
+| Binding                                     | Topology           | Credential consumer                                                                                            |
+| ------------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `api_key` with an OCC Secret                | Embedded OpenClaw  | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OCE_MODEL_API_KEY` in the combined workload.                        |
+| `api_key` with an OCC Secret                | Dedicated OpenClaw | Only the native Harness receives `OPENAI_API_KEY`.                                                             |
+| `api_key` with an OCC Secret                | Dedicated Codex    | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                |
+| `codex_pat` with a Secret or ServiceAccount | Dedicated Codex    | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                         |
+| `credential_source`                         | Dedicated Harness  | The Harness receives only a placeholder; the Sandbox egress proxy inserts the key from the Credential Gateway. |
 
-A selected Sandbox uses only Compute's
+Embedded custom providers require `apiKey: "${OCE_MODEL_API_KEY}"` or a matching
+env SecretRef. Compute supplies the bound Secret; dedicated support is unchanged.
+
+Sandbox consumes Compute's
 [rendered login mode and Secret projections](drivers/sandbox.md#provisioning-inputs).
 
-The `codex_pat` binding accepts a Secret or managed ServiceAccount source and
-renders `CODEX_LOGIN_MODE=codex_pat` for both. Source ownership and authorization
-remain distinct; native Codex derives account identity from the access token.
+The `codex_pat` binding projects `CODEX_LOGIN_MODE=codex_pat` for Secrets and
+managed ServiceAccounts. Authorization remains source-specific; Codex derives
+account identity from the token.
 
 A [`credential_source`](credential-sources.md) binding requires a selected
 Credential Gateway, the paired OpenShell Sandbox, a dedicated Codex or native

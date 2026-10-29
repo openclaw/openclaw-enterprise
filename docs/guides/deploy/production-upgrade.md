@@ -38,7 +38,7 @@ Prepare:
 - the OCC CLI from the same release, installed at the path you pass as `--occ`
   (`/secure/occ/bin/occ` below): its
   [release binary](../cli.md#connect-to-your-installation), or `bin/occ` from
-  `pnpm cli:build` in that checkout. The helper reads the deployment inventory
+  `go build -trimpath -o bin/occ ./cmd/occ` in that checkout. The helper reads the deployment inventory
   and deploys Agents through it, and an older CLI can lack those commands;
 - a [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
   database state;
@@ -92,8 +92,7 @@ completes. Disable autoscalers and other automation that can restart or scale
 the OCC Deployments. Stop any other process that writes to the OCC database,
 including independent API, worker, or maintenance processes. Confirm nodes are reachable and do not force-delete OCC
 Pods: a missing Pod alone cannot prove a partitioned process stopped. The helper
-stops the selected Helm release's API and worker and waits for their Pods to
-terminate; it cannot stop or detect other database writers. For a runtime upgrade,
+stops only the selected Helm release's API and worker. For a runtime upgrade,
 also stop Agent deployments and draft edits, and resolve queued or running Agent
 deployments first. Keep these restrictions in place through recovery.
 
@@ -257,9 +256,10 @@ controller image. If cleanup fails or the helper is killed, delete its leftovers
 `kubectl delete pod,secret,networkpolicy.networking.k8s.io -n <namespace> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=upgrade-preflight`.
 
 A runtime upgrade also sends each running Agent's saved Configuration to the API
-Pod, which checks it with the image's deploy rules. A refused draft, such as one
-that keeps a setting the new OpenClaw runtime retired, stops the command with
-each Agent and OCC's deploy message. Correct the draft or stop the Agent, then
+Pod, which applies the image's deploy rules that read only those values. A refused
+draft, such as one with a setting the new OpenClaw runtime retired or an unusable
+model provider URL, stops the command with each Agent and OCC's deploy message;
+Driver, credential, plugin and repository checks run only at deploy. Correct the draft or stop the Agent, then
 start again with a new evidence directory.
 
 The command then applies reviewed settings, scales the API and worker to zero, and

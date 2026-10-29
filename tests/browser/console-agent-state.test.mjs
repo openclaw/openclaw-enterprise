@@ -22,6 +22,7 @@ import {
   nonAuthWriteRequests,
   persistedDeploymentError,
   recordLayoutShifts,
+  settledFetches,
   shortId,
   stopAgentButton,
   takeLayoutShifts,
@@ -29,6 +30,7 @@ import {
   waitForChosenVersion,
   waitForEnabled,
   waitForIdleFetches,
+  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
   deploymentRecordUrl,
@@ -52,12 +54,14 @@ import {
   BOUND_SECRET_UNLISTED,
   DIAGNOSTICS_RUNTIME_UNAVAILABLE,
   diagnosticsRecordedFailure,
+  GENERIC_DENIAL,
   MALFORMED_REQUEST,
   NO_PERSISTED_STARTUP_FAILURE,
   RESOURCE_CONFLICT,
   requestedVersionUnavailable,
   stopRefused,
   NEW_VERSIONS_READ,
+  PLUGINS_READ_ONLY,
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
@@ -1490,6 +1494,419 @@ test("Reads waiting behind a pending administration read end with their page", a
   }
 });
 
+// Finding D790. The Access tab's panel is built once per page. An administrator who opened it,
+// lost administration with the page open and came back to the tab found the panel read before:
+// "Current policy loaded." and an enabled Remove binding, while nothing said the policy reads were
+// now refused. A return reads the policy again, one list at a time, so the refusal is audited once
+// and takes the member path a reload takes: the tab gives way to Configuration and says why.
+test("A return to the Access tab after a revoke shows the member notice, audited once", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["access-recipient"] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked sharing", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Revoked sharing Agent", nativeValues("x"));
+  const account = await fixture.createNamespaceMember("revoked-sharer", namespace.id, AGENT_READ);
+  // A direct grant gives the panel a Remove binding to show.
+  const policyPath = `/namespaces/${namespace.id}/iam`;
+  const role = await fixture.request("POST", `${policyPath}/roles`, {
+    body: { permissions: [{ action: "operate", resourceKind: "agent" }] },
+  });
+  const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: account.principal.id,
+      roleId: role.data.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+    },
+  });
+  assert.equal(binding.status, 201);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const policyReads = (from) => requests.slice(from).filter(({ path }) => path.includes("/iam/"));
+  const iamDenials = () => authorizationDenials(fixture.auditSink, /^openclaw\.iam\./);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
+    account.credentials,
+  );
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+  const configurationTab = page.getByRole("tab", { name: "Configuration", exact: true });
+  const loaded = page.getByText("Current policy loaded.", { exact: true });
+  const remove = page.getByRole("button", { name: "Remove binding", exact: true });
+  await accessTab.click();
+  await loaded.waitFor();
+  await waitForEnabled(remove.first());
+  await configurationTab.click();
+  await waitForIdleFetches(page);
+  // An administrator's return reads the policy again and shows it as before.
+  let sent = requests.length;
+  await accessTab.click();
+  await waitForEnabled(remove.first());
+  await waitForIdleFetches(page);
+  assert.equal(await loaded.isVisible(), true);
+  assert.equal(policyReads(sent).length, 2);
+  // A share's outcome stays through the next return: the recheck rereads the policy but keeps
+  // what the panel said.
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const shared = panel.getByText("Agent access is shared.", { exact: false });
+  await panel
+    .getByLabel("Existing person’s Principal ID")
+    .fill(fixture.provisionedAccounts[0].principal.id);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await shared.waitFor();
+  await configurationTab.click();
+  await waitForIdleFetches(page);
+  sent = requests.length;
+  await accessTab.click();
+  await waitForEnabled(remove.first());
+  await waitForIdleFetches(page);
+  assert.equal(policyReads(sent).length, 2);
+  assert.equal(await shared.isVisible(), true);
+  assert.equal(await loaded.count(), 0);
+  await configurationTab.click();
+  await waitForIdleFetches(page);
+  assert.deepEqual(iamDenials(), []);
+
+  revoke();
+  sent = requests.length;
+  await accessTab.click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await accessTab.count(), 0);
+  assert.equal(await loaded.count(), 0);
+  assert.equal(await remove.count(), 0);
+  assert.equal(policyReads(sent).length, 1);
+  assert.equal(iamDenials().length, 1);
+
+  // Finding D792. Credentials then read the IAM policy for the model credential's grant, as an
+  // administrator's Credentials tab does: two more refusals, audited, with nothing shown. The
+  // refusal above settled that this reader no longer administers the Installation, so the tab
+  // sends no read that needs it.
+  sent = requests.length;
+  const credentialsTab = page.getByRole("tab", { name: "Credentials", exact: true });
+  await credentialsTab.click();
+  await page.getByRole("tab", { name: "Credentials", selected: true }).waitFor();
+  await page.locator("#harness-auth-method").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(policyReads(sent).length, 0);
+  assert.equal(iamDenials().length, 1);
+
+  // Access that returns is used again: Refresh asks again, and the Access tab is back.
+  grantInstallationAdministration(fixture, account.principal);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await accessTab.click();
+  await loaded.waitFor();
+  await waitForEnabled(remove.first());
+  assert.equal(iamDenials().length, 1);
+});
+
+// Finding D795. Once the Access tab's recheck settled that a revoked administrator no longer
+// administers the Installation, her open page kept the administrator's controls until Refresh:
+// Deploy new version, Stop and Delete stayed enabled, and Plugins sent a capabilities read the
+// API refused and audited. The page now reads her permission answer again, which audits
+// nothing, and shows the member's controls as Refresh would, without a reload. Plugins opened
+// while that answer is in flight waits for it instead of reading.
+test("A revoke the Access tab settles takes away administrator controls without Refresh", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked controls", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Revoked controls Agent",
+    nativeValues("x"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const account = await fixture.createNamespaceMember("revoked-controls", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
+    account.credentials,
+  );
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+  const stop = stopAgentButton(page);
+  await waitForEnabled(deploy);
+  await waitForEnabled(stop);
+  await waitForEnabled(remove);
+  await accessTab.click();
+  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await waitForIdleFetches(page);
+
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  const reread = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    { once: true },
+  );
+  await accessTab.click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await reread.requested;
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
+  reread.release();
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  // She holds Agent read only: no deploy, operate or delete.
+  await stop.waitFor({ state: "hidden" });
+  await remove.waitFor({ state: "hidden" });
+  assert.equal(await deploy.isDisabled(), true);
+  await waitForIdleFetches(page);
+  assert.equal(
+    requests.slice(sent).filter(({ path }) => path.endsWith("/plugins/capabilities")).length,
+    0,
+  );
+  // The Access tab's refused policy read is the only audited refusal.
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+});
+
+// A namespace member who administers the Installation opens an Agent page on its Access tab
+// (`version`: the active version, or "draft"), which confirms her administration. `revoke` ends
+// it; the page learns of that only from a later read. Her own grant is Agent read, so her
+// permission answer changes from an administrator's to a reader's: no Stop, no Delete and a
+// read-only draft.
+async function openAsRevocableAdministrator(t, name, version = "active") {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("x"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const account = await fixture.createNamespaceMember("reread", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  const shown = version === "draft" ? "draft" : revision.id;
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, shown, "access")),
+    account.credentials,
+  );
+  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
+  const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+  const stop = stopAgentButton(page);
+  await waitForEnabled(stop);
+  await waitForEnabled(remove);
+  await waitForIdleFetches(page);
+  const permissionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  return {
+    fixture,
+    page,
+    requests,
+    revoke,
+    stop,
+    remove,
+    agentUrl: `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    permissionsPath,
+    permissionsUrl: `${fixture.origin}${permissionsPath}`,
+    revision,
+    // The draft's entry in the version chooser follows the permission summary (finding 2421).
+    draftEntry: page.locator('#revision-selector option[value="draft"]'),
+  };
+}
+
+// Runtime status is refused, as it is without Agent operate. Logs then compares that refusal
+// with a fresh permission answer: a permission reread the test can hold.
+async function refuseRuntimeStatus(page, agentUrl, revisionId) {
+  await page.route(`${agentUrl}/deployments/${revisionId}/runtime`, (route) =>
+    route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
+  );
+}
+
+const DRAFT_EDITABLE = "Draft · Editable Configuration";
+const DRAFT_READ_ONLY = "Draft · Read-only Configuration";
+
+// Finding 2329. Two permission rereads overlap and the newer one fails: a failed reread resolves to
+// the answer before it, here the older reread, which then answers. That older answer is the
+// newest the page has, so the permission summary (Delete, the failed-version recovery, the
+// draft's access) takes it together with the operate controls (Stop). Before, only Stop took it
+// and Delete kept the administrator's answer until Refresh.
+test("An older permission reread that answers after a newer one failed applies to every control", async (t) => {
+  const { page, revoke, stop, remove, agentUrl, permissionsUrl, revision, draftEntry } =
+    await openAsRevocableAdministrator(t, "Overlapping rereads");
+  assert.equal(await draftEntry.textContent(), DRAFT_EDITABLE);
+
+  revoke();
+  await refuseRuntimeStatus(page, agentUrl, revision.id);
+  // The older reread, from Logs. The server answers it (Agent read only); the page receives
+  // that answer last.
+  const older = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await older.requested;
+  // The newer reread: the Access tab's refused recheck ends administration, and the permission
+  // read that follows fails.
+  await page.route(
+    permissionsUrl,
+    (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
+    { times: 1 },
+  );
+  const failed = page.waitForResponse(
+    (response) => response.url() === permissionsUrl && response.status() === 503,
+  );
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await failed;
+  older.release();
+  // She holds Agent read only: Stop, Delete and the draft's access all follow the older answer.
+  await stop.waitFor({ state: "hidden" });
+  await waitForIdleFetches(page);
+  assert.equal(await remove.isVisible(), false);
+  assert.equal(await draftEntry.textContent(), DRAFT_READ_ONLY);
+});
+
+// Finding 2901. Two permission rereads overlap and the newer one answers first. The older
+// reread's answer, which the page receives last, is out of date: the server gave it while she
+// still administered the Installation. The page keeps the newer answer, so Stop, Delete and the
+// draft's access do not come back with the late administrator's answer.
+test("An older permission reread that answers after a newer one leaves the newer answer", async (t) => {
+  const {
+    page,
+    revoke,
+    stop,
+    remove,
+    agentUrl,
+    permissionsUrl,
+    permissionsPath,
+    revision,
+    draftEntry,
+  } = await openAsRevocableAdministrator(t, "Late older reread");
+  assert.equal(await draftEntry.textContent(), DRAFT_EDITABLE);
+
+  await refuseRuntimeStatus(page, agentUrl, revision.id);
+  // The older reread, from Logs: the server answers it before the revoke.
+  const older = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await older.requested;
+  revoke();
+  // The newer reread: the Access tab's refused recheck ends administration, and the page reads
+  // her reader's answer, which it receives first.
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await stop.waitFor({ state: "hidden" });
+  assert.equal(await remove.isVisible(), false);
+  assert.equal(await draftEntry.textContent(), DRAFT_READ_ONLY);
+
+  const answered = await settledFetches(page, permissionsPath);
+  older.release();
+  await waitForSettledFetches(page, permissionsPath, answered + 1);
+  await waitForIdleFetches(page);
+  // The administrator's late answer changes nothing.
+  assert.equal(await stop.isVisible(), false);
+  assert.equal(await remove.isVisible(), false);
+  assert.equal(await draftEntry.textContent(), DRAFT_READ_ONLY);
+});
+
+// Finding 2902 (the D795 rule with overlapping rereads). An older permission reread answers,
+// out of date, while the Access tab's newer reread after a revoke is still in flight. Its
+// answer is the newest the page has, so the shown controls take it, but a view built meanwhile
+// waits for the newer answer: Plugins opened in that window sends no capabilities read the
+// API refuses and audits.
+test("Plugins opened while a newer permission reread is in flight waits for it", async (t) => {
+  const { fixture, page, requests, revoke, stop, remove, permissionsUrl, permissionsPath } =
+    await openAsRevocableAdministrator(t, "Pending newer reread", "draft");
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  const reload = page.getByRole("button", { name: "Reload authentication source", exact: true });
+  await waitForEnabled(reload);
+  await waitForIdleFetches(page);
+
+  // The older reread, from the draft refresh: the server answers it before the revoke.
+  const older = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
+  await reload.click();
+  await older.requested;
+  await waitForIdleFetches(page, { except: permissionsPath });
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  // The newer reread, from the Access tab's refused recheck; the server answers it after the
+  // revoke, and the page receives it last.
+  const newer = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await newer.requested;
+  const answered = await settledFetches(page, permissionsPath);
+  older.release();
+  await waitForSettledFetches(page, permissionsPath, answered + 1);
+
+  const sent = requests.length;
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
+  await waitForIdleFetches(page, { except: permissionsPath });
+  newer.release();
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  await stop.waitFor({ state: "hidden" });
+  await waitForIdleFetches(page);
+  assert.equal(await remove.isVisible(), false);
+  assert.equal(
+    requests.slice(sent).filter(({ path }) => path.endsWith("/plugins/capabilities")).length,
+    0,
+  );
+  // The Access tab's refused policy read is the only audited refusal.
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+});
+
+// Finding D792. A refusal after the page confirmed administration settles nothing until the
+// permission answer, which audits nothing, says so: a Restriction can refuse one read to an
+// administrator. Opened on the Access tab, the sharing reads confirm her administration; the
+// Configuration tab's bound Secret read, sent after them, is refused. She is still an
+// administrator, so she keeps the Observability link and the Access tab, and that refusal is the
+// only audited one.
+test("A Restriction refusal after confirmed administration keeps an administrator's answer", async (t) => {
+  const url = "https://metrics.example.test/d/operations";
+  const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Confirmed then restricted", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Confirmed model key", "hidden-model");
+  const agent = await fixture.createAgent(namespace.id, "Confirmed Agent", nativeValues("x"), {
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  restrict(fixture.policy, "read", "secret", { namespaceId: namespace.id });
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const observability = page.getByRole("link", { name: "Observability", exact: true });
+  await login(page, fixture, String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
+  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const refusal = page.waitForResponse(
+    (response) => /\/secrets\//.test(new URL(response.url()).pathname) && response.status() === 403,
+  );
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await refusal;
+  await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await observability.getAttribute("href"), url);
+  assert.equal(await page.getByRole("tab", { name: "Access", exact: true }).count(), 1);
+  assert.deepEqual(
+    authorizationDenials(
+      fixture.auditSink,
+      /^openclaw\.(observability|backends|iam|secrets|installation)\./,
+    ).map((event) => event.action),
+    ["openclaw.secrets.read"],
+  );
+});
+
 // Only a Backends refusal settles Installation administration as false (finding 2627). A read that
 // fails for another reason, here an unavailable dependency, says nothing about it: the
 // administrator keeps the Observability link.
@@ -1648,15 +2065,31 @@ test("Agent detail says when the current or requested version cannot be read", a
   // Revision read is granted per version: v2 is current, but this reader cannot read it.
   const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
   denyRevisionRead(fixture, namespace, second.revision);
+  const requests = apiRequests(page, fixture.origin);
+  const versionReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/revisions/${second.revision.id}`)).length;
+  const versionDenials = () =>
+    authorizationDenials(fixture.auditSink, "openclaw.agent_revisions.read").length;
   await page.goto(
     detailUrl(fixture, namespace.id, agent.id, second.revision.id, "configuration").href,
   );
+  // The page named that version by its raw ID in four places and read it once per tab, an
+  // audited refusal. The newest page of versions lists every version this reader can read and
+  // leaves v2 out, so, as on the Agents list, the page names it in words and does not read it.
+  // Beside v1's completed deployment it is newer (finding D791).
+  const NEWER_UNREADABLE = "A newer version you cannot read";
   await summary.getByText("Newer version hidden", { exact: true }).waitFor();
-  await summary.getByText("Selected for service · you cannot read this version").waitFor();
+  await summary.getByText(NEWER_UNREADABLE, { exact: true }).waitFor();
   assert.equal(await summary.getByText("v1 · Completed").count(), 0);
   await page
     .locator(".agent-status-line")
-    .getByText(/The current version, rev_.*, is one you cannot read; v1 is an older version\./)
+    .getByText(/^The current version is one you cannot read; v1 is an older version\./)
+    .waitFor();
+  await page
+    .getByText(
+      `${NEWER_UNREADABLE} remains selected for service. Browsing does not deploy or roll back.`,
+      { exact: true },
+    )
     .waitFor();
   // Members have no chat or native admin surface, so the hint names only paths that work.
   await page
@@ -1669,6 +2102,10 @@ test("Agent detail says when the current or requested version cannot be read", a
     .waitFor();
   await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
   assert.equal(await page.getByText("Configuration unavailable").count(), 0);
+  // The settled denial panel shows once the page decided whether to read the version.
+  assert.equal(await page.locator("main").getByText(/rev_/).count(), 0);
+  assert.equal(versionReads(), 0);
+  assert.equal(versionDenials(), 0);
 
   // After a deploy the console opens the requested version; its outcome stays hidden too.
   const requested = await fixture.deployAgent(namespace.id, agent.id);
@@ -1682,6 +2119,32 @@ test("Agent detail says when the current or requested version cannot be read", a
   await statusLine.getByText(requestedVersionUnavailable(shortId(requested.id))).waitFor();
   await page.getByRole("heading", { name: "Version not found or not shared" }).waitFor();
   await page.getByText(VERSION_UNAVAILABLE, { exact: true }).waitFor();
+});
+
+// After a stop request the Stop row names the current version. One the reader cannot read is
+// named in the page's words there too, not by its raw ID (finding D791).
+test("A requested stop names an unreadable current version in words", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Stopped hidden", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Stopped hidden Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  denyRevisionRead(fixture, namespace, second.revision);
+  const stopped = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+  );
+  assert.equal(stopped.status, 202);
+  assert.equal(stopped.data.activeRevisionId, second.revision.id);
+  const { page } = await newPage(t, fixture);
+  await routeDeploymentStatus(page, fixture, namespace, agent, first.revision, "succeeded");
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion.getByText("Requested runtime state", { exact: true }).waitFor();
+  await stopRegion.getByText("A newer version you cannot read", { exact: true }).waitFor();
+  assert.equal(await stopRegion.getByText(/rev_/).count(), 0);
 });
 
 test("Agent detail says an Agent's versions are hidden, not missing, when none is readable", async (t) => {
@@ -2199,17 +2662,25 @@ test("Agent detail reads the selected version's deployment record once on load",
   const { page } = await newPage(t, fixture);
   let recordReads = 0;
   let failFirst = false;
-  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) => {
-    recordReads += 1;
-    if (failFirst && recordReads === 1) {
-      return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
-    }
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
-    });
-  });
+  const recovery = Promise.withResolvers();
+  t.after(() => recovery.resolve());
+  await page.route(
+    deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id),
+    async (route) => {
+      recordReads += 1;
+      if (failFirst && recordReads === 1) {
+        return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
+      }
+      if (failFirst) {
+        await recovery.promise;
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+      });
+    },
+  );
   await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
@@ -2219,12 +2690,14 @@ test("Agent detail reads the selected version's deployment record once on load",
   // Deployment activity and the version's record panel show the same record.
   assert.equal(recordReads, 1);
 
-  // When the shared read fails, the version's record panel reads the record itself.
+  // When the shared read fails, the selected panel recovers the same record for both panels.
   recordReads = 0;
   failFirst = true;
   await page.reload();
   await expectDeploymentOutcome(page, "Unavailable");
+  recovery.resolve();
   await expectVersionRecord(page, "Completed");
+  await expectDeploymentOutcome(page, "Completed");
   await waitForIdleFetches(page);
   assert.equal(recordReads, 2);
 });

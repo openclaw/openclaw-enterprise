@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-24 23:40
-last_updated_session: fix-2376-2378
+updated: 2026-10-29 03:37
+last_updated_session: authoring-run/0befad8f-89c2-473e-bf8d-6b978197921e
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -71,6 +71,9 @@ Driver capability, identity, and callbacks once during registration. It preserve
 selection order for preparation and reverses that order for teardown. Registered callbacks remain
 stable even if their trusted owner changes. Hooks receive the worker's existing claim-owned abort
 signal; direct Compute calls receive a nonaborted fallback.
+`apps/controller/src/drivers/compute/operation-context.ts:withComputeAbortSignal`
+combines nested operation signals with the enclosing signal, even when the enclosing
+operation has no deadline. It preserves an enclosing deadline and the abort reason.
 
 ### 3. Gate Namespace readiness on completed hooks
 
@@ -176,6 +179,8 @@ after the remaining resources. The worker settles deletion only from the resulti
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 03:37: Preserve enclosing cancellation in nested Compute operations. (authoring-run/0befad8f-89c2-473e-bf8d-6b978197921e - 8e20e2019fb4d067e0876fb10e59231dd70c5761)
 
 - 2026-10-24 23:40: Check dedicated placement at Agent save too. (fix-2376-2378)
 

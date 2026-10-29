@@ -23,6 +23,7 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
+  LIVE_BUTTON,
   configurationPostRequests,
   createModelCredentialSecret,
   createRepositoryLaunchFixture,
@@ -243,7 +244,7 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   const failed = failNextNamespacesRead(page);
   await sidebarLink(page, "Namespaces").click();
   await failed;
-  await heading(page, "Namespace access unavailable").waitFor();
+  await heading(page, "Could not reach OpenClaw Enterprise").waitFor();
   // Hiding private content does not need dropping the in-memory draft (finding 1935).
   assert.equal(await asksBeforeUnload(page), true);
   await page.getByRole("button", { name: "Retry", exact: true }).click();
@@ -305,7 +306,7 @@ test("a failed Namespace recheck keeps the Agent page's Configuration edit", asy
   const failed = failNextNamespacesRead(page);
   await refocus(page);
   await failed;
-  await heading(page, "Namespace access unavailable").waitFor();
+  await heading(page, "Could not reach OpenClaw Enterprise").waitFor();
   assert.equal(await asksBeforeUnload(page), true);
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await waitForInputValue(editor, '{"edited": true}');
@@ -335,7 +336,7 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
   await openTab("Channels", "channels");
   assert.equal(await disableSlack.getAttribute("data-retained"), "true");
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   const held = await holdRequests(
     t,
     page,
@@ -459,7 +460,7 @@ for (const pending of [
       await page.getByRole("tab", { name: tabLabel, exact: true }).click();
       await page.waitForURL((url) => url.searchParams.get("tab") === pending.tab);
     }
-    await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+    await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
     const held = await holdRequests(t, page, ...pending.hold({ namespace, agent }));
     await pending.start(page, { replacement });
     await held.requested;
@@ -558,7 +559,7 @@ test("a plugin save that settles after Delete lets the page go", async (t) => {
   const { agent } = await createSlackAgent(fixture, namespace, "Plugin Delete Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   // The controller applies the save; its answer waits until after Delete.
   const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
     method: "PATCH",

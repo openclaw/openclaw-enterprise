@@ -233,7 +233,8 @@ project_yaml() {
 }
 
 # yaml_object FILE OUTPUT writes FILE's YAML object documents to OUTPUT as sorted
-# JSON and sets yaml_object_text to the same bytes; it fails without one.
+# JSON and sets yaml_object_text to the same bytes; it fails without one or if
+# any document is not an object.
 yaml_object() {
   local file=$1 output=$2 status=0
   yaml_json "$file" || status=$?
@@ -242,7 +243,7 @@ yaml_object() {
     printf '%s' "$yaml_object_text" >"$output" || return 1
     return 0
   fi
-  jq -eS 'select(type == "object")' <<<"$yaml_text" >"$output" || return 1
+  jq -eS -n 'inputs | if type == "object" then . else error("expected a YAML object") end' <<<"$yaml_text" >"$output" || return 1
   ((status == 0)) || return 1
   yaml_object_text=
   IFS= read -r -d '' yaml_object_text <"$output" || true
@@ -582,10 +583,10 @@ preflight_startup() {
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   if [[ -s "${agent_drafts:-}" ]]; then
     drafts="$evidence_dir/inventory/agent-drafts.json.gz"
-    node scripts/upgrade-startup-preflight.mjs drafts "$agent_drafts" "$drafts" >/dev/null ||
-      drafts_status=$?
+    node scripts/upgrade-startup-preflight.mjs drafts "$agent_drafts" "$candidate_installation" \
+      "$drafts" >/dev/null || drafts_status=$?
     if ((drafts_status == 3)); then
-      warn "the recorded Agents' drafts are too large for the startup preflight, so it does not check them; OCC checks each draft when the upgrade deploys it."
+      warn "the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it."
       drafts=
     elif ((drafts_status != 0)); then
       die "cannot gather the recorded Agents' drafts for the startup preflight; no OCC writer was stopped."
@@ -1568,7 +1569,8 @@ transient_kubectl_failure='^error: EOF$|"https?://[^" ]+": EOF$|Unable to connec
 
 # Prints the gateway container's free memory below its cgroup v2 limit in MiB,
 # or "unlimited". Inactive file cache counts as free, as in the kubelet's
-# working set. Fails when the container's cgroup files cannot be read.
+# working set. Fails when the container's cgroup files cannot be read, and
+# returns 2 without a read once the deadline has passed.
 gateway_free_memory() {
   local gateway_namespace=$1 gateway_name=$2 output=$3 free attempt remaining
   local LC_ALL=C
@@ -1577,7 +1579,7 @@ gateway_free_memory() {
   # failure, such as missing cgroup v2 files, falls back at once.
   for attempt in 1 2 3; do
     remaining=$((deadline - SECONDS))
-    ((remaining > 0)) || return 1
+    ((remaining > 0)) || return 2
     ((remaining <= 15)) || remaining=15
     "${kube[@]}" --request-timeout="${remaining}s" --namespace "$gateway_namespace" exec "$gateway_name" \
       --container gateway -- cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current \
@@ -1707,8 +1709,19 @@ if ((target_count > 0)); then
     measured_low=0
     admitted=0
     free=unknown
-    while ((SECONDS < deadline)); do
-      if ! free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory"); then
+    # The last successful read, for the timeout message when later reads fail.
+    measured=unknown
+    # gateway_free_memory checks the deadline before each read.
+    while :; do
+      read_status=0
+      read_free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory") ||
+        read_status=$?
+      # The deadline passed before the read: keep the last read for the timeout message.
+      ((read_status != 2)) || break
+      if ((read_status == 0)); then
+        free=$read_free
+        measured=$free
+      else
         if ((measured_low == 0)); then
           warn "cannot read the cgroup v2 memory use of Agent $agent_id's gateway; running OpenClaw Doctor without checking its free memory."
           admitted=1
@@ -1737,7 +1750,11 @@ if ((target_count > 0)); then
     # A read that admitted Doctor can still end at the deadline; that is a plain
     # timeout below, not a memory shortage.
     if ((admitted == 0 && measured_low == 1)); then
-      doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout (last read: $free MiB free), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
+      last_read="last read: $free MiB free"
+      # A read that failed after a low one, such as one cut off at the deadline, measured
+      # nothing; name the last read that did.
+      [[ "$free" != unknown ]] || last_read="last measured: $measured MiB free; later reads failed"
+      doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout ($last_read), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
     fi
     # On a timeout, start no further Doctor. No Doctor is running then: each one
     # ends before the next starts, so the evidence lock outlasts all of them.

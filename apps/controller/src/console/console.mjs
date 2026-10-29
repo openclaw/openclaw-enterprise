@@ -459,12 +459,20 @@ function forgetInstallationAccess() {
 
 // The caller does not administer the Installation: true for this tab, not kept across reloads,
 // which ask the permission answer again at no audited cost. The Observability link goes away.
+// A page built while the answer was another one is told, so it takes the new answer in place, as
+// its Refresh would (finding D795).
 function settleNotAdministrator() {
+  const ended = installationAdmin !== false;
   forgetInstallationAccess();
   observabilityUrl = null;
   installationAdmin = false;
   observabilityOwner = sessionOwnerKey(session);
   shellUI.dropObservabilityLink();
+  if (ended) {
+    for (const handler of mountedViewState?.administrationEnded ?? []) {
+      handler();
+    }
+  }
 }
 
 // The refusal of a read only Installation administration may make, refused here without sending
@@ -488,13 +496,32 @@ function administrationRefusal() {
 // administration, the refusal settles "not an administrator" for this tab, as a Backends refusal
 // does (finding 2627), and the reads still waiting are refused here, unsent. A failed answer
 // settles nothing (finding 2637). A probe answered in this page load already confirms the answer.
+// Administration can also end while the page is open, after a read confirmed it: a revoked
+// administrator's Access tab recheck was refused, and then Credentials sent two more IAM reads
+// the API refused and audited (finding D792). So a refusal after confirmation is checked the same
+// way, and the reads after it wait for that answer. Refresh on the Agent page asks again, so
+// access that returns is used again.
 // Gating only: the API still authorizes every read.
 function administrationRead(path, options) {
   if (installationAdmin === false) {
     return Promise.reject(administrationRefusal());
   }
   if (administrationConfirmed) {
-    return sendRequest(path, options);
+    const owner = sessionOwnerKey(session);
+    return sendRequest(path, options).catch(async (error) => {
+      if (error?.status === 403) {
+        // The first refusal starts the check; refusals of reads sent alongside it wait for it.
+        if (administrationConfirmed) {
+          administrationConfirmed = false;
+          trackAdministrationCheck(settleAdministrationRefusal(error, owner));
+        }
+        await administrationCheck;
+        if (installationAdmin === false) {
+          error.notAdministrator = true;
+        }
+      }
+      throw error;
+    });
   }
   if (administrationCheck) {
     // A read waiting behind the check belongs to this page: leaving it or signing out aborts the
@@ -514,37 +541,45 @@ function administrationRead(path, options) {
         administrationConfirmed = true;
       }
     },
-    async (error) => {
-      if (error?.status !== 403) {
-        return;
-      }
-      let answer;
-      try {
-        answer = await namespacePermissionsRead({ outlivesView: true });
-      } catch {
-        // No answer (a network failure or a 5xx) is unknown, not a refusal: an administrator
-        // whose read a Restriction refused keeps that answer, and the next page load asks again
-        // (finding 2637).
-        return;
-      }
-      if (owner === null || owner !== sessionOwnerKey(session)) {
-        return;
-      }
-      if (answer?.installation?.administer === true) {
-        administrationConfirmed = true;
-      } else {
-        settleNotAdministrator();
-        error.notAdministrator = true;
-      }
-    },
+    (error) => settleAdministrationRefusal(error, owner),
   );
+  trackAdministrationCheck(check);
+  return check.then(() => read);
+}
+
+function trackAdministrationCheck(check) {
   administrationCheck = check;
   void check.then(() => {
     if (administrationCheck === check) {
       administrationCheck = null;
     }
   });
-  return check.then(() => read);
+}
+
+// What a refused read that took the caller for an Installation administrator says, asked of a
+// readable Namespace's permission answer (see administrationRead). Never rejects.
+async function settleAdministrationRefusal(error, owner) {
+  if (error?.status !== 403) {
+    return;
+  }
+  let answer;
+  try {
+    answer = await namespacePermissionsRead({ outlivesView: true });
+  } catch {
+    // No answer (a network failure or a 5xx) is unknown, not a refusal: an administrator
+    // whose read a Restriction refused keeps that answer, and the next page load asks again
+    // (finding 2637).
+    return;
+  }
+  if (owner === null || owner !== sessionOwnerKey(session)) {
+    return;
+  }
+  if (answer?.installation?.administer === true) {
+    administrationConfirmed = true;
+  } else {
+    settleNotAdministrator();
+    error.notAdministrator = true;
+  }
 }
 
 // Agent detail reads that the viewer's grants may not allow (saved settings, native admin
@@ -1488,9 +1523,15 @@ async function loadPage({
     reuseView = false;
   }
   namespaceId = current.namespace;
-  if (fromRefresh && current.feature === "backends" && installationAdmin === false) {
+  if (
+    fromRefresh &&
+    (current.feature === "backends" || current.agentId) &&
+    installationAdmin === false
+  ) {
     // Refresh on the Backends refusal checks Installation administration again instead of
     // reusing the settled answer (finding 2622): a permission answer, or one probe without one.
+    // So does an Agent page's, whose Access tab and administrator-only reads a refusal there
+    // turned off while the page was open (finding D792).
     forgetInstallationAccess();
     observabilityOwner = null;
     installationAdmin = null;
@@ -2081,12 +2122,15 @@ async function loadPage({
       reusable: true,
       mutations: 0,
       reads: new Map(),
+      readablePaths: new Set(),
       metaReads: new Set(),
       // Each read's Installation-administration option, so a return replays it gated (finding
       // 2636).
       administrationReads: new Map(),
       resumeHandlers: new Set(),
       revalidators: new Set(),
+      // Called once Installation administration settles as ended while the view is mounted.
+      administrationEnded: new Set(),
       user: session.user,
       // The view this load renders, retained by its own node (finding 1542).
       view: shell.view,
@@ -2117,6 +2161,7 @@ async function loadPage({
         // Live reads (runtime status, log pages) differ on every call; replaying them to
         // revalidate a cached view would only spend the reader's rate limit.
         if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
+          viewState.readablePaths.add(path);
           recordRead(readSignature(result, options.includeMeta));
           if (options.includeMeta) {
             viewState.metaReads.add(path);
@@ -2222,6 +2267,7 @@ async function loadPage({
         viewState.revalidators.add(check);
         return () => viewState.revalidators.delete(check);
       },
+      onAdministrationEnded: (handler) => viewState.administrationEnded.add(handler),
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
           showExpiredLogin();
@@ -2424,8 +2470,20 @@ async function loadPage({
         `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
         JSON.stringify(firstAgent),
       );
+      viewState.readablePaths.add(
+        `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
+      );
       const agent = await renderAgentDetail(
-        { ...agentContext, agentId: current.agentId },
+        {
+          ...agentContext,
+          agentId: current.agentId,
+          onProtectedReadDenied(error, receipt) {
+            if (lifetime.isCurrent(viewState.active)) {
+              agentContext.drafts.clear();
+              showAgentReadFailure(current, namespaceId, error, receipt);
+            }
+          },
+        },
         { agent: firstAgent },
       );
       // The load settles with the Agent's page shown, not its placeholder.
@@ -2507,10 +2565,11 @@ async function loadPage({
     if (!accessResolved) {
       // Uncertain shared admission invalidates every preview, not just this route. Drafts stay:
       // a later read clears them only if it proves their Namespace or account gone (finding 1935).
+      const account = session;
       resetReads();
       clearPrivate();
       shell = null;
-      showAdmissionUnavailable(sessionResolved, error.status);
+      showAdmissionUnavailable(sessionResolved, error, account);
       return;
     }
     mountedRouteKey = null;
@@ -2668,8 +2727,8 @@ async function loadPage({
 // Static text only: a refused lookup never says whether the link expired or was denied.
 const chatLinkFailures = {
   unavailable:
-    "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
-  interrupted: "This Agent chat link could not be opened. Try the link again.",
+    "This Gateway link could not be opened. It may be out of date, or you may not have access to the Gateway.",
+  interrupted: "This Gateway link could not be opened. Try the link again.",
 };
 
 function showChatLinkFailure(view, failure) {
@@ -2709,6 +2768,36 @@ async function locateAgentNamespace(agentId, excluded) {
       (result) => result.status === "rejected" && [403, 404].includes(result.reason?.status),
     );
   return { namespaceId: null, complete };
+}
+
+function showAgentReadFailure(current, selectedNamespace, error, receipt) {
+  resetReads();
+  if ([400, 403, 404].includes(error.status)) {
+    clearRetainedViewsForNamespace(selectedNamespace);
+  }
+  const shell = renderShell(current.feature);
+  panel(
+    shell.view,
+    error.status === 403
+      ? "Access denied"
+      : error.status === 404
+        ? "Resource unavailable"
+        : "Request unavailable",
+    error.status === 403
+      ? agentPageReadRefusal(error)
+      : "The read could not be completed. Retry to check current access and saved state.",
+    // A permission refusal offers the header's Refresh, not a Retry that repeats it.
+    error.status === 403 ? undefined : "Retry",
+    error.status === 403 ? undefined : () => void loadPage(),
+    receipt ? undefined : error.requestId,
+  );
+  if (receipt) {
+    shell.view.append(receipt);
+  }
+  if (error.status === 403) {
+    shell.refresh.disabled = false;
+  }
+  return shell.view;
 }
 
 async function revalidateMountedAgent(current) {
@@ -2793,13 +2882,28 @@ async function revalidateMountedAgent(current) {
     if (current.url.searchParams.get("tab") !== "workspace") {
       const selected =
         current.url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
+      const snapshotPath =
+        selected === "draft"
+          ? `/namespaces/${encodeURIComponent(selectedNamespace)}/configurations/${encodeURIComponent(agent.configurationId)}`
+          : `${path}/revisions/${encodeURIComponent(selected)}`;
+      const previousSnapshotRead = mountedViewState?.reads.get(snapshotPath);
+      const snapshotWasReadable = mountedViewState?.readablePaths.has(snapshotPath);
       await Promise.all([
         request(`${path}/revisions`),
-        request(
-          selected === "draft"
-            ? `/namespaces/${encodeURIComponent(selectedNamespace)}/configurations/${encodeURIComponent(agent.configurationId)}`
-            : `${path}/revisions/${encodeURIComponent(selected)}`,
-        ),
+        request(snapshotPath).catch((error) => {
+          // Initial admission can show an Agent with its draft Configuration denied. Keep
+          // that same refusal, but scrub a page whose previously readable data was revoked.
+          if (
+            selected === "draft" &&
+            error.status === 403 &&
+            (previousSnapshotRead === refusedRead(403) ||
+              deniedReadsFor(owner).has(snapshotPath)) &&
+            snapshotWasReadable === false
+          ) {
+            return;
+          }
+          throw error;
+        }),
       ]);
     }
   } catch (error) {
@@ -2810,35 +2914,15 @@ async function revalidateMountedAgent(current) {
       showExpiredLogin();
       return;
     }
-    resetReads();
     if (checking !== "detail") {
+      resetReads();
       // Drafts survive an unavailable check, as in loadPage (finding 1935).
+      const account = session;
       clearPrivate();
-      showAdmissionUnavailable(checking !== "session", error.status);
+      showAdmissionUnavailable(checking !== "session", error, account);
       return;
     }
-    if ([400, 403, 404].includes(error.status)) {
-      clearRetainedViewsForNamespace(selectedNamespace);
-    }
-    const shell = renderShell(current.feature);
-    panel(
-      shell.view,
-      error.status === 403
-        ? "Access denied"
-        : error.status === 404
-          ? "Resource unavailable"
-          : "Request unavailable",
-      error.status === 403
-        ? agentPageReadRefusal(error)
-        : "The read could not be completed. Retry to check current access and saved state.",
-      // A permission refusal offers the header's Refresh, not a Retry that repeats it.
-      error.status === 403 ? undefined : "Retry",
-      error.status === 403 ? undefined : () => void loadPage(),
-      error.requestId,
-    );
-    if (error.status === 403) {
-      shell.refresh.disabled = false;
-    }
+    showAgentReadFailure(current, selectedNamespace, error);
   } finally {
     clearTimeout(stillChecking);
     clearStillChecking?.();
@@ -2944,10 +3028,44 @@ function settingsView() {
   );
 }
 
+const UNREACHABLE_TITLE = "Could not reach OpenClaw Enterprise";
+const UNREACHABLE_TEXT = "Check your connection, then try again.";
+
+// A read that never reached the API: the browser is offline, or the API did not answer in time.
+function unreachable(error) {
+  return (
+    error.status === undefined && (error.name === "TypeError" || error.name === "TimeoutError")
+  );
+}
+
 // The shared session or Namespace read failed, so no private page can show. Once the session
 // is confirmed, a refusal can be lasting (an account whose access was removed), and this panel
 // has no account menu, so it offers Sign out beside Retry (finding 1894).
-function showAdmissionUnavailable(sessionChecked, status) {
+// A read that never reached the API says nothing about the session (finding 1896). A tab that
+// was signed in as `account` keeps its shell, without Namespace or page data, names the
+// connection and puts focus on Retry. Any answer from the API (401, 403, 503) is shown below.
+function showAdmissionUnavailable(sessionChecked, error, account) {
+  const current = route();
+  if (unreachable(error) && account && Object.hasOwn(pages, current.feature)) {
+    // The account alone stays known, so Retry, Refresh and a refocus hold this shell while they
+    // check again, and a 401 then still signs the tab out.
+    session = account;
+    const shell = renderShell(current.feature, true, { recovery: false });
+    panel(shell.view, UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    shell.refresh.disabled = false;
+    shell.view.setAttribute("aria-busy", "false");
+    const reason = shell.view.querySelector(".state-panel > p");
+    reason.id = "unreachable-reason";
+    const retry = shell.view.querySelector(".state-panel > button");
+    retry.setAttribute("aria-describedby", reason.id);
+    retry.focus();
+    return;
+  }
+  if (unreachable(error)) {
+    publicPanel(UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    return;
+  }
+  const { status } = error;
   if (!sessionChecked) {
     publicPanel(
       "Session unavailable",
@@ -3016,8 +3134,41 @@ window.addEventListener("popstate", () => {
     navigation.traverse({ fromNavigation: !resumePending, mountedUrl: mountedRouteKey });
   }
 });
-window.addEventListener("focus", resumePage);
+// Tab past the page's last control moves focus to the browser's own controls, and the next Tab
+// brings it back. That lap is not the reader returning to the page: the refocus recheck it would
+// start holds the page inert, so the lap's next Tabs skipped the page (finding 2879). A return
+// within TAB_LAP_MS of tabbing out, with the page shown throughout, is not rechecked; a later
+// return, or one after the page was hidden, is.
+const TAB_LAP_MS = 10_000;
+let lastTabKey = -Infinity;
+let tabbedOutAt = null;
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key === "Tab") {
+      lastTabKey = event.timeStamp;
+    }
+  },
+  { capture: true },
+);
+window.addEventListener("blur", (event) => {
+  if (event.target === window) {
+    // Focus leaves the page in the Tab key's own default action, right after its keydown.
+    tabbedOutAt = !document.hidden && event.timeStamp - lastTabKey < 1000 ? event.timeStamp : null;
+  }
+});
+window.addEventListener("focus", (event) => {
+  if (event.target !== window) {
+    return;
+  }
+  const lap = tabbedOutAt !== null && event.timeStamp - tabbedOutAt < TAB_LAP_MS;
+  tabbedOutAt = null;
+  if (!lap) {
+    resumePage();
+  }
+});
 document.addEventListener("visibilitychange", () => {
+  tabbedOutAt = null;
   resumePage();
 });
 // Drafts live only in this document, so a reload or tab close would lose unsaved editor work
