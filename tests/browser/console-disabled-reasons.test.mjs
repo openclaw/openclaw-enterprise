@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -17,6 +18,11 @@ import {
   newPage,
 } from "./console-agents-browser-helpers.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
+
+// The shipped default Preset, so Create Agent offers "Start with default Preset".
+const DEFAULT_CODEX_PRESET = JSON.parse(
+  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+);
 
 // Socket Mode Slack reading its two tokens from SLACK_APP_TOKEN and SLACK_BOT_TOKEN.
 const SLACK_CHANNEL = {
@@ -115,7 +121,7 @@ test("the Namespace selector names no missing reason on a page without the no-Na
 
 // Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
 // disabled with a sentence beside them that no control named. Each is described by it now.
-test("a draft's disabled Save, Discard and Use Preset name their reasons", async (t) => {
+test("a draft's disabled Save and Discard name their reasons", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Described draft", { ready: true });
@@ -152,13 +158,21 @@ test("a draft's disabled Save, Discard and Use Preset name their reasons", async
   for (const name of ["Save plugin selections", "Discard changes"]) {
     await describedBy(page.getByRole("button", { name }), "No plugin changes to save.");
   }
+});
 
-  // Use Preset waits for a Preset; the status line under the chooser says so.
-  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+// Use Preset waits for a Preset; the status line under the chooser says so.
+test("Use Preset names the Preset still to choose as its reason", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [DEFAULT_CODEX_PRESET] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Described Preset", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  const status = page.getByRole("status").filter({ hasText: /^Choose a Preset/ });
-  await status.waitFor();
-  await describedBy(page.getByRole("button", { name: "Use Preset" }), await status.textContent());
+  const reason = "Choose a Preset or start with the default Preset.";
+  await page.getByRole("status").filter({ hasText: reason }).waitFor();
+  const use = page.getByRole("button", { name: "Use Preset" });
+  assert.equal(await use.isDisabled(), true);
+  assert.equal(await accessibleDescription(use), reason);
 });
 
 // A Slack token without a Secret is the reason too.
