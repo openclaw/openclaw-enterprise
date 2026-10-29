@@ -15,6 +15,9 @@ import (
 const (
 	openShellClientSecretContainerPath = "/run/openclaw-development/openshell-client-secret"
 	openShellExternalCAContainerPath   = "/run/openclaw-development/openshell-ca.crt"
+	// Kubernetes secret volumes mount directories, so the chart's CA mount cannot
+	// share /run/openclaw-development with the client-secret Secret.
+	openShellExternalCAKubernetesPath = "/etc/openclaw/openshell/ca.crt"
 )
 
 // externalOpenShell is an operator-selected external OpenShell gateway connection
