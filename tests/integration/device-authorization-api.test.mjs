@@ -191,6 +191,26 @@ test("Gateway device login saves a source-backed Agent and reuses discovery afte
   const fixture = await createFixture(t, { approve: async () => approved });
   const login = await fixture.start();
   assertDeviceAudit(fixture, "start");
+  const startRequestId = fixture.responses.at(-1).meta.requestId;
+  const sourceId = (await fixture.stored(login)).sourceId;
+  const startEvents = fixture.auditSink.events.filter(
+    (event) => event.action === "openclaw.agents.device_authorization.start",
+  );
+  // A completed start records each saved phase once and ties the private session to its source.
+  assert.deepEqual(
+    startEvents.map((event) => event.details?.phase),
+    ["source_registering", "source_ready", "session_pending"],
+  );
+  for (const event of startEvents) {
+    assert.equal(event.actorId, fixture.policy.identities[0].id);
+    assert.equal(event.requestId, startRequestId);
+    assert.equal(event.details.sourceId, sourceId);
+    assert.deepEqual(event.resource, {
+      kind: event.details.phase === "session_pending" ? "agent" : "credential_source",
+      id: event.details.phase === "session_pending" ? fixture.namespace.id : sourceId,
+      namespaceId: fixture.namespace.id,
+    });
+  }
   assert.equal(login.verificationUrl, "https://auth.openai.com/codex/device");
   assert.equal(login.intervalSeconds, 5);
   assert.equal((await fixture.poll(login)).data.status, "pending");
