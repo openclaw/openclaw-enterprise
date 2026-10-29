@@ -250,18 +250,18 @@ test("an external OpenShell gateway CA mounts into the API and worker trust", to
         {
           secretName: "occ-openshell-ca",
           defaultMode: 288,
-          items: [{ key: "ca.crt", path: "openshell-ca.crt" }],
+          items: [{ key: "ca.crt", path: "ca.crt" }],
         },
       ],
     );
     const container = spec.containers[0];
     assert.deepEqual(
       container.volumeMounts.filter(({ name }) => name === "openshell-external-ca"),
-      [{ name: "openshell-external-ca", mountPath: "/run/openclaw-development", readOnly: true }],
+      [{ name: "openshell-external-ca", mountPath: "/etc/openclaw/openshell", readOnly: true }],
     );
     assert.deepEqual(
       container.env.filter(({ name }) => name === "NODE_EXTRA_CA_CERTS"),
-      [{ name: "NODE_EXTRA_CA_CERTS", value: "/run/openclaw-development/openshell-ca.crt" }],
+      [{ name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw/openshell/ca.crt" }],
     );
   }
   // The external CA's directory is reserved, so the database CA cannot take it.
@@ -269,7 +269,7 @@ test("an external OpenShell gateway CA mounts into the API and worker trust", to
     renderProductionChart({
       ...values,
       ...databaseCaValues,
-      "database.caMountPath": "/run/openclaw-development",
+      "database.caMountPath": "/etc/openclaw/openshell",
     }),
     (error) => {
       assert.equal(error.code, 1);

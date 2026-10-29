@@ -152,14 +152,14 @@ backend:
     # Backend owns the connection settings.
     oidcSecretName: ""
     oidcSecretKey: client-secret
-    oidcFilePath: /etc/openclaw/openshell/client-secret
+    oidcFilePath: /run/openclaw-development/openshell-client-secret
     # Mounts a PEM CA bundle for an external OpenShell gateway connection into
     # the API and worker Deployments. The Installation's Backend references it
     # at rootCertificatePath for gRPC, and both Deployments trust it for the
     # OIDC token request through NODE_EXTRA_CA_CERTS. Empty uses system trust.
     caSecretName: ""
     caSecretKey: ca.crt
-    caFilePath: /run/openclaw-development/openshell-ca.crt
+    caFilePath: /etc/openclaw/openshell/ca.crt
   chatgpt:
     enabled: false
     secretName: occ-chatgpt-admin

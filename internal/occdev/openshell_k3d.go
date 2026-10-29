@@ -873,7 +873,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if state.openShellExternal.caPath != "" {
 			openshell["caSecretName"] = "occ-openshell-ca"
 			openshell["caSecretKey"] = "ca.crt"
-			openshell["caFilePath"] = openShellExternalCAContainerPath
+			openshell["caFilePath"] = openShellExternalCAKubernetesPath
 		}
 		values["backend"] = map[string]any{"openshell": openshell}
 	}

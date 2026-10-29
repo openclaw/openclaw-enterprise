@@ -519,7 +519,13 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 			"requestTimeoutMs": 30000,
 		}
 		if s.openShellExternal.caPath != "" {
-			configuration["rootCertificatePath"] = openShellExternalCAContainerPath
+			// The k3s chart mounts the CA Secret as its own directory; the Compose
+			// control plane binds the file beside the client secret.
+			caContainerPath := openShellExternalCAContainerPath
+			if s.DeploymentMode == "k3d" {
+				caContainerPath = openShellExternalCAKubernetesPath
+			}
+			configuration["rootCertificatePath"] = caContainerPath
 		}
 		return map[string]any{
 			"id":            "openshell",

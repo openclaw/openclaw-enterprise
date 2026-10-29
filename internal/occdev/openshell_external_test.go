@@ -229,7 +229,7 @@ func TestExternalOpenShellInstallationAuthenticatesWithOidc(t *testing.T) {
 		"clientId: occ-openshell",
 		"clientSecretPath: " + openShellClientSecretContainerPath,
 		"endpoint: https://openshell-gateway.example.com:8443",
-		"rootCertificatePath: " + openShellExternalCAContainerPath,
+		"rootCertificatePath: " + openShellExternalCAKubernetesPath,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("installation.yaml is missing %q", required)
