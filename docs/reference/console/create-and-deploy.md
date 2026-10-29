@@ -207,7 +207,9 @@ recovery are in [Choose repository access in the console](repository-access.md).
 
 If a password Preset's model Secret name already exists, the form offers
 **Choose existing Secret** or **Use another Secret name** under **Model provider**.
-Select a readable Secret deliberately, or enter a **New Secret name** and select
+The notice names the collision beside both choices. Credential changes clear
+recovery; switching back does not restore it. Select a readable Secret deliberately,
+or enter a **New Secret name** and select
 **Create Agent** again. Other draft fields stay unchanged. Selecting an existing
 Secret clears the entered key and uses metadata only; it does not read or replace
 the stored value. An Agent-name conflict still requires a different Agent name.

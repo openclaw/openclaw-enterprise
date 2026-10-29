@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-10-29
-last_updated_session: authoring-run/daf33de1-41b3-4148-86b6-62eade385b72
+last_updated_session: authoring-run/1839d93c-8cde-4ebb-b994-4b1333cc7ada
 ---
 
 # Agent Presets flow
@@ -244,7 +244,9 @@ picker or an independent new Secret name in the same form. Selection clears the
 entered key; neither path deletes or reads the existing value. Other draft fields
 remain. Other known refusals keep the masked input for correction or retry;
 uncertain writes clear it and lock creation. Agent-name conflicts do not enable
-Secret recovery.
+Secret recovery. Credential-context changes clear the notice, alternate name,
+and required state. Returning to a password method does not revive that recovery.
+The notice and choices share a focused block under the model credential field.
 If a later save fails, its saved Secret reference is reused.
 If Configuration creation succeeds but Agent creation fails, the form retains
 the Configuration ID and locks Configuration-affecting controls. A safe retry
@@ -291,6 +293,8 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-29 11:06: Clear Secret recovery when credential context changes and group its notice with choices. (authoring-run/1839d93c-8cde-4ebb-b994-4b1333cc7ada - 6e83f6e7409fb4fa238cd4230f1136d278794926)
 
 - 2026-10-29 10:28: Add deliberate model Secret conflict recovery in the current draft. (authoring-run/daf33de1-41b3-4148-86b6-62eade385b72 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 

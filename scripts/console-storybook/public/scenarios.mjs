@@ -3673,9 +3673,35 @@ export const scenarios = {
       "A confirmed duplicate model Secret keeps the draft and offers deliberate existing Secret selection or a separate new Secret name.",
     steps: [
       "Choose existing Secret and select a readable model credential. Confirm the Agent name, model and other draft fields remain.",
-      "Reset the story. Choose Use another Secret name and enter an alternate name. Create Agent without changing its name.",
+      "Reset the story. Tab from the collision notice through both choices. Use another Secret name focuses its input. Switch Authentication method to ChatGPT OAuth: recovery and its required input disappear. Switch back: no stale choice returns.",
     ],
     gap: "Simulated UI proof; native controller browser tests exercise duplicate rejection and recovery.",
+  },
+  createPasswordSecretConflictOAuth: {
+    group: "Pages/Create Agent",
+    name: "Secret conflict cleared for OAuth",
+    path: create,
+    standardCodexPreset: true,
+    actions: [
+      ...passwordPresetForm,
+      click("Create Agent"),
+      click("Use another Secret name"),
+      { selector: "#agent-auth-method", value: "credential_source" },
+    ],
+    rules: [
+      {
+        suffix: "/secrets",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "A Secret with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    description:
+      "Switching the refused password draft to OAuth clears the Secret collision choices and required alternate name. Returning to API key requires fresh credentials without restoring the collision.",
+    gap: "Simulated UI proof; native fixtures cover the actual duplicate refusal and keyboard recovery.",
   },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",

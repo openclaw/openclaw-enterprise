@@ -31,3 +31,8 @@ and confirm the Agent name and model remain. Reset the story, select
 **Use another Secret name**, enter a new name, and submit. The Agent name remains
 unchanged. This story simulates API responses; native browser tests verify the
 controller's duplicate rejection, denied writes, and lost replies.
+
+In **Secret conflict cleared for OAuth**, return to API key and confirm that the
+old collision and alternate name stay cleared. In the conflict story, Tab from
+the notice through the choices; Enter on the alternate choice focuses its input.
+Repeat at phone width. Credential changes must not submit another Secret write.

@@ -348,3 +348,5 @@ export const RosterModelPrimary = {
 };
 
 export const PasswordSecretConflict = story("createPasswordSecretConflict");
+
+export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");

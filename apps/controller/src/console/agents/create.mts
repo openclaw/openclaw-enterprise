@@ -1140,6 +1140,18 @@ function renderAgentForm(
   });
   const modelCredentialField = modelCredentialPicker.field;
   let secretNameConflict = false;
+  const secretConflictMessage = element("p", { className: "status-body" });
+  const ownsSecretRecovery = () =>
+    passwordAuth && !binding && ["api_key", "codex_pat"].includes(authMethod.value) && !savedSecret;
+  function clearSecretRecovery() {
+    secretNameConflict = false;
+    secretConflictMessage.textContent = "";
+    secretConflictRecovery.hidden = true;
+    alternateSecretField.hidden = true;
+    alternateSecretName.value = "";
+    alternateSecretName.required = false;
+    alternateSecretName.setCustomValidity("");
+  }
   const alternateSecretName = element("input", {
     id: "alternate-model-secret-name",
     autocomplete: "off",
@@ -1150,40 +1162,34 @@ function renderAgentForm(
   const alternateSecretField = field("New Secret name", alternateSecretName);
   alternateSecretField.hidden = true;
   const chooseExistingSecret = button("Choose existing Secret", () => {
-    if (pending || outcomeUnknown || savedSecret || !secretNameConflict) {
+    if (pending || outcomeUnknown || !ownsSecretRecovery() || !secretNameConflict) {
       return;
     }
     passwordAuth = false;
     operateAnswer.reset();
     apiKey.value = "";
-    alternateSecretField.hidden = true;
-    alternateSecretName.required = false;
-    alternateSecretName.setCustomValidity("");
-    secretConflictRecovery.hidden = true;
+    clearSecretRecovery();
     feedback.textContent =
       "Choose an existing model credential Secret, then select Create Agent. Your other draft fields are unchanged.";
     updateControls();
     modelCredentialField.querySelector("input")?.focus();
   });
   const chooseAlternateName = button("Use another Secret name", () => {
-    if (pending || outcomeUnknown || savedSecret || !secretNameConflict) {
+    if (pending || outcomeUnknown || !ownsSecretRecovery() || !secretNameConflict) {
       return;
     }
     alternateSecretField.hidden = false;
     alternateSecretName.required = true;
     alternateSecretName.focus();
   });
-  const secretConflictRecovery = element(
-    "div",
-    { hidden: true },
-    element(
-      "p",
-      { className: "hint" },
-      "Select an existing Secret deliberately, or save the entered key under another Secret name. Other draft fields stay unchanged.",
-    ),
-    element("div", { className: "status-actions" }, chooseExistingSecret, chooseAlternateName),
-    alternateSecretField,
+  const secretConflictRecovery = statusBlock(
+    "warning",
+    null,
+    secretConflictMessage,
+    [chooseExistingSecret, chooseAlternateName],
+    { id: "model-secret-conflict", hidden: true },
   );
+  secretConflictRecovery.append(alternateSecretField);
   const oauthLogin = createDeviceLogin({
     context,
     initial: draft.oauthLogin,
@@ -1491,6 +1497,7 @@ function renderAgentForm(
     renderChannelEditor();
   }
   function clearModelCredential() {
+    clearSecretRecovery();
     apiKey.value = "";
     modelCredentialSource = null;
     modelCredentialSecret = undefined;
@@ -2798,8 +2805,10 @@ function renderAgentForm(
     modelCredentialField.hidden = Boolean(binding || passwordAuth || usesOAuth);
     transientCredentialField.hidden =
       usesOAuth || (!passwordAuth && transientCredentialField.parentElement === authSection);
-    secretConflictRecovery.hidden =
-      !secretNameConflict || !passwordAuth || Boolean(savedSecret) || outcomeUnknown;
+    if (!ownsSecretRecovery()) {
+      clearSecretRecovery();
+    }
+    secretConflictRecovery.hidden = !secretNameConflict || outcomeUnknown;
     pluginDiscoveryTokenDetails.hidden = Boolean(
       binding || passwordAuth || !usesPat || pluginDiscoveryCredential === "none",
     );
@@ -3501,9 +3510,10 @@ function renderAgentForm(
                 ? AGENT_NAME_CONFLICT
                 : followableRefusal(rejectionMessage(error));
           refusedInConfiguration = showChannelBindingRefusal(error);
-          feedback.textContent = refusedInConfiguration
-            ? ""
-            : withRequestId(detail, failure.requestId);
+          feedback.textContent =
+            refusedInConfiguration || confirmedSecretConflict
+              ? ""
+              : withRequestId(detail, failure.requestId);
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
           if (nameTaken) {
@@ -3786,7 +3796,14 @@ function renderAgentForm(
         error.code === "RESOURCE_CONFLICT" &&
         error.serverMessage ===
           "A Secret with this name already exists in this Namespace. Choose a different name.";
-      secretNameConflict ||= confirmedSecretConflict;
+      if (confirmedSecretConflict) {
+        secretNameConflict = true;
+        secretConflictMessage.textContent = withRequestId(
+          `A Secret named "${requestedSecretName}" already exists in this Namespace. Choose an existing Secret or use another Secret name. Other draft fields stay unchanged.`,
+          error.requestId,
+        );
+        secretConflictRecovery.hidden = false;
+      }
       const registrationProblem =
         error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";
       // A refused grant on a saved Agent shows this text only to an Installation administrator (a
@@ -3796,7 +3813,7 @@ function renderAgentForm(
         : savedAgent
           ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets.`
           : confirmedSecretConflict
-            ? `A Secret named "${requestedSecretName}" already exists in this Namespace. Choose an existing Secret or use another Secret name below Model provider.`
+            ? ""
             : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
               ? error.serverMessage === AGENT_NAME_CONFLICT
                 ? AGENT_NAME_CONFLICT
@@ -3844,12 +3861,13 @@ function renderAgentForm(
         error.status === 403;
       credentialGrantRefused ||= memberGrantRefused;
       refusedInConfiguration = !savedConfiguration && showChannelBindingRefusal(cause);
-      feedback.textContent = refusedInConfiguration
-        ? ""
-        : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
-          guidance +
-          (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
-      focusFeedbackLine(feedback);
+      feedback.textContent =
+        refusedInConfiguration || confirmedSecretConflict
+          ? ""
+          : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
+            guidance +
+            (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
+      focusFeedbackLine(confirmedSecretConflict ? secretConflictRecovery : feedback);
       // A create that raced another Agent to the name (the preflight checked it).
       if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {
         markNameTaken();
