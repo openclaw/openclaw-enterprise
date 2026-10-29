@@ -1605,6 +1605,55 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   assert.equal(iamDenials().length, 1);
 });
 
+// Finding D804. The page load confirmed her administration, so the Access tab's first open sent
+// both policy reads at once. An administrator revoked before that first open was refused, and
+// audited, twice. The tab reads one list at a time, so the revoke costs one audited refusal, as a
+// return to the tab does (D790), and the tab gives way to Configuration.
+test("A first Access open after a revoke shows the member notice, audited once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked first open", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "First open Agent", nativeValues("x"));
+  const account = await fixture.createNamespaceMember("revoked-opener", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
+    account.credentials,
+  );
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version", exact: true }));
+  await waitForIdleFetches(page);
+  // The page load asked whether she administers the Installation, and the answer was yes.
+  assert.equal(requests.filter(({ path }) => path === "/observability").length, 1);
+
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await accessTab.click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await accessTab.count(), 0);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+  assert.deepEqual(
+    requests
+      .slice(sent)
+      .filter(({ path }) => path.includes("/iam/"))
+      .map(({ path }) => path),
+    [`/namespaces/${namespace.id}/iam/roles`],
+  );
+});
+
 // Finding D795. Once the Access tab's recheck settled that a revoked administrator no longer
 // administers the Installation, her open page kept the administrator's controls until Refresh:
 // Deploy new version, Stop and Delete stayed enabled, and Plugins sent a capabilities read the
