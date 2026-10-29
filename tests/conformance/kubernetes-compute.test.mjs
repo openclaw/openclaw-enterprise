@@ -130,6 +130,29 @@ import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-k
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
+
+test("Kubernetes Compute rejects a remote provider Harness address that is not an exact IP or CIDR", () => {
+  const configured = options();
+  configured.network.providerHarness = {
+    remote: true,
+    address: "not-an-address",
+    port: 8443,
+  };
+
+  assert.throws(
+    () => createKubernetesComputeDriver(configured),
+    (error) => {
+      assert.ok(error instanceof SharedConfigurationValidationError);
+      assert.ok(
+        JSON.stringify(error.error?.details ?? []).includes(
+          "Remote Provider Harness address must be an exact IP address or CIDR",
+        ),
+      );
+      return true;
+    },
+  );
+});
+
 test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
   // Node selectors reach the API server only in a deployment's Deployment, after a dedicated
   // deployment stopped its predecessors (finding 2357).

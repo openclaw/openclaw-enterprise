@@ -1902,10 +1902,6 @@ function parseCidr(value: unknown, description: string, path?: string): ParsedCi
   return { value, address, family: family === 4 ? 4 : 6, prefix: prefixValue };
 }
 
-function validateCidr(value: unknown, description: string): void {
-  parseCidr(value, description);
-}
-
 type RemoteProviderHarness = Extract<
   NonNullable<KubernetesComputeDriverOptions["network"]["providerHarness"]>,
   { readonly remote: true }
@@ -3880,9 +3876,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "/network/providerHarness",
           );
         }
-        if (isIP(options.network.providerHarness.address) === 0) {
+        const providerAddress = options.network.providerHarness.address;
+        if (
+          isRemoteProviderHarness(options.network.providerHarness)
+            ? !isValidExactCidr(providerAddress)
+            : isIP(providerAddress) === 0
+        ) {
           throw configurationConstraintFailure(
-            "Provider Harness gateway address must be an IP address.",
+            isRemoteProviderHarness(options.network.providerHarness)
+              ? "Remote Provider Harness address must be an exact IP address or CIDR."
+              : "Provider Harness gateway address must be an IP address.",
             "/network/providerHarness/address",
           );
         }
